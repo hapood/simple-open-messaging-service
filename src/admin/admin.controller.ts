@@ -34,6 +34,7 @@ import {
   AdminUserBatchDto,
   AdminCreateUserDto,
   AdminSetQuotaDto,
+  AdminClearHistoryDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -53,6 +54,7 @@ import {
   setAdminSessionCookie,
 } from './admin-session.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { ThreadHistoryService } from '../message/thread-history.service.js';
 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
@@ -78,6 +80,7 @@ export class AdminController {
     private readonly pushService: PushService,
     private readonly otpLoginService: OtpLoginService,
     private readonly userQuotaService: UserQuotaService,
+    private readonly threadHistory: ThreadHistoryService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -371,6 +374,21 @@ export class AdminController {
   @ApiOperation({ summary: "Force logout (revoke all of the user's sessions)" })
   async forceLogout(@Param('id') id: string): Promise<void> {
     await this.userManageService.forceLogout(Number(id));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('thread.history.clear', {
+    targetType: 'thread',
+    targetBody: 'threadId',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/threads/clear-history')
+  @ApiOperation({
+    summary: 'Clear thread history through a selected or current message',
+  })
+  async clearThreadHistory(@Body() dto: AdminClearHistoryDto): Promise<void> {
+    await this.threadHistory.clear(dto.threadId, dto.seq);
   }
 
   @UseGuards(AdminAuthGuard)

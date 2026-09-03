@@ -89,6 +89,42 @@ function selectBuilder<T>(result: T, resolvesAtLimit = false) {
 }
 
 describe('MessageService.queryClientMessagePage', () => {
+  it('returns authoritative recovery cursors before querying an out-of-range before cursor', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue(
+        selectBuilder(
+          [
+            {
+              clearedSeq: 9,
+              visibleThroughSeq: null,
+              currentEnd: 50,
+            },
+          ],
+          true,
+        ),
+      ),
+      query: { message: { findMany: vi.fn() } },
+    };
+    const svc = new MessageService(
+      {
+        db: { transaction: vi.fn((work) => work(tx)) },
+      } as never,
+      {} as never,
+    );
+
+    await expect(
+      svc.queryClientMessagePage(7, {
+        threadId: 1,
+        before: 9,
+        take: 3,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: 30006,
+      data: { resumeAfter: 9, resumeBefore: 51 },
+    });
+    expect(tx.query.message.findMany).not.toHaveBeenCalled();
+  });
+
   it('selects messages, visibility, scan metadata, and full intersecting gaps in one snapshot', async () => {
     const rows = [
       mk({
@@ -106,7 +142,7 @@ describe('MessageService.queryClientMessagePage', () => {
             [
               {
                 clearedSeq: 9,
-                visibleBeforeSeq: 46,
+                visibleThroughSeq: 45,
                 currentEnd: 50,
               },
             ],
@@ -179,7 +215,7 @@ describe('MessageService.queryClientMessagePage', () => {
             [
               {
                 clearedSeq: null,
-                visibleBeforeSeq: null,
+                visibleThroughSeq: null,
                 currentEnd: 50,
               },
             ],

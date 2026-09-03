@@ -116,7 +116,7 @@ describe('MessageRepository', () => {
         }),
       );
 
-    const result = await repo.queryBrowserMessageHistory(42, undefined, {
+    const result = await repo.queryBrowserMessageHistory(42, {
       kind: 'latest',
       count: 5,
     });
@@ -152,7 +152,7 @@ describe('MessageRepository', () => {
       knownNewestSeq: 50,
     });
 
-    const result = await repo.queryBrowserMessageHistory(42, undefined, {
+    const result = await repo.queryBrowserMessageHistory(42, {
       kind: 'older',
       before: 51,
       count: 5,
@@ -186,7 +186,7 @@ describe('MessageRepository', () => {
       knownNewestSeq: 40,
     });
 
-    const result = await repo.queryBrowserMessageHistory(42, undefined, {
+    const result = await repo.queryBrowserMessageHistory(42, {
       kind: 'around',
       anchor: 25,
       olderCount: 1,
@@ -230,7 +230,7 @@ describe('MessageRepository', () => {
       data: { threadId: 42, seq: 11, ts: 11_000 },
     });
 
-    const result = await repo.queryBrowserMessageHistory(42, undefined, {
+    const result = await repo.queryBrowserMessageHistory(42, {
       kind: 'newer',
       after: 10,
       count: 10,

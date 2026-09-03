@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
-import { ThreadParticipantService } from './thread-participant.service.js';
+import { AccountThreadStateService } from './account-thread-state.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { assertPositiveInt } from '../common/assert.js';
@@ -18,7 +18,7 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  * carries no hard-coded field name: a DTO rename is a compile error at the use site, not a silent
  * drift. This mirrors the codebase's existing `RolesGuard` + `@Roles()` authorization convention.
  *
- * Resolves a retained ThreadParticipant. Current write/member authority comes from the folded
+ * Resolves a retained AccountThreadState. Current write/member authority comes from the folded
  * RelationshipPair.active fact, so a revoked conversation can remain visible read-only while the
  * directed RelationshipIntent rows remain state-machine inputs rather than authorization facts.
  *
@@ -31,7 +31,7 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
 @Injectable()
 export class ThreadAccessGuard implements CanActivate {
   constructor(
-    private readonly participantService: ThreadParticipantService,
+    private readonly participantService: AccountThreadStateService,
     private readonly reflector: Reflector,
   ) {}
 
@@ -76,6 +76,7 @@ export class ThreadAccessGuard implements CanActivate {
     req.threadAccess = {
       threadId,
       threadType: participant.thread.type,
+      clearedSeq: participant.thread.clearedSeq,
       participant,
       friendshipActive: participant.thread.type !== 'P2P' || mutuallyAuthorized,
       membershipActive: mutuallyAuthorized,

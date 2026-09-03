@@ -56,15 +56,13 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   private source?: MockItemSource;
   private readonly groupSources = new WeakSet<MessageThreadSource>();
-  private readonly clearedThreads = new Set<number>();
-
   override createSource(
     conversation: ConversationItem,
     _callbacks: MessageThreadLiveCallbacks,
   ): MessageThreadSource {
     const isGroupConversation = conversation.type === 'GROUP';
     const source = new MockItemSource(
-      this.clearedThreads.has(conversation.threadId) ? 0 : this.itemCount(),
+      this.itemCount(),
       this.sourceLatency(),
       new MockUserService(),
       1,
@@ -94,7 +92,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       data: {
         ...request.optimistic.data,
         msgId: sentId,
-        creator: 'mock.local\u0000mock.local\u0000user-1',
+        creator: JSON.stringify([0, 'mock.local', 'user-1']),
         isSelf: true,
         name: 'Me',
         // The real production source carries `sent` when the push echo wins the HTTP-response race.
@@ -134,7 +132,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
             ...(optimistic?.data as ChatMsgData | undefined),
             type: 'msg' as const,
             msgId: sentId,
-            creator: 'mock.local\u0000mock.local\u0000user-1',
+            creator: JSON.stringify([0, 'mock.local', 'user-1']),
             isSelf: true,
             name: 'Me',
             text: optimistic?.data.text ?? '',
@@ -183,14 +181,6 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override setPinned(_request: { threadId: number; pinned: boolean }) {
     return of(this.mockResponse());
-  }
-
-  override clearHistory(_request: { threadId: number }) {
-    return of(this.mockResponse());
-  }
-
-  override clearLocalHistory(threadId: number): void {
-    this.clearedThreads.add(threadId);
   }
 
   override stageMedia(request: StageMediaRequest) {
@@ -251,7 +241,11 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       const data: ChatMsgData = {
         type: 'msg',
         msgId: id,
-        creator: `mock.local\u0000mock.local\u0000user-${2 + senderOffset}`,
+        creator: JSON.stringify([
+          0,
+          'mock.local',
+          `user-${2 + senderOffset}`,
+        ]),
         isSelf: false,
         isGroupConversation,
         name: ['Alice', 'Maya', 'Noah', 'Olivia'][senderOffset],

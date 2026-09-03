@@ -1027,13 +1027,12 @@ pub(crate) async fn native_message_history_get(
     proxy: tauri::State<'_, ProxyState>,
     user_id: i64,
     thread_id: i64,
-    cleared_through_seq: Option<i64>,
     demand: NativeHistoryDemand,
 ) -> Result<NativeHistoryResult, String> {
     if user_id <= 0 || thread_id <= 0 {
         return Err("native history demand has an invalid owner or thread".to_string());
     }
-    let lower = cleared_through_seq.unwrap_or_default().max(0);
+    let lower = 0;
     let validate_count = |count: i64| -> Result<i64, String> {
         if (0..=200).contains(&count) {
             Ok(count)

@@ -127,7 +127,6 @@ export class MessageRepository {
    */
   async queryNativeMessageHistory(
     threadId: number,
-    clearedThroughSeq: number | undefined,
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
     if (!isTauri())
@@ -140,7 +139,6 @@ export class MessageRepository {
       {
         userId,
         threadId,
-        clearedThroughSeq: clearedThroughSeq ?? null,
         demand,
       },
     );
@@ -150,19 +148,18 @@ export class MessageRepository {
    * reduction, and recursive continuation required by one source demand. */
   async queryBrowserMessageHistory(
     threadId: number,
-    clearedThroughSeq: number | undefined,
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
     if (isTauri())
       throw new Error('browser message history requested inside Tauri');
-    const lowerHint = Math.max(0, clearedThroughSeq ?? 0);
+    const lowerHint = 0;
     const lifetime = this.webdb.captureMessageLifetime();
     try {
       switch (demand.kind) {
         case 'latest': {
           const [serverLower, upper] =
             await this.bootstrapMessageBounds(threadId);
-          const lower = Math.max(lowerHint, serverLower);
+          const lower = serverLower;
           const page = await this.walkBrowserMessageHistory(
             threadId,
             'older',
@@ -183,7 +180,7 @@ export class MessageRepository {
         case 'around': {
           const [serverLower, upper] =
             await this.bootstrapMessageBounds(threadId);
-          const lower = Math.max(lowerHint, serverLower);
+          const lower = serverLower;
           const older = await this.walkBrowserMessageHistory(
             threadId,
             'older',

@@ -5,7 +5,6 @@ import {
   eq,
   gt,
   inArray,
-  isNull,
   isNotNull,
   gte,
   lt,
@@ -31,10 +30,10 @@ import {
   fileSyncProgress,
   federationThreadHistoryGap,
   group,
-  threadMember,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../database/schema.js';
+import { rawDate } from '../database/raw-result.js';
 import { isUniqueViolation } from '../database/database-error.js';
 import {
   assembleOutboundContent,
@@ -68,7 +67,6 @@ import {
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
-import { recordHostedGroupSentBoundaries } from './hosted-group-sent-boundaries.js';
 import { requireOutboundPendingMedia } from './pending-media-row.js';
 
 interface ReplyPreview {
@@ -190,8 +188,8 @@ export function derivePreview(type: ContentType, content: string): string {
  *
  * Friendship state-machine logic formerly lived here; it has moved to FriendshipService (on the new
  * Friendship model). This service now deals only with Message rows + the MessageThread last-message
- * denormalization. Membership authorization (is the caller an active ThreadParticipant of this thread?)
- * is handled by ThreadParticipantService in the controllers before write/query is called.
+ * denormalization. Membership authorization (is the caller an active AccountThreadState of this thread?)
+ * is handled by AccountThreadStateService in the controllers before write/query is called.
  */
 @Injectable()
 export class MessageService {
@@ -319,10 +317,10 @@ export class MessageService {
           })
           .from(messageThread)
           .innerJoin(
-            threadParticipant,
+            accountThreadState,
             and(
-              eq(threadParticipant.threadId, messageThread.id),
-              eq(threadParticipant.accountId, userId),
+              eq(accountThreadState.threadId, messageThread.id),
+              eq(accountThreadState.accountId, userId),
             ),
           )
           .innerJoin(user, eq(user.id, userId))
@@ -450,23 +448,6 @@ export class MessageService {
             updatedAt: new Date(),
           })
           .returning();
-        await tx
-          .update(threadMember)
-          .set({
-            profileRev: writeAccess.profileRev,
-            profileMessageSeq: seq,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(threadMember.threadId, threadId),
-              eq(threadMember.userId, userId),
-              or(
-                isNull(threadMember.profileMessageSeq),
-                lt(threadMember.profileMessageSeq, seq),
-              ),
-            ),
-          );
         if (type === ContentType.FORWARD) {
           if (!forwardBundleId) {
             throw new Error('FORWARD message requires forwardBundleId');
@@ -487,23 +468,14 @@ export class MessageService {
         // Sender has implicitly "read" what they just sent; seq is freshly allocated so it is always
         // strictly greater than the prior watermark — a forward move, never a regression.
         await tx
-          .update(threadParticipant)
+          .update(accountThreadState)
           .set({ lastReadSeq: seq, updatedAt: new Date() })
           .where(
             and(
-              eq(threadParticipant.accountId, userId),
-              eq(threadParticipant.threadId, threadId),
+              eq(accountThreadState.accountId, userId),
+              eq(accountThreadState.threadId, threadId),
             ),
           );
-        await recordHostedGroupSentBoundaries(
-          tx,
-          threadId,
-          {
-            account: writeAccess.creatorAccount,
-            domain: writeAccess.creatorDomain,
-          },
-          seq,
-        );
         await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
@@ -638,12 +610,12 @@ export class MessageService {
       .where(eq(messageThread.id, threadId));
     if (options?.markReadUserId !== undefined) {
       await tx
-        .update(threadParticipant)
+        .update(accountThreadState)
         .set({ lastReadSeq: seq, updatedAt: new Date() })
         .where(
           and(
-            eq(threadParticipant.accountId, options.markReadUserId),
-            eq(threadParticipant.threadId, threadId),
+            eq(accountThreadState.accountId, options.markReadUserId),
+            eq(accountThreadState.threadId, threadId),
           ),
         );
     }
@@ -1094,16 +1066,16 @@ export class MessageService {
         const creatorUserId = creator.id;
         const [participant] = await tx
           .select({ type: messageThread.type, dissolvedAt: group.dissolvedAt })
-          .from(threadParticipant)
+          .from(accountThreadState)
           .innerJoin(
             messageThread,
-            eq(messageThread.id, threadParticipant.threadId),
+            eq(messageThread.id, accountThreadState.threadId),
           )
           .leftJoin(group, eq(group.id, messageThread.groupId))
           .where(
             and(
-              eq(threadParticipant.accountId, creatorUserId),
-              eq(threadParticipant.threadId, stage.threadId),
+              eq(accountThreadState.accountId, creatorUserId),
+              eq(accountThreadState.threadId, stage.threadId),
             ),
           )
           .limit(1);
@@ -1166,23 +1138,6 @@ export class MessageService {
           })
           .returning();
         await tx
-          .update(threadMember)
-          .set({
-            profileRev: msg.profileRev,
-            profileMessageSeq: seq,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(threadMember.threadId, stage.threadId),
-              eq(threadMember.userId, creatorUserId),
-              or(
-                isNull(threadMember.profileMessageSeq),
-                lt(threadMember.profileMessageSeq, seq),
-              ),
-            ),
-          );
-        await tx
           .update(messageThread)
           .set({
             lastMessageSeq: seq,
@@ -1192,23 +1147,14 @@ export class MessageService {
           })
           .where(eq(messageThread.id, stage.threadId));
         await tx
-          .update(threadParticipant)
+          .update(accountThreadState)
           .set({ lastReadSeq: seq, updatedAt: new Date() })
           .where(
             and(
-              eq(threadParticipant.accountId, creatorUserId),
-              eq(threadParticipant.threadId, stage.threadId),
+              eq(accountThreadState.accountId, creatorUserId),
+              eq(accountThreadState.threadId, stage.threadId),
             ),
           );
-        await recordHostedGroupSentBoundaries(
-          tx,
-          stage.threadId,
-          {
-            account: stage.creatorAccount,
-            domain: stage.creatorDomain,
-          },
-          seq,
-        );
         await ClientThreadContentHeadWriter.publishMessage(
           tx,
           stage.threadId,
@@ -1248,7 +1194,7 @@ export class MessageService {
     params: MessageQueryParams,
     filters?: {
       clearedThroughSeq?: number | null;
-      visibleBeforeSeq?: number | null;
+      visibleThroughSeq?: number | null;
       hideCreators?: MessageAuthorAddress[];
     },
   ) {
@@ -1270,19 +1216,19 @@ export class MessageService {
       async (tx) => {
         const [scope] = await tx
           .select({
-            clearedSeq: threadParticipant.clearedSeq,
-            visibleBeforeSeq: threadParticipant.messageVisibleBeforeSeq,
+            clearedSeq: messageThread.clearedSeq,
+            visibleThroughSeq: accountThreadState.messageVisibleThroughSeq,
             currentEnd: messageThread.curSeq,
           })
-          .from(threadParticipant)
+          .from(accountThreadState)
           .innerJoin(
             messageThread,
-            eq(messageThread.id, threadParticipant.threadId),
+            eq(messageThread.id, accountThreadState.threadId),
           )
           .where(
             and(
-              eq(threadParticipant.accountId, userId),
-              eq(threadParticipant.threadId, query.threadId),
+              eq(accountThreadState.accountId, userId),
+              eq(accountThreadState.threadId, query.threadId),
             ),
           )
           .limit(1);
@@ -1292,11 +1238,12 @@ export class MessageService {
             `no thread [${query.threadId}]`,
           );
 
-        const lower = Math.max(scope.clearedSeq ?? 0, 0);
-        const upper = Math.min(
-          scope.currentEnd + 1,
-          scope.visibleBeforeSeq ?? scope.currentEnd + 1,
-        );
+        const lower = scope.clearedSeq ?? 0;
+        const upper =
+          Math.min(
+            scope.currentEnd,
+            scope.visibleThroughSeq ?? scope.currentEnd,
+          ) + 1;
         const cursorData = { resumeAfter: lower, resumeBefore: upper };
         const { after, before, through } = query;
         if (after === undefined && before === undefined)
@@ -1347,7 +1294,7 @@ export class MessageService {
           },
           {
             clearedThroughSeq: scope.clearedSeq,
-            visibleBeforeSeq: scope.visibleBeforeSeq,
+            visibleThroughSeq: scope.visibleThroughSeq,
           },
         );
         const hasMore = rows.length > query.take;
@@ -1389,7 +1336,7 @@ export class MessageService {
           hasMore,
           filters: {
             clearedThroughSeq: scope.clearedSeq,
-            visibleBeforeSeq: scope.visibleBeforeSeq,
+            visibleThroughSeq: scope.visibleThroughSeq,
           },
         };
       },
@@ -1413,12 +1360,13 @@ export class MessageService {
     params: MessageQueryParams,
     filters?: {
       clearedThroughSeq?: number | null;
-      visibleBeforeSeq?: number | null;
+      visibleThroughSeq?: number | null;
       hideCreators?: MessageAuthorAddress[];
     },
   ) {
-    // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
-    //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
+    // The viewer's per-thread filters, layered on top of the membership-resolved threadId. The
+    // thread-wide clearedThroughSeq is validated before this query and is retained only for quote
+    // preview filtering; it is deliberately not repeated as a SQL row predicate here.
     //  - hideCreators: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
     const conditions: SQL[] = [
@@ -1426,15 +1374,10 @@ export class MessageService {
       eq(message.isDeleted, false),
     ];
     if (
-      filters?.clearedThroughSeq !== null &&
-      filters?.clearedThroughSeq !== undefined
+      filters?.visibleThroughSeq !== null &&
+      filters?.visibleThroughSeq !== undefined
     )
-      conditions.push(gt(message.seq, filters.clearedThroughSeq));
-    if (
-      filters?.visibleBeforeSeq !== null &&
-      filters?.visibleBeforeSeq !== undefined
-    )
-      conditions.push(lt(message.seq, filters.visibleBeforeSeq));
+      conditions.push(lte(message.seq, filters.visibleThroughSeq));
     if (filters?.hideCreators?.length)
       conditions.push(
         sql`NOT (${or(
@@ -1597,12 +1540,14 @@ export class MessageService {
     filters?:
       | {
           clearedThroughSeq?: number | null;
+          visibleThroughSeq?: number | null;
           hideCreators?: MessageAuthorAddress[];
         }
       | Map<
           number,
           {
             clearedThroughSeq?: number | null;
+            visibleThroughSeq?: number | null;
             hideCreators?: MessageAuthorAddress[];
           }
         >,
@@ -1662,7 +1607,7 @@ export class MessageService {
           });
     const authorNames = new Map(
       authors.map((author) => [
-        `${author.account}\u0000${author.domain}\u0000${author.namespaceId}`,
+        JSON.stringify([author.account, author.domain, author.namespaceId]),
         author.name,
       ]),
     );
@@ -1673,6 +1618,9 @@ export class MessageService {
         (viewerFilters?.clearedThroughSeq !== null &&
           viewerFilters?.clearedThroughSeq !== undefined &&
           target.seq <= viewerFilters.clearedThroughSeq) ||
+        (viewerFilters?.visibleThroughSeq !== null &&
+          viewerFilters?.visibleThroughSeq !== undefined &&
+          target.seq > viewerFilters.visibleThroughSeq) ||
         (target.creatorAccount !== null &&
           viewerFilters?.hideCreators?.some(
             (creator) =>
@@ -1688,7 +1636,11 @@ export class MessageService {
           target.creatorAccount === null
             ? 'System'
             : (authorNames.get(
-                `${target.creatorAccount}\u0000${target.creatorDomain}\u0000${target.creatorNamespaceId}`,
+                JSON.stringify([
+                  target.creatorAccount,
+                  target.creatorDomain,
+                  target.creatorNamespaceId,
+                ]),
               ) ?? target.creatorAccount),
           target.contentType,
           target.content,
@@ -1839,10 +1791,18 @@ export class MessageService {
     keyword: string,
     take: number,
     lastSeq?: number,
+    clearedSeq?: number | null,
   ) {
+    if (
+      clearedSeq !== null &&
+      clearedSeq !== undefined &&
+      lastSeq !== undefined &&
+      lastSeq <= clearedSeq + 1
+    )
+      return [];
     const cursor =
       lastSeq === undefined ? sql.empty() : sql`AND seq < ${lastSeq}`;
-    return this.queryRaw<Array<{ seq: number; createdAt: Date }>>`
+    const rows = await this.queryRaw<Array<{ seq: number; createdAt: string }>>`
       SELECT seq, "createdAt"
       FROM "Message"
       WHERE "threadId" = ${threadId}
@@ -1870,6 +1830,17 @@ export class MessageService {
       ORDER BY seq DESC
       LIMIT ${take + 1}
     `;
+    return rows
+      .filter(
+        (row) =>
+          clearedSeq === null ||
+          clearedSeq === undefined ||
+          row.seq > clearedSeq,
+      )
+      .map((row) => ({
+        ...row,
+        createdAt: rawDate(row.createdAt, 'Message.createdAt'),
+      }));
   }
 
   /** Single message lookup by per-thread (threadId, seq) identity — seq is unique only within a thread,
@@ -1954,7 +1925,7 @@ export class MessageService {
           ),
           ARRAY[]::text[]
         ) AS "mentionContents"
-      FROM "ThreadParticipant" tp
+      FROM "AccountThreadState" tp
       LEFT JOIN LATERAL (
         SELECT msg.seq, msg.content, msg."contentType"
         FROM "Message" msg
@@ -2009,7 +1980,7 @@ export class MessageService {
         WHERE id = ${userId}
         RETURNING "readRevision"
       ), advanced AS (
-        UPDATE "ThreadParticipant" AS participant
+        UPDATE "AccountThreadState" AS participant
         SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", 0), ${localReadHwm}),
             "readRevision" = bumped."readRevision",
             "updatedAt" = CURRENT_TIMESTAMP
@@ -2072,19 +2043,19 @@ export class MessageService {
   ) {
     const participants = await this.database.db
       .select({
-        threadId: threadParticipant.threadId,
-        lastReadSeq: threadParticipant.lastReadSeq,
-        readRevision: threadParticipant.readRevision,
+        threadId: accountThreadState.threadId,
+        lastReadSeq: accountThreadState.lastReadSeq,
+        readRevision: accountThreadState.readRevision,
       })
-      .from(threadParticipant)
+      .from(accountThreadState)
       .where(
         and(
-          eq(threadParticipant.accountId, userId),
-          gt(threadParticipant.readRevision, fromRevision),
-          lte(threadParticipant.readRevision, toRevision),
+          eq(accountThreadState.accountId, userId),
+          gt(accountThreadState.readRevision, fromRevision),
+          lte(accountThreadState.readRevision, toRevision),
         ),
       )
-      .orderBy(asc(threadParticipant.readRevision));
+      .orderBy(asc(accountThreadState.readRevision));
     if (participants.length === 0) return [];
     const self = await this.database.db.query.user.findFirst({
       where: eq(user.id, userId),
@@ -2166,7 +2137,7 @@ export class MessageService {
       sample AS (
         SELECT m."threadId" AS tid, m.seq, m.id, m.content, m."contentType"
         FROM "Message" m
-        JOIN "ThreadParticipant" tp
+        JOIN "AccountThreadState" tp
           ON tp."threadId" = m."threadId"
          AND tp."accountId" = ${userId}
          AND tp.muted = false
@@ -2252,7 +2223,12 @@ export class MessageService {
           ) AS x(tid, since_seq)`
         : sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
     const rows = await this.queryRaw<
-      Array<AwayNotificationMessage & { rn: bigint }>
+      Array<
+        Omit<AwayNotificationMessage, 'createdAt'> & {
+          createdAt: string;
+          rn: string;
+        }
+      >
     >`
       WITH thread_hwm AS (${hwmCte}),
       ranked AS (
@@ -2267,7 +2243,7 @@ export class MessageService {
          AND u.domain = m."creatorDomain"
          AND u."namespaceId" = m."creatorNamespaceId"
          AND u.availability = 'AVAILABLE'
-        JOIN "ThreadParticipant" tp
+        JOIN "AccountThreadState" tp
           ON tp."threadId" = m."threadId"
          AND tp."accountId" = ${userId}
          AND tp.muted = false
@@ -2298,10 +2274,7 @@ export class MessageService {
           typeof row.content === 'string'
             ? row.content
             : JSON.stringify(row.content),
-        createdAt:
-          row.createdAt instanceof Date
-            ? row.createdAt
-            : new Date(row.createdAt as unknown as string),
+        createdAt: rawDate(row.createdAt, 'Message.createdAt'),
       });
       result.set(row.threadId, list);
     }
@@ -2348,7 +2321,7 @@ export class MessageService {
       Array<{ threadId: number; content: string }>
     >`
       SELECT m."threadId" AS "threadId", m.content::text AS content
-      FROM "ThreadParticipant" tp
+      FROM "AccountThreadState" tp
       JOIN "Message" m
         ON m."threadId" = tp."threadId"
        AND m.seq > COALESCE(tp."lastReadSeq", 0)
@@ -2409,7 +2382,7 @@ export class MessageService {
     >`
       SELECT m."threadId" AS "threadId", m.content::text AS content
       FROM "Message" m
-      JOIN "ThreadParticipant" tp
+      JOIN "AccountThreadState" tp
         ON tp."threadId" = m."threadId"
        AND tp."accountId" = ${userId}
        AND tp.muted = false

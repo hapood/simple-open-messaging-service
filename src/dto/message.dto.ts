@@ -377,7 +377,7 @@ export class ReadDeltaDto {
   toRevision!: number;
 }
 
-/** Toggle mute for a conversation (the caller's ThreadParticipant row). */
+/** Toggle mute for a conversation (the caller's AccountThreadState row). */
 export class SetMutedDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
@@ -409,7 +409,7 @@ export class SetBlockedDto {
   blocked!: boolean;
 }
 
-/** Toggle pin for a conversation (the caller's ThreadParticipant row). */
+/** Toggle pin for a conversation (the caller's AccountThreadState row). */
 export class SetPinnedDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
@@ -423,15 +423,6 @@ export class SetPinnedDto {
   })
   @IsBoolean()
   pinned!: boolean;
-}
-
-/** Per-user "clear chat history": hides all messages up to now for the caller (peer's copy untouched). */
-export class ClearHistoryDto {
-  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  threadId!: number;
 }
 
 /** Set a per-user alias/remark for a conversation — a nickname that overrides the peer's handle

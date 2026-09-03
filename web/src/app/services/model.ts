@@ -37,51 +37,42 @@ export type Message = Omit<
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 
-export function messageCreatorKey(
-  creator: MessageCreator,
-  sourceDomain: string,
-): string;
-export function messageCreatorKey(creator: null, sourceDomain: string): null;
-export function messageCreatorKey(
-  creator: MessageCreator | null,
-  sourceDomain: string,
-): string | null {
+export function messageCreatorKey(creator: MessageCreator): string;
+export function messageCreatorKey(creator: null): null;
+export function messageCreatorKey(creator: MessageCreator | null): string | null {
   return creator === null
     ? null
-    : `${creator.namespaceId}\u0000${sourceDomain}\u0000${creator.domain}\u0000${creator.account}`;
+    : JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
 }
 
 /** JSON-safe identity persisted inside ClientStateFeed preview bodies. PostgreSQL JSONB cannot store the
  * NUL-separated in-memory creator key, so durable thread previews use an explicit tuple encoding. */
 export function messagePreviewSenderKey(
   creator: MessageCreator,
-  sourceDomain: string,
 ): string {
-  return JSON.stringify([
-    creator.namespaceId,
-    sourceDomain,
-    creator.domain,
-    creator.account,
-  ]);
+  return JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
 }
 
 export function parseUserIdentityKey(key: string): {
   account: string;
   domain: string;
-  sourceDomain: string;
   namespaceId: number;
 } | null {
-  const [rawNamespaceId, sourceDomain, domain, account, ...rest] =
-    key.split('\u0000');
-  const namespaceId = Number(rawNamespaceId);
-  return Number.isSafeInteger(namespaceId) &&
-    namespaceId >= 0 &&
-    sourceDomain &&
-    domain &&
-    account &&
-    rest.length === 0
-    ? { account, domain, sourceDomain, namespaceId }
-    : null;
+  try {
+    const value: unknown = JSON.parse(key);
+    if (!Array.isArray(value) || value.length !== 3) return null;
+    const [namespaceId, domain, account] = value;
+    return Number.isSafeInteger(namespaceId) &&
+      (namespaceId as number) >= 0 &&
+      typeof domain === 'string' &&
+      domain.length > 0 &&
+      typeof account === 'string' &&
+      account.length > 0
+      ? { account, domain, namespaceId: namespaceId as number }
+      : null;
+  } catch {
+    return null;
+  }
 }
 export interface Group {
   id: number;
@@ -116,7 +107,6 @@ type ConversationItemBase = {
   blocked?: boolean;
   pinned: boolean;
   pinnedAt: number | null;
-  clearedSeq: number | null;
   alias?: string | null;
   /** P2P only: false after unfriend; history remains readable but sending/calling is disabled. */
   friendshipActive?: boolean;
@@ -188,7 +178,6 @@ export function createP2PConversation(
     blocked: false,
     pinned: false,
     pinnedAt: null,
-    clearedSeq: null,
     alias: null,
     friendshipActive: true,
     conversationState: 'ACTIVE',
@@ -237,7 +226,6 @@ export function createGroupConversation(
     blocked: false,
     pinned: false,
     pinnedAt: null,
-    clearedSeq: null,
     alias: null,
     conversationState: 'ACTIVE',
     lastReadSeq: null,

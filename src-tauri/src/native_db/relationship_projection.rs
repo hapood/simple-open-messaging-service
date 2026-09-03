@@ -39,7 +39,15 @@ fn relationship_intent_key(
     subject_account: &str,
     subject_domain: &str,
 ) -> String {
-    format!("{namespace_id}\0{domain}\0{account}->{subject_domain}\0{subject_account}")
+    serde_json::json!([
+        "relationship",
+        namespace_id,
+        domain,
+        account,
+        subject_domain,
+        subject_account
+    ])
+    .to_string()
 }
 
 pub(super) fn apply_relationship_intent_fact(
@@ -159,27 +167,27 @@ pub(super) fn apply_friend_request_effect(
         return Ok(());
     }
     let reverse = status == "ACCEPTED";
-    let authored = if reverse {
-        relationship_intent_key(
+    let key = if reverse {
+        serde_json::json!([
+            "friend",
             namespace_id,
-            subject_account,
             subject_domain,
-            account,
+            subject_account,
             domain,
-        )
+            account
+        ])
+        .to_string()
     } else {
-        relationship_intent_key(
+        serde_json::json!([
+            "friend",
             namespace_id,
-            account,
             domain,
-            subject_account,
+            account,
             subject_domain,
-        )
+            subject_account
+        ])
+        .to_string()
     };
-    let key = format!(
-        "friend:{namespace_id}:{}",
-        json_text(&Value::String(authored))?
-    );
     if status != "REQUESTED" {
         return update_live_request_projection(tx, user_id, &key, status, now);
     }
@@ -259,7 +267,14 @@ pub(super) fn apply_group_request_effect(
     } else {
         direction
     };
-    let key = format!("group:{namespace_id}:{group_domain}\0{group_account}:{target_direction}");
+    let key = serde_json::json!([
+        "group",
+        namespace_id,
+        group_domain,
+        group_account,
+        target_direction
+    ])
+    .to_string();
     if status != "REQUESTED" {
         return update_live_request_projection(tx, user_id, &key, status, now);
     }
@@ -346,7 +361,7 @@ pub(super) fn materialize_group_thread_from_fact(
         "type": "GROUP", "role": null,
         "lastMessageAt": null, "lastMessageSeq": null, "muted": false,
         "blocked": false, "pinned": false, "pinnedAt": null,
-        "clearedSeq": null, "alias": null, "conversationState": "ACTIVE",
+        "alias": null, "conversationState": "ACTIVE",
         "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [],
         "lastMessagePreview": null, "lastMessageSenderId": null,
         "group": {
@@ -435,7 +450,7 @@ pub(super) fn apply_friend_thread_from_facts(
             "type": "P2P", "role": null,
             "lastMessageAt": null, "lastMessageSeq": null, "muted": false,
             "blocked": false, "pinned": false, "pinnedAt": null,
-            "clearedSeq": null, "alias": null, "peerUser": peer,
+            "alias": null, "peerUser": peer,
             "friendshipActive": true, "conversationState": "ACTIVE",
             "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [],
             "lastMessagePreview": null, "lastMessageSenderId": null,

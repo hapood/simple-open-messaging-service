@@ -255,7 +255,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
    *  awaits this before cross-fading a pane in, so the reveal never races a half-initialized kernel. Carries
-   *  `threadId` (NOT `trd.id` — that's the ThreadParticipant row id, a different value) so the host can
+   *  `threadId` (NOT `trd.id` — that's the AccountThreadState row id, a different value) so the host can
    *  discard stale emits from a superseded reset. Not emitted on teardown. */
   readonly ready = output<number>();
 
@@ -554,7 +554,8 @@ export class MessageThreadComponent implements OnDestroy {
   readonly composingQuote = this.messageInteraction.composingQuote;
 
   /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
-   *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
+   *  friendship, a newly-created group, or after a server-applied history boundary). Maintained from
+   *  onScroll's `mounted` count:
    *  the kernel's emit() fires on init's empty branch, on every mount, and on optimistic/incoming inserts, so
    *  the hero card reacts the instant the first message — including an optimistic send — mounts. Reset to false
    *  in teardown; the template additionally gates on !initialLoading() so the card never flashes mid-load. */
@@ -1489,14 +1490,14 @@ export class MessageThreadComponent implements OnDestroy {
           account: profile.account,
           name: profile.name,
           avatar: profile.avatar,
-          bio: '',
+          bio: profile.bio,
           domain: profile.domain || 'local',
           namespaceId: profile.namespaceId,
           friendThreadId,
           relationship:
             profile.account === this.userService.sessionProfile()?.account &&
             profile.domain === 'local' &&
-            profile.profileSourceDomain === 'local'
+            profile.namespaceId === 0
               ? 'SELF'
               : friendThreadId === undefined
                 ? 'NONE'
@@ -2603,7 +2604,8 @@ export class MessageThreadComponent implements OnDestroy {
   /** Force an in-place re-init for the current bound thread (teardown + rebuild), emitting `ready` when the
    *  fresh kernel settles. The constructor init effect does NOT re-fire here (its deps — viewport/content/
    *  userMsgTrd — are unchanged), so this is the sole re-init path when the data beneath a pane changes
-   *  (clear-history) or when a resident pane is cold ({@link reset}). */
+   *  (for example, after a server-applied history boundary) or when a resident pane is cold
+   *  ({@link reset}). */
   private reinit(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;

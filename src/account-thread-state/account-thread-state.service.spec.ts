@@ -1,32 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ThreadParticipantService } from './thread-participant.service.js';
+import { AccountThreadStateService } from './account-thread-state.service.js';
 
-describe('ThreadParticipantService.endP2P transaction boundary', () => {
+describe('AccountThreadStateService.endP2P transaction boundary', () => {
   it('writes the relationship revocation and clear boundary without a thread revision', async () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
-    const identities = [
-      {
-        id: 1,
-        userId: 1,
-        account: 'alice',
-        domain: 'local',
-        relationshipRev: 0,
-      },
-      { id: 2, userId: 2, account: 'bob', domain: 'local', relationshipRev: 0 },
-    ];
+    const endpoints = {
+      pairId: 10n,
+      callerSide: 'A',
+      mineUserId: 1,
+      mineAccount: 'alice',
+      mineDomain: 'local',
+      mineNamespaceId: 0,
+      peerUserId: 2,
+      peerAccount: 'bob',
+      peerDomain: 'local',
+      peerNamespaceId: 0,
+    };
     const tx = {
-      execute: vi.fn().mockResolvedValue({
-        rows: [{ id: 10, revision: 1, authorized: true }],
-      }),
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          innerJoin: vi.fn(() => ({
-            where: vi.fn().mockResolvedValue(identities),
-          })),
-        })),
-      })),
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [endpoints] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [endpoints] })
+        .mockResolvedValueOnce({ rows: [{ id: 10n }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED' }] })
+        .mockResolvedValue({ rows: [], rowCount: 0 }),
       update: vi.fn(() => ({ set })),
       delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     };
@@ -50,7 +53,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
         .fn()
         .mockResolvedValue({ message: systemMessage }),
     };
-    const service = new ThreadParticipantService(
+    const service = new AccountThreadStateService(
       database as never,
       stateFeed as never,
       {} as never,
@@ -70,7 +73,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       2,
       { actorUserId: 1, markReadUserId: 1, recipientUserIds: [1, 2] },
     );
-    expect(tx.execute).toHaveBeenCalledTimes(10);
+    expect(tx.execute).toHaveBeenCalledTimes(12);
     // The canonical P2P advisory scope is locked first, followed by
     // RelationshipPair, MessageThread, intents, and participant rows.
     expect(tx.execute.mock.invocationCallOrder[4]).toBeLessThan(
@@ -82,38 +85,29 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
   });
 
   it('treats a revoked caller-authored direction as an idempotent success', async () => {
-    const identities = [
-      {
-        id: 1,
-        userId: 1,
-        account: 'alice',
-        domain: 'local',
-        relationshipRev: 1,
-      },
-      {
-        id: 2,
-        userId: 2,
-        account: 'bob',
-        domain: 'local',
-        relationshipRev: 1,
-      },
-    ];
+    const endpoints = {
+      pairId: 8n,
+      callerSide: 'A',
+      mineUserId: 1,
+      mineAccount: 'alice',
+      mineDomain: 'local',
+      mineNamespaceId: 0,
+      peerUserId: 2,
+      peerAccount: 'bob',
+      peerDomain: 'local',
+      peerNamespaceId: 0,
+    };
     const tx = {
       execute: vi
         .fn()
+        .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [{ id: 8n }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ status: 'REVOKED' }] }),
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          innerJoin: vi.fn(() => ({
-            where: vi.fn().mockResolvedValue(identities),
-          })),
-        })),
-      })),
       update: vi.fn(),
     };
     const database = {
@@ -124,7 +118,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       },
     };
     const messages = { writeSystemMessageInTx: vi.fn() };
-    const service = new ThreadParticipantService(
+    const service = new AccountThreadStateService(
       database as never,
       {} as never,
       {} as never,
@@ -142,7 +136,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
   });
 });
 
-describe('ThreadParticipantService.setBlocked', () => {
+describe('AccountThreadStateService.setBlocked', () => {
   it('commits the participant fact and client feed before notifying devices', async () => {
     const returning = vi.fn().mockResolvedValue([{ userId: 4 }]);
     const where = vi.fn(() => ({ returning }));
@@ -159,7 +153,7 @@ describe('ThreadParticipantService.setBlocked', () => {
       writeInTx: vi.fn().mockResolvedValue(12),
       notifyFeedUpdated: vi.fn(),
     };
-    const service = new ThreadParticipantService(
+    const service = new AccountThreadStateService(
       database as never,
       {} as never,
       clientFeed as never,

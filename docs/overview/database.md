@@ -17,12 +17,15 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 
 ```text
 Account 1─1 User                  Group 1─1 MessageThread
-   │          │                                ├─N Message
-   │          └─N ThreadMember N───────────────┤
-   └─N ThreadParticipant N─────────────────────┘
+   │                                      ├─N Message
+   └─N AccountThreadState N────────────────┤
+                                          └─1 GroupMetaFeed  (canonical or replica)
 
 RelationshipPair 1─N RelationshipIntent
-        └────────────── optional MessageThread
+        ├────────────── optional MessageThread
+        └────────────── two source-correct endpoints
+
+DurableTask (self-reference through parentTaskId and supersededByTaskId)
 ```
 
 ## Model Details
@@ -35,19 +38,20 @@ the client-state allocator, read revision, sessions, push tokens, login codes,
 admin linkage, and quotas reference `Account`. Federated identities never get
 an `Account` row.
 
-### User — source-scoped person identity
+### User — namespace-scoped person identity
 
 `User` stores only person identity and profile data. It never represents a
-group. The identity key is `(account, domain, sourceDomain)`: `domain` is the
-member's claimed home address, while `sourceDomain` is the feed publisher whose
-profile projection supplied this row. Only users created locally use
-`domain=local, sourceDomain=local`; inbound feed values are not normalized to
-`local` merely because the address belongs to this server.
+group. The identity key is `(account, domain, namespaceId)`: `domain` is the
+person's claimed home address, while `namespaceId` identifies the local or
+verified remote identity epoch that materialized this projection. The namespace
+already determines its publisher domain, so `User` does not duplicate that
+domain in a `sourceDomain` column. Inbound feed values are not normalized to the
+local namespace merely because the claimed address belongs to this server.
 
-Fields include `id`, `account`, `domain`, `sourceDomain`, `name`, `avatar`,
-`bio`, `availability`, `profileRev`, and timestamps. `availability=REMOVED`
-marks a removed source projection. External users are valid `User` rows but
-cannot log in because they have no `Account`.
+Fields include `id`, `account`, `domain`, `namespaceId`, `name`, `avatar`,
+`bio`, `availability`, `defaultProfileRev`, and timestamps.
+`availability=REMOVED` marks a removed source projection. External users are
+valid `User` rows but cannot log in because they have no `Account`.
 
 The incoming-request badge is derived by each client from incoming
 `RELATIONSHIP_INTENT/REQUESTED` client-state entries.
@@ -91,57 +95,52 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 | `id`                                                      | Int (PK)                |                                                                                                         |
 | `type`                                                    | MessageThreadType       | `P2P` \| `GROUP`                                                                                        |
 | `curSeq`                                                  | Int                     | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
+| `clearedSeq`                                              | Int?                    | inclusive history boundary shared by every viewer; messages at or below it are unavailable              |
 | `pullUntil`                                               | Int                     | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
 | `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                         | denormalized "last message" cache for the conversation list (hot read)                                  |
 | `groupId`                                                 | Int? (unique, FK→Group) | independent group profile for GROUP; null for P2P                                                       |
 | `createdAt` / `updatedAt`                                 |                         |                                                                                                         |
 
-### ThreadMember — roster and message identity
+### P2P endpoint resolution
 
-One row per `(threadId, userId)`. Every P2P thread has exactly two member rows;
-group threads use the same table for their roster. `userId` points to the exact
-source-scoped `User` row supplied by the relevant feed. Rows observed before a
-departure are retained locally, but Group Meta does not backfill members who
-left before the mirror received the roster. These rows never grant permission.
+There is no `ThreadMember` table. A P2P `RelationshipPair` owns the two
+source-correct endpoint Addresses and its optional `threadId`; this is sufficient
+to resolve both identities and find the opposite endpoint. `active` is the
+authorization fact, while the two `RelationshipIntent.profileRev` values retain
+the revisions selected by the current relationship flow. Every message retains
+its own immutable author Address and `profileRev`.
 
-| Field                     | Type       | Description                                           |
-| ------------------------- | ---------- | ----------------------------------------------------- |
-| `lastSentSeq`             | Int?       | latest authored seq tracked by a locally hosted group |
-| `left`                    | Boolean    | retained group projection is departed; false for P2P  |
-| `role`                    | GroupRole? | OWNER/ADMIN/MEMBER (GROUP only); null for P2P         |
-| `joinedAt`                | Timestamp  | start of the current observed membership interval     |
-| `createdAt` / `updatedAt` | Timestamp  | retained row creation and last update                 |
-
-The host updates `lastSentSeq`; mirrors leave it null. Group Meta does not use
-this field to disclose departed speakers. `joinedAt` is local lifecycle
-metadata: re-entry refreshes it, but it is not federated through GROUP_META and
-must not be interpreted as the origin's join time on a mirror.
-
-### ThreadParticipant — local account conversation state
+### AccountThreadState — local account conversation state
 
 This is an independent fact keyed by `(accountId, threadId)`. It references a
-local `Account` and a `MessageThread`, never a `ThreadMember`. It stores the
+local `Account` and a `MessageThread`. It stores the
 local role fact, `lastReadSeq`, `readRevision`, mute/block/pin state,
-`clearedSeq`, `messageVisibleBeforeSeq`, and alias. A thread may therefore have
+inclusive `messageVisibleThroughSeq`, and alias. The thread-wide `clearedSeq` history boundary lives
+on `MessageThread`. A thread may therefore have
 zero, one, or several participants: a cross-server P2P usually has one, a
 local-local P2P has two, and a group has one for each local account. Roster
-identity is resolved separately through `ThreadMember JOIN User`.
+identity is resolved from canonical Group Meta for a locally hosted group and
+from the replicated Group Meta for a remote group.
 
 ### RelationshipPair and RelationshipIntent
 
 - **RelationshipIntent** — one authored direction (`authorSide=A|B`) per fixed
   pair, with its own
   `note`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable and
-  acceptable only before expiry. Its publisher creates a placeholder thread and
-  immediately grants the target peer query access; the reverse direction remains
-  independent. User/user pairs use P2P threads and user/group pairs use group
+  acceptable only before expiry. Its publisher creates the stable query state
+  before publishing the direction, which immediately grants passive query access
+  to the target peer without enabling content-head notification. The reverse
+  direction remains independent. User/user pairs use P2P threads and user/group pairs use group
   threads. A received one-sided federation request remains address-keyed and
   creates no local thread until the user accepts or independently initiates.
-- **RelationshipPair.active** — the materialized bilateral fact used by
-  permission checks. It is folded from the two intents under a row lock; roster
-  and participant presence are never permission inputs.
-- **ThreadAudience current projection** — the origin server's current federation delivery boundary. Relationship
-  removal deletes the audience row and immediately revokes message and tombstone queries. Reactivation
+- **RelationshipPair.active** — the materialized bilateral fact used by sends,
+  content-head publication, and other mutually confirmed operations. It is
+  folded from the two intents under a row lock; roster and participant presence
+  are never permission inputs.
+- **ThreadAudience current projection** — the origin server's current federation notification and delivery boundary. It also stores the
+  canonical Group Meta delta visibility floor established on authorization or reauthorization. Relationship
+  removal deletes the audience row and stops head publication. Intent revocation independently
+  revokes passive message and tombstone queries. Reactivation
   recreates the audience at the current thread tail and reuses the same thread/mirror. A group peer
   audience remains present while that peer has any active member. Messages from an interval with no
   active audience are neither discovered nor backfilled.
@@ -154,6 +153,23 @@ there is no JSON merge and no polymorphic `Invite` table.
 invitations waiting for the member. Both directions share one schema, status vocabulary, paging
 coordinate, retention policy, and API response shape.
 
+### DurableTask — mutation and projection work
+
+`DurableTask` stores retained operational history for asynchronous mutations
+and paginated projections. It is not authoritative relationship or group state.
+`kind` separates `MUTATION` and `PROJECTION` execution lanes, while `scopeType`
+and `scopeKey` identify the ordering boundary. At most one row for a
+`(kind, scopeKey)` lane may be `PROCESSING`.
+
+`payload` is immutable after claim. An eligible pending group-member intent
+slot may be rewritten in place to its latest desired value before execution.
+Required JSON object `checkpoint` stores type-specific resumable progress.
+`parentTaskId` links fan-out work. `coalescingKey` identifies both in-place
+mutation slots and replace-by-successor projections; `SUPERSEDED` and
+`supersededByTaskId` retain the latter's replacement history. See
+[Durable Task Scheduling](../design/durable-task-scheduling.md) for execution
+and failure semantics.
+
 ### Group — independent group identity
 
 | Field                                            | Type       | Description                                                    |
@@ -163,6 +179,43 @@ coordinate, retention policy, and API response shape.
 | `remoteGroupMetaFeedId`                          | BigInt?    | last consumed Group Meta Feed ID for a federated mirror        |
 | `dissolvedAt`                                    | Timestamp? | terminal dissolve marker; null while the group remains active  |
 | `createdAt` / `updatedAt`                        | Timestamp  | lifecycle timestamps                                           |
+
+### Canonical Group Meta — origin-owned roster
+
+A locally hosted group has one Group Meta allocator and append log. Canonical
+member and group-profile rows are keyed by `groupId`, never by a target peer.
+The latest operation for a stable member is the authoritative local roster:
+`UPSERT` is current and `DEPART` is absent. `ThreadAudience` supplies current
+peer authorization and its delta visibility floor; it does not own a roster
+copy.
+
+`GroupMetaMemberFeed` stores `UPSERT { role, profileRev }` and internally stores
+an empty body for `DEPART`; federation serialization omits the body entirely.
+`GroupMetaProfileFeed` is the compacted group-profile reference in the same
+group coordinate space.
+
+A mirror stores the consumed cursor and each validated remote item once in a
+group-scoped replica using the remote canonical coordinates. The newest
+operation per stable member is its current roster projection; no mirror
+`ThreadMember` rows or separate delivery log exist. The replica is shared by
+all local accounts and is not authoritative roster state. Local account rows
+contain only compacted Client State Feed heads and device cursors. An origin
+serves local clients directly from its canonical log, while a mirror serves
+them from the replica.
+
+Delta and full rounds both fix a remote `through` and may use multiple bounded
+pages. Page transactions update replica facts and recovery progress only; they
+do not advance the mirror's `feedEndId`, allocate a Client State Feed head, or
+emit a wake hint. Full pages additionally tag observed rows with a
+durable `fullSyncRunId`, followed by bounded removal of unobserved rows. One
+short final transaction advances `feedEndId`. Delta and full application
+serialize per mirrored group. There is no local read gate during the round.
+
+On an origin, `feedEndId` is the allocation end. On a mirror, it is the last
+completely applied round cursor. A State Feed Group Meta head supplies the
+sub-round target through its durable task payload; progress remains in the task
+checkpoint. The State Feed item commits only after `feedEndId` reaches its
+target, and no Group Meta network read occurs inside that item transaction.
 
 ### ClientStateFeed — Client state feed
 
@@ -238,8 +291,14 @@ similarity is not an identity substitute.
 - **FederationNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
-- **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted per-peer relationship,
-  profile and group state with transactional source and receiver cursors.
+- **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted
+  per-peer relationship and group/thread heads with transactional source and
+  receiver cursors. Delta and cursor-unavailable full consumption both use a
+  fixed-through paginated round; page commits persist facts without outward
+  notification, and round completion emits coalesced wakes.
+- **Canonical Group Meta feeds** — one allocator and member/profile coordinate
+  space per locally hosted group. Audience-specific state contains authorization
+  and visibility boundaries only; it never duplicates roster items.
 
 ### QuotaDailyUsage — Unified daily-quota counters
 
@@ -271,10 +330,18 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 ## Design Notes
 
 1. **Account and identity are separate**: `Account` is local login/control-plane state; `User` is a source-scoped person profile. Groups live only in `Group`.
-2. **Roster and local state are separate**: `ThreadMember` stores P2P/group roster facts and retained speakers. `ThreadParticipant` is an independent local-account conversation fact; neither table references the other.
+2. **Membership storage follows relationship kind**: canonical Group Meta
+   stores a locally hosted group's authoritative roster; the same storage shape
+   holds a remote group's validated non-authoritative replica. P2P participants
+   are the two `RelationshipPair` endpoints. `AccountThreadState` remains
+   independent local-account conversation state. No `ThreadMember` table is
+   retained.
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
 5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
-6. **Lifecycle is model-specific**: group departure marks `ThreadMember.left` and emits an ordered group-meta `DEPART`; it does not erase the retained member. Media-CAS blobs are reclaimed only after reachability checks.
+6. **Lifecycle is model-specific**: the origin appends bodyless Group Meta
+   `DEPART`; mirrors and clients physically delete current member projections.
+   Historical messages retain their own author Address and profile reference.
+   Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

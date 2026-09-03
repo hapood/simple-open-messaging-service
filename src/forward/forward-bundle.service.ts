@@ -20,9 +20,7 @@ import {
   messageAsset,
   message,
   messageThread,
-  threadMember,
-  threadParticipant,
-  user,
+  accountThreadState,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
@@ -63,7 +61,9 @@ export interface ForwardSourceMessage {
   seq: number;
 }
 
-export interface ForwardAuthorSnapshot extends FederationAddress {
+export type ForwardAuthor = FederationAddress;
+
+export interface ForwardProfileSnapshot {
   displayName: string;
   avatarDigest?: string;
 }
@@ -71,7 +71,8 @@ export interface ForwardAuthorSnapshot extends FederationAddress {
 export interface ForwardBundleMessage extends FederatedMessagePayload {
   /** Positive identity used only by quotes in this enclosing messages array. */
   id: number;
-  author: ForwardAuthorSnapshot;
+  author: ForwardAuthor;
+  profile?: ForwardProfileSnapshot;
   sentAt: number;
   childBundleId?: string;
   quoteTargetId?: number;
@@ -255,20 +256,20 @@ export class ForwardBundleService {
     const uniqueThreads = [...new Set(sources.map((s) => s.threadId))];
     const memberships = await this.database.db
       .select({
-        threadId: threadParticipant.threadId,
-        clearedSeq: threadParticipant.clearedSeq,
-        blocked: threadParticipant.blocked,
+        threadId: accountThreadState.threadId,
+        clearedSeq: messageThread.clearedSeq,
+        blocked: accountThreadState.blocked,
         messageThread,
       })
-      .from(threadParticipant)
+      .from(accountThreadState)
       .innerJoin(
         messageThread,
-        eq(messageThread.id, threadParticipant.threadId),
+        eq(messageThread.id, accountThreadState.threadId),
       )
       .where(
         and(
-          eq(threadParticipant.accountId, userId),
-          inArray(threadParticipant.threadId, uniqueThreads),
+          eq(accountThreadState.accountId, userId),
+          inArray(accountThreadState.threadId, uniqueThreads),
         ),
       );
     const authorizedMemberships = (
@@ -309,30 +310,18 @@ export class ForwardBundleService {
           })
           .then(async (row) => {
             if (!row) return null;
-            const creatorItem =
+            const creatorProfile =
               row.creatorAccount === null || row.creatorDomain === null
                 ? null
-                : ((await this.database.db.query.user.findFirst({
-                    where: and(
-                      eq(user.account, row.creatorAccount),
-                      eq(user.domain, row.creatorDomain),
-                      eq(user.namespaceId, row.creatorNamespaceId),
-                    ),
-                    columns: {
-                      account: true,
-                      domain: true,
-                      name: true,
-                      avatar: true,
-                    },
-                  })) ?? {
+                : await this.exactProfileForMessage({
                     account: row.creatorAccount,
                     domain: row.creatorDomain,
-                    name: row.creatorAccount,
-                    avatar: '',
+                    namespaceId: row.creatorNamespaceId,
+                    profileRev: row.profileRev,
                   });
             return {
               ...row,
-              creatorItem,
+              creatorProfile,
               forwardMessage: row.forwardMessages[0]
                 ? {
                     ...row.forwardMessages[0],
@@ -399,10 +388,19 @@ export class ForwardBundleService {
           'system messages cannot be forwarded',
         );
       }
-      const creatorItem = message.creatorItem;
-      if (!creatorItem)
+      if (message.creatorAccount === null || message.creatorDomain === null)
         throw new Error('user-authored forward source has no creator');
-      const avatar = await this.snapshotAvatarForMessage(creatorItem.avatar);
+      const avatar = message.creatorProfile?.avatar
+        ? await this.snapshotAvatarForMessage(message.creatorProfile.avatar)
+        : null;
+      const profile =
+        message.creatorProfile &&
+        (!message.creatorProfile.avatar || avatar !== null)
+          ? {
+              displayName: message.creatorProfile.displayName,
+              ...(avatar ? { avatarDigest: avatar.digest } : {}),
+            }
+          : undefined;
       if (avatar) assets.set(this.assetKey(avatar), avatar);
       const mediaAssets = await this.assetsFromContent(
         message.contentType,
@@ -412,14 +410,13 @@ export class ForwardBundleService {
       messages.push({
         id: index + 1,
         author: {
-          displayName: creatorItem.name,
-          account: creatorItem.account,
+          account: message.creatorAccount,
           domain:
-            creatorItem.domain === 'local'
+            message.creatorDomain === 'local'
               ? (process.env.SOMS_DOMAIN ?? 'local')
-              : creatorItem.domain,
-          ...(avatar ? { avatarDigest: avatar.digest } : {}),
+              : message.creatorDomain,
         },
+        ...(profile ? { profile } : {}),
         contentType: message.contentType,
         content: localizeForwardMediaContent(
           message.contentType,
@@ -531,17 +528,16 @@ export class ForwardBundleService {
       .from(forwardMessage)
       .innerJoin(message, eq(message.id, forwardMessage.messageId))
       .innerJoin(
-        threadParticipant,
+        accountThreadState,
         and(
-          eq(threadParticipant.threadId, message.threadId),
-          eq(threadParticipant.accountId, userId),
+          eq(accountThreadState.threadId, message.threadId),
+          eq(accountThreadState.accountId, userId),
         ),
       )
       .where(
         and(
           eq(forwardMessage.bundleId, rootBundleId),
           eq(message.isDeleted, false),
-          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
         ),
       );
     let carrier: { threadId: number; seq: number } | null = null;
@@ -746,9 +742,19 @@ export class ForwardBundleService {
           !Number.isSafeInteger(message.id) ||
           message.id < 1 ||
           ids.has(message.id) ||
-          typeof message.author?.displayName !== 'string' ||
           typeof message.author?.account !== 'string' ||
           typeof message.author?.domain !== 'string' ||
+          Object.keys(message.author).some(
+            (key) => key !== 'account' && key !== 'domain',
+          ) ||
+          (message.profile !== undefined &&
+            (message.profile === null ||
+              typeof message.profile !== 'object' ||
+              Array.isArray(message.profile) ||
+              typeof message.profile.displayName !== 'string' ||
+              Object.keys(message.profile).some(
+                (key) => key !== 'displayName' && key !== 'avatarDigest',
+              ))) ||
           !Number.isSafeInteger(message.sentAt) ||
           message.sentAt < 0 ||
           !isFederatedContentType(message.contentType) ||
@@ -759,10 +765,10 @@ export class ForwardBundleService {
           throw this.invalidWire('invalid flat forward message');
         }
         ids.add(message.id);
-        if (message.author.avatarDigest !== undefined) {
-          if (!/^[a-f0-9]{64}$/.test(message.author.avatarDigest))
-            throw this.invalidWire('invalid forward author avatar digest');
-          expectedDigests.add(message.author.avatarDigest);
+        if (message.profile?.avatarDigest !== undefined) {
+          if (!/^[a-f0-9]{64}$/.test(message.profile.avatarDigest))
+            throw this.invalidWire('invalid forward profile avatar digest');
+          expectedDigests.add(message.profile.avatarDigest);
         }
         try {
           for (const digest of federatedContentDigests(
@@ -1024,6 +1030,32 @@ export class ForwardBundleService {
     }
   }
 
+  private async exactProfileForMessage(selector: {
+    account: string;
+    domain: string;
+    namespaceId: number;
+    profileRev: number;
+  }): Promise<{ displayName: string; avatar: string } | null> {
+    const result = await this.database.db.execute<{
+      displayName: string;
+      avatar: string;
+    }>(sql`
+      SELECT snapshot."displayName", snapshot.avatar
+      FROM "User" identity
+      JOIN "ProfileVersion" snapshot
+        ON snapshot."userId" = identity.id
+       AND snapshot."profileRev" = ${selector.profileRev}
+      WHERE identity.account = ${selector.account}
+        AND identity.domain = ${selector.domain}
+        AND identity."namespaceId" = ${selector.namespaceId}
+      LIMIT 1
+    `);
+    const profile = result.rows[0];
+    return profile
+      ? { displayName: profile.displayName, avatar: profile.avatar }
+      : null;
+  }
+
   private summaryLine(message: ForwardBundleMessage): string {
     const preview = deriveMessagePreview(
       message.contentType,
@@ -1031,7 +1063,7 @@ export class ForwardBundleService {
       toDisplayText,
     );
     return truncateGraphemes(
-      `${message.author.displayName}：${preview}`,
+      `${message.profile?.displayName ?? message.author.account}：${preview}`,
       FORWARD_SUMMARY_CHARS,
     );
   }

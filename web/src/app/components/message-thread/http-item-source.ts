@@ -659,18 +659,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private queryHistory(
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
-    const clearedThroughSeq = this.conv.clearedSeq ?? undefined;
     return isTauri()
-      ? this.repo.queryNativeMessageHistory(
-          this.conv.threadId,
-          clearedThroughSeq,
-          demand,
-        )
-      : this.repo.queryBrowserMessageHistory(
-          this.conv.threadId,
-          clearedThroughSeq,
-          demand,
-        );
+      ? this.repo.queryNativeMessageHistory(this.conv.threadId, demand)
+      : this.repo.queryBrowserMessageHistory(this.conv.threadId, demand);
   }
 
   private applyBoundaries(items: CbItem<ChatItemData>[]): void {
@@ -694,12 +685,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private creatorKey(creator: Message['creator']): string | null {
     if (creator === null) return null;
-    const sourceDomain = this.isSelfAddress(creator.account, creator.domain)
-      ? 'local'
-      : this.conv.type === 'GROUP'
-        ? this.conv.group.domain
-        : this.conv.peerUser.domain || 'local';
-    return messageCreatorKey(creator, sourceDomain);
+    return messageCreatorKey(creator);
   }
 
   private toMsgData(
@@ -855,12 +841,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           const cached = await this.profileRepo!.getUser(
             identity.account,
             identity.domain,
-            identity.sourceDomain,
             identity.namespaceId,
           );
           if (!cached)
             throw new Error(
-              `source-scoped User is missing: ${identity.account}@${identity.domain} via ${identity.sourceDomain}`,
+              `User is missing: ${identity.account}@${identity.domain} in namespace ${identity.namespaceId}`,
             );
           this.profiles.set(key, {
             name: cached.name,
@@ -896,7 +881,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               avatar: resolved.avatarBase64
                 ? `data:image/webp;base64,${resolved.avatarBase64}`
                 : '',
-              avatarIdentityId: `${creatorKey}\u0000profile:${resolved.rev}`,
+              avatarIdentityId: JSON.stringify([
+                creatorKey,
+                'profile',
+                resolved.rev,
+              ]),
               domain: resolved.domain,
               isSelf: this.isSelfAddress(
                 message.creator!.account,
@@ -914,6 +903,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
                     rev: resolved.rev,
                     name: resolved.name,
                     avatar: profile.avatar,
+                    bio: resolved.bio,
                   },
                 );
             }

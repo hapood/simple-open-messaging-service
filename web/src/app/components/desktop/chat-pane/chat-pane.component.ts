@@ -263,7 +263,7 @@ export class ChatPaneComponent implements OnDestroy {
   readonly isCompact = computed(() => this.layout.mode() === 'compact');
 
   /** Each slot holds the threadId its pane is bound to (undefined → empty, no kernel). The LIVE
-   *  ConversationItem is DERIVED from the conv list by that id, so per-user state (mute/pin/block/clear)
+   *  ConversationItem is DERIVED from the conv list by that id, so per-user state (mute/pin/block)
    *  updated via applyThreadMeta flows into the bound MessageThreadComponent without a re-switch — the
    *  header's toggle labels + the blocked banner reflect the current state, not a switch-time snapshot. */
   private readonly slotA = signal<number | undefined>(undefined);

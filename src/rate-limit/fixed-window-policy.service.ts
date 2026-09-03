@@ -34,7 +34,6 @@ export const FIXED_WINDOW_DEFAULTS = {
   'thread.set-muted': [30, 60],
   'thread.set-blocked': [30, 60],
   'thread.set-pinned': [30, 60],
-  'thread.clear-history': [10, 60],
   'thread.set-alias': [30, 60],
   'group.join-request-action': [30, 60],
   'message.search': [30, 60],

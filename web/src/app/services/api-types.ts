@@ -276,23 +276,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/thread/clear-history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Clear chat history for me (hides all messages up to now; peer copy untouched) */
-        post: operations["MessageController_clearHistory"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/thread/set-alias": {
         parameters: {
             query?: never;
@@ -583,23 +566,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/delete-friend": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Unfriend — end a P2P conversation (mutual) */
-        post: operations["UserController_deleteFriend"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/query": {
         parameters: {
             query?: never;
@@ -871,23 +837,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/group/federated-join-request": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Apply to a federated group by Address */
-        post: operations["GroupController_requestFederatedGroupJoin"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/group/leave": {
         parameters: {
             query?: never;
@@ -1007,7 +956,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/invite/friend": {
+    "/api/v1/relationship/revoke": {
         parameters: {
             query?: never;
             header?: never;
@@ -1016,7 +965,24 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a friend invite to a local account */
+        /** Revoke a user relationship/request or a pending federated group-join request by Address */
+        post: operations["InviteController_revokeRelationship"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relationship/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request a user or group relationship by Address */
         post: operations["InviteController_sendFriendInvite"];
         delete?: never;
         options?: never;
@@ -1024,24 +990,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/invite/federated-friend": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Send a federated friend request by Address */
-        post: operations["InviteController_sendFederatedFriendInvite"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/invite/accept": {
+    "/api/v1/relationship/accept": {
         parameters: {
             query?: never;
             header?: never;
@@ -1052,40 +1001,6 @@ export interface paths {
         put?: never;
         /** Accept an invite by id (friend → P2P thread; group → join as MEMBER) */
         post: operations["InviteController_acceptInvite"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/invite/revoke": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Revoke my own outgoing invite */
-        post: operations["InviteController_revokeInvite"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/invite/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reject an incoming friend invite */
-        post: operations["InviteController_rejectInvite"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2044,6 +1959,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/threads/clear-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear thread history through a selected or current message */
+        post: operations["AdminController_clearThreadHistory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/users/{id}/sessions": {
         parameters: {
             query?: never;
@@ -2710,7 +2642,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** List active resumable upload sessions */
-        post: operations["MediaAssetGcController_activeUploads"];
+        post: operations["MediaTransferAdminController_activeUploads"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2727,14 +2659,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Terminate an active resumable upload session */
-        post: operations["MediaAssetGcController_abortUpload"];
+        post: operations["MediaTransferAdminController_abortUpload"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/media/gc": {
+    "/api/v1/admin/media/downloads": {
         parameters: {
             query?: never;
             header?: never;
@@ -2743,15 +2675,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Manually reclaim media unused by live messages or active staging */
-        post: operations["MediaAssetGcController_triggerGc"];
+        /** List inbound federation download batches */
+        post: operations["MediaTransferAdminController_downloadsInbox"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/media/reconcile": {
+    "/api/v1/admin/media/downloads/{batchId}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -2760,15 +2692,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Scan-driven reconcile of shards vs MediaAsset (O(files); run sparingly) */
-        post: operations["MediaAssetGcController_reconcile"];
+        /** Retry a failed inbound federation download */
+        post: operations["MediaTransferAdminController_retryDownload"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/media/tasks/current": {
+    "/api/v1/admin/media/downloads/{batchId}/clean": {
         parameters: {
             query?: never;
             header?: never;
@@ -2777,161 +2709,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Get the current or most recent media maintenance task */
-        post: operations["MediaAssetGcController_currentTask"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/tasks/{id}/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Get a media maintenance task snapshot */
-        post: operations["MediaAssetGcController_taskStatus"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/tasks/{id}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Request cooperative cancellation of a media maintenance task */
-        post: operations["MediaAssetGcController_cancelTask"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/tasks/{id}/progress": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stream media maintenance task progress over SSE */
-        get: operations["MediaAssetGcController_taskProgress"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/forward-bundles/inspect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Inspect unreachable forward bundles (read-only) */
-        post: operations["MediaAssetGcController_inspectForwardBundles"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/forward-bundles/gc": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Delete unreachable forward bundle metadata */
-        post: operations["MediaAssetGcController_gcForwardBundles"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/inbox": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List staged inbound media batches and their per-file download state */
-        get: operations["MediaAssetGcController_inbox"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/pending-federated-deletions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List federated deletion facts still awaiting their local message */
-        post: operations["MediaAssetGcController_pendingFederatedDeletions"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/inbox/{batchId}/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Re-drive a stalled inbound media batch (reset FAILED/DOWNLOADING → PENDING and re-download) */
-        post: operations["MediaAssetGcController_retryInboxBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/inbox/{batchId}/clean": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Drop a staged inbound media batch (delete database rows; temp files remain for GC) */
-        post: operations["MediaAssetGcController_cleanInboxBatch"];
+        /** Remove an inbound federation download job */
+        post: operations["MediaTransferAdminController_cleanDownload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2964,7 +2743,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Media storage overview: DB bytes/count/reclaimable + on-disk per-extension breakdown */
+        /** Read-only media storage totals from the database and CAS */
         post: operations["DashboardController_mediaStats"];
         delete?: never;
         options?: never;
@@ -3482,7 +3261,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/domain-commands": {
+    "/api/v1/admin/durable-tasks": {
         parameters: {
             query?: never;
             header?: never;
@@ -3491,8 +3270,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Domain command history (paginated and filterable) */
-        post: operations["DomainCommandAdminController_list"];
+        /** Durable task history (paginated and filterable) */
+        post: operations["DurableTaskAdminController_list"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3604,6 +3383,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_getMessageAuthorProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/group-member-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupMemberProfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3724,7 +3519,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/v1/health": {
+    "/s2s/v1/health": {
         parameters: {
             query?: never;
             header?: never;
@@ -4141,13 +3936,6 @@ export interface components {
              */
             pinned: boolean;
         };
-        ClearHistoryDto: {
-            /**
-             * @description Conversation (MessageThread) id
-             * @example 12
-             */
-            threadId: number;
-        };
         SetAliasDto: {
             /**
              * @description Conversation (MessageThread) id
@@ -4340,32 +4128,6 @@ export interface components {
             /** @description Canonical base64 image bytes. Omit to keep the previous avatar; null removes it. */
             avatarBase64?: string | null;
         };
-        DomainCommandAcceptedDto: {
-            /**
-             * @description Durable command ID
-             * @example 123
-             */
-            commandId: string;
-            /** @enum {string} */
-            status: "PENDING";
-        };
-        DeleteFriendDto: {
-            /**
-             * @description Friend account
-             * @example alice
-             */
-            account: string;
-            /**
-             * @description Friend home domain. Omit for a local account.
-             * @example peer.example
-             */
-            domain?: string;
-            /**
-             * @description Also delete this chat for the caller
-             * @default false
-             */
-            deleteData: boolean;
-        };
         UserAddressDto: {
             /** @example alice */
             account: string;
@@ -4532,6 +4294,15 @@ export interface components {
              */
             readFeedId: number;
         };
+        DurableTaskAcceptedDto: {
+            /**
+             * @description Durable task ID
+             * @example 123
+             */
+            taskId: string;
+            /** @enum {string} */
+            status: "PENDING";
+        };
         HandleGroupJoinRequestDto: {
             /**
              * @description Group id
@@ -4550,36 +4321,6 @@ export interface components {
              * @example 12
              */
             groupId: number;
-        };
-        FederatedGroupJoinRequestDto: {
-            /**
-             * @description Group account
-             * @example !engineering
-             */
-            account: string;
-            /**
-             * @description Group home domain
-             * @example peer.example
-             */
-            domain: string;
-            /** @description Untrusted pending-card display snapshot */
-            displayName: string;
-            /** @description Untrusted pending-card avatar */
-            avatar?: string;
-            /** @description Join-request note (≤255 chars) */
-            note?: string;
-        };
-        GroupTerminalActionDto: {
-            /**
-             * @description Group id
-             * @example 12
-             */
-            groupId: number;
-            /**
-             * @description Also delete this chat for the caller
-             * @default false
-             */
-            deleteData: boolean;
         };
         KickGroupDto: {
             /**
@@ -4667,36 +4408,36 @@ export interface components {
              */
             readThroughFeedId: number;
         };
-        SendFriendInviteDto: {
+        RevokeRelationshipDto: {
             /**
-             * @description Local target account
+             * @description Peer user or group account
              * @example alice
              */
             account: string;
             /**
-             * @description Invite note (≤255 chars)
-             * @example Hi from the conference
-             */
-            note?: string;
-        };
-        SendFederatedFriendInviteDto: {
-            /**
-             * @description Federated target account
-             * @example alice
-             */
-            account: string;
-            /**
-             * @description Invite note (≤255 chars)
-             * @example Hi from the conference
-             */
-            note?: string;
-            /**
-             * @description Federated target home domain
-             * @example peer.example
+             * @description Peer home domain. Use the literal 'local' for a local account.
+             * @example local
              */
             domain: string;
+        };
+        SendFriendInviteDto: {
+            /**
+             * @description Target user or group account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Target home domain. Use the literal 'local' for a local account.
+             * @example local
+             */
+            domain: string;
+            /**
+             * @description Invite note (≤255 chars)
+             * @example Hi from the conference
+             */
+            note?: string;
             /** @description Untrusted pending-card display snapshot. */
-            displayName: string;
+            displayName?: string;
             /** @description Untrusted pending-card avatar Base64 data URL. */
             avatar?: string;
         };
@@ -4707,13 +4448,6 @@ export interface components {
             account?: string;
             /** @description Federated peer domain */
             domain?: string;
-        };
-        InviteIdDto: {
-            /**
-             * @description Invite id (stringified BigInt)
-             * @example 123456789
-             */
-            inviteId: string;
         };
         InviteUserDto: {
             id: number;
@@ -5057,6 +4791,18 @@ export interface components {
             /** @enum {string} */
             action: "disable" | "enable" | "force-logout";
         };
+        AdminClearHistoryDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Inclusive message sequence to clear through; omitted means the thread current sequence
+             * @example 100
+             */
+            seq?: number;
+        };
         AdminUnbanDto: {
             /**
              * @description Banned IP (optional)
@@ -5238,12 +4984,6 @@ export interface components {
              */
             addFileBytes?: number;
         };
-        AdminListPendingFederatedDeletionsDto: {
-            /** @default 0 */
-            skip: Record<string, never>;
-            /** @default 20 */
-            take: Record<string, never>;
-        };
         AdminAuditQueryDto: {
             /** @default 0 */
             skip: number;
@@ -5410,15 +5150,15 @@ export interface components {
             /** @enum {string} */
             status: "UPHELD" | "REJECTED";
         };
-        AdminDomainCommandQueryDto: {
+        AdminDurableTaskQueryDto: {
             /** @default 0 */
             skip: number;
             /** @default 50 */
             take: number;
-            /** @description Substring over command type or aggregate key */
+            /** @description Substring over task type or scope key */
             search?: string;
             /** @enum {string} */
-            status?: "PENDING" | "PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED";
+            status?: "PENDING" | "PROCESSING" | "ASYNC_PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED" | "SUPERSEDED";
         };
     };
     responses: never;
@@ -5776,27 +5516,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SetPinnedDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MessageController_clearHistory: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ClearHistoryDto"];
             };
         };
         responses: {
@@ -6181,31 +5900,6 @@ export interface operations {
             };
         };
     };
-    UserController_deleteFriend: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeleteFriendDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
-                    };
-                };
-            };
-        };
-    };
     UserController_queryUserBase: {
         parameters: {
             query?: never;
@@ -6490,7 +6184,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6515,7 +6209,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6540,7 +6234,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6565,32 +6259,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
-                    };
-                };
-            };
-        };
-    };
-    GroupController_requestFederatedGroupJoin: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FederatedGroupJoinRequestDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6605,7 +6274,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GroupTerminalActionDto"];
+                "application/json": components["schemas"]["GroupIdDto"];
             };
         };
         responses: {
@@ -6615,7 +6284,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6630,7 +6299,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GroupTerminalActionDto"];
+                "application/json": components["schemas"]["GroupIdDto"];
             };
         };
         responses: {
@@ -6640,7 +6309,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6665,7 +6334,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6690,7 +6359,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6715,7 +6384,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6763,6 +6432,31 @@ export interface operations {
             };
         };
     };
+    InviteController_revokeRelationship: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeRelationshipDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
     InviteController_sendFriendInvite: {
         parameters: {
             query?: never;
@@ -6782,32 +6476,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
-                    };
-                };
-            };
-        };
-    };
-    InviteController_sendFederatedFriendInvite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SendFederatedFriendInviteDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
                     };
                 };
             };
@@ -6831,56 +6500,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    InviteController_revokeInvite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FriendInviteActionDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
-                    };
-                };
-            };
-        };
-    };
-    InviteController_rejectInvite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InviteIdDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DomainCommandAcceptedDto"];
-                    };
-                };
             };
         };
     };
@@ -8021,6 +7640,27 @@ export interface operations {
             };
         };
     };
+    AdminController_clearThreadHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminClearHistoryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminController_userSessions: {
         parameters: {
             query?: never;
@@ -8806,7 +8446,7 @@ export interface operations {
             };
         };
     };
-    MediaAssetGcController_activeUploads: {
+    MediaTransferAdminController_activeUploads: {
         parameters: {
             query?: never;
             header?: never;
@@ -8823,7 +8463,7 @@ export interface operations {
             };
         };
     };
-    MediaAssetGcController_abortUpload: {
+    MediaTransferAdminController_abortUpload: {
         parameters: {
             query?: never;
             header?: never;
@@ -8842,7 +8482,7 @@ export interface operations {
             };
         };
     };
-    MediaAssetGcController_triggerGc: {
+    MediaTransferAdminController_downloadsInbox: {
         parameters: {
             query?: never;
             header?: never;
@@ -8859,170 +8499,7 @@ export interface operations {
             };
         };
     };
-    MediaAssetGcController_reconcile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_currentTask: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_taskStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_cancelTask: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_taskProgress: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_inspectForwardBundles: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_gcForwardBundles: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_inbox: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_pendingFederatedDeletions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminListPendingFederatedDeletionsDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_retryInboxBatch: {
+    MediaTransferAdminController_retryDownload: {
         parameters: {
             query?: never;
             header?: never;
@@ -9041,7 +8518,7 @@ export interface operations {
             };
         };
     };
-    MediaAssetGcController_cleanInboxBatch: {
+    MediaTransferAdminController_cleanDownload: {
         parameters: {
             query?: never;
             header?: never;
@@ -9684,7 +9161,7 @@ export interface operations {
             };
         };
     };
-    DomainCommandAdminController_list: {
+    DurableTaskAdminController_list: {
         parameters: {
             query?: never;
             header?: never;
@@ -9693,7 +9170,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AdminDomainCommandQueryDto"];
+                "application/json": components["schemas"]["AdminDurableTaskQueryDto"];
             };
         };
         responses: {
@@ -9836,6 +9313,23 @@ export interface operations {
                 peerAccount: string;
                 messageSeq: string;
             };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupMemberProfile: {
+        parameters: {
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -10006,6 +9500,10 @@ export interface operations {
                 } | {
                     threadId: number;
                     messageSeq: number;
+                } | {
+                    threadId: number;
+                    memberAccount: string;
+                    memberDomain: string;
                 };
             };
         };
@@ -10023,6 +9521,7 @@ export interface operations {
                             domain: string;
                             rev: number;
                             name: string;
+                            bio: string;
                             avatarBase64: string | null;
                         };
                     } | {

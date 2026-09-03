@@ -477,14 +477,6 @@ export class MsgService {
     );
   }
 
-  /** Per-user "clear chat history" — hides all messages up to now for the caller; peer copy untouched. */
-  clearHistory(params: { threadId: number }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/thread/clear-history`,
-      params,
-    );
-  }
-
   /** Set a per-user alias/remark for a conversation — overrides the displayed name for the caller.
    *  An empty string clears it. */
   setAlias(params: { threadId: number; alias?: string }) {

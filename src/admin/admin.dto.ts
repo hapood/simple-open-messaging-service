@@ -541,8 +541,8 @@ export class AdminAuditQueryDto {
   status?: 'STARTED' | 'SUCCEEDED' | 'FAILED';
 }
 
-/** Domain-command history query. Search covers command type and aggregate key; status is exact. */
-export class AdminDomainCommandQueryDto {
+/** Durable-task history query. Search covers task type and scope key; status is exact. */
+export class AdminDurableTaskQueryDto {
   @ApiPropertyOptional({ default: 0 })
   @IsOptional()
   @Type(() => Number)
@@ -559,7 +559,7 @@ export class AdminDomainCommandQueryDto {
   take?: number;
 
   @ApiPropertyOptional({
-    description: 'Substring over command type or aggregate key',
+    description: 'Substring over task type or scope key',
   })
   @IsOptional()
   @IsString()
@@ -567,11 +567,34 @@ export class AdminDomainCommandQueryDto {
   search?: string;
 
   @ApiPropertyOptional({
-    enum: ['PENDING', 'PROCESSING', 'SUCCEEDED', 'REJECTED', 'FAILED'],
+    enum: [
+      'PENDING',
+      'PROCESSING',
+      'ASYNC_PROCESSING',
+      'SUCCEEDED',
+      'REJECTED',
+      'FAILED',
+      'SUPERSEDED',
+    ],
   })
   @IsOptional()
-  @IsIn(['PENDING', 'PROCESSING', 'SUCCEEDED', 'REJECTED', 'FAILED'])
-  status?: 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'REJECTED' | 'FAILED';
+  @IsIn([
+    'PENDING',
+    'PROCESSING',
+    'ASYNC_PROCESSING',
+    'SUCCEEDED',
+    'REJECTED',
+    'FAILED',
+    'SUPERSEDED',
+  ])
+  status?:
+    | 'PENDING'
+    | 'PROCESSING'
+    | 'ASYNC_PROCESSING'
+    | 'SUCCEEDED'
+    | 'REJECTED'
+    | 'FAILED'
+    | 'SUPERSEDED';
 }
 
 /** Admin self-management: paginated, searchable list of admin accounts. */
@@ -633,6 +656,28 @@ export class AdminUserBatchDto {
   @ApiProperty({ enum: ['disable', 'enable', 'force-logout'] })
   @IsIn(['disable', 'enable', 'force-logout'])
   action!: 'disable' | 'enable' | 'force-logout';
+}
+
+/** Advance a thread's shared history boundary to a selected or current message sequence. */
+export class AdminClearHistoryDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiPropertyOptional({
+    example: 100,
+    minimum: 0,
+    description:
+      'Inclusive message sequence to clear through; omitted means the thread current sequence',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(2_147_483_647)
+  seq?: number;
 }
 
 /** Groups/threads list query (type=GROUP threads; fuzzy search over the group name/account). */

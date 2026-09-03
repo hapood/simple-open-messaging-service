@@ -5,6 +5,8 @@ export interface AdminAuditOptions {
   targetType?: string;
   /** Route path-param whose value is recorded as targetId, e.g. 'id' | 'domain' | 'jti'. */
   targetParam?: string;
+  /** Request-body field recorded as targetId when the target is not represented in the route path. */
+  targetBody?: string;
 }
 
 export interface AdminAuditMetadata {

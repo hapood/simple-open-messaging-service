@@ -4,7 +4,7 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   message,
   messageThread,
-  threadParticipant,
+  accountThreadState,
 } from '../database/schema.js';
 import { MessageThreadType } from '../database/enums.js';
 
@@ -21,16 +21,16 @@ export class MessageVisibilityService {
       .select({
         message,
         threadType: messageThread.type,
-        clearedSeq: threadParticipant.clearedSeq,
-        messageVisibleBeforeSeq: threadParticipant.messageVisibleBeforeSeq,
-        blocked: threadParticipant.blocked,
+        clearedSeq: messageThread.clearedSeq,
+        messageVisibleThroughSeq: accountThreadState.messageVisibleThroughSeq,
+        blocked: accountThreadState.blocked,
       })
       .from(message)
       .innerJoin(
-        threadParticipant,
+        accountThreadState,
         and(
-          eq(threadParticipant.threadId, message.threadId),
-          eq(threadParticipant.accountId, userId),
+          eq(accountThreadState.threadId, message.threadId),
+          eq(accountThreadState.accountId, userId),
         ),
       )
       .innerJoin(messageThread, eq(messageThread.id, message.threadId))
@@ -39,14 +39,17 @@ export class MessageVisibilityService {
           eq(message.threadId, threadId),
           eq(message.seq, seq),
           eq(message.isDeleted, false),
-          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
-          sql`${threadParticipant.messageVisibleBeforeSeq} IS NULL OR ${message.seq} < ${threadParticipant.messageVisibleBeforeSeq}`,
+          sql`${accountThreadState.messageVisibleThroughSeq} IS NULL OR ${message.seq} <= ${accountThreadState.messageVisibleThroughSeq}`,
         ),
       )
       .limit(1);
     if (!row) return null;
 
-    if (row.threadType === MessageThreadType.P2P && row.blocked) return null;
+    if (
+      (row.clearedSeq !== null && seq <= row.clearedSeq) ||
+      (row.threadType === MessageThreadType.P2P && row.blocked)
+    )
+      return null;
     return row.message;
   }
 }

@@ -355,7 +355,7 @@ export class ThreadRepository {
 
   // ── list mutations (each writes through to IDB + emits a fine-grained signal update) ───────
 
-  /** Patch per-user thread metadata (mute/pin/clear/block/alias) on a row. Only pin changes re-sort the
+  /** Patch per-user thread metadata (mute/pin/block/alias) on a row. Only pin changes re-sort the
    *  list; display-state changes stay at the row's current position and must not re-apply recency ordering.
    *  Only defined fields are applied. Used for optimistic UI patches
    *  (multi-device) and (via the facade) from local optimistic actions (mute/pin toggle, block/unblock). */
@@ -365,7 +365,6 @@ export class ThreadRepository {
       muted?: boolean;
       pinned?: boolean;
       pinnedAt?: number | null;
-      clearedSeq?: number | null;
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';
@@ -673,6 +672,7 @@ export class ThreadRepository {
               peerUser: {
                 ...item.peerUser,
                 name: profile.name,
+                bio: profile.bio,
                 avatar: profile.avatarBase64
                   ? `data:image/webp;base64,${profile.avatarBase64}`
                   : '',
@@ -716,6 +716,7 @@ export class ThreadRepository {
               group: {
                 ...item.group,
                 name: profile.name,
+                description: profile.bio,
                 avatar: profile.avatarBase64
                   ? `data:image/webp;base64,${profile.avatarBase64}`
                   : '',
@@ -1496,14 +1497,7 @@ export class ThreadRepository {
     thread: ConversationItem,
   ): string | null {
     if (creator === null) return null;
-    const self = this.userService.sessionProfile();
-    const sourceDomain =
-      self && creator.account === self.account && creator.domain === 'local'
-        ? 'local'
-        : thread.type === 'GROUP'
-          ? thread.group.domain
-          : thread.peerUser.domain || 'local';
-    return messagePreviewSenderKey(creator, sourceDomain);
+    return messagePreviewSenderKey(creator);
   }
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
@@ -1589,6 +1583,7 @@ export class ThreadRepository {
     namespaceId: number;
     name: string;
     avatar: string;
+    description: string;
     profileRev: number;
   }): void {
     void this.profileRepo.putProfile(`g${g.id}`, 'group', {
@@ -1596,6 +1591,7 @@ export class ThreadRepository {
       name: g.name,
       account: g.account,
       avatar: g.avatar,
+      bio: g.description,
       domain: g.domain,
       sourceServer: g.domain,
       namespaceId: g.namespaceId,
@@ -1621,7 +1617,6 @@ interface ThreadMetaPayload {
   muted?: boolean;
   pinned?: boolean;
   pinnedAt?: number | null;
-  clearedSeq?: number | null;
   blocked?: boolean;
   alias?: string | null;
 }

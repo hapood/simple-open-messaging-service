@@ -1,19 +1,23 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  accountThreadState,
   group,
   messageThread,
-  threadMember,
-  threadParticipant,
   user,
 } from '../database/schema.js';
+import { rawBigInt } from '../database/raw-result.js';
 import { MessageThreadType } from '../database/enums.js';
 import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
 import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
 import {
   isThreadMutuallyAuthorized,
-  mutuallyAuthorizedSql,
+  relationshipEndpointMatchesUserSql,
+  relationshipPairMatchesUsersSql,
 } from '../invite/relationship-authorization.js';
 import {
   MessageService,
@@ -25,10 +29,9 @@ import {
   userPairBusinessScopeKey,
 } from '../invite/business-scope-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-/** ThreadMember is the source-scoped roster projection. ThreadParticipant independently owns local
- * Account conversation state and role facts; neither table is an authorization source. */
+/** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
-export class ThreadParticipantService {
+export class AccountThreadStateService {
   constructor(
     private database: DatabaseService,
     private readonly stateFeed: PeerStateFeedService,
@@ -39,11 +42,11 @@ export class ThreadParticipantService {
   async findParticipant(userId: number, threadId: number) {
     const [participant] = await this.database.db
       .select()
-      .from(threadParticipant)
+      .from(accountThreadState)
       .where(
         and(
-          eq(threadParticipant.accountId, userId),
-          eq(threadParticipant.threadId, threadId),
+          eq(accountThreadState.accountId, userId),
+          eq(accountThreadState.threadId, threadId),
         ),
       )
       .limit(1);
@@ -64,15 +67,15 @@ export class ThreadParticipantService {
   async getActiveParticipantUserIds(threadId: number) {
     const rows = await this.database.db
       .select({
-        userId: threadParticipant.accountId,
-        muted: threadParticipant.muted,
-        blocked: threadParticipant.blocked,
+        userId: accountThreadState.accountId,
+        muted: accountThreadState.muted,
+        blocked: accountThreadState.blocked,
         account: user.account,
         domain: user.domain,
       })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.accountId))
-      .where(eq(threadParticipant.threadId, threadId));
+      .from(accountThreadState)
+      .innerJoin(user, eq(user.id, accountThreadState.accountId))
+      .where(eq(accountThreadState.threadId, threadId));
     const authorized = await Promise.all(
       rows.map((row) => this.isMutuallyAuthorized(row.userId, threadId)),
     );
@@ -86,18 +89,18 @@ export class ThreadParticipantService {
     if (userIds.length === 0) return [];
     return this.database.db
       .select({
-        userId: threadParticipant.accountId,
-        muted: threadParticipant.muted,
-        blocked: threadParticipant.blocked,
+        userId: accountThreadState.accountId,
+        muted: accountThreadState.muted,
+        blocked: accountThreadState.blocked,
         account: user.account,
         domain: user.domain,
       })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.accountId))
+      .from(accountThreadState)
+      .innerJoin(user, eq(user.id, accountThreadState.accountId))
       .where(
         and(
-          eq(threadParticipant.threadId, threadId),
-          inArray(threadParticipant.accountId, [...userIds]),
+          eq(accountThreadState.threadId, threadId),
+          inArray(accountThreadState.accountId, [...userIds]),
         ),
       );
   }
@@ -105,21 +108,22 @@ export class ThreadParticipantService {
   async findActiveParticipantWithThread(userId: number, threadId: number) {
     const [row] = await this.database.db
       .select({
-        participant: threadParticipant,
+        participant: accountThreadState,
         threadType: messageThread.type,
+        clearedSeq: messageThread.clearedSeq,
         groupId: group.id,
         dissolvedAt: group.dissolvedAt,
       })
-      .from(threadParticipant)
+      .from(accountThreadState)
       .innerJoin(
         messageThread,
-        eq(messageThread.id, threadParticipant.threadId),
+        eq(messageThread.id, accountThreadState.threadId),
       )
       .leftJoin(group, eq(group.id, messageThread.groupId))
       .where(
         and(
-          eq(threadParticipant.accountId, userId),
-          eq(threadParticipant.threadId, threadId),
+          eq(accountThreadState.accountId, userId),
+          eq(accountThreadState.threadId, threadId),
         ),
       )
       .limit(1);
@@ -128,6 +132,7 @@ export class ThreadParticipantService {
           ...row.participant,
           thread: {
             type: row.threadType,
+            clearedSeq: row.clearedSeq,
             group:
               row.groupId === null ? null : { dissolvedAt: row.dissolvedAt },
           },
@@ -142,15 +147,15 @@ export class ThreadParticipantService {
   async setBlocked(userId: number, threadId: number, blocked: boolean) {
     const pending = await this.database.db.transaction(async (tx) => {
       const [participant] = await tx
-        .update(threadParticipant)
+        .update(accountThreadState)
         .set({ blocked, updatedAt: new Date() })
         .where(
           and(
-            eq(threadParticipant.accountId, userId),
-            eq(threadParticipant.threadId, threadId),
+            eq(accountThreadState.accountId, userId),
+            eq(accountThreadState.threadId, threadId),
           ),
         )
-        .returning({ id: threadParticipant.id });
+        .returning({ id: accountThreadState.id });
       if (!participant) throw new Error('thread participant is missing');
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId,
@@ -177,16 +182,6 @@ export class ThreadParticipantService {
     );
   }
 
-  async clearHistory(userId: number, threadId: number) {
-    const thread = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { curSeq: true },
-    });
-    return this.updateParticipant(userId, threadId, {
-      clearedSeq: thread?.curSeq ?? 0,
-    });
-  }
-
   setAlias(userId: number, threadId: number, alias: string | undefined) {
     const trimmed = alias?.trim();
     return this.updateParticipant(userId, threadId, {
@@ -198,25 +193,25 @@ export class ThreadParticipantService {
     const threadId = params.where.threadId;
     const rows = await this.database.db
       .select({
-        participant: threadParticipant,
+        participant: accountThreadState,
         thread: messageThread,
       })
-      .from(threadParticipant)
+      .from(accountThreadState)
       .innerJoin(
         messageThread,
-        eq(messageThread.id, threadParticipant.threadId),
+        eq(messageThread.id, accountThreadState.threadId),
       )
       .where(
         and(
-          eq(threadParticipant.accountId, params.where.userId),
+          eq(accountThreadState.accountId, params.where.userId),
           typeof threadId === 'number'
-            ? eq(threadParticipant.threadId, threadId)
+            ? eq(accountThreadState.threadId, threadId)
             : threadId
-              ? inArray(threadParticipant.threadId, threadId.in)
+              ? inArray(accountThreadState.threadId, threadId.in)
               : undefined,
         ),
       )
-      .orderBy(asc(threadParticipant.id))
+      .orderBy(asc(accountThreadState.id))
       .limit(params.take ?? 1000);
     return rows.map((row) => ({
       ...row.participant,
@@ -226,35 +221,45 @@ export class ThreadParticipantService {
 
   async findP2PPeers(threadIds: number[], notUserId: number) {
     if (threadIds.length === 0) return [];
-    const rows = await this.database.db
-      .select({
-        member: threadMember,
-        identity: user,
-      })
-      .from(threadMember)
-      .innerJoin(user, eq(user.id, threadMember.userId))
-      .where(
-        and(
-          inArray(threadMember.threadId, threadIds),
-          ne(threadMember.userId, notUserId),
-        ),
-      );
-    return rows.map((row) => ({
-      ...row.member,
-      user: row.identity,
-      account: row.identity.account,
-      domain: row.identity.domain,
+    const rows = await this.database.db.execute<{
+      threadId: number;
+      userId: number;
+      account: string;
+      domain: string;
+      namespaceId: number;
+    }>(sql`
+      SELECT pair."threadId", peer.id AS "userId", peer.account,
+        peer.domain, peer."namespaceId"
+      FROM "RelationshipPair" pair
+      JOIN "User" self_identity ON self_identity.id = ${notUserId}
+      JOIN "User" peer ON peer.id <> self_identity.id
+      WHERE pair.kind = 'P2P'
+        AND pair."threadId" IN (${sql.join(
+          threadIds.map((threadId) => sql`${threadId}`),
+          sql`, `,
+        )})
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`self_identity`, sql`peer`)}
+    `);
+    return rows.rows.map((row) => ({
+      ...row,
+      user: {
+        id: row.userId,
+        account: row.account,
+        domain: row.domain,
+        namespaceId: row.namespaceId,
+      },
     }));
   }
 
   async findP2PThreadBetween(userX: number, userY: number) {
     const result = await this.database.db.execute<{ threadId: number }>(sql`
-      SELECT mine."threadId"
-      FROM "ThreadMember" mine
-      JOIN "ThreadMember" peer ON peer."threadId" = mine."threadId"
-      JOIN "MessageThread" thread ON thread.id = mine."threadId"
-      WHERE mine."userId" = ${userX} AND peer."userId" = ${userY}
-        AND ${mutuallyAuthorizedSql(userX, userY)}
+      SELECT pair."threadId"
+      FROM "RelationshipPair" pair
+      JOIN "User" first_identity ON first_identity.id = ${userX}
+      JOIN "User" second_identity ON second_identity.id = ${userY}
+      JOIN "MessageThread" thread ON thread.id = pair."threadId"
+      WHERE pair.kind = 'P2P' AND pair.active = true
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
         AND thread.type = ${MessageThreadType.P2P}
       LIMIT 1
     `);
@@ -263,13 +268,15 @@ export class ThreadParticipantService {
 
   async findLatestP2PThreadBetween(userX: number, userY: number) {
     const result = await this.database.db.execute<{ threadId: number }>(sql`
-      SELECT mine."threadId"
-      FROM "ThreadMember" mine
-      JOIN "ThreadMember" peer ON peer."threadId" = mine."threadId"
-      JOIN "MessageThread" thread ON thread.id = mine."threadId"
-      WHERE mine."userId" = ${userX} AND peer."userId" = ${userY}
+      SELECT pair."threadId"
+      FROM "RelationshipPair" pair
+      JOIN "User" first_identity ON first_identity.id = ${userX}
+      JOIN "User" second_identity ON second_identity.id = ${userY}
+      JOIN "MessageThread" thread ON thread.id = pair."threadId"
+      WHERE pair.kind = 'P2P'
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
         AND thread.type = ${MessageThreadType.P2P}
-      ORDER BY mine."threadId" DESC LIMIT 1
+      ORDER BY pair."threadId" DESC LIMIT 1
     `);
     return result.rows[0]?.threadId ?? null;
   }
@@ -281,7 +288,6 @@ export class ThreadParticipantService {
   async endP2P(
     threadId: number,
     callerUserId: number,
-    deleteData: boolean,
   ): Promise<{
     transitioned: boolean;
     statePeers: string[];
@@ -290,39 +296,30 @@ export class ThreadParticipantService {
   }> {
     const now = new Date();
     return this.database.db.transaction(async (tx) => {
-      const readIdentities = () =>
-        tx
-          .select({
-            memberId: threadMember.id,
-            userId: user.id,
-            account: user.account,
-            domain: user.domain,
-            namespaceId: user.namespaceId,
-          })
-          .from(threadMember)
-          .innerJoin(user, eq(user.id, threadMember.userId))
-          .where(eq(threadMember.threadId, threadId));
-      let identities = await readIdentities();
-      let mine = identities.find((row) => row.userId === callerUserId);
-      let peer = identities.find((row) => row.userId !== callerUserId);
-      if (!mine || !peer) throw new Error('P2P endpoints are missing');
+      let endpoints = await this.readP2PEndpointsInTx(
+        tx,
+        threadId,
+        callerUserId,
+      );
+      if (!endpoints) throw new Error('P2P endpoints are missing');
+      let { mine, peer } = endpoints;
       await lockBusinessScopeInTx(tx, userPairBusinessScopeKey([mine, peer]));
-      identities = await readIdentities();
-      mine = identities.find((row) => row.userId === callerUserId);
-      peer = identities.find((row) => row.userId !== callerUserId);
-      if (!mine || !peer) throw new Error('P2P endpoints are missing');
-
-      const endpointKey = (row: (typeof identities)[number]) =>
-        `USER\u0000${row.domain}\u0000${row.account}`;
-      const callerSide = endpointKey(mine) < endpointKey(peer) ? 'A' : 'B';
+      endpoints = await this.readP2PEndpointsInTx(tx, threadId, callerUserId);
+      if (!endpoints) throw new Error('P2P endpoints are missing');
+      ({ mine, peer } = endpoints);
+      const { callerSide, pairId } = endpoints;
       const peerSide = callerSide === 'A' ? 'B' : 'A';
-      const pair = await tx.execute<{ id: bigint }>(sql`
-        SELECT id FROM "RelationshipPair"
-        WHERE "threadId" = ${threadId} AND kind = 'P2P' FOR UPDATE
+      const pair = await tx.execute<{ id: string; active: boolean }>(sql`
+        SELECT id, active FROM "RelationshipPair"
+        WHERE id = ${pairId} AND "threadId" = ${threadId} AND kind = 'P2P'
+        FOR UPDATE
       `);
-      const pairId = pair.rows[0]?.id;
-      if (pairId === undefined)
+      if (
+        pair.rows[0] === undefined ||
+        rawBigInt(pair.rows[0].id, 'RelationshipPair.id') !== pairId
+      )
         throw new Error('P2P relationship pair is missing');
+      const wasActive = pair.rows[0].active;
       await tx.execute(
         sql`SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
       );
@@ -333,7 +330,7 @@ export class ThreadParticipantService {
         FOR UPDATE
       `);
       await tx.execute(sql`
-        SELECT id FROM "ThreadParticipant"
+        SELECT id FROM "AccountThreadState"
         WHERE "threadId" = ${threadId}
         ORDER BY "accountId"
         FOR UPDATE
@@ -343,23 +340,7 @@ export class ThreadParticipantService {
         WHERE "pairId" = ${pairId} AND "authorSide" = ${callerSide}
       `);
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
-      if (deleteData)
-        await tx
-          .update(threadParticipant)
-          .set({
-            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
-            pinned: false,
-            pinnedAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(threadParticipant.accountId, callerUserId),
-              eq(threadParticipant.threadId, threadId),
-            ),
-          );
-
-      const localRecipientIds = identities
+      const localRecipientIds = [mine, peer]
         .filter((identity) => identity.domain === 'local')
         .map((identity) => identity.userId);
       let systemMessage: PublicMessage | null = null;
@@ -367,7 +348,7 @@ export class ThreadParticipantService {
       if (!transitioned)
         return { transitioned, statePeers, systemMessage, localRecipientIds };
 
-      if (this.messages) {
+      if (wasActive && this.messages) {
         systemMessage = (
           await this.messages.writeSystemMessageInTx(
             tx,
@@ -382,19 +363,21 @@ export class ThreadParticipantService {
           )
         ).message;
         await tx
-          .update(threadParticipant)
+          .update(accountThreadState)
           .set({
-            messageVisibleBeforeSeq: systemMessage.seq + 1,
+            messageVisibleThroughSeq: systemMessage.seq,
             updatedAt: now,
           })
-          .where(eq(threadParticipant.threadId, threadId));
+          .where(eq(accountThreadState.threadId, threadId));
       }
-      await tx.execute(sql`
-        DELETE FROM "ThreadAudience"
-        WHERE "threadId" = ${threadId} AND "targetDomain" = 'local'
-      `);
-      if (peer.domain !== 'local')
-        await closeFederatedAudienceInTx(tx, peer.domain, threadId);
+      if (wasActive) {
+        await tx.execute(sql`
+          DELETE FROM "ThreadAudience"
+          WHERE "threadId" = ${threadId} AND "targetDomain" = 'local'
+        `);
+        if (peer.domain !== 'local')
+          await closeFederatedAudienceInTx(tx, peer.domain, threadId);
+      }
 
       const request = await tx.execute<{ profileRev: number }>(sql`
         INSERT INTO "RelationshipIntent" (
@@ -407,7 +390,7 @@ export class ThreadParticipantService {
         WHERE "RelationshipIntent".status <> 'REVOKED'
         RETURNING "profileRev"
       `);
-      if (peer.domain === 'local')
+      if (wasActive && peer.domain === 'local')
         await tx.execute(sql`
           INSERT INTO "RelationshipIntent" (
             "pairId", "authorSide", status, note,
@@ -460,29 +443,98 @@ export class ThreadParticipantService {
 
   async getActiveP2PPeerUserIds(userId: number): Promise<number[]> {
     const result = await this.database.db.execute<{ userId: number }>(sql`
-      SELECT DISTINCT peer."userId"
-      FROM "ThreadMember" mine
-      JOIN "ThreadMember" peer ON peer."threadId" = mine."threadId"
-      JOIN "MessageThread" thread ON thread.id = mine."threadId"
-      WHERE mine."userId" = ${userId} AND peer."userId" <> ${userId}
-        AND ${mutuallyAuthorizedSql(sql`mine."userId"`, sql`peer."userId"`)}
+      SELECT DISTINCT peer.id AS "userId"
+      FROM "RelationshipPair" pair
+      JOIN "User" self_identity ON self_identity.id = ${userId}
+      JOIN "User" peer ON peer.id <> self_identity.id
+      JOIN "MessageThread" thread ON thread.id = pair."threadId"
+      WHERE pair.kind = 'P2P' AND pair.active = true
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`self_identity`, sql`peer`)}
         AND thread.type = ${MessageThreadType.P2P}
     `);
     return result.rows.map((row) => row.userId);
   }
 
+  private async readP2PEndpointsInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    callerUserId: number,
+  ): Promise<{
+    pairId: bigint;
+    callerSide: 'A' | 'B';
+    mine: {
+      userId: number;
+      account: string;
+      domain: string;
+      namespaceId: number;
+    };
+    peer: {
+      userId: number;
+      account: string;
+      domain: string;
+      namespaceId: number;
+    };
+  } | null> {
+    const result = await tx.execute<{
+      pairId: string;
+      callerSide: 'A' | 'B';
+      mineUserId: number;
+      mineAccount: string;
+      mineDomain: string;
+      mineNamespaceId: number;
+      peerUserId: number;
+      peerAccount: string;
+      peerDomain: string;
+      peerNamespaceId: number;
+    }>(sql`
+      SELECT pair.id AS "pairId",
+        CASE
+          WHEN ${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`mine`)} THEN 'A'
+          ELSE 'B'
+        END AS "callerSide",
+        mine.id AS "mineUserId", mine.account AS "mineAccount",
+        mine.domain AS "mineDomain", mine."namespaceId" AS "mineNamespaceId",
+        peer.id AS "peerUserId", peer.account AS "peerAccount",
+        peer.domain AS "peerDomain", peer."namespaceId" AS "peerNamespaceId"
+      FROM "RelationshipPair" pair
+      JOIN "User" mine ON mine.id = ${callerUserId}
+      JOIN "User" peer ON peer.id <> mine.id
+      WHERE pair.kind = 'P2P' AND pair."threadId" = ${threadId}
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`mine`, sql`peer`)}
+      LIMIT 1
+    `);
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      pairId: rawBigInt(row.pairId, 'RelationshipPair.id'),
+      callerSide: row.callerSide,
+      mine: {
+        userId: row.mineUserId,
+        account: row.mineAccount,
+        domain: row.mineDomain,
+        namespaceId: row.mineNamespaceId,
+      },
+      peer: {
+        userId: row.peerUserId,
+        account: row.peerAccount,
+        domain: row.peerDomain,
+        namespaceId: row.peerNamespaceId,
+      },
+    };
+  }
+
   private async updateParticipant(
     userId: number,
     threadId: number,
-    data: Partial<typeof threadParticipant.$inferInsert>,
+    data: Partial<typeof accountThreadState.$inferInsert>,
   ) {
     const [row] = await this.database.db
-      .update(threadParticipant)
+      .update(accountThreadState)
       .set({ ...data, updatedAt: new Date() })
       .where(
         and(
-          eq(threadParticipant.accountId, userId),
-          eq(threadParticipant.threadId, threadId),
+          eq(accountThreadState.accountId, userId),
+          eq(accountThreadState.threadId, threadId),
         ),
       )
       .returning();

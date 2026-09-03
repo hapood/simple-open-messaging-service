@@ -75,9 +75,12 @@ export class AdminAuditInterceptor implements NestInterceptor {
   ): Promise<bigint> {
     try {
       const params = req.params as Record<string, unknown> | undefined;
+      const body = req.body as Record<string, unknown> | undefined;
       const targetId = meta.options?.targetParam
         ? String(params?.[meta.options.targetParam] ?? '')
-        : undefined;
+        : meta.options?.targetBody
+          ? String(body?.[meta.options.targetBody] ?? '')
+          : undefined;
       const ip = (req.ip ?? '').slice(0, 64);
       const ua = String(req.headers['user-agent'] ?? '').slice(0, 255);
       const [row] = await this.database.db

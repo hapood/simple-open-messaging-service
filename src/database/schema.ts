@@ -89,16 +89,22 @@ export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'ACCEPTED',
   'REVOKED',
 ]);
-export const domainCommandAggregateType = pgEnum('DomainCommandAggregateType', [
+export const durableTaskKind = pgEnum('DurableTaskKind', [
+  'MUTATION',
+  'PROJECTION',
+]);
+export const durableTaskScopeType = pgEnum('DurableTaskScopeType', [
   'USER_PAIR',
   'GROUP',
 ]);
-export const domainCommandStatus = pgEnum('DomainCommandStatus', [
+export const durableTaskStatus = pgEnum('DurableTaskStatus', [
   'PENDING',
   'PROCESSING',
+  'ASYNC_PROCESSING',
   'SUCCEEDED',
   'REJECTED',
   'FAILED',
+  'SUPERSEDED',
 ]);
 
 export const messageDeleteType = pgEnum('MessageDeleteType', [
@@ -310,9 +316,7 @@ export const user = pgTable(
     avatar: text().default('').notNull(),
     bio: varchar({ length: 255 }).default('').notNull(),
     domain: varchar({ length: 63 }).default('local').notNull(),
-    /** Publisher of this source-scoped profile. Only identities created here use `local`. */
-    sourceDomain: varchar({ length: 63 }).default('local').notNull(),
-    /** Identity namespace which materialized this projection; 0 for locally created identities. */
+    /** Publisher identity namespace which materialized this projection; 0 for local data. */
     namespaceId: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -327,33 +331,28 @@ export const user = pgTable(
     defaultProfileRev: integer().default(0).notNull(),
   },
   (table) => [
-    unique('User_account_domain_sourceDomain_namespaceId_key').on(
+    unique('User_account_domain_namespaceId_key').on(
       table.account,
       table.domain,
-      table.sourceDomain,
       table.namespaceId,
     ),
     index('User_address_idx').on(table.account, table.domain),
-    index('User_source_address_idx').on(
-      table.sourceDomain,
+    index('User_namespace_address_idx').on(
       table.namespaceId,
       table.account,
       table.domain,
     ),
     foreignKey({
-      columns: [table.sourceDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'User_sourceNamespace_fkey',
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'User_namespaceId_fkey',
     }).onDelete('restrict'),
-    check(
-      'User_namespace_check',
-      sql`(${table.sourceDomain} = 'local') = (${table.namespaceId} = 0)`,
-    ),
     check('User_account_check', sql`${table.account} NOT LIKE '!%'`),
     check(
       'User_availability_check',
       sql`${table.availability} IN ('AVAILABLE', 'REMOVED')`,
     ),
+    check('User_defaultProfileRev_check', sql`${table.defaultProfileRev} >= 0`),
   ],
 );
 
@@ -384,20 +383,26 @@ export const account = pgTable(
   ],
 );
 
-/** Durable domain-mutation queue. Aggregate ordering is application-defined by aggregateKey;
- * command rows remain operational history while the relationship and group tables remain authoritative. */
-export const domainCommand = pgTable(
-  'DomainCommand',
+/** Durable mutation and projection work. Ordering is isolated by kind and scopeKey;
+ * task rows remain operational history while domain tables remain authoritative. */
+export const durableTask = pgTable(
+  'DurableTask',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    parentCommandId: bigint({ mode: 'bigint' }),
-    aggregateType: domainCommandAggregateType().notNull(),
-    aggregateKey: varchar({ length: 512 }).notNull(),
-    commandType: varchar({ length: 64 }).notNull(),
+    parentTaskId: bigint({ mode: 'bigint' }),
+    kind: durableTaskKind().notNull(),
+    scopeType: durableTaskScopeType().notNull(),
+    scopeKey: varchar({ length: 512 }).notNull(),
+    taskType: varchar({ length: 64 }).notNull(),
     actorUserId: integer(),
     payload: jsonb().$type<Record<string, unknown>>().notNull(),
-    progressCursor: integer(),
-    status: domainCommandStatus().default('PENDING').notNull(),
+    checkpoint: jsonb()
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    coalescingKey: varchar({ length: 512 }),
+    supersededByTaskId: bigint({ mode: 'bigint' }),
+    status: durableTaskStatus().default('PENDING').notNull(),
     resultCode: integer(),
     lastError: varchar({ length: 1000 }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -407,72 +412,103 @@ export const domainCommand = pgTable(
     completedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
-    index('DomainCommand_pending_id_idx')
+    index('DurableTask_pending_id_idx')
       .on(table.id)
       .where(sql`${table.status} = 'PENDING'`),
-    index('DomainCommand_blocking_aggregate_id_idx')
-      .on(table.aggregateKey, table.id)
-      .where(sql`${table.status} IN ('PENDING', 'PROCESSING', 'FAILED')`),
-    uniqueIndex('DomainCommand_one_processing_per_aggregate_key')
-      .on(table.aggregateKey)
-      .where(sql`${table.status} = 'PROCESSING'`),
-    index('DomainCommand_parentCommandId_idx').on(table.parentCommandId),
+    index('DurableTask_blocking_scope_id_idx')
+      .on(table.kind, table.scopeKey, table.id)
+      .where(
+        sql`${table.status} IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING', 'FAILED')`,
+      ),
+    uniqueIndex('DurableTask_one_processing_per_scope')
+      .on(table.kind, table.scopeKey)
+      .where(sql`${table.status} IN ('PROCESSING', 'ASYNC_PROCESSING')`),
+    index('DurableTask_parentTaskId_idx').on(table.parentTaskId),
+    index('DurableTask_pending_coalescing_key_idx')
+      .on(table.coalescingKey, table.id)
+      .where(
+        sql`${table.status} = 'PENDING' AND ${table.coalescingKey} IS NOT NULL`,
+      ),
+    index('DurableTask_supersededByTaskId_idx').on(table.supersededByTaskId),
     foreignKey({
-      columns: [table.parentCommandId],
+      columns: [table.parentTaskId],
       foreignColumns: [table.id],
-      name: 'DomainCommand_parentCommandId_fkey',
+      name: 'DurableTask_parentTaskId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.supersededByTaskId],
+      foreignColumns: [table.id],
+      name: 'DurableTask_supersededByTaskId_fkey',
     }).onDelete('restrict'),
     check(
-      'DomainCommand_parent_order_check',
-      sql`${table.parentCommandId} IS NULL OR ${table.parentCommandId} < ${table.id}`,
+      'DurableTask_parent_order_check',
+      sql`${table.parentTaskId} IS NULL OR ${table.parentTaskId} < ${table.id}`,
+    ),
+    check('DurableTask_scope_key_check', sql`length(${table.scopeKey}) > 0`),
+    check(
+      'DurableTask_task_type_check',
+      sql`${table.taskType} ~ '^[A-Z][A-Z0-9_]*$'`,
     ),
     check(
-      'DomainCommand_aggregate_key_check',
-      sql`length(${table.aggregateKey}) > 0`,
-    ),
-    check(
-      'DomainCommand_command_type_check',
-      sql`${table.commandType} ~ '^[A-Z][A-Z0-9_]*$'`,
-    ),
-    check(
-      'DomainCommand_actor_user_id_check',
+      'DurableTask_actor_user_id_check',
       sql`${table.actorUserId} IS NULL OR ${table.actorUserId} > 0`,
     ),
     check(
-      'DomainCommand_payload_check',
+      'DurableTask_payload_check',
       sql`jsonb_typeof(${table.payload}) = 'object'`,
     ),
     check(
-      'DomainCommand_progress_cursor_check',
-      sql`${table.progressCursor} IS NULL OR ${table.progressCursor} >= 0`,
+      'DurableTask_checkpoint_check',
+      sql`jsonb_typeof(${table.checkpoint}) = 'object'`,
     ),
     check(
-      'DomainCommand_status_timestamps_check',
+      'DurableTask_coalescing_key_check',
+      sql`${table.coalescingKey} IS NULL OR length(${table.coalescingKey}) > 0`,
+    ),
+    check(
+      'DurableTask_supersession_check',
+      sql`(
+        ${table.status} = 'SUPERSEDED'
+        AND ${table.supersededByTaskId} IS NOT NULL
+        AND ${table.supersededByTaskId} > ${table.id}
+        AND ${table.coalescingKey} IS NOT NULL
+      ) OR (
+        ${table.status} <> 'SUPERSEDED'
+        AND ${table.supersededByTaskId} IS NULL
+      )`,
+    ),
+    check(
+      'DurableTask_status_timestamps_check',
       sql`(
         ${table.status} = 'PENDING'
         AND ${table.startedAt} IS NULL
         AND ${table.completedAt} IS NULL
       ) OR (
-        ${table.status} = 'PROCESSING'
+        ${table.status} IN ('PROCESSING', 'ASYNC_PROCESSING')
         AND ${table.startedAt} IS NOT NULL
         AND ${table.completedAt} IS NULL
       ) OR (
         ${table.status} IN ('SUCCEEDED', 'REJECTED', 'FAILED')
         AND ${table.startedAt} IS NOT NULL
         AND ${table.completedAt} IS NOT NULL
+      ) OR (
+        ${table.status} = 'SUPERSEDED'
+        AND ${table.startedAt} IS NULL
+        AND ${table.completedAt} IS NOT NULL
       )`,
     ),
     check(
-      'DomainCommand_timestamp_order_check',
+      'DurableTask_timestamp_order_check',
       sql`(${table.startedAt} IS NULL OR ${table.startedAt} >= ${table.createdAt})
-        AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.startedAt})`,
+        AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt})
+        AND (${table.completedAt} IS NULL OR ${table.startedAt} IS NULL OR ${table.completedAt} >= ${table.startedAt})`,
     ),
     check(
-      'DomainCommand_result_check',
+      'DurableTask_result_check',
       sql`${table.resultCode} IS NULL OR ${table.status} IN ('SUCCEEDED', 'REJECTED')`,
     ),
     check(
-      'DomainCommand_error_check',
+      'DurableTask_error_check',
       sql`${table.lastError} IS NULL OR ${table.status} = 'FAILED'`,
     ),
   ],
@@ -506,81 +542,8 @@ export const userPreference = pgTable(
   ],
 );
 
-/** Source-correct roster membership for every conversation. P2P threads have exactly two rows;
- * group rows retain departures so historical messages keep a resolvable author. */
-export const threadMember = pgTable(
-  'ThreadMember',
-  {
-    id: serial().primaryKey().notNull(),
-    threadId: integer().notNull(),
-    userId: integer().notNull(),
-    role: groupRole(),
-    left: boolean().default(false).notNull(),
-    /** Latest profile revision selected by this member's messages in this thread. */
-    profileRev: integer().default(0).notNull(),
-    /** Message sequence ordering profileRev; revision numbers are not clocks. */
-    profileMessageSeq: integer(),
-    /** Earliest authored sequence tracked by a group hosted on this server. */
-    firstSentSeq: integer(),
-    /** Latest authored sequence tracked by a locally hosted group. */
-    lastSentSeq: integer(),
-    joinedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('ThreadMember_threadId_userId_key').on(
-      table.threadId,
-      table.userId,
-    ),
-    uniqueIndex('ThreadMember_id_threadId_key').on(table.id, table.threadId),
-    index('ThreadMember_threadId_left_lastSentSeq_idx').on(
-      table.threadId,
-      table.left,
-      table.lastSentSeq,
-    ),
-    index('ThreadMember_threadId_left_firstSentSeq_idx').on(
-      table.threadId,
-      table.left,
-      table.firstSentSeq,
-    ),
-    uniqueIndex('ThreadMember_one_current_owner_key')
-      .on(table.threadId)
-      .where(sql`${table.role} = 'OWNER' AND ${table.left} = false`),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'ThreadMember_threadId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'ThreadMember_userId_fkey',
-    }).onDelete('restrict'),
-    check(
-      'ThreadMember_lastSentSeq_check',
-      sql`${table.lastSentSeq} IS NULL OR ${table.lastSentSeq} > 0`,
-    ),
-    check(
-      'ThreadMember_firstSentSeq_check',
-      sql`${table.firstSentSeq} IS NULL OR ${table.firstSentSeq} > 0`,
-    ),
-    check('ThreadMember_profileRev_check', sql`${table.profileRev} >= 0`),
-    check(
-      'ThreadMember_profileMessageSeq_check',
-      sql`${table.profileMessageSeq} IS NULL OR ${table.profileMessageSeq} > 0`,
-    ),
-  ],
-);
-
-export const threadParticipant = pgTable(
-  'ThreadParticipant',
+export const accountThreadState = pgTable(
+  'AccountThreadState',
   {
     id: serial().primaryKey().notNull(),
     /** Local account that owns this conversation state. */
@@ -595,8 +558,8 @@ export const threadParticipant = pgTable(
     blocked: boolean().default(false).notNull(),
     pinned: boolean().default(false).notNull(),
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    clearedSeq: integer(),
-    messageVisibleBeforeSeq: bigint({ mode: 'number' }),
+    /** Inclusive upper message sequence visible after this local participant leaves the relationship. */
+    messageVisibleThroughSeq: bigint({ mode: 'number' }),
     alias: varchar({ length: 64 }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -610,36 +573,32 @@ export const threadParticipant = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('ThreadParticipant_accountId_threadId_key').on(
+    uniqueIndex('AccountThreadState_accountId_threadId_key').on(
       table.accountId,
       table.threadId,
     ),
-    index('ThreadParticipant_threadId_idx').on(table.threadId),
-    index('ThreadParticipant_accountId_pinned_idx').on(
+    index('AccountThreadState_threadId_idx').on(table.threadId),
+    index('AccountThreadState_accountId_pinned_idx').on(
       table.accountId,
       table.pinned,
     ),
-    index('ThreadParticipant_accountId_readRevision_idx').on(
+    index('AccountThreadState_accountId_readRevision_idx').on(
       table.accountId,
       table.readRevision,
     ),
     foreignKey({
       columns: [table.accountId],
       foreignColumns: [account.id],
-      name: 'ThreadParticipant_accountId_fkey',
+      name: 'AccountThreadState_accountId_fkey',
     }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'ThreadParticipant_threadId_fkey',
+      name: 'AccountThreadState_threadId_fkey',
     }).onDelete('restrict'),
     check(
-      'ThreadParticipant_cleared_seq_check',
-      sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= 0`,
-    ),
-    check(
-      'ThreadParticipant_messageVisibleBeforeSeq_check',
-      sql`${table.messageVisibleBeforeSeq} IS NULL OR ${table.messageVisibleBeforeSeq} > 1`,
+      'AccountThreadState_messageVisibleThroughSeq_check',
+      sql`${table.messageVisibleThroughSeq} IS NULL OR ${table.messageVisibleThroughSeq} >= 0`,
     ),
   ],
 );
@@ -658,6 +617,8 @@ export const messageThread = pgTable(
       mode: 'date',
     }).notNull(),
     curSeq: integer().default(0).notNull(),
+    /** Inclusive lower history boundary shared by every viewer of this thread. */
+    clearedSeq: integer(),
     deletionSeqAllocatedThrough: integer().default(0).notNull(),
     lastMessageSeq: integer(),
     lastMessagePreview: varchar({ length: 255 }),
@@ -708,6 +669,10 @@ export const messageThread = pgTable(
       'MessageThread_deletionSeqAllocatedThrough_check',
       sql`${table.deletionSeqAllocatedThrough} >= 0`,
     ),
+    check(
+      'MessageThread_clearedSeq_check',
+      sql`${table.clearedSeq} IS NULL OR (${table.clearedSeq} >= 0 AND ${table.clearedSeq} <= ${table.curSeq})`,
+    ),
   ],
 );
 
@@ -724,6 +689,10 @@ export const threadAudience = pgTable(
     /** Exclusive federation message-access lower bound. A peer audience may query only messages with
      *  a greater thread sequence. It advances when a closed relationship is reauthorized. */
     messageAccessAfterSeq: integer().default(0).notNull(),
+    /** Exclusive Group Meta delta visibility floor in the group's canonical coordinate space. */
+    groupMetaVisibleAfter: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -784,6 +753,10 @@ export const threadAudience = pgTable(
     check(
       'ThreadAudience_messageAccessAfterSeq_check',
       sql`${table.messageAccessAfterSeq} >= 0`,
+    ),
+    check(
+      'ThreadAudience_groupMetaVisibleAfter_check',
+      sql`${table.groupMetaVisibleAfter} >= 0`,
     ),
   ],
 );
@@ -1649,7 +1622,6 @@ export const group = pgTable(
     /** Whether this remote group currently has federation authorization through at least one
      * active local member relationship. Local groups always retain false. */
     federationAuthorized: boolean().default(false).notNull(),
-    remoteGroupMetaFeedId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1723,37 +1695,7 @@ export const profileVersion = pgTable(
       'ProfileVersion_owner_check',
       sql`(${table.userId} IS NOT NULL) <> (${table.groupId} IS NOT NULL)`,
     ),
-    check('ProfileVersion_profileRev_check', sql`${table.profileRev} >= 0`),
-  ],
-);
-
-/** Durable name/avatar snapshot retained only after a message references a foreign revision. */
-export const referencedUserProfileVersion = pgTable(
-  'ReferencedUserProfileVersion',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    userId: integer().notNull(),
-    profileRev: integer().notNull(),
-    displayName: varchar({ length: 30 }).notNull(),
-    avatar: text().default('').notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('ReferencedUserProfileVersion_userId_profileRev_key').on(
-      table.userId,
-      table.profileRev,
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'ReferencedUserProfileVersion_userId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'ReferencedUserProfileVersion_profileRev_check',
-      sql`${table.profileRev} >= 0`,
-    ),
+    check('ProfileVersion_profileRev_check', sql`${table.profileRev} > 0`),
   ],
 );
 
@@ -2047,19 +1989,41 @@ export const peerStateFeedTarget = pgTable(
   ],
 );
 
-/** Origin-authoritative group roster feed. feedId is the ordered transport and mutation cursor. */
+/** One group-scoped Group Meta coordinate space. Local groups author it; remote groups mirror it. */
+export const groupMetaFeed = pgTable(
+  'GroupMetaFeed',
+  {
+    groupId: integer().primaryKey().notNull(),
+    /** Origin allocation end or mirror's last completely applied round cursor. */
+    feedEndId: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.groupId],
+      foreignColumns: [group.id],
+      name: 'GroupMetaFeed_groupId_fkey',
+    }).onDelete('cascade'),
+    check('GroupMetaFeed_feedEndId_check', sql`${table.feedEndId} >= 0`),
+  ],
+);
+
+/** Canonical or mirrored Group Meta member operations in remote-visible coordinate order. */
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
-    targetPeerDomain: varchar({ length: 63 }).notNull(),
-    targetNamespaceId: integer().notNull(),
     groupId: integer().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    memberDomain: varchar({ length: 63 }).notNull(),
-    memberNamespaceId: integer().default(0).notNull(),
+    /** Local identity projection for the protocol member Address. */
+    memberUserId: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
+    /** Local mirror bookkeeping only; never serialized. */
+    fullSyncRunId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2069,90 +2033,53 @@ export const groupMetaMemberFeed = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.targetNamespaceId, table.groupId, table.feedId],
+      columns: [table.groupId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
     index('GroupMetaMemberFeed_member_feed_idx').on(
-      table.targetPeerDomain,
-      table.targetNamespaceId,
       table.groupId,
-      table.memberDomain,
-      table.memberNamespaceId,
-      table.memberAccount,
+      table.memberUserId,
+      table.feedId,
+    ),
+    index('GroupMetaMemberFeed_full_sync_idx').on(
+      table.groupId,
+      table.fullSyncRunId,
       table.feedId,
     ),
     foreignKey({
-      columns: [table.memberNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'GroupMetaMemberFeed_memberNamespaceId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.targetPeerDomain, table.targetNamespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'GroupMetaMemberFeed_targetNamespace_fkey',
+      columns: [table.memberUserId],
+      foreignColumns: [user.id],
+      name: 'GroupMetaMemberFeed_memberUserId_fkey',
     }).onDelete('restrict'),
     foreignKey({
       columns: [table.groupId],
       foreignColumns: [group.id],
       name: 'GroupMetaMemberFeed_groupId_fkey',
     }).onDelete('cascade'),
-    check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
-    check('GroupMetaMemberFeed_body_check', sql`${table.body} <> '{}'::jsonb`),
-  ],
-);
-
-export const groupMetaFeedTarget = pgTable(
-  'GroupMetaFeedTarget',
-  {
-    targetPeerDomain: varchar({ length: 63 }).notNull(),
-    targetNamespaceId: integer().notNull(),
-    groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    active: boolean().default(true).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.targetNamespaceId, table.groupId],
-      name: 'GroupMetaFeedTarget_pkey',
-    }),
     foreignKey({
-      columns: [table.targetPeerDomain, table.targetNamespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'GroupMetaFeedTarget_targetNamespace_fkey',
+      columns: [table.fullSyncRunId],
+      foreignColumns: [durableTask.id],
+      name: 'GroupMetaMemberFeed_fullSyncRunId_fkey',
     }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'GroupMetaFeedTarget_groupId_fkey',
-    }).onDelete('cascade'),
+    check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
-      'GroupMetaFeedTarget_allocatedThrough_check',
-      sql`${table.allocatedThrough} >= 0`,
-    ),
-    check(
-      'GroupMetaFeedTarget_oldestAvailableAfter_check',
-      sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
+      'GroupMetaMemberFeed_body_check',
+      sql`jsonb_typeof(${table.body}) = 'object'
+        AND ((${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb)
+          OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb))`,
     ),
   ],
 );
 
-/** The single compacted GROUP_PROFILE item in each target peer/group Group Meta feed. */
+/** The single compacted GROUP_PROFILE item in one group's coordinate space. */
 export const groupMetaProfileFeed = pgTable(
   'GroupMetaProfileFeed',
   {
-    targetPeerDomain: varchar({ length: 63 }).notNull(),
-    targetNamespaceId: integer().notNull(),
-    groupId: integer().notNull(),
+    groupId: integer().primaryKey().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
     profileRev: integer().notNull(),
+    /** Local mirror bookkeeping only; never serialized. */
+    fullSyncRunId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2161,122 +2088,20 @@ export const groupMetaProfileFeed = pgTable(
       .notNull(),
   },
   (table) => [
-    primaryKey({
-      columns: [table.targetNamespaceId, table.groupId],
-      name: 'GroupMetaProfileFeed_pkey',
-    }),
-    foreignKey({
-      columns: [table.targetPeerDomain, table.targetNamespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'GroupMetaProfileFeed_targetNamespace_fkey',
-    }).onDelete('restrict'),
     foreignKey({
       columns: [table.groupId],
       foreignColumns: [group.id],
       name: 'GroupMetaProfileFeed_groupId_fkey',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.fullSyncRunId],
+      foreignColumns: [durableTask.id],
+      name: 'GroupMetaProfileFeed_fullSyncRunId_fkey',
+    }).onDelete('restrict'),
     check('GroupMetaProfileFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'GroupMetaProfileFeed_profileRev_check',
       sql`${table.profileRev} >= 0`,
-    ),
-  ],
-);
-
-/** Per-user device projection of one group's member feed. */
-export const clientGroupMetaMemberFeed = pgTable(
-  'ClientGroupMetaMemberFeed',
-  {
-    accountId: integer().notNull(),
-    groupId: integer().notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    memberDomain: varchar({ length: 63 }).notNull(),
-    memberNamespaceId: integer().default(0).notNull(),
-    operation: groupMetaMemberOperation().notNull(),
-    body: jsonb().notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.accountId, table.groupId, table.feedId],
-      name: 'ClientGroupMetaMemberFeed_pkey',
-    }),
-    index('ClientGroupMetaMemberFeed_member_feed_idx').on(
-      table.accountId,
-      table.groupId,
-      table.memberDomain,
-      table.memberNamespaceId,
-      table.memberAccount,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.memberNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'ClientGroupMetaMemberFeed_memberNamespaceId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.accountId],
-      foreignColumns: [account.id],
-      name: 'ClientGroupMetaMemberFeed_accountId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'ClientGroupMetaMemberFeed_groupId_fkey',
-    }).onDelete('cascade'),
-    check('ClientGroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'ClientGroupMetaMemberFeed_body_check',
-      sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb)`,
-    ),
-  ],
-);
-
-/** Allocation and retention boundary for a user's view of one group-member feed. */
-export const clientGroupMetaFeedTarget = pgTable(
-  'ClientGroupMetaFeedTarget',
-  {
-    accountId: integer().notNull(),
-    groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    active: boolean().default(true).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.accountId, table.groupId],
-      name: 'ClientGroupMetaFeedTarget_pkey',
-    }),
-    foreignKey({
-      columns: [table.accountId],
-      foreignColumns: [account.id],
-      name: 'ClientGroupMetaFeedTarget_accountId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'ClientGroupMetaFeedTarget_groupId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'ClientGroupMetaFeedTarget_allocatedThrough_check',
-      sql`${table.allocatedThrough} >= 0`,
-    ),
-    check(
-      'ClientGroupMetaFeedTarget_oldestAvailableAfter_check',
-      sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
     ),
   ],
 );
@@ -2299,7 +2124,7 @@ export const federatedFriendRequest = pgTable(
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     displayName: varchar({ length: 30 }),
     avatar: text(),
-    profileRevision: integer(),
+    profileRevision: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2343,7 +2168,7 @@ export const federatedFriendRequest = pgTable(
     ),
     check(
       'FederatedFriendRequest_profileRevision_check',
-      sql`${table.profileRevision} IS NULL OR ${table.profileRevision} >= 0`,
+      sql`${table.profileRevision} >= 0`,
     ),
     check(
       'FederatedFriendRequest_expiry_check',
@@ -2463,6 +2288,14 @@ export const relationshipPair = pgTable(
       table.endpointBAccount,
       table.endpointBDomain,
       table.endpointBNamespaceId,
+      table.active,
+    ),
+    uniqueIndex('RelationshipPair_p2p_threadId_key')
+      .on(table.threadId)
+      .where(sql`${table.kind} = 'P2P' AND ${table.threadId} IS NOT NULL`),
+    index('RelationshipPair_thread_kind_active_idx').on(
+      table.threadId,
+      table.kind,
       table.active,
     ),
     foreignKey({

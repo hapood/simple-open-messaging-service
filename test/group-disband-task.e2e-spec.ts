@@ -3,27 +3,27 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, count, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  domainCommand,
+  durableTask,
   group,
+  groupMetaMemberFeed,
   messageThread,
   relationshipPair,
-  threadMember,
-  threadParticipant,
+  accountThreadState,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
 import {
-  waitForAcceptedDomainCommands,
-  waitForDomainCommand,
+  waitForAcceptedDurableTasks,
+  waitForDurableTask,
   waitForLocalFriendInvite,
-} from './domain-command-helpers.js';
+} from './durable-task-helpers.js';
 
-describe('group disband command fan-out', () => {
+describe('group disband task fan-out', () => {
   let app: INestApplication;
   let database: DatabaseService;
 
@@ -48,20 +48,20 @@ describe('group disband command fan-out', () => {
     const owner = await seedUserWithSession(app, 'disband-owner');
     const member = await seedUserWithSession(app, 'disband-member');
     const sent = await request(app.getHttpServer())
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ account: member.account });
+      .send({ account: member.account, domain: 'local' });
     const inviteId = await waitForLocalFriendInvite(
       database.db,
-      sent.body.data.commandId,
+      sent.body.data.taskId,
       owner.id,
       member.id,
     );
     const accepted = await request(app.getHttpServer())
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ inviteId });
-    await waitForDomainCommand(database.db, accepted.body.data.commandId);
+    await waitForDurableTask(database.db, accepted.body.data.taskId);
 
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
@@ -73,77 +73,91 @@ describe('group disband command fan-out', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, userIds: [member.id] });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommands(database.db, invited.body);
+    await waitForAcceptedDurableTasks(database.db, invited.body);
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(joined.body.code).toBe(BusinessCode.OK);
-    await waitForDomainCommand(database.db, joined.body.data.commandId);
+    await waitForDurableTask(database.db, joined.body.data.taskId);
+    const [threadBeforeDissolve] = await database.db
+      .select({ groupId: messageThread.groupId })
+      .from(messageThread)
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    expect(threadBeforeDissolve?.groupId).toBeTypeOf('number');
+    const [metaBeforeDissolve] = await database.db
+      .select({ value: count() })
+      .from(groupMetaMemberFeed)
+      .where(eq(groupMetaMemberFeed.groupId, threadBeforeDissolve!.groupId!));
 
     const beforeUnauthorized = await database.db
-      .select({ id: domainCommand.id })
-      .from(domainCommand);
+      .select({ id: durableTask.id })
+      .from(durableTask);
     const unauthorized = await request(app.getHttpServer())
       .post('/api/v1/group/dissolve')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(unauthorized.body.code).toBe(BusinessCode.GROUP_FORBIDDEN);
     expect(
-      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+      await database.db.select({ id: durableTask.id }).from(durableTask),
     ).toHaveLength(beforeUnauthorized.length);
 
     const dissolved = await request(app.getHttpServer())
       .post('/api/v1/group/dissolve')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, deleteData: true });
+      .send({ groupId: threadId });
     expect(dissolved.body).toMatchObject({
       code: BusinessCode.OK,
       data: { status: 'PENDING' },
     });
-    const parentId = dissolved.body.data.commandId as string;
-    await waitForDomainCommand(database.db, parentId);
+    const parentId = dissolved.body.data.taskId as string;
+    await waitForDurableTask(database.db, parentId);
 
-    const parent = await database.db.query.domainCommand.findFirst({
-      where: eq(domainCommand.id, BigInt(parentId)),
+    const parent = await database.db.query.durableTask.findFirst({
+      where: eq(durableTask.id, BigInt(parentId)),
     });
     expect(parent).toMatchObject({
-      commandType: 'DISBAND_GROUP',
+      taskType: 'DISBAND_GROUP',
       status: 'SUCCEEDED',
-      progressCursor: Math.max(owner.id, member.id),
+      checkpoint: { afterPairId: expect.stringMatching(/^[1-9]\d*$/) },
     });
     const children = await database.db
       .select()
-      .from(domainCommand)
-      .where(eq(domainCommand.parentCommandId, BigInt(parentId)))
-      .orderBy(asc(domainCommand.id));
+      .from(durableTask)
+      .where(eq(durableTask.parentTaskId, BigInt(parentId)))
+      .orderBy(asc(durableTask.id));
     expect(children).toHaveLength(2);
-    expect(children.map(({ commandType }) => commandType)).toEqual([
+    expect(children.map(({ taskType }) => taskType)).toEqual([
       'REVOKE_DISSOLVED_GROUP_MEMBER',
       'REVOKE_DISSOLVED_GROUP_MEMBER',
     ]);
     expect(children.map(({ payload }) => payload)).toEqual(
       expect.arrayContaining([
-        { threadId, memberUserId: owner.id, deleteData: true },
-        { threadId, memberUserId: member.id, deleteData: false },
+        { threadId, memberUserId: owner.id },
+        { threadId, memberUserId: member.id },
       ]),
     );
     for (const child of children) {
-      await waitForDomainCommand(database.db, child.id.toString());
+      await waitForDurableTask(database.db, child.id.toString());
     }
 
     const hostedGroup = await database.db
-      .select({ dissolvedAt: group.dissolvedAt })
+      .select({
+        dissolvedAt: group.dissolvedAt,
+        clearedSeq: messageThread.clearedSeq,
+      })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.groupId))
       .where(eq(messageThread.id, threadId))
       .limit(1);
     expect(hostedGroup[0]?.dissolvedAt).toBeInstanceOf(Date);
-    const roster = await database.db.query.threadMember.findMany({
-      where: eq(threadMember.threadId, threadId),
-    });
-    expect(roster).toHaveLength(2);
-    expect(roster.every(({ left }) => left)).toBe(true);
+    expect(hostedGroup[0]?.clearedSeq).toBeNull();
+    const [metaAfterDissolve] = await database.db
+      .select({ value: count() })
+      .from(groupMetaMemberFeed)
+      .where(eq(groupMetaMemberFeed.groupId, threadBeforeDissolve!.groupId!));
+    expect(metaAfterDissolve.value).toBe(metaBeforeDissolve.value);
     const relationships = await database.db.query.relationshipPair.findMany({
       where: and(
         eq(relationshipPair.threadId, threadId),
@@ -152,13 +166,5 @@ describe('group disband command fan-out', () => {
     });
     expect(relationships).toHaveLength(2);
     expect(relationships.every(({ active }) => !active)).toBe(true);
-    const ownerParticipant =
-      await database.db.query.threadParticipant.findFirst({
-        where: and(
-          eq(threadParticipant.threadId, threadId),
-          eq(threadParticipant.accountId, owner.id),
-        ),
-      });
-    expect(ownerParticipant?.clearedSeq).toBeTypeOf('number');
   });
 });

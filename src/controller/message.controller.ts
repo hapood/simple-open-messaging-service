@@ -26,8 +26,8 @@ import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
+import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { parseLinkContent } from '../upload/file-content.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
@@ -45,7 +45,6 @@ import {
   SetMutedDto,
   SetBlockedDto,
   SetPinnedDto,
-  ClearHistoryDto,
   SetAliasDto,
   SearchMessagesDto,
   SendForwardDto,
@@ -79,7 +78,7 @@ export class MessageController {
   constructor(
     private readonly messageService: MessageService,
     private readonly sseService: SseService,
-    private readonly participantService: ThreadParticipantService,
+    private readonly participantService: AccountThreadStateService,
     private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
@@ -322,7 +321,7 @@ export class MessageController {
         domain: string;
         namespaceId: number;
       }>;
-    } = { clearedThroughSeq: req.threadAccess.participant.clearedSeq };
+    } = { clearedThroughSeq: req.threadAccess.clearedSeq };
     const hasQuote =
       contentType === ContentType.PURE_TEXT &&
       parseTextMessageContent(dto.content)?.quote !== undefined;
@@ -440,7 +439,7 @@ export class MessageController {
     const groupTarget =
       dto.targetGroupId === undefined ||
       groupVisibility?.thread.type !== 'GROUP' ||
-      groupVisibility.messageVisibleBeforeSeq !== null
+      groupVisibility.messageVisibleThroughSeq !== null
         ? null
         : await this.groups.findGroupByThreadId(dto.targetGroupId);
     const target =
@@ -960,23 +959,6 @@ export class MessageController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
-  @ResourceId<ClearHistoryDto>('threadId')
-  @Throttle('thread.clear-history')
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('thread/clear-history')
-  @ApiOperation({
-    summary:
-      'Clear chat history for me (hides all messages up to now; peer copy untouched)',
-  })
-  async clearHistory(
-    @Request() req: FastifyRequest,
-    @Body() dto: ClearHistoryDto,
-  ): Promise<void> {
-    await this.participantService.clearHistory(req.user.userId, dto.threadId);
-  }
-
-  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetAliasDto>('threadId')
   @Throttle('thread.set-alias')
   @ApiBearerAuth()
@@ -1007,18 +989,22 @@ export class MessageController {
     summary:
       'Search a conversation by substring (returns lightweight match ids for kernel jump)',
   })
-  async searchMessages(@Body() dto: SearchMessagesDto) {
+  async searchMessages(
+    @Request() req: FastifyRequest,
+    @Body() dto: SearchMessagesDto,
+  ) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
     // list excludes blocked/muted indirectly: blocked creators' messages are already hidden at the
-    // source by the send fan-out, and clearedSeq only affects the user's own view — search returns the
-    // raw id matches; the client jumps the kernel, which loads each via query-messages (re-applying
-    // clearedSeq/block). take+1 hasMore trick.
+    // source by the send fan-out. The thread-wide clearedSeq is applied after the descending search
+    // page is read (without adding a clearedSeq SQL predicate); the client then jumps the kernel to a
+    // returned id and loads the bubble through query-messages. take+1 hasMore trick.
     const lastSeq = dto.lastSeq !== undefined ? Number(dto.lastSeq) : undefined;
     const rows = await this.messageService.searchMessages(
       dto.threadId,
       dto.keyword,
       dto.take,
       lastSeq,
+      req.threadAccess.clearedSeq,
     );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;

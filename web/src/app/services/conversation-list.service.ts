@@ -185,14 +185,13 @@ export class ConversationListService {
     this.repo.markTopOnNextUpdate(threadId);
   }
 
-  /** Patch per-user thread metadata (mute/pin/clear/block/alias); called from local optimistic actions. */
+  /** Patch per-user thread metadata (mute/pin/block/alias); called from local optimistic actions. */
   applyThreadMeta(
     threadId: number,
     patch: {
       muted?: boolean;
       pinned?: boolean;
       pinnedAt?: number | null;
-      clearedSeq?: number | null;
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';

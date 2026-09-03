@@ -144,14 +144,6 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - The result is an untrusted display card plus relationship status. It is never persisted and never creates
   a stub; clients may close it and start another lookup at any time.
 
-### POST `/user/delete-friend`
-
-- **Body**: `{ account, domain?, deleteData? }`. `domain` is omitted for a local account. Ends the active
-  P2P relationship while retaining its conversation history (`20002` if not friends).
-- After synchronous identity and thread validation, returns
-  `{ commandId: string, status: "PENDING" }`. The existing P2P termination
-  transaction executes asynchronously in `USER_PAIR` order.
-
 ### POST `/user/peer-trust-status`
 
 - Returns the recognition/trust status for a peer domain. Federated profiles and group metadata arrive through server feeds; there is no client-triggered freshness probe.
@@ -171,54 +163,59 @@ request tables. The former polymorphic `Invite` table has been removed. REST
 See the [relationship intent state machine](../overview/relationship-intent-state-machine.md) for
 the complete transition, pair-folding, and projection-side-effect rules.
 
-### POST `/invite/friend` — Send friend invite
+### POST `/relationship/request` — Request a user or group relationship
 
-- **Body**: `{ account, note?: string(≤255) }`. The route resolves the local account internally; database
-  user ids are not part of the client identity contract. It validates the caller and target, then
-  durably enqueues the directed request mutation.
-- **Response data**: `{ commandId: string, status: "PENDING" }`. Success means the command was committed,
+- **Body**: `{ account, domain, note?: string(≤255), displayName?, avatar? }`. Use the literal domain
+  `local` for a local account. For a federated Address, `displayName` is required and `avatar` is an
+  optional untrusted request-card snapshot obtained by the preceding temporary resolve. Database user
+  ids are not part of the client identity contract.
+- **Response data**: `{ taskId: string, status: "PENDING" }`. Success means the task was durably accepted,
   not that the relationship transaction has completed. The resulting `inviteId` arrives through the
   Client State Feed or the incoming/outgoing request lists.
 - Execution upserts the caller's directed request. A new request expires after seven days; an explicit
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
+- A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
+  `profileRev`. The receiver resolves that exact revision independently through the global profile
+  resolver; there is no separate `PROFILE` State Feed event. A stable foreign identity shell and its
+  immutable `ProfileVersion` may be materialized by that resolution without changing relationship
+  authorization.
+- The federated request endpoint and its DurableTask perform no peer discovery, recognition, or other
+  network operation. The preceding exact-address resolve must already have established an active peer
+  namespace. If it has not, the local transaction fails and creates no relationship request or State
+  Feed item.
+- No federated request id is exposed. A group account is accepted only for a federated group-join
+  request; a local group relationship still requires an existing invitation.
 
-### POST `/invite/federated-friend` — Send a pre-stub federated request
+### POST `/relationship/revoke` — Revoke a relationship or pending request
 
-- **Body**: `{ account, domain, note?, displayName?, avatar? }`. `account + domain` are the immutable target
-  Address; `displayName/avatar` are only the untrusted request-card snapshot returned by the temporary
-  lookup. The client is session-authenticated but does not sign this application or its snapshot.
-- The API returns `{ commandId: string, status: "PENDING" }`; command execution
-  creates the address-keyed relationship shell needed by the outgoing
-  request, but does not expose a foreign `User` row. Every non-revoked request publishes the
-  author's verified home-owned `PROFILE` immediately after `RELATIONSHIP_INTENT`; the receiver uses
-  it to fill the address-keyed request projection before acceptance.
-- No federated request id or foreign User stub is exposed.
-- This route accepts user accounts only. Group accounts use `/group/federated-join-request`.
+- **Body**: `{ account, domain }`, using the literal domain `local` for a local user.
+- For a user Address, revokes an incoming or outgoing pending friend request, or ends an active P2P
+  relationship. The conversation history is retained.
+- For a federated group Address, revokes only the caller's pending group-join request. Leaving an
+  active group remains a separate membership operation.
+- **Response data**: `{ taskId: string, status: "PENDING" }`.
 
-### POST `/group/federated-join-request` — Apply to a federated group
+### POST `/relationship/accept` — Accept an incoming relationship request
 
-- **Body**: `{ account, domain, note?, displayName, avatar? }`, where `account` starts with `!`.
-- Returns `{ commandId: string, status: "PENDING" }`. The command publishes a
-  member-authored group relationship request. It does not pass through a friend
-  endpoint or materialize the group as a User.
+- **Body**: `{ inviteId }` for a stored local request, or `{ account, domain }` for an addressed
+  federated request.
+- For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
+  active only when both directed intents are effective.
+- For a group invitation, the group mirror becomes active only after the origin's state snapshot
+  confirms membership.
+- **Response data**: `{ taskId: string, status: "PENDING" }` for durable operations.
 
-### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
+There are no separate public reject, request-revoke, or delete-friend routes. All three user-facing
+actions use `/relationship/revoke` with the counterparty Address; the server resolves the current
+relationship state and dispatches the corresponding internal task. A USER→GROUP federated join
+application likewise uses `/relationship/request`. GROUP→USER invitation administration remains
+under `/group/*` because the group, rather than the current user, authors that direction.
 
-- **Body**: local request `{ inviteId }`; pre-stub federated request `{ account, domain }`.
-- `accept`: authors the caller's reverse direction. A P2P thread becomes active only when both friend
-  directions are effective in the same transaction; a federated group mirror becomes active only after
-  the origin's state snapshot confirms membership.
-- `reject` closes an incoming local request; `revoke` closes the caller-owned outgoing direction.
-  Federation convergence is asynchronous
-  through the state feed; there are no S2S invite command endpoints.
-- `/invite/reject` validates request ownership and returns
-  `{ commandId: string, status: "PENDING" }` after durable command acceptance.
-  P2P `{ inviteId }` acceptance and revoke have the same durable acceptance
-  response. Stored group invitations and addressed federated friend/group
-  accept or revoke operations also return this response and execute in their
-  canonical aggregate order.
-- Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
-  ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.
+- Federation convergence is asynchronous through the state feed; there are no S2S invite command
+  endpoints.
+- Every pending friend/group request has an absolute expiry of at most seven days. Expired requests
+  are ineffective even if an old feed projection remains. REVOKED has no expiry and is retained
+  best-effort.
 
 ### POST `/invite/incoming` · `/invite/outgoing` · `/invite/incoming/read`
 
@@ -256,6 +253,10 @@ the complete transition, pair-folding, and projection-side-effect rules.
   `{ resumeAfter, resumeBefore }`; a forward query adopts `resumeAfter`, while a reverse query adopts
   `resumeBefore`. The resume fields and successful-page `scannedThrough` are
   integer message-sequence boundaries.
+- `MessageThread.clearedSeq` is an exclusive lower cursor boundary. An `after` below it or a `before`
+  at/below the first remaining coordinate is rejected before the message-row query with the same
+  `30006 { resumeAfter, resumeBefore }` recovery payload. The client must retry from those server-owned
+  cursors; it does not merge a locally stored clear boundary into the request.
 
 ### POST `/deleted-messages/query` — Paginated tombstones
 
@@ -270,14 +271,14 @@ the complete transition, pair-folding, and projection-side-effect rules.
   direction cursors, `scannedThrough`, and `deletionSeq` are JSON integers in
   the conversation's thread-local deletion-coordinate space.
 
-### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, clear-history, set-alias}`
+### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, set-alias}`
 
-- Per-`ThreadParticipant` mutations: the P2P thread lookup, read watermark advance, mute, pin, clear-history, and per-thread alias. `search-messages` does in-chat search.
+- Per-`AccountThreadState` mutations: the P2P thread lookup, read watermark advance, mute, pin, and per-thread alias. `search-messages` does in-chat search.
 
 `mark-read` commits a viewport-dwelled HWM on chat close/switch:
 
 - **Body**: `{ threadId, localReadHwm }`.
-- The server stores `max(ThreadParticipant.lastReadSeq, localReadHwm)` and returns
+- The server stores `max(AccountThreadState.lastReadSeq, localReadHwm)` and returns
   `{ threadId, lastReadSeq, unreadCount, mentionUnread }`.
 - `unreadCount` is capped at `1000`; `1000` means 1000 or more and clients render it as `999+`.
 - `mentionUnread` is an unordered, duplicate-free set encoded as an array containing zero or more of
@@ -303,8 +304,8 @@ the complete transition, pair-folding, and projection-side-effect rules.
 ### POST `/group/invite`
 
 - **Body**: `{ groupId, userIds: number[] }` — enqueue one GROUP invitation per
-  valid existing friend. The response includes `commands[]` entries with each
-  accepted target's `commandId`; invalid targets remain in `skipped`.
+  valid existing friend. The response includes `tasks[]` entries with each
+  accepted target's `taskId`; invalid targets remain in `skipped`.
 
 ### Group request projections
 
@@ -312,7 +313,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
   contract: `{ groupId, before?, take? }`.
 - `POST /group/join-request/{accept,reject}` acts on a member-authored application.
 - `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
-- These mutation routes return `{ commandId: string, status: "PENDING" }` after
+- These mutation routes return `{ taskId: string, status: "PENDING" }` after
   validation and durable acceptance.
 - These lists are backend projections written after the corresponding intent fact and relationship
   fold commit. They are not membership authority.
@@ -321,16 +322,16 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 - `leave` (`40004` owner must transfer first) · `kick` (`40005` forbidden,
   `40006` target not a member) · `transfer` (ownership) · `set-role`
-  (ADMIN/MEMBER) return durable command acceptance. `update`
+  (ADMIN/MEMBER) return durable task acceptance. `update`
   (name/avatar/bio) remains synchronous because it is not a relationship
   mutation.
 
 ### POST `/group/dissolve`
 
-- **Body**: `{ groupId, deleteData? }`. Owner-only.
-- Returns `{ commandId: string, status: "PENDING" }` after durable acceptance.
-  The parent command commits the permanent dissolution marker and durably
-  checkpoints one member-revoke child command per active roster member. It does
+- **Body**: `{ groupId }`. Owner-only. Conversation history is retained.
+- Returns `{ taskId: string, status: "PENDING" }` after durable acceptance.
+  The parent task commits the permanent dissolution marker and durably
+  checkpoints one member-revoke child task per active roster member. It does
   not wait for those children to execute.
 
 ---
@@ -394,10 +395,11 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 - `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`.
 - `POST /admin/users/:id/{disable,enable,force-logout,sessions,reset-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, reset password (all invalidate sessions).
+- `POST /admin/threads/clear-history` `{ threadId, seq? }` — advances the thread-wide history boundary through `seq` (inclusive), or through the thread's current message sequence when omitted. Requires `ADMIN` or `SUPER_ADMIN` and is audited.
 - `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
 - `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
 - `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
-- `POST /admin/domain-commands` — paginated domain-command execution history with status and search filters.
+- `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
 - Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
 
 ---

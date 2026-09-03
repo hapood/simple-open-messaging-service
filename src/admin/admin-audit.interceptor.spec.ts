@@ -23,6 +23,7 @@ describe('AdminAuditInterceptor', () => {
   const request = {
     user: { adminId: 7, role: 'SUPER_ADMIN' },
     params: { id: '42' },
+    body: { threadId: 99 },
     ip: '192.0.2.1',
     headers: { 'user-agent': 'test-agent' },
     url: '/admin/users/42/disable',
@@ -73,6 +74,20 @@ describe('AdminAuditInterceptor', () => {
       status: 'SUCCEEDED',
       errorMessage: null,
     });
+  });
+
+  it('can resolve the audited target from the request body', async () => {
+    reflector.getAllAndOverride.mockReturnValueOnce({
+      action: 'thread.history.clear',
+      options: { targetType: 'thread', targetBody: 'threadId' },
+    });
+    const next: CallHandler = { handle: vi.fn(() => of(undefined)) };
+
+    await lastValueFrom(interceptor.intercept(context, next));
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ targetType: 'thread', targetId: '99' }),
+    );
   });
 
   it('refuses the action when the STARTED row cannot be persisted', async () => {

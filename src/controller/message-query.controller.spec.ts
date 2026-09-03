@@ -54,7 +54,8 @@ function setup(rows: Array<{ seq: number }> = []) {
     user: { userId: 1 },
     threadAccess: {
       threadType: 'P2P',
-      participant: { clearedSeq: null },
+      clearedSeq: null,
+      participant: {},
     },
   } as unknown as FastifyRequest;
   return {

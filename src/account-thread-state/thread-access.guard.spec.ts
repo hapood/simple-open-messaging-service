@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { ThreadAccessGuard } from './thread-access.guard.js';
-import type { ThreadParticipantService } from './thread-participant.service.js';
+import type { AccountThreadStateService } from './account-thread-state.service.js';
 import type { Reflector } from '@nestjs/core';
 import { BusinessCode } from '../common/business-code.js';
 import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
@@ -11,7 +11,7 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  * Covered: active member → attaches req.threadAccess; non-member → THREAD_NOT_FOUND (non-leaking); a
  * non-number threadId (raw body, pre-ValidationPipe) → VALIDATION_FAILED; route missing @ResourceId →
  * INTERNAL (a wiring bug, not a client error). Pure-vitest, no Nest DI — collaborators
- * (ThreadParticipantService, Reflector) mocked inline.
+ * (AccountThreadStateService, Reflector) mocked inline.
  */
 describe('ThreadAccessGuard', () => {
   const participantService = {
@@ -24,7 +24,7 @@ describe('ThreadAccessGuard', () => {
     get: vi.fn().mockReturnValue('threadId'),
   };
   const guard = new ThreadAccessGuard(
-    participantService as unknown as ThreadParticipantService,
+    participantService as unknown as AccountThreadStateService,
     reflector as unknown as Reflector,
   );
 
@@ -58,7 +58,7 @@ describe('ThreadAccessGuard', () => {
       id: 9,
       userId: 7,
       threadId: 12,
-      thread: { type: 'P2P' },
+      thread: { type: 'P2P', clearedSeq: null },
     };
     participantService.isMutuallyAuthorized.mockResolvedValueOnce(true);
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
@@ -80,6 +80,7 @@ describe('ThreadAccessGuard', () => {
     ).toEqual({
       threadId: 12,
       threadType: 'P2P',
+      clearedSeq: null,
       participant,
       friendshipActive: true,
       membershipActive: true,
@@ -92,7 +93,7 @@ describe('ThreadAccessGuard', () => {
       id: 9,
       userId: 7,
       threadId: 12,
-      thread: { type: 'P2P' },
+      thread: { type: 'P2P', clearedSeq: null },
     };
     participantService.isMutuallyAuthorized.mockResolvedValueOnce(false);
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
