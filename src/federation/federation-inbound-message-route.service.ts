@@ -1,12 +1,10 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import * as tables from '../database/schema.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
-import { upsertSourceUserInTx } from '../user/source-user.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
@@ -107,25 +105,38 @@ export class FederationInboundMessageRouteService {
         SELECT thread.id AS "threadId",
                thread."federationVersion",
                local_user.account AS "toAccount"
-        FROM "MessageThread" thread
-        JOIN "ThreadMember" local_member ON local_member."threadId" = thread.id
-        JOIN "User" local_user ON local_user.id = local_member."userId"
-        JOIN "ThreadParticipant" local_participant
+        FROM "RelationshipPair" pair
+        JOIN "MessageThread" thread ON thread.id = pair."threadId"
+        JOIN "AccountThreadState" local_participant
           ON local_participant."threadId" = thread.id
-         AND local_participant."accountId" = local_user.id
-        JOIN "ThreadMember" remote_member ON remote_member."threadId" = thread.id
-        JOIN "User" remote_user ON remote_user.id = remote_member."userId"
+        JOIN "User" local_user ON local_user.id = local_participant."accountId"
         WHERE thread.type = 'P2P'
+          AND pair.kind = 'P2P'
+          AND pair.active = true
           AND local_user.domain = 'local'
           AND local_user."namespaceId" = 0
           AND local_user.account = ${normalizeAccount(item.thread.peerAccount)}
-          AND local_member."left" = false
-          AND remote_user.domain = ${sourceDomain}
-          AND remote_user."namespaceId" = ${namespaceId}
-          AND remote_user.account = ${normalizeAccount(item.thread.account)}
-          AND remote_member."left" = false
+          AND (
+            (pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = local_user.account
+              AND pair."endpointADomain" = 'local'
+              AND pair."endpointANamespaceId" = ${namespaceId}
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = ${normalizeAccount(item.thread.account)}
+              AND pair."endpointBDomain" = ${sourceDomain}
+              AND pair."endpointBNamespaceId" = ${namespaceId})
+            OR
+            (pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = local_user.account
+              AND pair."endpointBDomain" = 'local'
+              AND pair."endpointBNamespaceId" = ${namespaceId}
+              AND pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = ${normalizeAccount(item.thread.account)}
+              AND pair."endpointADomain" = ${sourceDomain}
+              AND pair."endpointANamespaceId" = ${namespaceId})
+          )
         LIMIT 1
-        FOR SHARE OF thread, local_member, remote_member
+        FOR SHARE OF pair, thread, local_participant
       `);
       threadRows = result.rows;
     }
@@ -139,46 +150,11 @@ export class FederationInboundMessageRouteService {
     const creatorAccount = normalizeAccount(author.account);
     const creatorDomain =
       author.domain === this.config.domain ? 'local' : author.domain;
-    if (
-      !('peerAccount' in item.thread) &&
-      author.domain !== this.config.domain
-    ) {
-      const normalizedAuthor = normalizeAccount(author.account);
-      const existingAuthor = await tx.query.user.findFirst({
-        where: and(
-          eq(tables.user.account, normalizedAuthor),
-          eq(tables.user.domain, author.domain),
-          eq(tables.user.sourceDomain, sourceDomain),
-          eq(tables.user.namespaceId, namespaceId),
-        ),
-        columns: { id: true },
-      });
-      const authorId =
-        existingAuthor?.id ??
-        (await upsertSourceUserInTx(tx, {
-          account: normalizedAuthor,
-          domain: author.domain,
-          sourceDomain,
-          namespaceId,
-          name: normalizedAuthor,
-          profileRev: 0,
-        }));
-      await tx
-        .insert(tables.threadMember)
-        .values({
-          threadId: route.threadId,
-          userId: authorId,
-          role: null,
-          left: true,
-          updatedAt: new Date(),
-        })
-        .onConflictDoNothing();
-    }
     const recipientRows =
       'peerAccount' in item.thread
         ? await tx.execute<{ userId: number }>(sql`
             SELECT participant."accountId" AS "userId"
-            FROM "ThreadParticipant" participant
+            FROM "AccountThreadState" participant
             WHERE participant."threadId" = ${route.threadId}
             FOR SHARE OF participant
           `)
@@ -237,15 +213,16 @@ export class FederationInboundMessageRouteService {
     }
     const recipientRows = await tx.execute<{ userId: number }>(sql`
       SELECT participant."accountId" AS "userId"
-      FROM "ThreadParticipant" participant
+      FROM "AccountThreadState" participant
       WHERE participant."threadId" = ${route.threadId}
       FOR SHARE OF participant
     `);
-    const recipientAuthorization = await Promise.all(
-      recipientRows.rows.map((row) =>
-        isThreadMutuallyAuthorized(tx, row.userId, route.threadId),
-      ),
-    );
+    const recipientAuthorization: boolean[] = [];
+    for (const row of recipientRows.rows) {
+      recipientAuthorization.push(
+        await isThreadMutuallyAuthorized(tx, row.userId, route.threadId),
+      );
+    }
     return {
       ...route,
       groupOriginDomain:

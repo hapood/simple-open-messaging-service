@@ -1,20 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  account,
-  group,
-  messageThread,
-  pushToken,
-  threadMember,
-  user,
-} from '../database/schema.js';
+import { account, pushToken, user } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { randomInt } from 'node:crypto';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { rawDate } from '../database/raw-result.js';
 @Injectable()
 export class UserManageService {
   constructor(
@@ -36,23 +30,39 @@ export class UserManageService {
     if (!profile) return null;
     const [groups, sessions, pushTokens] = await Promise.all([
       this.database.db
-        .select({
-          threadId: threadMember.threadId,
-          role: threadMember.role,
-          joinedAt: threadMember.joinedAt,
-          groupAccount: group.account,
-          groupName: group.name,
-        })
-        .from(threadMember)
-        .innerJoin(messageThread, eq(messageThread.id, threadMember.threadId))
-        .innerJoin(group, eq(group.id, messageThread.groupId))
-        .where(
-          and(eq(threadMember.userId, id), eq(messageThread.type, 'GROUP')),
+        .execute<{
+          threadId: number;
+          role: 'OWNER' | 'ADMIN' | 'MEMBER';
+          joinedAt: string;
+          groupAccount: string;
+          groupName: string;
+        }>(
+          sql`
+          SELECT thread.id AS "threadId", latest.body ->> 'role' AS role,
+            latest."createdAt" AS "joinedAt", group_profile.account AS "groupAccount",
+            group_profile.name AS "groupName"
+          FROM "MessageThread" thread
+          JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+          JOIN LATERAL (
+            SELECT member_fact.operation, member_fact.body, member_fact."createdAt"
+            FROM "GroupMetaMemberFeed" member_fact
+            WHERE member_fact."groupId" = group_profile.id
+              AND member_fact."memberUserId" = ${id}
+            ORDER BY member_fact."feedId" DESC
+            LIMIT 1
+          ) latest ON latest.operation = 'UPSERT'
+          JOIN "AccountThreadState" account_state
+            ON account_state."accountId" = ${id}
+           AND account_state."threadId" = thread.id
+          WHERE thread.type = 'GROUP'
+          ORDER BY latest."createdAt" DESC
+        `,
         )
-        .orderBy(desc(threadMember.joinedAt))
-        .then((rows) =>
-          rows.map(({ groupAccount, groupName, ...row }) => ({
+        .then((result) =>
+          result.rows.map(({ groupAccount, groupName, ...row }) => ({
             ...row,
+            joinedAt: rawDate(row.joinedAt, 'joinedAt'),
+            leftAt: null,
             thread: { group: { account: groupAccount, name: groupName } },
           })),
         ),
@@ -77,7 +87,7 @@ export class UserManageService {
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
       eq(user.domain, 'local'),
-      eq(user.sourceDomain, 'local'),
+      eq(user.namespaceId, 0),
       opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
     );
     const [list, total] = await Promise.all([
@@ -228,11 +238,7 @@ export class UserManageService {
       .from(account)
       .innerJoin(user, eq(user.id, account.id))
       .where(
-        and(
-          eq(user.id, id),
-          eq(user.domain, 'local'),
-          eq(user.sourceDomain, 'local'),
-        ),
+        and(eq(user.id, id), eq(user.domain, 'local'), eq(user.namespaceId, 0)),
       )
       .limit(1);
     if (target.length === 0) {

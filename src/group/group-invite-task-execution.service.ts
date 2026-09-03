@@ -2,20 +2,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
+import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { InviteService } from '../invite/invite.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { RelationshipService } from '../relationship/relationship.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { GroupService } from './group.service.js';
 
 @Injectable()
-export class GroupInviteCommandExecutionService {
-  private readonly logger = new Logger(GroupInviteCommandExecutionService.name);
+export class GroupInviteTaskExecutionService {
+  private readonly logger = new Logger(GroupInviteTaskExecutionService.name);
 
   constructor(
-    private readonly invites: InviteService,
-    private readonly participants: ThreadParticipantService,
-    private readonly relationships: FederationRelationshipCommandService,
+    private readonly relationships: RelationshipService,
+    private readonly participants: AccountThreadStateService,
+    private readonly federationRelationships: FederationRelationshipMutationService,
     private readonly federation: FederationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly groups: GroupService,
@@ -39,21 +39,22 @@ export class GroupInviteCommandExecutionService {
     }
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.invites.createGroupInvite(
+    await this.relationships.createGroupInvite(
       inviterUserId,
       threadId,
       memberUserId,
       '',
       async (tx) => {
         await this.groups.assertGroupManagerInTx(tx, threadId, inviterUserId);
-        statePeers = await this.relationships.writeGroupRelationshipIntentInTx(
-          tx,
-          threadId,
-          memberUserId,
-          '',
-          'REQUESTED',
-          clientFeedUpdates,
-        );
+        statePeers =
+          await this.federationRelationships.writeGroupRelationshipIntentInTx(
+            tx,
+            threadId,
+            memberUserId,
+            '',
+            'REQUESTED',
+            clientFeedUpdates,
+          );
       },
     );
     try {

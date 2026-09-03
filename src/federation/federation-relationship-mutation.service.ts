@@ -6,18 +6,18 @@ import {
   type PendingClientStateFeedUpdate,
 } from '../client-state-feed/client-state-feed.service.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
+import { GroupRole } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import {
   applyFederatedPendingProfileSnapshot,
-  InviteService,
+  RelationshipService,
   type FederatedPendingProfileSnapshot,
-} from '../invite/invite.service.js';
-import { RelationshipIntentService } from '../invite/relationship-intent.service.js';
+} from '../relationship/relationship.service.js';
+import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { upsertSourceUserInTx } from '../user/source-user.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
-import { FederationProfileStatePublisher } from './federation-profile-state-publisher.service.js';
 import {
   PeerStateFeedService,
   type PeerStateFeedWrite,
@@ -36,23 +36,23 @@ function groupIntentEndpoints(
 interface GroupRelationshipMutationOptions {
   publishGroupState?: boolean;
   allowOwnerDeactivation?: boolean;
+  initialRole?: typeof GroupRole.OWNER;
 }
 
 /**
- * Serializes and applies relationship commands. Transport wake-ups remain an
+ * Serializes and applies relationship mutations. Transport wake-ups remain an
  * outer orchestration concern and occur only after the caller's transaction
  * commits.
  */
 @Injectable()
-export class FederationRelationshipCommandService {
+export class FederationRelationshipMutationService {
   private readonly config = loadFederationConfig();
 
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
     private readonly groupRequestProjection: FederationGroupRequestProjectionService,
-    private readonly invite: InviteService,
+    private readonly relationships: RelationshipService,
     private readonly stateFeed: PeerStateFeedService,
-    private readonly profiles: FederationProfileStatePublisher,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly groupRelationships: FederationGroupRelationshipService,
   ) {}
@@ -67,7 +67,11 @@ export class FederationRelationshipCommandService {
     groupSnapshot?: FederatedPendingProfileSnapshot,
     options: GroupRelationshipMutationOptions = {},
   ): Promise<Map<string, bigint>> {
-    const { publishGroupState = true, allowOwnerDeactivation } = options;
+    const {
+      publishGroupState = true,
+      allowOwnerDeactivation,
+      initialRole,
+    } = options;
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [thread] = await tx
       .select({ groupId: tables.messageThread.groupId })
@@ -75,24 +79,22 @@ export class FederationRelationshipCommandService {
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (!thread?.groupId) throw new Error('group join target is invalid');
-    const [group, member] = await Promise.all([
-      tx.query.group.findFirst({
-        where: eq(tables.group.id, thread.groupId),
-        columns: {
-          account: true,
-          domain: true,
-          namespaceId: true,
-          name: true,
-          avatar: true,
-          description: true,
-          defaultProfileRev: true,
-        },
-      }),
-      tx.query.user.findFirst({
-        where: eq(tables.user.id, memberUserId),
-        columns: { account: true, domain: true },
-      }),
-    ]);
+    const group = await tx.query.group.findFirst({
+      where: eq(tables.group.id, thread.groupId),
+      columns: {
+        account: true,
+        domain: true,
+        namespaceId: true,
+        name: true,
+        avatar: true,
+        description: true,
+        defaultProfileRev: true,
+      },
+    });
+    const member = await tx.query.user.findFirst({
+      where: eq(tables.user.id, memberUserId),
+      columns: { account: true, domain: true },
+    });
     if (!group || !member || member.domain !== 'local')
       throw new Error('group join identities are invalid');
     const projectedGroup = applyFederatedPendingProfileSnapshot(
@@ -113,7 +115,9 @@ export class FederationRelationshipCommandService {
           status === 'REQUESTED'
             ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
             : null,
+        ...(initialRole ? { initialRole } : {}),
         ...(allowOwnerDeactivation ? { allowOwnerDeactivation: true } : {}),
+        ...(!publishGroupState ? { updateCanonicalRoster: false } : {}),
       },
     );
     if (group.domain === 'local' && membership.changed)
@@ -128,12 +132,6 @@ export class FederationRelationshipCommandService {
         membership.request.status === 'REQUESTED',
       );
     if (group.domain === 'local') {
-      if (status === 'REVOKED' && publishGroupState)
-        return this.profiles.writeGroupStateInTx(
-          tx,
-          threadId,
-          clientFeedUpdates,
-        );
       if (clientFeedUpdates && membership.changed) {
         const endpoints = groupIntentEndpoints(
           group.account,
@@ -169,13 +167,7 @@ export class FederationRelationshipCommandService {
         if (feedId !== null)
           clientFeedUpdates.push({ userId: memberUserId, feedId });
       }
-      if (
-        !publishGroupState ||
-        !membership.shouldBeActive ||
-        !membership.pairChanged
-      )
-        return new Map();
-      return this.profiles.writeGroupStateInTx(tx, threadId, clientFeedUpdates);
+      return new Map();
     }
     const relationship: PeerStateFeedWrite = {
       peerDomain: group.domain,
@@ -254,7 +246,11 @@ export class FederationRelationshipCommandService {
     requestProjectionDirection?: 'APPLICATION' | 'INVITATION',
     options: GroupRelationshipMutationOptions = {},
   ): Promise<Map<string, bigint>> {
-    const { publishGroupState = true, allowOwnerDeactivation } = options;
+    const {
+      publishGroupState = true,
+      allowOwnerDeactivation,
+      initialRole,
+    } = options;
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [state] = await tx
       .select({
@@ -293,7 +289,9 @@ export class FederationRelationshipCommandService {
           status === 'REQUESTED'
             ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
             : null,
+        ...(initialRole ? { initialRole } : {}),
         ...(allowOwnerDeactivation ? { allowOwnerDeactivation: true } : {}),
+        ...(!publishGroupState ? { updateCanonicalRoster: false } : {}),
       },
     );
     if (membership.active) {
@@ -302,15 +300,6 @@ export class FederationRelationshipCommandService {
           .update(tables.group)
           .set({ updatedAt: new Date() })
           .where(eq(tables.group.id, state.groupId));
-      if (member.domain === 'local')
-        await tx
-          .insert(tables.threadAudience)
-          .values({
-            targetDomain: 'local',
-            localUserId: memberUserId,
-            threadId,
-          })
-          .onConflictDoNothing();
     }
     await this.writeGroupRequestEffectsInTx(
       tx,
@@ -358,10 +347,7 @@ export class FederationRelationshipCommandService {
       });
       if (feedId !== null)
         clientFeedUpdates.push({ userId: memberUserId, feedId });
-      return publishGroupState &&
-        (membership.shouldBeActive || status === 'REVOKED')
-        ? this.profiles.writeGroupStateInTx(tx, threadId, clientFeedUpdates)
-        : new Map();
+      return new Map();
     }
     const relationship: PeerStateFeedWrite = {
       peerDomain: member.domain,
@@ -380,30 +366,10 @@ export class FederationRelationshipCommandService {
         expiresAt: membership.request.expiresAt,
       },
     };
-    if (membership.request.status === 'REVOKED') {
-      const intent = await this.stateFeed.writeManyInTx(tx, [relationship]);
-      const cleanup = await this.profiles.cleanupGroupProjectionInTx(
-        tx,
-        threadId,
-        state.groupId,
-        state.groupAccount,
-        member.domain,
-        member.namespaceId!,
-        clientFeedUpdates,
-      );
-      return new Map([...intent, ...cleanup]);
-    }
-    const identityState = await this.stateFeed.writeManyInTx(tx, [relationship]);
-    if (membership.request.status === 'REQUESTED') return identityState;
-    const groupState = await this.profiles.writeGroupStateInTx(
-      tx,
-      threadId,
-      clientFeedUpdates,
-    );
-    return new Map([...identityState, ...groupState]);
+    return this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
-  async writeFriendIntentInTx(
+  async writeP2PIntentInTx(
     tx: DatabaseTransaction,
     localUserId: number,
     peerUserId: number,
@@ -428,7 +394,7 @@ export class FederationRelationshipCommandService {
     });
     if (!remote || !local) throw new Error('invalid federated friend intent');
     clientFeedUpdates.push(
-      ...(await this.invite.writeLocalFriendIntentInTx(
+      ...(await this.relationships.writeLocalP2PIntentInTx(
         tx,
         localUserId,
         peerUserId,
@@ -472,7 +438,7 @@ export class FederationRelationshipCommandService {
     );
   }
 
-  async writeAddressedFriendRequestInTx(
+  async writeAddressedRelationshipRequestInTx(
     tx: DatabaseTransaction,
     localUserId: number,
     remote: { account: string; domain: string; namespaceId: number },
@@ -501,7 +467,7 @@ export class FederationRelationshipCommandService {
       remote.namespaceId,
     );
     clientFeedUpdates.push(
-      ...(await this.invite.writeLocalFriendIntentInTx(
+      ...(await this.relationships.writeLocalP2PIntentInTx(
         tx,
         localUserId,
         remoteUserId,
@@ -564,7 +530,6 @@ export class FederationRelationshipCommandService {
     return upsertSourceUserInTx(tx, {
       account: normalized,
       domain,
-      sourceDomain: domain,
       namespaceId,
       name: normalized,
       profileRev: 0,

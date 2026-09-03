@@ -10,6 +10,11 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import {
+  federationLabDatabaseUrl,
+  federationLabNodes,
+  federationLabRoutes,
+} from './topology.mjs';
 
 const labDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(labDir, '..', '..');
@@ -33,21 +38,10 @@ if (runBackend && !baseDatabaseUrl) {
   throw new Error('DATABASE_URL is required in the repository .env');
 }
 
-const nodes = [
-  { name: 'alpha', domain: 'alpha.test', edgePort: 3101, backendPort: 3201 },
-  { name: 'bravo', domain: 'bravo.test', edgePort: 3102, backendPort: 3202 },
-  {
-    name: 'charlie',
-    domain: 'charlie.test',
-    edgePort: 3103,
-    backendPort: 3203,
-  },
-].map((node) => ({ ...node, database: `soms_fed_lab_${node.name}` }));
+const nodes = federationLabNodes;
 
 function databaseUrl(database) {
-  const url = new URL(baseDatabaseUrl);
-  url.pathname = `/${database}`;
-  return url.toString();
+  return federationLabDatabaseUrl(baseDatabaseUrl, database);
 }
 
 function run(command, args, options = {}) {
@@ -68,18 +62,19 @@ function run(command, args, options = {}) {
   });
 }
 
-async function ensureDatabase(database) {
+async function recreateDatabase(database) {
   const admin = new URL(baseDatabaseUrl);
   admin.pathname = '/postgres';
   const client = new Client({ connectionString: admin.toString() });
   await client.connect();
   try {
-    const found = await client.query(
-      'SELECT 1 FROM pg_database WHERE datname = $1',
+    await client.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1',
       [database],
     );
-    if (found.rowCount === 0)
-      await client.query(`CREATE DATABASE "${database}"`);
+    await client.query(`DROP DATABASE IF EXISTS "${database}"`);
+    await client.query(`CREATE DATABASE "${database}"`);
+    console.log(`[lab] recreated ${database}`);
   } finally {
     await client.end();
   }
@@ -177,7 +172,7 @@ if (requiredOutputs.some((output) => !existsSync(output))) {
 if (runBackend) {
   mkdirSync(runtimeDir, { recursive: true });
   for (const node of nodes) {
-    await ensureDatabase(node.database);
+    await recreateDatabase(node.database);
     await run('npm', ['run', 'db:migrate'], {
       env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
     });
@@ -189,9 +184,7 @@ if (runBackend) {
   }
 }
 
-const routes = Object.fromEntries(
-  nodes.map((node) => [node.domain, `http://127.0.0.1:${node.backendPort}`]),
-);
+const routes = federationLabRoutes;
 
 function labEnvironment(node, peerRoutes) {
   const env = {

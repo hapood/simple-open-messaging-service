@@ -16,9 +16,12 @@ and client behavior.
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
-- [Domain command scheduling](./design/domain-command-scheduling.md)
+- [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
+- [Durable task scheduling](./design/durable-task-scheduling.md)
 - [Message deletion](./design/message-deletion.md)
 - [Message inline entities](./design/message-entities.md)
+- [Federation consistency stress testing](./design/federation-consistency-stress-testing.md)
+- [Federation P2P observed-fact oracle](./design/federation-p2p-consistency-state-machine.md)
 
 ## Platform
 

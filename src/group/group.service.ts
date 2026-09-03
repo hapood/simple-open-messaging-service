@@ -16,13 +16,10 @@ import {
   clientStateFeed,
   group,
   groupRequestProjection,
-  relationshipIntent,
-  relationshipPair,
   messageThread,
   profileVersion,
+  accountThreadState,
   threadAudience,
-  threadMember,
-  threadParticipant,
   user,
 } from '../database/schema.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
@@ -31,12 +28,20 @@ import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
+import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
+import { AuthoritativeGroupMetaMutationService } from '../federation/authoritative-group-meta-mutation.service.js';
+import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
-import { mutuallyAuthorizedSql } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { mutuallyAuthorizedSql } from '../relationship/relationship-authorization.js';
+import {
+  readCurrentGroupMemberByAddressInTx,
+  readCurrentGroupMemberInTx,
+  readCurrentGroupOwnersInTx,
+  readCurrentLocalAuthorizedGroupMemberIdsInTx,
+} from '../group-meta/current-group-roster.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -60,11 +65,11 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * (leave/kick/transfer/set-role/update).
  *
  * Group identity is stored independently from User and linked by MessageThread.groupId. The owner is
- * derived from the active ThreadMember with role=OWNER. All group-management
+ * derived from the latest canonical Group Meta member operations. All group-management
  * operations now key on threadId (the stable handle, also used for messaging); the wire still calls it
  * `groupId` for frontend compatibility, but the value IS the threadId.
  *
- * Roster membership is stored on ThreadMember; ThreadParticipant contains only local per-user state.
+ * Roster membership is stored in canonical Group Meta; AccountThreadState contains only local per-user state.
  * Authorization is split:
  * ThreadAccessGuard + RolesGuard decide the OPERATOR's membership and role (throwing BusinessException →
  * HTTP 200 + domain code); the methods below validate TARGET-specific invariants and mutate.
@@ -76,8 +81,9 @@ export class GroupService {
   constructor(
     private database: DatabaseService,
     private readonly federation: FederationService,
-    private readonly relationshipCommands: FederationRelationshipCommandService,
+    private readonly relationshipMutations: FederationRelationshipMutationService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly authoritativeGroupMeta: AuthoritativeGroupMetaMutationService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
@@ -97,33 +103,36 @@ export class GroupService {
     domain: string;
     name: string;
   }> {
-    const [member] = await this.database.db
-      .select({
-        userId: user.id,
-        account: user.account,
-        domain: user.domain,
-        name: user.name,
-      })
-      .from(threadMember)
-      .innerJoin(user, eq(user.id, threadMember.userId))
-      .innerJoin(messageThread, eq(messageThread.id, threadMember.threadId))
-      .innerJoin(group, eq(group.id, messageThread.groupId))
-      .where(
-        and(
-          eq(threadMember.threadId, threadId),
-          eq(threadMember.left, false),
-          eq(user.account, identity.account),
-          eq(user.domain, identity.domain),
-          eq(user.sourceDomain, group.domain),
-        ),
-      )
-      .limit(1);
-    if (!member)
-      throw new BusinessException(
-        BusinessCode.GROUP_TARGET_NOT_MEMBER,
-        'target is not an active group member',
-      );
-    return member;
+    return this.database.db.transaction(async (tx) => {
+      const [thread] = await tx
+        .select({ groupId: messageThread.groupId })
+        .from(messageThread)
+        .where(eq(messageThread.id, threadId))
+        .limit(1);
+      const member = thread?.groupId
+        ? await readCurrentGroupMemberByAddressInTx(
+            tx,
+            thread.groupId,
+            identity,
+          )
+        : undefined;
+      if (!member)
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          'target is not an active group member',
+        );
+      const source = await tx.query.user.findFirst({
+        where: eq(user.id, member.userId),
+        columns: { name: true },
+      });
+      if (!source) throw new Error('current group member identity is missing');
+      return {
+        userId: member.userId,
+        account: member.account,
+        domain: member.domain,
+        name: source.name,
+      };
+    });
   }
 
   /**
@@ -158,9 +167,19 @@ export class GroupService {
           ELSE 'AVAILABLE'
         END AS state
       FROM "User" friend
-      LEFT JOIN "ThreadMember" member
-        ON member."threadId" = ${threadId} AND member."userId" = friend.id
-       AND member.left = false
+      JOIN "MessageThread" thread_scope ON thread_scope.id = ${threadId}
+       AND thread_scope."groupId" IS NOT NULL
+      LEFT JOIN LATERAL (
+        SELECT member_fact."memberUserId" AS "userId", member_fact.operation
+        FROM "GroupMetaMemberFeed" member_fact
+        JOIN "User" member_identity
+          ON member_identity.id = member_fact."memberUserId"
+        WHERE member_fact."groupId" = thread_scope."groupId"
+          AND member_identity.account = friend.account
+          AND member_identity.domain = friend.domain
+        ORDER BY member_fact."feedId" DESC
+        LIMIT 1
+      ) member ON member.operation = 'UPSERT'
       LEFT JOIN "GroupRequestProjection" invitation
         ON invitation."managerUserId" = ${managerUserId}
        AND invitation."threadId" = ${threadId}
@@ -275,11 +294,18 @@ export class GroupService {
         SELECT projection."managerUserId", projection."threadId",
           MAX(projection."feedId")::integer AS "latestFeedId"
         FROM "GroupRequestProjection" projection
-        LEFT JOIN "ThreadMember" manager
-          ON manager."userId" = projection."managerUserId"
-         AND manager."threadId" = projection."threadId"
-         AND manager.left = false
-         AND manager.role IN ('OWNER', 'ADMIN')
+        JOIN "MessageThread" thread_scope
+          ON thread_scope.id = projection."threadId"
+        LEFT JOIN LATERAL (
+          SELECT member_fact."memberUserId" AS "userId",
+                 member_fact.operation, member_fact.body
+          FROM "GroupMetaMemberFeed" member_fact
+          WHERE member_fact."groupId" = thread_scope."groupId"
+            AND member_fact."memberUserId" = projection."managerUserId"
+          ORDER BY member_fact."feedId" DESC
+          LIMIT 1
+        ) manager ON manager.operation = 'UPSERT'
+         AND manager.body ->> 'role' IN ('OWNER', 'ADMIN')
         WHERE projection."expiresAt" <= CURRENT_TIMESTAMP
            OR manager."userId" IS NULL
         GROUP BY projection."managerUserId", projection."threadId"
@@ -293,11 +319,19 @@ export class GroupService {
               eq(groupRequestProjection.managerUserId, candidate.managerUserId),
               eq(groupRequestProjection.threadId, candidate.threadId),
               sql`(${groupRequestProjection.expiresAt} <= CURRENT_TIMESTAMP OR NOT EXISTS (
-                SELECT 1 FROM "ThreadMember" manager
-                WHERE manager."userId" = ${candidate.managerUserId}
-                  AND manager."threadId" = ${candidate.threadId}
-                  AND manager.left = false
-                  AND manager.role IN ('OWNER', 'ADMIN')
+                SELECT 1
+                FROM (
+                  SELECT member_fact.operation, member_fact.body
+                  FROM "GroupMetaMemberFeed" member_fact
+                  JOIN "MessageThread" thread_scope
+                    ON thread_scope."groupId" = member_fact."groupId"
+                  WHERE thread_scope.id = ${candidate.threadId}
+                    AND member_fact."memberUserId" = ${candidate.managerUserId}
+                  ORDER BY member_fact."feedId" DESC
+                  LIMIT 1
+                ) current_manager
+                WHERE current_manager.operation = 'UPSERT'
+                  AND current_manager.body ->> 'role' IN ('OWNER', 'ADMIN')
               ))`,
             ),
           )
@@ -371,7 +405,6 @@ export class GroupService {
         JOIN "User" member
           ON member.account = pair."endpointBAccount"
          AND member.domain = pair."endpointBDomain"
-         AND member."sourceDomain" = pair."endpointBDomain"
          AND ((member.domain = 'local' AND member."namespaceId" = 0)
            OR (member.domain <> 'local'
              AND member."namespaceId" = pair."endpointBNamespaceId"))
@@ -392,7 +425,7 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'join request not found',
         );
-      await this.relationshipCommands.lockGroupMutationInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
         candidate.memberUserId,
@@ -410,7 +443,7 @@ export class GroupService {
           'join request not found',
         );
       statePeers =
-        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+        await this.relationshipMutations.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,
           request.memberUserId,
@@ -445,7 +478,6 @@ export class GroupService {
           JOIN "User" member
             ON member.account = pair."endpointBAccount"
            AND member.domain = pair."endpointBDomain"
-           AND member."sourceDomain" = pair."endpointBDomain"
            AND ((member.domain = 'local' AND member."namespaceId" = 0)
              OR (member.domain <> 'local'
                AND member."namespaceId" = pair."endpointBNamespaceId"))
@@ -462,7 +494,7 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'group invitation not found',
         );
-      await this.relationshipCommands.lockGroupMutationInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
         candidate.memberUserId,
@@ -480,7 +512,7 @@ export class GroupService {
           'group invitation not found',
         );
       statePeers =
-        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+        await this.relationshipMutations.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,
           request.memberUserId,
@@ -541,31 +573,23 @@ export class GroupService {
 
   /** Load a group thread with its independent profile. */
   async findGroupByThreadId(threadId: number) {
-    const [row] = await this.database.db
-      .select({ thread: messageThread, group })
-      .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
-      .where(eq(messageThread.id, threadId))
-      .limit(1);
-    if (!row) return null;
-    const [owner] = await this.database.db
-      .select({ userId: threadMember.userId })
-      .from(threadMember)
-      .where(
-        and(
-          eq(threadMember.threadId, threadId),
-          eq(threadMember.role, GroupRole.OWNER),
-          eq(threadMember.left, false),
-        ),
-      )
-      .limit(1);
-    return {
-      ...row.thread,
-      group: {
-        ...row.group,
-        ownerId: owner?.userId ?? 0,
-      },
-    };
+    return this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ thread: messageThread, group })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, threadId))
+        .limit(1);
+      if (!row) return null;
+      const [owner] = await readCurrentGroupOwnersInTx(tx, [row.group.id]);
+      return {
+        ...row.thread,
+        group: {
+          ...row.group,
+          ownerId: owner?.userId ?? 0,
+        },
+      };
+    });
   }
 
   /** Batch-load independent group profiles by thread id. */
@@ -586,23 +610,24 @@ export class GroupService {
     >
   > {
     if (threadIds.length === 0) return new Map();
-    const threads = await this.database.db
-      .select({ threadId: messageThread.id, group })
-      .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
-      .where(inArray(messageThread.id, threadIds));
-    const owners = await this.database.db
-      .select({ threadId: threadMember.threadId, userId: threadMember.userId })
-      .from(threadMember)
-      .where(
-        and(
-          inArray(threadMember.threadId, threadIds),
-          eq(threadMember.role, GroupRole.OWNER),
-          eq(threadMember.left, false),
-        ),
-      );
-    const ownerByThread = new Map(
-      owners.map((row) => [row.threadId, row.userId]),
+    const { threads, ownerByGroup } = await this.database.db.transaction(
+      async (tx) => {
+        const threads = await tx
+          .select({ threadId: messageThread.id, group })
+          .from(messageThread)
+          .innerJoin(group, eq(group.id, messageThread.groupId))
+          .where(inArray(messageThread.id, threadIds));
+        const owners = await readCurrentGroupOwnersInTx(
+          tx,
+          threads.map((row) => row.group.id),
+        );
+        return {
+          threads,
+          ownerByGroup: new Map(
+            owners.map((owner) => [owner.groupId, owner.userId]),
+          ),
+        };
+      },
     );
     const m = new Map<
       number,
@@ -627,7 +652,7 @@ export class GroupService {
         bio: row.group.description,
         domain: row.group.domain,
         profileRev: row.group.defaultProfileRev,
-        ownerId: ownerByThread.get(row.threadId) ?? 0,
+        ownerId: ownerByGroup.get(row.group.id) ?? 0,
         dissolvedAt: row.group.dissolvedAt,
       });
     return m;
@@ -635,8 +660,8 @@ export class GroupService {
 
   /**
    * Create a group: mint the `!`-User identity (name/avatar/bio) + the GROUP thread linked via
-   * Group.id + the owner as an OWNER ThreadMember. No other members are created here; invitations
-   * are represented by membership state. Wrapped in a
+   * Group.id + the owner relationship whose first canonical membership fact is OWNER. No other
+   * members are created here; invitations are represented by membership state. Wrapped in a
    * regenerate-on-P2002 loop: a same-ms ULID collision at the
    * account-domain unique index is probabilistically impossible, but the loop is a real safety net.
    */
@@ -658,6 +683,7 @@ export class GroupService {
               name: params.name,
               avatar: params.avatar ?? '',
               description: params.description ?? '',
+              defaultProfileRev: 1,
               updatedAt: new Date(),
             })
             .returning()
@@ -673,36 +699,16 @@ export class GroupService {
             .then(([row]) => row);
           await tx.insert(profileVersion).values({
             groupId: groupState.id,
-            profileRev: 0,
+            profileRev: 1,
             displayName: groupState.name,
             avatar: groupState.avatar,
             bio: groupState.description,
-          });
-          const [ownerMember] = await tx
-            .insert(threadMember)
-            .values({
-              userId: params.owner,
-              threadId: thread.id,
-              role: GroupRole.OWNER,
-              updatedAt: new Date(),
-            })
-            .returning({ id: threadMember.id });
-          if (!ownerMember) throw new Error('group owner member insert failed');
-          await tx.insert(threadParticipant).values({
-            accountId: params.owner,
-            threadId: thread.id,
-            role: GroupRole.OWNER,
-          });
-          await tx.insert(threadAudience).values({
-            targetDomain: 'local',
-            localUserId: params.owner,
-            threadId: thread.id,
           });
           const clientFeedUpdates: Array<{
             userId: number;
             feedId: number;
           }> = [];
-          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+          await this.relationshipMutations.writeGroupRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
@@ -710,23 +716,23 @@ export class GroupService {
             'REQUESTED',
             clientFeedUpdates,
           );
-          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+          await this.relationshipMutations.writeMemberRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
             'ACCEPTED',
             clientFeedUpdates,
+            '',
+            undefined,
+            { initialRole: GroupRole.OWNER },
           );
-          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+          await this.relationshipMutations.writeGroupRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
             '',
             'ACCEPTED',
             clientFeedUpdates,
-          );
-          clientFeedUpdates.push(
-            ...(await this.clientStateFeed.recordGroupStateInTx(tx, thread.id)),
           );
           return {
             id: groupState.id,
@@ -752,21 +758,17 @@ export class GroupService {
 
   /**
    * Leave a group by deactivating membership. The owner may not leave: they must transfer ownership or dissolve
-   * the group, preserving the invariant that every active group has exactly one owner. Returns the
-   * remaining active member ids for the caller response and follow-up effects.
+   * the group, preserving the invariant that every active group has exactly one owner.
    */
   async leaveGroup(params: {
     userId: number;
     threadId: number;
-    role: GroupRole | null;
-    deleteData: boolean;
     dissolvedFanout?: boolean;
-  }): Promise<{ remainingMemberIds: number[]; transitioned: boolean }> {
+  }): Promise<{ transitioned: boolean }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-      const shouldDelete = params.deleteData;
-      await this.relationshipCommands.lockGroupMutationInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
         params.userId,
@@ -776,18 +778,9 @@ export class GroupService {
           groupId: messageThread.groupId,
           groupDomain: group.domain,
           dissolvedAt: group.dissolvedAt,
-          role: threadMember.role,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.groupId))
-        .leftJoin(
-          threadMember,
-          and(
-            eq(threadMember.threadId, messageThread.id),
-            eq(threadMember.userId, params.userId),
-            eq(threadMember.left, false),
-          ),
-        )
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
       if (!thread?.groupId)
@@ -795,8 +788,16 @@ export class GroupService {
       if (params.dissolvedFanout && thread.dissolvedAt === null) {
         throw new Error('group member fan-out requires a dissolved group');
       }
-      const outgoing = await tx.execute<{ status: string }>(sql`
-        SELECT intent.status
+      const currentMember = await readCurrentGroupMemberInTx(
+        tx,
+        thread.groupId,
+        params.userId,
+      );
+      const outgoing = await tx.execute<{
+        status: string;
+        active: boolean;
+      }>(sql`
+        SELECT intent.status, pair.active
         FROM "RelationshipPair" pair
         JOIN "User" identity ON identity.id = ${params.userId}
         LEFT JOIN "RelationshipIntent" intent
@@ -809,7 +810,7 @@ export class GroupService {
           AND (identity."namespaceId" = 0
             OR pair."endpointBNamespaceId" = identity."namespaceId")
       `);
-      if (params.role === null && outgoing.rows.length === 0)
+      if (!currentMember && outgoing.rows.length === 0)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
       const fanoutMember = params.dissolvedFanout
@@ -825,7 +826,7 @@ export class GroupService {
         transitioned &&
         !params.dissolvedFanout &&
         thread.groupDomain === 'local' &&
-        thread.role === GroupRole.OWNER
+        currentMember?.role === GroupRole.OWNER
       ) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
@@ -841,6 +842,7 @@ export class GroupService {
         } else {
           localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
             tx,
+            thread.groupId,
             params.threadId,
           );
         }
@@ -863,39 +865,15 @@ export class GroupService {
           : null;
       if (systemMessage) {
         await tx
-          .update(threadParticipant)
+          .update(accountThreadState)
           .set({
-            messageVisibleBeforeSeq: systemMessage.seq + 1,
+            messageVisibleThroughSeq: systemMessage.seq,
             updatedAt: now,
           })
           .where(
             and(
-              eq(threadParticipant.accountId, params.userId),
-              eq(threadParticipant.threadId, params.threadId),
-            ),
-          );
-      }
-      if (transitioned) {
-        await tx.execute(sql`
-          DELETE FROM "ThreadAudience" audience
-          WHERE audience."targetDomain" = 'local'
-            AND audience."localUserId" = ${params.userId}
-            AND audience."threadId" = ${params.threadId}
-        `);
-      }
-      if (shouldDelete) {
-        await tx
-          .update(threadParticipant)
-          .set({
-            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${params.threadId})`,
-            pinned: false,
-            pinnedAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(threadParticipant.accountId, params.userId),
-              eq(threadParticipant.threadId, params.threadId),
+              eq(accountThreadState.accountId, params.userId),
+              eq(accountThreadState.threadId, params.threadId),
             ),
           );
       }
@@ -908,7 +886,7 @@ export class GroupService {
       const requestState =
         transitioned &&
         (!params.dissolvedFanout || fanoutMember?.domain === 'local')
-          ? await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+          ? await this.relationshipMutations.writeMemberRelationshipIntentInTx(
               tx,
               params.threadId,
               params.userId,
@@ -922,10 +900,37 @@ export class GroupService {
               },
             )
           : new Map<string, bigint>();
+      if (
+        transitioned &&
+        outgoing.rows[0]?.active === true &&
+        thread.groupDomain !== 'local'
+      ) {
+        await tx
+          .delete(threadAudience)
+          .where(
+            and(
+              eq(threadAudience.targetDomain, 'local'),
+              eq(threadAudience.localUserId, params.userId),
+              eq(threadAudience.threadId, params.threadId),
+            ),
+          );
+        await closeFederatedAudienceInTx(
+          tx,
+          thread.groupDomain,
+          params.threadId,
+        );
+        await tx
+          .update(messageThread)
+          .set({
+            authorizationEpoch: sql`${messageThread.authorizationEpoch} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(messageThread.id, params.threadId));
+      }
       let groupRequestState = new Map<string, bigint>();
       if (transitioned && thread.groupDomain === 'local') {
         groupRequestState =
-          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+          await this.relationshipMutations.writeGroupRelationshipIntentInTx(
             tx,
             params.threadId,
             params.userId,
@@ -939,48 +944,15 @@ export class GroupService {
             },
           );
       }
-      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipMutations.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.userId,
         clientFeedUpdates,
       );
-      const groupState =
-        transitioned && !params.dissolvedFanout
-          ? await this.federation.writeGroupStateInTx(
-              tx,
-              params.threadId,
-              clientFeedUpdates,
-            )
-          : new Map<string, bigint>();
-      const remaining = params.dissolvedFanout
-        ? []
-        : await tx
-            .select({ userId: threadMember.userId })
-            .from(threadMember)
-            .where(
-              and(
-                eq(threadMember.threadId, params.threadId),
-                eq(threadMember.left, false),
-              ),
-            );
-      const remainingAuthorization = params.dissolvedFanout
-        ? []
-        : await Promise.all(
-            remaining.map((row) =>
-              isThreadMutuallyAuthorized(tx, row.userId, params.threadId),
-            ),
-          );
       return {
         transitioned,
-        remainingMemberIds: remaining
-          .filter((_, index) => remainingAuthorization[index])
-          .map((row) => row.userId),
-        statePeers: [
-          ...requestState.keys(),
-          ...groupRequestState.keys(),
-          ...groupState.keys(),
-        ],
+        statePeers: [...requestState.keys(), ...groupRequestState.keys()],
         clientFeedUpdates,
         systemMessage,
         localRecipientIds,
@@ -1011,20 +983,16 @@ export class GroupService {
         );
     return {
       transitioned: result.transitioned,
-      remainingMemberIds: result.remainingMemberIds,
     };
   }
 
   async revokeDissolvedGroupMember(params: {
     threadId: number;
     memberUserId: number;
-    deleteData: boolean;
   }): Promise<void> {
     await this.leaveGroup({
       userId: params.memberUserId,
       threadId: params.threadId,
-      role: null,
-      deleteData: params.deleteData,
       dissolvedFanout: true,
     });
   }
@@ -1033,29 +1001,35 @@ export class GroupService {
     threadId: number,
     operatorUserId: number,
   ): Promise<{ account: string; domain: string }> {
-    const [state] = await this.database.db
-      .select({
-        account: group.account,
-        domain: group.domain,
-        role: threadMember.role,
-      })
-      .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
-      .innerJoin(
-        threadMember,
-        and(
-          eq(threadMember.threadId, messageThread.id),
-          eq(threadMember.userId, operatorUserId),
-        ),
+    return this.database.db.transaction(async (tx) => {
+      const [state] = await tx
+        .select({
+          groupId: group.id,
+          account: group.account,
+          domain: group.domain,
+          namespaceId: group.namespaceId,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, threadId))
+        .limit(1);
+      if (!state)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      const operator = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        operatorUserId,
+      );
+      if (
+        state.domain !== 'local' ||
+        state.namespaceId !== 0 ||
+        operator?.domain !== 'local' ||
+        operator.role !== GroupRole.OWNER ||
+        !(await isThreadMutuallyAuthorized(tx, operatorUserId, threadId))
       )
-      .where(eq(messageThread.id, threadId))
-      .limit(1);
-    if (!state)
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-    if (state.domain !== 'local' || state.role !== GroupRole.OWNER) {
-      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
-    }
-    return { account: state.account, domain: state.domain };
+        throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
+      return { account: state.account, domain: state.domain };
+    });
   }
 
   async resolveGroupCommandScope(
@@ -1108,7 +1082,7 @@ export class GroupService {
   }): Promise<{ transitioned: boolean }> {
     const now = new Date();
     return this.database.db.transaction(async (tx) => {
-      await this.relationshipCommands.lockGroupMutationInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
         params.operatorUserId,
@@ -1117,24 +1091,37 @@ export class GroupService {
         .select({
           groupId: group.id,
           groupDomain: group.domain,
-          role: threadMember.role,
+          namespaceId: group.namespaceId,
+          dissolvedAt: group.dissolvedAt,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.groupId))
-        .innerJoin(
-          threadMember,
-          and(
-            eq(threadMember.threadId, messageThread.id),
-            eq(threadMember.userId, params.operatorUserId),
-          ),
-        )
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
       if (!state)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-      if (state.groupDomain !== 'local' || state.role !== GroupRole.OWNER) {
+      const operator = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        params.operatorUserId,
+      );
+      if (
+        state.groupDomain !== 'local' ||
+        state.namespaceId !== 0 ||
+        operator?.domain !== 'local' ||
+        operator.role !== GroupRole.OWNER
+      ) {
         throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
       }
+      if (state.dissolvedAt !== null) return { transitioned: false };
+      if (
+        !(await isThreadMutuallyAuthorized(
+          tx,
+          params.operatorUserId,
+          params.threadId,
+        ))
+      )
+        throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
       const dissolved = await tx
         .update(group)
         .set({ dissolvedAt: now, updatedAt: now })
@@ -1155,39 +1142,44 @@ export class GroupService {
     reason?: string;
   }): Promise<{ transitioned: boolean }> {
     const result = await this.database.db.transaction(async (tx) => {
-      await this.relationshipCommands.lockGroupMutationInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
         params.targetUserId,
         [params.operatorUserId],
       );
-      const [operator, target] = await Promise.all([
-        tx
-          .select()
-          .from(threadMember)
-          .where(
-            and(
-              eq(threadMember.userId, params.operatorUserId),
-              eq(threadMember.threadId, params.threadId),
-              eq(threadMember.left, false),
-            ),
-          )
-          .limit(1)
-          .then(([row]) => row),
-        tx
-          .select({ member: threadMember, domain: user.domain })
-          .from(threadMember)
-          .innerJoin(user, eq(user.id, threadMember.userId))
-          .where(
-            and(
-              eq(threadMember.userId, params.targetUserId),
-              eq(threadMember.threadId, params.threadId),
-              eq(threadMember.left, false),
-            ),
-          )
-          .limit(1)
-          .then(([row]) => row),
-      ]);
+      const [thread] = await tx
+        .select({
+          groupId: group.id,
+          groupDomain: group.domain,
+          namespaceId: group.namespaceId,
+          dissolvedAt: group.dissolvedAt,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (!thread)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      if (
+        thread.groupDomain !== 'local' ||
+        thread.namespaceId !== 0 ||
+        thread.dissolvedAt !== null
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'group membership authority is unavailable',
+        );
+      const operator = await readCurrentGroupMemberInTx(
+        tx,
+        thread.groupId,
+        params.operatorUserId,
+      );
+      const target = await readCurrentGroupMemberInTx(
+        tx,
+        thread.groupId,
+        params.targetUserId,
+      );
       if (!target) {
         return {
           transitioned: false,
@@ -1197,10 +1189,16 @@ export class GroupService {
           localRecipientIds: [],
         };
       }
-      const [operatorAuthorized, targetAuthorized] = await Promise.all([
-        isThreadMutuallyAuthorized(tx, params.operatorUserId, params.threadId),
-        isThreadMutuallyAuthorized(tx, params.targetUserId, params.threadId),
-      ]);
+      const operatorAuthorized = await isThreadMutuallyAuthorized(
+        tx,
+        params.operatorUserId,
+        params.threadId,
+      );
+      const targetAuthorized = await isThreadMutuallyAuthorized(
+        tx,
+        params.targetUserId,
+        params.threadId,
+      );
       if (!targetAuthorized)
         return {
           transitioned: false,
@@ -1212,9 +1210,8 @@ export class GroupService {
       if (
         !operator ||
         !operatorAuthorized ||
-        operator.role === null ||
-        target.member.role === GroupRole.OWNER ||
-        !outranks(operator.role, target.member.role)
+        target.role === GroupRole.OWNER ||
+        !outranks(operator.role, target.role)
       ) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
@@ -1224,6 +1221,7 @@ export class GroupService {
       const now = new Date();
       const localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
         tx,
+        thread.groupId,
         params.threadId,
       );
       const systemMessage = this.messages
@@ -1243,38 +1241,21 @@ export class GroupService {
         : null;
       if (systemMessage) {
         await tx
-          .update(threadParticipant)
+          .update(accountThreadState)
           .set({
-            messageVisibleBeforeSeq: systemMessage.seq + 1,
+            messageVisibleThroughSeq: systemMessage.seq,
             updatedAt: now,
           })
           .where(
             and(
-              eq(threadParticipant.accountId, params.targetUserId),
-              eq(threadParticipant.threadId, params.threadId),
+              eq(accountThreadState.accountId, params.targetUserId),
+              eq(accountThreadState.threadId, params.threadId),
             ),
           );
       }
-      const [thread] = await tx
-        .select({
-          groupId: messageThread.groupId,
-          groupDomain: group.domain,
-        })
-        .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.groupId))
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (thread?.groupId != null) {
-        await tx
-          .update(group)
-          .set({
-            updatedAt: now,
-          })
-          .where(eq(group.id, thread.groupId));
-      }
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const requestState =
-        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+        await this.relationshipMutations.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,
           params.targetUserId,
@@ -1282,9 +1263,9 @@ export class GroupService {
           'REVOKED',
           clientFeedUpdates,
         );
-      if (thread?.groupDomain === 'local' && target.domain === 'local') {
+      if (target.domain === 'local') {
         const reverseState =
-          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+          await this.relationshipMutations.writeMemberRelationshipIntentInTx(
             tx,
             params.threadId,
             params.targetUserId,
@@ -1294,15 +1275,10 @@ export class GroupService {
         for (const [domain, feedId] of reverseState)
           requestState.set(domain, feedId);
       }
-      const groupState = await this.federation.writeGroupStateInTx(
-        tx,
-        params.threadId,
-        clientFeedUpdates,
-      );
       return {
         transitioned: true,
         clientFeedUpdates,
-        statePeers: [...requestState.keys(), ...groupState.keys()],
+        statePeers: [...requestState.keys()],
         systemMessage,
         localRecipientIds,
       };
@@ -1317,11 +1293,7 @@ export class GroupService {
     return { transitioned: result.transitioned };
   }
 
-  /**
-   * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
-   * OWNER — all in one transaction so no ownerless state is visible, then advances every local
-   * member's group-meta feed.
-   */
+  /** Transfer ownership atomically in the authoritative Group Meta roster. */
   async transferOwnership(params: {
     threadId: number;
     fromUserId: number;
@@ -1335,20 +1307,39 @@ export class GroupService {
     }
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-      // Serialize every transfer through the current OWNER row. The partial unique index prevents
-      // multiple active owners; the service invariants prevent the sole owner from leaving/demotion.
-      const [currentOwner] = await tx
-        .select({ id: threadMember.id, role: threadMember.role })
-        .from(threadMember)
-        .where(
-          and(
-            eq(threadMember.userId, params.fromUserId),
-            eq(threadMember.threadId, params.threadId),
-            eq(threadMember.left, false),
-          ),
-        )
-        .for('update')
+      await this.relationshipMutations.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.fromUserId,
+        [params.toUserId],
+      );
+      const [state] = await tx
+        .select({
+          groupId: group.id,
+          groupAccount: group.account,
+          groupDomain: group.domain,
+          namespaceId: group.namespaceId,
+          dissolvedAt: group.dissolvedAt,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, params.threadId))
         .limit(1);
+      if (
+        !state ||
+        state.groupDomain !== 'local' ||
+        state.namespaceId !== 0 ||
+        state.dissolvedAt !== null
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'group role authority is unavailable',
+        );
+      const currentOwner = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        params.fromUserId,
+      );
       if (
         currentOwner?.role !== GroupRole.OWNER ||
         !(await isThreadMutuallyAuthorized(
@@ -1362,22 +1353,11 @@ export class GroupService {
           'only the current owner may transfer ownership',
         );
       }
-      const [target] = await tx
-        .select({
-          member: threadMember,
-          domain: user.domain,
-        })
-        .from(threadMember)
-        .innerJoin(user, eq(user.id, threadMember.userId))
-        .where(
-          and(
-            eq(threadMember.userId, params.toUserId),
-            eq(threadMember.threadId, params.threadId),
-            eq(threadMember.left, false),
-          ),
-        )
-        .for('update')
-        .limit(1);
+      const target = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        params.toUserId,
+      );
       if (
         !target ||
         !(await isThreadMutuallyAuthorized(
@@ -1398,71 +1378,39 @@ export class GroupService {
           'cannot transfer ownership to a member on another server',
         );
       }
-      if (target.member.role === GroupRole.OWNER) {
+      if (target.role === GroupRole.OWNER) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'target is already the owner',
         );
       }
-      const now = new Date();
-      await tx
-        .update(threadMember)
-        .set({ role: GroupRole.MEMBER, updatedAt: now })
-        .where(
-          and(
-            eq(threadMember.userId, params.fromUserId),
-            eq(threadMember.threadId, params.threadId),
-          ),
-        );
-      await tx
-        .update(threadMember)
-        .set({ role: GroupRole.OWNER, updatedAt: now })
-        .where(eq(threadMember.id, target.member.id));
-      await tx
-        .update(threadParticipant)
-        .set({ role: GroupRole.MEMBER, updatedAt: now })
-        .where(
-          and(
-            eq(threadParticipant.accountId, params.fromUserId),
-            eq(threadParticipant.threadId, params.threadId),
-          ),
-        );
-      await tx
-        .update(threadParticipant)
-        .set({ role: GroupRole.OWNER, updatedAt: now })
-        .where(
-          and(
-            eq(threadParticipant.accountId, params.toUserId),
-            eq(threadParticipant.threadId, params.threadId),
-          ),
-        );
-      await tx
-        .update(group)
-        .set({ updatedAt: now })
-        .where(
-          sql`${group.id} = (SELECT "groupId" FROM "MessageThread" WHERE id = ${params.threadId})`,
-        );
-      const state = await this.federation.writeGroupStateInTx(
-        tx,
-        params.threadId,
-        clientFeedUpdates,
-      );
-      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
+      await this.authoritativeGroupMeta.applyRoleFactsInTx(tx, {
+        threadId: params.threadId,
+        groupId: state.groupId,
+        changes: [
+          { member: currentOwner, role: GroupRole.MEMBER },
+          { member: target, role: GroupRole.OWNER },
+        ],
+      });
+      await this.relationshipMutations.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.fromUserId,
         clientFeedUpdates,
       );
-      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipMutations.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.toUserId,
         clientFeedUpdates,
       );
-      return { statePeers: [...state.keys()], clientFeedUpdates };
+      await this.authoritativeGroupMeta.finalizeInTx(tx, {
+        threadId: params.threadId,
+        groupAccount: state.groupAccount,
+      });
+      return { clientFeedUpdates };
     });
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.fromUserId,
       params.threadId,
@@ -1471,37 +1419,13 @@ export class GroupService {
     );
   }
 
-  /**
-   * Set a member's role to ADMIN or MEMBER. OWNER-only (enforced by @Roles); ownership changes go
-   * through transferOwnership, so role=OWNER is rejected here, as is touching the current owner.
-   */
+  /** Set ADMIN or MEMBER in the authoritative Group Meta roster. */
   async setRole(params: {
     threadId: number;
     targetUserId: number;
     role: GroupRole;
     operatorUserId: number;
   }): Promise<void> {
-    const operator = await this.database.db.query.threadMember.findFirst({
-      where: and(
-        eq(threadMember.userId, params.operatorUserId),
-        eq(threadMember.threadId, params.threadId),
-        eq(threadMember.left, false),
-      ),
-      columns: { role: true },
-    });
-    if (
-      operator?.role !== GroupRole.OWNER ||
-      !(await isThreadMutuallyAuthorized(
-        this.database.db,
-        params.operatorUserId,
-        params.threadId,
-      ))
-    ) {
-      throw new BusinessException(
-        BusinessCode.GROUP_FORBIDDEN,
-        'only the group owner may change administrator roles',
-      );
-    }
     if (params.role === GroupRole.OWNER) {
       throw new BusinessException(
         BusinessCode.GROUP_FORBIDDEN,
@@ -1514,82 +1438,102 @@ export class GroupService {
         'cannot change your own role',
       );
     }
-    const target = await this.database.db.query.threadMember.findFirst({
-      where: and(
-        eq(threadMember.userId, params.targetUserId),
-        eq(threadMember.threadId, params.threadId),
-        eq(threadMember.left, false),
-      ),
-      with: { user: { columns: { domain: true } } },
-    });
-    if (
-      !target ||
-      !(await isThreadMutuallyAuthorized(
-        this.database.db,
-        params.targetUserId,
-        params.threadId,
-      ))
-    ) {
-      throw new BusinessException(
-        BusinessCode.GROUP_TARGET_NOT_MEMBER,
-        'target is not an active member',
-      );
-    }
-    if (target.role === GroupRole.OWNER) {
-      throw new BusinessException(
-        BusinessCode.GROUP_FORBIDDEN,
-        "cannot change the owner's role",
-      );
-    }
-    if (params.role === GroupRole.ADMIN && target.user.domain !== 'local') {
-      throw new BusinessException(
-        BusinessCode.GROUP_FORBIDDEN,
-        'cannot grant administrator role to a member on another server',
-      );
-    }
-    if (target.role === params.role) return;
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-      await tx
-        .update(threadMember)
-        .set({ role: params.role, updatedAt: new Date() })
-        .where(eq(threadMember.id, target.id));
-      await tx
-        .update(threadParticipant)
-        .set({ role: params.role, updatedAt: new Date() })
-        .where(
-          and(
-            eq(threadParticipant.accountId, params.targetUserId),
-            eq(threadParticipant.threadId, params.threadId),
-          ),
-        );
-      const [trd] = await tx
-        .select({ groupId: messageThread.groupId })
-        .from(messageThread)
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (trd?.groupId != null)
-        await tx
-          .update(group)
-          .set({
-            updatedAt: new Date(),
-          })
-          .where(eq(group.id, trd.groupId));
-      const state = await this.federation.writeGroupStateInTx(
+      await this.relationshipMutations.lockGroupMutationInTx(
         tx,
         params.threadId,
-        clientFeedUpdates,
+        params.operatorUserId,
+        [params.targetUserId],
       );
-      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
+      const [state] = await tx
+        .select({
+          groupId: group.id,
+          groupAccount: group.account,
+          groupDomain: group.domain,
+          namespaceId: group.namespaceId,
+          dissolvedAt: group.dissolvedAt,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (
+        !state ||
+        state.groupDomain !== 'local' ||
+        state.namespaceId !== 0 ||
+        state.dissolvedAt !== null
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'group role authority is unavailable',
+        );
+      const operator = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        params.operatorUserId,
+      );
+      if (
+        operator?.role !== GroupRole.OWNER ||
+        !(await isThreadMutuallyAuthorized(
+          tx,
+          params.operatorUserId,
+          params.threadId,
+        ))
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'only the group owner may change administrator roles',
+        );
+      const target = await readCurrentGroupMemberInTx(
+        tx,
+        state.groupId,
+        params.targetUserId,
+      );
+      if (
+        !target ||
+        !(await isThreadMutuallyAuthorized(
+          tx,
+          params.targetUserId,
+          params.threadId,
+        ))
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          'target is not an active member',
+        );
+      if (target.role === GroupRole.OWNER)
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          "cannot change the owner's role",
+        );
+      if (params.role === GroupRole.ADMIN && target.domain !== 'local')
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'cannot grant administrator role to a member on another server',
+        );
+      if (target.role === params.role)
+        return { changed: false, clientFeedUpdates };
+
+      await this.authoritativeGroupMeta.applyRoleFactsInTx(tx, {
+        threadId: params.threadId,
+        groupId: state.groupId,
+        changes: [{ member: target, role: params.role }],
+      });
+      await this.relationshipMutations.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.targetUserId,
         clientFeedUpdates,
       );
-      return { statePeers: [...state.keys()], clientFeedUpdates };
+      await this.authoritativeGroupMeta.finalizeInTx(tx, {
+        threadId: params.threadId,
+        groupAccount: state.groupAccount,
+      });
+      return { changed: true, clientFeedUpdates };
     });
+    if (!result.changed) return;
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.operatorUserId,
       params.threadId,
@@ -1619,61 +1563,68 @@ export class GroupService {
 
   private async localAuthorizedRecipientIdsInTx(
     tx: DatabaseTransaction,
+    groupId: number,
     threadId: number,
   ): Promise<number[]> {
-    const rows = await tx
-      .select({ userId: threadMember.userId })
-      .from(threadMember)
-      .innerJoin(user, eq(user.id, threadMember.userId))
-      .where(
-        and(
-          eq(threadMember.threadId, threadId),
-          eq(threadMember.left, false),
-          eq(user.domain, 'local'),
-          eq(user.availability, 'AVAILABLE'),
-        ),
-      );
-    const authorized = await Promise.all(
-      rows.map((row) => isThreadMutuallyAuthorized(tx, row.userId, threadId)),
-    );
-    return rows
-      .filter((_, index) => authorized[index])
-      .map((row) => row.userId);
+    return readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
+      groupId,
+      threadId,
+    });
   }
 
   /** Update a group's independent profile. */
   async updateGroup(params: {
     threadId: number;
+    operatorUserId: number;
     name?: string;
     description?: string;
     avatar?: string;
   }) {
-    const trd = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, params.threadId),
-      columns: { groupId: true },
-    });
-    if (!trd || !trd.groupId) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'group thread not found',
-        HttpStatus.NOT_FOUND,
+    return this.database.db.transaction(async (tx) => {
+      await this.relationshipMutations.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.operatorUserId,
       );
-    }
-    const result = await this.database.db.transaction(async (tx) => {
-      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const [current] = await tx
-        .select()
-        .from(group)
-        .where(eq(group.id, trd.groupId!))
-        .for('update')
+        .select({ group })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, params.threadId))
         .limit(1);
-      if (!current) throw new Error('group disappeared during profile update');
-      const nextRev = current.defaultProfileRev + 1;
-      const name = params.name ?? current.name;
-      const description = params.description ?? current.description;
-      const avatar = params.avatar ?? current.avatar;
+      if (!current)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'group thread not found',
+          HttpStatus.NOT_FOUND,
+        );
+      if (
+        current.group.domain !== 'local' ||
+        current.group.namespaceId !== 0 ||
+        current.group.dissolvedAt !== null
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'group profile authority is unavailable',
+        );
+      await this.assertGroupManagerInTx(
+        tx,
+        params.threadId,
+        params.operatorUserId,
+      );
+      const name = params.name ?? current.group.name;
+      const description = params.description ?? current.group.description;
+      const avatar = params.avatar ?? current.group.avatar;
+      if (
+        name === current.group.name &&
+        description === current.group.description &&
+        avatar === current.group.avatar
+      )
+        return current.group;
+
+      const nextRev = current.group.defaultProfileRev + 1;
       await tx.insert(profileVersion).values({
-        groupId: current.id,
+        groupId: current.group.id,
         profileRev: nextRev,
         displayName: name,
         avatar,
@@ -1688,18 +1639,20 @@ export class GroupService {
           defaultProfileRev: nextRev,
           updatedAt: new Date(),
         })
-        .where(eq(group.id, trd.groupId!))
+        .where(eq(group.id, current.group.id))
         .returning();
-      const stateItems = await this.federation.writeGroupStateInTx(
+      if (!row) throw new Error('group profile update returned no row');
+      await this.authoritativeGroupMeta.applyProfileFactInTx(
         tx,
-        params.threadId,
-        clientFeedUpdates,
+        current.group.id,
+        nextRev,
       );
-      return { row, statePeers: [...stateItems.keys()], clientFeedUpdates };
+      await this.authoritativeGroupMeta.finalizeInTx(tx, {
+        threadId: params.threadId,
+        groupAccount: current.group.account,
+      });
+      return row;
     });
-    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(result.statePeers);
-    return result.row;
   }
 
   async assertGroupManagerInTx(
@@ -1707,20 +1660,18 @@ export class GroupService {
     threadId: number,
     managerUserId: number,
   ): Promise<void> {
-    const [manager] = await tx
-      .select({ role: threadMember.role })
-      .from(threadMember)
-      .where(
-        and(
-          eq(threadMember.threadId, threadId),
-          eq(threadMember.userId, managerUserId),
-          eq(threadMember.left, false),
-        ),
-      )
+    const [thread] = await tx
+      .select({ groupId: messageThread.groupId })
+      .from(messageThread)
+      .where(eq(messageThread.id, threadId))
       .limit(1);
+    const manager = thread?.groupId
+      ? await readCurrentGroupMemberInTx(tx, thread.groupId, managerUserId)
+      : undefined;
     if (
-      (manager?.role !== GroupRole.OWNER &&
-        manager?.role !== GroupRole.ADMIN) ||
+      !manager ||
+      manager.domain !== 'local' ||
+      (manager.role !== GroupRole.OWNER && manager.role !== GroupRole.ADMIN) ||
       !(await isThreadMutuallyAuthorized(tx, managerUserId, threadId))
     ) {
       throw new BusinessException(

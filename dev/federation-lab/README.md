@@ -48,8 +48,41 @@ npm run dev:fe
 The backend command builds before starting all three Node processes. The frontend command starts
 Angular, Vite, and Caddy without connecting to PostgreSQL.
 
-Use `Ctrl+C` to stop all six child processes. Data persists under
-`dev/federation-lab/runtime/<node>/`; starting again reuses identities and databases.
+Use `Ctrl+C` to stop all six child processes. Starting the backend recreates all three lab databases
+before applying migrations. Node identity files and workload reports persist under
+`dev/federation-lab/runtime/`, while database records always start empty.
+
+The P2P consistency workload attaches to these same running backends. Its administrator and user
+actors live only in the workload process, while every account and session is created through the real
+HTTP API and persists in the lab databases. A workload does not stop or reset the lab when it exits,
+so its final state remains available through the three browser URLs for manual inspection.
+
+The runner provisions and OTP-authenticates 20 users on each node, then generates operations online
+in rounds. It chooses an ordered pair, observes the converged authoritative facts, submits the selected
+action through `/relationship/request`, `/relationship/accept`, or `/relationship/revoke`, and appends
+the real admission and task result to the operation journal. It polls the existing administrator task
+list for `PENDING`, `PROCESSING`, and `ASYNC_PROCESSING` activity. After the round barrier is idle, it
+allows five seconds for federation delivery before selecting the next round:
+
+```bash
+npm run federation:p2p
+```
+
+`ADMIN_BOOTSTRAP_PASSWORD` must match the bootstrap administrator used by the running lab. The runner
+temporarily changes the OTP login rate-limit policy and request-quota defaults through the admin API,
+restores the previous configuration before exiting, and writes token-free reports below
+`dev/federation-lab/runtime/p2p-runs/`. The journal contains no credentials, OTPs, cookies, or session
+tokens. After operations stop, the final auditor samples `RelationshipPair.active` directly. A
+cross-node pair is a final friendship only when it is active on both endpoint home nodes; the audit
+requires that equality for three consecutive samples. Inactive row existence, historical friendship,
+and intent fields are outside this phase's acceptance gate. Console output includes provisioning,
+per-round selection and endpoint counts, admission throughput, active task IDs, convergence samples,
+audit differences, the random seed, and artifact paths.
+Add `--verbose` to print every successful operation.
+The default P2P baseline uses three nodes with 20 users each. It does not stop the lab or remove its
+data. Run it against a fresh lab; repeating the same account prefix correctly fails with an
+already-existing account. Smaller diagnostic runs may be used while developing the harness, but do
+not replace the 3-by-20 acceptance run.
 
 To test prebuilt assets rather than frontend development servers, run:
 

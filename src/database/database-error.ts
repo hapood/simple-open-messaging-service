@@ -37,13 +37,12 @@ export function findPostgresError(error: unknown): PostgresError | undefined {
 }
 
 export function isUniqueViolation(error: unknown): boolean {
-  return isPostgresError(error) && error.code === PG_UNIQUE_VIOLATION;
+  return hasPostgresErrorCode(error, PG_UNIQUE_VIOLATION);
 }
 
 export function isRetryableTransactionError(error: unknown): boolean {
   return (
-    isPostgresError(error) &&
-    (error.code === PG_SERIALIZATION_FAILURE ||
-      error.code === PG_DEADLOCK_DETECTED)
+    hasPostgresErrorCode(error, PG_SERIALIZATION_FAILURE) ||
+    hasPostgresErrorCode(error, PG_DEADLOCK_DETECTED)
   );
 }

@@ -46,7 +46,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import {
   parseMessageEntities,
   toDisplayText,

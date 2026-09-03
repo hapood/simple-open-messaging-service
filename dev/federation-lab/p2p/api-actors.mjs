@@ -1,0 +1,421 @@
+import { federationLabNode, federationLabNodes } from '../topology.mjs';
+
+const API_PREFIX = '/api/v1';
+
+export class LabApiError extends Error {
+  constructor(message, details) {
+    super(message);
+    this.name = 'LabApiError';
+    this.details = details;
+  }
+}
+
+async function readEnvelope(response, operation) {
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    throw new LabApiError(`${operation} returned non-JSON`, {
+      status: response.status,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!response.ok || body?.code !== 0) {
+    throw new LabApiError(`${operation} failed`, {
+      status: response.status,
+      code: body?.code,
+      message: body?.message,
+      data: body?.data,
+    });
+  }
+  return body.data;
+}
+
+async function post(node, path, options = {}) {
+  const headers = new Headers({
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  });
+  if (options.adminCookie) headers.set('Cookie', options.adminCookie);
+  if (options.userToken) {
+    headers.set('Authorization', `Bearer ${options.userToken}`);
+  }
+  const response = await fetch(`${node.backendBaseUrl}${API_PREFIX}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(options.body ?? {}),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+  });
+  return { response, data: await readEnvelope(response, options.operation) };
+}
+
+async function get(node, path, options = {}) {
+  const headers = new Headers({ Accept: options.accept ?? 'application/json' });
+  if (options.userToken) {
+    headers.set('Authorization', `Bearer ${options.userToken}`);
+  }
+  const response = await fetch(`${node.backendBaseUrl}${API_PREFIX}${path}`, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(options.timeoutMs ?? 35_000),
+  });
+  return response;
+}
+
+function parseSseTerminal(text, operation) {
+  const frames = text.split(/\r?\n\r?\n/);
+  for (const frame of frames) {
+    const event = frame
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('event:'))
+      ?.slice('event:'.length)
+      .trim();
+    if (event !== 'resolved' && event !== 'failed') continue;
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice('data:'.length).trimStart())
+      .join('\n');
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch (error) {
+      throw new LabApiError(`${operation} returned invalid SSE data`, {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (event === 'failed') {
+      throw new LabApiError(`${operation} failed`, parsed);
+    }
+    return parsed;
+  }
+  throw new LabApiError(`${operation} returned no terminal SSE event`, {});
+}
+
+function adminCookie(response) {
+  const setCookie = response.headers.get('set-cookie') ?? '';
+  const match = /(?:^|[,;]\s*)admin_session=([^;,]+)/.exec(setCookie);
+  if (!match) {
+    throw new LabApiError('admin login did not return admin_session cookie', {
+      status: response.status,
+    });
+  }
+  return `admin_session=${match[1]}`;
+}
+
+export class LabUserActor {
+  constructor({ node, id, account, token }) {
+    this.node = node;
+    this.id = id;
+    this.account = account;
+    this.domain = node.domain;
+    this.address = `${account}@${node.domain}`;
+    this.token = token;
+  }
+
+  async post(path, body = {}, operation = `user ${path}`) {
+    const result = await post(this.node, path, {
+      body,
+      userToken: this.token,
+      operation: `${this.address}: ${operation}`,
+    });
+    return result.data;
+  }
+
+  async myProfile() {
+    return this.post('/user/my-profile', {}, 'load own profile');
+  }
+
+  async resolveFederatedUser({ account, domain }) {
+    const operation = `${this.address}: resolve ${account}@${domain}`;
+    const query = new URLSearchParams({ account, domain });
+    const response = await get(
+      this.node,
+      `/user/resolve-federated-stream?${query}`,
+      {
+        userToken: this.token,
+        accept: 'text/event-stream',
+      },
+    );
+    if (!response.ok) {
+      throw new LabApiError(`${operation} returned HTTP ${response.status}`, {
+        status: response.status,
+      });
+    }
+    return parseSseTerminal(await response.text(), operation);
+  }
+
+  async queryStateFeed({ mode = 'full', after = 0, take = 200, through }) {
+    const query = new URLSearchParams({
+      mode,
+      after: String(after),
+      take: String(take),
+    });
+    if (through !== undefined) query.set('through', String(through));
+    const operation = `${this.address}: query client state feed`;
+    const response = await get(this.node, `/user/state-feed?${query}`, {
+      userToken: this.token,
+    });
+    return readEnvelope(response, operation);
+  }
+
+  async queryUser({ account, domain }) {
+    const users = await this.post(
+      '/user/query',
+      { addresses: [{ account, domain }] },
+      `query ${account}@${domain}`,
+    );
+    return users.find(
+      (user) => user.account === account && user.domain === domain,
+    );
+  }
+
+  async threadWithUser(userId) {
+    return this.post(
+      '/thread/by-user-id',
+      { userId },
+      `look up P2P thread with user ${userId}`,
+    );
+  }
+}
+
+export class LabAdminActor {
+  constructor({ node, account, cookie }) {
+    this.node = node;
+    this.account = account;
+    this.cookie = cookie;
+  }
+
+  static async login({ node, password, account = 'admin' }) {
+    const { response } = await post(node, '/admin/login', {
+      body: { account, password },
+      operation: `${node.domain}: admin login`,
+    });
+    return new LabAdminActor({
+      node,
+      account,
+      cookie: adminCookie(response),
+    });
+  }
+
+  async post(path, body = {}, operation = `admin ${path}`) {
+    const result = await post(this.node, path, {
+      body,
+      adminCookie: this.cookie,
+      operation: `${this.node.domain}: ${operation}`,
+    });
+    return result.data;
+  }
+
+  async createAndLoginUser({ account, name }) {
+    const created = await this.post(
+      '/admin/users/create',
+      { account, name },
+      `create user ${account}`,
+    );
+    if (!Number.isInteger(created?.id) || created?.account !== account) {
+      throw new LabApiError('create user returned an invalid identity', {
+        node: this.node.domain,
+        account,
+        data: created,
+      });
+    }
+    const issued = await this.post(
+      `/admin/users/${created.id}/issue-login-code`,
+      {},
+      `issue OTP for ${account}`,
+    );
+    if (typeof issued?.code !== 'string') {
+      throw new LabApiError('issue login code did not return a code', {
+        node: this.node.domain,
+        account,
+      });
+    }
+    const { data: loggedIn } = await post(this.node, '/auth/otp/login', {
+      body: {
+        account,
+        code: issued.code,
+        client: 'app',
+        device: `federation-lab-p2p:${this.node.name}:${account}`,
+      },
+      operation: `${this.node.domain}: OTP login ${account}`,
+    });
+    if (typeof loggedIn?.session_token !== 'string') {
+      throw new LabApiError('OTP login did not return a session token', {
+        node: this.node.domain,
+        account,
+      });
+    }
+    return new LabUserActor({
+      node: this.node,
+      id: created.id,
+      account,
+      token: loggedIn.session_token,
+    });
+  }
+
+  async authRateLimitConfiguration() {
+    const snapshot = await this.post(
+      '/admin/rate-limits',
+      {},
+      'read authentication rate limits',
+    );
+    if (!Array.isArray(snapshot?.policies)) {
+      throw new LabApiError('rate-limit snapshot did not contain policies', {
+        node: this.node.domain,
+      });
+    }
+    return snapshot.policies.map(({ policy, mode, buckets }) => ({
+      policy,
+      mode,
+      buckets: buckets.map(({ name, ratePerSecond, burst }) => ({
+        name,
+        ratePerSecond,
+        burst,
+      })),
+    }));
+  }
+
+  async setAuthRateLimitConfiguration(configuration) {
+    return this.post(
+      '/admin/rate-limits/configuration',
+      configuration,
+      'replace authentication rate limits',
+    );
+  }
+
+  async settings() {
+    return this.post('/admin/settings', {}, 'read runtime settings');
+  }
+
+  async setUserQuotaDefaults(configuration) {
+    return this.post(
+      '/admin/settings/user-quota-defaults',
+      configuration,
+      'replace user quota defaults',
+    );
+  }
+
+  async setFederationQuotaDefaults(configuration) {
+    return this.post(
+      '/admin/settings/federation-quota-defaults',
+      configuration,
+      'replace federation quota defaults',
+    );
+  }
+
+  async durableTaskActivity() {
+    const [pending, processing, asyncProcessing] = await Promise.all(
+      ['PENDING', 'PROCESSING', 'ASYNC_PROCESSING'].map((status) =>
+        this.durableTasks({
+          status,
+          take: status === 'PENDING' ? 1 : 200,
+        }),
+      ),
+    );
+    return {
+      pendingCount: pending.total,
+      processing: processing.list ?? [],
+      asyncProcessing: asyncProcessing.list ?? [],
+    };
+  }
+
+  async durableTasks({ status, skip = 0, take = 200 } = {}) {
+    return this.post(
+      '/admin/durable-tasks',
+      { ...(status ? { status } : {}), skip, take },
+      `read${status ? ` ${status.toLowerCase()}` : ''} durable tasks`,
+    );
+  }
+
+  async durableTaskStatuses(taskIds) {
+    const wanted = new Set([...taskIds].map(String));
+    const found = new Map();
+    let skip = 0;
+    while (wanted.size > found.size) {
+      const page = await this.durableTasks({ skip, take: 200 });
+      for (const task of page.list ?? []) {
+        const id = String(task.id);
+        if (wanted.has(id)) found.set(id, task);
+      }
+      skip += page.list?.length ?? 0;
+      if (!page.list?.length || skip >= page.total) break;
+    }
+    return found;
+  }
+}
+
+export class FederationLabActors {
+  constructor(nodes) {
+    this.nodes = nodes;
+  }
+
+  static async connect({ adminPassword, adminAccount = 'admin' }) {
+    if (!adminPassword) {
+      throw new Error(
+        'ADMIN_BOOTSTRAP_PASSWORD is required to connect federation lab administrators',
+      );
+    }
+    const admins = await Promise.all(
+      federationLabNodes.map((node) =>
+        LabAdminActor.login({
+          node,
+          account: adminAccount,
+          password: adminPassword,
+        }),
+      ),
+    );
+    return new FederationLabActors(
+      new Map(
+        federationLabNodes.map((node, index) => [
+          node.name,
+          {
+            topology: node,
+            admin: admins[index],
+            users: new Map(),
+          },
+        ]),
+      ),
+    );
+  }
+
+  node(name) {
+    federationLabNode(name);
+    const node = this.nodes.get(name);
+    if (!node) throw new Error(`federation lab actor node missing: ${name}`);
+    return node;
+  }
+
+  async createAndLoginUser(nodeName, input) {
+    const node = this.node(nodeName);
+    if (node.users.has(input.account)) {
+      throw new Error(
+        `${node.topology.domain}: duplicate actor ${input.account}`,
+      );
+    }
+    const user = await node.admin.createAndLoginUser(input);
+    node.users.set(user.account, user);
+    return user;
+  }
+
+  user(address) {
+    const separator = address.lastIndexOf('@');
+    if (separator <= 0)
+      throw new Error(`invalid federation address: ${address}`);
+    const account = address.slice(0, separator);
+    const domain = address.slice(separator + 1);
+    const node = [...this.nodes.values()].find(
+      (candidate) => candidate.topology.domain === domain,
+    );
+    const user = node?.users.get(account);
+    if (!user) throw new Error(`user actor is not loaded: ${address}`);
+    return user;
+  }
+
+  get userCount() {
+    return [...this.nodes.values()].reduce(
+      (total, node) => total + node.users.size,
+      0,
+    );
+  }
+}

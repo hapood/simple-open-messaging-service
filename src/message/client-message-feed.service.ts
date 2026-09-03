@@ -1,14 +1,13 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import {
   account,
   clientStateFeed,
   deletedMessage,
   message,
   messageThread,
-  threadParticipant,
-  threadMember,
+  accountThreadState,
   user,
 } from '../database/schema.js';
 import { planFeedRecipientIds } from './message-delivery-plan.js';
@@ -18,6 +17,7 @@ type ClientThreadPreview = {
   seq: number;
   text: string;
   senderId: string | null;
+  createdAt: number;
 };
 
 type ClientThreadContentHead = {
@@ -81,6 +81,7 @@ export class ClientThreadContentHeadWriter {
         creatorNamespaceId: true,
         federationSourceDomain: true,
         isDeleted: true,
+        createdAt: true,
       },
     });
     if (!source)
@@ -96,16 +97,16 @@ export class ClientThreadContentHeadWriter {
         messageEndSeq,
       ),
       preview: source.isDeleted
-        ? this.emptyPreview(source.seq)
+        ? this.emptyPreview(source.seq, source.createdAt.getTime())
         : {
             seq: source.seq,
             text: deriveMessagePreview(source.contentType, source.content),
+            createdAt: source.createdAt.getTime(),
             senderId:
               source.creatorAccount === null || source.creatorDomain === null
                 ? null
                 : JSON.stringify([
                     source.creatorNamespaceId,
-                    source.federationSourceDomain ?? 'local',
                     source.creatorDomain,
                     source.creatorAccount,
                   ]),
@@ -130,6 +131,19 @@ export class ClientThreadContentHeadWriter {
       });
       if (!thread || thread.curSeq < 1)
         throw new Error(`missing message head for thread ${threadId}`);
+      const fallbackMessage = current
+        ? undefined
+        : await tx.query.message.findFirst({
+            where: and(
+              eq(message.threadId, threadId),
+              eq(message.seq, thread.curSeq),
+            ),
+            columns: { createdAt: true },
+          });
+      if (!current && !fallbackMessage)
+        throw new Error(`missing latest message for thread ${threadId}`);
+      const previewCreatedAt =
+        current?.preview.createdAt ?? fallbackMessage!.createdAt.getTime();
       const deletion = await tx.query.deletedMessage.findFirst({
         where: and(
           eq(deletedMessage.threadId, threadId),
@@ -151,10 +165,11 @@ export class ClientThreadContentHeadWriter {
         ),
         preview:
           opts?.clearPreviewMessageSeq !== undefined
-            ? this.emptyPreview(opts.clearPreviewMessageSeq)
+            ? this.emptyPreview(opts.clearPreviewMessageSeq, previewCreatedAt)
             : current?.preview.seq === deletion.messageSeq
-              ? this.emptyPreview(deletion.messageSeq)
-              : (current?.preview ?? this.emptyPreview(thread.curSeq)),
+              ? this.emptyPreview(deletion.messageSeq, previewCreatedAt)
+              : (current?.preview ??
+                this.emptyPreview(thread.curSeq, previewCreatedAt)),
       });
     }
   }
@@ -214,8 +229,11 @@ export class ClientThreadContentHeadWriter {
     return JSON.stringify(['THREAD_CONTENT_HEAD', threadId]);
   }
 
-  private static emptyPreview(seq: number): ClientThreadPreview {
-    return { seq, text: '', senderId: null };
+  private static emptyPreview(
+    seq: number,
+    createdAt: number,
+  ): ClientThreadPreview {
+    return { seq, text: '', senderId: null, createdAt };
   }
 
   private static async latestPeerProfileMessageSeq(
@@ -245,20 +263,23 @@ export class ClientThreadContentHeadWriter {
     threadId: number,
   ): Promise<number[]> {
     const rows = await tx
-      .select({ userId: threadParticipant.accountId })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.accountId))
+      .select({ userId: accountThreadState.accountId })
+      .from(accountThreadState)
+      .innerJoin(user, eq(user.id, accountThreadState.accountId))
       .where(
         and(
-          eq(threadParticipant.threadId, threadId),
+          eq(accountThreadState.threadId, threadId),
           eq(user.domain, 'local'),
           eq(user.availability, 'AVAILABLE'),
         ),
       )
-      .orderBy(asc(threadParticipant.accountId));
-    const authorized = await Promise.all(
-      rows.map((row) => isThreadMutuallyAuthorized(tx, row.userId, threadId)),
-    );
+      .orderBy(asc(accountThreadState.accountId));
+    const authorized: boolean[] = [];
+    for (const row of rows) {
+      authorized.push(
+        await isThreadMutuallyAuthorized(tx, row.userId, threadId),
+      );
+    }
     return planFeedRecipientIds(
       rows.map((row, index) => ({
         userId: row.userId,

@@ -18,7 +18,7 @@ import {
   isThreadMutuallyAuthorized,
   relationshipEndpointMatchesUserSql,
   relationshipPairMatchesUsersSql,
-} from '../invite/relationship-authorization.js';
+} from '../relationship/relationship-authorization.js';
 import {
   MessageService,
   type PublicMessage,
@@ -27,7 +27,7 @@ import { SystemMessageType } from '../message/system-message.js';
 import {
   lockBusinessScopeInTx,
   userPairBusinessScopeKey,
-} from '../invite/business-scope-lock.js';
+} from '../relationship/business-scope-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()

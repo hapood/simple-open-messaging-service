@@ -139,27 +139,26 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### GET `/user/resolve-federated-stream` — Temporary federated exact lookup
 
 - **Query**: `{ account, domain }`; authenticated temporary SSE, with a 30-second server-side bound.
+- If either local recognition direction is missing, the lookup explicitly starts recognition. It then
+  polls signed Health with per-domain request coalescing. `available` or `degraded` confirms the peer's
+  recognition, while `unavailable` does not. The profile is retrieved after the local readiness gate passes.
 - Emits one terminal `resolved` or `failed` event and closes. Closing the client connection cancels client
   interest; the server-to-peer request keeps its normal bounded timeout.
 - The result is an untrusted display card plus relationship status. It is never persisted and never creates
   a stub; clients may close it and start another lookup at any time.
 
-### POST `/user/peer-trust-status`
-
-- Returns the recognition/trust status for a peer domain. Federated profiles and group metadata arrive through server feeds; there is no client-triggered freshness probe.
-
 ---
 
-## Invite API
+## Relationship API
 
-> Controller: [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) · Service: [src/invite/invite.service.ts](../../src/invite/invite.service.ts)
+> Controller: [src/controller/relationship.controller.ts](../../src/controller/relationship.controller.ts) · Service: [src/relationship/relationship.service.ts](../../src/relationship/relationship.service.ts)
 
 Friend and group requests use the same directed facts. `RelationshipIntent(A,B)` and
 `RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,
 one account is the group account and the other is the member account; `authorUserId` identifies which
 side authored the intent. There are no separate invite, join, friend-request, or group-membership
 request tables. The former polymorphic `Invite` table has been removed. REST
-`inviteId` values are stringified ids of the corresponding directed fact.
+`intentId` values are stringified ids of the corresponding directed fact.
 See the [relationship intent state machine](../overview/relationship-intent-state-machine.md) for
 the complete transition, pair-folding, and projection-side-effect rules.
 
@@ -170,8 +169,8 @@ the complete transition, pair-folding, and projection-side-effect rules.
   optional untrusted request-card snapshot obtained by the preceding temporary resolve. Database user
   ids are not part of the client identity contract.
 - **Response data**: `{ taskId: string, status: "PENDING" }`. Success means the task was durably accepted,
-  not that the relationship transaction has completed. The resulting `inviteId` arrives through the
-  Client State Feed or the incoming/outgoing request lists.
+  not that the relationship transaction has completed. The resulting `intentId` arrives through the
+  Client State Feed.
 - Execution upserts the caller's directed request. A new request expires after seven days; an explicit
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
@@ -197,8 +196,8 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/accept` — Accept an incoming relationship request
 
-- **Body**: `{ inviteId }` for a stored local request, or `{ account, domain }` for an addressed
-  federated request.
+- **Body**: `{ intentId }` for a stored local request, or `{ account, domain }` for an addressed
+  request. Address form supports local group invitations and federated user/group requests.
 - For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
   active only when both directed intents are effective.
 - For a group invitation, the group mirror becomes active only after the origin's state snapshot
@@ -217,9 +216,10 @@ under `/group/*` because the group, rather than the current user, authors that d
   are ineffective even if an old feed projection remains. REVOKED has no expiry and is retained
   best-effort.
 
-### POST `/invite/incoming` · `/invite/outgoing` · `/invite/incoming/read`
+### POST `/relationship/requests/read`
 
-- Lists received or sent requests. `incoming/read` advances the account's incoming-request read cursor.
+- Advances the account's incoming-request read cursor. Request lists are device projections consumed
+  from `ClientStateFeed`; the server exposes no separate incoming/outgoing list API.
 
 ---
 
