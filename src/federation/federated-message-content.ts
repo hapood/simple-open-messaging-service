@@ -6,7 +6,11 @@ import {
   isValidSomfpUserAccount,
   parseSomfpUserAddress,
 } from '../common/account.js';
-import { parseFederatedCallContent } from '../calls/call-content.js';
+import {
+  buildFederatedCallContent,
+  parseCallContent,
+  parseFederatedCallContent,
+} from '../calls/call-content.js';
 import {
   parseMessageEntities,
   serializeUserMention,
@@ -350,6 +354,12 @@ export function toFederatedMessageContent(
         throw new Error('invalid forward card');
       validateForwardCard({ bundleId: value['bundleId'] });
       return JSON.stringify({ bundleId: value['bundleId'] });
+    case ContentType.CALL: {
+      if (parseFederatedCallContent(content)) return content;
+      const local = parseCallContent(content);
+      if (!local) throw new Error('invalid local call content');
+      return buildFederatedCallContent(local);
+    }
     case ContentType.SYSTEM:
       throw new Error('SYSTEM is not a federated content type');
     default:

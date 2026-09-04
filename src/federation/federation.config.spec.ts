@@ -6,6 +6,8 @@ const saved = {
   domain: process.env.SOMS_DOMAIN,
   insecure: process.env.SOMS_ALLOW_INSECURE_HTTP,
   routes: process.env.SOMS_DEV_FEDERATION_ROUTES,
+  forwardedResourcePolicy:
+    process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY,
 };
 
 afterEach(() => {
@@ -14,6 +16,10 @@ afterEach(() => {
     ['SOMS_DOMAIN', saved.domain],
     ['SOMS_ALLOW_INSECURE_HTTP', saved.insecure],
     ['SOMS_DEV_FEDERATION_ROUTES', saved.routes],
+    [
+      'SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY',
+      saved.forwardedResourcePolicy,
+    ],
   ] as const) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -21,6 +27,21 @@ afterEach(() => {
 });
 
 describe('development federation routes', () => {
+  it('trusts forwarded resource snapshots by default and supports explicit rebuild', () => {
+    process.env.SOMS_DOMAIN = 'aaa.test';
+    delete process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY;
+    expect(loadFederationConfig().forwardedResourcePolicy).toBe('trust');
+
+    process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY = 'rebuild';
+    expect(loadFederationConfig().forwardedResourcePolicy).toBe('rebuild');
+  });
+
+  it('rejects an unknown forwarded resource policy', () => {
+    process.env.SOMS_DOMAIN = 'aaa.test';
+    process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY = 'passthrough';
+    expect(() => loadFederationConfig()).toThrow('must be trust or rebuild');
+  });
+
   it('loads canonical HTTP origins in a non-production insecure environment', () => {
     process.env.NODE_ENV = 'development';
     process.env.SOMS_DOMAIN = 'aaa.test';

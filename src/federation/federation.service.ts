@@ -1523,8 +1523,12 @@ export class FederationService {
       }
       if (!effect.historical)
         await this.notifyCurrentClientStateFeedHeads(effect.recipients);
-      if (effect.localForwardBundleId && !effect.message!.isDeleted) {
-        await this.forwardBundles.rebuildLinkCards(
+      if (
+        this.config.forwardedResourcePolicy === 'rebuild' &&
+        effect.localForwardBundleId &&
+        !effect.message!.isDeleted
+      ) {
+        await this.forwardBundles.rebuildUntrustedCards(
           effect.localForwardBundleId,
           (url) => this.linkPreview.buildCardContent(url),
         );

@@ -330,6 +330,35 @@ describe('federated message content projection', () => {
     ).toThrow('invalid fields');
   });
 
+  it('projects a local CALL bubble onto its identity-free federation shape', () => {
+    const wire = toFederatedMessageContent(
+      ContentType.CALL,
+      JSON.stringify({
+        type: 'CALL',
+        callType: 'VIDEO',
+        outcome: 'completed',
+        callerId: 7,
+        calleeId: 9,
+        startedAt: 100,
+        endedAt: 250,
+        durationMs: 150,
+      }),
+      'local.test',
+    );
+
+    expect(JSON.parse(wire)).toEqual({
+      mediaType: 'VIDEO',
+      outcome: 'completed',
+      startedAt: 100,
+      endedAt: 250,
+    });
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(ContentType.CALL, wire, 'local.test'),
+      ),
+    ).toEqual(JSON.parse(wire));
+  });
+
   it('drops local quote media previews on publish and rejects them on wire input', () => {
     const local = JSON.stringify({
       text: 'hello [@Alice](somfp://user/alice%40example.test)',

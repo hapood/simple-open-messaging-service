@@ -19,7 +19,11 @@ import {
   collectSseEvents,
   waitForSseEvent,
 } from './federation-test-helpers.js';
-import { findGroupRelationship, findP2PRelationship } from './seed.js';
+import {
+  findGroupRelationship,
+  findP2PRelationship,
+  seedAcceptedRelationship,
+} from './seed.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
   waitForAcceptedDurableTask,
@@ -40,6 +44,7 @@ import {
   federationMessageReceipt,
   federationThreadSyncState,
   forwardBundle,
+  forwardBundleAsset,
   forwardBundleDependency,
   forwardMessage,
   group,
@@ -66,7 +71,9 @@ import {
   systemSetting,
   user,
 } from '../src/database/schema.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readCurrentGroupMemberByAddressInTx } from '../src/group-meta/current-group-roster.js';
 import { encodeFederationResourceComponent } from '../src/federation/federation-resource-request.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
@@ -955,58 +962,509 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
   });
 
-  it('forwards a complete bundle closure, preserves retry idempotency, and relays a nested bundle from the receiving server', async () => {
-    const sourceA = await appA.database.query.message.findFirst({
-      where: and(
-        eq(message.content, JSON.stringify({ text: 'hi from alice' })),
-        eq(message.creatorAccount, 'alice'),
-        eq(message.creatorDomain, 'local'),
-      ),
-    });
-    if (!sourceA) throw new Error('source message missing on appA');
-    const clientMessageIdA = randomUUID();
-    const payloadA = {
-      threadId: sourceA.threadId,
-      sourceMessages: [{ threadId: sourceA.threadId, seq: sourceA.seq }],
-      mode: 'HISTORY',
-      clientMessageId: clientMessageIdA,
+  it('quotes, directly forwards, and repeatedly federates every forwardable type with byte-exact bundle assets', async () => {
+    await ensureAliceAndBobAreFriends();
+
+    // Keep the source conversation local to appA. The remote node cannot see these messages or their
+    // assets until the HISTORY carrier reaches it, so a successful assertion below necessarily travels
+    // through GET /s2s/v1/forward-bundles/:id + signed Range media downloads.
+    const sourcePeerAccount = `forwardpeer${randomUUID().slice(0, 8)}`;
+    const sourcePeer = await registerAndLogin(
+      appA,
+      sourcePeerAccount,
+      'Forward Source Peer',
+    );
+    const [sourceThread] = await appA.database
+      .insert(messageThread)
+      .values({ type: MessageThreadType.P2P, updatedAt: new Date() })
+      .returning({ id: messageThread.id });
+    await seedAcceptedRelationship(
+      appA.database,
+      aliceLocalIdA,
+      sourcePeer.id,
+      sourceThread.id,
+    );
+
+    const fixtureBytes = new Map<string, Buffer>();
+    const addFixture = async (label: string): Promise<string> => {
+      const bytes = Buffer.from(`forward-e2e:${label}:${randomUUID()}`);
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      fixtureBytes.set(digest, bytes);
+      const shard = join(
+        appA.dataDir,
+        'cas',
+        digest.slice(0, 2),
+        digest.slice(2, 4),
+      );
+      await mkdir(shard, { recursive: true });
+      await writeFile(join(shard, digest), bytes);
+      await appA.database.insert(mediaAsset).values({
+        digest,
+        bytes: BigInt(bytes.length),
+      });
+      return digest;
     };
-    const first = await request(appA.baseUrl)
+    const cas = (digest: string) =>
+      `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
+
+    const [
+      imageDigest,
+      videoDigest,
+      audioDigest,
+      fileDigest,
+      linkImageDigest,
+      linkFaviconDigest,
+      contactAvatarDigest,
+      galleryImageDigest,
+      galleryVideoDigest,
+      galleryAudioDigest,
+      galleryFileDigest,
+    ] = await Promise.all(
+      [
+        'image',
+        'video',
+        'audio',
+        'file',
+        'link-image',
+        'link-favicon',
+        'contact-avatar',
+        'gallery-image',
+        'gallery-video',
+        'gallery-audio',
+        'gallery-file',
+      ].map(addFixture),
+    );
+
+    const now = Date.now();
+    const sourceSpecs: Array<{
+      contentType: ContentType;
+      content: string;
+      digests: string[];
+    }> = [
+      {
+        contentType: ContentType.PURE_TEXT,
+        content: textContent('all-types text'),
+        digests: [],
+      },
+      {
+        contentType: ContentType.IMAGE,
+        content: JSON.stringify({
+          url: cas(imageDigest),
+          w: 7,
+          h: 5,
+          size: fixtureBytes.get(imageDigest)!.length,
+        }),
+        digests: [imageDigest],
+      },
+      {
+        contentType: ContentType.VIDEO,
+        content: JSON.stringify({
+          url: cas(videoDigest),
+          name: 'clip.webm',
+          size: fixtureBytes.get(videoDigest)!.length,
+          mimeType: 'video/webm',
+          w: 16,
+          h: 9,
+          duration: 2.5,
+        }),
+        digests: [videoDigest],
+      },
+      {
+        contentType: ContentType.AUDIO,
+        content: JSON.stringify({
+          url: cas(audioDigest),
+          name: 'voice.ogg',
+          size: fixtureBytes.get(audioDigest)!.length,
+          mimeType: 'audio/ogg',
+          duration: 1.25,
+        }),
+        digests: [audioDigest],
+      },
+      {
+        contentType: ContentType.FILE,
+        content: JSON.stringify({
+          url: cas(fileDigest),
+          name: 'report.bin',
+          size: fixtureBytes.get(fileDigest)!.length,
+          mimeType: 'application/octet-stream',
+        }),
+        digests: [fileDigest],
+      },
+      {
+        contentType: ContentType.LINK,
+        content: JSON.stringify({
+          url: 'https://example.test/all-types',
+          title: 'All forward types',
+          description: 'Link artwork must remain part of the bundle closure.',
+          image: cas(linkImageDigest),
+          favicon: cas(linkFaviconDigest),
+        }),
+        digests: [linkImageDigest, linkFaviconDigest],
+      },
+      {
+        contentType: ContentType.CONTACT_CARD,
+        content: JSON.stringify({
+          account: sourcePeerAccount,
+          domain: 'local',
+          displayName: 'Forward Contact',
+          bio: 'Contact-card avatar fixture',
+          avatar: cas(contactAvatarDigest),
+        }),
+        digests: [contactAvatarDigest],
+      },
+      {
+        contentType: ContentType.GALLERY,
+        content: JSON.stringify({
+          items: [
+            {
+              kind: 'IMAGE',
+              url: cas(galleryImageDigest),
+              size: fixtureBytes.get(galleryImageDigest)!.length,
+              w: 4,
+              h: 3,
+            },
+            {
+              kind: 'VIDEO',
+              url: cas(galleryVideoDigest),
+              size: fixtureBytes.get(galleryVideoDigest)!.length,
+              name: 'gallery.webm',
+              mimeType: 'video/webm',
+              w: 16,
+              h: 9,
+              duration: 3,
+            },
+            {
+              kind: 'AUDIO',
+              url: cas(galleryAudioDigest),
+              size: fixtureBytes.get(galleryAudioDigest)!.length,
+              name: 'gallery.ogg',
+              mimeType: 'audio/ogg',
+              duration: 4,
+            },
+            {
+              kind: 'FILE',
+              url: cas(galleryFileDigest),
+              size: fixtureBytes.get(galleryFileDigest)!.length,
+              name: 'gallery.bin',
+              mimeType: 'application/octet-stream',
+            },
+          ],
+        }),
+        digests: [
+          galleryImageDigest,
+          galleryVideoDigest,
+          galleryAudioDigest,
+          galleryFileDigest,
+        ],
+      },
+      {
+        contentType: ContentType.CALL,
+        content: JSON.stringify({
+          type: 'CALL',
+          callType: 'VIDEO',
+          outcome: 'completed',
+          callerId: aliceLocalIdA,
+          calleeId: sourcePeer.id,
+          startedAt: now,
+          endedAt: now + 1_000,
+          durationMs: 1_000,
+        }),
+        digests: [],
+      },
+    ];
+
+    const sourceRows = await appA.database.transaction(async (tx) => {
+      const rows = [];
+      for (const [index, spec] of sourceSpecs.entries()) {
+        const seq = index + 1;
+        const [row] = await tx
+          .insert(message)
+          .values({
+            seq,
+            originSeq: seq,
+            profileRev: 1,
+            contentType: spec.contentType,
+            content: spec.content,
+            threadId: sourceThread.id,
+            creatorAccount: 'alice',
+            creatorDomain: 'local',
+            createdAt: new Date(now + index),
+            updatedAt: new Date(now + index),
+          })
+          .returning({ id: message.id, seq: message.seq });
+        if (spec.digests.length > 0) {
+          await tx.insert(messageAsset).values(
+            spec.digests.map((digest) => ({
+              messageId: row.id,
+              threadId: sourceThread.id,
+              digest,
+            })),
+          );
+        }
+        rows.push(row);
+      }
+      await tx
+        .update(messageThread)
+        .set({
+          curSeq: sourceSpecs.length,
+          lastMessageSeq: sourceSpecs.length,
+          lastMessagePreview: '[File set]',
+          lastMessageAt: new Date(now + sourceSpecs.length - 1),
+          updatedAt: new Date(now + sourceSpecs.length - 1),
+        })
+        .where(eq(messageThread.id, sourceThread.id));
+      return rows;
+    });
+
+    // Quote every supported source shape through the real local HTTP endpoint, then verify that the
+    // query endpoint enriches each stored seq-only reference with the correct target type.
+    const replyIds: string[] = [];
+    for (const [index, source] of sourceRows.entries()) {
+      const clientMessageId = randomUUID();
+      replyIds.push(clientMessageId);
+      const reply = await request(appA.baseUrl)
+        .post('/api/v1/send-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          threadId: sourceThread.id,
+          contentType: ContentType.PURE_TEXT,
+          clientMessageId,
+          content: JSON.stringify({
+            text: `reply to ${sourceSpecs[index].contentType}`,
+            quote: { seq: source.seq },
+          }),
+        });
+      expect(reply.body.code).toBe(BusinessCode.OK);
+    }
+    const quoted = await request(appA.baseUrl)
+      .post('/api/v1/query-messages')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ threadId: sourceThread.id, after: 0, take: 50 });
+    expect(quoted.body.code).toBe(BusinessCode.OK);
+    const quotedById = new Map(
+      quoted.body.data.messages.map(
+        (item: { clientMessageId?: string; content: string }) => [
+          item.clientMessageId,
+          item,
+        ],
+      ),
+    );
+    for (const [index, clientMessageId] of replyIds.entries()) {
+      expect(
+        JSON.parse(quotedById.get(clientMessageId)!.content).quote,
+      ).toMatchObject({
+        seq: sourceRows[index].seq,
+        contentType: sourceSpecs[index].contentType,
+      });
+    }
+
+    // First make an inner local bundle from all nine concrete types. It becomes the tenth (FORWARD)
+    // source type in the outer bundle that is actually sent across the federation boundary.
+    const innerId = randomUUID();
+    const inner = await request(appA.baseUrl)
       .post('/api/v1/send-forward')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send(payloadA);
-    expect(first.status).toBe(200);
-    expect(first.body.code).toBe(BusinessCode.OK);
+      .send({
+        threadId: sourceThread.id,
+        sourceMessages: sourceRows.map((row) => ({
+          threadId: sourceThread.id,
+          seq: row.seq,
+        })),
+        mode: 'HISTORY',
+        clientMessageId: innerId,
+      });
+    expect(inner.body.code).toBe(BusinessCode.OK);
+    expect(inner.body.data.contentType).toBe(ContentType.FORWARD);
+    const innerSeq = inner.body.data.seq as number;
+
+    const forwardQuoteId = randomUUID();
+    const forwardQuote = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: sourceThread.id,
+        contentType: ContentType.PURE_TEXT,
+        clientMessageId: forwardQuoteId,
+        content: JSON.stringify({
+          text: 'reply to nested forward',
+          quote: { seq: innerSeq },
+        }),
+      });
+    expect(forwardQuote.body.code).toBe(BusinessCode.OK);
+
+    const allQuoted = await request(appA.baseUrl)
+      .post('/api/v1/query-messages')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: sourceThread.id,
+        after: 0,
+        through: forwardQuote.body.data.seq,
+        take: 50,
+      });
+    const forwardQuoteRow = allQuoted.body.data.messages.find(
+      (item: { clientMessageId?: string }) =>
+        item.clientMessageId === forwardQuoteId,
+    );
+    expect(JSON.parse(forwardQuoteRow.content).quote).toMatchObject({
+      seq: innerSeq,
+      contentType: ContentType.FORWARD,
+    });
+
+    // Exercise DIRECT through the real local API for every allowed type, including FORWARD. A quoted
+    // text reply is also directly forwarded to prove that reply context is intentionally stripped.
+    const directSources = [
+      ...sourceRows.flatMap((row, index) =>
+        sourceSpecs[index].contentType === ContentType.CALL
+          ? []
+          : [
+              {
+                seq: row.seq,
+                contentType: sourceSpecs[index].contentType,
+              },
+            ],
+      ),
+      { seq: innerSeq, contentType: ContentType.FORWARD },
+      {
+        seq: quotedById.get(replyIds[0])!.seq as number,
+        contentType: ContentType.PURE_TEXT,
+        stripsQuote: true,
+      },
+    ];
+    for (const source of directSources) {
+      const direct = await request(appA.baseUrl)
+        .post('/api/v1/send-forward')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          threadId: sourceThread.id,
+          sourceMessages: [{ threadId: sourceThread.id, seq: source.seq }],
+          mode: 'DIRECT',
+          clientMessageId: randomUUID(),
+        });
+      expect(direct.body.code).toBe(BusinessCode.OK);
+      expect(direct.body.data.contentType).toBe(source.contentType);
+      if (source.stripsQuote) {
+        expect(JSON.parse(direct.body.data.content)).not.toHaveProperty(
+          'quote',
+        );
+      }
+    }
+
+    const destinationThreadA = await alicesThreadIdOnA();
+    const outerClientMessageId = randomUUID();
+    const outerPayload = {
+      threadId: destinationThreadA,
+      sourceMessages: [
+        ...sourceRows.map((row) => ({
+          threadId: sourceThread.id,
+          seq: row.seq,
+        })),
+        { threadId: sourceThread.id, seq: innerSeq },
+      ],
+      mode: 'HISTORY',
+      clientMessageId: outerClientMessageId,
+    };
+    const outer = await request(appA.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(outerPayload);
+    expect(outer.status).toBe(200);
+    expect(outer.body.code).toBe(BusinessCode.OK);
+
+    // HTTP retry must return the exact carrier instead of creating another bundle/message.
     const retry = await request(appA.baseUrl)
       .post('/api/v1/send-forward')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send(payloadA);
-    expect(retry.body.data.seq).toBe(first.body.data.seq);
+      .send(outerPayload);
+    expect(retry.body.data.seq).toBe(outer.body.data.seq);
     expect(
-      await countMessages(appA, eq(message.clientMessageId, clientMessageIdA)),
+      await countMessages(
+        appA,
+        eq(message.clientMessageId, outerClientMessageId),
+      ),
     ).toBe(1);
 
-    let importedOnB: {
-      threadId: number;
-      seq: number;
-      forwardMessage: {
-        bundleId: string;
-        bundle: { messageCount: number };
-      } | null;
-    } | null = null;
+    let importedOnB: Awaited<ReturnType<typeof findLatestForwardMessage>>;
     await vi.waitFor(
       async () => {
         importedOnB = await findLatestForwardMessage(appB, {
           account: 'alice',
           domain: DOM_A,
         });
-        expect(importedOnB?.forwardMessage?.bundle.messageCount).toBe(1);
+        expect(importedOnB?.forwardMessage?.bundle.messageCount).toBe(19);
       },
-      { timeout: 5000 },
+      { timeout: 15_000, interval: 100 },
     );
 
-    const clientMessageIdB = randomUUID();
-    const nested = await request(appB.baseUrl)
+    const closureResponse = await request(appB.baseUrl)
+      .get(`/api/v1/forward-bundles/${importedOnB!.forwardMessage!.bundleId}`)
+      .set('Authorization', `Bearer ${tokenB}`);
+    expect(closureResponse.body.code).toBe(BusinessCode.OK);
+    const closure = closureResponse.body.data as {
+      messages: Array<{ contentType: ContentType }>;
+      children: Array<{ messages: Array<{ contentType: ContentType }> }>;
+      assets: Array<{ digest: string; bytes: number }>;
+      accessContext: { threadId: number; seq: number };
+    };
+    expect(closure.messages.map((item) => item.contentType)).toEqual([
+      ...sourceSpecs.map((item) => item.contentType),
+      ContentType.FORWARD,
+    ]);
+    expect(closure.children).toHaveLength(1);
+    expect(
+      closure.children[0].messages.map((item) => item.contentType),
+    ).toEqual(sourceSpecs.map((item) => item.contentType));
+    expect(new Set(closure.assets.map((asset) => asset.digest)).size).toBe(
+      closure.assets.length,
+    );
+    for (const digest of fixtureBytes.keys()) {
+      expect(closure.assets.map((asset) => asset.digest)).toContain(digest);
+    }
+
+    // Every declared closure asset, including profile snapshots, must become byte-identical local CAS
+    // data and be readable through appB's normal bearer + per-forward-message authorization boundary.
+    await vi.waitFor(
+      async () => {
+        for (const asset of closure.assets) {
+          const row = await appB.database.query.mediaAsset.findFirst({
+            where: and(
+              eq(mediaAsset.digest, asset.digest),
+              eq(mediaAsset.isDeleted, false),
+            ),
+          });
+          expect(row?.bytes).toBe(BigInt(asset.bytes));
+          const local = await readFile(
+            join(
+              appB.dataDir,
+              'cas',
+              asset.digest.slice(0, 2),
+              asset.digest.slice(2, 4),
+              asset.digest,
+            ),
+          );
+          expect(createHash('sha256').update(local).digest('hex')).toBe(
+            asset.digest,
+          );
+        }
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+    for (const asset of closure.assets) {
+      const download = await request(appB.baseUrl)
+        .get(
+          `${cas(asset.digest)}?threadId=${closure.accessContext.threadId}&seq=${closure.accessContext.seq}`,
+        )
+        .set('Authorization', `Bearer ${tokenB}`)
+        .buffer(true);
+      expect(download.status).toBe(200);
+      expect(Buffer.isBuffer(download.body)).toBe(true);
+      expect(createHash('sha256').update(download.body).digest('hex')).toBe(
+        asset.digest,
+      );
+    }
+
+    // Re-wrap the received carrier twice more (B→A→B). Each pass must retain the complete flat
+    // descendant closure and increase the aggregate message count by exactly one.
+    const nestedOnB = await request(appB.baseUrl)
       .post('/api/v1/send-forward')
       .set('Authorization', `Bearer ${tokenB}`)
       .send({
@@ -1015,30 +1473,80 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           { threadId: importedOnB!.threadId, seq: importedOnB!.seq },
         ],
         mode: 'HISTORY',
-        clientMessageId: clientMessageIdB,
+        clientMessageId: randomUUID(),
       });
-    expect(nested.status).toBe(200);
-    expect(nested.body.code).toBe(BusinessCode.OK);
+    expect(nestedOnB.body.code).toBe(BusinessCode.OK);
 
+    let relayedOnA: Awaited<ReturnType<typeof findLatestForwardMessage>>;
     await vi.waitFor(
       async () => {
-        const relayed = await findLatestForwardMessage(appA, {
+        relayedOnA = await findLatestForwardMessage(appA, {
           account: 'bob',
           domain: DOM_B,
         });
-        expect(relayed?.forwardMessage?.bundle.messageCount).toBe(2);
-        const closure =
+        expect(relayedOnA?.forwardMessage?.bundle.messageCount).toBe(20);
+        expect(
           await appA.database.query.forwardBundleDependency.findMany({
             where: eq(
               forwardBundleDependency.parentBundleId,
-              relayed!.forwardMessage!.bundleId,
+              relayedOnA!.forwardMessage!.bundleId,
+            ),
+          }),
+        ).toHaveLength(2);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+
+    const nestedOnA = await request(appA.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: relayedOnA!.threadId,
+        sourceMessages: [
+          { threadId: relayedOnA!.threadId, seq: relayedOnA!.seq },
+        ],
+        mode: 'HISTORY',
+        clientMessageId: randomUUID(),
+      });
+    expect(nestedOnA.body.code).toBe(BusinessCode.OK);
+
+    await vi.waitFor(
+      async () => {
+        const finalOnB = await findLatestForwardMessage(appB, {
+          account: 'alice',
+          domain: DOM_A,
+        });
+        expect(finalOnB?.forwardMessage?.bundle.messageCount).toBe(21);
+        expect(
+          await appB.database.query.forwardBundleDependency.findMany({
+            where: eq(
+              forwardBundleDependency.parentBundleId,
+              finalOnB!.forwardMessage!.bundleId,
+            ),
+          }),
+        ).toHaveLength(3);
+        const finalAssets =
+          await appB.database.query.forwardBundleAsset.findMany({
+            where: eq(
+              forwardBundleAsset.bundleId,
+              finalOnB!.forwardMessage!.bundleId,
             ),
           });
-        expect(closure).toHaveLength(1);
+        expect(new Set(finalAssets.map((asset) => asset.digest)).size).toBe(
+          finalAssets.length,
+        );
+        expect(finalAssets.length).toBeGreaterThanOrEqual(
+          closure.assets.length,
+        );
+        for (const asset of closure.assets) {
+          expect(finalAssets.map((item) => item.digest)).toContain(
+            asset.digest,
+          );
+        }
       },
-      { timeout: 5000 },
+      { timeout: 15_000, interval: 100 },
     );
-  }, 30_000);
+  }, 120_000);
 
   it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {
     // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content

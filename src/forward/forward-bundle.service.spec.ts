@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
-import { forwardBundle } from '../database/schema.js';
+import { forwardBundle, forwardBundleAsset } from '../database/schema.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
@@ -267,6 +267,121 @@ describe('ForwardBundleService', () => {
       { digest: first, bytes: 10 },
       { digest: second, bytes: 20 },
     ]);
+  });
+
+  it('rebuilds untrusted LINK and CONTACT_CARD snapshots and reconciles the manifest exactly', async () => {
+    const linkDigest = 'a'.repeat(64);
+    const contactDigest = 'b'.repeat(64);
+    const retainedDigest = 'c'.repeat(64);
+    const rootId = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
+    const messages = [
+      {
+        id: 1,
+        author: { account: 'alice', domain: 'peer.test' },
+        contentType: ContentType.LINK,
+        content: JSON.stringify({
+          url: 'https://example.test',
+          title: 'Remote',
+          description: '',
+          image: `/uploads/msg-assets/aa/aa/${linkDigest}`,
+        }),
+        sentAt: 1,
+      },
+      {
+        id: 2,
+        author: { account: 'alice', domain: 'peer.test' },
+        contentType: ContentType.CONTACT_CARD,
+        content: JSON.stringify({
+          account: 'bob',
+          domain: 'peer.test',
+          displayName: 'Bob',
+          bio: '',
+          avatar: `/uploads/msg-assets/bb/bb/${contactDigest}`,
+        }),
+        sentAt: 2,
+      },
+      {
+        id: 3,
+        author: { account: 'alice', domain: 'peer.test' },
+        contentType: ContentType.IMAGE,
+        content: JSON.stringify({
+          url: `/uploads/msg-assets/cc/cc/${retainedDigest}`,
+          w: 1,
+          h: 1,
+          size: 30,
+        }),
+        sentAt: 3,
+      },
+    ];
+    const bundleUpdates: Array<Record<string, unknown>> = [];
+    const insertedAssets: Array<Record<string, unknown>> = [];
+    let deletedAssets = false;
+    const tx = {
+      update: vi.fn((table: unknown) => ({
+        set: vi.fn((values: Record<string, unknown>) => ({
+          where: vi.fn(async () => {
+            if (table === forwardBundle) bundleUpdates.push(values);
+          }),
+        })),
+      })),
+      delete: vi.fn((table: unknown) => ({
+        where: vi.fn(async () => {
+          if (table === forwardBundleAsset) deletedAssets = true;
+        }),
+      })),
+      insert: vi.fn((table: unknown) => ({
+        values: vi.fn(async (values: Array<Record<string, unknown>>) => {
+          if (table === forwardBundleAsset) insertedAssets.push(...values);
+        }),
+      })),
+    };
+    const database = {
+      db: {
+        query: {
+          forwardBundle: {
+            findFirst: vi.fn().mockResolvedValue({
+              id: rootId,
+              forwardBundleDependencies_parentBundleId: [],
+            }),
+            findMany: vi.fn().mockResolvedValue([{ id: rootId, messages }]),
+          },
+          forwardBundleAsset: {
+            findMany: vi.fn().mockResolvedValue([
+              { digest: linkDigest, bytes: 10n },
+              { digest: contactDigest, bytes: 20n },
+              { digest: retainedDigest, bytes: 30n },
+            ]),
+          },
+          mediaAsset: {
+            findFirst: vi.fn().mockResolvedValue({ bytes: 30n }),
+          },
+        },
+        transaction: vi.fn(async (work: (client: typeof tx) => Promise<void>) =>
+          work(tx),
+        ),
+      },
+    };
+    const service = forwardService(database);
+
+    await service.rebuildUntrustedCards(rootId, async (url) => ({
+      url,
+      title: 'Local',
+      description: '',
+    }));
+
+    expect(deletedAssets).toBe(true);
+    expect(insertedAssets).toEqual([
+      { bundleId: rootId, ordinal: 0, digest: retainedDigest, bytes: 30n },
+    ]);
+    const rewritten = bundleUpdates.find((value) => value['messages'])!
+      .messages as Array<{ content: string }>;
+    expect(JSON.parse(rewritten[0].content)).toEqual({
+      url: 'https://example.test',
+      title: 'Local',
+      description: '',
+    });
+    expect(JSON.parse(rewritten[1].content)).not.toHaveProperty('avatar');
+    expect(bundleUpdates).toContainEqual({ assetCount: 1, totalBytes: 30n });
   });
 
   it('builds a closure containing an imported minimal forward card', async () => {

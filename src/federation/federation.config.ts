@@ -15,6 +15,19 @@ export interface FederationConfig {
   /** Dev-only static peer routes. This deliberately bypasses DNS/SRV so two local nodes can federate
    *  over a Docker network while keeping their logical SOMS domains. Forbidden in production. */
   devRoutes: Readonly<Record<string, string>>;
+  /** How forwarded LINK artwork and CONTACT_CARD avatars are handled. `trust` preserves the immutable
+   *  bundle snapshot and its downloaded CAS assets; `rebuild` regenerates LINK cards locally and strips
+   *  contact avatars because a card snapshot has no independent resource locator to re-resolve. */
+  forwardedResourcePolicy: 'trust' | 'rebuild';
+}
+
+function loadForwardedResourcePolicy(): 'trust' | 'rebuild' {
+  const value = process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY;
+  if (value === undefined || value === 'trust') return 'trust';
+  if (value === 'rebuild') return 'rebuild';
+  throw new Error(
+    'SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY must be trust or rebuild',
+  );
 }
 
 function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
@@ -93,6 +106,7 @@ export function loadFederationConfig(): FederationConfig {
     keyPath: dataDirectory('soms-s2s-key.json'),
     allowInsecureHttp,
     devRoutes: loadDevRoutes(allowInsecureHttp),
+    forwardedResourcePolicy: loadForwardedResourcePolicy(),
   };
 }
 

@@ -614,8 +614,10 @@ export class ForwardBundleService {
     };
   }
 
-  /** Rebuild receiver-local artwork for LINK snapshots after a federated bundle has committed. */
-  async rebuildLinkCards(
+  /** Apply the opt-in untrusted-resource policy after a federated bundle commits: LINK snapshots are
+   *  rebuilt locally, while CONTACT_CARD avatars are removed because the snapshot carries no
+   *  independently resolvable profile coordinate. The root manifest is then reconciled exactly. */
+  async rebuildUntrustedCards(
     rootBundleId: string,
     build: (url: string) => Promise<LinkContent>,
   ): Promise<void> {
@@ -637,30 +639,65 @@ export class ForwardBundleService {
       id: string;
       messages: ForwardBundleMessage[];
     }> = [];
-    const digests = new Set<string>();
     for (const row of rows) {
       let changed = false;
       const messages = await Promise.all(
         (row.messages as ForwardBundleMessage[]).map(async (message) => {
+          if (message.contentType === ContentType.CONTACT_CARD) {
+            const value = JSON.parse(message.content) as Record<
+              string,
+              unknown
+            >;
+            if (value['avatar'] === undefined) return message;
+            const withoutAvatar = { ...value };
+            delete withoutAvatar['avatar'];
+            changed = true;
+            return { ...message, content: JSON.stringify(withoutAvatar) };
+          }
           if (message.contentType !== ContentType.LINK) return message;
           const value = JSON.parse(message.content) as { url?: unknown };
           if (typeof value.url !== 'string') return message;
           const card = await build(value.url);
           changed = true;
           const content = JSON.stringify(card);
-          extractDigests(content).forEach((digest) => digests.add(digest));
           return { ...message, content };
         }),
       );
       if (changed) rebuilt.push({ id: row.id, messages });
     }
     if (rebuilt.length === 0) return;
+    const rebuiltById = new Map(
+      rebuilt.map((item) => [item.id, item.messages]),
+    );
+    const digests = new Set<string>();
+    for (const row of rows) {
+      const messages =
+        rebuiltById.get(row.id) ?? (row.messages as ForwardBundleMessage[]);
+      for (const message of messages) {
+        if (message.profile?.avatarDigest) {
+          digests.add(message.profile.avatarDigest);
+        }
+        extractDigests(message.content).forEach((digest) =>
+          digests.add(digest),
+        );
+      }
+    }
+    const existing = await this.database.db.query.forwardBundleAsset.findMany({
+      where: eq(forwardBundleAsset.bundleId, rootBundleId),
+      columns: { digest: true, bytes: true },
+    });
+    const existingBytes = new Map(
+      existing.map((asset) => [asset.digest, asset.bytes]),
+    );
     const assets = await Promise.all(
       [...digests].map(async (digest) => {
         const row = await this.database.db.query.mediaAsset.findFirst({
           where: eq(mediaAsset.digest, digest),
         });
-        return { digest, bytes: BigInt(row?.bytes ?? 1n) };
+        return {
+          digest,
+          bytes: BigInt(row?.bytes ?? existingBytes.get(digest) ?? 1n),
+        };
       }),
     );
     await this.database.db.transaction(async (tx) => {
@@ -670,34 +707,25 @@ export class ForwardBundleService {
           .set({ messages: item.messages })
           .where(eq(forwardBundle.id, item.id));
       }
+      await tx
+        .delete(forwardBundleAsset)
+        .where(eq(forwardBundleAsset.bundleId, rootBundleId));
       if (assets.length > 0) {
-        const existing = await tx.query.forwardBundleAsset.findMany({
-          where: eq(forwardBundleAsset.bundleId, rootBundleId),
-          columns: { digest: true, ordinal: true },
-        });
-        const known = new Set(existing.map((asset) => asset.digest));
-        const additions = assets.filter((asset) => !known.has(asset.digest));
-        if (additions.length > 0) {
-          const start = existing.reduce(
-            (max, asset) => Math.max(max, asset.ordinal + 1),
-            0,
-          );
-          await tx.insert(forwardBundleAsset).values(
-            additions.map((asset, index) => ({
-              bundleId: rootBundleId,
-              ordinal: start + index,
-              ...asset,
-            })),
-          );
-          await tx
-            .update(forwardBundle)
-            .set({
-              assetCount: existing.length + additions.length,
-              totalBytes: sql`${forwardBundle.totalBytes} + ${additions.reduce((sum, asset) => sum + asset.bytes, 0n)}`,
-            })
-            .where(eq(forwardBundle.id, rootBundleId));
-        }
+        await tx.insert(forwardBundleAsset).values(
+          assets.map((asset, ordinal) => ({
+            bundleId: rootBundleId,
+            ordinal,
+            ...asset,
+          })),
+        );
       }
+      await tx
+        .update(forwardBundle)
+        .set({
+          assetCount: assets.length,
+          totalBytes: assets.reduce((sum, asset) => sum + asset.bytes, 0n),
+        })
+        .where(eq(forwardBundle.id, rootBundleId));
     });
   }
 
@@ -733,6 +761,11 @@ export class ForwardBundleService {
         throw this.invalidWire('invalid flat forward child');
       }
       childIds.add(child.id);
+    }
+    const assetBytes = new Map<string, number>();
+    for (const asset of closure.assets) {
+      this.validateWireAsset(asset);
+      assetBytes.set(asset.digest, asset.bytes);
     }
     const expectedDigests = new Set<string>();
     const validateMessages = (messages: ForwardBundleMessage[]): void => {
@@ -776,7 +809,11 @@ export class ForwardBundleService {
             message.content,
           ))
             expectedDigests.add(digest);
-          projectForwardContentFromWire(message.contentType, message.content);
+          projectForwardContentFromWire(
+            message.contentType,
+            message.content,
+            assetBytes,
+          );
         } catch {
           throw this.invalidWire('invalid forward message content');
         }
@@ -810,7 +847,6 @@ export class ForwardBundleService {
     };
     validateMessages(closure.messages);
     for (const child of closure.children) validateMessages(child.messages);
-    for (const asset of closure.assets) this.validateWireAsset(asset);
     const declaredDigests = new Set(
       closure.assets.map((asset) => asset.digest),
     );
@@ -849,6 +885,7 @@ export class ForwardBundleService {
         content: projectForwardContentFromWire(
           message.contentType,
           message.content,
+          assetBytes,
         ),
         ...(message.childBundleId
           ? {
@@ -857,6 +894,7 @@ export class ForwardBundleService {
                 projectForwardContentFromWire(
                   message.contentType,
                   message.content,
+                  assetBytes,
                 ),
                 idMap.get(message.childBundleId)!,
               ),
@@ -1192,6 +1230,7 @@ function projectForwardContentToWire(
 function projectForwardContentFromWire(
   contentType: string,
   content: string,
+  assetBytes: ReadonlyMap<string, number>,
 ): string {
   if (!isFederatedContentType(contentType)) {
     throw new Error('invalid forward content type');
@@ -1200,6 +1239,7 @@ function projectForwardContentFromWire(
     contentType,
     content,
     process.env.SOMS_DOMAIN ?? 'local',
+    assetBytes,
   );
 }
 

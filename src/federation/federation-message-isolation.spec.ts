@@ -60,7 +60,7 @@ describe('federation message context isolation', () => {
           threadId: 9,
           seq: 70,
           originSeq: 70,
-          federationSourceDomain: 'origin.test',
+          sourceNamespaceId: 4,
           creatorAccount: 'bob',
           creatorDomain: 'origin.test',
           contentType: 'PURE_TEXT',
@@ -132,11 +132,12 @@ describe('federation message context isolation', () => {
     const signalDeletionOutbound = vi.fn();
     const notifyFeedUpdates = vi.fn();
     Object.assign(service, {
+      config: { forwardedResourcePolicy: 'trust' },
       clientStateFeed: {
         readEndId: vi.fn(),
         notifyFeedUpdates,
       },
-      forwardBundles: { rebuildLinkCards: vi.fn() },
+      forwardBundles: { rebuildUntrustedCards: vi.fn() },
       signalOutbound,
       signalDeletionOutbound,
       unblockedRecipients: vi.fn(),
@@ -166,6 +167,48 @@ describe('federation message context isolation', () => {
     expect(notifyFeedUpdates).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['trust', 0],
+    ['rebuild', 1],
+  ] as const)(
+    'applies the %s forwarded-resource policy after bundle import',
+    async (policy, expectedCalls) => {
+      const service = Object.create(
+        FederationService.prototype,
+      ) as FederationService & Record<string, unknown>;
+      const rebuildUntrustedCards = vi.fn().mockResolvedValue(undefined);
+      Object.assign(service, {
+        config: { forwardedResourcePolicy: policy },
+        clientStateFeed: { readEndId: vi.fn(), notifyFeedUpdates: vi.fn() },
+        forwardBundles: { rebuildUntrustedCards },
+        linkPreview: { buildCardContent: vi.fn() },
+      });
+
+      await service.publishMessageQueryEffects('origin.test', [
+        {
+          kind: 'message',
+          historical: true,
+          threadId: 9,
+          originSeq: 70,
+          recipients: [],
+          toAccount: 'alice',
+          author: { account: 'bob', domain: 'origin.test' },
+          localForwardBundleId: 'bundle',
+          message: {
+            seq: 70,
+            profileRev: 0,
+            creatorAccount: 'bob',
+            creatorDomain: 'origin.test',
+            createdAt: new Date(),
+            isDeleted: false,
+          },
+        },
+      ] as never);
+
+      expect(rebuildUntrustedCards).toHaveBeenCalledTimes(expectedCalls);
+    },
+  );
+
   it('publishes a committed live message through the client state-feed throttler', async () => {
     const service = Object.create(
       FederationService.prototype,
@@ -176,8 +219,9 @@ describe('federation message context isolation', () => {
       .mockResolvedValueOnce(17);
     const notifyFeedUpdates = vi.fn();
     Object.assign(service, {
+      config: { forwardedResourcePolicy: 'trust' },
       clientStateFeed: { readEndId, notifyFeedUpdates },
-      forwardBundles: { rebuildLinkCards: vi.fn() },
+      forwardBundles: { rebuildUntrustedCards: vi.fn() },
       linkPreview: { buildCardContent: vi.fn() },
       signalOutbound: vi.fn().mockResolvedValue(undefined),
       signalDeletionOutbound: vi.fn().mockResolvedValue(undefined),
@@ -282,23 +326,24 @@ describe('federation message context isolation', () => {
     };
 
     await expect(
-      service.apply(tx as never, 'group-origin.test', [item('1')], {} as never),
+      service.apply(tx as never, 'group-origin.test', [item('1')], {
+        namespaceId: 9,
+      } as never),
     ).resolves.toEqual([]);
 
     expect(update).not.toHaveBeenCalled();
     expect(receiptValues).toHaveBeenCalledWith({
       peerDomain: 'group-origin.test',
+      namespaceId: 9,
       threadId: 9,
       peerSeq: 1,
       messageId: 1n,
     });
   });
 
-  it('backfills the publisher coordinate for a self-authored reverse item', async () => {
+  it('records a reverse receipt without rewriting the local message source', async () => {
     const service = createMessagePageService();
-    const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn().mockReturnValue({ where });
-    const update = vi.fn().mockReturnValue({ set });
+    const update = vi.fn();
     const receiptValues = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -319,8 +364,6 @@ describe('federation message context isolation', () => {
           findFirst: vi.fn().mockResolvedValue({
             id: 1n,
             createdAt: new Date(1_700_000_000_000),
-            originSeq: null,
-            federationSourceDomain: null,
           }),
         },
         federationMessageReceipt: {
@@ -337,7 +380,7 @@ describe('federation message context isolation', () => {
         tx as never,
         'group-origin.test',
         [reverseItem],
-        {} as never,
+        { namespaceId: 9 } as never,
         {
           sequencePolicy: {
             kind: 'MAP_ORIGIN',
@@ -349,15 +392,10 @@ describe('federation message context isolation', () => {
       ),
     ).resolves.toEqual([]);
 
-    expect(set).toHaveBeenCalledWith(
-      expect.objectContaining({
-        originSeq: 70,
-        federationSourceDomain: 'group-origin.test',
-        updatedAt: expect.any(Date),
-      }),
-    );
+    expect(update).not.toHaveBeenCalled();
     expect(receiptValues).toHaveBeenCalledWith({
       peerDomain: 'group-origin.test',
+      namespaceId: 9,
       threadId: 9,
       peerSeq: 70,
       messageId: 1n,
