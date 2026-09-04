@@ -420,7 +420,14 @@ export class ProfileResolutionCoordinatorService {
       selector.kind === 'account' ? selector.domain : selector.publisherDomain!,
       selector.namespaceId,
     );
-    return this.clientProfile(profile);
+    const materialized = await this.readDurable(selector);
+    if (!materialized) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'materialized profile revision is unavailable',
+      );
+    }
+    return materialized;
   }
 
   private clientProfile(profile: S2SProfile): ResolvedClientProfile {

@@ -135,7 +135,7 @@ export type PeerResponseToken = FederationContext;
  * use the REAL config.domain for local users' wire addresses ({ account: <account>, domain: <config.domain> }), never "local".
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
- * the profile embedded in the friend-request payload (and refreshed via fetchRemoteUser on
+ * the profile embedded in the friend-request payload (and refreshed via fetchRemoteAccount on
  * approve + the chat-open staleness probe). Deletion is LOCAL-ONLY — unfriending never fans out an S2S
  * notification; the peer discovers the severed edge lazily, via a rejection-on-send in Step 2.
  */
@@ -1045,9 +1045,11 @@ export class FederationService {
     return result.count;
   }
 
-  /** Public profile of a local user (GET /s2s/v1/users/:account). Null if not local / not found. */
-  async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
-    return this.profiles.getLocalUserProfile(address);
+  /** Public profile of a local user or group. Null if not local, unavailable, or not found. */
+  async getLocalAccountProfile(
+    address: S2SAddress,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getLocalAccountProfile(address);
   }
 
   async getAuthorizedLocalProfile(
@@ -1818,25 +1820,25 @@ export class FederationService {
   }
 
   /**
-   * Fetch a peer user's public profile (signed GET /s2s/v1/users/:account). Used by federated
-   * resolve (the add-friend card), ensureForeignUserLocalized (send-friend-request safety net), and
-   * initial invite/profile localization. Throws on any non-success (the caller
+   * Fetch a peer user or group's public profile (signed GET /s2s/v1/accounts/:account). Used by
+   * federated resolve, ensureForeignUserLocalized (send-friend-request safety net), and initial
+   * invite/profile localization. Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
-  async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
-    return this.profiles.fetchRemoteUser(address);
+  async fetchRemoteAccount(address: S2SAddress): Promise<S2SProfile> {
+    return this.profiles.fetchRemoteAccount(address);
   }
 
   // ─── inbound / re-pull localization ──────────────────────────────────────────
 
   /**
    * Localize a foreign stub from a received S2SProfile: decode + persist the avatar via the
-   * shared saveAvatars pipeline, write name/avatar/bio, and stamp remoteUpdatedAt. Idempotent + gated
+   * shared byte-preserving avatar pipeline, write name/avatar/bio, and stamp remoteUpdatedAt. Idempotent + gated
    * on the profile revision — skips entirely when profile.updatedAt is not newer than the stored
    * remoteUpdatedAt (so a re-delivered payload or a no-change re-pull does no work). Avatar decode
-   * failures (corrupt/oversized bytes from a compromised peer) are isolated: name/bio/remoteUpdatedAt
-   * still advance and the existing avatar is kept, so a broken avatar can't break friend-flow (and
-   * advancing remoteUpdatedAt prevents a probe retry-loop on the same broken bytes).
+   * failures (corrupt/oversized bytes from a compromised peer) are isolated: the truncated name/bio
+   * and revision still advance while the avatar is cleared, so a broken avatar can't break friend-flow
+   * or leave an older revision's image attached to the new profile.
    */
   async localizeForeignProfile(
     userId: number,

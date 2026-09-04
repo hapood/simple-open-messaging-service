@@ -67,6 +67,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     const peerHttp = { get: vi.fn().mockResolvedValue(wire) };
     const profiles = {
       materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
+      getStoredProfile: vi.fn().mockResolvedValue(wire),
     };
     const threadSources = {
       resolve: vi.fn().mockResolvedValue({
@@ -103,6 +104,12 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       'group-host.example',
       7,
     );
+    expect(profiles.getStoredProfile).toHaveBeenCalledWith(
+      'alice',
+      'member.example',
+      7,
+      9,
+    );
     expect(result).toEqual({
       account: 'alice',
       domain: 'member.example',
@@ -125,6 +132,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     const peerHttp = { get: vi.fn().mockResolvedValue(wire) };
     const profiles = {
       materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
+      getStoredProfile: vi.fn().mockResolvedValue(wire),
     };
     const subject = new ProfileResolutionCoordinatorService(
       {} as never,
