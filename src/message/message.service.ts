@@ -271,8 +271,8 @@ export class MessageService {
    * tx — Postgres row-locks the MessageThread row until commit, so concurrent sends to the SAME thread
    * serialize (a brief wait, never an error) and each gets a distinct, gapless-modulo-rollback value.
    * No MAX() aggregate and no retry loop: the row lock IS the allocation authority. A local message
-   * keeps originSeq/originServerTime null until its self-authored message-feed receipt returns; the
-   * publisher uses seq as the wire originSeq while the receipt is still absent.
+   * starts with originSeq equal to its local seq. A self-authored message-feed receipt may later replace
+   * that provisional coordinate with the direct remote publisher's coordinate.
    */
   async writeMsgToThread(
     userId: number,
@@ -337,7 +337,6 @@ export class MessageService {
             'conversation is read-only',
           );
         }
-        // originSeq remains null until a remote publisher returns this self-authored item as a receipt.
         const textContent =
           type === ContentType.PURE_TEXT
             ? parseTextMessageContent(content)
@@ -445,6 +444,7 @@ export class MessageService {
             profileRev: writeAccess.profileRev,
             clientMessageId,
             seq,
+            originSeq: seq,
             updatedAt: new Date(),
           })
           .returning();
@@ -1134,6 +1134,7 @@ export class MessageService {
             )`,
             clientMessageId,
             seq,
+            originSeq: seq,
             updatedAt: new Date(),
           })
           .returning();

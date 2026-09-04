@@ -7,9 +7,12 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
+  isNull,
   lt,
   lte,
   ne,
+  or,
   sql,
 } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -24,8 +27,6 @@ import {
   messageAsset,
   messageThread,
   peerStateFeed,
-  threadMember,
-  user,
 } from '../database/schema.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import {
@@ -43,20 +44,22 @@ import type {
   FederationByteDescriptor,
   FederatedMessagePayload,
 } from './federated-message-types.js';
+import {
+  resolveAuthorizedFederationThreadInTx,
+  type FederationThreadAddress,
+  type FederationThreadQuery,
+} from './federation-thread-query-authorization.js';
+
+export type {
+  FederationThreadAddress,
+  FederationThreadQuery,
+} from './federation-thread-query-authorization.js';
 
 export const FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE = 100;
 export const FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE = 200;
 export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
   ContentType,
 ).filter((type) => type !== ContentType.SYSTEM);
-
-export type FederationThreadAddress =
-  | { account: string; peerAccount: string }
-  | { account: string };
-
-export type FederationThreadQuery =
-  | { type: 'GROUP'; account: string }
-  | { type: 'P2P'; account: string; peerAccount: string };
 
 export type FederationMessageFeedAsset = FederationByteDescriptor;
 
@@ -103,17 +106,27 @@ export class FederationMessageFeedService {
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    const { messageAccessAfterSeq } = await this.resolveAuthorizedThread(
-      peerDomain,
-      namespaceId,
-      selector,
-    );
-    const currentEnd = Math.max(
-      await this.database.db.transaction((tx) =>
-        this.readAdvertisedMessageEnd(tx, peerDomain, namespaceId, selector),
-      ),
-      messageAccessAfterSeq,
-    );
+    const { messageAccessAfterSeq, currentEnd } =
+      await this.database.db.transaction(async (tx) => {
+        const authorized = await resolveAuthorizedFederationThreadInTx(
+          tx,
+          peerDomain,
+          namespaceId,
+          selector,
+        );
+        return {
+          messageAccessAfterSeq: authorized.messageAccessAfterSeq,
+          currentEnd: Math.max(
+            await this.readAdvertisedMessageEnd(
+              tx,
+              peerDomain,
+              namespaceId,
+              selector,
+            ),
+            authorized.messageAccessAfterSeq,
+          ),
+        };
+      });
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
@@ -143,9 +156,14 @@ export class FederationMessageFeedService {
       this.invalidThrough();
     if (before !== undefined && through !== undefined && through > before)
       this.invalidReverseThrough();
-    const { threadId, messageAccessAfterSeq } =
-      await this.resolveAuthorizedThread(peerDomain, namespaceId, selector);
     return this.database.db.transaction(async (tx) => {
+      const { threadId, messageAccessAfterSeq, address, groupQueryDirection } =
+        await resolveAuthorizedFederationThreadInTx(
+          tx,
+          peerDomain,
+          namespaceId,
+          selector,
+        );
       const currentEnd = Math.max(
         await this.readAdvertisedMessageEnd(
           tx,
@@ -212,6 +230,18 @@ export class FederationMessageFeedService {
                 eq(message.isDeleted, false),
                 eq(message.localState, 'READY'),
                 ne(message.contentType, ContentType.SYSTEM),
+                groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                  ? or(
+                      and(
+                        eq(message.creatorDomain, 'local'),
+                        isNull(message.federationSourceDomain),
+                      ),
+                      and(
+                        isNotNull(message.originSeq),
+                        eq(message.federationSourceDomain, peerDomain),
+                      ),
+                    )
+                  : undefined,
                 includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
               ),
             )
@@ -222,6 +252,7 @@ export class FederationMessageFeedService {
         tx,
         selected,
         peerDomain,
+        address,
       );
       const scannedThrough =
         rows.length > take
@@ -274,14 +305,10 @@ export class FederationMessageFeedService {
       authorDomain: string;
     }>,
     peerDomain: string,
+    threadAddress: FederationThreadAddress,
   ): Promise<FederationMessageFeedMessage[]> {
     if (rows.length === 0) return [];
     const messageIds = rows.map((row) => row.messageId);
-    const addresses = await this.threadAddressesInTx(
-      tx,
-      [...new Set(rows.map((row) => row.threadId))],
-      peerDomain,
-    );
     const groupIds = rows.flatMap((row) =>
       row.groupId === null ? [] : [row.groupId],
     );
@@ -354,7 +381,7 @@ export class FederationMessageFeedService {
 
     const result: FederationMessageFeedMessage[] = [];
     for (const row of rows) {
-      const thread = this.requiredAddress(addresses, row.threadId);
+      const thread = threadAddress;
       const author = {
         account: row.authorAccount,
         domain: this.wireDomain(row.authorDomain),
@@ -459,152 +486,6 @@ export class FederationMessageFeedService {
     return result;
   }
 
-  async resolveAuthorizedThread(
-    peerDomain: string,
-    namespaceId: number,
-    selector: FederationThreadQuery,
-  ): Promise<{ threadId: number; messageAccessAfterSeq: number }> {
-    const rows =
-      selector.type === 'GROUP'
-        ? await this.database.db.execute<{
-            threadId: number;
-            messageAccessAfterSeq: number;
-          }>(sql`
-            SELECT thread.id AS "threadId",
-              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
-            FROM "MessageThread" thread
-            JOIN "Group" group_user ON group_user.id = thread."groupId"
-            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
-              AND audience."targetDomain" = ${peerDomain}
-              AND audience."targetNamespaceId" = ${namespaceId}
-              AND audience."localUserId" IS NULL
-            WHERE thread.type = 'GROUP'
-              AND group_user.account = ${selector.account}
-            LIMIT 1
-          `)
-        : await this.database.db.execute<{
-            threadId: number;
-            messageAccessAfterSeq: number;
-          }>(sql`
-            SELECT thread.id AS "threadId",
-              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
-            FROM "MessageThread" thread
-            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
-              AND audience."targetDomain" = ${peerDomain}
-              AND audience."targetNamespaceId" = ${namespaceId}
-              AND audience."localUserId" IS NULL
-            WHERE thread.type = 'P2P'
-              AND EXISTS (
-                SELECT 1 FROM "ThreadMember" member_link
-                JOIN "User" member ON member.id = member_link."userId"
-                WHERE member_link."threadId" = thread.id
-                  AND member_link."left" = false
-                  AND member.account = ${selector.account}
-                  AND member.domain = 'local'
-                  AND member."namespaceId" = 0
-              )
-              AND EXISTS (
-                SELECT 1 FROM "ThreadMember" member_link
-                JOIN "User" member ON member.id = member_link."userId"
-                WHERE member_link."threadId" = thread.id
-                  AND member_link."left" = false
-                  AND member.account = ${selector.peerAccount}
-                  AND member.domain <> 'local'
-                  AND member.domain = ${peerDomain}
-                  AND member."namespaceId" = ${namespaceId}
-              )
-            LIMIT 1
-          `);
-    const authorized = rows.rows[0];
-    if (!authorized) {
-      throw new BusinessException(
-        BusinessCode.FORBIDDEN,
-        'the signed peer does not currently have access to this thread',
-        HttpStatus.OK,
-      );
-    }
-    return authorized;
-  }
-
-  private async threadAddressesInTx(
-    tx: DatabaseTransaction,
-    threadIds: number[],
-    peerDomain: string,
-  ): Promise<Map<number, FederationThreadAddress>> {
-    if (threadIds.length === 0) return new Map();
-    const threads = await tx
-      .select({
-        id: messageThread.id,
-        type: messageThread.type,
-        groupId: messageThread.groupId,
-      })
-      .from(messageThread)
-      .where(inArray(messageThread.id, threadIds));
-    const participants = await tx
-      .select({
-        threadId: threadMember.threadId,
-        account: user.account,
-        domain: user.domain,
-      })
-      .from(threadMember)
-      .innerJoin(user, eq(user.id, threadMember.userId))
-      .where(inArray(threadMember.threadId, threadIds));
-    const groupIds = threads.flatMap((row) =>
-      row.groupId === null ? [] : [row.groupId],
-    );
-    const groups =
-      groupIds.length === 0
-        ? []
-        : await tx
-            .select({
-              id: group.id,
-              account: group.account,
-              domain: group.domain,
-            })
-            .from(group)
-            .where(inArray(group.id, groupIds));
-    const groupById = new Map(groups.map((row) => [row.id, row]));
-    const result = new Map<number, FederationThreadAddress>();
-    for (const thread of threads) {
-      if (thread.type === 'GROUP') {
-        const groupState = groupById.get(thread.groupId!);
-        if (!groupState)
-          throw new Error(`group identity missing for thread ${thread.id}`);
-        result.set(thread.id, {
-          account: groupState.account,
-        });
-      } else {
-        const members = participants.filter(
-          (row) => row.threadId === thread.id,
-        );
-        const source = members.find(
-          (row) => this.wireDomain(row.domain) === this.localDomain,
-        );
-        const target = members.find(
-          (row) => this.wireDomain(row.domain) === peerDomain,
-        );
-        if (!source || !target)
-          throw new Error(
-            `P2P thread ${thread.id} has no peer-relative address`,
-          );
-        result.set(thread.id, {
-          account: source.account,
-          peerAccount: target.account,
-        });
-      }
-    }
-    return result;
-  }
-
-  private requiredAddress(
-    addresses: Map<number, FederationThreadAddress>,
-    threadId: number,
-  ): FederationThreadAddress {
-    const address = addresses.get(threadId);
-    if (!address) throw new Error(`thread ${threadId} has no wire address`);
-    return address;
-  }
-
   private async readAdvertisedMessageEnd(
     tx: DatabaseTransaction,
     peerDomain: string,
@@ -640,18 +521,14 @@ export class FederationMessageFeedService {
 
   private pageSize(value?: number): number {
     if (value === undefined) return FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE;
-    if (
-      !Number.isSafeInteger(value) ||
-      value < 1 ||
-      value > FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE
-    ) {
+    if (!Number.isSafeInteger(value) || value < 1) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'take must be a positive safe integer no greater than 200',
+        'take must be a positive safe integer',
         HttpStatus.BAD_REQUEST,
       );
     }
-    return value;
+    return Math.min(value, FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE);
   }
 
   private invalidThrough(): never {

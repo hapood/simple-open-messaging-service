@@ -277,7 +277,11 @@ pub(crate) async fn native_db_cleanup_relationship_requests(
     .map_err(|e| format!("join friend-request cleanup: {e}"))?
 }
 
-fn cleanup_relationship_requests(conn: &Connection, user_id: i64, now: i64) -> Result<(), String> {
+pub(super) fn cleanup_relationship_requests(
+    conn: &Connection,
+    user_id: i64,
+    now: i64,
+) -> Result<(), String> {
     conn.execute(
         "DELETE FROM relationship_requests
              WHERE user_id=?1

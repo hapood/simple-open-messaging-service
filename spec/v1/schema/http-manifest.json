@@ -131,10 +131,10 @@
     {
       "id": "userProfile",
       "method": "GET",
-      "path": "/s2s/v1/users/:account",
+      "path": "/s2s/v1/accounts/:account",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/userProfileParameters",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountProfileParameters",
       "requestHeaders": [
         "Date",
         "Content-Digest",

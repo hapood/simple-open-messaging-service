@@ -31,7 +31,6 @@ import {
 import { ContentType } from '../database/enums.js';
 import { MediaAssetService } from './media-asset.service.js';
 import { detectMedia, type DetectedMedia } from './media-sig.js';
-import { AVATAR_SIZES, AVATAR_MAX } from './avatar-path.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
 import { MediaMetadataService } from './media-metadata.service.js';
 
@@ -151,10 +150,8 @@ export type ConsumedParts =
  * magic-number check; width/height are read client-side via createImageBitmap and sent with the
  * FormData (the backend never parses the image content).
  *
- * Avatar pipeline (saveAvatars): sharp does a server-side rewrite — decode → EXIF-orient → cover
- * crop → multi-size webp re-encode. The rewrite naturally strips EXIF/malicious chunks (privacy +
- * polyglot-payload defense); a non-image decode throws; a pixel cap guards against decompression
- * bombs; the multi-size set lets the client pick by position to save bandwidth.
+ * Avatars are fully validated against the federation byte, format, and dimension limits, then stored
+ * byte-for-byte as one file. Invalid or oversized input is rejected rather than transformed.
  *
  * Design:
  * - @fastify/multipart in-memory mode: file → buffer, magic-number-checked before landing on disk.
@@ -163,7 +160,7 @@ export type ConsumedParts =
  *
  * Storage lives below the configured application data directory, aligned with bootstrap.ts's
  * @fastify/static prefix '/uploads/'.
- * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatars()'s
+ * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatar()'s
  * write target + url generation — the interface contract stays the same.
  */
 @Injectable()
@@ -181,19 +178,16 @@ export class UploadService {
     private readonly mediaMetadata: MediaMetadataService,
   ) {}
 
-  /** Avatar pixel cap (decompression-bomb defense: a tiny file expanding into a huge canvas). */
-  static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
+  /** Federation avatar edge and pixel caps. Local storage accepts exactly the wire-safe shape. */
+  static readonly MAX_AVATAR_EDGE = 512;
+  static readonly MAX_AVATAR_PIXELS =
+    UploadService.MAX_AVATAR_EDGE * UploadService.MAX_AVATAR_EDGE;
   /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
    * ceiling can be raised for generic files (MAX_FILE_BYTES) without also raising it for images. */
   static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-  /** Cap on an inbound federated avatar's base64 string length (pre-decode). A real federated avatar is
-   *  the ~55 KB 512-representative (`readAvatarAsWire` reads `User.avatar` = the representative that
-   *  `saveAvatars` wrote, NOT the upload source), so 1 MiB of base64 (~750 KB decoded) is ~18× headroom.
-   *  This exists ONLY to stop a trusted-but-broken peer OOM-ing us with a huge b64 before `Buffer.from`
-   *  allocates — a round number avoids the imprecise base64 4/3 ceil math. See design-review item C3. */
+  /** Federation's strict pre-decode Base64 ceiling. */
   static readonly MAX_AVATAR_WIRE_B64_LEN = 1024 * 1024;
-  /** Maximum decoded bytes represented by MAX_AVATAR_WIRE_B64_LEN. Contact-card avatar assets use
-   *  the same federation avatar ceiling, but advertise raw bytes instead of padded Base64 length. */
+  /** Maximum decoded bytes represented by the federation Base64 ceiling. */
   static readonly MAX_AVATAR_WIRE_BYTES =
     (UploadService.MAX_AVATAR_WIRE_B64_LEN / 4) * 3;
 
@@ -671,7 +665,7 @@ export class UploadService {
     }
   }
 
-  /** Ensure the flat uploads/ root exists (avatar multi-size files still land here). */
+  /** Ensure the flat uploads root exists. */
   private ensureDir() {
     if (!existsSync(this.uploadDir)) {
       mkdirSync(this.uploadDir, { recursive: true });
@@ -1069,8 +1063,8 @@ export class UploadService {
           }
         }
 
-        // GC normally excludes claimed downloads, but a stale scan, manual filesystem cleanup, or an
-        // operator can still remove/truncate a live partial. Never append at a now-invalid logical
+        // External filesystem maintenance can still remove or truncate a live partial. Never append
+        // at a now-invalid logical
         // offset: abandon that response and open a fresh Range stream. TOMBSTONED cancellation is
         // enforced by the caller's iterable and is not converted into this storage recovery path.
         let storageRestarts = 0;
@@ -1173,39 +1167,31 @@ export class UploadService {
     return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
   }
 
-  /**
-   * Avatar-only: sharp decode→EXIF-orient→cover-crop square→multi-size webp re-encode. Strips
-   * EXIF/malicious chunks (privacy + anti-polyglot); sharp decode throws on non-image; pixel cap
-   * defuses decompression bombs; multi-size saves bandwidth by position.
-   *
-   * Avatars live in their own namespace `uploads/avatars/<base>-<size>.webp`, deliberately OUTSIDE
-   * `uploads/cas/` so the per-object media-authz gate (which authorizes by thread membership)
-   * never applies to them — avatars must render cross-thread (member lists, search, federation
-   * profiles). Returns the largest size's URL as the representative; the frontend derives the other
-   * sizes by substituting the `-<size>` suffix.
-   */
-  async saveAvatars(buf: Buffer): Promise<string> {
+  /** Validate and persist one wire-safe avatar without changing its bytes. */
+  async saveAvatar(buf: Buffer): Promise<string> {
+    if (buf.length === 0 || buf.length > UploadService.MAX_AVATAR_WIRE_BYTES)
+      throw new Error('avatar exceeds federation byte limit');
+    const detected = detectMedia(buf);
+    if (detected?.family !== 'image') throw new Error('invalid avatar image');
+    const meta = await sharp(buf, {
+      limitInputPixels: UploadService.MAX_AVATAR_PIXELS,
+    }).metadata();
+    if (
+      !meta.width ||
+      !meta.height ||
+      meta.width > UploadService.MAX_AVATAR_EDGE ||
+      meta.height > UploadService.MAX_AVATAR_EDGE ||
+      meta.width * meta.height > UploadService.MAX_AVATAR_PIXELS
+    ) {
+      throw new Error('avatar exceeds federation dimension limit');
+    }
     this.ensureDir();
     const avatarsDir = join(this.uploadDir, 'avatars');
     await mkdirAsync(avatarsDir, { recursive: true });
-    const meta = await sharp(buf).metadata();
-    if (
-      (meta.width ?? 0) * (meta.height ?? 0) >
-      UploadService.MAX_AVATAR_PIXELS
-    ) {
-      throw new Error('avatar too large in pixels');
-    }
     const base = `${Date.now()}-${randomBytes(6).toString('hex')}`;
-    const src = sharp(buf).rotate();
-    for (const size of AVATAR_SIZES) {
-      const out = await src
-        .clone()
-        .resize(size, size, { fit: 'cover', position: 'center' })
-        .webp({ quality: 85 })
-        .toBuffer();
-      await writeFileAsync(join(avatarsDir, `${base}-${size}.webp`), out);
-    }
-    return `/uploads/avatars/${base}-${AVATAR_MAX}.webp`;
+    const filename = `${base}.${detected.ext}`;
+    await writeFileAsync(join(avatarsDir, filename), buf);
+    return `/uploads/avatars/${filename}`;
   }
 
   /** Decode an authenticated client's canonical base64 avatar and run the normal image pipeline. */
@@ -1224,7 +1210,7 @@ export class UploadService {
     if (bytes.length === 0 || bytes.toString('base64') !== base64) {
       throw new Error('avatar base64 is not canonical');
     }
-    return this.saveAvatars(bytes);
+    return this.saveAvatar(bytes);
   }
 
   /**
@@ -1236,17 +1222,20 @@ export class UploadService {
    */
   async readAvatarAsWire(
     url: string,
-  ): Promise<{ b64: string; w: number; h: number } | null> {
+  ): Promise<{ b64: string; w: number; h: number; mimeType: string } | null> {
     if (!url?.startsWith('/uploads/')) return null;
     try {
       const buf = await readFileAsync(
         join(this.uploadDir, url.slice('/uploads/'.length)),
       );
       const meta = await sharp(buf).metadata();
+      const detected = detectMedia(buf);
+      if (detected?.family !== 'image') return null;
       return {
         b64: buf.toString('base64'),
         w: meta.width ?? 0,
         h: meta.height ?? 0,
+        mimeType: `image/${detected.ext === 'jpg' ? 'jpeg' : detected.ext}`,
       };
     } catch {
       // Missing/corrupt avatar file (operational edge case — disk wiped, manual deletion, etc.).
@@ -1260,17 +1249,14 @@ export class UploadService {
   }
 
   /**
-   * Federation inbound: decode an S2S wire avatar (base64 + declared dims) and persist it through the
-   * SAME multi-size webp pipeline as a local upload (saveAvatars center-crops to square + emits 32/64/
-   * 128/256/512 + strips EXIF). The declared w/h get a cheap pre-validation (reject an obviously-oversized
-   * source before spending CPU on a sharp decode); sharp's own metadata read is the authoritative pixel-bomb
-   * check (a compromised peer can lie about w/h, but can't lie past sharp). Returns the representative
-   * (512) URL, exactly like a local avatar upload.
+   * Federation inbound: validate the strict wire shape, then preserve the authenticated bytes. The
+   * profile service verifies the advertised digest before this method is called.
    */
   async saveAvatarFromWire(avatar: {
     b64: string;
     w: number;
     h: number;
+    mimeType: string;
   }): Promise<string> {
     if (
       !Number.isSafeInteger(avatar.w) ||
@@ -1280,8 +1266,12 @@ export class UploadService {
     ) {
       throw new Error('federated avatar dimensions are invalid');
     }
-    if (avatar.w * avatar.h > UploadService.MAX_AVATAR_PIXELS) {
-      throw new Error('federated avatar too large in pixels');
+    if (
+      avatar.w > UploadService.MAX_AVATAR_EDGE ||
+      avatar.h > UploadService.MAX_AVATAR_EDGE ||
+      avatar.w * avatar.h > UploadService.MAX_AVATAR_PIXELS
+    ) {
+      throw new Error('federated avatar exceeds dimension limit');
     }
     // Pre-decode byte cap: reject BEFORE `Buffer.from` allocates, so a trusted-but-broken peer can't
     // OOM us with a huge b64 string (the pixel check above can't see raw byte size — a small-declared
@@ -1305,7 +1295,16 @@ export class UploadService {
     if (buf.length === 0 || buf.toString('base64') !== avatar.b64) {
       throw new Error('federated avatar base64 is not canonical');
     }
-    const metadata = await sharp(buf).metadata();
+    const detected = detectMedia(buf);
+    const actualMimeType = detected
+      ? `image/${detected.ext === 'jpg' ? 'jpeg' : detected.ext}`
+      : null;
+    if (detected?.family !== 'image' || actualMimeType !== avatar.mimeType) {
+      throw new Error('federated avatar media type does not match image');
+    }
+    const metadata = await sharp(buf, {
+      limitInputPixels: UploadService.MAX_AVATAR_PIXELS,
+    }).metadata();
     if (
       metadata.width !== avatar.w ||
       metadata.height !== avatar.h ||
@@ -1313,7 +1312,7 @@ export class UploadService {
     ) {
       throw new Error('federated avatar dimensions do not match image');
     }
-    return this.saveAvatars(buf);
+    return this.saveAvatar(buf);
   }
 }
 

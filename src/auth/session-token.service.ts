@@ -4,9 +4,17 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
-import { and, eq, isNull, lte, sql } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
-import { account, sessionToken, userPreference } from '../database/schema.js';
+import { and, eq, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  account,
+  pushToken,
+  sessionToken,
+  userPreference,
+} from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 import {
   AUTO_TERMINATE_PREFERENCE_KEY,
@@ -64,6 +72,31 @@ export class SessionTokenService {
     private readonly database: DatabaseService,
     private readonly kvStore: KvStoreService,
   ) {}
+
+  /** Soft-revoke matching active sessions and remove their Push registrations atomically. A Push token
+   * inherits its session's authorization lifetime, so retaining it after revoke is both misleading in the
+   * admin surface and unnecessary persistent state. */
+  private async revokeSessionsInTx(
+    tx: DatabaseTransaction,
+    where: SQL | undefined,
+    reason: string,
+    now: Date,
+  ): Promise<Array<{ id: number; tokenHash: string }>> {
+    const revoked = await tx
+      .update(sessionToken)
+      .set({ revokedAt: now, revokeReason: reason })
+      .where(where)
+      .returning({ id: sessionToken.id, tokenHash: sessionToken.tokenHash });
+    if (revoked.length > 0) {
+      await tx.delete(pushToken).where(
+        inArray(
+          pushToken.sessionId,
+          revoked.map(({ id }) => id),
+        ),
+      );
+    }
+    return revoked;
+  }
 
   /** Mint a session token using the user's inactivity policy (30 days by default). Client is metadata
    * only. The plaintext is returned once; only its sha256 hash is stored. */
@@ -190,12 +223,15 @@ export class SessionTokenService {
     if (!rec || rec.revokedAt !== null) return null;
     const exp = rec.expiresAt.getTime();
     if (exp <= Date.now()) {
-      await this.database.db
-        .update(sessionToken)
-        .set({ revokedAt: new Date(), revokeReason: 'auto_terminated' })
-        .where(
+      const now = new Date();
+      await this.database.db.transaction((tx) =>
+        this.revokeSessionsInTx(
+          tx,
           and(eq(sessionToken.id, rec.id), isNull(sessionToken.revokedAt)),
-        );
+          'auto_terminated',
+          now,
+        ),
+      );
       return null;
     }
 
@@ -331,16 +367,16 @@ export class SessionTokenService {
           and(eq(sessionToken.userId, userId), isNull(sessionToken.revokedAt)),
         )
         .returning({ tokenHash: sessionToken.tokenHash });
-      await tx
-        .update(sessionToken)
-        .set({ revokedAt: now, revokeReason: 'auto_terminated' })
-        .where(
-          and(
-            eq(sessionToken.userId, userId),
-            isNull(sessionToken.revokedAt),
-            lte(sessionToken.expiresAt, now),
-          ),
-        );
+      await this.revokeSessionsInTx(
+        tx,
+        and(
+          eq(sessionToken.userId, userId),
+          isNull(sessionToken.revokedAt),
+          lte(sessionToken.expiresAt, now),
+        ),
+        'auto_terminated',
+        now,
+      );
     });
   }
 
@@ -348,12 +384,15 @@ export class SessionTokenService {
    *  already-revoked token is a no-op so device logout is resilient to retries / stale state. */
   async revoke(raw: string): Promise<void> {
     const h = hashToken(raw);
-    await this.database.db
-      .update(sessionToken)
-      .set({ revokedAt: new Date(), revokeReason: 'logout' })
-      .where(
+    const now = new Date();
+    await this.database.db.transaction((tx) =>
+      this.revokeSessionsInTx(
+        tx,
         and(eq(sessionToken.tokenHash, h), isNull(sessionToken.revokedAt)),
-      );
+        'logout',
+        now,
+      ),
+    );
     await this.kvStore.delPersistent(`${CACHE_PREFIX}${h}`).catch(() => {});
   }
 
@@ -368,23 +407,20 @@ export class SessionTokenService {
     sessionId: number,
     reason: string = 'device_revoke',
   ): Promise<boolean> {
-    const rec = await this.database.db
-      .select({ tokenHash: sessionToken.tokenHash })
-      .from(sessionToken)
-      .where(
+    const revoked = await this.database.db.transaction((tx) =>
+      this.revokeSessionsInTx(
+        tx,
         and(
           eq(sessionToken.id, sessionId),
           eq(sessionToken.userId, userId),
           isNull(sessionToken.revokedAt),
         ),
-      )
-      .limit(1)
-      .then((rows) => rows[0]);
+        reason,
+        new Date(),
+      ),
+    );
+    const rec = revoked[0];
     if (!rec) return false;
-    await this.database.db
-      .update(sessionToken)
-      .set({ revokedAt: new Date(), revokeReason: reason })
-      .where(eq(sessionToken.id, sessionId));
     await this.kvStore
       .delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`)
       .catch(() => {});
@@ -400,18 +436,13 @@ export class SessionTokenService {
       eq(sessionToken.userId, userId),
       isNull(sessionToken.revokedAt),
     );
-    const sessions = await this.database.db
-      .select({ tokenHash: sessionToken.tokenHash })
-      .from(sessionToken)
-      .where(active);
-    await this.database.db
-      .update(sessionToken)
-      .set({ revokedAt: new Date(), revokeReason: reason })
-      .where(active);
-    if (sessions.length > 0) {
+    const revoked = await this.database.db.transaction((tx) =>
+      this.revokeSessionsInTx(tx, active, reason, new Date()),
+    );
+    if (revoked.length > 0) {
       await this.kvStore
         .delPersistent(
-          ...sessions.map(({ tokenHash }) => `${CACHE_PREFIX}${tokenHash}`),
+          ...revoked.map(({ tokenHash }) => `${CACHE_PREFIX}${tokenHash}`),
         )
         .catch(() => {});
     }

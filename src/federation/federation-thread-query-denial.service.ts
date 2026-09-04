@@ -7,9 +7,9 @@ import {
 } from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { RelationshipIntentService } from '../invite/relationship-intent.service.js';
-import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
-import { FEDERATION_STATE_FEED_PUSH } from './federation-thread-round.events.js';
+import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
+import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
+import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
 /** Converges locally authored relationship directions after authenticated query denial. */
 @Injectable()
@@ -17,7 +17,7 @@ export class FederationThreadQueryDenialService {
   constructor(
     private readonly database: DatabaseService,
     private readonly relationshipIntents: RelationshipIntentService,
-    private readonly relationshipCommands: FederationRelationshipCommandService,
+    private readonly relationshipMutations: FederationRelationshipMutationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -166,7 +166,7 @@ export class FederationThreadQueryDenialService {
           };
         }
 
-        await this.relationshipCommands.lockGroupMutationInTx(
+        await this.relationshipMutations.lockGroupMutationInTx(
           tx,
           threadId,
           members[0]!.memberUserId,
@@ -177,7 +177,7 @@ export class FederationThreadQueryDenialService {
         for (const member of members) {
           const written =
             member.groupDomain === 'local'
-              ? await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+              ? await this.relationshipMutations.writeGroupRelationshipIntentInTx(
                   tx,
                   threadId,
                   member.memberUserId,
@@ -185,7 +185,7 @@ export class FederationThreadQueryDenialService {
                   'REVOKED',
                   clientFeedUpdates,
                 )
-              : await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+              : await this.relationshipMutations.writeMemberRelationshipIntentInTx(
                   tx,
                   threadId,
                   member.memberUserId,
@@ -228,7 +228,7 @@ export class FederationThreadQueryDenialService {
           allocated: new Map<string, bigint>(),
         };
       }
-      const allocated = await this.relationshipCommands.writeFriendIntentInTx(
+      const allocated = await this.relationshipMutations.writeP2PIntentInTx(
         tx,
         endpoint.localUserId,
         endpoint.remoteUserId,

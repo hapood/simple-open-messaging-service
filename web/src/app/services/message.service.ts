@@ -158,7 +158,7 @@ export class MsgService {
    * write, so a crash between staging and upload leaves a reclaimable record, never an orphan. No
    * Message or seq is created yet. The caller follows this with the matching upload() carrying the
    * same clientMessageId, which writes the file and promotes the stage to a real Message (confirmed
-   * via the NEW_MESSAGE SSE echo keyed by clientMessageId).
+   * through the content-head wake and canonical query keyed by clientMessageId).
    */
   sendMedia(params: {
     threadId: number;

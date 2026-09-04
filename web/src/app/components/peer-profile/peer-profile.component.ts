@@ -600,7 +600,10 @@ export class PeerProfileComponent {
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
-        this.userService.deleteFriend({ account, domain }),
+        this.userService.revokeRelationship({
+          account,
+          domain: domain || 'local',
+        }),
       );
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));

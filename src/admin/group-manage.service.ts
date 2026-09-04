@@ -25,9 +25,19 @@ export class GroupManageService {
         )
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
-    const activeParticipants = sql<number>`(
-      SELECT count(*)::int FROM "ThreadMember" member
-      WHERE member."threadId" = ${messageThread.id} AND member.left = false
+    const memberCount = sql<number>`(
+      SELECT count(*)::int
+      FROM (
+        SELECT DISTINCT ON (member_identity.domain, member_identity.account)
+          member_fact.operation
+        FROM "GroupMetaMemberFeed" member_fact
+        JOIN "User" member_identity
+          ON member_identity.id = member_fact."memberUserId"
+        WHERE member_fact."groupId" = ${group.id}
+        ORDER BY member_identity.domain, member_identity.account,
+          member_fact."feedId" DESC
+      ) latest
+      WHERE latest.operation = 'UPSERT'
     )`;
     const base = this.database.db
       .select({
@@ -38,7 +48,7 @@ export class GroupManageService {
         groupAccount: group.account,
         groupName: group.name,
         groupDomain: group.domain,
-        activeParticipants,
+        memberCount,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.groupId))
@@ -65,7 +75,7 @@ export class GroupManageService {
         name: row.groupName,
         domain: row.groupDomain,
       },
-      _count: { ThreadMember: row.activeParticipants },
+      memberCount: row.memberCount,
     }));
     const total = totalRow.value;
     return { list, total };

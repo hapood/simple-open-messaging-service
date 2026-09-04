@@ -223,12 +223,23 @@ A receiver MUST validate a signed request according to these security boundaries
 
 1. Bound request-line, header, and body sizes, and reject duplicate or ambiguously parseable security headers.
 2. Parse `Signature-Input` and `Signature`; check the single label, fixed component order, parameter set, and `alg`.
-3. Extract the canonical signer domain from `keyid`, apply the recognition or authorization gate for the authentication context in [Core Protocol, Section 3](./protocol.md), and select the key. `recognized signed` MUST NOT treat transport-only `degraded` as an authorization failure.
+3. Extract the canonical signer domain from `keyid`, apply the identity and receive-readiness prerequisites for the authentication context in [Core Protocol, Section 3](./protocol.md), and select the key. For `recognized signed`, do not yet evaluate recognition evidence, business authorization, or transport-only `degraded` state.
 4. Check `created <= expires <= created + 300` and that `Date`, parsed as Unix epoch seconds, equals `created` exactly. Reject `created < now - 300`, `created > now + 60`, or `expires < now`.
 5. Validate `Content-Digest` over the received raw body bytes. Its Structured Fields dictionary MUST contain exactly one parameterless `sha-256` byte sequence.
 6. Validate the Ed25519 signature using the received method, raw path, raw query, authority, and header values.
-7. Parse JSON and validate the operation shape, shared Federation types, signer/body/resource binding, and business authorization.
+7. Validate the directionally applicable recognition evidence when the context is `recognized signed`, then parse JSON and validate the operation shape, shared Federation types, signer/body/resource binding, and business authorization.
 8. Perform operation side effects only after every preceding check succeeds.
+
+After Step 6 succeeds for a pinned, locally recognized peer whose receive path
+is prepared, the receiver MUST treat the authenticated request as current
+reachability evidence before applying the later direction, shape, binding, and
+business checks. A rejection in Step 7 does not undo that reachability
+observation and does not create a recognition-direction or
+business-authorization fact. For a
+first bootstrap Recognize, recognition.md instead requires identity pinning,
+the local recognition decision, receive-path preparation, the inbound
+direction fact, reverse work, and this reachability observation to become
+externally visible together before `OK` is returned.
 
 The authenticated signer domain comes exclusively from the validated `keyid`.
 An operation body MUST NOT repeat it as a generic source, origin, or sender
@@ -237,7 +248,7 @@ resource-binding rules.
 
 A header or profile parsing error, digest mismatch, or signature mismatch MUST NOT be downgraded to a business rejection. The Stable Error Registry defines the exact HTTP status, stable code, and caller action.
 
-`health` is a status-query operation. An unparseable request line or signature structure MAY receive a generic malformed error. Once the structure is parseable, an unknown peer, an identity that cannot be verified through an existing pin, a permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable` and MUST NOT cause a side effect.
+`health` is a status-query operation. An unparseable request line or signature structure MAY receive a generic malformed error. Once the structure is parseable, an unknown peer, an identity that cannot be verified through an existing pin, a permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable`. The query has no application side effect at the responder, but successful authentication of an already prepared peer refreshes reachability. A valid `available` or `degraded` response is the responder's recognition assertion and MUST be consumed as inbound confirmation by the requester. The response projects lifecycle state at admission, before the reachability refresh.
 
 Federation v1 does not add an HTTP Message Signature to an ordinary JSON response; hostname-validated TLS provides response origin and integrity. This does not alter response-digest rules separately defined by the media operation.
 

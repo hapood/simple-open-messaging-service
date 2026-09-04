@@ -92,6 +92,134 @@ describe('RelationshipService.friendRelationshipStatuses', () => {
 });
 
 describe('RelationshipService P2P shell storage', () => {
+  it('binds a federated P2P thread to its remote namespace', async () => {
+    const threadValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 7 }]),
+    });
+    const participantValues = vi.fn().mockReturnValue({
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 1 }]),
+        }),
+      }),
+      insert: vi.fn((table: unknown) =>
+        table === messageThread
+          ? { values: threadValues }
+          : { values: participantValues },
+      ),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      }),
+    };
+    const service = new RelationshipService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        lockPairInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadId: null,
+          endpointA: {
+            type: 'USER',
+            account: 'alice',
+            domain: 'local',
+            namespaceId: 7,
+          },
+          endpointB: {
+            type: 'USER',
+            account: 'bob',
+            domain: 'remote.test',
+            namespaceId: 7,
+          },
+        }),
+      } as never,
+    );
+    const target = service as unknown as {
+      ensureP2PThreadShellInTx(
+        transaction: unknown,
+        firstUserId: number,
+        secondUserId: number,
+      ): Promise<number>;
+    };
+
+    await expect(target.ensureP2PThreadShellInTx(tx, 1, 2)).resolves.toBe(7);
+    expect(threadValues).toHaveBeenCalledExactlyOnceWith({
+      type: 'P2P',
+      authorityNamespaceId: 7,
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it('binds a local-only P2P thread to namespace zero', async () => {
+    const threadValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 7 }]),
+    });
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        }),
+      }),
+      insert: vi.fn((table: unknown) =>
+        table === messageThread
+          ? { values: threadValues }
+          : {
+              values: vi.fn().mockReturnValue({
+                onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+              }),
+            },
+      ),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      }),
+    };
+    const service = new RelationshipService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        lockPairInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadId: null,
+          endpointA: {
+            type: 'USER',
+            account: 'alice',
+            domain: 'local',
+            namespaceId: 0,
+          },
+          endpointB: {
+            type: 'USER',
+            account: 'bob',
+            domain: 'local',
+            namespaceId: 0,
+          },
+        }),
+      } as never,
+    );
+    const target = service as unknown as {
+      ensureP2PThreadShellInTx(
+        transaction: unknown,
+        firstUserId: number,
+        secondUserId: number,
+      ): Promise<number>;
+    };
+
+    await target.ensureP2PThreadShellInTx(tx, 1, 2);
+
+    expect(threadValues).toHaveBeenCalledExactlyOnceWith({
+      type: 'P2P',
+      authorityNamespaceId: 0,
+      updatedAt: expect.any(Date),
+    });
+  });
+
   it('creates client participants only for local accounts', async () => {
     const participantValues = vi.fn().mockReturnValue({
       onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),

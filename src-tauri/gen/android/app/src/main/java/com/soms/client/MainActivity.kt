@@ -2020,7 +2020,7 @@ class MainActivity : TauriActivity() {
 
     /** JS-callable surface exposed as window.SomsNotify. `showDescriptor(json)` parses the server-authored
      *  descriptor (the web's AndroidNotificationAdapter forwards it verbatim) and renders it via
-     *  [SomsMessagingService.renderDescriptor]; `clear` cancels the away-notification. The native background
+     *  [SomsMessagingService.renderDescriptor]. The native background
      *  triggers (FCM/WorkManager/RealtimeService → renderAwayNotification) share the same renderer — one
      *  source of truth. @JavascriptInterface runs on a background JS thread; NotificationManager is
      *  thread-safe, so no hop. */

@@ -24,10 +24,7 @@ import {
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import {
-  lockBusinessScopeInTx,
-  userPairBusinessScopeKey,
-} from '../relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
@@ -303,7 +300,7 @@ export class AccountThreadStateService {
       );
       if (!endpoints) throw new Error('P2P endpoints are missing');
       let { mine, peer } = endpoints;
-      await lockBusinessScopeInTx(tx, userPairBusinessScopeKey([mine, peer]));
+      await lockBusinessAccountsInTx(tx, [mine, peer]);
       endpoints = await this.readP2PEndpointsInTx(tx, threadId, callerUserId);
       if (!endpoints) throw new Error('P2P endpoints are missing');
       ({ mine, peer } = endpoints);
@@ -347,6 +344,11 @@ export class AccountThreadStateService {
       const statePeers: string[] = [];
       if (!transitioned)
         return { transitioned, statePeers, systemMessage, localRecipientIds };
+
+      if (peer.domain !== 'local')
+        await this.stateFeed.lockTargetsInTx(tx, [
+          { peerDomain: peer.domain, namespaceId: peer.namespaceId! },
+        ]);
 
       if (wasActive && this.messages) {
         systemMessage = (

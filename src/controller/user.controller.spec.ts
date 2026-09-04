@@ -79,6 +79,23 @@ describe('UserController.queryStateFeed', () => {
 });
 
 describe('UserController.resolveFederatedUserStream', () => {
+  function streamReply() {
+    const raw = new EventEmitter() as EventEmitter & {
+      chunks: string[];
+      writeHead: ReturnType<typeof vi.fn>;
+      write: (chunk: string) => boolean;
+      end: () => void;
+    };
+    raw.chunks = [];
+    raw.writeHead = vi.fn();
+    raw.write = (chunk: string) => {
+      raw.chunks.push(chunk);
+      return true;
+    };
+    raw.end = () => raw.emit('close');
+    return { hijack: vi.fn(), raw };
+  }
+
   it('completes explicit recognition and Health before fetching a profile', async () => {
     const calls: string[] = [];
     const federationService = {
@@ -91,7 +108,7 @@ describe('UserController.resolveFederatedUserStream', () => {
         calls.push('health');
         return 'degraded';
       }),
-      fetchRemoteUser: vi.fn(async () => {
+      fetchRemoteAccount: vi.fn(async () => {
         calls.push('profile');
         return {
           account: 'bob',
@@ -132,20 +149,8 @@ describe('UserController.resolveFederatedUserStream', () => {
       inviteService as never,
       {} as never,
     );
-    const raw = new EventEmitter() as EventEmitter & {
-      chunks: string[];
-      writeHead: ReturnType<typeof vi.fn>;
-      write: (chunk: string) => boolean;
-      end: () => void;
-    };
-    raw.chunks = [];
-    raw.writeHead = vi.fn();
-    raw.write = (chunk: string) => {
-      raw.chunks.push(chunk);
-      return true;
-    };
-    raw.end = () => raw.emit('close');
-    const reply = { hijack: vi.fn(), raw };
+    const reply = streamReply();
+    const { raw } = reply;
     const req = {
       user: { userId: 7 },
       headers: {},

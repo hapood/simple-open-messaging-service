@@ -54,8 +54,8 @@ function transaction(pairChanged: boolean) {
   };
 }
 
-describe('RelationshipIntentService group federation authorization', () => {
-  it('serializes a group pair change and refreshes authorization afterwards', async () => {
+describe('RelationshipIntentService remote-group authorization epoch', () => {
+  it('serializes an activating group pair change without maintaining a duplicate aggregate', async () => {
     const { tx, execute, forUpdate } = transaction(true);
     const service = new RelationshipIntentService();
 
@@ -69,13 +69,10 @@ describe('RelationshipIntentService group federation authorization', () => {
     ).resolves.toBe(true);
 
     expect(forUpdate).toHaveBeenCalledWith('update');
-    expect(execute).toHaveBeenCalledTimes(8);
-    expect(execute.mock.invocationCallOrder[6]).toBeLessThan(
-      execute.mock.invocationCallOrder[7]!,
-    );
+    expect(execute).toHaveBeenCalledTimes(7);
   });
 
-  it('repairs the group projection even when pair.active is unchanged', async () => {
+  it('does not write another aggregate when pair.active is unchanged', async () => {
     const { tx, execute } = transaction(false);
     const service = new RelationshipIntentService();
 
@@ -88,7 +85,7 @@ describe('RelationshipIntentService group federation authorization', () => {
       }),
     ).resolves.toBe(false);
 
-    expect(execute).toHaveBeenCalledTimes(8);
+    expect(execute).toHaveBeenCalledTimes(7);
   });
 
   it('checks the thread epoch after a remote-group member deactivation', async () => {
@@ -104,13 +101,11 @@ describe('RelationshipIntentService group federation authorization', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(execute).toHaveBeenCalledTimes(9);
-    expect(JSON.stringify(execute.mock.calls[8]![0])).toContain(
+    expect(execute).toHaveBeenCalledTimes(8);
+    expect(JSON.stringify(execute.mock.calls[7]![0])).toContain(
       'authorizationEpoch',
     );
-    expect(JSON.stringify(execute.mock.calls[8]![0])).toContain(
-      'federationAuthorized',
-    );
+    expect(JSON.stringify(execute.mock.calls[7]![0])).toContain('NOT EXISTS');
   });
 });
 

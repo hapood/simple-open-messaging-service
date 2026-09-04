@@ -60,8 +60,7 @@ The current path has four gaps:
   registration/reconnect and receives later state transitions through SSE;
 - immersive/detail viewers keep a local status snapshot instead of following a
   single shared persisted status; and
-- deleting terminal tasks discards durable outcome/error context. The stale
-  pending GC would later delete retained rows unless inbound work is excluded.
+- deleting terminal tasks discards durable outcome/error context.
 
 **Review checkpoint 1 — accepted:** the scope, the four public states, and the
 deliberately deferred cleanup policy.
@@ -138,24 +137,25 @@ delete the completed `PendingMedia`. Both success and failure delete their spent
 `FileSyncProgress` rows after the terminal outcome has been summarized in the
 retained batch row.
 
-After the transaction, cleanup removes resumable/partial temporary transfer
-artifacts. It must not blindly delete a verified CAS object: a digest may be
-deduplicated and referenced by another message. Formal CAS objects remain
-subject to the existing liveness-aware/manual media GC.
+The federation download manager owns its resumable/partial artifacts. Integrity
+failures discard untrusted prefixes; retryable transport failures retain valid
+prefixes for the next attempt. It must not blindly delete a verified CAS object:
+a digest may be deduplicated and referenced by another message.
 
-`gcStalePending` must exclude all inbound rows. Inbound rows are durable server
-jobs, not abandoned client upload intents, and a long quota pause must not make
-one disappear. Explicit administrator clean, an authoritative tombstone, and
-message/thread deletion may still remove them when the associated business
-object is deliberately removed. No TTL-based inbound-row cleanup is introduced
-in this change.
+Inbound rows are durable server jobs, not abandoned client upload intents, and
+a long quota pause must not make one disappear. Explicit administrator clean,
+an authoritative tombstone, and message/thread deletion may remove task rows
+when the associated business object is deliberately removed. Administrator
+clean removes the selected task and its staged dependency closure; it does not
+perform CAS reachability analysis or delete verified CAS objects. No TTL-based
+inbound-row cleanup is introduced.
 
 Existing code that treats the mere presence of `PendingMedia` as proof that a
 message is unresolved must be narrowed to active statuses (`pending` and
 `downloading`). In particular, retained `ready` rows must not block dependent
-quote promotion, appear as active admin transfer work, protect files as an
-in-flight GC root, or cause startup recovery to enqueue a completed batch.
-Terminal rows are history only.
+quote promotion or cause startup recovery to enqueue a completed batch. They
+remain visible as terminal history in the federation-download administration
+view until explicitly cleaned.
 
 Manual retry reuses the retained job identity instead of inserting a second
 row that conflicts with the unique inbound `messageId` constraint. Under the
@@ -193,8 +193,8 @@ requests for one thread are serialized and applied in request order. Any newer
 SSE state invalidates an older in-flight query result for that key.
 
 **Review checkpoint 3 — accepted:** retain terminal inbound rows after both
-success and failure, clean spent progress/temporary files, reuse the failed job
-for retry, and keep the status API unversioned.
+success and failure, let the download manager own temporary artifacts, reuse
+the failed job for retry, and keep the status API unversioned.
 
 ## 4. Frontend persistence and live status service
 
@@ -217,7 +217,7 @@ One root-provided `MediaAvailabilityService` owns live media state and refresh
 demand. Its key is the server message identity `(threadId, seq)`, never a card
 component instance or gallery index. It receives updates from:
 
-- history/`NEW_MESSAGE` ingestion;
+- message-history ingestion after a `THREAD_CONTENT_HEAD` advances the query ceiling;
 - `MEDIA_STATUS` SSE;
 - its registration/reconnect query; and
 - the manual retry response.
@@ -379,13 +379,14 @@ height-neutral presentation constraint.
   failed, and inconsistent orphan STUBs;
 - failure atomically retains `PendingMedia.failReason` and removes spent
   progress rows;
-- stale pending GC does not remove pending, downloading, ready, or failed
-  inbound rows;
+- no TTL or global media-maintenance task removes pending, downloading, ready,
+  or failed inbound rows;
 - retry reuses one row and only one concurrent caller starts the batch;
 - successful promotion retains a ready task row but removes spent progress
   rows;
-- retained ready rows do not block quote promotion, appear as active work,
-  become in-flight GC roots, or enter startup recovery; and
+- retained ready rows do not block quote promotion or enter startup recovery;
+- administrator clean removes only transfer state and its dependency closure,
+  never a verified CAS object; and
 - media-status access remains scoped by `ThreadAccessGuard`.
 
 ### 7.2 Frontend
@@ -424,6 +425,6 @@ Implementation should follow the accepted checkpoints in dependency order:
 4. pending-state card/viewer presentation and translations; and
 5. backend, frontend, and end-to-end verification.
 
-The deferred task-record cleanup policy must be handled by a separate reviewed
-design. Until then, retained terminal inbound rows are expected operational
-history, not stale rows for the automatic TTL sweep.
+Retained terminal inbound rows are expected operational history. Administrators
+may remove one explicitly from Media Transfers; there is no automatic TTL
+sweep or global media GC fallback.

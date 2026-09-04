@@ -23,8 +23,9 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         .fn()
         .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [endpoints] })
-        .mockResolvedValueOnce({ rows: [{ id: 10n }] })
+        .mockResolvedValueOnce({ rows: [{ id: 10n, active: true }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
@@ -73,13 +74,13 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       2,
       { actorUserId: 1, markReadUserId: 1, recipientUserIds: [1, 2] },
     );
-    expect(tx.execute).toHaveBeenCalledTimes(12);
-    // The canonical P2P advisory scope is locked first, followed by
+    expect(tx.execute).toHaveBeenCalledTimes(13);
+    // Both canonical account scopes are locked first, followed by
     // RelationshipPair, MessageThread, intents, and participant rows.
     expect(tx.execute.mock.invocationCallOrder[4]).toBeLessThan(
       tx.update.mock.invocationCallOrder[0],
     );
-    expect(tx.update).toHaveBeenCalledTimes(2);
+    expect(tx.update).toHaveBeenCalledOnce();
     expect(tx.delete).not.toHaveBeenCalled(); // history-only compatibility grants no longer exist
     expect(stateFeed.writeManyInTx).not.toHaveBeenCalled();
   });
@@ -101,6 +102,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       execute: vi
         .fn()
         .mockResolvedValueOnce({ rows: [endpoints] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [{ id: 8n }] })

@@ -48,6 +48,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice',
       avatar: '/uploads/avatars/a-512.webp',
+      bio: '',
       profileRev: 1,
     });
     const got = await repo.getProfile('u9');
@@ -68,6 +69,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/x',
+      bio: '',
       profileRev: 1,
     });
     refreshSpy.mockClear();
@@ -79,6 +81,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice Smith',
       avatar: '/p/x',
+      bio: '',
       profileRev: 2,
     });
     expect(refreshSpy).not.toHaveBeenCalled();
@@ -94,6 +97,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/old',
+      bio: '',
       profileRev: 1,
     });
     refreshSpy.mockClear();
@@ -105,6 +109,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/new',
+      bio: '',
       profileRev: 2,
     });
     expect(refreshSpy).toHaveBeenCalledWith('u9', '/p/new');
@@ -119,6 +124,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Alice',
       avatar: '',
+      bio: '',
       profileRev: 1,
     });
     expect(refreshSpy).not.toHaveBeenCalled();
@@ -137,6 +143,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'New',
       avatar: '/new',
+      bio: '',
       profileRev: 5,
     });
     refreshSpy.mockClear();
@@ -148,6 +155,7 @@ describe('ProfileRepository', () => {
       sourceServer: 'local',
       name: 'Old',
       avatar: '/old',
+      bio: '',
       profileRev: 4,
     });
     expect((await repo.getProfile('u9'))?.name).toBe('New');

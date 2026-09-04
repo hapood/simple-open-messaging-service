@@ -1,5 +1,9 @@
 import { Injectable, inject } from '@angular/core';
-import { WebdbService, type ProfileRecord } from './webdb.service';
+import {
+  WebdbService,
+  type ProfileRecord,
+  type ProfileWriteRecord,
+} from './webdb.service';
 import { AvatarRepository } from './avatar-cache.service';
 
 /** Profile fields written through the store (mapped from a User / Group by the caller). */
@@ -9,7 +13,7 @@ export interface ProfileData {
   account: string;
   /** Avatar path (the version tag — a change here drives {@link AvatarRepository.refresh}). */
   avatar: string;
-  bio?: string;
+  bio: string;
   domain: string;
   sourceServer: string;
   namespaceId: number;
@@ -45,14 +49,14 @@ export class ProfileRepository {
     try {
       const prev = await this.webdb.getProfile(identity);
       if (prev && data.profileRev < prev.profileRev) return;
-      const record: ProfileRecord = {
+      const record: ProfileWriteRecord = {
         identity,
         id: data.id,
         kind,
         name: data.name,
         account: data.account,
         avatar: data.avatar,
-        bio: data.bio ?? prev?.bio ?? '',
+        bio: data.bio,
         domain: data.domain,
         sourceServer: data.sourceServer,
         namespaceId: data.namespaceId,
@@ -79,18 +83,16 @@ export class ProfileRepository {
   async getUser(
     account: string,
     domain: string,
-    sourceDomain: string,
     namespaceId: number,
   ): Promise<ProfileRecord | undefined> {
     const record = await this.webdb.getUser(
       account,
       domain,
-      sourceDomain,
       namespaceId,
     );
     if (!record) return undefined;
     return {
-      identity: `${sourceDomain}\u0000${domain}\u0000${account}`,
+      identity: JSON.stringify([namespaceId, domain, account]),
       id: record.id ?? 0,
       kind: 'user',
       name: record.name,
@@ -98,8 +100,6 @@ export class ProfileRepository {
       avatar: record.avatar,
       bio: record.bio,
       domain: record.domain,
-      sourceServer: record.sourceDomain,
-      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }

@@ -69,7 +69,7 @@ enum StreamOutcome {
 /// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android), the
 /// backoff/online `wake` Notify, the offline flag the webview's navigator online/offline drives, and the
 /// cached HELLO — the last HELLO frame merged with every incremental revision frame
-/// (STATE_REV_UPDATED / NEW_MESSAGE) so a re-attached
+/// (for example, STATE_FEED_UPDATED) so a re-attached
 /// webview can be handed a FRESH handshake via `sse_replay_hello` without a reconnect (a retained open
 /// stream does not re-push HELLO on its own).
 #[cfg(desktop)]

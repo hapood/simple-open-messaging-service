@@ -4,9413 +4,9390 @@
  */
 
 export interface paths {
-  '/api/v1/message-reports': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Report one or more messages in one conversation */
-    post: operations['MessageController_reportMessages'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/deleted-messages/query': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Query one conversation tombstone log by cursor */
-    post: operations['MessageController_queryDeletedMessages'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/withdraw-message': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Withdraw a locally-authored message */
-    post: operations['MessageController_withdrawMessage'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/send-message': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Send a message (unified for P2P and group) */
-    post: operations['MessageController_sendMessage'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/send-contact-card': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Share an immutable user contact snapshot */
-    post: operations['MessageController_sendContactCard'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/send-forward': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Directly re-send one message or send a chat-record bundle */
-    post: operations['MessageController_sendForward'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/forward-bundles/{bundleId}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Read a visible FORWARD bundle and every nested child bundle */
-    get: operations['MessageController_getForwardBundle'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/send-media': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Stage a media message (before upload); promoted on POST /upload* */
-    post: operations['MessageController_sendMedia'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/query-media-stages': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Query the current user’s uncommitted media-send states in a conversation */
-    post: operations['MessageController_queryMediaStages'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/query-messages': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Query conversation history messages (cursor pagination) */
-    post: operations['MessageController_queryMessages'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/by-user-id': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Look up the P2P thread by peer userId (friends only) */
-    post: operations['MessageController_getThreadByUserId'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/mark-read': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Commit a local read HWM */
-    post: operations['MessageController_markRead'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/read-delta': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Fetch read-state delta in (fromRevision, toRevision] */
-    post: operations['MessageController_readDelta'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/set-muted': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Mute / unmute a conversation (suppresses notifications, not delivery) */
-    post: operations['MessageController_setMuted'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/set-blocked': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Block / unblock new-message delivery for one conversation */
-    post: operations['MessageController_setBlocked'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/set-pinned': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Pin / unpin a conversation (pinned-first ordering) */
-    post: operations['MessageController_setPinned'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/thread/set-alias': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set a per-user alias/remark for a conversation (overrides the displayed name for the caller) */
-    post: operations['MessageController_setAlias'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/search-messages': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Search a conversation by substring (returns lightweight match ids for kernel jump) */
-    post: operations['MessageController_searchMessages'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/relocalize-media': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Manually re-run federated media localize for one message (retry after a localize failure) */
-    post: operations['MessageController_relocalizeMedia'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/media-status': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Read federated media status for mounted messages */
-    post: operations['MessageController_mediaStatus'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/login': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Login (issue a long-lived per-device session token) */
-    post: operations['AuthController_login'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/logout': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Logout (revoke the presented session token) */
-    post: operations['AuthController_logout'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/logout-all': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Logout all devices (revoke every session) */
-    post: operations['AuthController_logoutAll'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/change-password': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Change password (revoke every session — the client re-logs in) */
-    post: operations['AuthController_changePassword'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/set-password': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set the user's own password (forced first-time set after an initial password; clears mustChangePassword) */
-    post: operations['AuthController_setPassword'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/sessions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List the current user's active sessions */
-    post: operations['AuthController_sessions'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/session-settings': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get automatic old-session termination settings */
-    get: operations['AuthController_sessionSettings'];
-    /** Set when inactive sessions are automatically terminated */
-    put: operations['AuthController_updateSessionSettings'];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/revoke-session': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke a single session by its device-list id (belonging to the current user) */
-    post: operations['AuthController_revokeSession'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/my-profile': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Get the current user profile */
-    post: operations['UserController_getMyProfile'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/my-quota': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** View the current local account's effective quota and today's usage */
-    post: operations['UserController_getMyQuota'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/update-profile': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Update the current user display name / bio (account is immutable) */
-    post: operations['UserController_updateProfile'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/state-feed': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Fetch compacted client state in a fixed feed-id range */
-    get: operations['UserController_queryStateFeed'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/group-meta': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Fetch one client-visible group member feed */
-    get: operations['UserController_queryGroupMeta'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/query': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Look up users by account and domain in batch (≤100) */
-    post: operations['UserController_queryUserBase'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/resolve': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Resolve a local user by account */
-    post: operations['UserController_resolveUser'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/resolve-federated-stream': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['UserController_resolveFederatedUserStream'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/search': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Fuzzy local identity discovery by account OR display name (local users and groups) */
-    post: operations['UserController_searchUsers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/register': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Register a new user */
-    post: operations['UserController_registerLocal'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/create': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Create a group */
-    post: operations['GroupController_createNewGroup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/invite': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Invite friends to an existing group */
-    post: operations['GroupController_inviteUsers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/invite-candidates': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List friends with authoritative group invitation state */
-    post: operations['GroupController_queryInviteCandidates'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/join-requests': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List valid pending group join applications */
-    post: operations['GroupController_queryJoinRequests'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/invitations': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List projected group invitations */
-    post: operations['GroupController_queryInvitations'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/join-requests/read': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Advance the account-wide join-request read watermark */
-    post: operations['GroupController_markJoinRequestsRead'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/join-request/accept': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Accept a pending group join application */
-    post: operations['GroupController_acceptJoinRequest'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/join-request/reject': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Reject/delete a pending group join application */
-    post: operations['GroupController_rejectJoinRequest'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/invitation/revoke': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke a pending group invitation */
-    post: operations['GroupController_revokeInvitation'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/join-request': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Author the local USER→GROUP request for an existing invitation */
-    post: operations['GroupController_joinRequestedGroup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/leave': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Leave a group (owner must transfer first) */
-    post: operations['GroupController_leaveGroup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/dissolve': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Dissolve a group (owner only) */
-    post: operations['GroupController_dissolveGroup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/kick': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Kick a member (owner/admin, must outrank target) */
-    post: operations['GroupController_kickMember'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/transfer': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Transfer ownership to a member (owner only) */
-    post: operations['GroupController_transferOwnership'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/set-role': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set a member's role to ADMIN/MEMBER (owner only) */
-    post: operations['GroupController_setRole'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/group/update': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Update group name/avatar (admin+) */
-    post: operations['GroupController_updateGroup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/relationship/requests/read': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Advance the account-wide relationship-request read watermark */
-    post: operations['RelationshipController_markRelationshipRequestsRead'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/relationship/revoke': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke a user relationship/request or a pending federated group-join request by Address */
-    post: operations['RelationshipController_revokeRelationship'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/relationship/request': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Request a user or group relationship by Address */
-    post: operations['RelationshipController_requestRelationship'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/relationship/accept': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Accept a relationship request by intent id or Address (friend → P2P thread; group → join as MEMBER) */
-    post: operations['RelationshipController_acceptRelationship'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/devices/register': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Register/refresh an FCM push token for the logged-in user */
-    post: operations['DeviceController_register'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/devices/register/{token}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post?: never;
-    /** Unregister an FCM push token (called on logout) */
-    delete: operations['DeviceController_unregister'];
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/devices/fcm-probes': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Start an end-to-end FCM delivery probe for the current Android device */
-    post: operations['DeviceController_createFcmProbe'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/devices/fcm-probes/{probeId}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Read a one-off FCM delivery probe status */
-    get: operations['DeviceController_getFcmProbe'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/devices/fcm-probes/{probeId}/ack': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Acknowledge that the Android device received an FCM delivery probe */
-    post: operations['DeviceController_acknowledgeFcmProbe'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/notifications/vapid-key': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** VAPID public key for Web Push subscription (browser) */
-    get: operations['NotificationController_vapidKey'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/notification-feed/query': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Build notifications from changed thread heads in ClientStateFeed */
-    post: operations['NotificationController_queryNotifications'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/notifications/action': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Report a notification action (button tap / inline reply) */
-    post: operations['NotificationController_reportAction'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/health': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Public liveness probe (unauthenticated): status, DB reachability, version, server time. */
-    get: operations['HealthController_health'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/config': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Public site configuration (registration flag + enabled login methods). */
-    get: operations['ConfigController_config'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/otp/login': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Login with an admin-issued one-time code (Android → long-term app session) */
-    post: operations['AuthOtpController_otpLogin'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/qr/create': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Begin QR sign-in: mint a token (the client renders it as a QR) */
-    post: operations['AuthQrController_create'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/qr/poll': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Poll a QR token status (receives the session token once confirmed) */
-    post: operations['AuthQrController_poll'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/qr/scan': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Phone scans a QR token (→ desktop shows "confirm on phone") */
-    post: operations['AuthQrController_scan'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/auth/qr/confirm': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Phone confirms a scanned QR token */
-    post: operations['AuthQrController_confirm'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/shell/compat': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config). */
-    get: operations['ShellController_compat'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/shell/web-manifest': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch. */
-    get: operations['ShellController_manifest'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/shell/web-bundle': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Streamed application/gzip tarball of the web SPA browser build. NOT enveloped in ApiResult (raw bytes). */
-    get: operations['ShellController_bundle'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/initiate': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Initiate a 1:1 call (rings the callee in-band + to all devices) */
-    post: operations['CallsController_initiate'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/accept': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Accept an incoming call (callee) */
-    post: operations['CallsController_accept'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/ringing': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Acknowledge the incoming ring is alerting the callee (callee device) */
-    post: operations['CallsController_ringing'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/connected': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Report the media leg is up (callee-authoritative connect marker) */
-    post: operations['CallsController_connected'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/upgrade-video': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Caller commits an established audio call upgrade to video */
-    post: operations['CallsController_upgradeVideo'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/decline': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Decline an incoming call (callee) */
-    post: operations['CallsController_decline'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/cancel': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Cancel a ringing call before the callee answers (caller) */
-    post: operations['CallsController_cancel'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/end': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** End a connected call (either party) */
-    post: operations['CallsController_end'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/signal': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Relay one WebRTC signaling frame (offer/answer/ICE) to the peer */
-    post: operations['CallsController_signal'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/ice-servers': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** WebRTC ICE servers (STUN + time-limited TURN REST credentials) */
-    get: operations['CallsController_iceServers'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/calls/{callSid}/signaling': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled */
-    get: operations['CallsController_signaling'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/events': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['EventsController_stream'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/link-preview/generations': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Resolve a URL into a link card (OpenGraph preview) */
-    post: operations['LinkPreviewController_preview'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/link-preview/generations/{generationId}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Read an in-memory link-card generation result */
-    get: operations['LinkPreviewController_generation'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/uploads/resumable/init': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Initialize or recover a sequential upload session */
-    post: operations['UploadController_initResumable'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/uploads/resumable/{uploadId}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get the authoritative resumable upload offset */
-    get: operations['UploadController_resumableStatus'];
-    /** Append one ordered upload chunk */
-    put: operations['UploadController_appendResumable'];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/uploads/resumable/{uploadId}/complete': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Validate, publish and promote a completed upload */
-    post: operations['UploadController_completeResumable'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/upload': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Upload one or more media files (type-agnostic; promotes a staged send at the batch barrier) */
-    post: operations['UploadController_upload'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/upload/avatar': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Upload avatar image (multi-size webp, returns representative url) */
-    post: operations['UploadController_uploadAvatar'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/login': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin login (password → session, or 2FA challenge when enrolled) */
-    post: operations['AdminController_login'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/login/verify': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin 2FA login verify (TOTP or backup code) → session */
-    post: operations['AdminController_loginVerify'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/login/begin': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin passkey login begin (challenge token → assertion options) */
-    post: operations['AdminController_webauthnLoginBegin'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/login/finish': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin passkey login finish (assertion) → session */
-    post: operations['AdminController_webauthnLoginFinish'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/logout': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin logout */
-    post: operations['AdminController_logout'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/me': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Current admin identity (account + role) for the console header + role gating */
-    post: operations['AdminController_me'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** User list (paginated + searchable) */
-    post: operations['AdminController_listUsers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/create': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Create a user account (admin-provisioned) */
-    post: operations['AdminController_createUser'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/issue-login-code': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Issue a one-time login code for a user (plaintext returned once) */
-    post: operations['AdminController_issueLoginCode'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/login-codes': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Audit list of a user's one-time login codes (never the code/token value) */
-    post: operations['AdminController_listLoginCodes'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/login-codes/{id}/revoke': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke an unused one-time login code */
-    post: operations['AdminController_revokeLoginCode'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/push/tokens': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Push device-token list (paginated + searchable) + FCM/Web Push config status */
-    post: operations['AdminController_listPushTokens'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/push/tokens/{id}/delete': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Delete (revoke) a push device token */
-    post: operations['AdminController_deletePushToken'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/push/test': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Send a test push to a given device token (FCM / Web Push) */
-    post: operations['AdminController_sendPushTest'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/disable': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Disable a user (soft-delete + force logout) */
-    post: operations['AdminController_disableUser'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/enable': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Enable a user */
-    post: operations['AdminController_enableUser'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/force-logout': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Force logout (revoke all of the user's sessions) */
-    post: operations['AdminController_forceLogout'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/threads/clear-history': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Clear thread history through a selected or current message */
-    post: operations['AdminController_clearThreadHistory'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/sessions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** View a given user's active sessions */
-    post: operations['AdminController_userSessions'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/detail': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** User 360° detail: profile + groups + sessions + push tokens */
-    post: operations['AdminController_userDetail'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/quota': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** View a local user's personal quota policy and today's usage */
-    post: operations['AdminController_userQuota'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/quota/set': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set a local user's personal quota overrides */
-    post: operations['AdminController_setUserQuota'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/generate-initial-password': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** (Re-)generate the user's initial password (random, reveal-once; forces a set on next login) */
-    post: operations['AdminController_generateInitialPassword'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/batch': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Apply an action to many users at once (disable / enable / force-logout) */
-    post: operations['AdminController_batchUsers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/bans': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List active login bans (IP / account — password + OTP) */
-    post: operations['AdminController_listBans'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/bans/unban': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Unban (IP and/or account — clears every account-keyed dimension: password + OTP) */
-    post: operations['AdminController_unban'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/sessions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** System-wide active session overview (cross-user; filter by userId/ip) */
-    post: operations['AdminController_listAllSessions'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/sessions/purge': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately) */
-    post: operations['AdminController_purgeAllSessions'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/sessions/{id}/revoke': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke a single active user session (kicks only that device; the user stays online on every other device) */
-    post: operations['AdminController_revokeSession'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/connections': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Online SSE connection overview (aggregated per user) */
-    post: operations['AdminController_listConnections'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admin-sessions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin active session list (joins Admin → linked user account) */
-    post: operations['AdminController_listAdminSessions'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admin-sessions/{id}/revoke': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Revoke an opaque admin session immediately */
-    post: operations['AdminController_revokeAdminSession'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Read the complete admin-managed runtime settings model */
-    post: operations['AdminSettingsController_getSettings'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/federation-transport': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setFederationTransport'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/admin-session-policy': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setAdminSessionPolicy'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/federation-quota-defaults': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setFederationQuotaDefaults'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/user-quota-defaults': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setUserQuotaDefaults'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/federation-http': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setFederationHttpLimits'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/federation-history-access': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setFederationHistoryAccess'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/federation-download': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['AdminSettingsController_setFederationDownloadLimits'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/keys': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Read-only status for every application-owned server key */
-    post: operations['AdminSettingsController_getKeys'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/otp-ttl': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set the one-time-code validity window (minutes, clamped 1-1440) */
-    post: operations['AdminSettingsController_setOtpTtl'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/health-check': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Validate the configured VAPID keypair + transport status (deterministic, no network) */
-    post: operations['AdminSettingsController_healthCheck'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Federated-peer lifecycle list (trust state + audit cols), paginated + filterable */
-    post: operations['AdminFederationController_listPeers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Single federated peer detail (current lifecycle state) */
-    post: operations['AdminFederationController_peerDetail'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/events': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** A peer trust-lifecycle event timeline (available → degraded → available …) */
-    post: operations['AdminFederationController_peerEvents'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/reset-preview': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Preview the namespace retired by an identity-mismatch halted peer reset (read-only) */
-    post: operations['AdminFederationController_resetPreview'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/reset': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Retire the active namespace of an identity-mismatch halted peer */
-    post: operations['AdminFederationController_resetPeer'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/recover-identity': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Recover an identity-mismatch halted peer only when the original pinned identity is reachable again */
-    post: operations['AdminFederationController_recoverPeerIdentity'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/block': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Block a peer domain — federation is refused until unblocked */
-    post: operations['AdminFederationController_blockPeer'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/peers/{domain}/unblock': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Unblock a peer domain — moves to pending; the next contact re-handshakes */
-    post: operations['AdminFederationController_unblockPeer'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/federation/self-check': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only) */
-    post: operations['AdminFederationController_selfCheck'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/quota/nodes': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List federated peers with today quota usage + limits */
-    post: operations['AdminQuotaController_listNodes'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/quota/breakers': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** All currently-tripped quota circuit breakers (federation peers + local users) */
-    post: operations['AdminQuotaController_trippedBreakers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/quota/nodes/{domain}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set a federated peer's per-dimension daily limits (null = default) */
-    post: operations['AdminQuotaController_setLimits'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/quota/nodes/{domain}/continue': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Add today's additive quota to a tripped federated peer and clear its breaker if within limits */
-    post: operations['AdminQuotaController_continuePeer'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/users/{id}/quota/continue': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Add today's additive quota to a tripped local user and clear its breaker if within limits */
-    post: operations['AdminQuotaController_continueUser'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/uploads': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List active resumable upload sessions */
-    post: operations['MediaTransferAdminController_activeUploads'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/uploads/{uploadId}/abort': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Terminate an active resumable upload session */
-    post: operations['MediaTransferAdminController_abortUpload'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/downloads': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List inbound federation download batches */
-    post: operations['MediaTransferAdminController_downloadsInbox'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/downloads/{batchId}/retry': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Retry a failed inbound federation download */
-    post: operations['MediaTransferAdminController_retryDownload'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/downloads/{batchId}/clean': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Remove an inbound federation download job */
-    post: operations['MediaTransferAdminController_cleanDownload'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/dashboard': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Console overview: online, sessions, federation health, media, recent admin actions */
-    post: operations['DashboardController_summary'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/media/stats': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Read-only media storage totals from the database and CAS */
-    post: operations['DashboardController_mediaStats'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/audit': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin action audit log (paginated + filter by action/adminId/status) */
-    post: operations['AuditController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin account list (paginated + searchable) */
-    post: operations['AdminManageController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins/create': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Promote an existing User to an admin */
-    post: operations['AdminManageController_create'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins/{id}/disable': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Disable an admin (revokes all their sessions immediately) */
-    post: operations['AdminManageController_disable'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins/{id}/enable': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Re-enable a disabled admin */
-    post: operations['AdminManageController_enable'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins/{id}/role': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Change an admin's role (demotion revokes their sessions) */
-    post: operations['AdminManageController_setRole'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/admins/{id}/reset-2fa': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Reset (disable) an admin's 2FA — lockout recovery when a device is lost */
-    post: operations['AdminManageController_reset2fa'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/groups': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Group threads list (member count + owner + federation origin) */
-    post: operations['GroupManageController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/2fa/status': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Current admin's 2FA status (enabled + remaining backup codes) */
-    post: operations['TwoFactorController_status'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/2fa/setup': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Begin 2FA enrollment (otpauth URI + secret + pending token) */
-    post: operations['TwoFactorController_setup'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/2fa/setup/verify': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Confirm 2FA enrollment (verify first code) → enables + returns backup codes once */
-    post: operations['TwoFactorController_setupVerify'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/2fa/disable': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Disable 2FA (requires current password + a live 2FA factor) */
-    post: operations['TwoFactorController_disable'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/2fa/backup/regenerate': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Regenerate backup codes (requires a live 2FA factor) → new codes returned once */
-    post: operations['TwoFactorController_regenerate'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/status': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Current admin's passkey status (availability + enabled + credential count) */
-    post: operations['WebAuthnController_status'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/registration/begin': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Begin passkey enrollment (re-auth required) → options + pending token */
-    post: operations['WebAuthnController_registrationBegin'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/registration/finish': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Confirm passkey enrollment → persists the credential */
-    post: operations['WebAuthnController_registrationFinish'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/credentials': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List the current admin's saved passkeys */
-    post: operations['WebAuthnController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/credentials/{id}/rename': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Rename a saved passkey */
-    post: operations['WebAuthnController_rename'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/webauthn/credentials/{id}/delete': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Delete a saved passkey */
-    post: operations['WebAuthnController_delete'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/diagnostics': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List diagnostic reports (with reporter identity) */
-    post: operations['AdminDiagnosticsController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/diagnostics/{id}/download': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Download a diagnostic bundle (.tar.gz) */
-    get: operations['AdminDiagnosticsController_download'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/diagnostics/gc': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Garbage-collect expired/orphaned diagnostic bundles */
-    post: operations['AdminDiagnosticsController_triggerGc'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/diagnostics/{id}/delete': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Soft-delete one diagnostic report (+ unlink its bundle if unreferenced) */
-    post: operations['AdminDiagnosticsController_delete'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/logs/stream': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Admin live log tail (SSE) */
-    get: operations['LogViewerController_stream'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/logs/history': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Admin historical log search */
-    post: operations['LogViewerController_history'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/rate-limits': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Read authentication rate-limit configuration and aggregate metrics */
-    post: operations['RateLimitMonitoringController_getSnapshot'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/rate-limits/fixed-window-configuration': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Replace fixed-window route-limit configuration */
-    post: operations['RateLimitMonitoringController_setFixedWindowConfiguration'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/rate-limits/configuration': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Replace authentication rate-limit configuration */
-    post: operations['RateLimitMonitoringController_setConfiguration'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/message-reports': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List message reports */
-    post: operations['MessageReportAdminController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/message-reports/resolve': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Uphold or reject message reports */
-    post: operations['MessageReportAdminController_resolve'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/durable-tasks': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Durable task history (paginated and filterable) */
-    post: operations['DurableTaskAdminController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/diagnostics/report': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Upload a diagnostic log bundle for field support */
-    post: operations['DiagnosticsController_report'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/.well-known/somfp': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['WellKnownController_getWellKnown'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/group-meta': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getGroupMeta'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/feed-heads': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['S2sController_postDiscoveryHwm'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/message-tombstones': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_queryMessageTombstones'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/messages': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_queryMessages'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/message-author-profile': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getMessageAuthorProfile'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/group-member-profile': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getGroupMemberProfile'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/state-feed': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getStateFeed'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/call': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['S2sController_postCall'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/users/{account}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getUserProfile'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/profiles/{account}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getAuthorizedProfile'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/media/{digest}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getFile'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/forward-bundles/{bundleId}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sController_getForwardBundle'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/recognize': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['S2sRecognitionController_recognize'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/s2s/v1/health': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get: operations['S2sRecognitionController_health'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/user/profile-resolution': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['ProfileResolutionController_start'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
+    "/api/v1/message-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report one or more messages in one conversation */
+        post: operations["MessageController_reportMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/deleted-messages/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Query one conversation tombstone log by cursor */
+        post: operations["MessageController_queryDeletedMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/withdraw-message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraw a locally-authored message */
+        post: operations["MessageController_withdrawMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/send-message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a message (unified for P2P and group) */
+        post: operations["MessageController_sendMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/send-contact-card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Share an immutable user contact snapshot */
+        post: operations["MessageController_sendContactCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/send-forward": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Directly re-send one message or send a chat-record bundle */
+        post: operations["MessageController_sendForward"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/forward-bundles/{bundleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a visible FORWARD bundle and every nested child bundle */
+        get: operations["MessageController_getForwardBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/send-media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stage a media message (before upload); promoted on POST /upload* */
+        post: operations["MessageController_sendMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/query-media-stages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Query the current user’s uncommitted media-send states in a conversation */
+        post: operations["MessageController_queryMediaStages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/query-messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Query conversation history messages (cursor pagination) */
+        post: operations["MessageController_queryMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/by-user-id": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Look up the P2P thread by peer userId (friends only) */
+        post: operations["MessageController_getThreadByUserId"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/mark-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Commit a local read HWM */
+        post: operations["MessageController_markRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/read-delta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetch read-state delta in (fromRevision, toRevision] */
+        post: operations["MessageController_readDelta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-muted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mute / unmute a conversation (suppresses notifications, not delivery) */
+        post: operations["MessageController_setMuted"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-blocked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Block / unblock new-message delivery for one conversation */
+        post: operations["MessageController_setBlocked"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-pinned": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pin / unpin a conversation (pinned-first ordering) */
+        post: operations["MessageController_setPinned"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-alias": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a per-user alias/remark for a conversation (overrides the displayed name for the caller) */
+        post: operations["MessageController_setAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/search-messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search a conversation by substring (returns lightweight match ids for kernel jump) */
+        post: operations["MessageController_searchMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relocalize-media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Manually re-run federated media localize for one message (retry after a localize failure) */
+        post: operations["MessageController_relocalizeMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read federated media status for mounted messages */
+        post: operations["MessageController_mediaStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login (issue a long-lived per-device session token) */
+        post: operations["AuthController_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout (revoke the presented session token) */
+        post: operations["AuthController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout all devices (revoke every session) */
+        post: operations["AuthController_logoutAll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change password (revoke every session — the client re-logs in) */
+        post: operations["AuthController_changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/set-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set the user's own password (forced first-time set after an initial password; clears mustChangePassword) */
+        post: operations["AuthController_setPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List the current user's active sessions */
+        post: operations["AuthController_sessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get automatic old-session termination settings */
+        get: operations["AuthController_sessionSettings"];
+        /** Set when inactive sessions are automatically terminated */
+        put: operations["AuthController_updateSessionSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/revoke-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a single session by its device-list id (belonging to the current user) */
+        post: operations["AuthController_revokeSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/my-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Get the current user profile */
+        post: operations["UserController_getMyProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/my-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** View the current local account's effective quota and today's usage */
+        post: operations["UserController_getMyQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/update-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update the current user display name / bio (account is immutable) */
+        post: operations["UserController_updateProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/state-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch compacted client state in a fixed feed-id range */
+        get: operations["UserController_queryStateFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/group-meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one client-visible group member feed */
+        get: operations["UserController_queryGroupMeta"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Look up users by account and domain in batch (≤100) */
+        post: operations["UserController_queryUserBase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a local user by account */
+        post: operations["UserController_resolveUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/resolve-federated-stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["UserController_resolveFederatedUserStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fuzzy local identity discovery by account OR display name (local users and groups) */
+        post: operations["UserController_searchUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register a new user */
+        post: operations["UserController_registerLocal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a group */
+        post: operations["GroupController_createNewGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invite friends to an existing group */
+        post: operations["GroupController_inviteUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/invite-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List friends with authoritative group invitation state */
+        post: operations["GroupController_queryInviteCandidates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/join-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List valid pending group join applications */
+        post: operations["GroupController_queryJoinRequests"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List projected group invitations */
+        post: operations["GroupController_queryInvitations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/join-requests/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Advance the account-wide join-request read watermark */
+        post: operations["GroupController_markJoinRequestsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/join-request/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept a pending group join application */
+        post: operations["GroupController_acceptJoinRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/join-request/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject/delete a pending group join application */
+        post: operations["GroupController_rejectJoinRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/invitation/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a pending group invitation */
+        post: operations["GroupController_revokeInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/join-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Author the local USER→GROUP request for an existing invitation */
+        post: operations["GroupController_joinRequestedGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/leave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Leave a group (owner must transfer first) */
+        post: operations["GroupController_leaveGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/dissolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dissolve a group (owner only) */
+        post: operations["GroupController_dissolveGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/kick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Kick a member (owner/admin, must outrank target) */
+        post: operations["GroupController_kickMember"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transfer ownership to a member (owner only) */
+        post: operations["GroupController_transferOwnership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/set-role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a member's role to ADMIN/MEMBER (owner only) */
+        post: operations["GroupController_setRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update group name/avatar (admin+) */
+        post: operations["GroupController_updateGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relationship/requests/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Advance the account-wide relationship-request read watermark */
+        post: operations["RelationshipController_markRelationshipRequestsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relationship/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a user relationship/request or a pending federated group-join request by Address */
+        post: operations["RelationshipController_revokeRelationship"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relationship/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request a user or group relationship by Address */
+        post: operations["RelationshipController_requestRelationship"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/relationship/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept a relationship request by intent id or Address (friend → P2P thread; group → join as MEMBER) */
+        post: operations["RelationshipController_acceptRelationship"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register/refresh an FCM push token for the logged-in user */
+        post: operations["DeviceController_register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/register/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Unregister an FCM push token (called on logout) */
+        delete: operations["DeviceController_unregister"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/fcm-probes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start an end-to-end FCM delivery probe for the current Android device */
+        post: operations["DeviceController_createFcmProbe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/fcm-probes/{probeId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a one-off FCM delivery probe status */
+        get: operations["DeviceController_getFcmProbe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/fcm-probes/{probeId}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge that the Android device received an FCM delivery probe */
+        post: operations["DeviceController_acknowledgeFcmProbe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/vapid-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** VAPID public key for Web Push subscription (browser) */
+        get: operations["NotificationController_vapidKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notification-feed/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Build notifications from changed thread heads in ClientStateFeed */
+        post: operations["NotificationController_queryNotifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report a notification action (button tap / inline reply) */
+        post: operations["NotificationController_reportAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public liveness probe (unauthenticated): status, DB reachability, version, server time. */
+        get: operations["HealthController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public site configuration (registration flag + enabled login methods). */
+        get: operations["ConfigController_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/otp/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login with an admin-issued one-time code (Android → long-term app session) */
+        post: operations["AuthOtpController_otpLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/qr/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin QR sign-in: mint a token (the client renders it as a QR) */
+        post: operations["AuthQrController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/qr/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Poll a QR token status (receives the session token once confirmed) */
+        post: operations["AuthQrController_poll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/qr/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Phone scans a QR token (→ desktop shows "confirm on phone") */
+        post: operations["AuthQrController_scan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/qr/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Phone confirms a scanned QR token */
+        post: operations["AuthQrController_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell/compat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config). */
+        get: operations["ShellController_compat"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell/web-manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch. */
+        get: operations["ShellController_manifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell/web-bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Streamed application/gzip tarball of the web SPA browser build. NOT enveloped in ApiResult (raw bytes). */
+        get: operations["ShellController_bundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/initiate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Initiate a 1:1 call (rings the callee in-band + to all devices) */
+        post: operations["CallsController_initiate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept an incoming call (callee) */
+        post: operations["CallsController_accept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/ringing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge the incoming ring is alerting the callee (callee device) */
+        post: operations["CallsController_ringing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/connected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report the media leg is up (callee-authoritative connect marker) */
+        post: operations["CallsController_connected"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/upgrade-video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Caller commits an established audio call upgrade to video */
+        post: operations["CallsController_upgradeVideo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decline an incoming call (callee) */
+        post: operations["CallsController_decline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a ringing call before the callee answers (caller) */
+        post: operations["CallsController_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** End a connected call (either party) */
+        post: operations["CallsController_end"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/signal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Relay one WebRTC signaling frame (offer/answer/ICE) to the peer */
+        post: operations["CallsController_signal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/ice-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** WebRTC ICE servers (STUN + time-limited TURN REST credentials) */
+        get: operations["CallsController_iceServers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{callSid}/signaling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled */
+        get: operations["CallsController_signaling"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["EventsController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/link-preview/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a URL into a link card (OpenGraph preview) */
+        post: operations["LinkPreviewController_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/link-preview/generations/{generationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read an in-memory link-card generation result */
+        get: operations["LinkPreviewController_generation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/resumable/init": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Initialize or recover a sequential upload session */
+        post: operations["UploadController_initResumable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/resumable/{uploadId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the authoritative resumable upload offset */
+        get: operations["UploadController_resumableStatus"];
+        /** Append one ordered upload chunk */
+        put: operations["UploadController_appendResumable"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/resumable/{uploadId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate, publish and promote a completed upload */
+        post: operations["UploadController_completeResumable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload one or more media files (type-agnostic; promotes a staged send at the batch barrier) */
+        post: operations["UploadController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload one validated avatar image without transforming its bytes */
+        post: operations["UploadController_uploadAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin login (password → session, or 2FA challenge when enrolled) */
+        post: operations["AdminController_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/login/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin 2FA login verify (TOTP or backup code) → session */
+        post: operations["AdminController_loginVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/login/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin passkey login begin (challenge token → assertion options) */
+        post: operations["AdminController_webauthnLoginBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/login/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin passkey login finish (assertion) → session */
+        post: operations["AdminController_webauthnLoginFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin logout */
+        post: operations["AdminController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Current admin identity (account + role) for the console header + role gating */
+        post: operations["AdminController_me"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** User list (paginated + searchable) */
+        post: operations["AdminController_listUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a user account (admin-provisioned) */
+        post: operations["AdminController_createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/issue-login-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a one-time login code for a user (plaintext returned once) */
+        post: operations["AdminController_issueLoginCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/login-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Audit list of a user's one-time login codes (never the code/token value) */
+        post: operations["AdminController_listLoginCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/login-codes/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an unused one-time login code */
+        post: operations["AdminController_revokeLoginCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Push device-token list (paginated + searchable) + FCM/Web Push config status */
+        post: operations["AdminController_listPushTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/tokens/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete (revoke) a push device token */
+        post: operations["AdminController_deletePushToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a test push to a given device token (FCM / Web Push) */
+        post: operations["AdminController_sendPushTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable a user (soft-delete + force logout) */
+        post: operations["AdminController_disableUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enable a user */
+        post: operations["AdminController_enableUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/force-logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force logout (revoke all of the user's sessions) */
+        post: operations["AdminController_forceLogout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/threads/clear-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear thread history through a selected or current message */
+        post: operations["AdminController_clearThreadHistory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** View a given user's active sessions */
+        post: operations["AdminController_userSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** User 360° detail: profile + groups + sessions + push tokens */
+        post: operations["AdminController_userDetail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** View a local user's personal quota policy and today's usage */
+        post: operations["AdminController_userQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/quota/set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a local user's personal quota overrides */
+        post: operations["AdminController_setUserQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/generate-initial-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** (Re-)generate the user's initial password (random, reveal-once; forces a set on next login) */
+        post: operations["AdminController_generateInitialPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply an action to many users at once (disable / enable / force-logout) */
+        post: operations["AdminController_batchUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/bans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List active login bans (IP / account — password + OTP) */
+        post: operations["AdminController_listBans"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/bans/unban": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unban (IP and/or account — clears every account-keyed dimension: password + OTP) */
+        post: operations["AdminController_unban"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** System-wide active session overview (cross-user; filter by userId/ip) */
+        post: operations["AdminController_listAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately) */
+        post: operations["AdminController_purgeAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a single active user session (kicks only that device; the user stays online on every other device) */
+        post: operations["AdminController_revokeSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Online SSE connection overview (aggregated per user) */
+        post: operations["AdminController_listConnections"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admin-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin active session list (joins Admin → linked user account) */
+        post: operations["AdminController_listAdminSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admin-sessions/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an opaque admin session immediately */
+        post: operations["AdminController_revokeAdminSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read the complete admin-managed runtime settings model */
+        post: operations["AdminSettingsController_getSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/federation-transport": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationTransport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/admin-session-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setAdminSessionPolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/federation-quota-defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationQuotaDefaults"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/user-quota-defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setUserQuotaDefaults"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/federation-http": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationHttpLimits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/federation-history-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationHistoryAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/federation-download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationDownloadLimits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read-only status for every application-owned server key */
+        post: operations["AdminSettingsController_getKeys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/otp-ttl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set the one-time-code validity window (minutes, clamped 1-1440) */
+        post: operations["AdminSettingsController_setOtpTtl"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/health-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate the configured VAPID keypair + transport status (deterministic, no network) */
+        post: operations["AdminSettingsController_healthCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Federated-peer lifecycle list (trust state + audit cols), paginated + filterable */
+        post: operations["AdminFederationController_listPeers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Single federated peer detail (current lifecycle state) */
+        post: operations["AdminFederationController_peerDetail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A peer trust-lifecycle event timeline (available → degraded → available …) */
+        post: operations["AdminFederationController_peerEvents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/reset-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview the namespace retired by an identity-mismatch halted peer reset (read-only) */
+        post: operations["AdminFederationController_resetPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retire the active namespace of an identity-mismatch halted peer */
+        post: operations["AdminFederationController_resetPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/recover-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Recover an identity-mismatch halted peer only when the original pinned identity is reachable again */
+        post: operations["AdminFederationController_recoverPeerIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Block a peer domain — federation is refused until unblocked */
+        post: operations["AdminFederationController_blockPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unblock a peer domain — moves to pending; the next contact re-handshakes */
+        post: operations["AdminFederationController_unblockPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/self-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only) */
+        post: operations["AdminFederationController_selfCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/quota/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List federated peers with today quota usage + limits */
+        post: operations["AdminQuotaController_listNodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/quota/breakers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** All currently-tripped quota circuit breakers (federation peers + local users) */
+        post: operations["AdminQuotaController_trippedBreakers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/quota/nodes/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a federated peer's per-dimension daily limits (null = default) */
+        post: operations["AdminQuotaController_setLimits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/quota/nodes/{domain}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add today's additive quota to a tripped federated peer and clear its breaker if within limits */
+        post: operations["AdminQuotaController_continuePeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/quota/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add today's additive quota to a tripped local user and clear its breaker if within limits */
+        post: operations["AdminQuotaController_continueUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List active resumable upload sessions */
+        post: operations["MediaTransferAdminController_activeUploads"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/uploads/{uploadId}/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Terminate an active resumable upload session */
+        post: operations["MediaTransferAdminController_abortUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/downloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List inbound federation download batches */
+        post: operations["MediaTransferAdminController_downloadsInbox"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/downloads/{batchId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry a failed inbound federation download */
+        post: operations["MediaTransferAdminController_retryDownload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/downloads/{batchId}/clean": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove an inbound federation download job */
+        post: operations["MediaTransferAdminController_cleanDownload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Console overview: online, sessions, federation health, media, recent admin actions */
+        post: operations["DashboardController_summary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read-only media storage totals from the database and CAS */
+        post: operations["DashboardController_mediaStats"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin action audit log (paginated + filter by action/adminId/status) */
+        post: operations["AuditController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin account list (paginated + searchable) */
+        post: operations["AdminManageController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Promote an existing User to an admin */
+        post: operations["AdminManageController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable an admin (revokes all their sessions immediately) */
+        post: operations["AdminManageController_disable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-enable a disabled admin */
+        post: operations["AdminManageController_enable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change an admin's role (demotion revokes their sessions) */
+        post: operations["AdminManageController_setRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/reset-2fa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset (disable) an admin's 2FA — lockout recovery when a device is lost */
+        post: operations["AdminManageController_reset2fa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Group threads list (member count + owner + federation origin) */
+        post: operations["GroupManageController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/2fa/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Current admin's 2FA status (enabled + remaining backup codes) */
+        post: operations["TwoFactorController_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/2fa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin 2FA enrollment (otpauth URI + secret + pending token) */
+        post: operations["TwoFactorController_setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/2fa/setup/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm 2FA enrollment (verify first code) → enables + returns backup codes once */
+        post: operations["TwoFactorController_setupVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/2fa/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable 2FA (requires current password + a live 2FA factor) */
+        post: operations["TwoFactorController_disable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/2fa/backup/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate backup codes (requires a live 2FA factor) → new codes returned once */
+        post: operations["TwoFactorController_regenerate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Current admin's passkey status (availability + enabled + credential count) */
+        post: operations["WebAuthnController_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/registration/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin passkey enrollment (re-auth required) → options + pending token */
+        post: operations["WebAuthnController_registrationBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/registration/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm passkey enrollment → persists the credential */
+        post: operations["WebAuthnController_registrationFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List the current admin's saved passkeys */
+        post: operations["WebAuthnController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/credentials/{id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rename a saved passkey */
+        post: operations["WebAuthnController_rename"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/webauthn/credentials/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete a saved passkey */
+        post: operations["WebAuthnController_delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List diagnostic reports (with reporter identity) */
+        post: operations["AdminDiagnosticsController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/diagnostics/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a diagnostic bundle (.tar.gz) */
+        get: operations["AdminDiagnosticsController_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/diagnostics/gc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Garbage-collect expired/orphaned diagnostic bundles */
+        post: operations["AdminDiagnosticsController_triggerGc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/diagnostics/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Soft-delete one diagnostic report (+ unlink its bundle if unreferenced) */
+        post: operations["AdminDiagnosticsController_delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin live log tail (SSE) */
+        get: operations["LogViewerController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin historical log search */
+        post: operations["LogViewerController_history"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/rate-limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read authentication rate-limit configuration and aggregate metrics */
+        post: operations["RateLimitMonitoringController_getSnapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/rate-limits/fixed-window-configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace fixed-window route-limit configuration */
+        post: operations["RateLimitMonitoringController_setFixedWindowConfiguration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/rate-limits/configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace authentication rate-limit configuration */
+        post: operations["RateLimitMonitoringController_setConfiguration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/message-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List message reports */
+        post: operations["MessageReportAdminController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/message-reports/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Uphold or reject message reports */
+        post: operations["MessageReportAdminController_resolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/durable-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Durable task history (paginated and filterable) */
+        post: operations["DurableTaskAdminController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload a diagnostic log bundle for field support */
+        post: operations["DiagnosticsController_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/somfp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["WellKnownController_getWellKnown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/group-meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupMeta"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/feed-heads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postDiscoveryHwm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/message-tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_queryMessageTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_queryMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/message-author-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getMessageAuthorProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/group-member-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupMemberProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/state-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getStateFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postCall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/accounts/{account}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getAccountProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/profiles/{account}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getAuthorizedProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/media/{digest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/forward-bundles/{bundleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getForwardBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/recognize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sRecognitionController_recognize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sRecognitionController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/profile-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ProfileResolutionController_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-  schemas: {
-    CreateMessageReportsDto: {
-      /** @example 12 */
-      threadId: number;
-      /**
-       * @example [
-       *       31
-       *     ]
-       */
-      seqs: string[];
-    };
-    ApiResult: {
-      /**
-       * @description 0 = success; non-zero = business error code, segmented by domain: 10xxx general (10000 validation / 10001 not-found / 10002 already-exists / 10003 unauthenticated / 10005 rate-limited), 20xxx friends & sessions, 30xxx messages, 40xxx groups. See BusinessCode.
-       * @example 0
-       */
-      code: number;
-      /**
-       * @description Human-readable status message
-       * @example successful
-       */
-      message: string;
-      /**
-       * @description Optional i18n key. When present, i18n clients translate this and fall back to `message`.
-       * @example friend.msg.sent
-       */
-      messageKey?: string;
-      /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
-      hasMore: boolean | null;
-      /** @description Populated by bounded pagination requests: whether this page actually reached the truncation boundary. */
-      truncated: boolean | null;
-    };
-    MessageTombstoneResponseDto: {
-      /**
-       * @description Thread-local deletion coordinate
-       * @example 42
-       */
-      deletionSeq: number;
-      /**
-       * @description Owning conversation id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Deleted message sequence
-       * @example 31
-       */
-      messageSeq: number;
-      /** @enum {string} */
-      type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
-      /** @example 1700000000000 */
-      createdAt: number;
-      /** @example 1700000000000 */
-      updatedAt: number;
-    };
-    MessageTombstoneQueryPageDto: {
-      tombstones: components['schemas']['MessageTombstoneResponseDto'][];
-      /**
-       * @description Direction-relative scan cursor
-       * @example 42
-       */
-      scannedThrough: number;
-      /** @example false */
-      hasMore: boolean;
-    };
-    QueryDeletedMessagesDto: {
-      /**
-       * @description Conversation id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Optional recovery filter. Tombstones above this target message sequence are scanned but omitted.
-       * @example 120
-       */
-      maxMessageSeq?: number;
-      /**
-       * @description Exclusive forward tombstone cursor.
-       * @example 0
-       */
-      after?: number;
-      /**
-       * @description Exclusive reverse tombstone cursor.
-       * @example 101
-       */
-      before?: number;
-      /**
-       * @description Inclusive boundary at the opposite end of the query.
-       * @example 20
-       */
-      through?: number;
-      /** @default 100 */
-      take: number;
-    };
-    WithdrawMessageDto: {
-      /**
-       * @description Conversation id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Local message seq
-       * @example 31
-       */
-      seq: number;
-    };
-    MessageAuthorAddressResponseDto: {
-      /** @example alice */
-      account: string;
-      /** @example local */
-      domain: string;
-      /** @example 7 */
-      namespaceId: number;
-    };
-    MessageResponseDto: {
-      /**
-       * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
-       * @example 42
-       */
-      seq: number;
-      /**
-       * @description Immutable complete-profile revision selected when this message was authored
-       * @example 7
-       */
-      profileRev: number;
-      /**
-       * @description Content type
-       * @enum {string}
-       */
-      contentType:
-        | 'PURE_TEXT'
-        | 'IMAGE'
-        | 'VIDEO'
-        | 'FILE'
-        | 'AUDIO'
-        | 'LINK'
-        | 'CONTACT_CARD'
-        | 'CALL'
-        | 'FORWARD'
-        | 'GALLERY'
-        | 'SYSTEM';
-      /**
-       * @description Message content
-       * @example hello
-       */
-      content: string;
-      /**
-       * @description Owning thread id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Sender address snapshot; null for server-authored SYSTEM messages
-       * @example {
-       *       "account": "alice",
-       *       "domain": "local"
-       *     }
-       */
-      creator: components['schemas']['MessageAuthorAddressResponseDto'] | null;
-      /** @example 1700000000000 */
-      createdAt: number;
-      /** @example 1700000000000 */
-      updatedAt: number;
-      /** @example false */
-      isDeleted: boolean;
-      /**
-       * @description Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.
-       * @example READY
-       * @enum {string}
-       */
-      localState: 'STUB' | 'FAILED' | 'READY';
-      /**
-       * @description Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.
-       * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
-       */
-      clientMessageId?: string;
-      /**
-       * @description Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). 'ready' = the Message is READY and every referenced blob is local; 'failed' = the Message is a FAILED placeholder; 'pending'/'downloading' = the Message is a STUB placeholder.
-       * @example ready
-       * @enum {string}
-       */
-      mediaStatus?: 'ready' | 'pending' | 'downloading' | 'failed';
-    };
-    SendMessageDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Message content. PURE_TEXT uses a JSON envelope with text and an optional quote seq.
-       * @example {"text":"hello","quote":{"seq":31}}
-       */
-      content: string;
-      /**
-       * @description Direct-send content type (defaults to PURE_TEXT). Media uses /send-media + /upload*.
-       * @enum {string}
-       */
-      contentType?: 'PURE_TEXT' | 'LINK';
-      /**
-       * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
-       * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
-       */
-      clientMessageId?: string;
-      /** @description Keep a completed LINK generation available for another selected destination. The final send must omit this flag. */
-      retainLinkGeneration?: boolean;
-    };
-    SendContactCardDto: {
-      /**
-       * @description Destination conversation id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Visible user whose current identity snapshot is shared
-       * @example 34
-       */
-      targetUserId?: number;
-      /**
-       * @description Visible group thread whose current identity snapshot is shared
-       * @example 56
-       */
-      targetGroupId?: number;
-      /** @description Client send-idempotency UUID */
-      clientMessageId: string;
-    };
-    ForwardSourceMessageDto: {
-      /**
-       * @description Source conversation id
-       * @example 8
-       */
-      threadId: number;
-      /**
-       * @description Source message seq within the conversation
-       * @example 31
-       */
-      seq: number;
-    };
-    SendForwardDto: {
-      /**
-       * @description Destination conversation id
-       * @example 12
-       */
-      threadId: number;
-      sourceMessages: components['schemas']['ForwardSourceMessageDto'][];
-      /**
-       * @description DIRECT re-sends exactly one message as the caller; HISTORY creates a chat-record bundle.
-       * @enum {string}
-       */
-      mode: 'DIRECT' | 'HISTORY';
-      /** @description Client send-idempotency UUID */
-      clientMessageId: string;
-    };
-    SendMediaDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Media content type being staged (PURE_TEXT uses /send-message directly). GALLERY is a multi-asset bundle of N files.
-       * @enum {string}
-       */
-      contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
-      /** @description Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent. */
-      clientMessageId: string;
-      /**
-       * @description Number of files in this batch. 1 for single-file types (the default); N (≤10) for GALLERY. Each file is uploaded separately sharing the same clientMessageId; the Nth upload promotes the batch.
-       * @default 1
-       */
-      fileCnt: number;
-      /**
-       * @description Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.
-       * @default false
-       */
-      retry: boolean;
-    };
-    QueryMediaStagesDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-    };
-    MessageHistoryGapDto: {
-      /**
-       * @description First missing message sequence
-       * @example 20
-       */
-      startSeq: number;
-      /**
-       * @description Last missing message sequence
-       * @example 30
-       */
-      endSeq: number;
-      /** @example true */
-      recoverable: boolean;
-    };
-    MessageQueryPageDto: {
-      messages: components['schemas']['MessageResponseDto'][];
-      gaps: components['schemas']['MessageHistoryGapDto'][];
-      /**
-       * @description Direction-relative scan cursor
-       * @example 42
-       */
-      scannedThrough: number;
-      /** @example false */
-      hasMore: boolean;
-    };
-    QueryMessagesDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Exclusive forward message-sequence cursor.
-       * @example 42
-       */
-      after?: number;
-      /**
-       * @description Exclusive reverse message-sequence cursor.
-       * @example 101
-       */
-      before?: number;
-      /**
-       * @description Inclusive fixed boundary at the opposite end of the selected direction.
-       * @example 80
-       */
-      through?: number;
-      /**
-       * @description Suggested page size (1-50).
-       * @default 20
-       * @example 20
-       */
-      take: number;
-    };
-    UserIdDto: {
-      /**
-       * @description User id
-       * @example 1
-       */
-      userId: number;
-    };
-    MarkReadDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Highest message seq the viewport has confirmed read locally.
-       * @example 42
-       */
-      localReadHwm: number;
-    };
-    ReadDeltaDto: Record<string, never>;
-    SetMutedDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description true = mute (suppress notifications), false = unmute
-       * @example true
-       */
-      muted: boolean;
-    };
-    SetBlockedDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description true = block new messages, false = resume delivery
-       * @example true
-       */
-      blocked: boolean;
-    };
-    SetPinnedDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description true = pin to top, false = unpin
-       * @example true
-       */
-      pinned: boolean;
-    };
-    SetAliasDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Alias/remark (≤64 chars). Empty/omitted clears it.
-       * @example Alice (work)
-       */
-      alias?: string;
-    };
-    SearchMessagesDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Search keyword (substring, case-insensitive)
-       * @example hello
-       */
-      keyword: string;
-      /**
-       * @description Number of match ids to take (1-50)
-       * @example 20
-       */
-      take: number;
-      /**
-       * @description Cursor: return matches with seq < lastSeq (descending). Omit for the first page.
-       * @example 42
-       */
-      lastSeq?: number;
-    };
-    RelocalizeMediaDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Per-thread message seq to re-localize
-       * @example 42
-       */
-      seq: number;
-    };
-    MediaStatusDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Per-thread message seqs to probe (1–50).
-       * @example [
-       *       42,
-       *       43
-       *     ]
-       */
-      seqs: number[];
-    };
-    LoginDto: {
-      /**
-       * @description Login unique name
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Password
-       * @example P@ssw0rd
-       */
-      password: string;
-      /**
-       * @description Device identifier (optional)
-       * @example web-chrome
-       */
-      device?: string;
-      /**
-       * @description Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational and does not affect session lifetime. Omitted → 'web'.
-       * @default web
-       * @enum {string}
-       */
-      client: 'app' | 'web' | 'desktop';
-    };
-    LogoutDto: {
-      /** @description Session token to revoke (the per-device credential). */
-      sessionToken?: string;
-    };
-    ChangePasswordDto: {
-      /**
-       * @description Current password
-       * @example OldP@ss1
-       */
-      oldPassword: string;
-      /**
-       * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
-       * @example NewP@ss2
-       */
-      newPassword: string;
-    };
-    SetPasswordDto: {
-      /**
-       * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
-       * @example MyOwnP@ss1
-       */
-      newPassword: string;
-    };
-    AutoTerminateSessionsDto: {
-      /**
-       * @description Terminate sessions after this many days without activity.
-       * @example 30
-       * @enum {number}
-       */
-      days: 7 | 30 | 90 | 180 | 365;
-    };
-    RevokeSessionDto: {
-      /**
-       * @description id of the SessionToken row to revoke, as shown in GET /auth/sessions
-       * @example 42
-       */
-      id: number;
-    };
-    UserResponseDto: {
-      /** @example 1 */
-      id: number;
-      /**
-       * @description Login unique name
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Display name
-       * @example Alice
-       */
-      name: string;
-      /**
-       * @description Avatar URL
-       * @example https://.../a.webp
-       */
-      avatar: string;
-      /**
-       * @description Bio (about)
-       * @example Hey there! I am using SOMS.
-       */
-      bio: string;
-      /**
-       * @description Whether this identity is a group
-       * @example false
-       */
-      isGroup: boolean;
-      /**
-       * @description Canonical identity domain; local users use local
-       * @example example.com
-       */
-      domain: string;
-      /**
-       * @description Identity namespace; 0 for identities created on this server
-       * @example 7
-       */
-      namespaceId: number;
-      /**
-       * @description Created at (ms timestamp)
-       * @example 31
-       */
-      createdAt: number;
-      /**
-       * @description Updated at (ms timestamp)
-       * @example 1700000000000
-       */
-      updatedAt: number;
-      /**
-       * @description Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.
-       * @example 3
-       */
-      profileRev: number;
-      /** @example false */
-      isDeleted: boolean;
-    };
-    UpdateProfileDto: {
-      /**
-       * @description Display name (1-30 chars; unicode/emoji allowed)
-       * @example Alice
-       */
-      name: string;
-      /**
-       * @description Bio (≤120 chars)
-       * @example Hey there!
-       */
-      bio: string;
-      /** @description Canonical base64 image bytes. Omit to keep the previous avatar; null removes it. */
-      avatarBase64?: string | null;
-    };
-    UserAddressDto: {
-      /** @example alice */
-      account: string;
-      /** @example local */
-      domain: string;
-    };
-    QueryUsersDto: {
-      /**
-       * @description List of user addresses (≤100 per query)
-       * @example [
-       *       {
-       *         "account": "alice",
-       *         "domain": "local"
-       *       }
-       *     ]
-       */
-      addresses: components['schemas']['UserAddressDto'][];
-    };
-    UserResolveDto: {
-      /**
-       * @description Account (a local account, or the peer user's account)
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Peer domain. Omitted/empty = local lookup.
-       * @example bbb.com
-       */
-      domain?: string;
-    };
-    UserSearchDto: {
-      /**
-       * @description Search query (≥2 chars; matches account OR display name)
-       * @example ali
-       */
-      q: string;
-      /**
-       * @description Records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Records to take (1-20; clamped server-side)
-       * @example 20
-       */
-      take?: number;
-    };
-    RegisterDto: {
-      /**
-       * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Display name (1-30 chars; unicode/emoji allowed)
-       * @example Alice
-       */
-      name: string;
-      /**
-       * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
-       * @example P@ssw0rd
-       */
-      password: string;
-    };
-    CreateGroupResponseDto: {
-      /**
-       * @description Group message thread id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-    };
-    CreateGroupDto: {
-      /**
-       * @description Group name (≤31 chars)
-       * @example dev-team
-       */
-      name: string;
-      /**
-       * @description Group avatar URL (optional)
-       * @example https://.../g.webp
-       */
-      avatar?: string;
-      /**
-       * @description Group description / intro (≤240 chars)
-       * @example Frontend team sync
-       */
-      description?: string;
-    };
-    InviteGroupDto: {
-      /**
-       * @description Friend user ids to invite (each must be a friend with an existing P2P thread)
-       * @example [
-       *       3,
-       *       7
-       *     ]
-       */
-      userIds: number[];
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-    };
-    QueryGroupInviteCandidatesDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Exclusive user-id cursor. Omit for the first page.
-       * @example 42
-       */
-      afterUserId?: number;
-      /**
-       * @description Optional case-insensitive account or display-name search.
-       * @example alice
-       */
-      search?: string;
-      /**
-       * @description Page size (1-50)
-       * @default 20
-       */
-      take: number;
-    };
-    QueryGroupJoinRequestsDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Exclusive projection feed cursor. Omit for the newest page.
-       * @example 123
-       */
-      before?: number;
-      /**
-       * @description Page size (1-50)
-       * @default 20
-       */
-      take: number;
-    };
-    ReadGroupJoinRequestsDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Highest application projection feed id displayed by the client
-       * @example 123
-       */
-      readFeedId: number;
-    };
-    DurableTaskAcceptedDto: {
-      /**
-       * @description Durable task ID
-       * @example 123
-       */
-      taskId: string;
-      /** @enum {string} */
-      status: 'PENDING';
-    };
-    HandleGroupJoinRequestDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description RelationshipIntent id (stringified BigInt)
-       * @example 123456789
-       */
-      requestId: string;
-    };
-    GroupIdDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-    };
-    KickGroupDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Member account
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Member home domain
-       * @example example.com
-       */
-      domain: string;
-    };
-    TransferGroupDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Member account
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Member home domain
-       * @example example.com
-       */
-      domain: string;
-    };
-    SetRoleGroupDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description Member account
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Member home domain
-       * @example example.com
-       */
-      domain: string;
-      /**
-       * @description New role (ADMIN | MEMBER)
-       * @example ADMIN
-       * @enum {string}
-       */
-      role: 'OWNER' | 'ADMIN' | 'MEMBER';
-    };
-    UpdateGroupDto: {
-      /**
-       * @description Group id
-       * @example 12
-       */
-      groupId: number;
-      /**
-       * @description New group name (≤31 chars)
-       * @example dev-team
-       */
-      name?: string;
-      /**
-       * @description New group avatar URL
-       * @example https://.../g.webp
-       */
-      avatar?: string;
-      /**
-       * @description New group description / intro (≤240 chars)
-       * @example Frontend team sync
-       */
-      description?: string;
-    };
-    ReadRelationshipRequestsDto: {
-      /**
-       * @description Highest client state-feed id durably applied before relationship requests were viewed
-       * @example 1234
-       */
-      readThroughFeedId: number;
-    };
-    RevokeRelationshipDto: {
-      /**
-       * @description Peer user or group account
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Peer home domain. Use the literal 'local' for a local account.
-       * @example local
-       */
-      domain: string;
-    };
-    RequestRelationshipDto: {
-      /**
-       * @description Target user or group account
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Target home domain. Use the literal 'local' for a local account.
-       * @example local
-       */
-      domain: string;
-      /**
-       * @description Relationship request note (≤255 chars)
-       * @example Hi from the conference
-       */
-      note?: string;
-      /** @description Untrusted pending-card display snapshot. */
-      displayName?: string;
-      /** @description Untrusted pending-card avatar Base64 data URL. */
-      avatar?: string;
-    };
-    AcceptRelationshipDto: {
-      /** @description Peer user or group account */
-      account: string;
-      /** @description Peer user or group domain */
-      domain: string;
-    };
-    RegisterDeviceDto: {
-      /**
-       * @description ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.
-       * @example dGhpcyBpcyBhIGZjbSB0b2tlbi4u
-       */
-      token: string;
-      /**
-       * @description Delivery platform (determines the server-side transport).
-       * @enum {string}
-       */
-      platform: 'ANDROID' | 'WEB' | 'IOS';
-      /** @description WEB only: the Web Push subscription's p256dh key (base64url). Required for WEB so the server can encrypt the payload. */
-      p256dh?: string;
-      /** @description WEB only: the Web Push subscription's auth key (base64url). Required for WEB. */
-      auth?: string;
-      /** @description Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps. */
-      deviceId?: string;
-    };
-    CreateFcmProbeDto: {
-      /** @description Current Android FCM registration token. */
-      token: string;
-    };
-    NotificationFeedQueryDto: {
-      /**
-       * @description Exclusive per-user ClientStateFeed cursor.
-       * @default 0
-       */
-      after: number;
-      /**
-       * @description "message" returns a bounded recent-message sample for MessagingStyle. "private" returns counts and routing only; message content never leaves the server.
-       * @default message
-       * @enum {string}
-       */
-      previewMode: 'message' | 'private';
-      /** @description The client's per-thread dismiss HWM map { threadId: seq }. A thread's notification starts after the greater of this value and its server read watermark. */
-      threadHwms?: Record<string, never>;
-    };
-    ReportActionDto: {
-      /** @description The notification's tag (which notification's action fired). */
-      tag: string;
-      /** @description The action id ('reply' | 'open' | …; 'dismiss' is handled client-side). */
-      actionId: string;
-      /** @description reply: the target thread. */
-      threadId?: number;
-      /** @description reply: the target message seq (routing). */
-      seq?: number;
-      /** @description reply: the inline-typed reply text. */
-      replyText?: string;
-    };
-    OtpLoginDto: {
-      /**
-       * @description Account the one-time code was issued for.
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description The 6-digit one-time login code (admin-issued).
-       * @example 123456
-       */
-      code: string;
-      /**
-       * @description Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'.
-       * @default app
-       * @enum {string}
-       */
-      client: 'app' | 'web' | 'desktop';
-      /** @description Human-readable device label (shown in the device list). */
-      device?: string;
-    };
-    QrCreateDto: {
-      /**
-       * @description Client kind for the issued session: 'app' (Android), 'web' (browser), or 'desktop' (Tauri). Defaults to 'web'.
-       * @default web
-       * @enum {string}
-       */
-      client: 'app' | 'web' | 'desktop';
-    };
-    QrPollDto: {
-      /** @description The QR sign-in token returned by /auth/qr/create. */
-      qrToken: string;
-      /** @description Human-readable device label (shown in the device list). */
-      device?: string;
-    };
-    QrTokenDto: {
-      /** @description The QR sign-in token scanned from the desktop QR. */
-      qrToken: string;
-    };
-    InitiateCallDto: {
-      /** @description Client-generated canonical lowercase RFC UUID — the call idempotency key + the address every signaling frame carries. */
-      callSid: string;
-      /**
-       * @description The callee userId (must be a friend — share an active P2P thread).
-       * @example 7
-       */
-      calleeUserId: number;
-      /**
-       * @description Call media direction.
-       * @enum {string}
-       */
-      callType: 'AUDIO' | 'VIDEO';
-    };
-    AnswerCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    RingingCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    ConnectedCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    UpgradeCallVideoDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    DeclineCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    CancelCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-    };
-    EndCallDto: {
-      /** @description The callSid addressing the call. */
-      callSid: string;
-      /**
-       * @description Why the call ended (advisory). "completed" is a normal hangup; "failed"/"timeout" mark a connect/answer failure (persisted as the `failed` call outcome).
-       * @enum {string}
-       */
-      endReason?: 'completed' | 'timeout' | 'failed';
-    };
-    SignalCallDto: {
-      /** @description Endpoint-generated canonical UUID for end-to-end signal idempotency. Reuse it when retrying the same logical signal. */
-      id: string;
-      /** @description The callSid this frame belongs to. */
-      callSid: string;
-      /**
-       * @description The peer userId to relay to (must be the OTHER call participant).
-       * @example 7
-       */
-      toUserId: number;
-      /**
-       * @description Signaling frame kind.
-       * @enum {string}
-       */
-      kind: 'offer' | 'answer' | 'ice' | 'video-state';
-      /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
-      payload: string;
-    };
-    LinkCardGenerationStartDto: {
-      generationId: string;
-      /** @enum {string} */
-      status: 'pending' | 'succeeded' | 'failed';
-      expiresAt: number;
-    };
-    LinkPreviewDto: {
-      /**
-       * @description The page URL to preview
-       * @example https://github.com/nestjs/nest
-       */
-      url: string;
-      /** @description Original text used only as a description fallback */
-      text?: string;
-      /** @description Existing owned generation offered to the server for reuse during a user-triggered retry */
-      generationId?: string;
-    };
-    InitResumableUploadDto: {
-      clientMessageId: string;
-      /** @description Stable UUID for this logical file within the message batch */
-      partId: string;
-      position: number;
-      /** @enum {string} */
-      intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-      originalName: string;
-      mimeType: string;
-      totalBytes: number;
-    };
-    Buffer: Record<string, never>;
-    AdminLoginDto: {
-      /**
-       * @description Admin account
-       * @example admin
-       */
-      account: string;
-      /**
-       * @description Password
-       * @example P@ssw0rd
-       */
-      password: string;
-    };
-    AdminLoginVerifyDto: {
-      /** @description Challenge token from POST admin/login (twoFactorRequired response) */
-      challengeToken: string;
-      /**
-       * @description 6-digit TOTP from the authenticator app
-       * @example 123456
-       */
-      code?: string;
-      /**
-       * @description A single-use backup (recovery) code
-       * @example ABCD-EFGH
-       */
-      backupCode?: string;
-    };
-    WebAuthnLoginBeginDto: {
-      /** @description Challenge token from POST admin/login (twoFactorRequired response) */
-      challengeToken: string;
-    };
-    WebAuthnLoginFinishDto: {
-      /** @description Challenge token from POST admin/login */
-      challengeToken: string;
-      /** @description Pending token from POST admin/webauthn/login/begin */
-      pendingToken: string;
-      /** @description AuthenticationResponseJSON returned by startAuthentication (browser) */
-      assertionResponse: Record<string, never>;
-    };
-    AdminListUsersDto: {
-      /**
-       * @description Number of records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Number of records to take (optional)
-       * @example 20
-       */
-      take?: number;
-      /**
-       * @description Fuzzy search by account/display name (optional)
-       * @example alice
-       */
-      search?: string;
-    };
-    AdminCreateUserDto: {
-      /**
-       * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Display name (1-30 chars; unicode/emoji allowed)
-       * @example Alice
-       */
-      name: string;
-      /**
-       * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
-       * @example P@ssw0rd
-       */
-      password?: string;
-    };
-    AdminListPushTokensDto: {
-      /**
-       * @description Records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Records to take (optional)
-       * @example 20
-       */
-      take?: number;
-      /**
-       * @description Fuzzy search account/token/deviceId (optional)
-       * @example alice
-       */
-      search?: string;
-    };
-    AdminPushTestDto: {
-      /**
-       * @description PushToken id
-       * @example 42
-       */
-      id: number;
-      /**
-       * @description Notification title
-       * @example Test
-       */
-      title: string;
-      /**
-       * @description Notification body (optional)
-       * @example sent from admin console
-       */
-      body?: string;
-    };
-    AdminSetQuotaDto: {
-      /**
-       * @description Messages/day (null = default)
-       * @example 5000
-       */
-      dailyMsgLimit?: Record<string, never>;
-      /**
-       * @description Inbound friend ops/day — anti-spam (null = default)
-       * @example 100
-       */
-      dailyRequestLimit?: Record<string, never>;
-      /**
-       * @description File items/day — all file types (image/video/audio/file) + bundles count +1 each (null = default)
-       * @example 500
-       */
-      dailyFileLimit?: Record<string, never>;
-      /**
-       * @description Total file bytes/day — uploads + downloads (null = default)
-       * @example 5368709120
-       */
-      dailyFileBytesLimit?: Record<string, never>;
-    };
-    AdminUserBatchDto: {
-      /**
-       * @description User ids to act on
-       * @example [
-       *       3,
-       *       7
-       *     ]
-       */
-      ids: number[];
-      /** @enum {string} */
-      action: 'disable' | 'enable' | 'force-logout';
-    };
-    AdminClearHistoryDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Inclusive message sequence to clear through; omitted means the thread current sequence
-       * @example 100
-       */
-      seq?: number;
-    };
-    AdminUnbanDto: {
-      /**
-       * @description Banned IP (optional)
-       * @example 1.2.3.4
-       */
-      ip?: string;
-      /**
-       * @description Banned account account (optional)
-       * @example alice
-       */
-      account?: string;
-    };
-    AdminListSessionsDto: {
-      /**
-       * @description Number of records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Number of records to take (optional)
-       * @example 20
-       */
-      take?: number;
-      /**
-       * @description Filter by user id (optional)
-       * @example 1
-       */
-      userId?: number;
-      /**
-       * @description Filter by IP (optional)
-       * @example 1.2.3.4
-       */
-      ip?: string;
-    };
-    FederationTransportDto: {
-      /** @example 21600 */
-      keyCacheTtlSec: number;
-      /** @example 12 */
-      connectTimeoutSec: number;
-      /** @example 12 */
-      callTimeoutSec: number;
-      /** @example 8388608 */
-      mediaChunkBytes: number;
-      /** @example 120 */
-      mediaChunkTimeoutSec: number;
-      /** @example 5 */
-      mediaMaxChunkRetries: number;
-    };
-    AdminSessionPolicyDto: {
-      /** @example 12 */
-      ttlHours: number;
-      /**
-       * @description 0 disables idle expiry; otherwise 15-480 minutes.
-       * @example 60
-       */
-      idleMinutes: number;
-    };
-    FederationQuotaDefaultsDto: {
-      dailyMsgLimit: number;
-      dailyRequestLimit: number;
-      dailySignalLimit: number;
-      dailyFileLimit: number;
-      dailyFileBytesLimit: number;
-    };
-    UserQuotaDefaultsDto: {
-      dailyMsgLimit: number;
-      dailyRequestLimit: number;
-      dailyFileLimit: number;
-      /** @example 1073741824 */
-      dailyFileBytesLimit: string;
-    };
-    FederationHttpLimitsDto: {
-      /** @example 16 */
-      global: number;
-      /** @example 8 */
-      perPeer: number;
-    };
-    FederationHistoryAccessDto: {
-      /**
-       * @default true
-       * @example true
-       */
-      enabled: boolean;
-    };
-    FederationDownloadLimitsDto: {
-      /** @example 10 */
-      global: number;
-      /** @example 2 */
-      perPeer: number;
-      /**
-       * @default false
-       * @example false
-       */
-      chunkDigestEnabled: boolean;
-    };
-    OtpTtlDto: {
-      /**
-       * @description One-time-code validity window in minutes (1-1440).
-       * @example 10
-       */
-      ttlMinutes: number;
-    };
-    AdminListFederationPeersDto: {
-      /**
-       * @description Records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Records to take (optional)
-       * @example 20
-       */
-      take?: number;
-      /**
-       * @description Fuzzy search by peer domain (optional)
-       * @example bbb
-       */
-      search?: string;
-      /**
-       * @description Filter by lifecycle: unrecognized | establishing | available | degraded | halted
-       * @example available
-       */
-      status?: string;
-    };
-    AdminFederationPeerEventsDto: {
-      /**
-       * @description Max events to return (optional, default 100)
-       * @example 100
-       */
-      take?: number;
-    };
-    AdminFederationResetDto: {
-      /**
-       * @description Type the federation domain again to confirm reset
-       * @example peer.example
-       */
-      confirmDomain: string;
-    };
-    AdminFederationIdentityRecoverDto: {
-      /**
-       * @description Type the federation domain again; recovery succeeds only if the original pinned identity is reachable
-       * @example peer.example
-       */
-      confirmDomain: string;
-    };
-    AdminFederationBlockDto: {
-      /**
-       * @description Optional block note (≤255)
-       * @example spam source
-       */
-      note?: string;
-    };
-    AdminFederationSelfCheckDto: {
-      /**
-       * @description NTP server used to measure clock skew (optional, default ntp.aliyun.com)
-       * @example ntp.aliyun.com
-       */
-      ntpServer?: string;
-      /**
-       * @description DNS resolver IP for lookups (optional, default 'system')
-       * @example 223.5.5.5
-       */
-      dnsResolver?: string;
-    };
-    AdminContinueQuotaDto: {
-      /**
-       * @description Additional messages granted for today
-       * @example 1000
-       */
-      addMsg?: number;
-      /**
-       * @description Additional file count granted for today
-       * @example 100
-       */
-      addFile?: number;
-      /**
-       * @description Additional file total bytes granted for today
-       * @example 1073741824
-       */
-      addFileBytes?: number;
-    };
-    AdminAuditQueryDto: {
-      /** @default 0 */
-      skip: number;
-      /** @default 50 */
-      take: number;
-      /** @description Substring over action (e.g. user., federation., session.) */
-      action?: string;
-      /** @description Scope to one actor */
-      adminId?: number;
-      /**
-       * @description Filter by lifecycle state
-       * @enum {string}
-       */
-      status?: 'STARTED' | 'SUCCEEDED' | 'FAILED';
-    };
-    AdminManageListDto: {
-      /** @default 0 */
-      skip: number;
-      /** @default 50 */
-      take: number;
-      /** @description Fuzzy search by linked user account (optional) */
-      search?: string;
-    };
-    AdminCreateDto: {
-      /**
-       * @description Id of the User to promote
-       * @example 42
-       */
-      userId: number;
-      /**
-       * @description Initial role
-       * @enum {string}
-       */
-      role: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
-    };
-    AdminSetRoleDto: {
-      /** @enum {string} */
-      role: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
-    };
-    AdminGroupsListDto: {
-      /** @default 0 */
-      skip: number;
-      /** @default 50 */
-      take: number;
-      /** @description Fuzzy search by group account / name */
-      search?: string;
-    };
-    TwoFactorSetupVerifyDto: {
-      /** @description Pending setup token from POST admin/2fa/setup */
-      pendingToken: string;
-      /**
-       * @description 6-digit TOTP shown by the authenticator after scanning
-       * @example 123456
-       */
-      code: string;
-    };
-    TwoFactorDisableDto: {
-      /**
-       * @description Current password
-       * @example P@ssw0rd
-       */
-      password: string;
-      /**
-       * @description 6-digit TOTP
-       * @example 123456
-       */
-      code?: string;
-      /**
-       * @description A single-use backup code
-       * @example ABCD-EFGH
-       */
-      backupCode?: string;
-    };
-    TwoFactorRegenerateDto: {
-      /**
-       * @description 6-digit TOTP
-       * @example 123456
-       */
-      code?: string;
-      /**
-       * @description A single-use backup code
-       * @example ABCD-EFGH
-       */
-      backupCode?: string;
-    };
-    WebAuthnRegBeginDto: {
-      /**
-       * @description Current password (re-auth required to enroll a passkey)
-       * @example P@ssw0rd
-       */
-      password: string;
-      /**
-       * @description Optional label for this passkey (≤64)
-       * @example MacBook Touch ID
-       */
-      nickname?: string;
-    };
-    WebAuthnRegFinishDto: {
-      /** @description Pending token from POST admin/webauthn/registration/begin */
-      pendingToken: string;
-      /** @description RegistrationResponseJSON returned by startRegistration (browser) */
-      registrationResponse: Record<string, never>;
-    };
-    WebAuthnRenameDto: {
-      /** @example MacBook Touch ID */
-      nickname: string;
-    };
-    AdminListDiagnosticsDto: {
-      /**
-       * @description Number of records to skip (optional)
-       * @example 0
-       */
-      skip?: number;
-      /**
-       * @description Number of records to take (optional)
-       * @example 20
-       */
-      take?: number;
-      /**
-       * @description Fuzzy search by reporter account/display name (optional)
-       * @example alice
-       */
-      search?: string;
-    };
-    AdminLogHistoryDto: {
-      /**
-       * @description Offset for pagination (newest-first)
-       * @default 0
-       */
-      skip: number;
-      /** @default 50 */
-      take: number;
-      /**
-       * @description Inclusive minimum level
-       * @enum {string}
-       */
-      level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-      /** @description Lower time bound, ms epoch */
-      from?: number;
-      /** @description Upper time bound, ms epoch */
-      to?: number;
-      /** @description Case-insensitive substring over msg + context */
-      search?: string;
-      /** @description Exact structured log scope */
-      scope?: string;
-      /** @description Exact structured task identifier */
-      taskId?: string;
-    };
-    AdminListMessageReportsDto: {
-      /** @default 0 */
-      skip: Record<string, never>;
-      /** @default 20 */
-      take: Record<string, never>;
-      /** @enum {string} */
-      status?: 'PENDING' | 'UPHELD' | 'REJECTED';
-    };
-    ResolveMessageReportsDto: {
-      /**
-       * @example [
-       *       "1"
-       *     ]
-       */
-      reportIds: string[];
-      /** @enum {string} */
-      status: 'UPHELD' | 'REJECTED';
-    };
-    AdminDurableTaskQueryDto: {
-      /** @default 0 */
-      skip: number;
-      /** @default 50 */
-      take: number;
-      /** @description Substring over task type or scope key */
-      search?: string;
-      /** @enum {string} */
-      status?:
-        | 'PENDING'
-        | 'PROCESSING'
-        | 'ASYNC_PROCESSING'
-        | 'SUCCEEDED'
-        | 'REJECTED'
-        | 'FAILED'
-        | 'SUPERSEDED';
-    };
-  };
-  responses: never;
-  parameters: never;
-  requestBodies: never;
-  headers: never;
-  pathItems: never;
+    schemas: {
+        CreateMessageReportsDto: {
+            /** @example 12 */
+            threadId: number;
+            /**
+             * @example [
+             *       31
+             *     ]
+             */
+            seqs: string[];
+        };
+        ApiResult: {
+            /**
+             * @description 0 = success; non-zero = business error code, segmented by domain: 10xxx general (10000 validation / 10001 not-found / 10002 already-exists / 10003 unauthenticated / 10005 rate-limited), 20xxx friends & sessions, 30xxx messages, 40xxx groups. See BusinessCode.
+             * @example 0
+             */
+            code: number;
+            /**
+             * @description Human-readable status message
+             * @example successful
+             */
+            message: string;
+            /**
+             * @description Optional i18n key. When present, i18n clients translate this and fall back to `message`.
+             * @example friend.msg.sent
+             */
+            messageKey?: string;
+            /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
+            hasMore: boolean | null;
+            /** @description Populated by bounded pagination requests: whether this page actually reached the truncation boundary. */
+            truncated: boolean | null;
+        };
+        MessageTombstoneResponseDto: {
+            /**
+             * @description Thread-local deletion coordinate
+             * @example 42
+             */
+            deletionSeq: number;
+            /**
+             * @description Owning conversation id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Deleted message sequence
+             * @example 31
+             */
+            messageSeq: number;
+            /** @enum {string} */
+            type: "USER_RETRACTION" | "MODERATION_REMOVAL";
+            /** @example 1700000000000 */
+            createdAt: number;
+            /** @example 1700000000000 */
+            updatedAt: number;
+        };
+        MessageTombstoneQueryPageDto: {
+            tombstones: components["schemas"]["MessageTombstoneResponseDto"][];
+            /**
+             * @description Direction-relative scan cursor
+             * @example 42
+             */
+            scannedThrough: number;
+            /** @example false */
+            hasMore: boolean;
+        };
+        QueryDeletedMessagesDto: {
+            /**
+             * @description Conversation id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Optional recovery filter. Tombstones above this target message sequence are scanned but omitted.
+             * @example 120
+             */
+            maxMessageSeq?: number;
+            /**
+             * @description Exclusive forward tombstone cursor.
+             * @example 0
+             */
+            after?: number;
+            /**
+             * @description Exclusive reverse tombstone cursor.
+             * @example 101
+             */
+            before?: number;
+            /**
+             * @description Inclusive boundary at the opposite end of the query.
+             * @example 20
+             */
+            through?: number;
+            /** @default 100 */
+            take: number;
+        };
+        WithdrawMessageDto: {
+            /**
+             * @description Conversation id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Local message seq
+             * @example 31
+             */
+            seq: number;
+        };
+        MessageAuthorAddressResponseDto: {
+            /** @example alice */
+            account: string;
+            /** @example local */
+            domain: string;
+            /** @example 7 */
+            namespaceId: number;
+        };
+        MessageResponseDto: {
+            /**
+             * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
+             * @example 42
+             */
+            seq: number;
+            /**
+             * @description Immutable complete-profile revision selected when this message was authored
+             * @example 7
+             */
+            profileRev: number;
+            /**
+             * @description Content type
+             * @enum {string}
+             */
+            contentType: "PURE_TEXT" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CONTACT_CARD" | "CALL" | "FORWARD" | "GALLERY" | "SYSTEM";
+            /**
+             * @description Message content
+             * @example hello
+             */
+            content: string;
+            /**
+             * @description Owning thread id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Sender address snapshot; null for server-authored SYSTEM messages
+             * @example {
+             *       "account": "alice",
+             *       "domain": "local"
+             *     }
+             */
+            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
+            /** @example 1700000000000 */
+            createdAt: number;
+            /** @example 1700000000000 */
+            updatedAt: number;
+            /** @example false */
+            isDeleted: boolean;
+            /**
+             * @description Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.
+             * @example READY
+             * @enum {string}
+             */
+            localState: "STUB" | "FAILED" | "READY";
+            /**
+             * @description Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.
+             * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+             */
+            clientMessageId?: string;
+            /**
+             * @description Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). 'ready' = the Message is READY and every referenced blob is local; 'failed' = the Message is a FAILED placeholder; 'pending'/'downloading' = the Message is a STUB placeholder.
+             * @example ready
+             * @enum {string}
+             */
+            mediaStatus?: "ready" | "pending" | "downloading" | "failed";
+        };
+        SendMessageDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Message content. PURE_TEXT uses a JSON envelope with text and an optional quote seq.
+             * @example {"text":"hello","quote":{"seq":31}}
+             */
+            content: string;
+            /**
+             * @description Direct-send content type (defaults to PURE_TEXT). Media uses /send-media + /upload*.
+             * @enum {string}
+             */
+            contentType?: "PURE_TEXT" | "LINK";
+            /**
+             * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
+             * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+             */
+            clientMessageId?: string;
+            /** @description Keep a completed LINK generation available for another selected destination. The final send must omit this flag. */
+            retainLinkGeneration?: boolean;
+        };
+        SendContactCardDto: {
+            /**
+             * @description Destination conversation id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Visible user whose current identity snapshot is shared
+             * @example 34
+             */
+            targetUserId?: number;
+            /**
+             * @description Visible group thread whose current identity snapshot is shared
+             * @example 56
+             */
+            targetGroupId?: number;
+            /** @description Client send-idempotency UUID */
+            clientMessageId: string;
+        };
+        ForwardSourceMessageDto: {
+            /**
+             * @description Source conversation id
+             * @example 8
+             */
+            threadId: number;
+            /**
+             * @description Source message seq within the conversation
+             * @example 31
+             */
+            seq: number;
+        };
+        SendForwardDto: {
+            /**
+             * @description Destination conversation id
+             * @example 12
+             */
+            threadId: number;
+            sourceMessages: components["schemas"]["ForwardSourceMessageDto"][];
+            /**
+             * @description DIRECT re-sends exactly one message as the caller; HISTORY creates a chat-record bundle.
+             * @enum {string}
+             */
+            mode: "DIRECT" | "HISTORY";
+            /** @description Client send-idempotency UUID */
+            clientMessageId: string;
+        };
+        SendMediaDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Media content type being staged (PURE_TEXT uses /send-message directly). GALLERY is a multi-asset bundle of N files.
+             * @enum {string}
+             */
+            contentType: "IMAGE" | "FILE" | "VIDEO" | "AUDIO" | "GALLERY";
+            /** @description Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent. */
+            clientMessageId: string;
+            /**
+             * @description Number of files in this batch. 1 for single-file types (the default); N (≤10) for GALLERY. Each file is uploaded separately sharing the same clientMessageId; the Nth upload promotes the batch.
+             * @default 1
+             */
+            fileCnt: number;
+            /**
+             * @description Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.
+             * @default false
+             */
+            retry: boolean;
+        };
+        QueryMediaStagesDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+        };
+        MessageHistoryGapDto: {
+            /**
+             * @description First missing message sequence
+             * @example 20
+             */
+            startSeq: number;
+            /**
+             * @description Last missing message sequence
+             * @example 30
+             */
+            endSeq: number;
+            /** @example true */
+            recoverable: boolean;
+        };
+        MessageQueryPageDto: {
+            messages: components["schemas"]["MessageResponseDto"][];
+            gaps: components["schemas"]["MessageHistoryGapDto"][];
+            /**
+             * @description Direction-relative scan cursor
+             * @example 42
+             */
+            scannedThrough: number;
+            /** @example false */
+            hasMore: boolean;
+        };
+        QueryMessagesDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Exclusive forward message-sequence cursor.
+             * @example 42
+             */
+            after?: number;
+            /**
+             * @description Exclusive reverse message-sequence cursor.
+             * @example 101
+             */
+            before?: number;
+            /**
+             * @description Inclusive fixed boundary at the opposite end of the selected direction.
+             * @example 80
+             */
+            through?: number;
+            /**
+             * @description Suggested page size (1-50).
+             * @default 20
+             * @example 20
+             */
+            take: number;
+        };
+        UserIdDto: {
+            /**
+             * @description User id
+             * @example 1
+             */
+            userId: number;
+        };
+        MarkReadDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Highest message seq the viewport has confirmed read locally.
+             * @example 42
+             */
+            localReadHwm: number;
+        };
+        ReadDeltaDto: Record<string, never>;
+        SetMutedDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description true = mute (suppress notifications), false = unmute
+             * @example true
+             */
+            muted: boolean;
+        };
+        SetBlockedDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description true = block new messages, false = resume delivery
+             * @example true
+             */
+            blocked: boolean;
+        };
+        SetPinnedDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description true = pin to top, false = unpin
+             * @example true
+             */
+            pinned: boolean;
+        };
+        SetAliasDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Alias/remark (≤64 chars). Empty/omitted clears it.
+             * @example Alice (work)
+             */
+            alias?: string;
+        };
+        SearchMessagesDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Search keyword (substring, case-insensitive)
+             * @example hello
+             */
+            keyword: string;
+            /**
+             * @description Number of match ids to take (1-50)
+             * @example 20
+             */
+            take: number;
+            /**
+             * @description Cursor: return matches with seq < lastSeq (descending). Omit for the first page.
+             * @example 42
+             */
+            lastSeq?: number;
+        };
+        RelocalizeMediaDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Per-thread message seq to re-localize
+             * @example 42
+             */
+            seq: number;
+        };
+        MediaStatusDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Per-thread message seqs to probe (1–50).
+             * @example [
+             *       42,
+             *       43
+             *     ]
+             */
+            seqs: number[];
+        };
+        LoginDto: {
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Password
+             * @example P@ssw0rd
+             */
+            password: string;
+            /**
+             * @description Device identifier (optional)
+             * @example web-chrome
+             */
+            device?: string;
+            /**
+             * @description Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational and does not affect session lifetime. Omitted → 'web'.
+             * @default web
+             * @enum {string}
+             */
+            client: "app" | "web" | "desktop";
+        };
+        LogoutDto: {
+            /** @description Session token to revoke (the per-device credential). */
+            sessionToken?: string;
+        };
+        ChangePasswordDto: {
+            /**
+             * @description Current password
+             * @example OldP@ss1
+             */
+            oldPassword: string;
+            /**
+             * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example NewP@ss2
+             */
+            newPassword: string;
+        };
+        SetPasswordDto: {
+            /**
+             * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example MyOwnP@ss1
+             */
+            newPassword: string;
+        };
+        AutoTerminateSessionsDto: {
+            /**
+             * @description Terminate sessions after this many days without activity.
+             * @example 30
+             * @enum {number}
+             */
+            days: 7 | 30 | 90 | 180 | 365;
+        };
+        RevokeSessionDto: {
+            /**
+             * @description id of the SessionToken row to revoke, as shown in GET /auth/sessions
+             * @example 42
+             */
+            id: number;
+        };
+        UserResponseDto: {
+            /** @example 1 */
+            id: number;
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Display name
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Avatar URL
+             * @example https://.../a.webp
+             */
+            avatar: string;
+            /**
+             * @description Bio (about)
+             * @example Hey there! I am using SOMS.
+             */
+            bio: string;
+            /**
+             * @description Whether this identity is a group
+             * @example false
+             */
+            isGroup: boolean;
+            /**
+             * @description Canonical identity domain; local users use local
+             * @example example.com
+             */
+            domain: string;
+            /**
+             * @description Identity namespace; 0 for identities created on this server
+             * @example 7
+             */
+            namespaceId: number;
+            /**
+             * @description Created at (ms timestamp)
+             * @example 31
+             */
+            createdAt: number;
+            /**
+             * @description Updated at (ms timestamp)
+             * @example 1700000000000
+             */
+            updatedAt: number;
+            /**
+             * @description Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.
+             * @example 3
+             */
+            profileRev: number;
+            /** @example false */
+            isDeleted: boolean;
+        };
+        UpdateProfileDto: {
+            /**
+             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Bio (≤120 chars)
+             * @example Hey there!
+             */
+            bio: string;
+            /** @description Canonical base64 image bytes. Omit to keep the previous avatar; null removes it. */
+            avatarBase64?: string | null;
+        };
+        UserAddressDto: {
+            /** @example alice */
+            account: string;
+            /** @example local */
+            domain: string;
+        };
+        QueryUsersDto: {
+            /**
+             * @description List of user addresses (≤100 per query)
+             * @example [
+             *       {
+             *         "account": "alice",
+             *         "domain": "local"
+             *       }
+             *     ]
+             */
+            addresses: components["schemas"]["UserAddressDto"][];
+        };
+        UserResolveDto: {
+            /**
+             * @description Account (a local account, or the peer user's account)
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Peer domain. Omitted/empty = local lookup.
+             * @example bbb.com
+             */
+            domain?: string;
+        };
+        UserSearchDto: {
+            /**
+             * @description Search query (≥2 chars; matches account OR display name)
+             * @example ali
+             */
+            q: string;
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (1-20; clamped server-side)
+             * @example 20
+             */
+            take?: number;
+        };
+        RegisterDto: {
+            /**
+             * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example P@ssw0rd
+             */
+            password: string;
+        };
+        CreateGroupResponseDto: {
+            /**
+             * @description Group message thread id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+        };
+        CreateGroupDto: {
+            /**
+             * @description Group name (≤31 chars)
+             * @example dev-team
+             */
+            name: string;
+            /**
+             * @description Group avatar URL (optional)
+             * @example https://.../g.webp
+             */
+            avatar?: string;
+            /**
+             * @description Group description / intro (≤240 chars)
+             * @example Frontend team sync
+             */
+            description?: string;
+        };
+        InviteGroupDto: {
+            /**
+             * @description Friend user ids to invite (each must be a friend with an existing P2P thread)
+             * @example [
+             *       3,
+             *       7
+             *     ]
+             */
+            userIds: number[];
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+        };
+        QueryGroupInviteCandidatesDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Exclusive user-id cursor. Omit for the first page.
+             * @example 42
+             */
+            afterUserId?: number;
+            /**
+             * @description Optional case-insensitive account or display-name search.
+             * @example alice
+             */
+            search?: string;
+            /**
+             * @description Page size (1-50)
+             * @default 20
+             */
+            take: number;
+        };
+        QueryGroupJoinRequestsDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Exclusive projection feed cursor. Omit for the newest page.
+             * @example 123
+             */
+            before?: number;
+            /**
+             * @description Page size (1-50)
+             * @default 20
+             */
+            take: number;
+        };
+        ReadGroupJoinRequestsDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Highest application projection feed id displayed by the client
+             * @example 123
+             */
+            readFeedId: number;
+        };
+        DurableTaskAcceptedDto: {
+            /**
+             * @description Durable task ID
+             * @example 123
+             */
+            taskId: string;
+            /** @enum {string} */
+            status: "PENDING";
+        };
+        HandleGroupJoinRequestDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description RelationshipIntent id (stringified BigInt)
+             * @example 123456789
+             */
+            requestId: string;
+        };
+        GroupIdDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+        };
+        KickGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Member account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Member home domain
+             * @example example.com
+             */
+            domain: string;
+        };
+        TransferGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Member account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Member home domain
+             * @example example.com
+             */
+            domain: string;
+        };
+        SetRoleGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Member account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Member home domain
+             * @example example.com
+             */
+            domain: string;
+            /**
+             * @description New role (ADMIN | MEMBER)
+             * @example ADMIN
+             * @enum {string}
+             */
+            role: "OWNER" | "ADMIN" | "MEMBER";
+        };
+        UpdateGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description New group name (≤31 chars)
+             * @example dev-team
+             */
+            name?: string;
+            /**
+             * @description New group avatar URL
+             * @example https://.../g.webp
+             */
+            avatar?: string;
+            /**
+             * @description New group description / intro (≤240 chars)
+             * @example Frontend team sync
+             */
+            description?: string;
+        };
+        ReadRelationshipRequestsDto: {
+            /**
+             * @description Highest client state-feed id durably applied before relationship requests were viewed
+             * @example 1234
+             */
+            readThroughFeedId: number;
+        };
+        RevokeRelationshipDto: {
+            /**
+             * @description Peer user or group account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Peer home domain. Use the literal 'local' for a local account.
+             * @example local
+             */
+            domain: string;
+        };
+        RequestRelationshipDto: {
+            /**
+             * @description Target user or group account
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Target home domain. Use the literal 'local' for a local account.
+             * @example local
+             */
+            domain: string;
+            /**
+             * @description Relationship request note (≤255 chars)
+             * @example Hi from the conference
+             */
+            note?: string;
+            /** @description Untrusted pending-card display snapshot. */
+            displayName?: string;
+            /** @description Untrusted pending-card avatar Base64 data URL. */
+            avatar?: string;
+        };
+        AcceptRelationshipDto: {
+            /** @description Peer user or group account */
+            account: string;
+            /** @description Peer user or group domain */
+            domain: string;
+        };
+        RegisterDeviceDto: {
+            /**
+             * @description ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.
+             * @example dGhpcyBpcyBhIGZjbSB0b2tlbi4u
+             */
+            token: string;
+            /**
+             * @description Delivery platform (determines the server-side transport).
+             * @enum {string}
+             */
+            platform: "ANDROID" | "WEB" | "IOS";
+            /** @description WEB only: the Web Push subscription's p256dh key (base64url). Required for WEB so the server can encrypt the payload. */
+            p256dh?: string;
+            /** @description WEB only: the Web Push subscription's auth key (base64url). Required for WEB. */
+            auth?: string;
+            /** @description Optional stable client installation id for diagnostics. Delivery suppression is bound to the authenticated session. */
+            deviceId?: string;
+        };
+        CreateFcmProbeDto: {
+            /** @description Current Android FCM registration token. */
+            token: string;
+        };
+        NotificationFeedQueryDto: {
+            /**
+             * @description Exclusive per-user ClientStateFeed cursor.
+             * @default 0
+             */
+            after: number;
+            /**
+             * @description "message" returns a bounded recent-message sample for MessagingStyle. "private" returns counts and routing only; message content never leaves the server.
+             * @default message
+             * @enum {string}
+             */
+            previewMode: "message" | "private";
+            /** @description The client's per-thread dismiss HWM map { threadId: seq }. A thread's notification starts after the greater of this value and its server read watermark. */
+            threadHwms?: Record<string, never>;
+        };
+        ReportActionDto: {
+            /** @description The notification's tag (which notification's action fired). */
+            tag: string;
+            /** @description The action id ('reply' | 'open' | …; 'dismiss' is handled client-side). */
+            actionId: string;
+            /** @description reply: the target thread. */
+            threadId?: number;
+            /** @description reply: the target message seq (routing). */
+            seq?: number;
+            /** @description reply: the inline-typed reply text. */
+            replyText?: string;
+        };
+        OtpLoginDto: {
+            /**
+             * @description Account the one-time code was issued for.
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description The 6-digit one-time login code (admin-issued).
+             * @example 123456
+             */
+            code: string;
+            /**
+             * @description Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'.
+             * @default app
+             * @enum {string}
+             */
+            client: "app" | "web" | "desktop";
+            /** @description Human-readable device label (shown in the device list). */
+            device?: string;
+        };
+        QrCreateDto: {
+            /**
+             * @description Client kind for the issued session: 'app' (Android), 'web' (browser), or 'desktop' (Tauri). Defaults to 'web'.
+             * @default web
+             * @enum {string}
+             */
+            client: "app" | "web" | "desktop";
+        };
+        QrPollDto: {
+            /** @description The QR sign-in token returned by /auth/qr/create. */
+            qrToken: string;
+            /** @description Human-readable device label (shown in the device list). */
+            device?: string;
+        };
+        QrTokenDto: {
+            /** @description The QR sign-in token scanned from the desktop QR. */
+            qrToken: string;
+        };
+        InitiateCallDto: {
+            /** @description Client-generated canonical lowercase RFC UUID — the call idempotency key + the address every signaling frame carries. */
+            callSid: string;
+            /**
+             * @description The callee userId (must be a friend — share an active P2P thread).
+             * @example 7
+             */
+            calleeUserId: number;
+            /**
+             * @description Call media direction.
+             * @enum {string}
+             */
+            callType: "AUDIO" | "VIDEO";
+        };
+        AnswerCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        RingingCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        ConnectedCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        UpgradeCallVideoDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        DeclineCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        CancelCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+        };
+        EndCallDto: {
+            /** @description The callSid addressing the call. */
+            callSid: string;
+            /**
+             * @description Why the call ended (advisory). "completed" is a normal hangup; "failed"/"timeout" mark a connect/answer failure (persisted as the `failed` call outcome).
+             * @enum {string}
+             */
+            endReason?: "completed" | "timeout" | "failed";
+        };
+        SignalCallDto: {
+            /** @description Endpoint-generated canonical UUID for end-to-end signal idempotency. Reuse it when retrying the same logical signal. */
+            id: string;
+            /** @description The callSid this frame belongs to. */
+            callSid: string;
+            /**
+             * @description The peer userId to relay to (must be the OTHER call participant).
+             * @example 7
+             */
+            toUserId: number;
+            /**
+             * @description Signaling frame kind.
+             * @enum {string}
+             */
+            kind: "offer" | "answer" | "ice" | "video-state";
+            /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
+            payload: string;
+        };
+        LinkCardGenerationStartDto: {
+            generationId: string;
+            /** @enum {string} */
+            status: "pending" | "succeeded" | "failed";
+            expiresAt: number;
+        };
+        LinkPreviewDto: {
+            /**
+             * @description The page URL to preview
+             * @example https://github.com/nestjs/nest
+             */
+            url: string;
+            /** @description Original text used only as a description fallback */
+            text?: string;
+            /** @description Existing owned generation offered to the server for reuse during a user-triggered retry */
+            generationId?: string;
+        };
+        InitResumableUploadDto: {
+            clientMessageId: string;
+            /** @description Stable UUID for this logical file within the message batch */
+            partId: string;
+            position: number;
+            /** @enum {string} */
+            intent: "IMAGE" | "VIDEO" | "AUDIO" | "FILE";
+            originalName: string;
+            mimeType: string;
+            totalBytes: number;
+        };
+        Buffer: Record<string, never>;
+        AdminLoginDto: {
+            /**
+             * @description Admin account
+             * @example admin
+             */
+            account: string;
+            /**
+             * @description Password
+             * @example P@ssw0rd
+             */
+            password: string;
+        };
+        AdminLoginVerifyDto: {
+            /** @description Challenge token from POST admin/login (twoFactorRequired response) */
+            challengeToken: string;
+            /**
+             * @description 6-digit TOTP from the authenticator app
+             * @example 123456
+             */
+            code?: string;
+            /**
+             * @description A single-use backup (recovery) code
+             * @example ABCD-EFGH
+             */
+            backupCode?: string;
+        };
+        WebAuthnLoginBeginDto: {
+            /** @description Challenge token from POST admin/login (twoFactorRequired response) */
+            challengeToken: string;
+        };
+        WebAuthnLoginFinishDto: {
+            /** @description Challenge token from POST admin/login */
+            challengeToken: string;
+            /** @description Pending token from POST admin/webauthn/login/begin */
+            pendingToken: string;
+            /** @description AuthenticationResponseJSON returned by startAuthentication (browser) */
+            assertionResponse: Record<string, never>;
+        };
+        AdminListUsersDto: {
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Number of records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search by account/display name (optional)
+             * @example alice
+             */
+            search?: string;
+        };
+        AdminCreateUserDto: {
+            /**
+             * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
+             * @example P@ssw0rd
+             */
+            password?: string;
+        };
+        AdminListPushTokensDto: {
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search account/token/deviceId (optional)
+             * @example alice
+             */
+            search?: string;
+        };
+        AdminPushTestDto: {
+            /**
+             * @description PushToken id
+             * @example 42
+             */
+            id: number;
+            /**
+             * @description Notification title
+             * @example Test
+             */
+            title: string;
+            /**
+             * @description Notification body (optional)
+             * @example sent from admin console
+             */
+            body?: string;
+        };
+        AdminClearHistoryDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Inclusive message sequence to clear through; omitted means the thread current sequence
+             * @example 100
+             */
+            seq?: number;
+        };
+        AdminSetQuotaDto: {
+            /**
+             * @description Messages/day (null = default)
+             * @example 5000
+             */
+            dailyMsgLimit?: Record<string, never>;
+            /**
+             * @description Inbound friend ops/day — anti-spam (null = default)
+             * @example 100
+             */
+            dailyRequestLimit?: Record<string, never>;
+            /**
+             * @description File items/day — all file types (image/video/audio/file) + bundles count +1 each (null = default)
+             * @example 500
+             */
+            dailyFileLimit?: Record<string, never>;
+            /**
+             * @description Total file bytes/day — uploads + downloads (null = default)
+             * @example 5368709120
+             */
+            dailyFileBytesLimit?: Record<string, never>;
+        };
+        AdminUserBatchDto: {
+            /**
+             * @description User ids to act on
+             * @example [
+             *       3,
+             *       7
+             *     ]
+             */
+            ids: number[];
+            /** @enum {string} */
+            action: "disable" | "enable" | "force-logout";
+        };
+        AdminUnbanDto: {
+            /**
+             * @description Banned IP (optional)
+             * @example 1.2.3.4
+             */
+            ip?: string;
+            /**
+             * @description Banned account account (optional)
+             * @example alice
+             */
+            account?: string;
+        };
+        AdminListSessionsDto: {
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Number of records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Filter by user id (optional)
+             * @example 1
+             */
+            userId?: number;
+            /**
+             * @description Filter by IP (optional)
+             * @example 1.2.3.4
+             */
+            ip?: string;
+        };
+        FederationTransportDto: {
+            /** @example 21600 */
+            keyCacheTtlSec: number;
+            /** @example 12 */
+            connectTimeoutSec: number;
+            /** @example 12 */
+            callTimeoutSec: number;
+            /** @example 8388608 */
+            mediaChunkBytes: number;
+            /** @example 120 */
+            mediaChunkTimeoutSec: number;
+            /** @example 5 */
+            mediaMaxChunkRetries: number;
+        };
+        AdminSessionPolicyDto: {
+            /** @example 12 */
+            ttlHours: number;
+            /**
+             * @description 0 disables idle expiry; otherwise 15-480 minutes.
+             * @example 60
+             */
+            idleMinutes: number;
+        };
+        FederationQuotaDefaultsDto: {
+            dailyMsgLimit: number;
+            dailyRequestLimit: number;
+            dailySignalLimit: number;
+            dailyFileLimit: number;
+            dailyFileBytesLimit: number;
+        };
+        UserQuotaDefaultsDto: {
+            dailyMsgLimit: number;
+            dailyRequestLimit: number;
+            dailyFileLimit: number;
+            /** @example 1073741824 */
+            dailyFileBytesLimit: string;
+        };
+        FederationHttpLimitsDto: {
+            /** @example 16 */
+            global: number;
+            /** @example 8 */
+            perPeer: number;
+        };
+        FederationHistoryAccessDto: {
+            /**
+             * @default true
+             * @example true
+             */
+            enabled: boolean;
+        };
+        FederationDownloadLimitsDto: {
+            /** @example 10 */
+            global: number;
+            /** @example 2 */
+            perPeer: number;
+            /**
+             * @default false
+             * @example false
+             */
+            chunkDigestEnabled: boolean;
+        };
+        OtpTtlDto: {
+            /**
+             * @description One-time-code validity window in minutes (1-1440).
+             * @example 10
+             */
+            ttlMinutes: number;
+        };
+        AdminListFederationPeersDto: {
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search by peer domain (optional)
+             * @example bbb
+             */
+            search?: string;
+            /**
+             * @description Filter by lifecycle: unrecognized | establishing | available | degraded | halted
+             * @example available
+             */
+            status?: string;
+        };
+        AdminFederationPeerEventsDto: {
+            /**
+             * @description Max events to return (optional, default 100)
+             * @example 100
+             */
+            take?: number;
+        };
+        AdminFederationResetDto: {
+            /**
+             * @description Type the federation domain again to confirm reset
+             * @example peer.example
+             */
+            confirmDomain: string;
+        };
+        AdminFederationIdentityRecoverDto: {
+            /**
+             * @description Type the federation domain again; recovery succeeds only if the original pinned identity is reachable
+             * @example peer.example
+             */
+            confirmDomain: string;
+        };
+        AdminFederationBlockDto: {
+            /**
+             * @description Optional block note (≤255)
+             * @example spam source
+             */
+            note?: string;
+        };
+        AdminFederationSelfCheckDto: {
+            /**
+             * @description NTP server used to measure clock skew (optional, default ntp.aliyun.com)
+             * @example ntp.aliyun.com
+             */
+            ntpServer?: string;
+            /**
+             * @description DNS resolver IP for lookups (optional, default 'system')
+             * @example 223.5.5.5
+             */
+            dnsResolver?: string;
+        };
+        AdminContinueQuotaDto: {
+            /**
+             * @description Additional messages granted for today
+             * @example 1000
+             */
+            addMsg?: number;
+            /**
+             * @description Additional file count granted for today
+             * @example 100
+             */
+            addFile?: number;
+            /**
+             * @description Additional file total bytes granted for today
+             * @example 1073741824
+             */
+            addFileBytes?: number;
+        };
+        AdminAuditQueryDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Substring over action (e.g. user., federation., session.) */
+            action?: string;
+            /** @description Scope to one actor */
+            adminId?: number;
+            /**
+             * @description Filter by lifecycle state
+             * @enum {string}
+             */
+            status?: "STARTED" | "SUCCEEDED" | "FAILED";
+        };
+        AdminManageListDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Fuzzy search by linked user account (optional) */
+            search?: string;
+        };
+        AdminCreateDto: {
+            /**
+             * @description Id of the User to promote
+             * @example 42
+             */
+            userId: number;
+            /**
+             * @description Initial role
+             * @enum {string}
+             */
+            role: "SUPER_ADMIN" | "ADMIN" | "VIEWER";
+        };
+        AdminSetRoleDto: {
+            /** @enum {string} */
+            role: "SUPER_ADMIN" | "ADMIN" | "VIEWER";
+        };
+        AdminGroupsListDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Fuzzy search by group account / name */
+            search?: string;
+        };
+        TwoFactorSetupVerifyDto: {
+            /** @description Pending setup token from POST admin/2fa/setup */
+            pendingToken: string;
+            /**
+             * @description 6-digit TOTP shown by the authenticator after scanning
+             * @example 123456
+             */
+            code: string;
+        };
+        TwoFactorDisableDto: {
+            /**
+             * @description Current password
+             * @example P@ssw0rd
+             */
+            password: string;
+            /**
+             * @description 6-digit TOTP
+             * @example 123456
+             */
+            code?: string;
+            /**
+             * @description A single-use backup code
+             * @example ABCD-EFGH
+             */
+            backupCode?: string;
+        };
+        TwoFactorRegenerateDto: {
+            /**
+             * @description 6-digit TOTP
+             * @example 123456
+             */
+            code?: string;
+            /**
+             * @description A single-use backup code
+             * @example ABCD-EFGH
+             */
+            backupCode?: string;
+        };
+        WebAuthnRegBeginDto: {
+            /**
+             * @description Current password (re-auth required to enroll a passkey)
+             * @example P@ssw0rd
+             */
+            password: string;
+            /**
+             * @description Optional label for this passkey (≤64)
+             * @example MacBook Touch ID
+             */
+            nickname?: string;
+        };
+        WebAuthnRegFinishDto: {
+            /** @description Pending token from POST admin/webauthn/registration/begin */
+            pendingToken: string;
+            /** @description RegistrationResponseJSON returned by startRegistration (browser) */
+            registrationResponse: Record<string, never>;
+        };
+        WebAuthnRenameDto: {
+            /** @example MacBook Touch ID */
+            nickname: string;
+        };
+        AdminListDiagnosticsDto: {
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Number of records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search by reporter account/display name (optional)
+             * @example alice
+             */
+            search?: string;
+        };
+        AdminLogHistoryDto: {
+            /**
+             * @description Offset for pagination (newest-first)
+             * @default 0
+             */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /**
+             * @description Inclusive minimum level
+             * @enum {string}
+             */
+            level?: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+            /** @description Lower time bound, ms epoch */
+            from?: number;
+            /** @description Upper time bound, ms epoch */
+            to?: number;
+            /** @description Case-insensitive substring over msg + context */
+            search?: string;
+            /** @description Exact structured log scope */
+            scope?: string;
+            /** @description Exact structured task identifier */
+            taskId?: string;
+        };
+        AdminListMessageReportsDto: {
+            /** @default 0 */
+            skip: Record<string, never>;
+            /** @default 20 */
+            take: Record<string, never>;
+            /** @enum {string} */
+            status?: "PENDING" | "UPHELD" | "REJECTED";
+        };
+        ResolveMessageReportsDto: {
+            /**
+             * @example [
+             *       "1"
+             *     ]
+             */
+            reportIds: string[];
+            /** @enum {string} */
+            status: "UPHELD" | "REJECTED";
+        };
+        AdminDurableTaskQueryDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Substring over task type or scope key */
+            search?: string;
+            /** @enum {string} */
+            status?: "PENDING" | "PROCESSING" | "ASYNC_PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED" | "SUPERSEDED";
+        };
+    };
+    responses: never;
+    parameters: never;
+    requestBodies: never;
+    headers: never;
+    pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-  MessageController_reportMessages: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CreateMessageReportsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_queryDeletedMessages: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryDeletedMessagesDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageTombstoneQueryPageDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_withdrawMessage: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WithdrawMessageDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_sendMessage: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SendMessageDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_sendContactCard: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SendContactCardDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_sendForward: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SendForwardDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_getForwardBundle: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        bundleId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_sendMedia: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SendMediaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_queryMediaStages: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryMediaStagesDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_queryMessages: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryMessagesDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['MessageQueryPageDto'];
-          };
-        };
-      };
-    };
-  };
-  MessageController_getThreadByUserId: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UserIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_markRead: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['MarkReadDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_readDelta: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ReadDeltaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_setMuted: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetMutedDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_setBlocked: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetBlockedDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_setPinned: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetPinnedDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_setAlias: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetAliasDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_searchMessages: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SearchMessagesDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_relocalizeMedia: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RelocalizeMediaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageController_mediaStatus: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['MediaStatusDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_login: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['LoginDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_logout: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['LogoutDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_logoutAll: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_changePassword: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ChangePasswordDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_setPassword: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetPasswordDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_sessions: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_sessionSettings: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_updateSessionSettings: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AutoTerminateSessionsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthController_revokeSession: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RevokeSessionDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_getMyProfile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['UserResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  UserController_getMyQuota: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_updateProfile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UpdateProfileDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['UserResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  UserController_queryStateFeed: {
-    parameters: {
-      query: {
-        mode: string;
-        after: string;
-        take: string;
-        through: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_queryGroupMeta: {
-    parameters: {
-      query: {
-        threadId: string;
-        account: string;
-        domain: string;
-        mode: string;
-        after: string;
-        take: string;
-        through: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_queryUserBase: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryUsersDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['UserResponseDto'][];
-          };
-        };
-      };
-    };
-  };
-  UserController_resolveUser: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UserResolveDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['UserResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  UserController_resolveFederatedUserStream: {
-    parameters: {
-      query: {
-        /** @description Account (a local account, or the peer user's account) */
-        account: string;
-        /** @description Peer domain. Omitted/empty = local lookup. */
-        domain?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_searchUsers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UserSearchDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UserController_registerLocal: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RegisterDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_createNewGroup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CreateGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['CreateGroupResponseDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_inviteUsers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['InviteGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_queryInviteCandidates: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryGroupInviteCandidatesDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_queryJoinRequests: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryGroupJoinRequestsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_queryInvitations: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryGroupJoinRequestsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_markJoinRequestsRead: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ReadGroupJoinRequestsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupController_acceptJoinRequest: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HandleGroupJoinRequestDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_rejectJoinRequest: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HandleGroupJoinRequestDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_revokeInvitation: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HandleGroupJoinRequestDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_joinRequestedGroup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GroupIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_leaveGroup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GroupIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_dissolveGroup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GroupIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_kickMember: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['KickGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_transferOwnership: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransferGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_setRole: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SetRoleGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  GroupController_updateGroup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UpdateGroupDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  RelationshipController_markRelationshipRequestsRead: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ReadRelationshipRequestsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  RelationshipController_revokeRelationship: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RevokeRelationshipDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  RelationshipController_requestRelationship: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RequestRelationshipDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['DurableTaskAcceptedDto'];
-          };
-        };
-      };
-    };
-  };
-  RelationshipController_acceptRelationship: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AcceptRelationshipDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DeviceController_register: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RegisterDeviceDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DeviceController_unregister: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        token: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DeviceController_createFcmProbe: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CreateFcmProbeDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DeviceController_getFcmProbe: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        probeId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DeviceController_acknowledgeFcmProbe: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        probeId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  NotificationController_vapidKey: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  NotificationController_queryNotifications: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['NotificationFeedQueryDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  NotificationController_reportAction: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ReportActionDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  HealthController_health: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  ConfigController_config: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthOtpController_otpLogin: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['OtpLoginDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthQrController_create: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QrCreateDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthQrController_poll: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QrPollDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthQrController_scan: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QrTokenDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuthQrController_confirm: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QrTokenDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  ShellController_compat: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  ShellController_manifest: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  ShellController_bundle: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_initiate: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['InitiateCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_accept: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AnswerCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_ringing: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RingingCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_connected: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ConnectedCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_upgradeVideo: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UpgradeCallVideoDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_decline: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['DeclineCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_cancel: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CancelCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_end: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['EndCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_signal: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SignalCallDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_iceServers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  CallsController_signaling: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        callSid: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  EventsController_stream: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkPreviewController_preview: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['LinkPreviewDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['LinkCardGenerationStartDto'];
-          };
-        };
-      };
-    };
-  };
-  LinkPreviewController_generation: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        generationId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_initResumable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['InitResumableUploadDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_resumableStatus: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        uploadId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_appendResumable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        uploadId: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/octet-stream': components['schemas']['Buffer'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_completeResumable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        uploadId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_upload: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  UploadController_uploadAvatar: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_login: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminLoginDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_loginVerify: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminLoginVerifyDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_webauthnLoginBegin: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WebAuthnLoginBeginDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_webauthnLoginFinish: {
-    parameters: {
-      query?: never;
-      header: {
-        'user-agent': string;
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WebAuthnLoginFinishDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_logout: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_me: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listUsers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListUsersDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_createUser: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminCreateUserDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_issueLoginCode: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listLoginCodes: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_revokeLoginCode: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listPushTokens: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListPushTokensDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_deletePushToken: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_sendPushTest: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminPushTestDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_disableUser: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_enableUser: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_forceLogout: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_clearThreadHistory: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminClearHistoryDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_userSessions: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_userDetail: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_userQuota: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_setUserQuota: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminSetQuotaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_generateInitialPassword: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_batchUsers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminUserBatchDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listBans: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_unban: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminUnbanDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listAllSessions: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListSessionsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_purgeAllSessions: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_revokeSession: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listConnections: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_listAdminSessions: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListSessionsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminController_revokeAdminSession: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_getSettings: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setFederationTransport: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FederationTransportDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setAdminSessionPolicy: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminSessionPolicyDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setFederationQuotaDefaults: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FederationQuotaDefaultsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setUserQuotaDefaults: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['UserQuotaDefaultsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setFederationHttpLimits: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FederationHttpLimitsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setFederationHistoryAccess: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FederationHistoryAccessDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setFederationDownloadLimits: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FederationDownloadLimitsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_getKeys: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_setOtpTtl: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['OtpTtlDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_healthCheck: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_listPeers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListFederationPeersDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_peerDetail: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_peerEvents: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminFederationPeerEventsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_resetPreview: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_resetPeer: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminFederationResetDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_recoverPeerIdentity: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminFederationIdentityRecoverDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_blockPeer: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminFederationBlockDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_unblockPeer: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminFederationController_selfCheck: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminFederationSelfCheckDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminQuotaController_listNodes: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminQuotaController_trippedBreakers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminQuotaController_setLimits: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminSetQuotaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminQuotaController_continuePeer: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        domain: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminContinueQuotaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminQuotaController_continueUser: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminContinueQuotaDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MediaTransferAdminController_activeUploads: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MediaTransferAdminController_abortUpload: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        uploadId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MediaTransferAdminController_downloadsInbox: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MediaTransferAdminController_retryDownload: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        batchId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MediaTransferAdminController_cleanDownload: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        batchId: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DashboardController_summary: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DashboardController_mediaStats: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AuditController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminAuditQueryDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminManageListDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_create: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminCreateDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_disable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_enable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_setRole: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminSetRoleDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminManageController_reset2fa: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  GroupManageController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminGroupsListDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  TwoFactorController_status: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  TwoFactorController_setup: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  TwoFactorController_setupVerify: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TwoFactorSetupVerifyDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  TwoFactorController_disable: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TwoFactorDisableDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  TwoFactorController_regenerate: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TwoFactorRegenerateDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_status: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_registrationBegin: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WebAuthnRegBeginDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_registrationFinish: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WebAuthnRegFinishDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_rename: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['WebAuthnRenameDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WebAuthnController_delete: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminDiagnosticsController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListDiagnosticsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminDiagnosticsController_download: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminDiagnosticsController_triggerGc: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminDiagnosticsController_delete: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LogViewerController_stream: {
-    parameters: {
-      query: {
-        level: string;
-        scope: string;
-        taskId: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LogViewerController_history: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminLogHistoryDto'];
-      };
-    };
-    responses: {
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  RateLimitMonitoringController_getSnapshot: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  RateLimitMonitoringController_setFixedWindowConfiguration: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  RateLimitMonitoringController_setConfiguration: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageReportAdminController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminListMessageReportsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  MessageReportAdminController_resolve: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ResolveMessageReportsDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DurableTaskAdminController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminDurableTaskQueryDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  DiagnosticsController_report: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  WellKnownController_getWellKnown: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getGroupMeta: {
-    parameters: {
-      query: {
-        account: string;
-        mode: string;
-        after: string;
-        take: string;
-        through: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_postDiscoveryHwm: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_queryMessageTombstones: {
-    parameters: {
-      query: {
-        account: string;
-        peerAccount: string;
-        after: string;
-        take: string;
-        through: string;
-        includeSelf: string;
-        maxMessageSeq: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_queryMessages: {
-    parameters: {
-      query: {
-        account: string;
-        peerAccount: string;
-        after: string;
-        before: string;
-        take: string;
-        through: string;
-        includeSelf: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getMessageAuthorProfile: {
-    parameters: {
-      query: {
-        account: string;
-        peerAccount: string;
-        messageSeq: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getGroupMemberProfile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getStateFeed: {
-    parameters: {
-      query: {
-        after: string;
-        take: string;
-        through: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_postCall: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getUserProfile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getAuthorizedProfile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getFile: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sController_getForwardBundle: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sRecognitionController_recognize: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  S2sRecognitionController_health: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  ProfileResolutionController_start: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json':
-          | {
-              account: string;
-              domain: string;
-              rev: number;
-            }
-          | {
-              threadId: number;
-              messageSeq: number;
-            }
-          | {
-              threadId: number;
-              memberAccount: string;
-              memberDomain: string;
+    MessageController_reportMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMessageReportsDto"];
             };
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
         };
-        content: {
-          'application/json':
-            | {
-                /** @enum {string} */
-                status: 'READY';
-                profile: {
-                  account: string;
-                  domain: string;
-                  rev: number;
-                  name: string;
-                  bio: string;
-                  avatarBase64: string | null;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
                 };
-              }
-            | {
-                /** @enum {string} */
-                status: 'PENDING';
-                /** Format: uuid */
-                requestId: string;
-              };
+                content?: never;
+            };
         };
-      };
     };
-  };
+    MessageController_queryDeletedMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryDeletedMessagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageTombstoneQueryPageDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_withdrawMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawMessageDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_sendMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_sendContactCard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendContactCardDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_sendForward: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendForwardDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_getForwardBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_sendMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMediaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_queryMediaStages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryMediaStagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_queryMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryMessagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageQueryPageDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_getThreadByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_markRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkReadDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_readDelta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadDeltaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setMuted: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetMutedDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setBlocked: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetBlockedDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setPinned: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPinnedDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAliasDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_searchMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchMessagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_relocalizeMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RelocalizeMediaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_mediaStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaStatusDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_login: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogoutDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_logoutAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_setPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPasswordDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_sessionSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_updateSessionSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoTerminateSessionsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeSessionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_getMyProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    UserController_getMyQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_updateProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProfileDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    UserController_queryStateFeed: {
+        parameters: {
+            query: {
+                mode: string;
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_queryGroupMeta: {
+        parameters: {
+            query: {
+                threadId: string;
+                account: string;
+                domain: string;
+                mode: string;
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_queryUserBase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryUsersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    UserController_resolveUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserResolveDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    UserController_resolveFederatedUserStream: {
+        parameters: {
+            query: {
+                /** @description Account (a local account, or the peer user's account) */
+                account: string;
+                /** @description Peer domain. Omitted/empty = local lookup. */
+                domain?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_searchUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserSearchDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_registerLocal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_createNewGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["CreateGroupResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_inviteUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_queryInviteCandidates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryGroupInviteCandidatesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_queryJoinRequests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryGroupJoinRequestsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_queryInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryGroupJoinRequestsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_markJoinRequestsRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadGroupJoinRequestsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_acceptJoinRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandleGroupJoinRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_rejectJoinRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandleGroupJoinRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_revokeInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandleGroupJoinRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_joinRequestedGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_leaveGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_dissolveGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_kickMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KickGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_transferOwnership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_setRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRoleGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_updateGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    RelationshipController_markRelationshipRequestsRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadRelationshipRequestsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    RelationshipController_revokeRelationship: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeRelationshipDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    RelationshipController_requestRelationship: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestRelationshipDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DurableTaskAcceptedDto"];
+                    };
+                };
+            };
+        };
+    };
+    RelationshipController_acceptRelationship: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptRelationshipDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterDeviceDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_unregister: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_createFcmProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateFcmProbeDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_getFcmProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                probeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_acknowledgeFcmProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                probeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_vapidKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_queryNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationFeedQueryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_reportAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportActionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    HealthController_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ConfigController_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthOtpController_otpLogin: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OtpLoginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthQrController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QrCreateDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthQrController_poll: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QrPollDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthQrController_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QrTokenDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthQrController_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QrTokenDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ShellController_compat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ShellController_manifest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ShellController_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_initiate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InitiateCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_accept: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnswerCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_ringing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RingingCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_connected: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectedCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_upgradeVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpgradeCallVideoDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_decline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclineCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_end: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EndCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_signal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalCallDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_iceServers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CallsController_signaling: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                callSid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    EventsController_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    LinkPreviewController_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkPreviewDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["LinkCardGenerationStartDto"];
+                    };
+                };
+            };
+        };
+    };
+    LinkPreviewController_generation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                generationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_initResumable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InitResumableUploadDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_resumableStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_appendResumable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": components["schemas"]["Buffer"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_completeResumable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_uploadAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_login: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLoginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_loginVerify: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLoginVerifyDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_webauthnLoginBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnLoginBeginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_webauthnLoginFinish: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnLoginFinishDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListUsersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_createUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateUserDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_issueLoginCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listLoginCodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_revokeLoginCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listPushTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListPushTokensDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_deletePushToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_sendPushTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminPushTestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_disableUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_enableUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_forceLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_clearThreadHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminClearHistoryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_userSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_userDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_userQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_setUserQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSetQuotaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_generateInitialPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_batchUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserBatchDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listBans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_unban: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUnbanDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listAllSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListSessionsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_purgeAllSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listAdminSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListSessionsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_revokeAdminSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_getSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setFederationTransport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationTransportDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setAdminSessionPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSessionPolicyDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setFederationQuotaDefaults: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationQuotaDefaultsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setUserQuotaDefaults: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserQuotaDefaultsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setFederationHttpLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationHttpLimitsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setFederationHistoryAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationHistoryAccessDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setFederationDownloadLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationDownloadLimitsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_getKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_setOtpTtl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OtpTtlDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_healthCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_listPeers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListFederationPeersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_peerDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_peerEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationPeerEventsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_resetPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_resetPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationResetDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_recoverPeerIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationIdentityRecoverDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_blockPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationBlockDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_unblockPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_selfCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationSelfCheckDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_listNodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_trippedBreakers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_setLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSetQuotaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_continuePeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminContinueQuotaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_continueUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminContinueQuotaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaTransferAdminController_activeUploads: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaTransferAdminController_abortUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaTransferAdminController_downloadsInbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaTransferAdminController_retryDownload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaTransferAdminController_cleanDownload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DashboardController_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DashboardController_mediaStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuditController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminAuditQueryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminManageListDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_disable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_enable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_setRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSetRoleDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_reset2fa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupManageController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminGroupsListDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TwoFactorController_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TwoFactorController_setup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TwoFactorController_setupVerify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorSetupVerifyDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TwoFactorController_disable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorDisableDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TwoFactorController_regenerate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorRegenerateDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_registrationBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnRegBeginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_registrationFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnRegFinishDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_rename: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnRenameDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WebAuthnController_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminDiagnosticsController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListDiagnosticsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminDiagnosticsController_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminDiagnosticsController_triggerGc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminDiagnosticsController_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    LogViewerController_stream: {
+        parameters: {
+            query: {
+                level: string;
+                scope: string;
+                taskId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    LogViewerController_history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLogHistoryDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    RateLimitMonitoringController_getSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    RateLimitMonitoringController_setFixedWindowConfiguration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    RateLimitMonitoringController_setConfiguration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageReportAdminController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListMessageReportsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageReportAdminController_resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveMessageReportsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DurableTaskAdminController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminDurableTaskQueryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DiagnosticsController_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WellKnownController_getWellKnown: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupMeta: {
+        parameters: {
+            query: {
+                account: string;
+                mode: string;
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postDiscoveryHwm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_queryMessageTombstones: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                after: string;
+                take: string;
+                through: string;
+                includeSelf: string;
+                maxMessageSeq: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_queryMessages: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                after: string;
+                before: string;
+                take: string;
+                through: string;
+                includeSelf: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getMessageAuthorProfile: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                messageSeq: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupMemberProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getStateFeed: {
+        parameters: {
+            query: {
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postCall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getAccountProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getAuthorizedProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getForwardBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sRecognitionController_recognize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sRecognitionController_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ProfileResolutionController_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    account: string;
+                    domain: string;
+                    rev: number;
+                } | {
+                    threadId: number;
+                    messageSeq: number;
+                } | {
+                    threadId: number;
+                    memberAccount: string;
+                    memberDomain: string;
+                };
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "READY";
+                        profile: {
+                            account: string;
+                            domain: string;
+                            rev: number;
+                            name: string;
+                            bio: string;
+                            avatarBase64: string | null;
+                        };
+                    } | {
+                        /** @enum {string} */
+                        status: "PENDING";
+                        /** Format: uuid */
+                        requestId: string;
+                    };
+                };
+            };
+        };
+    };
 }

@@ -1,33 +1,35 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
+  identityNamespace,
   mediaAsset,
   message,
   messageAsset,
   messageThread,
+  peerStateFeed,
+  relationshipIntent,
   threadAudience,
   user,
 } from '../src/database/schema.js';
-import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
-import { FederationMessageFeedIndexerService } from '../src/federation/federation-message-feed-indexer.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import {
   closeFederatedAudienceInTx,
   openFederatedAudienceInTx,
 } from '../src/federation/federation-audience.js';
 import { seedAcceptedRelationship } from './seed.js';
+import { loadFederationConfig } from '../src/federation/federation.config.js';
 
-describe('FederationMessageFeedService compacted feed', () => {
+describe('FederationMessageFeedService thread query', () => {
   let mod: TestingModule;
   let database: DatabaseService;
-  let indexer: FederationMessageFeedIndexerService;
   let service: FederationMessageFeedService;
   const peerDomain = 'message-feed-peer.test';
+  const localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -38,23 +40,46 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
-    indexer = new FederationMessageFeedIndexerService(database);
-    service = new FederationMessageFeedService(database, indexer);
+    service = new FederationMessageFeedService(database);
   });
 
   afterAll(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
 
   async function seed() {
     const now = new Date('2026-08-12T01:02:03.000Z');
+    const [existingNamespace] = await database.db
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.domain, peerDomain),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
+      .limit(1);
+    const namespaceId =
+      existingNamespace?.id ??
+      (
+        await database.db
+          .insert(identityNamespace)
+          .values({
+            domain: peerDomain,
+            rootKeyFingerprint: 'sha256:message-feed-test',
+            rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
+            identityPinnedAt: now,
+          })
+          .returning({ id: identityNamespace.id })
+      )[0].id;
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
+      activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
     const [alice, bob] = await database.db
@@ -70,7 +95,7 @@ describe('FederationMessageFeedService compacted feed', () => {
           account: 'bob',
           name: 'Bob',
           domain: peerDomain,
-          sourceDomain: peerDomain,
+          namespaceId,
           updatedAt: now,
         },
       ])
@@ -82,17 +107,18 @@ describe('FederationMessageFeedService compacted feed', () => {
     await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
+      targetNamespaceId: namespaceId,
       threadId: thread.id,
       messageAccessAfterSeq: 0,
     });
-    await new FederationCursorService(database).initializePeer(peerDomain, 0n);
-    return { alice, thread };
+    return { alice, namespaceId, thread };
   }
 
   async function append(
     threadId: number,
     creator: { account: string; domain: string },
     seq: number,
+    namespaceId: number,
   ) {
     const now = new Date();
     await database.db.insert(message).values({
@@ -108,18 +134,40 @@ describe('FederationMessageFeedService compacted feed', () => {
       .update(messageThread)
       .set({ curSeq: seq })
       .where(eq(messageThread.id, threadId));
-    await indexer.fill(peerDomain);
+    await database.db
+      .insert(peerStateFeed)
+      .values({
+        peerDomain,
+        namespaceId,
+        account: creator.account,
+        domain: localDomain,
+        eventType: 'THREAD_CONTENT_HEAD',
+        subjectAccount: 'bob',
+        subjectDomain: peerDomain,
+        feedId: BigInt(seq),
+        body: { messageEndSeq: seq, tombstoneEndSeq: 0 },
+      })
+      .onConflictDoUpdate({
+        target: [
+          peerStateFeed.namespaceId,
+          peerStateFeed.account,
+          peerStateFeed.domain,
+          peerStateFeed.eventType,
+          peerStateFeed.subjectAccount,
+          peerStateFeed.subjectDomain,
+        ],
+        set: {
+          feedId: BigInt(seq),
+          body: { messageEndSeq: seq, tombstoneEndSeq: 0 },
+          updatedAt: new Date(),
+        },
+      });
   }
 
-  it('uses 0 as both feed and message-query bootstrap', async () => {
-    await seed();
-    await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      status: 200,
-      data: { resumeAfter: '0', resumeBefore: '1' },
-    });
+  it('uses 0 as the message-query bootstrap', async () => {
+    const { namespaceId } = await seed();
     await expect(
-      service.rejectMissingQueryAfter(peerDomain, {
+      service.rejectMissingQueryAfter(peerDomain, namespaceId, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',
@@ -131,21 +179,13 @@ describe('FederationMessageFeedService compacted feed', () => {
     });
   });
 
-  it('serves only a compacted thread/end index and queries seq 1 separately', async () => {
-    const { alice, thread } = await seed();
-    await append(thread.id, alice, 1);
-
-    const feed = await service.serve(peerDomain, 0n);
-    expect(feed).toMatchObject({
-      scannedThrough: '1',
-      messageFeedEndId: '1',
-      hasMore: false,
-      items: [{ feedId: '1', messageEndSeq: 1 }],
-    });
-    expect(feed).not.toHaveProperty('messages');
+  it('queries the thread sequence advertised by State Feed', async () => {
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
 
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -158,29 +198,61 @@ describe('FederationMessageFeedService compacted feed', () => {
     });
   });
 
-  it('replaces the per-thread index while keeping feed IDs increasing', async () => {
-    const { alice, thread } = await seed();
-    await append(thread.id, alice, 1);
-    await append(thread.id, alice, 2);
+  it('accepts a take above the local page capacity and caps it', async () => {
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
 
-    const page = await service.serve(peerDomain, 0n);
-    expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: 2 }]);
-    expect(page.scannedThrough).toBe('2');
-    expect(page.messageFeedEndId).toBe('2');
+    await expect(
+      service.query(
+        peerDomain,
+        namespaceId,
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+        0,
+        Number.MAX_SAFE_INTEGER,
+        1,
+      ),
+    ).resolves.toMatchObject({
+      messages: [{ seq: 1 }],
+      scannedThrough: 1,
+      hasMore: false,
+    });
+  });
 
-    await expect(service.serve(peerDomain, 99n)).rejects.toMatchObject({
+  it('uses the latest compacted State Feed head as the query end', async () => {
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
+    await append(thread.id, alice, 2, namespaceId);
+
+    const [head] = await database.db
+      .select()
+      .from(peerStateFeed)
+      .where(eq(peerStateFeed.namespaceId, namespaceId));
+    expect(head).toMatchObject({
+      feedId: 2n,
+      body: { messageEndSeq: 2, tombstoneEndSeq: 0 },
+    });
+
+    await expect(
+      service.query(
+        peerDomain,
+        namespaceId,
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+        99,
+      ),
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '0', resumeBefore: '3' },
+      data: { resumeAfter: 0, resumeBefore: 3 },
     });
   });
 
   it('queries retained messages backwards with an exclusive before cursor', async () => {
-    const { alice, thread } = await seed();
-    await append(thread.id, alice, 1);
-    await append(thread.id, alice, 2);
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
+    await append(thread.id, alice, 2, namespaceId);
 
     const first = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       1,
@@ -196,6 +268,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const second = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       1,
@@ -211,7 +284,7 @@ describe('FederationMessageFeedService compacted feed', () => {
   });
 
   it('describes optional LINK artwork referenced by wire content', async () => {
-    const { alice, thread } = await seed();
+    const { alice, namespaceId, thread } = await seed();
     const digest = 'a'.repeat(64);
     const [link] = await database.db
       .insert(message)
@@ -244,10 +317,21 @@ describe('FederationMessageFeedService compacted feed', () => {
       .update(messageThread)
       .set({ curSeq: 1 })
       .where(eq(messageThread.id, thread.id));
-    await indexer.fill(peerDomain);
+    await database.db.insert(peerStateFeed).values({
+      peerDomain,
+      namespaceId,
+      account: alice.account,
+      domain: localDomain,
+      eventType: 'THREAD_CONTENT_HEAD',
+      subjectAccount: 'bob',
+      subjectDomain: peerDomain,
+      feedId: 1n,
+      body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
+    });
 
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -264,16 +348,17 @@ describe('FederationMessageFeedService compacted feed', () => {
     expect(page.messages[0].assets).toEqual([{ digest, bytes: 123 }]);
   });
 
-  it('revokes history access when the current audience closes', async () => {
-    const { alice, thread } = await seed();
-    await append(thread.id, alice, 1);
+  it('revokes query authorization when the relationship intents close', async () => {
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
     await database.db
-      .delete(threadAudience)
-      .where(eq(threadAudience.targetDomain, peerDomain));
+      .update(relationshipIntent)
+      .set({ status: 'REVOKED', expiresAt: null, updatedAt: new Date() });
 
     await expect(
       service.query(
         peerDomain,
+        namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
@@ -283,16 +368,30 @@ describe('FederationMessageFeedService compacted feed', () => {
   });
 
   it('reauthorizes the stable thread without hiding retained history', async () => {
-    const { alice, thread } = await seed();
-    await append(thread.id, alice, 1);
+    const { alice, namespaceId, thread } = await seed();
+    await append(thread.id, alice, 1, namespaceId);
     await database.db.transaction(async (tx) => {
       await closeFederatedAudienceInTx(tx, peerDomain, thread.id);
       await openFederatedAudienceInTx(tx, peerDomain, thread.id);
+    });
+    // Audience close removes the compacted head. The normal membership finalizer republishes it
+    // after reopening; reproduce that post-commit projection step in this service-level fixture.
+    await database.db.insert(peerStateFeed).values({
+      peerDomain,
+      namespaceId,
+      account: alice.account,
+      domain: localDomain,
+      eventType: 'THREAD_CONTENT_HEAD',
+      subjectAccount: 'bob',
+      subjectDomain: peerDomain,
+      feedId: 2n,
+      body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
     });
 
     await expect(
       service.query(
         peerDomain,
+        namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
@@ -302,9 +401,10 @@ describe('FederationMessageFeedService compacted feed', () => {
       hasMore: false,
     });
 
-    await append(thread.id, alice, 2);
+    await append(thread.id, alice, 2, namespaceId);
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
     );

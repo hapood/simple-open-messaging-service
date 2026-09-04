@@ -16,7 +16,20 @@ function transaction(options?: {
     account: options?.threadType === 'GROUP' ? null : 'alice',
     peerAccount: options?.threadType === 'GROUP' ? null : 'bob',
   };
-  const execute = vi.fn().mockResolvedValue({ rows: [route] });
+  const execute = vi
+    .fn()
+    .mockResolvedValueOnce({
+      rows: [
+        {
+          threadType: options?.threadType ?? 'P2P',
+          groupAccount: options?.threadType === 'GROUP' ? '!group' : null,
+          groupDomain:
+            options?.threadType === 'GROUP' ? 'peer.test' : null,
+          groupNamespaceId: options?.threadType === 'GROUP' ? 7 : null,
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ rows: [route] });
   let selectIndex = 0;
   const select = vi.fn(() => {
     selectIndex += 1;

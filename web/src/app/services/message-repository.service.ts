@@ -1,5 +1,5 @@
 import { Injectable, inject, effect } from '@angular/core';
-import { Subject, filter, firstValueFrom } from 'rxjs';
+import { Subject, firstValueFrom } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import {
@@ -55,13 +55,13 @@ interface DeletedMessageStream {
 }
 
 /**
- * The DB-layer repository for message bodies — the read + SSE half of the strict 3-tier
+ * The DB-layer repository for message bodies — the read + realtime half of the strict 3-tier
  * (UI ↔ repositories ↔ backend) for the message domain. It is the ONLY service that issues message
- * READs (`/query-messages`) and the ONLY consumer of the `NEW_MESSAGE` body cache. UI-facing sources
- * ({@link HttpItemSource}) read through here; they never fetch messages or cache SSE bodies themselves.
+ * READs (`/query-messages`). UI-facing sources ({@link HttpItemSource}) read through here; they never
+ * fetch messages themselves.
  *
  * NO writes live here — sending is a direct UI → backend POST (bypasses the DB layer); the sent row
- * lands in IDB via the `NEW_MESSAGE` SSE echo, which this repository caches.
+ * lands in IDB through the same pull path as remote messages.
  *
  * **Persistence model:** messages and explicit left-open/right-closed range records are mirrored to the
  * local database. The source-level walker reads classified local intervals, fills only their complement,
@@ -70,9 +70,8 @@ interface DeletedMessageStream {
  * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
  * thread leaves the user's roster (see {@link deleteByThread}).
  *
- * **NEW_MESSAGE → cache → signal (in that order):** the body is `await`-cached in IDB BEFORE the
- * {@link liveSignal$} fires, so the kernel's subsequent `getNewer` pull (triggered by the signal) is a
- * cache hit, not a backend round-trip.
+ * A committed `THREAD_CONTENT_HEAD` advances the bounded newer walk and emits {@link liveSignal$}; the
+ * mounted source then pulls the body through the canonical message query.
  */
 @Injectable({ providedIn: 'root' })
 export class MessageRepository {
@@ -82,8 +81,8 @@ export class MessageRepository {
   private readonly userService = inject(UserService);
 
   /**
-   * Fires `{threadId, seq}` AFTER a NEW_MESSAGE body has been cached for that thread. The per-thread
-   * Each {@link HttpItemSource} filters to its `threadId` and treats it as "newer data exists, go pull".
+   * Fires `{threadId, seq}` after a durable thread content head advances. Each {@link HttpItemSource}
+   * filters to its `threadId` and treats it as "newer data exists, go pull".
    * Multiple chatboxes therefore share one cutoff/fill lane but retain independent viewport demands.
    */
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
@@ -112,7 +111,7 @@ export class MessageRepository {
   }>();
   readonly mediaStatusLive$ = this.mediaStatusSignal$.asObservable();
 
-  /** Per-thread highest seq observed (via NEW_MESSAGE or a backend response body). In-memory only —
+  /** Per-thread highest seq observed (via State Feed or a backend response body). In-memory only —
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
   /** Shared finite upper bound for a newer walk. Reconnect clears it because frames may be missing. */
@@ -555,41 +554,6 @@ export class MessageRepository {
   }
 
   constructor() {
-    // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
-    // Advance the per-thread ceiling + emit the live signal so the open chat-box pulls the body via
-    // getNewer; nothing is cached here (the body arrives via catch-up / query-messages).
-    this.ws.eventSubject
-      .pipe(
-        filter(
-          (m) =>
-            m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined,
-        ),
-      )
-      .subscribe((m) =>
-        this.onNewMessage(
-          m.data as { threadId: number; seq: number; ts: number },
-        ),
-      );
-
-    this.ws.eventSubject
-      .pipe(
-        filter(
-          (m) =>
-            m.event === 'DELETED_MESSAGE_UPDATED' &&
-            m.status === 0 &&
-            m.data !== undefined,
-        ),
-      )
-      .subscribe((m) => {
-        const d = m.data as { threadId: number; deletionSeq: number };
-        if (
-          typeof d.threadId === 'number' &&
-          Number.isSafeInteger(d.deletionSeq) &&
-          d.deletionSeq >= 0
-        )
-          void this.updateTombstoneTarget(d.threadId, d.deletionSeq);
-      });
-
     this.ws.reconnect$.subscribe(() => {
       this.newerTruncateSeq.clear();
       this.reconnectSignal.next();
@@ -619,6 +583,23 @@ export class MessageRepository {
   retainNewestSeq(threadId: number, seq: number): void {
     if (Number.isSafeInteger(seq) && seq >= 0)
       this.advanceCeiling(threadId, seq, false);
+  }
+
+  /** Apply a committed client State Feed content head and optionally wake mounted message sources. */
+  applyThreadContentHead(
+    threadId: number,
+    messageEndSeq: number,
+    emitLiveSignal: boolean,
+  ): void {
+    if (
+      !Number.isSafeInteger(threadId) ||
+      threadId <= 0 ||
+      !Number.isSafeInteger(messageEndSeq) ||
+      messageEndSeq < 0
+    )
+      return;
+    if (!this.advanceCeiling(threadId, messageEndSeq)) return;
+    if (emitLiveSignal) this.signal$.next({ threadId, seq: messageEndSeq });
   }
 
   /** Start this thread's deletion stream when its chatbox is first opened. The recovery target and local
@@ -747,23 +728,19 @@ export class MessageRepository {
       /* local cache is best-effort */
     }
   }
-  /** Identity-only NEW_MESSAGE — the SSE frame carries only {threadId, seq, ts} (no body). Advance the
-   *  per-thread ceiling + emit the live signal so the open chat-box pulls the body via getNewer; the body
-   *  is never carried on the realtime stream (single data source = pull). */
-  private onNewMessage(d: { threadId: number; seq: number; ts: number }): void {
-    if (typeof d?.seq !== 'number' || typeof d?.threadId !== 'number') return;
-    this.advanceCeiling(d.threadId, d.seq);
-    this.signal$.next({ threadId: d.threadId, seq: d.seq });
-  }
-
   /** Advance the per-thread seq ceiling (drives the getNewer cache-hit test) if `seq` is newer. */
-  private advanceCeiling(threadId: number, seq: number, persist = true): void {
+  private advanceCeiling(
+    threadId: number,
+    seq: number,
+    persist = true,
+  ): boolean {
     const truncateSeq = this.newerTruncateSeq.get(threadId) ?? -1;
     if (seq > truncateSeq) this.newerTruncateSeq.set(threadId, seq);
     const cur = this.maxSeenSeq.get(threadId) ?? -1;
-    if (seq <= cur) return;
+    if (seq <= cur) return false;
     this.maxSeenSeq.set(threadId, seq);
     if (persist) void this.webdb.putMessageHead(threadId, seq);
+    return true;
   }
 
   /** The newest cached message (highest seq) for EACH threadId, fetched in ONE read transaction: one reverse

@@ -76,7 +76,7 @@ pub(crate) enum MessageRangeState {
 }
 
 impl MessageRangeState {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::LocalCovered => "LOCAL_COVERED",
             Self::ServerPending => "SERVER_PENDING",
@@ -213,7 +213,7 @@ enum MessageBackendResponse {
     Cursor(MessageCursorWire),
 }
 
-fn load_message_ranges(
+pub(super) fn load_message_ranges(
     conn: &Connection,
     user_id: i64,
     thread_id: i64,

@@ -131,11 +131,12 @@ describe('Federation v1 protocol documentation', () => {
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/group-meta',
       'GET /s2s/v1/profiles/:account',
+      'GET /s2s/v1/group-member-profile',
       'GET /s2s/v1/message-author-profile',
       'GET /s2s/v1/messages',
       'GET /s2s/v1/message-tombstones',
       'POST /s2s/v1/call',
-      'GET /s2s/v1/users/:account',
+      'GET /s2s/v1/accounts/:account',
       'GET /s2s/v1/media/:digest',
       'GET /s2s/v1/forward-bundles/:bundleId',
     ]);

@@ -33,6 +33,7 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
     {} as never,
     rounds,
     {} as never,
+    {} as never,
     { resolve: vi.fn().mockResolvedValue(source) } as never,
   );
   const batch = {
@@ -56,8 +57,7 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
 
 describe('FederationThreadReverseRoundExecutorService', () => {
   it('executes one group gap without changing wire boundaries', async () => {
-    const { executor, fetchMessages, commit, source, batch } =
-      harness();
+    const { executor, fetchMessages, commit, source, batch } = harness();
 
     await expect(
       executor.run(31, source.peerDomain, 12, 20),

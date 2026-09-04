@@ -16,6 +16,8 @@ export const SOMS_NOTIF_MSG = {
   DISMISS: 'soms-notif-dismiss',
   /** A body-tap deep-link: open the thread (`threadId`) in the chat pane. */
   OPEN: 'soms-notif-open',
+  /** Push worker asks a live page with healthy SSE to take over notification aggregation. */
+  CLAIM: 'soms-notif-claim',
 } as const;
 
 /** A SW→page postMessage payload (the `type` selects which fields matter). */

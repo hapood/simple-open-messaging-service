@@ -30,6 +30,44 @@ server-to-endpoint API is outside the SOMFP wire surface, but a node MUST NOT
 publish `1` in `protocolVersions` unless those endpoints satisfy all mandatory
 WebRTC/JSEP behavior in `calls.md`.
 
+## Recognition lifecycle checks
+
+A conformant recognition state machine must satisfy all of these independently
+observable requirements:
+
+- Before sending any Recognize request, the sender has durably pinned and
+  locally recognized the peer, prepared its receive path, retained retryable
+  work for that direction, and reached at least `degraded`. Existing current
+  reachability may leave it `available`.
+- Before returning the first Recognize `OK`, the receiver atomically completes
+  identity pinning, local recognition, receive-path preparation, inbound
+  direction confirmation, lightweight admission, and durable reverse-Recognize
+  work. The authenticated request itself supplies reachability, so the resulting
+  lifecycle is `available`.
+- Reverse Recognize network work starts only after the first response is
+  returned. It remains mandatory and retryable even while the peer is
+  `available`, but it is not the only way for the peer to learn the responder's
+  recognition decision.
+- Every request authenticated from a pinned, locally recognized peer with a
+  prepared receive path refreshes reachability before later shape or business
+  authorization. This general availability update does not create recognition
+  evidence or cancel retry work; positive Health has its separately specified
+  inbound-confirmation effect.
+- A valid Health `available` or `degraded` response is accepted by the requester
+  as confirmation that the responder recognizes it and has prepared its receive
+  path. `unavailable` supplies no recognition evidence, and Health never supplies
+  a missing outbound Recognize `OK`.
+- An ordinary recognized-data sender validates both delivery of its Recognize
+  notification and the peer's recognition assertion. The receiver requires the
+  requester's notification but does not block on delivery of its redundant
+  reverse notification.
+- A retryable Recognize or transport failure retains pins, receive readiness,
+  committed direction facts, and retry work and leaves a prepared peer
+  `degraded`, not durably `establishing`.
+- Health projects lifecycle at request admission. A valid request may therefore
+  return `degraded` while atomically refreshing the receiver's local lifecycle
+  to `available` for subsequent operations.
+
 ## Independent validation
 
 Run this command from the repository root:

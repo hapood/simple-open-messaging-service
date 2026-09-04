@@ -11,6 +11,7 @@ import {
 } from './federation-protocol.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FederationTransportError } from './federation-errors.js';
 
 /** Owns peer trust state, liveness bookkeeping, and administrative lifecycle operations. */
 @Injectable()
@@ -25,11 +26,12 @@ export class FederationPeerLifecycle {
     private readonly discovery: DiscoveryService,
   ) {}
 
-  async ensureTrusted(domain: string): Promise<void> {
+  /** Pure local gate for an ordinary outbound S2S operation. Never starts recognition or network IO. */
+  async checkOutboundReady(domain: string): Promise<void> {
+    if (domain === this.ourDomain) return;
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (existing?.trustLevel === 'available') return;
     if (existing?.trustLevel === 'halted') {
       const code = this.isFatalCode(existing.haltCode)
         ? existing.haltCode
@@ -40,17 +42,44 @@ export class FederationPeerLifecycle {
         HttpStatus.CONFLICT,
       );
     }
-    await this.recognition.recover(domain);
+    if (existing?.trustLevel === 'degraded') {
+      throw new FederationTransportError(
+        `${domain} is degraded; waiting for Health recovery`,
+      );
+    }
+    if (
+      existing?.trustLevel === 'available' &&
+      existing?.activeNamespaceId != null &&
+      existing.recognizesPeer &&
+      existing.localServiceAvailable &&
+      existing.outboundRecognitionConfirmed &&
+      existing.inboundRecognitionConfirmed
+    )
+      return;
+    throw new BusinessException(
+      BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
+      `${domain} recognition directions are incomplete`,
+      HttpStatus.UNAUTHORIZED,
+    );
   }
 
-  async recoverTrust(domain: string): Promise<void> {
+  /** Explicit recovery path used by the reconnect worker, never by a business read or write. */
+  async recoverPeerRecognition(domain: string): Promise<void> {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
-      columns: { trustLevel: true },
+      columns: {
+        trustLevel: true,
+        outboundRecognitionConfirmed: true,
+        inboundRecognitionConfirmed: true,
+        reverseRecognitionPending: true,
+      },
     });
     if (
-      !peer ||
-      !['unrecognized', 'establishing', 'degraded'].includes(peer.trustLevel)
+      peer?.trustLevel === 'halted' ||
+      (peer?.trustLevel === 'available' &&
+        peer.outboundRecognitionConfirmed &&
+        peer.inboundRecognitionConfirmed &&
+        !peer.reverseRecognitionPending)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
@@ -61,12 +90,26 @@ export class FederationPeerLifecycle {
     await this.recognition.recognize(domain);
   }
 
-  async isTrusted(domain: string): Promise<boolean> {
+  /** Pure local recognition check used only to choose whether an explicit bootstrap is required. */
+  async hasCompleteRecognition(domain: string): Promise<boolean> {
     if (domain === this.ourDomain) return true;
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    return existing?.trustLevel === 'available';
+    return (
+      existing?.trustLevel !== 'halted' &&
+      existing?.activeNamespaceId != null &&
+      existing.recognizesPeer &&
+      existing.localServiceAvailable &&
+      existing.outboundRecognitionConfirmed &&
+      existing.inboundRecognitionConfirmed
+    );
+  }
+
+  /** Explicit signed Health round trip. An available/degraded result acknowledges peer recognition
+   * and refreshes reachability; unavailable only degrades reachability. */
+  async checkHealth(domain: string) {
+    return this.recognition.checkHealth(domain);
   }
 
   async markContactSuccess(domain: string): Promise<void> {
@@ -197,10 +240,7 @@ export class FederationPeerLifecycle {
     const trustLevel =
       existing.activeNamespaceId === null
         ? 'unrecognized'
-        : existing.recognizesPeer &&
-            existing.outboundRecognitionConfirmed &&
-            existing.inboundRecognitionConfirmed &&
-            existing.localServiceAvailable
+        : existing.recognizesPeer && existing.localServiceAvailable
           ? existing.remoteServiceReachable
             ? 'available'
             : 'degraded'

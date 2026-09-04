@@ -3,12 +3,12 @@
   "$id": "urn:somfp:v1:http-parameters",
   "title": "Federation v1 normalized HTTP path/query parameter objects",
   "$defs": {
-    "userProfileParameters": {
+    "accountProfileParameters": {
       "type": "object",
       "required": ["account"],
       "properties": {
         "account": {
-          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+          "$ref": "urn:somfp:v1:common#/$defs/account"
         }
       },
       "additionalProperties": false

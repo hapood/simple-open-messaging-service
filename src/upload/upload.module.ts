@@ -27,7 +27,6 @@ import { MediaMetadataService } from './media-metadata.service.js';
   // preHandler gate (the gate runs outside DI's request scope, on the Fastify root instance).
   // AvatarStackService is exported so NotificationQueryService (in MessageFanoutModule, which imports this
   // module) can inject it to composite the notification icon.
-  // MediaAssetService is exported so MediaAssetGcService (admin layer) can publish salvaged blobs.
   exports: [
     UploadService,
     MediaAccessService,

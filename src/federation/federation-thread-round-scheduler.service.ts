@@ -21,9 +21,7 @@ import {
 } from './federation-errors.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import {
-  FEDERATION_STATE_FEED_PUSH,
   FEDERATION_THREAD_ROUND_WAKE,
-  type FederationStateFeedPush,
   type FederationThreadRoundWake,
 } from './federation-thread-round.events.js';
 import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
@@ -53,7 +51,6 @@ const DEFAULT_TOMBSTONE_LIMIT = 4;
 const DEFAULT_REVERSE_LIMIT = 2;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 60_000;
-const STATE_PUSH_MIN_INTERVAL_MS = 1_000;
 
 /** Fair, process-local scheduler for bounded per-thread synchronization rounds. */
 @Injectable()
@@ -78,13 +75,6 @@ export class FederationThreadRoundSchedulerService
   private readonly retryAttempts = new Map<string, number>();
   private readonly blockedThreads = new Set<string>();
   private readonly inactiveThreads = new Set<string>();
-  private readonly statePushDirty = new Set<string>();
-  private readonly statePushActive = new Set<string>();
-  private readonly statePushTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
-  private readonly statePushLastAttemptAt = new Map<string, number>();
   private readonly stateDrainTargets = new Map<string, bigint>();
   private readonly stateDrainActive = new Set<string>();
   private readonly stateDrainRetryAttempts = new Map<string, number>();
@@ -145,7 +135,12 @@ export class FederationThreadRoundSchedulerService
           state.namespaceId,
         );
       } catch (error) {
-        if (error instanceof FederationMessageContextError) continue;
+        if (error instanceof FederationMessageContextError) {
+          this.logger.debug(
+            `skipped startup recovery for thread ${state.threadId} from ${state.peerDomain}: ${error.message}`,
+          );
+          continue;
+        }
         throw error;
       }
       if (state.messageProcessedThroughSeq < state.messageTargetSeq)
@@ -171,10 +166,8 @@ export class FederationThreadRoundSchedulerService
           'reverse',
         );
     }
-    for (const peerDomain of await this.federation.listTrustedPeerDomains()) {
-      this.scheduleStateFeedPush(peerDomain);
+    for (const peerDomain of await this.federation.listTrustedPeerDomains())
       this.wakeStateFeed(peerDomain, 0n);
-    }
   }
 
   @OnEvent(FEDERATION_THREAD_ROUND_WAKE)
@@ -228,11 +221,6 @@ export class FederationThreadRoundSchedulerService
       event.namespaceId,
       'reverse',
     );
-  }
-
-  @OnEvent(FEDERATION_STATE_FEED_PUSH)
-  onStateFeedPush(event: FederationStateFeedPush): void {
-    this.scheduleStateFeedPush(event.peerDomain);
   }
 
   wakeStateFeed(peerDomain: string, stateFeedEndId: bigint): void {
@@ -309,9 +297,6 @@ export class FederationThreadRoundSchedulerService
     this.shuttingDown = true;
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
-    for (const timer of this.statePushTimers.values()) clearTimeout(timer);
-    this.statePushTimers.clear();
-    this.statePushDirty.clear();
     for (const timer of this.stateDrainRetryTimers.values())
       clearTimeout(timer);
     this.stateDrainRetryTimers.clear();
@@ -325,50 +310,6 @@ export class FederationThreadRoundSchedulerService
       queue.dirtyThreads.clear();
     }
     await Promise.allSettled([...this.activeTasks]);
-  }
-
-  private scheduleStateFeedPush(peerDomain: string): void {
-    if (this.shuttingDown) return;
-    this.statePushDirty.add(peerDomain);
-    if (
-      this.statePushActive.has(peerDomain) ||
-      this.statePushTimers.has(peerDomain)
-    )
-      return;
-    const delay = Math.max(
-      0,
-      (this.statePushLastAttemptAt.get(peerDomain) ?? 0) +
-        STATE_PUSH_MIN_INTERVAL_MS -
-        Date.now(),
-    );
-    const timer = setTimeout(() => {
-      this.statePushTimers.delete(peerDomain);
-      this.runStateFeedPush(peerDomain);
-    }, delay);
-    timer.unref?.();
-    this.statePushTimers.set(peerDomain, timer);
-  }
-
-  private runStateFeedPush(peerDomain: string): void {
-    if (this.shuttingDown || !this.statePushDirty.delete(peerDomain)) return;
-    this.statePushActive.add(peerDomain);
-    this.statePushLastAttemptAt.set(peerDomain, Date.now());
-    const task = this.federation
-      .pushDiscoveryHwm(peerDomain)
-      .catch((error: unknown) => {
-        this.logger.warn(
-          `state-feed HWM push ${peerDomain} failed: ${(error as Error).message}`,
-        );
-        if (this.retryDecision(error).retry)
-          this.statePushDirty.add(peerDomain);
-      })
-      .finally(() => {
-        this.statePushActive.delete(peerDomain);
-        this.activeTasks.delete(task);
-        if (this.statePushDirty.has(peerDomain))
-          this.scheduleStateFeedPush(peerDomain);
-      });
-    this.activeTasks.add(task);
   }
 
   private runStateFeedDrain(peerDomain: string): void {
@@ -463,9 +404,10 @@ export class FederationThreadRoundSchedulerService
           if (requeue)
             queueMicrotask(
               () =>
-                void this.wake(
+                void this.wakeCaptured(
                   selected.threadId,
                   selected.peerDomain,
+                  selected.namespaceId,
                   direction,
                 ),
             );

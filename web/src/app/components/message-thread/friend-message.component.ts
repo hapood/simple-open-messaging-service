@@ -81,7 +81,7 @@ import {
   MediaAvailabilityService,
 } from '../../services/media-availability.service';
 import {
-  avatarUrl as sizedAvatarUrl,
+  avatarUrl,
   UserService,
 } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -473,7 +473,7 @@ export class MessageThreadComponent implements OnDestroy {
     const members = roster.map((member) => ({
       id: member.account,
       label: member.name,
-      avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
+      avatarUrl: assetUrl(avatarUrl(member.avatar)),
     }));
     if (
       this.chatContext.canAdministerGroup() &&
@@ -2399,7 +2399,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Send-media-first flow: POST /send-media stages a PendingMedia (durable intent, keyed by cid),
    *  then the upload (carrying the same cid via the x-client-message-id header) writes the file and the
-   *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
+   *  server promotes the stage to a real Message. The State Feed wake and canonical pull reconcile
    *  the optimistic bubble — so on upload success there is nothing to do here. Any failure → failPending. */
   private uploadAndSendImage(
     cid: string,
@@ -2496,7 +2496,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  Message and the SSE echo reconciles the bubble. */
   /** Retry a failed send (the row's retry output → createMsgCbElement onRetry → here, with msgId = clientMessageId).
    *  Flip the SAME entry back to 'sending' (stable identity, in-place morph), then replay the send. The idempotent
-   *  retry re-fans NEW_MESSAGE to the sender, so the SSE echo reconciles the bubble normally. */
+   *  retry republishes the content head, so the canonical pull reconciles the bubble normally. */
   async retrySend(clientMessageId: string): Promise<void> {
     await this.sendRetry.retry(clientMessageId);
   }

@@ -17,12 +17,14 @@ export interface ResolvedProfile {
   domain: string;
   rev: number;
   name: string;
+  bio: string;
   avatarBase64: string | null;
 }
 
 export type ProfileSelector =
   | { account: string; domain: string; rev: number }
-  | { threadId: number; messageSeq: number };
+  | { threadId: number; messageSeq: number }
+  | { threadId: number; memberAccount: string; memberDomain: string };
 
 type Terminal =
   | { requestId: string; profile: ResolvedProfile }
@@ -196,6 +198,7 @@ export class ProfileResolutionService {
         typeof value.profile.domain === 'string' &&
         Number.isSafeInteger(value.profile.rev) &&
         typeof value.profile.name === 'string' &&
+        typeof value.profile.bio === 'string' &&
         (value.profile.avatarBase64 === null ||
           typeof value.profile.avatarBase64 === 'string')
       );
@@ -207,13 +210,19 @@ export class ProfileResolutionService {
 }
 
 function normalizeSelector(selector: ProfileSelector): ProfileSelector {
-  return 'rev' in selector
-    ? {
-        account: selector.account.trim().toLowerCase(),
-        domain: selector.domain.trim().toLowerCase(),
-        rev: selector.rev,
-      }
-    : { threadId: selector.threadId, messageSeq: selector.messageSeq };
+  if ('rev' in selector)
+    return {
+      account: selector.account.trim().toLowerCase(),
+      domain: selector.domain.trim().toLowerCase(),
+      rev: selector.rev,
+    };
+  if ('messageSeq' in selector)
+    return { threadId: selector.threadId, messageSeq: selector.messageSeq };
+  return {
+    threadId: selector.threadId,
+    memberAccount: selector.memberAccount.trim().toLowerCase(),
+    memberDomain: selector.memberDomain.trim().toLowerCase(),
+  };
 }
 
 function profileKey(account: string, domain: string, rev: number): string {

@@ -6,7 +6,7 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { requireInboundPendingMedia } from '../message/pending-media-row.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
@@ -44,7 +44,7 @@ export class FederationInboundMediaBatchService {
     private readonly fileSync: FederationInboundFileSync,
     private readonly promoter: FederationPendingMediaPromoter,
     private readonly mediaRanges: FederationMediaRangeClient,
-    private readonly participants: ThreadParticipantService,
+    private readonly participants: AccountThreadStateService,
     private readonly sse: SseService,
   ) {}
 

@@ -39,6 +39,50 @@ export async function ensureDatabase(
   return databaseUrl(baseUrl, database);
 }
 
+/**
+ * Restore the mutable contents of a prepared worker database before Vitest
+ * imports a spec file. The migration ledger and the local namespace sentinel
+ * are schema baseline; every other public-table row belongs to a previous spec.
+ */
+export async function resetE2EWorkerDatabase(
+  url: string,
+  expectedDatabase: string,
+): Promise<void> {
+  const client = new Client({ connectionString: url });
+  await client.connect();
+  try {
+    const current = await client.query<{ current_database: string }>(
+      'SELECT current_database()',
+    );
+    if (current.rows[0]?.current_database !== expectedDatabase) {
+      throw new Error(
+        `refusing to reset unexpected database: ${current.rows[0]?.current_database ?? 'unknown'}`,
+      );
+    }
+    const tables = await client.query<{ names: string | null }>(`
+      SELECT string_agg(format('%I.%I', schemaname, tablename), ', ' ORDER BY tablename) AS names
+      FROM pg_tables
+      WHERE schemaname = 'public'
+        AND tablename NOT IN ('schema_migrations', 'IdentityNamespace')
+    `);
+    await client.query('BEGIN');
+    try {
+      if (tables.rows[0]?.names) {
+        await client.query(
+          `TRUNCATE TABLE ${tables.rows[0].names} RESTART IDENTITY CASCADE`,
+        );
+      }
+      await client.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 export async function dropDatabase(
   baseUrl: string,
   database: string,

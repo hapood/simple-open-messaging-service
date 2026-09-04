@@ -1,9 +1,12 @@
-use super::{
+use super::client_state::cleanup_relationship_requests;
+use super::messages::load_message_ranges;
+use super::relationship_projection::{
     apply_group_request_effect, apply_relationship_intent_fact, apply_relationship_request_effect,
-    cleanup_relationship_requests, decode_deleted_hwm, history_gap_is_owned, load_message_ranges,
-    materialize_group_thread_from_fact, reduce_message_ranges, update_live_request_projection,
-    validate_message_ranges, HistoryDirection, MessageInterval, MessageRange, MessageRangeState,
-    ServerMessageRange,
+    materialize_group_thread_from_fact, update_live_request_projection,
+};
+use super::{
+    decode_deleted_hwm, history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
+    HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};

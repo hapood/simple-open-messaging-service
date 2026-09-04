@@ -101,7 +101,7 @@ describe('ThreadAudience schema', () => {
     );
   });
 
-  it('installs compacted feeds and removes superseded federation storage', async () => {
+  it('installs State Feed and thread-scoped sync while removing superseded message feeds', async () => {
     const tables = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
        FROM information_schema.tables
@@ -121,15 +121,19 @@ describe('ThreadAudience schema', () => {
           'FederationThreadCheckpoint',
           'FederationTombstoneCheckpoint',
           'FederationP2PHistoryGrant',
+          'PeerStateFeed',
+          'PeerStateFeedTarget',
+          'PeerStateFeedPullCursor',
+          'FederationThreadSyncState',
         ],
       ],
     );
     expect(tables.rows.map((row) => row.table_name).sort()).toEqual(
       [
-        'FederationMessageFeedIndex',
-        'FederationPullCursor',
-        'FederationServeCursor',
-        'FederationTombstoneFeedIndex',
+        'FederationThreadSyncState',
+        'PeerStateFeed',
+        'PeerStateFeedPullCursor',
+        'PeerStateFeedTarget',
       ].sort(),
     );
 
@@ -150,15 +154,6 @@ describe('ThreadAudience schema', () => {
     );
     expect(indexes.rows).toEqual([]);
 
-    const targetColumns = await database.pool.query<{ column_name: string }>(
-      `SELECT column_name
-       FROM information_schema.columns
-       WHERE table_name = 'FederationServeCursor'`,
-    );
-    const targetColumnNames = targetColumns.rows.map((row) => row.column_name);
-    expect(targetColumnNames).toContain('allocatedThrough');
-    expect(targetColumnNames).not.toContain('targetId');
-
     const cursorConstraints = await database.pool.query<{
       conname: string;
       definition: string;
@@ -166,22 +161,23 @@ describe('ThreadAudience schema', () => {
       `SELECT conname, pg_get_constraintdef(oid) AS definition
        FROM pg_constraint
        WHERE conrelid IN (
-         '"FederationPullCursor"'::regclass,
-         '"FederationServeCursor"'::regclass
+         '"PeerStateFeedTarget"'::regclass,
+         '"PeerStateFeedPullCursor"'::regclass,
+         '"FederationThreadSyncState"'::regclass
        )`,
     );
     const cursorChecks = new Map(
       cursorConstraints.rows.map((row) => [row.conname, row.definition]),
     );
     expect(
-      cursorChecks.get('FederationPullCursor_committedThrough_check'),
-    ).toContain('retainedAfter');
+      cursorChecks.get('PeerStateFeedTarget_allocatedThrough_check'),
+    ).toContain('allocatedThrough');
     expect(
-      cursorChecks.has('FederationServeCursor_acknowledgedThrough_check'),
-    ).toBe(false);
+      cursorChecks.get('PeerStateFeedPullCursor_committedThrough_check'),
+    ).toContain('committedThrough');
     expect(
-      cursorChecks.has('FederationServeCursor_lastServedThrough_check'),
-    ).toBe(false);
+      cursorChecks.get('FederationThreadSyncState_messageSeqs_check'),
+    ).toContain('messageProcessedThroughSeq');
 
     const obsoleteFunctions = await database.pool.query<{ proname: string }>(
       `SELECT proname

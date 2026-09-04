@@ -86,7 +86,13 @@ Index: `@@index([userId])`.
 
 ### PushToken — push registration
 
-One row per (device, user); `token` globally unique (FCM registration token for ANDROID, push endpoint URL for WEB). Re-owned to the current user on re-register. WEB rows also carry the subscription's `webP256dh` + `webAuth`. `platform` ∈ `ANDROID`/`WEB`/`IOS`; `lastSeenAt` feeds a future stale-token sweep.
+One row per registered device session; `token` is globally unique (FCM registration token for ANDROID,
+push endpoint URL for WEB) and is re-owned to the current authenticated session on registration. The required
+`sessionId` references `SessionToken`, allowing message Push to be suppressed only when that exact session
+already owns a live SSE connection. `deviceId` remains optional diagnostic metadata. WEB rows also carry the
+subscription's `webP256dh` + `webAuth`; `platform` is `ANDROID`/`WEB`/`IOS`. Every session soft-revoke path
+deletes its associated Push rows in the same transaction, so revoked and expired devices do not remain in the
+operational registration set.
 
 ### MessageThread — Conversation
 
@@ -137,13 +143,16 @@ from the replicated Group Meta for a remote group.
   content-head publication, and other mutually confirmed operations. It is
   folded from the two intents under a row lock; roster and participant presence
   are never permission inputs.
-- **ThreadAudience current projection** — the origin server's current federation notification and delivery boundary. It also stores the
+- **ThreadAudience current projection** — the group origin server's current federation notification and delivery boundary. It also stores the
   canonical Group Meta delta visibility floor established on authorization or reauthorization. Relationship
   removal deletes the audience row and stops head publication. Intent revocation independently
-  revokes passive message and tombstone queries. Reactivation
-  recreates the audience at the current thread tail and reuses the same thread/mirror. A group peer
-  audience remains present while that peer has any active member. Messages from an interval with no
-  active audience are neither discovered nor backfilled.
+  revokes passive message and tombstone queries. Reactivation reuses the same thread/mirror. By default,
+  a newly created or recreated audience may query all retained history; the local
+  `federation:audience:historyAccessEnabled` setting can instead place its access floor at the current
+  thread tail. This is a serving policy rather than a wire-protocol guarantee. A group peer audience
+  remains present while that peer has any active member. A remote-group mirror
+  has no `ThreadAudience`; its local account projections use
+  `AccountThreadState`, and the group address identifies its sole authority.
 
 Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
 there is no JSON merge and no polymorphic `Invite` table.

@@ -74,17 +74,11 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
         account: 'admin',
         name: 'admin',
         domain: 'local',
-        sourceDomain: 'local',
         namespaceId: 0,
         updatedAt: new Date(),
       })
       .onConflictDoNothing({
-        target: [
-          userTable.account,
-          userTable.domain,
-          userTable.sourceDomain,
-          userTable.namespaceId,
-        ],
+        target: [userTable.account, userTable.domain, userTable.namespaceId],
       })
       .returning({ id: userTable.id });
     const userId =

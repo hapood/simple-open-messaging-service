@@ -6,13 +6,12 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
   federatedPeerEvent,
-  federationPullCursor,
-  federationServeCursor,
+  identityNamespace,
   peerStateFeedPullCursor,
   peerStateFeedTarget,
 } from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
-import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
+import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 
@@ -34,7 +33,15 @@ describe('FederationRecognitionService atomic commit', () => {
     database = mod.get(DatabaseService);
   });
 
-  beforeEach(async () => {
+  async function cleanDomain() {
+    await database.pool.query(
+      'DELETE FROM "PeerStateFeedPullCursor" WHERE "peerDomain" = $1',
+      [domain],
+    );
+    await database.pool.query(
+      'DELETE FROM "PeerStateFeedTarget" WHERE "peerDomain" = $1',
+      [domain],
+    );
     await database.pool.query(
       'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
       [domain],
@@ -42,16 +49,18 @@ describe('FederationRecognitionService atomic commit', () => {
     await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
       domain,
     ]);
+    await database.pool.query(
+      'DELETE FROM "IdentityNamespace" WHERE domain = $1',
+      [domain],
+    );
+  }
+
+  beforeEach(async () => {
+    await cleanDomain();
   });
 
   afterAll(async () => {
-    await database.pool.query(
-      'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
-      [domain],
-    );
-    await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
-      domain,
-    ]);
+    await cleanDomain();
     await mod.close();
   });
 
@@ -62,13 +71,13 @@ describe('FederationRecognitionService atomic commit', () => {
       database,
       {} as never,
       {} as never,
-      new FederationCursorService(database),
       stateFeed,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
+      new FederationNamespaceService(database),
     );
   }
 
-  it('commits the inbound recognition fact and every peer cursor together', async () => {
+  it('commits inbound recognition, namespace, and State Feed cursors together', async () => {
     await service(new PeerStateFeedService(database)).acceptInbound(
       domain,
       document,
@@ -79,23 +88,17 @@ describe('FederationRecognitionService atomic commit', () => {
         where: eq(federatedPeer.domain, domain),
       }),
     ).toMatchObject({
-      trustLevel: 'establishing',
-      rootPublicKey,
+      trustLevel: 'available',
       inboundRecognitionConfirmed: true,
       lightweightInboundReady: true,
       reverseRecognitionPending: true,
+      remoteServiceReachable: true,
     });
     expect(
       await database.db
         .select()
-        .from(federationServeCursor)
-        .where(eq(federationServeCursor.peerDomain, domain)),
-    ).toHaveLength(1);
-    expect(
-      await database.db
-        .select()
-        .from(federationPullCursor)
-        .where(eq(federationPullCursor.peerDomain, domain)),
+        .from(identityNamespace)
+        .where(eq(identityNamespace.domain, domain)),
     ).toHaveLength(1);
     expect(
       await database.db
@@ -137,29 +140,31 @@ describe('FederationRecognitionService atomic commit', () => {
     expect(
       await database.db
         .select()
-        .from(federationServeCursor)
-        .where(eq(federationServeCursor.peerDomain, domain)),
-    ).toEqual([]);
-    expect(
-      await database.db
-        .select()
-        .from(federationPullCursor)
-        .where(eq(federationPullCursor.peerDomain, domain)),
-    ).toEqual([]);
-    expect(
-      await database.db
-        .select()
         .from(peerStateFeedTarget)
         .where(eq(peerStateFeedTarget.peerDomain, domain)),
+    ).toEqual([]);
+    expect(
+      await database.db
+        .select()
+        .from(identityNamespace)
+        .where(eq(identityNamespace.domain, domain)),
     ).toEqual([]);
   });
 
   it('counts and logs only the available to degraded transition', async () => {
+    const [namespace] = await database.db
+      .insert(identityNamespace)
+      .values({
+        domain,
+        rootPublicKey,
+        rootKeyFingerprint: 'test-fingerprint',
+        identityPinnedAt: new Date(),
+      })
+      .returning({ id: identityNamespace.id });
     await database.db.insert(federatedPeer).values({
       domain,
+      activeNamespaceId: namespace!.id,
       trustLevel: 'available',
-      rootPublicKey,
-      identityPinnedAt: new Date(),
       recognizesPeer: true,
       outboundRecognitionConfirmed: true,
       inboundRecognitionConfirmed: true,

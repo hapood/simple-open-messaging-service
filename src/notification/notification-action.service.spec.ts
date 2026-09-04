@@ -55,8 +55,8 @@ describe('NotificationActionService.handleAction', () => {
 
   it('dismiss / open / unknown actionId → no-op (no service calls)', async () => {
     // dismiss is a pure frontend shade-close — even if POSTed, the backend does nothing with it.
-    await svc.handleAction(1, { tag: 'soms-away', actionId: 'dismiss' });
-    await svc.handleAction(1, { tag: 'soms-away', actionId: 'open' });
+    await svc.handleAction(1, { tag: 'soms-thread-7', actionId: 'dismiss' });
+    await svc.handleAction(1, { tag: 'soms-thread-7', actionId: 'open' });
     expect(writeMsgToThread).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
   });

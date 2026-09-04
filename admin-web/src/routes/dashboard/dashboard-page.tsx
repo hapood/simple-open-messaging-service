@@ -146,7 +146,7 @@ export function DashboardPage() {
               ? undefined
               : t('dashboard.mediaSub', {
                   assets: data!.media.assetCount,
-                  reclaimable: data!.media.reclaimable,
+                  live: data!.media.live,
                 })
           }
         />

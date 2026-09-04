@@ -28,7 +28,7 @@ function message(
     data: {
       type: 'msg',
       msgId,
-      creator: `local\u0000local\u0000user-${creator}`,
+      creator: JSON.stringify([0, 'local', `user-${creator}`]),
       isSelf: false,
       name: 'Alice',
       text: 'hello',

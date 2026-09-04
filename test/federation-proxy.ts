@@ -17,6 +17,8 @@ export interface S2sProxy {
   port: number;
   /** One-shot: the next media first-range response is truncated mid-stream. */
   armGetFileTruncation: () => void;
+  /** One-shot: return HTTP 503 for the next request whose pathname exactly matches. */
+  armServiceUnavailable: (pathname: string) => void;
   /** How many media `bytes=0-` requests appB has issued through the proxy. The resume test asserts
    *  this is ≥2 (initial + the retry after the truncation) → appB re-requested the SAME range (resume). */
   firstRangeGetFileCount: () => number;
@@ -50,6 +52,9 @@ export interface S2sProxy {
    * a mirror does not activate a join before the origin confirms GROUP_META. */
   blockStateFeed: (blocked: boolean) => void;
   blockedStateFeedCount: () => number;
+  /** Hold Recognize requests while Health and ordinary traffic continue. */
+  blockRecognize: (blocked: boolean) => void;
+  blockedRecognizeCount: () => number;
   /** Serve one digest from proxy memory so the two test processes can model physically separate CAS roots. */
   setGetFileFixture: (digest: string, bytes: Buffer | null) => void;
   close: () => Promise<void>;
@@ -59,6 +64,7 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
   return new Promise((resolve, reject) => {
     // One-shot truncation flag — set by the resume test, cleared after it fires once.
     let truncateNextGetFile = false;
+    let serviceUnavailablePath: string | null = null;
     // Running count of media first-range requests seen (initial + any retries).
     let firstRangeCount = 0;
     // Total requests relayed (debug).
@@ -81,6 +87,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     const blockedReverseMessages = new Set<() => void>();
     let stateFeedBlocked = false;
     const blockedStateFeeds = new Set<() => void>();
+    let recognizeBlocked = false;
+    const blockedRecognizes = new Set<() => void>();
     const getFileFixtures = new Map<string, Buffer>();
 
     const server = http.createServer((req, res) => {
@@ -106,7 +114,19 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
       // parameter. Match the route by pathname so bootstrap and resumed pulls
       // are both eligible for state-feed fault injection.
       const isStateFeed = requestUrl.pathname === '/s2s/v1/state-feed';
+      const isRecognize = requestUrl.pathname === '/s2s/v1/recognize';
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
+      if (requestUrl.pathname === serviceUnavailablePath) {
+        serviceUnavailablePath = null;
+        requests.push({
+          method: req.method ?? 'GET',
+          path: req.url ?? '/',
+          status: 503,
+        });
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 10000, message: 'fault injected' }));
+        return;
+      }
 
       const relay = (): void => {
         // A bodyless GET can have a normally completed/destroyed IncomingMessage while its response is
@@ -301,6 +321,15 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         req.once('aborted', () => blockedStateFeeds.delete(resume));
         return;
       }
+      if (isRecognize && recognizeBlocked) {
+        const resume = (): void => {
+          blockedRecognizes.delete(resume);
+          relay();
+        };
+        blockedRecognizes.add(resume);
+        req.once('aborted', () => blockedRecognizes.delete(resume));
+        return;
+      }
       relay();
     });
 
@@ -311,6 +340,9 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         port,
         armGetFileTruncation: () => {
           truncateNextGetFile = true;
+        },
+        armServiceUnavailable: (pathname: string) => {
+          serviceUnavailablePath = pathname;
         },
         firstRangeGetFileCount: () => firstRangeCount,
         totalRequestCount: () => totalCount,
@@ -360,6 +392,13 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
           }
         },
         blockedStateFeedCount: () => blockedStateFeeds.size,
+        blockRecognize: (blocked: boolean) => {
+          recognizeBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedRecognizes]) resume();
+          }
+        },
+        blockedRecognizeCount: () => blockedRecognizes.size,
         setGetFileFixture: (digest: string, bytes: Buffer | null) => {
           if (bytes) getFileFixtures.set(digest, bytes);
           else getFileFixtures.delete(digest);

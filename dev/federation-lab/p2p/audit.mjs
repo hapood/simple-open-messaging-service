@@ -199,10 +199,8 @@ export async function readP2pPairSnapshot(connections, users) {
 export async function readP2pConsistencySnapshot(connections, users) {
   const entries = await Promise.all(
     [...connections.values()].map(async ({ node, client }) => {
-      const [pairRows, intentRows] = await Promise.all([
-        readNodeRows(client),
-        readNodeIntentRows(client),
-      ]);
+      const pairRows = await readNodeRows(client);
+      const intentRows = await readNodeIntentRows(client);
       return [
         node.name,
         {

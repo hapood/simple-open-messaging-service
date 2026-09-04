@@ -198,6 +198,10 @@ export const pushTokenRelations = relations(pushToken, ({ one }) => ({
     fields: [pushToken.userId],
     references: [account.id],
   }),
+  session: one(sessionToken, {
+    fields: [pushToken.sessionId],
+    references: [sessionToken.id],
+  }),
 }));
 
 export const relationshipIntentRelations = relations(
@@ -299,12 +303,16 @@ export const loginCodeRelations = relations(loginCode, ({ one }) => ({
   }),
 }));
 
-export const sessionTokenRelations = relations(sessionToken, ({ one }) => ({
-  account: one(account, {
-    fields: [sessionToken.userId],
-    references: [account.id],
+export const sessionTokenRelations = relations(
+  sessionToken,
+  ({ one, many }) => ({
+    account: one(account, {
+      fields: [sessionToken.userId],
+      references: [account.id],
+    }),
+    pushTokens: many(pushToken),
   }),
-}));
+);
 
 export const twoFactorBackupCodeRelations = relations(
   twoFactorBackupCode,

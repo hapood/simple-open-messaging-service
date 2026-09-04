@@ -3,8 +3,6 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
-  IsBoolean,
-  IsDataURI,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -83,40 +81,6 @@ export class GroupIdDto {
   groupId!: number;
 }
 
-/** Apply to a federated group by its public Address. The profile fields are an untrusted display
- * snapshot and never establish the group's identity. */
-export class FederatedGroupJoinRequestDto {
-  @ApiProperty({ example: '!engineering', description: 'Group account' })
-  @IsString()
-  @IsNotEmpty()
-  account!: string;
-
-  @ApiProperty({ example: 'peer.example', description: 'Group home domain' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-
-  @ApiProperty({ description: 'Untrusted pending-card display snapshot' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(31)
-  displayName!: string;
-
-  @ApiPropertyOptional({ description: 'Untrusted pending-card avatar' })
-  @IsOptional()
-  @IsString()
-  @IsDataURI()
-  @MaxLength(1_500_000)
-  avatar?: string;
-
-  @ApiPropertyOptional({ description: 'Join-request note (≤255 chars)' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  note?: string;
-}
-
 /** Server-authoritative friend page for the group invitation picker. */
 export class QueryGroupInviteCandidatesDto extends GroupIdDto {
   @ApiPropertyOptional({
@@ -190,16 +154,6 @@ export class ReadGroupJoinRequestsDto extends GroupIdDto {
   @IsInt()
   @Min(1)
   readFeedId!: number;
-}
-
-export class GroupTerminalActionDto extends GroupIdDto {
-  @ApiPropertyOptional({
-    default: false,
-    description: 'Also delete this chat for the caller',
-  })
-  @IsOptional()
-  @IsBoolean()
-  deleteData?: boolean;
 }
 
 class GroupMemberTargetDto {

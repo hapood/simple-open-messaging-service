@@ -115,17 +115,17 @@ describe('NativeEventTransport', () => {
     expect(rec.states).toEqual(['closed']);
   });
 
-  it('forwards a NEW_MESSAGE frame verbatim into a StandardMessage', () => {
+  it('forwards a STATE_FEED_UPDATED frame verbatim into a StandardMessage', () => {
     installFakeFcm('open');
     const rec = recordingSink();
     new NativeEventTransport(rec.sink).start();
-    fireEvent('NEW_MESSAGE', { id: 5, threadId: 42, body: 'hi' });
+    fireEvent('STATE_FEED_UPDATED', { feedId: 5 });
     expect(rec.events).toEqual([
       {
-        event: 'NEW_MESSAGE',
+        event: 'STATE_FEED_UPDATED',
         status: 0,
         message: 'new message',
-        data: { id: 5, threadId: 42, body: 'hi' },
+        data: { feedId: 5 },
       },
     ]);
   });
@@ -223,7 +223,7 @@ describe('NativeEventTransport', () => {
     // The transport reports its own stream as closed; Kotlin's service is unaffected (independent lifecycle).
     expect(rec.states[rec.states.length - 1]).toBe('closed');
     // Hooks detached → a forwarded frame no longer reaches the sink.
-    fireEvent('NEW_MESSAGE', { id: 9 });
+    fireEvent('STATE_FEED_UPDATED', { feedId: 9 });
     expect(rec.events.length).toBe(0);
     expect(window.__SOMS_EVENT__).toBeUndefined();
     expect(window.__SOMS_CONN_STATE__).toBeUndefined();

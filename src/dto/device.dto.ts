@@ -14,7 +14,8 @@ import {
 /**
  * Device registration DTOs for FCM push. The client obtains an FCM registration token from the
  * platform Firebase SDK (Android) and POSTs it here so the server can fan out data-only FCM messages
- * on NEW_MESSAGE for recipients with no live SSE connection (see PushService).
+ * as an out-of-band `NEW_MESSAGE` Push payload. A device session with live SSE takes over notification
+ * aggregation locally; other registered sessions remain independently eligible for Push.
  */
 
 export class RegisterDeviceDto {
@@ -58,7 +59,7 @@ export class RegisterDeviceDto {
   @ApiProperty({
     required: false,
     description:
-      "Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps.",
+      'Optional stable client installation id for diagnostics. Delivery suppression is bound to the authenticated session.',
   })
   @IsOptional()
   @IsString()

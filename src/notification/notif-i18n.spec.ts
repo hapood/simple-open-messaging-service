@@ -39,7 +39,7 @@ describe('buildSummaryBody — en', () => {
       'Alice sent you 5 messages',
     );
   });
-  it('zero unread total → empty string (the caller emits a clear descriptor)', () => {
+  it('zero unread total → empty string (the caller emits no notification)', () => {
     expect(buildSummaryBody([item('Alice', 0)], locale)).toBe('');
     expect(buildSummaryBody([], locale)).toBe('');
   });

@@ -1,6 +1,8 @@
 import { federationLabNode, federationLabNodes } from '../topology.mjs';
 
 const API_PREFIX = '/api/v1';
+const PROFILE_AVATAR_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWOwLbv2HwAFBgKJNk+bNAAAAABJRU5ErkJggg==';
 
 export class LabApiError extends Error {
   constructor(message, details) {
@@ -47,6 +49,21 @@ async function post(node, path, options = {}) {
     signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
   });
   return { response, data: await readEnvelope(response, options.operation) };
+}
+
+async function postMultipart(node, path, { body, userToken, headers = {} }) {
+  const requestHeaders = new Headers({
+    Accept: 'application/json',
+    Authorization: `Bearer ${userToken}`,
+    ...headers,
+  });
+  const response = await fetch(`${node.backendBaseUrl}${API_PREFIX}${path}`, {
+    method: 'POST',
+    headers: requestHeaders,
+    body,
+    signal: AbortSignal.timeout(35_000),
+  });
+  return readEnvelope(response, `${node.domain}: multipart ${path}`);
 }
 
 async function get(node, path, options = {}) {
@@ -126,6 +143,43 @@ export class LabUserActor {
     return this.post('/user/my-profile', {}, 'load own profile');
   }
 
+  async updateProfile({ name, bio, avatar = 'KEEP' }) {
+    return this.post(
+      '/user/update-profile',
+      {
+        name,
+        bio,
+        ...(avatar === 'SET'
+          ? { avatarBase64: PROFILE_AVATAR_BASE64 }
+          : avatar === 'REMOVE'
+            ? { avatarBase64: null }
+            : {}),
+      },
+      'update own profile',
+    );
+  }
+
+  async uploadAvatar() {
+    const body = new FormData();
+    body.set(
+      'file',
+      new Blob([Buffer.from(PROFILE_AVATAR_BASE64, 'base64')], {
+        type: 'image/png',
+      }),
+      'federation-profile.png',
+    );
+    const result = await postMultipart(this.node, '/upload/avatar', {
+      body,
+      userToken: this.token,
+    });
+    if (typeof result?.avatar !== 'string') {
+      throw new LabApiError('avatar upload returned no path', {
+        node: this.node.domain,
+      });
+    }
+    return result.avatar;
+  }
+
   async resolveFederatedUser({ account, domain }) {
     const operation = `${this.address}: resolve ${account}@${domain}`;
     const query = new URLSearchParams({ account, domain });
@@ -143,6 +197,14 @@ export class LabUserActor {
       });
     }
     return parseSseTerminal(await response.text(), operation);
+  }
+
+  async resolveProfile(selector) {
+    return this.post(
+      '/user/profile-resolution',
+      selector,
+      `resolve profile ${JSON.stringify(selector)}`,
+    );
   }
 
   async queryStateFeed({ mode = 'full', after = 0, take = 200, through }) {
@@ -175,6 +237,121 @@ export class LabUserActor {
       '/thread/by-user-id',
       { userId },
       `look up P2P thread with user ${userId}`,
+    );
+  }
+
+  async createGroup({ name, description = '', avatar }) {
+    return this.post(
+      '/group/create',
+      { name, description, ...(avatar ? { avatar } : {}) },
+      `create group ${name}`,
+    );
+  }
+
+  async updateGroup({ groupId, name, description, avatar }) {
+    return this.post(
+      '/group/update',
+      {
+        groupId,
+        name,
+        description,
+        ...(avatar !== undefined ? { avatar } : {}),
+      },
+      `update group ${groupId}`,
+    );
+  }
+
+  async sendText(threadId, content, clientMessageId) {
+    return this.post(
+      '/send-message',
+      {
+        threadId,
+        content: JSON.stringify({ text: content }),
+        contentType: 'PURE_TEXT',
+        clientMessageId,
+      },
+      `send message ${clientMessageId}`,
+    );
+  }
+
+  async sendMedia({ threadId, clientMessageId, parts }) {
+    const contentType = parts.length === 1 ? 'FILE' : 'GALLERY';
+    await this.post(
+      '/send-media',
+      { threadId, clientMessageId, contentType, fileCnt: parts.length },
+      `stage ${contentType} message ${clientMessageId}`,
+    );
+    for (const [position, part] of parts.entries()) {
+      const body = new FormData();
+      body.set('partId', part.partId);
+      body.set('position', String(position));
+      body.set('intent', 'FILE');
+      body.set(
+        'file',
+        new Blob([part.bytes], {
+          type: part.mimeType ?? 'application/octet-stream',
+        }),
+        part.filename,
+      );
+      await postMultipart(this.node, '/upload', {
+        body,
+        userToken: this.token,
+        headers: { 'x-client-message-id': clientMessageId },
+      });
+    }
+    return this.findMessageByClientMessageId(threadId, clientMessageId);
+  }
+
+  async findMessageByClientMessageId(threadId, clientMessageId) {
+    let before;
+    try {
+      await this.post('/query-messages', { threadId }, 'initialize history');
+      throw new LabApiError('message history unexpectedly returned no cursor', {
+        threadId,
+      });
+    } catch (error) {
+      const resumeBefore = error?.details?.data?.resumeBefore;
+      if (
+        !(error instanceof LabApiError) ||
+        error.details?.code !== 30006 ||
+        !Number.isInteger(resumeBefore)
+      )
+        throw error;
+      before = resumeBefore;
+    }
+    for (;;) {
+      const page = await this.post(
+        '/query-messages',
+        { threadId, before, take: 50 },
+        `resolve media message ${clientMessageId}`,
+      );
+      const found = page.messages?.find(
+        (message) => message.clientMessageId === clientMessageId,
+      );
+      if (found) return found;
+      if (!page.hasMore) break;
+      if (
+        !Number.isInteger(page.scannedThrough) ||
+        page.scannedThrough >= before
+      )
+        throw new LabApiError('message history cursor did not retreat', {
+          threadId,
+          before,
+          scannedThrough: page.scannedThrough,
+        });
+      before = page.scannedThrough;
+    }
+    throw new LabApiError('promoted media message was not found in history', {
+      threadId,
+      clientMessageId,
+    });
+  }
+
+  async withdrawMessage(threadId, seq) {
+    return this.post(
+      '/withdraw-message',
+      { threadId, seq },
+      `withdraw message seq ${seq}`,
     );
   }
 }

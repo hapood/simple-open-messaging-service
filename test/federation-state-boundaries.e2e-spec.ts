@@ -21,21 +21,21 @@ describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let relationships: RelationshipService;
-  let relationships: RelationshipIntentService;
+  let relationshipIntents: RelationshipIntentService;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
     }).compile();
     database = mod.get(DatabaseService);
-    relationships = new RelationshipIntentService();
+    relationshipIntents = new RelationshipIntentService();
     relationships = new RelationshipService(
       database,
       {} as never,
       new ClientStateFeedService(database, {
         onStateFeedUpdated: () => undefined,
       } as never),
-      relationships,
+      relationshipIntents,
     );
   });
 
@@ -85,7 +85,7 @@ describe('federation directed-state boundaries', () => {
     }>,
   ) {
     await database.db.transaction((tx) =>
-      relationships.lockPairInTx(tx, localId, peerId),
+      relationshipIntents.lockPairInTx(tx, localId, peerId),
     );
     const relationship = await findP2PRelationship(
       database.db,
@@ -383,7 +383,7 @@ describe('federation directed-state boundaries', () => {
     );
 
     await database.db.transaction((tx) =>
-      relationships.lockPairInTx(tx, local.id, peer.id),
+      relationshipIntents.lockPairInTx(tx, local.id, peer.id),
     );
     const relationship = await findP2PRelationship(
       database.db,

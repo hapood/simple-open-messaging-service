@@ -47,8 +47,8 @@ fn take_frame_drains_multiple_frames_in_order() {
 
 #[test]
 fn parse_basic_event_and_json_data() {
-    let f = parse_sse_frame(b"event: NEW_MESSAGE\ndata: {\"id\":5}").unwrap();
-    assert_eq!(f.event, "NEW_MESSAGE");
+    let f = parse_sse_frame(b"event: EXAMPLE_EVENT\ndata: {\"id\":5}").unwrap();
+    assert_eq!(f.event, "EXAMPLE_EVENT");
     assert_eq!(f.data, serde_json::json!({"id": 5}));
 }
 

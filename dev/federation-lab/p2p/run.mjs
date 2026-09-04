@@ -5,14 +5,26 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FederationLabActors } from './api-actors.mjs';
 import { federationLabNodes } from '../topology.mjs';
-import { buildUserPlan } from './scenario.mjs';
+import {
+  buildGroupCreationPlan,
+  buildUserPlan,
+  SeededRandom,
+} from './scenario.mjs';
 import { executeRandomP2pWorkload } from './random-execute.mjs';
-import { P2P_OPERATION_LOG_SCHEMA_VERSION } from './operation-log.mjs';
 import {
   closeP2pAuditDatabases,
   connectP2pAuditDatabases,
-  waitForP2pFriendConvergence,
+  readP2pConsistencySnapshot,
 } from './audit.mjs';
+import {
+  attachCreatedGroups,
+  readGroupWorkloadSnapshot,
+} from './group-facts.mjs';
+import {
+  readFederationAuditSnapshot,
+  waitForFederationConvergence,
+} from './final-audit.mjs';
+import { resolveWorkloadProfiles } from './profile-resolution.mjs';
 
 const p2pDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(p2pDir, '..', 'runtime', 'p2p-runs');
@@ -48,6 +60,8 @@ function stringOption(name, fallback) {
 function assertKnownOptions() {
   const valued = [
     '--users-per-node=',
+    '--groups-per-node=',
+    '--operations-per-second=',
     '--concurrency=',
     '--prefix=',
     '--seed=',
@@ -125,7 +139,16 @@ async function writeJson(runDir, filename, value) {
   await mkdir(runDir, { recursive: true });
   await writeFile(
     join(runDir, filename),
-    `${JSON.stringify(value, null, 2)}\n`,
+    `${JSON.stringify(
+      value,
+      (_key, item) =>
+        item instanceof Map
+          ? Object.fromEntries(item)
+          : item instanceof Set
+            ? [...item]
+            : item,
+      2,
+    )}\n`,
     { mode: 0o600 },
   );
 }
@@ -149,9 +172,30 @@ function publicFederationQuotaDefaults(value) {
   };
 }
 
+async function restoreQuotaDefaults(actors, originals) {
+  const restorations = await Promise.allSettled(
+    [...actors.nodes.values()].map(async ({ topology, admin }) => {
+      const original = originals.get(topology.name);
+      if (!original) return;
+      await Promise.all([
+        admin.setUserQuotaDefaults(original.user),
+        admin.setFederationQuotaDefaults(original.federation),
+      ]);
+    }),
+  );
+  return restorations.filter(({ status }) => status === 'rejected').length;
+}
+
 async function main() {
   assertKnownOptions();
-  const usersPerNode = integerOption('users-per-node', 20, 1, 999);
+  const usersPerNode = integerOption('users-per-node', 5, 1, 999);
+  const groupsPerNode = integerOption('groups-per-node', 5, 1, 999);
+  const operationsPerSecond = integerOption(
+    'operations-per-second',
+    10,
+    1,
+    100,
+  );
   const concurrency = integerOption('concurrency', 12, 1, 100);
   const prefix = stringOption('prefix', 'p2p');
   const seed = integerOption(
@@ -175,12 +219,22 @@ async function main() {
   const startedAt = new Date();
   const runId = `${startedAt.toISOString().replaceAll(/[-:.TZ]/g, '')}-${prefix}`;
   const runDir = join(runtimeDir, runId);
-  const plan = buildUserPlan(prefix, usersPerNode);
+  const plan = buildUserPlan(
+    prefix,
+    usersPerNode,
+    new SeededRandom(seed ^ 0xbb67ae85),
+  );
+  const groupPlan = buildGroupCreationPlan(
+    prefix,
+    plan,
+    groupsPerNode,
+    new SeededRandom(seed ^ 0x6a09e667),
+  );
   const maximumPairs = (plan.length * (plan.length - 1)) / 2;
   const operationCount = integerOption('operations', 600, 1, 100_000);
   const roundSize = integerOption(
     'round-size',
-    Math.min(60, maximumPairs),
+    Math.min(6, maximumPairs),
     1,
     maximumPairs,
   );
@@ -206,14 +260,14 @@ async function main() {
   const convergenceSamples = integerOption('convergence-samples', 3, 2, 20);
   const verbose = hasFlag('verbose');
   const operationLog = {
-    schemaVersion: P2P_OPERATION_LOG_SCHEMA_VERSION,
     seed,
     users: plan.map(({ address }) => address),
+    groups: [],
     operations: [],
   };
   const report = {
     schemaVersion: 1,
-    phase: 'PROVISION_USERS',
+    phase: 'PROVISION_USERS_AND_GROUPS',
     runId,
     status: 'RUNNING',
     startedAt: startedAt.toISOString(),
@@ -225,7 +279,10 @@ async function main() {
         browserBaseUrl,
       })),
       usersPerNode,
+      groupsPerNode,
       totalUsers: plan.length,
+      totalGroups: groupPlan.length,
+      operationsPerSecond,
       concurrency,
       prefix,
       seed,
@@ -239,6 +296,7 @@ async function main() {
       convergenceSamples,
     },
     users: [],
+    groups: [],
     error: null,
   };
   await Promise.all([
@@ -269,6 +327,13 @@ async function main() {
     let completed = 0;
     const users = await mapConcurrent(plan, concurrency, async (item) => {
       const actor = await actors.createAndLoginUser(item.nodeName, item);
+      if (item.avatar || item.bio) {
+        await actor.updateProfile({
+          name: item.name,
+          bio: item.bio,
+          avatar: item.avatar ? 'SET' : 'KEEP',
+        });
+      }
       const profile = await actor.myProfile();
       if (profile?.id !== actor.id || profile?.account !== actor.account) {
         throw new Error(`${actor.address}: authenticated profile mismatch`);
@@ -283,12 +348,56 @@ async function main() {
         account: actor.account,
         domain: actor.domain,
         address: actor.address,
+        profileRev: profile.profileRev,
+        name: profile.name,
+        bio: profile.bio,
+        avatar: Boolean(profile.avatar),
       };
     });
     if (actors.userCount !== plan.length) {
       throw new Error(
         `in-memory actor count ${actors.userCount} does not match plan ${plan.length}`,
       );
+    }
+    let groupsCompleted = 0;
+    const createdGroups = await mapConcurrent(
+      groupPlan,
+      concurrency,
+      async (item) => {
+        const actor = actors.user(item.owner);
+        const avatar = item.avatar ? await actor.uploadAvatar() : undefined;
+        const created = await actor.createGroup({
+          name: item.name,
+          description: item.description,
+          avatar,
+        });
+        if (!Number.isInteger(created?.threadId))
+          throw new Error(
+            `${item.owner}: group creation returned no thread id`,
+          );
+        groupsCompleted += 1;
+        if (groupsCompleted === groupPlan.length || groupsCompleted % 10 === 0)
+          console.log(
+            `[p2p] groups ready ${groupsCompleted}/${groupPlan.length}`,
+          );
+        return { ...item, threadId: created.threadId };
+      },
+    );
+    const provisioningConnections =
+      await connectP2pAuditDatabases(baseDatabaseUrl);
+    try {
+      const p2pSnapshot = await readP2pConsistencySnapshot(
+        provisioningConnections,
+        operationLog.users,
+      );
+      const groupSnapshot = await readGroupWorkloadSnapshot(
+        provisioningConnections,
+        p2pSnapshot,
+      );
+      operationLog.groups = attachCreatedGroups(groupSnapshot, createdGroups);
+      report.groups = operationLog.groups;
+    } finally {
+      await closeP2pAuditDatabases(provisioningConnections);
     }
     report.status = 'SUCCEEDED';
     report.users = users;
@@ -342,6 +451,7 @@ async function main() {
   };
   await writeJson(runDir, 'execution.json', execution);
   const originalQuotas = new Map();
+  let quotasRestored = false;
   let workloadConnections;
   try {
     console.log(
@@ -368,10 +478,30 @@ async function main() {
           admin.setUserQuotaDefaults({
             ...user,
             dailyRequestLimit: requestLimit,
+            dailyMsgLimit: Math.max(user.dailyMsgLimit, operationCount * 2),
+            dailyFileLimit: Math.max(user.dailyFileLimit, operationCount),
+            dailyFileBytesLimit: String(
+              BigInt(user.dailyFileBytesLimit) > BigInt(operationCount * 1024)
+                ? user.dailyFileBytesLimit
+                : operationCount * 1024,
+            ),
           }),
           admin.setFederationQuotaDefaults({
             ...federation,
             dailyRequestLimit: federationRequestLimit,
+            dailyMsgLimit: Math.max(
+              federation.dailyMsgLimit,
+              operationCount * 2,
+            ),
+            dailySignalLimit: Math.max(
+              federation.dailySignalLimit,
+              operationCount * 4,
+            ),
+            dailyFileLimit: Math.max(federation.dailyFileLimit, operationCount),
+            dailyFileBytesLimit: Math.max(
+              federation.dailyFileBytesLimit,
+              operationCount * 1024,
+            ),
           }),
         ]);
         console.log(
@@ -392,6 +522,7 @@ async function main() {
       concurrency,
       timeoutMs: taskTimeoutMs,
       progressEvery,
+      operationsPerSecond,
       onLog: (value) => writeJson(runDir, 'operations.json', value),
     });
     execution.operationCount = operationLog.operations.length;
@@ -402,19 +533,13 @@ async function main() {
     throw error;
   } finally {
     if (workloadConnections) await closeP2pAuditDatabases(workloadConnections);
-    const restorations = await Promise.allSettled(
-      [...actors.nodes.values()].map(async ({ topology, admin }) => {
-        const original = originalQuotas.get(topology.name);
-        if (!original) return;
-        await Promise.all([
-          admin.setUserQuotaDefaults(original.user),
-          admin.setFederationQuotaDefaults(original.federation),
-        ]);
-      }),
-    );
-    const failed = restorations.filter(({ status }) => status === 'rejected');
-    if (failed.length > 0) {
-      const message = `${failed.length} node quota configurations were not restored`;
+    const failedRestorations =
+      execution.status === 'SUCCEEDED'
+        ? 0
+        : await restoreQuotaDefaults(actors, originalQuotas);
+    quotasRestored = execution.status !== 'SUCCEEDED';
+    if (failedRestorations > 0) {
+      const message = `${failedRestorations} node quota configurations were not restored`;
       execution.status = 'FAILED';
       execution.error = execution.error
         ? `${execution.error}; ${message}`
@@ -435,7 +560,7 @@ async function main() {
 
   const audit = {
     schemaVersion: 1,
-    phase: 'AUDIT_FINAL_P2P_FRIENDS',
+    phase: 'AUDIT_FINAL_FEDERATION_STATE',
     runId,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
@@ -450,9 +575,24 @@ async function main() {
   try {
     console.log('[p2p] connecting read-only auditor to three lab databases');
     connections = await connectP2pAuditDatabases(baseDatabaseUrl);
-    const converged = await waitForP2pFriendConvergence({
+    const profileSnapshot = await readFederationAuditSnapshot(
       connections,
-      users: operationLog.users,
+      operationLog,
+    );
+    const profileResolutions = await resolveWorkloadProfiles({
+      actors,
+      groups: profileSnapshot.groups,
+      profiles: profileSnapshot.profiles,
+      log: operationLog,
+      timeoutMs: taskTimeoutMs,
+    });
+    await writeJson(runDir, 'profile-resolutions.json', {
+      schemaVersion: 1,
+      checks: profileResolutions,
+    });
+    const converged = await waitForFederationConvergence({
+      connections,
+      log: operationLog,
       timeoutMs: convergenceTimeoutMs,
       intervalMs: convergenceIntervalMs,
       stableSamples: convergenceSamples,
@@ -461,18 +601,11 @@ async function main() {
     audit.snapshot = converged.snapshot;
     audit.comparison = converged.comparison;
     audit.status = audit.comparison.passed ? 'SUCCEEDED' : 'FAILED';
-    for (const node of federationLabNodes) {
-      const result = audit.comparison.nodes[node.name];
-      console.log(
-        `[p2p][audit] ${node.domain}: ${result.passed ? 'PASS' : 'FAIL'} ` +
-          `active=${result.activeCount}, duplicates=${result.duplicates.length}, ` +
-          `invalid=${result.invalid.length}, misplacedActive=${result.misplacedActive.length}`,
-      );
-    }
     console.log(
-      `[p2p][audit] finalFriends=${audit.comparison.finalFriends}, ` +
-        `crossNodePairs=${audit.comparison.crossNodePairs}, ` +
-        `activeMismatch=${audit.comparison.mismatches.length}`,
+      `[federation][audit] groups=${audit.comparison.groups}, ` +
+        `finalFriends=${audit.comparison.p2pFriends.finalFriends}, ` +
+        `messages=${audit.comparison.liveMessages}, ` +
+        `withdrawn=${audit.comparison.withdrawnMessages}`,
     );
   } catch (error) {
     audit.status = 'FAILED';
@@ -480,34 +613,35 @@ async function main() {
     if (error?.snapshot) audit.snapshot = error.snapshot;
     if (error?.comparison) {
       audit.comparison = error.comparison;
-      for (const node of federationLabNodes) {
-        const result = error.comparison.nodes[node.name];
-        if (result.passed) continue;
-        console.error(
-          `[p2p][audit][${node.name}] ` +
-            JSON.stringify({
-              duplicates: result.duplicates,
-              invalid: result.invalid,
-              misplacedActive: result.misplacedActive,
-            }),
-        );
-      }
-      if (error.comparison.mismatches.length > 0)
-        console.error(
-          `[p2p][audit][active-mismatch] ${JSON.stringify(error.comparison.mismatches)}`,
-        );
+      console.error(
+        `[federation][audit][failures] ${JSON.stringify(error.comparison.failures.slice(0, 50))}`,
+      );
     }
   } finally {
     if (connections) await closeP2pAuditDatabases(connections);
+    if (!quotasRestored) {
+      const failedRestorations = await restoreQuotaDefaults(
+        actors,
+        originalQuotas,
+      );
+      quotasRestored = true;
+      if (failedRestorations > 0) {
+        const message = `${failedRestorations} node quota configurations were not restored`;
+        audit.status = 'FAILED';
+        audit.error = audit.error ? `${audit.error}; ${message}` : message;
+      }
+    }
     audit.finishedAt = new Date().toISOString();
     await writeJson(runDir, 'audit.json', audit);
     console.log(`[p2p] audit report ${join(runDir, 'audit.json')}`);
   }
   if (audit.status !== 'SUCCEEDED') {
     process.exitCode = 1;
-    throw new Error(audit.error ?? 'P2P final friend audit failed');
+    throw new Error(audit.error ?? 'federation final consistency audit failed');
   }
-  console.log('[p2p] final RelationshipPair.active federation symmetry PASSED');
+  console.log(
+    '[federation] final intents, rosters, messages, and media PASSED',
+  );
 }
 
 main().catch((error) => {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
+import { GLOBAL_PREFIX_EXCLUSIONS } from '../bootstrap.js';
 import {
   FEDERATION_API_PREFIX,
   FEDERATION_PROTOCOL_VERSION,
@@ -53,19 +54,35 @@ describe('Federation v1 surface', () => {
         'GET /.well-known/somfp',
         'GET /s2s/v1/forward-bundles/:bundleId',
         'GET /s2s/v1/group-meta',
+        'GET /s2s/v1/group-member-profile',
         'GET /s2s/v1/media/:digest',
         'GET /s2s/v1/messages',
         'GET /s2s/v1/message-tombstones',
         'GET /s2s/v1/message-author-profile',
         'GET /s2s/v1/profiles/:account',
         'GET /s2s/v1/state-feed',
-        'GET /s2s/v1/users/:account',
+        'GET /s2s/v1/accounts/:account',
         'POST /s2s/v1/call',
         'POST /s2s/v1/feed-heads',
         'GET /s2s/v1/health',
         'POST /s2s/v1/recognize',
       ].sort(),
     );
+  });
+
+  it('keeps every federation route outside the client API prefix', () => {
+    const declaredRoutes = [
+      S2sController,
+      S2sRecognitionController,
+      WellKnownController,
+    ]
+      .flatMap(routes)
+      .sort();
+    const excludedRoutes = GLOBAL_PREFIX_EXCLUSIONS.map(
+      ({ method, path }) => `${RequestMethod[method]} /${path}`,
+    ).sort();
+
+    expect(excludedRoutes).toEqual(declaredRoutes);
   });
 
   it('keeps cross-version bootstrap on the fixed well-known surface', () => {

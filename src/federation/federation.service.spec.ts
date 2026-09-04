@@ -318,13 +318,13 @@ describe('FederationProfileService resource path', () => {
     const getSigned = vi.fn().mockResolvedValue({ profileRev: 1 });
     Object.assign(peerHttp, { get: getSigned });
 
-    await profiles.fetchRemoteUser({
+    await profiles.fetchRemoteAccount({
       account: '!group',
       domain: 'peer.test',
     });
 
     expect(getSigned).toHaveBeenCalledWith(
-      '/s2s/v1/users/%21group',
+      '/s2s/v1/accounts/%21group',
       'peer.test',
     );
   });
@@ -337,7 +337,7 @@ describe('FederationProfileService resource path', () => {
       Object.assign(peerHttp, { get: getSigned });
 
       await expect(
-        profiles.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
+        profiles.fetchRemoteAccount({ account: 'alice', domain: 'peer.test' }),
       ).rejects.toMatchObject({
         code: BusinessCode.FEDERATION_MALFORMED,
         status: 200,
@@ -352,6 +352,7 @@ describe('FederationProfileService resource path', () => {
       b64: bytes.toString('base64'),
       w: 32,
       h: 24,
+      mimeType: 'image/webp',
     });
     Object.assign(profiles, { upload: { readAvatarAsWire } });
 
@@ -427,6 +428,7 @@ describe('FederationProfileService resource path', () => {
       b64: bytes.toString('base64'),
       w: 32,
       h: 24,
+      mimeType: 'image/webp',
     });
   });
 });
@@ -434,7 +436,7 @@ describe('FederationProfileService resource path', () => {
 describe('federated group join request', () => {
   it('writes the request with the resolved card snapshot without prefetching the remote profile', async () => {
     const { svc, database } = makeStubs();
-    const fetchRemoteUser = vi.fn();
+    const fetchRemoteAccount = vi.fn();
     const ensureShell = vi.fn().mockResolvedValue({
       groupId: 17,
       threadId: 23,
@@ -443,7 +445,7 @@ describe('federated group join request', () => {
     const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
     database.db.transaction = vi.fn(async (operation) => operation({}));
     const target = svc as unknown as {
-      fetchRemoteUser: typeof fetchRemoteUser;
+      fetchRemoteAccount: typeof fetchRemoteAccount;
       stateFeedConsumer: {
         ensureFederatedGroupRequestShellInTx: typeof ensureShell;
       };
@@ -453,7 +455,7 @@ describe('federated group join request', () => {
       clientStateFeed: { notifyFeedUpdates: () => void };
       pushStateFeedDomains: typeof pushStateFeedDomains;
     };
-    target.fetchRemoteUser = fetchRemoteUser;
+    target.fetchRemoteAccount = fetchRemoteAccount;
     target.stateFeedConsumer = {
       ensureFederatedGroupRequestShellInTx: ensureShell,
     };
@@ -473,7 +475,7 @@ describe('federated group join request', () => {
       },
     );
 
-    expect(fetchRemoteUser).not.toHaveBeenCalled();
+    expect(fetchRemoteAccount).not.toHaveBeenCalled();
     expect(ensureShell).toHaveBeenCalledWith(
       expect.anything(),
       '!group',
@@ -492,6 +494,61 @@ describe('federated group join request', () => {
         avatar: 'group-avatar',
       },
     );
+    expect(pushStateFeedDomains).toHaveBeenCalledWith(
+      expect.objectContaining({ [Symbol.iterator]: expect.any(Function) }),
+    );
+  });
+
+  it('delegates remote-group revocation without a second client-feed write', async () => {
+    const { svc, database } = makeStubs();
+    const tx = {
+      query: {
+        group: {
+          findFirst: vi.fn().mockResolvedValue({ id: 17 }),
+        },
+        messageThread: {
+          findFirst: vi.fn().mockResolvedValue({ id: 23 }),
+        },
+      },
+    };
+    const writeIntent = vi.fn().mockResolvedValue(new Map([['peer.test', 6n]]));
+    const notifyFeedUpdates = vi.fn();
+    const writeClientFeed = vi.fn();
+    const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
+    database.db.transaction = vi.fn(async (operation) => operation(tx));
+    const target = svc as unknown as {
+      relationshipMutations: {
+        writeMemberRelationshipIntentInTx: typeof writeIntent;
+      };
+      clientStateFeed: {
+        notifyFeedUpdates: typeof notifyFeedUpdates;
+        writeInTx: typeof writeClientFeed;
+      };
+      pushStateFeedDomains: typeof pushStateFeedDomains;
+    };
+    target.relationshipMutations = {
+      writeMemberRelationshipIntentInTx: writeIntent,
+    };
+    target.clientStateFeed = {
+      notifyFeedUpdates,
+      writeInTx: writeClientFeed,
+    };
+    target.pushStateFeedDomains = pushStateFeedDomains;
+
+    await svc.revokeGroupJoinRequest(11, {
+      account: '!group',
+      domain: 'peer.test',
+    });
+
+    expect(writeIntent).toHaveBeenCalledWith(
+      tx,
+      23,
+      11,
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(writeClientFeed).not.toHaveBeenCalled();
+    expect(notifyFeedUpdates).toHaveBeenCalledWith(expect.any(Array));
     expect(pushStateFeedDomains).toHaveBeenCalledWith(
       expect.objectContaining({ [Symbol.iterator]: expect.any(Function) }),
     );
@@ -718,7 +775,7 @@ function makeStubs() {
   const outboundMessageSignals = new FederationOutboundMessageSignalService(
     database as never,
     {} as never, // threadContentHeads
-    statePull as never,
+    eventEmitter as never,
   );
   const threadQueryDenials = new FederationThreadQueryDenialService(
     database as never,
@@ -1018,7 +1075,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
     const select = vi.fn().mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({ where: candidateWhere }),
+          where: candidateWhere,
         }),
       }),
     });
@@ -1050,7 +1107,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
     return { service, select };
   }
 
-  it('requires a current thread audience before inspecting historical coordinates', async () => {
+  it('requires current thread query authorization before inspecting historical coordinates', async () => {
     const { service, select } = target({
       currentAudience: false,
       historicalPair: true,

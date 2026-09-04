@@ -4,8 +4,8 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. It defines the authenticated,
 policy-controlled profile operation used for an established user or group
-thread. It is separate from `GET /s2s/v1/users/:account`, whose exact-account
-lookup remains limited to the add-friend flow.
+thread. It is separate from `GET /s2s/v1/accounts/:account`, whose exact-account
+lookup returns the current public profile of an exact local user or live group.
 
 ## 1. Request
 
@@ -60,14 +60,25 @@ authorization permits account/revision lookup.
 ## 3. Authorization and errors
 
 The profile owner MAY independently control which recognized peers may read a
-default-selected or historical revision. Recognition, knowledge of `account`, knowledge
-of `rev`, or possession of earlier profile data does not grant access.
+default-selected or historical revision except where an effective Relationship
+Intent grants the access defined below. Recognition, knowledge of `account`,
+knowledge of `rev`, or possession of earlier profile data does not grant access.
+
+An effective `REQUESTED` or `ACCEPTED` Relationship Intent with a positive
+`profileRev` MUST authorize the server hosting the intent's other endpoint to
+read exactly the author's referenced `(account, profileRev)`. The other endpoint
+MAY be a user or a group. The publisher MUST verify that the requested account
+is the intent author, the requested revision equals the intent's `profileRev`,
+and the authenticated signer hosts the opposite endpoint in the same identity
+namespace. An expired `REQUESTED` direction and a `REVOKED` direction grant no
+access. No intent authorizes a different account or revision.
 
 The publisher MUST evaluate its current disclosure policy for every request.
-Knowledge of `account` and `rev`, recognition of the peer, friendship, group
-audience, or access to a different revision does not by itself require the
-publisher to disclose this revision. The policy and its local authorization
-index are implementation-defined.
+Outside the mandatory Relationship Intent grant above, knowledge of `account`
+and `rev`, recognition of the peer, friendship, group audience, or access to a
+different revision does not by itself require the publisher to disclose this
+revision. Any additional policy and its local authorization index are
+implementation-defined.
 
 Message-bound profile access uses [Message Author Profile](./message-author-profile.md)
 so the publisher can validate the exact thread and message allocation. This

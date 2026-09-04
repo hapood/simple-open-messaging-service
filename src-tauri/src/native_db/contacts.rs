@@ -12,11 +12,16 @@ pub(crate) async fn native_db_get_profile(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         let value = if let Some(rest) = identity.strip_prefix("a:") {
-            let mut parts = rest.split('\0');
-            let domain = parts.next().unwrap_or("");
-            let account = parts.next().unwrap_or("");
+            let address: Value = serde_json::from_str(rest)
+                .map_err(|e| format!("parse profile address: {e}"))?;
+            let domain = address.get(0).and_then(Value::as_str).unwrap_or("");
+            let account = address.get(1).and_then(Value::as_str).unwrap_or("");
             conn.query_row(
-                "SELECT payload_json FROM users WHERE user_id=?1 AND account=?2 AND domain=?3 AND source_domain=?3",
+                "SELECT identity.payload_json FROM users identity
+                 JOIN namespaces namespace ON namespace.user_id=identity.user_id
+                   AND namespace.namespace_id=identity.namespace_id
+                 WHERE identity.user_id=?1 AND identity.account=?2 AND identity.domain=?3
+                   AND namespace.domain=?3 AND namespace.status='ACTIVE' LIMIT 1",
                 params![user_id, account, domain], |row| row.get::<_, String>(0),
             ).optional()
         } else if let Some(raw) = identity.strip_prefix('u') {
@@ -43,8 +48,6 @@ pub(crate) async fn native_db_get_profile(
             "avatar": record.get("avatar").cloned().unwrap_or(Value::String(String::new())),
             "bio": record.get("bio").or_else(|| record.get("description")).cloned().unwrap_or(Value::String(String::new())),
             "domain": record.get("domain").cloned().unwrap_or(Value::String(String::new())),
-            "sourceServer": record.get("sourceDomain").or_else(|| record.get("domain")).cloned().unwrap_or(Value::String(String::new())),
-            "namespaceId": record.get("namespaceId").cloned().unwrap_or(Value::from(0)),
             "profileRev": record.get("profileRev").cloned().unwrap_or(Value::from(0)),
         })))
     })
@@ -58,15 +61,14 @@ pub(crate) async fn native_db_get_user(
     user_id: i64,
     account: String,
     domain: String,
-    source_domain: String,
     namespace_id: i64,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let value = open(&app)?
             .query_row(
                 "SELECT payload_json FROM users
-             WHERE user_id=?1 AND account=?2 AND domain=?3 AND source_domain=?4 AND namespace_id=?5",
-                params![user_id, account, domain, source_domain, namespace_id],
+             WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4",
+                params![user_id, account, domain, namespace_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -84,14 +86,14 @@ pub(crate) async fn native_db_get_group_member(
     thread_id: i64,
     account: String,
     domain: String,
-    source_domain: String,
     namespace_id: i64,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?.query_row(
-            "SELECT json_object(
+        let value = open(&app)?
+            .query_row(
+                "SELECT json_object(
                'threadId',member.thread_id,'account',member.member_account,
-               'domain',member.member_domain,'sourceDomain',member.source_domain,
+               'domain',member.member_domain,
                'namespaceId',member.namespace_id,
                'role',member.role,'left',json('false'),
                'profileRev',member.profile_rev,
@@ -99,19 +101,24 @@ pub(crate) async fn native_db_get_group_member(
                'resolvedProfileRev',member.resolved_profile_rev,
                'profileName',member.profile_name,
                'profileAvatar',member.profile_avatar,
+               'profileBio',member.profile_bio,
                'user',json(identity.payload_json))
              FROM members member JOIN users identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
-              AND identity.domain=member.member_domain AND identity.source_domain=member.source_domain
+              AND identity.domain=member.member_domain
               AND identity.namespace_id=member.namespace_id
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
-               AND member.member_domain=?4 AND member.source_domain=?5 AND member.namespace_id=?6
+               AND member.member_domain=?4 AND member.namespace_id=?5
                AND member.left_state=0",
-            params![user_id,thread_id,account,domain,source_domain,namespace_id],
-            |row| row.get::<_, String>(0),
-        ).optional().map_err(|e| format!("get group member: {e}"))?;
+                params![user_id, thread_id, account, domain, namespace_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("get group member: {e}"))?;
         value.map(parse_json).transpose()
-    }).await.map_err(|e| format!("join group member read: {e}"))?
+    })
+    .await
+    .map_err(|e| format!("join group member read: {e}"))?
 }
 
 #[tauri::command]
@@ -125,17 +132,17 @@ pub(crate) async fn native_db_query_group_members(
 ) -> Result<Vec<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
-        let mut cursor = after_identity.split('\0');
-        let after_namespace = cursor.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
-        let after_source = cursor.next().unwrap_or("");
-        let after_domain = cursor.next().unwrap_or("");
-        let after_account = cursor.next().unwrap_or("");
+        let cursor: Value = serde_json::from_str(&after_identity)
+            .unwrap_or_else(|_| serde_json::json!([0, "", ""]));
+        let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);
+        let after_domain = cursor.get(1).and_then(Value::as_str).unwrap_or("");
+        let after_account = cursor.get(2).and_then(Value::as_str).unwrap_or("");
         let mut statement = conn
             .prepare(
                 "SELECT json_object(
                    'threadId', member.thread_id,
                    'account', member.member_account, 'domain', member.member_domain,
-                   'sourceDomain', member.source_domain, 'namespaceId', member.namespace_id,
+                   'namespaceId', member.namespace_id,
                    'role', member.role,
                    'left', json('false'),
                    'profileRev',member.profile_rev,
@@ -143,24 +150,24 @@ pub(crate) async fn native_db_query_group_members(
                    'resolvedProfileRev',member.resolved_profile_rev,
                    'profileName',member.profile_name,
                    'profileAvatar',member.profile_avatar,
+                   'profileBio',member.profile_bio,
                    'user', json(identity.payload_json)
                  )
                  FROM members member JOIN users identity
                    ON identity.user_id=member.user_id
                   AND identity.account=member.member_account
                   AND identity.domain=member.member_domain
-                  AND identity.source_domain=member.source_domain
                   AND identity.namespace_id=member.namespace_id
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
-                   AND (member.namespace_id,member.source_domain,member.member_domain,member.member_account)>(?3,?4,?5,?6)
-                   AND (?7='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?7))>0
-                                OR instr(lower(member.member_account),lower(?7))>0)
-                 ORDER BY member.namespace_id,member.source_domain,member.member_domain,member.member_account LIMIT ?8",
+                   AND (member.namespace_id,member.member_domain,member.member_account)>(?3,?4,?5)
+                   AND (?6='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?6))>0
+                                OR instr(lower(member.member_account),lower(?6))>0)
+                 ORDER BY member.namespace_id,member.member_domain,member.member_account LIMIT ?7",
             )
             .map_err(|e| format!("prepare group member page: {e}"))?;
         let rows = statement
             .query_map(
-                params![user_id, thread_id, after_namespace, after_source, after_domain, after_account, search, take],
+                params![user_id, thread_id, after_namespace, after_domain, after_account, search, take],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| format!("query group member page: {e}"))?;
@@ -184,7 +191,6 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
     thread_id: i64,
     account: String,
     domain: String,
-    source_domain: String,
     namespace_id: i64,
     profile_rev: i64,
     message_seq: i64,
@@ -192,16 +198,15 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
     tauri::async_runtime::spawn_blocking(move || {
         let changed = open(&app)?
             .execute(
-                "UPDATE members SET profile_rev=?7,profile_message_seq=?8
+                "UPDATE members SET profile_rev=?6,profile_message_seq=?7
                  WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                   AND member_domain=?4
-                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?8",
+                   AND member_domain=?4 AND namespace_id=?5
+                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?7",
                 params![
                     user_id,
                     thread_id,
                     account,
                     domain,
-                    source_domain,
                     namespace_id,
                     profile_rev,
                     message_seq,
@@ -221,29 +226,29 @@ pub(crate) async fn native_db_store_group_member_profile(
     thread_id: i64,
     account: String,
     domain: String,
-    source_domain: String,
     namespace_id: i64,
     profile_rev: i64,
     name: String,
     avatar: String,
+    bio: String,
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let changed = open(&app)?
             .execute(
-                "UPDATE members SET resolved_profile_rev=?7,profile_name=?8,profile_avatar=?9
+                "UPDATE members SET resolved_profile_rev=?6,profile_name=?7,profile_avatar=?8,profile_bio=?9
                  WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                   AND member_domain=?4
-                   AND left_state=0 AND profile_rev=?7",
+                   AND member_domain=?4 AND namespace_id=?5
+                   AND left_state=0 AND profile_rev=?6",
                 params![
                     user_id,
                     thread_id,
                     account,
                     domain,
-                    source_domain,
                     namespace_id,
                     profile_rev,
                     name,
                     avatar,
+                    bio,
                 ],
             )
             .map_err(|e| format!("store group member profile: {e}"))?;
@@ -290,9 +295,8 @@ pub(crate) async fn native_db_put_profile(
                 params![user_id,account,domain,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
             )
         } else {
-            let source = profile.get("sourceServer").and_then(Value::as_str).unwrap_or(domain);
             let record = serde_json::json!({
-                "id": surrogate_id, "account": account, "domain": domain, "sourceDomain": source,
+                "id": surrogate_id, "account": account, "domain": domain,
                 "namespaceId": namespace_id,
                 "name": profile.get("name").cloned().unwrap_or(Value::String(String::new())),
                 "avatar": profile.get("avatar").cloned().unwrap_or(Value::String(String::new())),
@@ -301,13 +305,13 @@ pub(crate) async fn native_db_put_profile(
                 "createdAt": now, "updatedAt": now,
             });
             conn.execute(
-                "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
-                 ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
+                "INSERT INTO users(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
                    surrogate_id=COALESCE(excluded.surrogate_id,users.surrogate_id),
                    payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                  WHERE excluded.profile_rev >= users.profile_rev",
-                params![user_id,account,domain,source,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
+                params![user_id,account,domain,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
             )
         }
             .map_err(|e| format!("put profile: {e}"))?;

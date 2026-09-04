@@ -57,10 +57,11 @@ export class ThreadOptimisticController {
       data: {
         type: 'msg',
         msgId: placeholderId,
-        creator: messageCreatorKey(
-          { account: author.account, domain: 'local', namespaceId: 0 },
-          'local',
-        ),
+        creator: messageCreatorKey({
+          account: author.account,
+          domain: 'local',
+          namespaceId: 0,
+        }),
         isSelf: true,
         isGroupConversation,
         name: author.name,

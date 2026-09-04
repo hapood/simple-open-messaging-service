@@ -1,5 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
-import { FederationHttpScheduler } from './federation-http-scheduler.js';
+import { Logger } from '@nestjs/common';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BusinessCode } from '../common/business-code.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
+import {
+  FederationHttpScheduler,
+  isRetryableFederationNetworkError,
+} from './federation-http-scheduler.js';
 
 function scheduler(global: number, perPeer: number) {
   const instance = new FederationHttpScheduler({} as never);
@@ -9,6 +18,15 @@ function scheduler(global: number, perPeer: number) {
   });
   return instance;
 }
+
+beforeEach(() => {
+  vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('FederationHttpScheduler', () => {
   it('waits at the global and per-peer limits, then releases exactly one waiter', async () => {
@@ -81,5 +99,66 @@ describe('FederationHttpScheduler', () => {
     release();
     const next = await subject.acquire('b.example');
     next();
+  });
+
+  it('retries typed transport failures with exponential scheduling', async () => {
+    vi.useFakeTimers();
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new FederationTransportError('timeout one'))
+      .mockRejectedValueOnce(new FederationTransportError('timeout two'))
+      .mockResolvedValueOnce('ok');
+    const result = scheduler(1, 1).runWithRetry(
+      'peer.test',
+      'group-meta page',
+      operation,
+    );
+
+    await vi.waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(operation).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(result).resolves.toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(3);
+  });
+
+  it('honors retryAfter and returns permanent failures immediately', async () => {
+    vi.useFakeTimers();
+    const temporary = new S2sResponseError(
+      'busy',
+      429,
+      BusinessCode.RATE_LIMITED,
+      { retryAfter: 5 },
+    );
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(temporary)
+      .mockResolvedValueOnce('ok');
+    const result = scheduler(1, 1).runWithRetry(
+      'peer.test',
+      'group-meta page',
+      operation,
+    );
+
+    await vi.waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(operation).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toBe('ok');
+
+    const permanent = new S2sResponseError(
+      'forbidden',
+      403,
+      BusinessCode.FORBIDDEN,
+    );
+    await expect(
+      scheduler(1, 1).runWithRetry('peer.test', 'group-meta page', () =>
+        Promise.reject(permanent),
+      ),
+    ).rejects.toBe(permanent);
+    expect(isRetryableFederationNetworkError(new SyntaxError('bad json'))).toBe(
+      false,
+    );
   });
 });

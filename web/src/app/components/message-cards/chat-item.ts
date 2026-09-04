@@ -77,7 +77,7 @@ interface ChatMessageBase {
   name: string;
   /** Cached sender profile data used by message-card avatars, including offline opens. */
   avatar?: string;
-  /** Full user identity key (`sourceDomain\0domain\0account`) for avatar caching. */
+  /** Full user identity key encoded as `[namespaceId, domain, account]`. */
   avatarIdentityId?: string;
   /** Stable sender account used with avatarDomain for deterministic fallback colors. */
   avatarAccount?: string;

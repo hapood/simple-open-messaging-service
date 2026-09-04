@@ -5,8 +5,8 @@
 This document defines the local consumer design for authorization epochs,
 durable message staging, atomic per-stream page commits, and recoverable
 reverse-history gaps. It does not change the federation wire protocol. Wire
-messages, message and tombstone cursors, State Feed items, and departed-member
-profile queries retain their protocol meanings.
+messages, message and tombstone cursors, State Feed items, and lazy exact-
+message profile references retain their protocol meanings.
 
 The design makes one bounded scheduler batch the atomic commit unit. A logical
 round ends once every message inspected by that batch has a durable Message row
@@ -18,9 +18,17 @@ local content materialization are not synchronization-round dependencies.
 
 ### 2.1 Thread authorization epoch
 
-`MessageThread.authorizationEpoch` is a non-negative integer initialized to
-zero. It belongs to MessageThread rather than Group because both P2P and GROUP
-threads use the same federation round machinery.
+`MessageThread.authorizationEpoch` is the durable generation number of one
+thread's continuous federation-authorization interval. Equal values mean that
+work was admitted within the same uninterrupted interval. A greater value means
+that effective authorization ended after the older work was admitted, even if
+the relationship is active again now. This distinction closes the
+active-inactive-active ABA race that a current authorization check alone cannot
+detect.
+
+The value is a non-negative integer initialized to zero. It belongs to
+MessageThread rather than Group because both P2P and GROUP threads use the same
+federation round machinery.
 
 Every effective `active -> inactive` relationship transition increments the
 epoch in the caller-owned relationship transaction. Repeated inactive writes do
@@ -188,12 +196,32 @@ partially fetched page cannot move its committed endpoint.
 
 ## 4. State Feed application and initialization
 
-State Feed transport remains paginated, but application is item-by-item in
-strictly increasing feedId order. Each item and its inclusive committed cursor
-are committed in one database transaction. After all returned items are
-committed, a cursor-only transaction may advance across compacted or trailing
-holes to the page's `scannedThrough`. The next request passes the inclusive
-committed cursor as `after`; it does not derive the request cursor by adding one.
+State Feed transport remains paginated. A consumer fixes one `through` target
+for the complete synchronization round, both for an ordinary delta drain and a
+cursor-unavailable full rebuild. Application is item-by-item in strictly
+increasing feedId order. Each item and its inclusive processing cursor are
+committed in one database transaction. After all returned items are committed,
+a cursor-only transaction may advance across compacted or trailing holes to the
+page's `scannedThrough`. The next request passes that inclusive cursor as
+`after`; it does not derive the request cursor by adding one.
+
+Item and page transactions write durable facts, local compacted projections,
+and recovery progress but emit no side effect from inside the transaction.
+After each item commits together with its processing cursor, the consumer hands
+that item's wakes and client revision hints to the process-wide schedulers. The
+client notifier coalesces the greatest committed revision for one second per
+local account feed and retains a non-durable, process-lifetime monotonic high
+watermark for each feed; different feeds never share that timer or high
+watermark. The design does not block unsolicited reads of facts committed by an
+incomplete round.
+
+`GROUP_META_FEED_HEAD` supplies a fixed Group Meta sub-round target. The
+consumer runs its HTTP and bounded member-page work outside the State Feed item
+transaction. The item transaction durably creates or merges that work, advances
+its own cursor, and may continue consuming later items immediately. Group Meta
+pages emit no client notification. The task's final transaction advances the
+mirror `feedEndId`, applies completed local projections, and writes compacted
+client heads; only after that commit are their hints published.
 
 RELATIONSHIP_INTENT application invokes the canonical relationship transaction
 and advances the item cursor only when that transaction succeeds.
@@ -217,8 +245,8 @@ FederationThreadSyncState and branches on its stored epoch:
 The transaction then advances the State Feed cursor through the current item.
 
 The synchronization-state key remains `(threadId, peerDomain)`. A missing row is
-created idempotently. The committed transaction is the only source of a thread
-scheduler notification; the notification is emitted after commit.
+created idempotently. Each item commit marks durable dirty work and its
+after-commit handler is the scheduler-notification boundary.
 
 If the relationship is no longer active when the thread row is locked, the item
 is stale. The transaction writes no thread synchronization state or gap
@@ -303,8 +331,6 @@ partial page or failed transaction clears neither.
 A reverse logical round becomes committable when:
 
 - one bounded reverse message batch has completed;
-- the matching departed-member profile query has completed for the same message
-  interval when the thread is a group;
 - the thread authorization epoch still matches.
 
 The final transaction first atomically compare-and-sets MessageThread against

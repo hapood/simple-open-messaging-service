@@ -23,7 +23,7 @@ import {
   accountThreadState,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,

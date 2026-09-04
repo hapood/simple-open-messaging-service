@@ -68,6 +68,17 @@ describe('SseService', () => {
     svc.onModuleDestroy();
   });
 
+  it('reports online state for the exact session rather than the whole user', () => {
+    const svc = makeService();
+    const client = mockRes();
+    svc.register(7, 11, client.res);
+
+    expect(svc.isSessionOnline(7, 11)).toBe(true);
+    expect(svc.isSessionOnline(7, 22)).toBe(false);
+    expect(svc.isSessionOnline(8, 11)).toBe(false);
+    svc.onModuleDestroy();
+  });
+
   it('pushes only the attention revision as the durable-feed wake-up', () => {
     const svc = makeService();
     const client = mockRes();
@@ -97,7 +108,7 @@ describe('SseService', () => {
     expect(a.res.end).toHaveBeenCalled();
     expect(gotForceLogout(b.writes)).toBe(false);
     expect(b.res.end).not.toHaveBeenCalled();
-    expect(svc.isUserOnline(7)).toBe(true); // survivor remains
+    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
     svc.onModuleDestroy();
   });
 
@@ -115,7 +126,7 @@ describe('SseService', () => {
     expect(gotForceLogout(tab1.writes)).toBe(true);
     expect(gotForceLogout(tab2.writes)).toBe(true);
     expect(gotForceLogout(other.writes)).toBe(false);
-    expect(svc.isUserOnline(7)).toBe(true); // the other device survives
+    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
     svc.onModuleDestroy();
   });
 
@@ -127,7 +138,7 @@ describe('SseService', () => {
     svc.onSessionRevoked({ userId: 7, sessionId: 11, reason: 'device_revoke' });
 
     expect(gotForceLogout(a.writes)).toBe(true);
-    expect(svc.isUserOnline(7)).toBe(false);
+    expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
   });
 
   it("onSessionsInvalidated kicks ALL of the user's sessions (broadcast)", () => {
@@ -141,7 +152,7 @@ describe('SseService', () => {
 
     expect(gotForceLogout(a.writes)).toBe(true);
     expect(gotForceLogout(b.writes)).toBe(true);
-    expect(svc.isUserOnline(7)).toBe(false);
+    expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
   });
 
   it('onSessionRevoked is a no-op for an unknown sessionId', () => {
@@ -157,7 +168,7 @@ describe('SseService', () => {
 
     expect(gotForceLogout(a.writes)).toBe(false);
     expect(a.res.end).not.toHaveBeenCalled();
-    expect(svc.isUserOnline(7)).toBe(true);
+    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
     svc.onModuleDestroy();
   });
 });

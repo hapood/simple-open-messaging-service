@@ -14,10 +14,6 @@ import type { SupportedLocale } from '../common/locale.js';
  * (`tag` = replace-in-place vs new; `kind` = template + action set; `actions` = buttons).
  */
 
-/** Stable tag for the single coalesced away-summary notification — posting with this tag REPLACES the
- *  prior one (the universal Web/Android replace-by-tag/id primitive), so the shade holds one entry. */
-export const AWAY_SUMMARY_TAG = 'soms-away';
-
 /** A button on the notification. Maps to Web Push `actions[]` / Android `addAction` (+ `RemoteInput` when
  *  `type:'text'`). `id` is what the client reports back via `POST /notifications/action`. */
 export interface NotifAction {
@@ -33,11 +29,9 @@ export interface NotifAction {
  * `kind` discriminators — select the client's render template + which `actions` apply. Open set; the
  * The message surface ships one per-conversation kind today:
  *  - `'thread-message'`  — one stable notification per conversation.
- *  - `'clear'`           — tells the client to CANCEL the notification with this `tag` (server-driven
- *                          dismiss when nothing is unread+unmuted; replaces the client-side empty-cancel).
  * Future kinds (`'single-message'` with a per-thread reply action, `'friend-request'`, …) extend this union.
  */
-export type NotificationKind = 'thread-message' | 'clear' | (string & {});
+export type NotificationKind = 'thread-message' | (string & {});
 
 export interface NotificationMessage {
   seq: number;
@@ -49,20 +43,17 @@ export interface NotificationMessage {
 
 /** One fully self-describing notification surface. The client renders it with zero composition logic. */
 export interface NotificationDescriptor {
-  /** Stable id; posting same tag REPLACES (coalesce). {@link AWAY_SUMMARY_TAG} for the summary; unique for
-   *  a one-off. This is THE primitive for "replace old popup" (same tag) vs "pop new popup" (unique tag). */
+  /** Stable id; posting the same per-thread tag replaces that conversation's prior notification. */
   tag: string;
   /** Template/action discriminator — see {@link NotificationKind}. */
   kind: NotificationKind;
   /** Server-localized title. */
   title: string;
-  /** Server-localized body. For an "all"-grouped summary: the folded "X, Y sent you N messages". For a
-   *  "thread"-grouped descriptor (one per conversation): "X sent you N messages" (same template, single
-   *  sender). Empty for a `clear` descriptor. */
+  /** Server-localized body for one conversation, such as "X sent you N messages". */
   body: string;
   /** Number of new messages represented by this notification, measured from the client's frozen foreground
    *  HWM (or its later per-thread dismiss HWM). Android feeds this directly to `Notification.setNumber`, so
-   *  the launcher badge and notification copy share one server-authored count. `clear` always carries 0. */
+   *  the launcher badge and notification copy share one server-authored count. */
   count: number;
   /** The locale the copy was rendered in (echoes the negotiated Accept-Language). */
   lang: SupportedLocale;
@@ -79,8 +70,6 @@ export interface NotificationDescriptor {
   /** Present only in message-preview mode. Private mode deliberately omits this field. */
   messages?: NotificationMessage[];
   previewMode?: 'message' | 'private';
-  /** Routing payload, opaque to the server. The away-summary carries none today — its `dismiss` button is a
-   *  pure frontend op (closes the shade, no backend round-trip, no read-watermark change). A future
-   *  `single-message` kind would carry one `threadId` + `seq` to identify its message (e.g. for a reply). */
+  /** Routing payload. Message descriptors carry `threadId` + `seq`. */
   data: { threadId?: number; seq?: number; [k: string]: unknown };
 }

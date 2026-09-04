@@ -50,6 +50,7 @@ export class AwayNotificationService {
           ),
         )
         .orderBy(asc(clientStateFeed.feedId));
+      if (rows.length === 0) return { notifications: [], stateFeedEndId: end };
       const threadIds = rows
         .map((row) => (row.body as { threadId?: unknown }).threadId)
         .filter((threadId): threadId is number =>

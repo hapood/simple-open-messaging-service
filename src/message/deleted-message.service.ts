@@ -226,12 +226,6 @@ export class DeletedMessageService {
         );
       }
 
-      const threadHead = await tx.query.messageThread.findFirst({
-        where: eq(messageThread.id, threadId),
-        columns: { lastMessageSeq: true },
-      });
-      const clearsPreview = threadHead?.lastMessageSeq === seq;
-
       const now = new Date();
       await tx
         .update(message)
@@ -262,7 +256,6 @@ export class DeletedMessageService {
         tx,
         threadId,
         deletion.deletionSeq,
-        clearsPreview ? { clearPreviewMessageSeq: seq } : undefined,
       );
 
       return {
@@ -547,15 +540,6 @@ export class DeletedMessageService {
       localDeletionSeq = localDeletion.created
         ? localDeletion.deletionSeq
         : null;
-      const clearsPreview =
-        localDeletion.created &&
-        params.type === MessageDeleteType.USER_RETRACTION &&
-        (
-          await tx.query.messageThread.findFirst({
-            where: eq(messageThread.id, params.threadId),
-            columns: { lastMessageSeq: true },
-          })
-        )?.lastMessageSeq === target.seq;
       if (localDeletion.created) {
         systemMessage = (
           await this.messages.writeSystemMessageInTx(
@@ -585,7 +569,6 @@ export class DeletedMessageService {
           tx,
           params.threadId,
           localDeletion.deletionSeq,
-          clearsPreview ? { clearPreviewMessageSeq: target.seq } : undefined,
         );
       }
       await tx

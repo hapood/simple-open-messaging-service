@@ -73,6 +73,13 @@ export class SseService implements OnModuleDestroy {
     void this.sendHello(userId, entry);
   }
 
+  /** Whether this exact authenticated device session currently owns a live SSE connection. */
+  isSessionOnline(userId: number, sessionId: number): boolean {
+    return !!this.clients[userId]?.some(
+      (client) => client.sessionId === sessionId,
+    );
+  }
+
   /** Push the HELLO handshake to one connection (the just-registered one). Best-effort: a racing close or a
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
@@ -115,16 +122,6 @@ export class SseService implements OnModuleDestroy {
       // establishes, and the client's HELLO-timeout will force a reconnect that re-pushes HELLO.
       this.logger.error(`HELLO handshake failed for user ${userId}`, e);
     }
-  }
-
-  /** True iff the user currently has ≥1 live SSE connection. Used by PushService to skip FCM
-   *  dispatch for already-online recipients (no double-delivery, no wasted battery) — the inverse of
-   *  the fan-out loop in onNewMessage. Constant-time lookup; safe per-recipient in the send hot path.
-   *  The 25s heartbeat bounds the only inaccuracy: a half-open connection reads "online" until the next
-   *  failed ping, so FCM is skipped for at most one heartbeat after a real drop — self-correcting. */
-  isUserOnline(userId: number): boolean {
-    const list = this.clients[userId];
-    return !!list && list.length > 0;
   }
 
   /**
@@ -181,42 +178,9 @@ export class SseService implements OnModuleDestroy {
     if (list.length === 0) delete this.clients[userId];
   }
 
-  /** New message: identity-only signal `{ threadId, seq, ts }` — the body is PULLED by the client (single
-   *  data source; the realtime stream is a trigger, never a body carrier). No Last-Event-ID cursor: a
-   *  transient drop or an offline gap is reconciled by the per-user catch-up feed on reconnect, not by SSE
-   *  replay, so no message-cursor `id` is emitted. */
-  onNewMessage(
-    userId: number,
-    threadId: number,
-    seq: number,
-    ts: number,
-    stateFeedId: number,
-  ) {
-    this.pushToUser(userId, 'NEW_MESSAGE', {
-      threadId,
-      seq,
-      ts,
-      stateFeedId,
-    });
-  }
-
-  /** Hint only: the client pulls the durable log using its thread-level deletion HWM. */
-  onDeletedMessageUpdated(
-    userId: number,
-    threadId: number,
-    deletionSeq: number,
-    stateFeedId: number,
-  ) {
-    this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', {
-      threadId,
-      deletionSeq,
-      stateFeedId,
-    });
-  }
-
   /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /
-   *  missed. This is NOT identity-only (unlike NEW_MESSAGE): a call is ephemeral coordination, not
-   *  persisted content the client pulls, so the descriptor rides INLINE. The addressed user's online
+   *  missed. A call is ephemeral coordination rather than persisted content, so its descriptor rides
+   *  inline. The addressed user's online
    *  connections all receive it; the caller (CallsService) emits one frame per user. No message-cursor
    *  id (a call event is not a resumable history cursor). */
   onCallEvent(userId: number, data: unknown) {
@@ -248,7 +212,10 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
 
-  onProfileResolved(userId: number, data: { requestId: string; profile: unknown }) {
+  onProfileResolved(
+    userId: number,
+    data: { requestId: string; profile: unknown },
+  ) {
     this.pushToUser(userId, 'PROFILE_RESOLVED', data);
   }
 

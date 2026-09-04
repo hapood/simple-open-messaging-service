@@ -66,7 +66,6 @@ function harness() {
   };
   const federation = {
     listTrustedPeerDomains: vi.fn().mockResolvedValue([]),
-    pushDiscoveryHwm: vi.fn().mockResolvedValue(undefined),
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
@@ -275,6 +274,38 @@ describe('FederationThreadRoundSchedulerService', () => {
 
     await scheduler.wake(1, 'a.test', 'reverse');
     await vi.waitFor(() => expect(reverse.run).toHaveBeenCalledTimes(2));
+    await scheduler.onModuleDestroy();
+  });
+
+  it('continues a captured namespace across scheduler quanta', async () => {
+    const { scheduler, states, forward, databaseState } = harness();
+    databaseState.ownerDomain = 'b.test';
+    states.require
+      .mockResolvedValueOnce({
+        historyBoundaryReached: true,
+        messageTargetSeq: 10,
+        deletionTargetSeq: 0,
+        messageProcessedThroughSeq: 9,
+        deletionProcessedThroughSeq: 0,
+      })
+      .mockResolvedValue({
+        historyBoundaryReached: true,
+        messageTargetSeq: 10,
+        deletionTargetSeq: 0,
+        messageProcessedThroughSeq: 10,
+        deletionProcessedThroughSeq: 0,
+      });
+
+    scheduler.onWake({
+      threadId: 1,
+      peerDomain: 'a.test',
+      namespaceId: 7,
+      direction: 'forward',
+    });
+
+    await vi.waitFor(() =>
+      expect(forward.runMessages).toHaveBeenCalledTimes(2),
+    );
     await scheduler.onModuleDestroy();
   });
 
@@ -519,29 +550,6 @@ describe('FederationThreadRoundSchedulerService', () => {
       expect(reverse.run).toHaveBeenCalledOnce();
     });
     await scheduler.onModuleDestroy();
-  });
-
-  it('pushes every trusted peer after restart and coalesces to once per second', async () => {
-    vi.useFakeTimers();
-    try {
-      const { scheduler, federation } = harness();
-      federation.listTrustedPeerDomains.mockResolvedValue(['a.test']);
-
-      await scheduler.onApplicationBootstrap();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(federation.pushDiscoveryHwm).toHaveBeenCalledTimes(1);
-      expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n);
-
-      scheduler.onStateFeedPush({ peerDomain: 'a.test' });
-      scheduler.onStateFeedPush({ peerDomain: 'a.test' });
-      await vi.advanceTimersByTimeAsync(999);
-      expect(federation.pushDiscoveryHwm).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(federation.pushDiscoveryHwm).toHaveBeenCalledTimes(2);
-      await scheduler.onModuleDestroy();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it('single-flights a peer state drain and follows with the greatest dirty target', async () => {

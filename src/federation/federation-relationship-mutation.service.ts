@@ -15,6 +15,7 @@ import {
 } from '../relationship/relationship.service.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { upsertSourceUserInTx } from '../user/source-user.js';
+import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
@@ -97,6 +98,13 @@ export class FederationRelationshipMutationService {
     });
     if (!group || !member || member.domain !== 'local')
       throw new Error('group join identities are invalid');
+    if (group.domain !== 'local')
+      await this.stateFeed.lockTargetsInTx(tx, [
+        {
+          peerDomain: group.domain,
+          namespaceId: group.namespaceId!,
+        },
+      ]);
     const projectedGroup = applyFederatedPendingProfileSnapshot(
       { name: group.name, avatar: group.avatar },
       groupSnapshot,
@@ -120,6 +128,10 @@ export class FederationRelationshipMutationService {
         ...(!publishGroupState ? { updateCanonicalRoster: false } : {}),
       },
     );
+    const clientRequestedAt =
+      membership.request.status === 'REVOKED'
+        ? null
+        : membership.request.requestedAt;
     if (group.domain === 'local' && membership.changed)
       await this.writeGroupRequestEffectsInTx(
         tx,
@@ -149,7 +161,7 @@ export class FederationRelationshipMutationService {
           body: {
             status: membership.request.status,
             note: membership.request.note,
-            requestedAt: membership.request.requestedAt,
+            requestedAt: clientRequestedAt,
             expiresAt: membership.request.expiresAt,
             direction: 'OUTGOING',
             threadId,
@@ -186,11 +198,7 @@ export class FederationRelationshipMutationService {
         expiresAt: membership.request.expiresAt,
       },
     };
-    if (
-      clientFeedUpdates &&
-      membership.changed &&
-      membership.request.status === 'REQUESTED'
-    ) {
+    if (clientFeedUpdates && membership.changed) {
       const endpoints = groupIntentEndpoints(
         group.account,
         member.account,
@@ -205,9 +213,9 @@ export class FederationRelationshipMutationService {
         subjectAccount: endpoints.subjectAccount,
         subjectDomain: group.domain,
         body: {
-          status: 'REQUESTED',
+          status: membership.request.status,
           note: membership.request.note,
-          requestedAt: membership.request.requestedAt,
+          requestedAt: clientRequestedAt,
           expiresAt: membership.request.expiresAt,
           direction: 'OUTGOING',
           threadId,
@@ -275,6 +283,13 @@ export class FederationRelationshipMutationService {
       columns: { account: true, domain: true, namespaceId: true },
     });
     if (!member) throw new Error('group invite identity is invalid');
+    if (member.domain !== 'local')
+      await this.stateFeed.lockTargetsInTx(tx, [
+        {
+          peerDomain: member.domain,
+          namespaceId: member.namespaceId!,
+        },
+      ]);
     const membership = await this.groupRelationships.writeAuthoredIntentInTx(
       tx,
       {
@@ -393,6 +408,10 @@ export class FederationRelationshipMutationService {
       columns: { account: true },
     });
     if (!remote || !local) throw new Error('invalid federated friend intent');
+    await this.relationshipIntents.lockPairInTx(tx, localUserId, peerUserId);
+    await this.stateFeed.lockTargetsInTx(tx, [
+      { peerDomain: remote.domain, namespaceId: remote.namespaceId! },
+    ]);
     clientFeedUpdates.push(
       ...(await this.relationships.writeLocalP2PIntentInTx(
         tx,
@@ -460,12 +479,20 @@ export class FederationRelationshipMutationService {
     if (!local) throw new Error('invalid local friend requester');
     if (remote.domain === this.config.domain)
       throw new Error('addressed federated request targets the local domain');
+    await lockBusinessAccountsInTx(tx, [
+      { account: local.account, domain: 'local' },
+      { account: normalizeAccount(remote.account), domain: remote.domain },
+    ]);
     const remoteUserId = await this.materializeFederatedUserInTx(
       tx,
       remote.account,
       remote.domain,
       remote.namespaceId,
     );
+    await this.relationshipIntents.lockPairInTx(tx, localUserId, remoteUserId);
+    await this.stateFeed.lockTargetsInTx(tx, [
+      { peerDomain: remote.domain, namespaceId: remote.namespaceId },
+    ]);
     clientFeedUpdates.push(
       ...(await this.relationships.writeLocalP2PIntentInTx(
         tx,

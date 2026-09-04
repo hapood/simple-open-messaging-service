@@ -554,31 +554,36 @@ export interface DashboardSummary {
   media: {
     bytes: string;
     assetCount: number;
-    ready: number;
-    pending: number;
-    reclaimable: number;
+    live: number;
+    deleted: number;
   };
   recentActions: DashboardAction[];
 }
 
-// ── Domain command history (POST /admin/domain-commands) ─────────────────────
-export type DomainCommandStatus =
+// ── Durable task history (POST /admin/durable-tasks) ────────────────────────
+export type DurableTaskKind = 'MUTATION' | 'PROJECTION';
+export type DurableTaskStatus =
   | 'PENDING'
   | 'PROCESSING'
+  | 'ASYNC_PROCESSING'
   | 'SUCCEEDED'
   | 'REJECTED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'SUPERSEDED';
 
-export interface DomainCommandEntry {
+export interface DurableTaskEntry {
   id: string;
-  parentCommandId: string | null;
-  aggregateType: 'USER_PAIR' | 'GROUP';
-  aggregateKey: string;
-  commandType: string;
+  parentTaskId: string | null;
+  kind: DurableTaskKind;
+  scopeType: 'USER_PAIR' | 'GROUP';
+  scopeKey: string;
+  taskType: string;
   actorUserId: number | null;
   payload: Record<string, unknown>;
-  progressCursor: number | null;
-  status: DomainCommandStatus;
+  checkpoint: Record<string, unknown>;
+  coalescingKey: string | null;
+  supersededByTaskId: string | null;
+  status: DurableTaskStatus;
   resultCode: number | null;
   lastError: string | null;
   createdAt: number;
@@ -586,32 +591,21 @@ export interface DomainCommandEntry {
   completedAt: number | null;
 }
 
-export interface DomainCommandListResult {
-  list: DomainCommandEntry[];
+export interface DurableTaskListResult {
+  list: DurableTaskEntry[];
   total: number;
 }
 
 // ── Media storage (POST /admin/media/stats) ──────────────────────────────────
 // BigInt byte sums are serialized to strings by the global interceptor.
-export interface MediaExtBucket {
-  ext: string;
-  files: number;
-  bytes: string;
-}
-
 export interface MediaStats {
   db: {
     bytes: string;
     assetCount: number;
-    ready: number;
-    pending: number;
-    deleting: number;
+    live: number;
     deleted: number;
-    stalePending: number;
-    staleDeleting: number;
-    reclaimable: number;
   };
-  onDisk: { files: number; bytes: string; byExt: MediaExtBucket[] };
+  onDisk: { files: number; bytes: string };
 }
 
 // ── Admin self-management (POST /admin/admins*) ──────────────────────────────
@@ -642,7 +636,7 @@ export interface GroupRow {
   originDomain: string | null;
   fedGroupAccount: string | null;
   group: { account: string; name: string } | null;
-  _count: { ThreadMember: number };
+  memberCount: number;
 }
 
 export interface GroupListResult {

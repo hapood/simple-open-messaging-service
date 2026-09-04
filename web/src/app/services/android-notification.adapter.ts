@@ -6,8 +6,8 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * alongside `SomsFcm` / `SomsShell` / `SomsBack`). This adapter forwards the WHOLE server-authored
  * descriptor as JSON to Kotlin (`SomsNotify.showDescriptor(json)`), which renders it natively
  * (`BigTextStyle(body)` + `setLargeIcon(icon bitmap)` + `setOnlyAlertOnce(!renotify)` + per-action
- * `addAction`). The native layer owns the replace-by-id (`tag` → `AWAY_NOTIF_ID` for the away-summary) and
- * the `kind:'clear'` cancel.
+ * `addAction`). The native layer maps each stable per-thread tag to a stable Android notification ID, so a
+ * newer descriptor replaces that thread's prior notification.
  *
  * Per the native-bridge rule, this adapter runs only on Android, so `window.SomsNotify` is guaranteed
  * present — call with `!`, never `?`.

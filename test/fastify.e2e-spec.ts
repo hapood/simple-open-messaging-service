@@ -157,7 +157,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // Second local user for the per-object media-authz tests (the non-member).
     token2 = (await seedUserWithSession(app, 'fastify2', { name: 'Fastify2' }))
       .token;
-    // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
+    // A sharp-valid PNG for the avatar endpoint (avatar validation decodes it; the hand-written
     // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).
     avatarPng = await makePng(200);
     // A DISTINCT PNG for the authz test so its CAS digest is not pre-authorized by the earlier
@@ -552,7 +552,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .attach('file', avatarPng, 'av.png');
     expect(up.body.code).toBe(0);
     expect(up.body.data.avatar).toMatch(
-      /^\/uploads\/avatars\/.+-(?:32|64|128|256|512)\.webp$/,
+      /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/,
     );
     const avatarUrl: string = up.body.data.avatar;
     // Avatars live outside shards/, so the per-object gate never applies — any authed user reads them

@@ -14,10 +14,10 @@ import {
   federatedPeer,
   group,
   identityNamespace,
+  profileVersion,
   relationshipIntent,
   relationshipPair,
-  threadMember,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../src/database/schema';
 import type { Database } from '../src/database/database.service';
@@ -108,17 +108,11 @@ export async function findGroupRelationship(
       eq(relationshipPair.endpointAType, 'GROUP'),
       eq(relationshipPair.endpointAAccount, groupIdentity.account),
       eq(relationshipPair.endpointADomain, groupIdentity.domain),
-      eq(
-        relationshipPair.endpointANamespaceId,
-        relationshipNamespaceId,
-      ),
+      eq(relationshipPair.endpointANamespaceId, relationshipNamespaceId),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, memberIdentity.account),
       eq(relationshipPair.endpointBDomain, memberIdentity.domain),
-      eq(
-        relationshipPair.endpointBNamespaceId,
-        relationshipNamespaceId,
-      ),
+      eq(relationshipPair.endpointBNamespaceId, relationshipNamespaceId),
     ),
   });
   return { pair, groupSide: 'A' as const, memberSide: 'B' as const };
@@ -147,27 +141,21 @@ export async function findP2PRelationship(
     first.namespaceId,
     second.namespaceId,
   ]);
-  const endpoints = [first, second].sort((left, right) =>
-    `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
-      `USER\u0000${right.domain}\u0000${right.account}`,
-    ),
+  const endpoints = [first, second].sort(
+    (left, right) =>
+      left.domain.localeCompare(right.domain) ||
+      left.account.localeCompare(right.account),
   );
   const pair = await database.query.relationshipPair.findFirst({
     where: and(
       eq(relationshipPair.endpointAType, 'USER'),
       eq(relationshipPair.endpointAAccount, endpoints[0].account),
       eq(relationshipPair.endpointADomain, endpoints[0].domain),
-      eq(
-        relationshipPair.endpointANamespaceId,
-        relationshipNamespaceId,
-      ),
+      eq(relationshipPair.endpointANamespaceId, relationshipNamespaceId),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, endpoints[1].account),
       eq(relationshipPair.endpointBDomain, endpoints[1].domain),
-      eq(
-        relationshipPair.endpointBNamespaceId,
-        relationshipNamespaceId,
-      ),
+      eq(relationshipPair.endpointBNamespaceId, relationshipNamespaceId),
     ),
   });
   return {
@@ -211,10 +199,10 @@ export async function seedAcceptedRelationship(
         .insert(accountTable)
         .values(localAccountIds)
         .onConflictDoNothing({ target: accountTable.id });
-    const endpoints = [first, second].sort((left, right) =>
-      `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
-        `USER\u0000${right.domain}\u0000${right.account}`,
-      ),
+    const endpoints = [first, second].sort(
+      (left, right) =>
+        left.domain.localeCompare(right.domain) ||
+        left.account.localeCompare(right.account),
     );
     const [pair] = await tx
       .insert(relationshipPair)
@@ -274,30 +262,16 @@ export async function seedAcceptedRelationship(
           updatedAt,
         },
       });
-    const members = await tx
-      .insert(threadMember)
-      .values([
-        { threadId, userId: firstUserId },
-        { threadId, userId: secondUserId },
-      ])
-      .onConflictDoUpdate({
-        target: [threadMember.threadId, threadMember.userId],
-        set: { left: false, updatedAt },
-      })
-      .returning({ id: threadMember.id, userId: threadMember.userId });
-    const localIds = new Set(localAccountIds.map((row) => row.id));
-    const participantRows = members
-      .filter((member) => localIds.has(member.userId))
-      .map((member) => ({
-        accountId: member.userId,
-        threadId,
-      }));
+    const participantRows = localAccountIds.map((localAccount) => ({
+      accountId: localAccount.id,
+      threadId,
+    }));
     if (participantRows.length > 0)
       await tx
-        .insert(threadParticipant)
+        .insert(accountThreadState)
         .values(participantRows)
         .onConflictDoNothing({
-          target: [threadParticipant.accountId, threadParticipant.threadId],
+          target: [accountThreadState.accountId, accountThreadState.threadId],
         });
   });
 }
@@ -321,8 +295,8 @@ export async function seedUser(
       .values({
         account,
         domain: 'local',
-        sourceDomain: 'local',
         name: opts.name ?? account,
+        defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: user.id, account: user.account });
@@ -330,6 +304,13 @@ export async function seedUser(
       id: created.id,
       hashPwd: passwordHash,
       mustChangePassword: false,
+    });
+    await tx.insert(profileVersion).values({
+      userId: created.id,
+      profileRev: 1,
+      displayName: opts.name ?? account,
+      avatar: '',
+      bio: '',
     });
     return created;
   });

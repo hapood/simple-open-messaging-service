@@ -153,7 +153,7 @@ describe('ClientStateFeedService', () => {
     expect(query).not.toContain('ClientGroupMetaMemberFeed');
   });
 
-  it('publishes the shared Group Meta head to each current local audience', async () => {
+  it('publishes the shared Group Meta head to each active local account state', async () => {
     const service = new ClientStateFeedService(
       undefined as never,
       undefined as never,
@@ -183,7 +183,7 @@ describe('ClientStateFeedService', () => {
     };
 
     await expect(
-      service.publishGroupStateToLocalAudiencesInTx(tx as never, 11),
+      service.publishGroupStateToLocalAccountsInTx(tx as never, 11),
     ).resolves.toEqual([
       { userId: 7, feedId: 9 },
       { userId: 7, feedId: 9 },

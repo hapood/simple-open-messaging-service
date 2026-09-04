@@ -187,7 +187,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(storedMessage).toBeDefined();
       expect(JSON.parse(storedMessage.content)).toEqual({ text: 'first!' });
       expect(Number(storedMessage.seq)).toBeGreaterThanOrEqual(0);
-      expect(storedMessage.originSeq).toBeNull();
+      expect(storedMessage.originSeq).toBe(storedMessage.seq);
       const head = await database.db.query.clientStateFeed.findFirst({
         where: and(
           eq(clientStateFeed.userId, bob.id),

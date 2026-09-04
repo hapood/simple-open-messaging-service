@@ -20,7 +20,7 @@ JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artif
 
 - **Server**: a protocol participant that implements Federation v1 and sends or receives S2S requests.
 - **Server domain**: the server's stable federation identity, represented by a normalized `Domain`. A host, port, or IP obtained through DNS or SRV determines only where to connect and is not the server domain.
-- **Peer**: a remote server with which the local server is establishing or has established bidirectional recognition.
+- **Peer**: a remote server whose identity the local server is validating or has pinned and locally recognized. Recognition-direction confirmation and current availability are separate facts.
 - **Origin**: the sole authority for a group's identity, roster, and accepted timeline, including terminal deletion facts. A member from a third-party domain remains the message author, but its home server submits only to the origin; only the origin publishes accepted facts to group mirrors.
 - **Mirror**: a group copy held by a non-origin server. A mirror consumes authoritative group state, messages, and deletions only from the origin and MUST NOT republish received group facts to a third peer.
 - **Submission**: a member-authored message published by its home server to the group origin. A submission is not an authoritative fact for group mirrors; the origin MUST validate and durably accept it before authoritative distribution. Author-enacted deletion is instead a `USER_RETRACTION` tombstone fact published through the tombstone feed.
@@ -76,7 +76,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope    |
 | `POST` | `/s2s/v1/call`                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/users/:account`            | recognized signed      | path account              | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/accounts/:account`         | recognized signed      | path account              | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/media/:digest`             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                |
 | `GET`  | `/s2s/v1/forward-bundles/:bundleId` | recognized signed      | path bundle ID            | `200`       | success data envelope    |
 
@@ -88,9 +88,9 @@ All four signed contexts use the same HTTP Message Signature profile but have di
   then makes the directional recognition fact durably recoverable as one
   externally indivisible commit. The protocol does not prescribe a database
   transaction. One request MUST NOT be interpreted as bidirectional recognition.
-- **status signed** applies only to `health`. The receiver attempts validation using only an existing pinned/recognition identity. A recognized but not-yet-converged peer MAY receive `degraded`. Unknown, unrecognized, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
+- **status signed** applies only to `health`. The receiver attempts validation using only an existing pinned, locally recognized identity and prepared receive path. Such a peer MAY receive `available` or `degraded`; either result is the receiver's recognition assertion, which the requester MUST accept as inbound recognition confirmation. A successfully authenticated query also refreshes reachability. Unknown, unrecognized, unprepared, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
 - **lightweight signed** applies only to `feed-heads`. Before returning Recognize `OK` to a signer, the receiver MUST atomically open this directional gate. The signer MAY send this operation only after receiving `OK`. This context does not require full `available` state and cannot authorize another data-plane operation.
-- **recognized signed** requires a pinned root, complete bidirectional recognition facts, a currently valid signing-key certificate, and the operation's own business authorization. A receiver MUST NOT reject a request merely because its cached availability view is `degraded`. A successfully validated and processed request/response round trip MAY clear transport-only degradation as defined by recognition.md. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
+- **recognized signed** requires a pinned and locally recognized peer, a prepared receive path, the requester's recognition notification, a currently valid signing-key certificate, compatible version and policy state, and the operation's own business authorization. The sender separately requires confirmation that its Recognize was delivered and that the peer recognizes it, with positive Health serving as one valid source of the latter fact. A receiver MUST NOT reject a request merely because its cached availability view is `degraded` or because its redundant reverse notification has not received `OK`. Signature authentication occurs before recognition and business authorization, so every successfully authenticated request refreshes reachability even when later validation rejects that operation. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
 
 A hard gate MUST preserve the specific wire result that caused `halted` and MUST NOT collapse it into a generic “untrusted” error. A policy block uses `FEDERATION_PEER_BLOCKED`, an identity contradiction uses the appropriate identity error, and version incompatibility uses `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. These causes share a lifecycle that stops automatic communication but retain distinct reasons and security meaning.
 
@@ -101,14 +101,14 @@ A path absent from this complete surface is not part of Federation v1. [Peer Rec
 The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `available`, `degraded`, or `halted`. It is distinct from the privacy projection `available | degraded | unavailable` returned by Health:
 
 - `unrecognized` means there is no usable pinned/recognition identity.
-- `establishing` means the root is pinned but bidirectional Recognize or service-readiness facts have not converged. An initiator MUST enter this state before sending its first Recognize HTTP request.
-- `available` means bidirectional recognition, service readiness, and reachability have all converged.
-- `degraded` means bidirectional recognition is established but current reachability has a retryable failure.
+- `establishing` means identity validation, pinning, policy admission, or receive-path preparation is in progress but has not committed. It is not the durable state of a node ready to send Recognize.
+- `available` means the peer is pinned and locally recognized, the receive path is prepared, and current authenticated reachability evidence exists without unresolved transport degradation.
+- `degraded` means the peer is pinned and locally recognized and the receive path is prepared, but current reachability is absent or has a retryable failure.
 - `halted` is the uniform, non-automatically-recoverable state after a verifiable hard failure. The specific HTTP error or local security cause is retained separately for administrator action.
 
-`available` and `degraded` are local availability and scheduling information and do not independently authorize an ordinary operation. An operation gate MUST be calculated from pinned identity, directional confirmation facts, version, policy, and business authorization. recognition.md defines the complete states and transitions.
+`available` and `degraded` are local availability and scheduling information. A positive Health result additionally carries the explicit recognition assertion defined in recognition.md. Ordinary-operation gates MUST be calculated from pinned identity, local recognition and receive readiness, the directionally applicable recognition evidence, version, policy, and business authorization; the lifecycle label alone is insufficient.
 
-Before returning Recognize `OK`, a receiver MUST atomically open its directional receive gate for `feed-heads`. A server sending reverse Recognize MUST complete local service preparation before sending the HTTP request so that the peer's later Health query returns at least `degraded`, rather than `unavailable`. recognition.md defines the exact commit boundaries and race timing.
+Before returning Recognize `OK`, a receiver MUST atomically prepare its directional receive path, including the `feed-heads` gate, and durably retain required reverse-Recognize work. Before sending any Recognize, a server MUST likewise pin and locally recognize the peer and prepare its receive path, so its lifecycle is at least `degraded`; previously established reachability MAY leave it `available`. recognition.md defines the exact commit boundaries and race timing.
 
 ## 4. Well-known discovery and keys
 
@@ -166,9 +166,13 @@ interface InlineProfileAvatar {
 non-empty image of at most 786,432 bytes. `digest` MUST equal the SHA-256 of the
 decoded bytes, and `mimeType` MUST be a non-empty media type matching the
 decoded image. `width` and `height` MUST equal the decoded image's actual pixel
-dimensions, and `width * height` MUST NOT exceed 16,000,000. A consumer MUST
-verify the decoded bytes, digest, media type, and dimensions; declared metadata
-is not trusted allocation metadata. Unknown fields are forbidden.
+dimensions, and each MUST NOT exceed 512. A conforming implementation MUST
+reject an avatar that exceeds either the encoded-byte or dimension limit. It
+MUST preserve accepted avatar bytes exactly; resizing, re-encoding, and
+multi-size derivative generation are forbidden at the federation boundary. A
+consumer MUST verify the decoded bytes, digest, media type, and dimensions;
+declared metadata is not trusted allocation metadata. Unknown fields are
+forbidden.
 
 v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOMFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
 
@@ -278,7 +282,7 @@ The required closure is:
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `state-feed`                          | Publishes relationship facts with exact profile references, group-meta heads, and thread-content heads; it publishes no profile display data. |
 | `group-meta`                          | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.             |
-| `/profiles/:account`                  | Requires `rev` and returns only that exact allocated immutable profile revision when current policy permits it.                               |
+| `/profiles/:account`                  | Requires `rev`; an effective intent grants its opposite endpoint's peer the author's exact referenced revision, while any additional disclosure remains local policy. |
 | `/group-member-profile`               | The group origin returns only the exact complete profile referenced by a current canonical Group Meta member to a currently authorized peer.  |
 | `/message-author-profile`             | Returns only the complete profile version referenced by an exact message currently authorized and serviceable to the signer.                  |
 | `/messages` and `/message-tombstones` | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority. |
@@ -468,7 +472,7 @@ Media content carries only explicit digests, not publisher display or download U
 
 This section defines the security baseline that Recognize and subsequent identity continuity MUST NOT cross. [Federation v1 Peer Recognition](./recognition.md) defines the empty Recognize body, bidirectional confirmation, failure retries, privacy-safe Health status, and atomic transitions.
 
-The first bidirectional Recognize separately confirms “A recognizes B” and “B recognizes A” and pins both root public keys. It does not exchange cursors or initialize business mirrors. The root identity is the long-lived continuity anchor; a signing key is only a request-signing key authorized by that root and rotatable online under Section 4. Ordinary transport degradation MUST preserve identity pins, bidirectional confirmation facts, and synchronization state. It MUST NOT automatically repeat recognition or rewrite the initial confirmation time.
+Initial recognition separately establishes “A recognizes B” and “B recognizes A” and pins both root public keys. Recognize carries an active notification; positive Health is an equivalent responder recognition assertion. Neither operation exchanges cursors or initializes business mirrors. The root identity is the long-lived continuity anchor; a signing key is only a request-signing key authorized by that root and rotatable online under Section 4. Ordinary transport degradation MUST preserve identity pins, recognition facts, and synchronization state. It MUST NOT automatically repeat recognition or rewrite the initial confirmation time.
 
 Any contradiction with a pinned root identity MUST retain the old pin, record the reason, and atomically enter fail-closed `halted`. The current domain controller, a signing key not authorized by the pinned root, deletion of a peer row, or ordinary rediscovery cannot inherit old authorization.
 

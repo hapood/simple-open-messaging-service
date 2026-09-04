@@ -32,8 +32,8 @@ import {
 } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { pushToken, user } from '../database/schema.js';
-import { SseService } from '../gateway/sse.service.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { SseService } from '../gateway/sse.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -54,14 +54,23 @@ type FcmProbeEntry = FcmProbeStatus & {
   sending?: boolean;
 };
 
+type SessionBoundPushToken = {
+  userId: number;
+  sessionId: number;
+  session: {
+    userId: number;
+    expiresAt: Date;
+    revokedAt: Date | null;
+  };
+};
+
 /**
  * Multi-platform push delivery — the wake-up channel that complements SSE.
  *
- * Design (see plans/virtual-forging-fairy.md): on every NEW_MESSAGE the server fans out an SSE signal
- * to online recipients; PushService fans out a wake-up to OFFLINE recipients only (skip-when-online).
- * The payload is the SAME data-only signal regardless of transport — the client's pull pipeline is
- * already idempotent at three layers, so a duplicate SSE+push pull collapses silently, and a duplicate
- * across transports (FCM + Web Push) collapses too.
+ * Every committed message wakes connected clients through their durable State Feed. PushService separately
+ * sends the `NEW_MESSAGE` data-only payload to registered target sessions that do not currently own a live
+ * SSE connection. An online session takes over notification aggregation from its State Feed; other devices
+ * remain independently eligible. Duplicate wake delivery is harmless because the pull pipeline is idempotent.
  *
  * Two transports, branched by `PushToken.platform`:
  *  - ANDROID / IOS → firebase-admin `sendEach` (data-only, high priority).
@@ -116,12 +125,17 @@ export class PushService {
    *  and bumps lastSeenAt on every re-register (token rotation, app upgrade, periodic heartbeat). For
    *  WEB the subscription's p256dh + auth keys are stored alongside (the server must encrypt the Web
    *  Push payload to these keys before sending). */
-  async registerToken(userId: number, dto: RegisterDeviceDto): Promise<void> {
+  async registerToken(
+    userId: number,
+    sessionId: number,
+    dto: RegisterDeviceDto,
+  ): Promise<void> {
     const now = new Date();
     await this.database.db
       .insert(pushToken)
       .values({
         userId,
+        sessionId,
         token: dto.token,
         platform: dto.platform,
         deviceId: dto.deviceId,
@@ -133,6 +147,7 @@ export class PushService {
         target: pushToken.token,
         set: {
           userId,
+          sessionId,
           platform: dto.platform,
           deviceId: dto.deviceId,
           webP256dh: dto.p256dh,
@@ -266,6 +281,20 @@ export class PushService {
     }
   }
 
+  /** A Push registration inherits the authorization lifetime of the session that created it. The
+   * duplicated user id is checked defensively, then a live SSE on that exact session takes ownership. */
+  private canDeliverOutOfBand(
+    token: SessionBoundPushToken,
+    now: Date,
+  ): boolean {
+    return (
+      token.session.userId === token.userId &&
+      token.session.revokedAt === null &&
+      token.session.expiresAt > now &&
+      !this.sse.isSessionOnline(token.userId, token.sessionId)
+    );
+  }
+
   /** Send one Web Push notification, passing the VAPID details PER CALL from SettingsService (NOT the
    *  module-global setVapidDetails). Reading the (DB-backed) keypair on each send means an admin rotation
    *  takes effect immediately on the next send, with no restart and no event wiring. Throws if Web Push is
@@ -291,44 +320,51 @@ export class PushService {
    * MessageFanoutService (never awaited) — push latency must not delay the sender's HTTP response. Never
    * throws: every step is guarded so a push failure can never break message delivery.
    *
-   * Recipient filtering: the caller (fanout) already excluded the sender + muted + blocked recipients;
-   * here we additionally skip any recipient with a live SSE connection (SseService.isUserOnline — no
-   * double-delivery, no wasted battery). Remaining targets each receive the SAME data-only payload
-   * `{ type:'NEW_MESSAGE', ts, threadId, seq }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
+   * Recipient filtering: the caller (fanout) already excluded the sender + muted + blocked recipients.
+   * A token is suppressed only when its exact authenticated session owns a live SSE connection; that device
+   * takes over notification aggregation from `STATE_FEED_UPDATED`. Other devices receive the same payload
+   * `{ type:'NEW_MESSAGE', messageEndSeq }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
    * WEB → Web Push `sendNotification`. Per-token errors that indicate a definitively-dead subscription
    * (FCM UNREGISTERED / Web Push 404/410) are pruned; transient errors are left alone to self-heal.
    */
   async dispatchForMessage(
     targets: { userId: number }[],
-    threadId: number,
-    seq: number,
+    messageEndSeq: number,
   ): Promise<void> {
     try {
-      const userIds = targets
-        .map((r) => r.userId)
-        .filter((uid) => !this.sse.isUserOnline(uid));
+      const userIds = [...new Set(targets.map((target) => target.userId))];
       if (userIds.length === 0) return;
 
       const tokens = await this.database.db.query.pushToken.findMany({
         where: inArray(pushToken.userId, userIds),
         columns: {
+          userId: true,
+          sessionId: true,
           token: true,
+          deviceId: true,
           platform: true,
           webP256dh: true,
           webAuth: true,
         },
+        with: {
+          session: {
+            columns: { userId: true, expiresAt: true, revokedAt: true },
+          },
+        },
       });
-      if (tokens.length === 0) return;
+      const now = new Date();
+      const deliverableTokens = tokens.filter((token) =>
+        this.canDeliverOutOfBand(token, now),
+      );
+      if (deliverableTokens.length === 0) return;
 
-      // Identity-only wake-up — {type, ts, threadId, seq}. No body/preview/contentType/msgid: the client
+      // Identity-only wake-up — {type, messageEndSeq}. No cursor/body/preview/contentType/msgid: the client
       // pulls the body. FCM requires string values; Web Push carries the JSON-stringified form. No
       // `notification` field for FCM — its presence would make the OS show it itself and bypass
       // onMessageReceived on background.
       const data: Record<string, string> = {
         type: 'NEW_MESSAGE',
-        ts: String(Date.now()),
-        threadId: String(threadId),
-        seq: String(seq),
+        messageEndSeq: String(messageEndSeq),
       };
 
       const dead: string[] = [];
@@ -337,8 +373,12 @@ export class PushService {
       // Android webview PWA, AND iOS-Safari-installed-as-PWA). The platform enum is transport-oriented
       // (WEB = Web Push, ANDROID = FCM, IOS reserved for a hypothetical future native APNs app), so
       // iOS-PWA subs register as WEB and correctly route here. No native APNs path exists today.
-      const webSubs = tokens.filter((t) => !!t.webP256dh && !!t.webAuth);
-      const fcmTokens = tokens.filter((t) => !t.webP256dh || !t.webAuth);
+      const webSubs = deliverableTokens.filter(
+        (token) => !!token.webP256dh && !!token.webAuth,
+      );
+      const fcmTokens = deliverableTokens.filter(
+        (token) => !token.webP256dh || !token.webAuth,
+      );
 
       // FCM path (ANDROID / IOS).
       if (fcmTokens.length > 0 && this.messaging) {
@@ -410,9 +450,8 @@ export class PushService {
   /**
    * Fan out an INCOMING-CALL wake-up to a callee. Mirrors dispatchForMessage with two deliberate
    * differences for the ringing case:
-   *  (1) NO skip-when-online — the phone must ring even when the callee's desktop has a live SSE
-   *      connection. (dispatchForMessage skips online recipients because the message body is also
-   *      delivered in-band over SSE; a ring, by contrast, must reach every device.)
+   *  (1) The phone must ring on every eligible offline device even when another device has a live SSE
+   *      connection. As with message Push, foreground suppression is exact-session and device-local.
    *  (2) type = 'CALL_INCOMING' carrying { ts, callSid, callerUserId, threadId, callType } so the
    *      client's call-handling layer (NOT the message-pull pipeline) wakes and surfaces the incoming-
    *      call UI. FCM ttl is short (30s) — a ring is ephemeral, so a stale wake-up must not outlive it.
@@ -437,13 +476,24 @@ export class PushService {
       const tokens = await this.database.db.query.pushToken.findMany({
         where: eq(pushToken.userId, calleeUserId),
         columns: {
+          userId: true,
+          sessionId: true,
           token: true,
           platform: true,
           webP256dh: true,
           webAuth: true,
         },
+        with: {
+          session: {
+            columns: { userId: true, expiresAt: true, revokedAt: true },
+          },
+        },
       });
-      if (tokens.length === 0) return;
+      const now = new Date();
+      const deliverableTokens = tokens.filter((token) =>
+        this.canDeliverOutOfBand(token, now),
+      );
+      if (deliverableTokens.length === 0) return;
 
       // Inline wake-up — the client's call layer consumes this directly (no body pull).
       const data: Record<string, string> = {
@@ -459,8 +509,12 @@ export class PushService {
 
       const dead: string[] = [];
       // Same subscription-shape branch as dispatchForMessage.
-      const webSubs = tokens.filter((t) => !!t.webP256dh && !!t.webAuth);
-      const fcmTokens = tokens.filter((t) => !t.webP256dh || !t.webAuth);
+      const webSubs = deliverableTokens.filter(
+        (t) => !!t.webP256dh && !!t.webAuth,
+      );
+      const fcmTokens = deliverableTokens.filter(
+        (t) => !t.webP256dh || !t.webAuth,
+      );
 
       // FCM path (ANDROID / IOS).
       if (fcmTokens.length > 0 && this.messaging) {

@@ -4,7 +4,7 @@
  * delivery is tied to the SW registration that subscribed, not to which pages it controls).
  *
  * Server-authored descriptor: the push is the identity-only wake-up (no body); this SW fetches
- * `POST <API_PREFIX>/notifications/missed` (no cursor → the current unread snapshot; same-origin → the
+ * `POST <API_PREFIX>/notification-feed/query` from its persisted Client State Feed cursor (same-origin → the
  * httpOnly session cookie authenticates) and renders each server-authored descriptor verbatim — the
  * localized title/body, the composited stacked-avatar `icon`, and the `tag`-based replace (one shade entry,
  * never stacks). `Accept-Language` is sent so the body honors the device language. Tap focuses/opens the app.
@@ -29,27 +29,114 @@ importScripts('./sw-config.js');
     });
   }
 
-  /** The per-thread shade-notification tag prefix (soms-thread-<id>) — discriminates a deep-linkable per-
-   *  thread card from the cross-thread summary (soms-away → focus root). */
+  /** The per-thread shade-notification tag prefix (soms-thread-<id>). */
   var SOMS_THREAD_PREFIX = 'soms-thread-';
+  var CHECKPOINT_DB = 'soms-notification-checkpoint';
+  var CHECKPOINT_STORE = 'state';
+  var CHECKPOINT_KEY = 'state-feed-since';
+
+  function openCheckpointDb() {
+    return new Promise(function (resolve, reject) {
+      var request = indexedDB.open(CHECKPOINT_DB, 1);
+      request.onupgradeneeded = function () {
+        if (!request.result.objectStoreNames.contains(CHECKPOINT_STORE))
+          request.result.createObjectStore(CHECKPOINT_STORE);
+      };
+      request.onsuccess = function () {
+        resolve(request.result);
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
+  async function readNotificationSince() {
+    var db = await openCheckpointDb();
+    return new Promise(function (resolve, reject) {
+      var request = db
+        .transaction(CHECKPOINT_STORE, 'readonly')
+        .objectStore(CHECKPOINT_STORE)
+        .get(CHECKPOINT_KEY);
+      request.onsuccess = function () {
+        resolve(typeof request.result === 'number' ? request.result : 0);
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
+  async function advanceNotificationSince(feedId) {
+    if (!Number.isSafeInteger(feedId) || feedId < 0) return;
+    var db = await openCheckpointDb();
+    await new Promise(function (resolve, reject) {
+      var tx = db.transaction(CHECKPOINT_STORE, 'readwrite');
+      var store = tx.objectStore(CHECKPOINT_STORE);
+      var request = store.get(CHECKPOINT_KEY);
+      request.onsuccess = function () {
+        var current = typeof request.result === 'number' ? request.result : 0;
+        if (feedId > current) store.put(feedId, CHECKPOINT_KEY);
+      };
+      tx.oncomplete = resolve;
+      tx.onerror = function () {
+        reject(tx.error);
+      };
+      tx.onabort = function () {
+        reject(tx.error);
+      };
+    });
+  }
+
+  function askPageToClaim(client) {
+    return new Promise(function (resolve) {
+      var channel = new MessageChannel();
+      var settled = false;
+      var finish = function (claimed) {
+        if (settled) return;
+        settled = true;
+        resolve(claimed);
+      };
+      channel.port1.onmessage = function (event) {
+        finish(!!(event.data && event.data.claimed));
+      };
+      client.postMessage({ type: self.__SOMS_NOTIF_MSG__.CLAIM }, [
+        channel.port2,
+      ]);
+      setTimeout(function () {
+        finish(false);
+      }, 250);
+    });
+  }
+
+  async function aLivePageClaimsPush() {
+    var pages = await self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    });
+    for (var i = 0; i < pages.length; i++) {
+      if (await askPageToClaim(pages[i])) return true;
+    }
+    return false;
+  }
 
   self.addEventListener('push', function (event) {
     event.waitUntil(
       (async function () {
         try {
+          // A responsive page with healthy SSE owns the notification projection. A closed, frozen, or
+          // disconnected page cannot claim in time, so this worker safely falls back.
+          if (await aLivePageClaimsPush()) return;
+          var since = await readNotificationSince();
           var res = await fetch(API_PREFIX + '/notification-feed/query', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Accept-Language': (self.navigator && self.navigator.language) || 'en',
+              'Accept-Language':
+                (self.navigator && self.navigator.language) || 'en',
             },
-            // `grouping` is the away-summary fold ("thread" = one card per conversation). NOTE: this SW path
-            // sends no `since` cursor (the SW keeps none), so the server treats it as first-ever → a `clear`
-            // descriptor → no notification until the page-side cursor is wired through to the SW (a pre-
-            // existing gap, not introduced here). The foreground (UnreadAttentionService) path DOES send
-            // `since` + `grouping` and is the working web away-surface today. Never send undeclared fields
-            // (e.g. the old `take`) — MissedDto runs under forbidNonWhitelisted → a hard HTTP 400.
-            body: JSON.stringify({ previewMode: 'message' }),
+            // The page checkpoints its committed foreground cursor into this worker-visible IndexedDB.
+            body: JSON.stringify({ after: since, previewMode: 'message' }),
             credentials: 'include', // same-origin httpOnly session cookie
           });
           if (!res.ok) return;
@@ -57,13 +144,6 @@ importScripts('./sw-config.js');
           var notifs = (json && json.data && json.data.notifications) || [];
           for (var i = 0; i < notifs.length; i++) {
             var d = notifs[i];
-            if (d.kind === 'clear') {
-              // Server-driven cancel: close any notification with this tag (e.g. the prior away-summary when
-              // nothing is unread+unmuted anymore).
-              var existing = await self.registration.getNotifications({ tag: d.tag });
-              for (var k = 0; k < existing.length; k++) existing[k].close();
-              continue;
-            }
             await self.registration.showNotification(d.title, {
               body: d.body,
               tag: d.tag, // coalesce — same tag replaces, never stacks
@@ -75,6 +155,8 @@ importScripts('./sw-config.js');
               actions: mapActions(d.actions),
             });
           }
+          var end = json && json.data && json.data.stateFeedEndId;
+          await advanceNotificationSince(end);
         } catch (e) {
           /* best-effort — a transient fetch failure just means no notification this push */
         }
@@ -99,10 +181,21 @@ importScripts('./sw-config.js');
             // the next /missed pull counts THIS thread from `seq` (it stops re-firing until newer messages
             // arrive). The SW can't reach the Angular WebdbService, so postMessage the page (which owns the
             // HWM store); delivered even though ngsw, not this SW, controls the page. Best-effort.
-            if (d.threadId != null && typeof d.threadId === 'number' && typeof d.seq === 'number') {
-              var dcs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+            if (
+              d.threadId != null &&
+              typeof d.threadId === 'number' &&
+              typeof d.seq === 'number'
+            ) {
+              var dcs = await self.clients.matchAll({
+                type: 'window',
+                includeUncontrolled: true,
+              });
               for (var j = 0; j < dcs.length; j++) {
-                dcs[j].postMessage({ type: self.__SOMS_NOTIF_MSG__.DISMISS, threadId: d.threadId, seq: d.seq });
+                dcs[j].postMessage({
+                  type: self.__SOMS_NOTIF_MSG__.DISMISS,
+                  threadId: d.threadId,
+                  seq: d.seq,
+                });
               }
             }
             return;
@@ -125,16 +218,24 @@ importScripts('./sw-config.js');
           }
           return; // an action handled it — don't also focus the app
         }
-        // Body tap: a per-thread card (soms-thread-<id>) deep-links to that thread; the cross-thread summary
-        // (soms-away) just focuses the app root (it may span several threads). Deep-link is a postMessage to
+        // Body tap: a per-thread card (soms-thread-<id>) deep-links to that thread. Deep-link is a postMessage to
         // the page (it owns navigation via NavStateMachineService.openChat); the window is focused here so it
         // foregrounds either way. With no live client (tab closed — the push path), openWindow to the chat URL
         // (parsed by NavStateMachineService.initFromUrl) for a per-thread card, else the app root.
-        var isOpen = typeof d.threadId === 'number' && tag.indexOf(SOMS_THREAD_PREFIX) === 0;
-        var cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        var isOpen =
+          typeof d.threadId === 'number' &&
+          tag.indexOf(SOMS_THREAD_PREFIX) === 0;
+        var cs = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
         for (var i = 0; i < cs.length; i++) {
           if (!cs[i] || !('focus' in cs[i])) continue;
-          if (isOpen) cs[i].postMessage({ type: self.__SOMS_NOTIF_MSG__.OPEN, threadId: d.threadId });
+          if (isOpen)
+            cs[i].postMessage({
+              type: self.__SOMS_NOTIF_MSG__.OPEN,
+              threadId: d.threadId,
+            });
           return cs[i].focus();
         }
         return self.clients.openWindow(isOpen ? '/chat/' + d.threadId : '/');

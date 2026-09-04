@@ -16,7 +16,7 @@ describe('local message delivery plan', () => {
     ).toEqual([1, 2]);
   });
 
-  it('sends SSE to the creator devices but suppresses their notification Push', () => {
+  it('wakes the creator devices but suppresses their notification Push', () => {
     expect(
       planLiveDelivery(
         [
@@ -27,12 +27,12 @@ describe('local message delivery plan', () => {
         ],
         1,
       ),
-    ).toEqual({ sseUserIds: [1, 2, 3], pushUserIds: [2] });
+    ).toEqual({ wakeUserIds: [1, 2, 3], pushUserIds: [2] });
   });
 
   it('does not exclude any recipient when a SYSTEM message has no creator', () => {
     expect(
       planLiveDelivery([{ userId: 1, muted: false, blocked: false }], null),
-    ).toEqual({ sseUserIds: [1], pushUserIds: [1] });
+    ).toEqual({ wakeUserIds: [1], pushUserIds: [1] });
   });
 });

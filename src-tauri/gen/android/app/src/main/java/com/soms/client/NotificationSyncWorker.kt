@@ -7,7 +7,7 @@ import androidx.work.WorkerParameters
 /**
  * The 国内 fallback push path. FCM is blocked in mainland China, so on devices where the FCM token
  * fetch fails (no google-services.json / no GMS / network), this WorkManager job periodically polls
- * `/notifications/missed` and renders the server-authored away-notification descriptor itself — giving the
+ * `/notification-feed/query` and renders the server-authored away-notification descriptors itself — giving the
  * "within a day, you'll be reminded" UX without any OEM/厂商 channel.
  *
  * Auth: the no-expiry session token (POST /auth/login, app client) — a single native credential shared

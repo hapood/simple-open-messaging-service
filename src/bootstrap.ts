@@ -44,6 +44,62 @@ const IMAGE_CACHE_MAX_AGE_SECONDS = 3 * 24 * 60 * 60;
 const VIDEO_AUDIO_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60;
 const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
 
+/** Routes that must remain outside the client-facing /api/v1 prefix. Keep this implementation
+ * manifest aligned with the decorated federation controllers; route-manifest tests enforce it. */
+export const GLOBAL_PREFIX_EXCLUSIONS = [
+  { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
+  {
+    path: `${FEDERATION_API_PREFIX}/recognize`,
+    method: RequestMethod.POST,
+  },
+  { path: `${FEDERATION_API_PREFIX}/health`, method: RequestMethod.GET },
+  {
+    path: `${FEDERATION_API_PREFIX}/feed-heads`,
+    method: RequestMethod.POST,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/state-feed`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/group-meta`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/messages`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/message-tombstones`,
+    method: RequestMethod.GET,
+  },
+  { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
+  {
+    path: `${FEDERATION_API_PREFIX}/accounts/:account`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/profiles/:account`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/message-author-profile`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/group-member-profile`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/media/:digest`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/forward-bundles/:bundleId`,
+    method: RequestMethod.GET,
+  },
+] as const;
+
 /** Matches a CAS shard URL at the start of a request path and captures the 64-hex digest. The
  *  /uploads/ preHandler uses this to decide whether a request needs per-object authorization (a
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
@@ -210,55 +266,7 @@ export async function configureApp(
   // /api/v1/docs in non-production only — see the gate below. .well-known/somfp is excluded — it must
   // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
   app.setGlobalPrefix(CLIENT_API_PREFIX, {
-    exclude: [
-      { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
-      {
-        path: `${FEDERATION_API_PREFIX}/recognize`,
-        method: RequestMethod.POST,
-      },
-      { path: `${FEDERATION_API_PREFIX}/healthy`, method: RequestMethod.POST },
-      {
-        path: `${FEDERATION_API_PREFIX}/feed-heads`,
-        method: RequestMethod.POST,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/state-feed`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/group-meta`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/messages`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/message-tombstones`,
-        method: RequestMethod.GET,
-      },
-      { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
-      {
-        path: `${FEDERATION_API_PREFIX}/users/:account`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/profiles/:account`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/message-author-profile`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/media/:digest`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/forward-bundles/:bundleId`,
-        method: RequestMethod.GET,
-      },
-    ],
+    exclude: [...GLOBAL_PREFIX_EXCLUSIONS],
   });
 
   // Interactive API docs (Swagger UI at /api/v1/docs, spec at /api/v1/docs-json). The UI is a

@@ -18,9 +18,12 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  */
 export class TauriNotificationAdapter extends NotificationAdapter {
   async showDescriptor(d: NotificationDescriptor): Promise<void> {
-    if (d.kind === 'clear') return; // the bridge exposes no cancel-by-id → nothing to dismiss
     try {
-      tauriSendNotification({ title: d.title, body: d.body, identifier: d.tag });
+      tauriSendNotification({
+        title: d.title,
+        body: d.body,
+        identifier: d.tag,
+      });
     } catch {
       /* best-effort */
     }

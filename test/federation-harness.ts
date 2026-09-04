@@ -144,8 +144,8 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
 
 /**
  * Generate a valid PNG (a solid `size`×`size` square of the given red channel) that round-trips
- * through saveAvatars' sharp decode→resize→webp pipeline. Hand-written base64 PNGs are risky — a
- * corrupt header is silently swallowed by save() (raw bytes) but throws inside saveAvatars (sharp).
+ * through the avatar decoder and validation pipeline. Hand-written base64 PNGs are risky because a
+ * corrupt header is rejected during metadata validation.
  * `red` varies the bytes so two uploads produce distinct files (for the re-pull test).
  */
 export async function makePng(
@@ -441,6 +441,9 @@ export async function bootFederationPair(): Promise<{
     portB,
     dataDir: dataDirB,
   });
+  // Clean both persistent stores before any lifecycle hook or recovery scheduler can observe them.
+  // Truncating after startup races in-memory recovery work against the replacement fixture state.
+  await truncateFederationDbs(appA, appB);
   await Promise.all([appA.start(), appB.start()]);
   await assertSeparateDatabases(appA, appB);
   return { appA, appB, proxy };
@@ -475,6 +478,8 @@ export async function assertSeparateDatabases(
  *  belt-and-suspenders (they FK-cascade, but list them anyway). */
 const FEDERATION_TRUNCATE_SQL =
   'TRUNCATE TABLE "User", "MessageThread", "Message", "MessageAsset", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache" RESTART IDENTITY CASCADE';
+const FEDERATION_NAMESPACE_RESET_SQL =
+  'DELETE FROM "IdentityNamespace" WHERE id <> 0';
 
 /** Truncate BOTH apps' databases between tests (in parallel — a test cannot forget one side). */
 export async function truncateFederationDbs(
@@ -482,7 +487,13 @@ export async function truncateFederationDbs(
   appB: FedApp,
 ): Promise<void> {
   await Promise.all([
-    appA.database.execute(sql.raw(FEDERATION_TRUNCATE_SQL)),
-    appB.database.execute(sql.raw(FEDERATION_TRUNCATE_SQL)),
+    appA.database.transaction(async (tx) => {
+      await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+      await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
+    }),
+    appB.database.transaction(async (tx) => {
+      await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+      await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
+    }),
   ]);
 }

@@ -90,7 +90,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
           account: 'bob',
           name: 'Bob',
           domain: peerDomain,
-          sourceDomain: peerDomain,
           namespaceId,
           updatedAt: now,
         },
@@ -152,7 +151,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   }
 
   it('queries deletion facts through the advertised State Feed head', async () => {
-    const { deletion, namespaceId } = await seedDeletion();
+    const { deletion, namespaceId, thread } = await seedDeletion();
 
     const page = await service.query(
       peerDomain,
@@ -176,7 +175,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   });
 
   it('omits requester-authored tombstones when includeSelf is false', async () => {
-    const { deletion, namespaceId } = await seedDeletion();
+    const { deletion, namespaceId, thread } = await seedDeletion();
     const page = await service.query(
       peerDomain,
       namespaceId,
@@ -191,7 +190,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     await database.db
       .update(message)
       .set({ creatorDomain: peerDomain, creatorNamespaceId: namespaceId })
-      .where(eq(message.seq, 1));
+      .where(and(eq(message.threadId, thread.id), eq(message.seq, 1)));
     const filtered = await service.query(
       peerDomain,
       namespaceId,
@@ -208,7 +207,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     });
   });
 
-  it('scans past tombstones above the fixed maxMessageSeq boundary', async () => {
+  it('uses the current publisher coordinate for tombstones and maxMessageSeq', async () => {
     const { deletion, namespaceId, thread } = await seedDeletion();
     const now = new Date('2026-08-12T01:03:03.000Z');
     await database.db.insert(message).values({
@@ -260,7 +259,10 @@ describe('FederationMessageTombstoneFeedService query', () => {
     );
 
     expect(page).toMatchObject({
-      tombstones: [{ deletionSeq: deletion.deletionSeq, messageSeq: 1 }],
+      tombstones: [
+        { deletionSeq: deletion.deletionSeq, messageSeq: 1 },
+        { deletionSeq: laterDeletion.deletionSeq, messageSeq: 2 },
+      ],
       scannedThrough: laterDeletion.deletionSeq,
       hasMore: false,
     });
@@ -327,6 +329,16 @@ describe('FederationMessageTombstoneFeedService query', () => {
       true,
       3,
     );
+    const third = await service.query(
+      peerDomain,
+      namespaceId,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      second.scannedThrough,
+      1,
+      4,
+      true,
+      3,
+    );
 
     expect(first).toMatchObject({
       tombstones: [{ deletionSeq: deletion.deletionSeq, messageSeq: 1 }],
@@ -334,13 +346,36 @@ describe('FederationMessageTombstoneFeedService query', () => {
       hasMore: true,
     });
     expect(second).toMatchObject({
-      tombstones: [{ deletionSeq: 3, messageSeq: 2 }],
+      tombstones: [{ deletionSeq: 2, messageSeq: 2 }],
+      scannedThrough: 2,
+      hasMore: true,
+    });
+    expect(third).toMatchObject({
+      tombstones: [{ deletionSeq: 3, messageSeq: 3 }],
       scannedThrough: 4,
       hasMore: false,
     });
   });
 
-  it('rejects tombstone queries after current audience closes', async () => {
+  it('accepts a take above the local page capacity and caps it', async () => {
+    const { deletion, namespaceId } = await seedDeletion();
+    await expect(
+      service.query(
+        peerDomain,
+        namespaceId,
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+        0,
+        Number.MAX_SAFE_INTEGER,
+        deletion.deletionSeq,
+      ),
+    ).resolves.toMatchObject({
+      tombstones: [{ messageSeq: 1 }],
+      scannedThrough: deletion.deletionSeq,
+      hasMore: false,
+    });
+  });
+
+  it('keeps P2P tombstone queries authorized by the relationship intent after audience closes', async () => {
     const { namespaceId, thread } = await seedDeletion();
     await database.db
       .delete(threadAudience)
@@ -353,7 +388,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+    ).resolves.toMatchObject({ tombstones: [{ messageSeq: 1 }] });
   });
 
   it('exposes pre-floor tombstones inside a filtered reauthorization drain', async () => {

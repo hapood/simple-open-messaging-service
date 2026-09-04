@@ -130,7 +130,8 @@ export class MessageResponseDto {
 
   @ApiProperty({
     example: 7,
-    description: 'Immutable complete-profile revision selected when this message was authored',
+    description:
+      'Immutable complete-profile revision selected when this message was authored',
   })
   profileRev!: number;
 
@@ -251,7 +252,7 @@ export class MessageTombstoneQueryPageDto {
 }
 
 /**
- * A user's view of one conversation (their ThreadParticipant row), hydrated with the peer entity.
+ * A user's view of one conversation (their AccountThreadState row), hydrated with the peer entity.
  * The threadId is the conversation handle — the key clients use for send-message / query-messages.
  * Replaces the overloaded UserMessageThreadResponseDto: friendship state no longer lives here.
  */

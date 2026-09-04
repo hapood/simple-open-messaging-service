@@ -11,7 +11,7 @@ import { callTombstone, user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import {
@@ -173,7 +173,7 @@ export class CallsService implements OnModuleDestroy {
     private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly push: PushService,
-    private readonly participants: ThreadParticipantService,
+    private readonly participants: AccountThreadStateService,
     private readonly messages: MessageService,
     private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
@@ -1143,8 +1143,7 @@ export class CallsService implements OnModuleDestroy {
       (['declined', 'cancelled', 'missed', 'ended'] as const).includes(
         frame.op as TerminalCallOperation,
       ) ||
-      (frame.op === 'signal' &&
-        call.seenSignalIds.has(frame.payload.signalId))
+      (frame.op === 'signal' && call.seenSignalIds.has(frame.payload.signalId))
     ) {
       return;
     }
@@ -1416,14 +1415,12 @@ export class CallsService implements OnModuleDestroy {
     } else {
       params = { ...common, op };
     }
-    void this.federation
-      .sendCallFrame(params, call.peerDomain!)
-      .catch((e) => {
-        if (this.convergePeerTerminal(call, e)) return;
-        this.logger.warn(
-          `failed to relay call frame ${op} (callSid=${call.callSid}): ${(e as Error).message}`,
-        );
-      });
+    void this.federation.sendCallFrame(params, call.peerDomain!).catch((e) => {
+      if (this.convergePeerTerminal(call, e)) return;
+      this.logger.warn(
+        `failed to relay call frame ${op} (callSid=${call.callSid}): ${(e as Error).message}`,
+      );
+    });
   }
 
   /** A peer tombstone is authoritative evidence that dependent frames must stop. */
@@ -1501,8 +1498,7 @@ export class CallsService implements OnModuleDestroy {
   private async timeoutMissed(callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state === 'connected') return; // gone, or connected (timer was cleared — defensive)
-    const outcome: CallOutcome =
-      call.state === 'ringing' ? 'missed' : 'failed';
+    const outcome: CallOutcome = call.state === 'ringing' ? 'missed' : 'failed';
     const timeout = timeoutLifecycle(call.state);
     const eventExtra =
       timeout.endReason === null ? {} : { endReason: timeout.endReason };
@@ -1525,7 +1521,8 @@ export class CallsService implements OnModuleDestroy {
       );
       this.release(call);
       this.sendFrame(call, terminalOp, endReason ? { endReason } : {});
-      if (call.localRole === 'caller') await this.persistTerminal(call, outcome);
+      if (call.localRole === 'caller')
+        await this.persistTerminal(call, outcome);
     } else {
       call.terminal = {
         op: timeout.operation,

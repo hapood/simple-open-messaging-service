@@ -4,7 +4,7 @@ import {
   type AwayNotificationMessage,
   type UnreadMentionState,
 } from '../message/message.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
 import { derivePreview } from '../message/message.service.js';
@@ -17,10 +17,7 @@ import {
   buildMentionTitle,
   actionLabel,
 } from './notif-i18n.js';
-import {
-  AWAY_SUMMARY_TAG,
-  type NotificationDescriptor,
-} from './notification-descriptor.js';
+import { type NotificationDescriptor } from './notification-descriptor.js';
 
 interface HydratedThreadItem {
   threadId: number;
@@ -55,7 +52,7 @@ interface HydratedThreadItem {
 @Injectable()
 export class NotificationQueryService {
   constructor(
-    private readonly participantService: ThreadParticipantService,
+    private readonly participantService: AccountThreadStateService,
     private readonly messageService: MessageService,
     private readonly userService: UserService,
     private readonly groupService: GroupService,
@@ -72,8 +69,7 @@ export class NotificationQueryService {
     },
   ): Promise<{ notifications: NotificationDescriptor[] }> {
     const locale = pickLocale(opts.acceptLanguage);
-    if (threadIds.length === 0)
-      return { notifications: [this.clearDescriptor(locale)] };
+    if (threadIds.length === 0) return { notifications: [] };
     return {
       notifications: await this.threadDescriptors(
         userId,
@@ -95,7 +91,7 @@ export class NotificationQueryService {
    * `data.seq` = the thread's latest new seq — the client's per-thread dismiss target (records it in memory on
    * dismiss; advances only on dismiss; cleared on foreground). `kind:'thread-message'` discriminates the
    * render path (#5). `icon: null` (no per-thread avatar composition — resource-friendly). Returns `[]` when
-   * nothing is new (the client clears all `soms-thread-*` notifications).
+   * nothing is new; an empty notification delta is a no-op.
    */
   private async threadDescriptors(
     userId: number,
@@ -118,7 +114,7 @@ export class NotificationQueryService {
           threadIds,
         )
       : new Map();
-    if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
+    if (buckets.size === 0) return [];
 
     // Query B (ONE batched query): for each thread the client dismissed (in threadHwms), count since its HWM.
     // Threads not dismissed keep Query A's cumulative-since-foreground count.
@@ -196,22 +192,6 @@ export class NotificationQueryService {
         data: { threadId: it.threadId, seq: latestSeq },
       };
     });
-  }
-
-  /** A `clear` descriptor — cancel the tagged away notification (nothing new / first-ever / unresolvable). */
-  private clearDescriptor(locale: SupportedLocale): NotificationDescriptor {
-    return {
-      tag: AWAY_SUMMARY_TAG,
-      kind: 'clear',
-      title: '',
-      body: '',
-      count: 0,
-      lang: locale,
-      icon: null,
-      renotify: false,
-      actions: [],
-      data: {},
-    };
   }
 
   /**

@@ -1,9 +1,9 @@
-import { useTranslation } from 'react-i18next'
-import { Globe, Search } from 'lucide-react'
-import { useGroups } from '@/hooks/use-groups'
-import { useListParams } from '@/hooks/use-list-params'
-import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
+import { useTranslation } from 'react-i18next';
+import { Globe, Search } from 'lucide-react';
+import { useGroups } from '@/hooks/use-groups';
+import { useListParams } from '@/hooks/use-list-params';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -11,28 +11,35 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { Pagination } from '@/components/common/pagination'
-import { TableBodyState } from '@/components/common/table-state'
-import { Timestamp } from '@/components/common/timestamp'
+} from '@/components/ui/table';
+import { Pagination } from '@/components/common/pagination';
+import { TableBodyState } from '@/components/common/table-state';
+import { Timestamp } from '@/components/common/timestamp';
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 50;
 
 /** Group/thread observability. Every GROUP thread (local + federated) with its member count and
  *  federation origin. Read-only for now — dissolve/transfer are a follow-up. */
 export function GroupsPage() {
-  const { t } = useTranslation()
-  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
-    pageSize: PAGE_SIZE,
-  })
-  const { data, isLoading, error } = useGroups({ skip, take, search: search || undefined })
-  const total = data?.total ?? 0
+  const { t } = useTranslation();
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } =
+    useListParams({
+      pageSize: PAGE_SIZE,
+    });
+  const { data, isLoading, error } = useGroups({
+    skip,
+    take,
+    search: search || undefined,
+  });
+  const total = data?.total ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('groups.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t('groups.title')}
+          </h1>
           <p className="text-sm text-muted-foreground">{t('groups.desc')}</p>
         </div>
         <div className="relative w-72">
@@ -73,7 +80,9 @@ export function GroupsPage() {
                       {g.group?.account ?? `#${g.id}`}
                     </div>
                   </TableCell>
-                  <TableCell className="tabular-nums">{g._count.ThreadMember}</TableCell>
+                  <TableCell className="tabular-nums">
+                    {g.memberCount}
+                  </TableCell>
                   <TableCell>
                     {g.originDomain ? (
                       <span className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground">
@@ -107,8 +116,13 @@ export function GroupsPage() {
       </div>
 
       <div className="flex items-center justify-end text-sm text-muted-foreground">
-        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onPageChange={setPage}
+        />
       </div>
     </div>
-  )
+  );
 }

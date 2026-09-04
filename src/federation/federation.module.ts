@@ -69,6 +69,8 @@ import { FederationInboundMessageValidatorService } from './federation-inbound-m
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
 import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
 import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationStateFeedHeadClient } from './federation-state-feed-head-client.service.js';
+import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
 import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
@@ -163,6 +165,8 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationInboundMessagePageService,
     FederationLocalSystemMessagePublisher,
     FederationStatePullService,
+    FederationStateFeedHeadClient,
+    FederationStateFeedPushSchedulerService,
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
     FederationOutboundMessageSignalService,

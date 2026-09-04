@@ -1,17 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, count, eq, inArray } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { GroupRole, MessageThreadType } from '../src/database/enums.js';
+import { MessageThreadType } from '../src/database/enums.js';
 import {
   account as accountTable,
   group,
   messageThread,
   relationshipIntent,
   relationshipPair,
-  threadMember,
   user,
 } from '../src/database/schema.js';
 import {
@@ -65,14 +64,6 @@ describe('origin-server group capacity', () => {
         updatedAt: new Date(),
       })
       .returning({ id: messageThread.id });
-    await database.db.insert(threadMember).values(
-      people.slice(0, SERVER_MAX_GROUP_MEMBERS - 1).map((person, index) => ({
-        threadId: thread.id,
-        userId: person.id,
-        role: index === 0 ? GroupRole.OWNER : GroupRole.MEMBER,
-        updatedAt: new Date(),
-      })),
-    );
     const authorizedPairs = await database.db
       .insert(relationshipPair)
       .values(
@@ -132,12 +123,6 @@ describe('origin-server group capacity', () => {
           expiresAt: null,
           updatedAt: new Date(),
         });
-        await tx.insert(threadMember).values({
-          threadId: thread.id,
-          userId,
-          role: GroupRole.MEMBER,
-          updatedAt: new Date(),
-        });
       });
     const candidates = people.slice(-2);
     const results = await Promise.allSettled(
@@ -170,22 +155,11 @@ describe('origin-server group capacity', () => {
       );
     expect(value).toBe(SERVER_MAX_GROUP_MEMBERS);
 
-    const [admitted] = await database.db
-      .select({ userId: threadMember.userId })
-      .from(threadMember)
-      .where(
-        and(
-          eq(threadMember.threadId, thread.id),
-          inArray(
-            threadMember.userId,
-            candidates.map((candidate) => candidate.id),
-          ),
-        ),
-      )
-      .limit(1);
+    const admitted =
+      candidates[results.findIndex((result) => result.status === 'fulfilled')]!;
     await expect(
       database.db.transaction((tx) =>
-        assertServerGroupCapacityInTx(tx, thread.id, admitted!.userId),
+        assertServerGroupCapacityInTx(tx, thread.id, admitted.id),
       ),
     ).resolves.toBeUndefined();
   }, 30_000);

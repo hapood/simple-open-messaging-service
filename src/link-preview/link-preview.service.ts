@@ -162,7 +162,10 @@ export class LinkPreviewService {
     rawUrl: string,
     fallbackText = '',
   ): Promise<LinkContent> {
-    const key = `${this.normalizeUrl(rawUrl)}\u0000${this.descriptionFallback(fallbackText, rawUrl)}`;
+    const key = JSON.stringify([
+      this.normalizeUrl(rawUrl),
+      this.descriptionFallback(fallbackText, rawUrl),
+    ]);
     const hit = this.cacheGet(key);
     if (hit) return hit;
 

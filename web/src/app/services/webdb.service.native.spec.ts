@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ConversationItem, Message } from './model';
-import type { ProfileRecord } from './webdb.service';
+import type { ProfileWriteRecord } from './webdb.service';
 import { WebdbService } from './webdb.service';
 
 describe('WebdbService native SQLite routing', () => {
@@ -120,7 +120,7 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {
-    const profile: ProfileRecord = {
+    const profile: ProfileWriteRecord = {
       identity: 'u8',
       id: 8,
       kind: 'user',
@@ -152,13 +152,15 @@ describe('WebdbService native SQLite routing', () => {
       threadId: 9,
       account: 'alice',
       domain: 'home.example',
-      sourceDomain: 'local',
+      namespaceId: 12,
+      profileRev: 6,
+      profileBio: '',
       role: 'MEMBER',
       left: false,
       user: {
         account: 'alice',
         domain: 'home.example',
-        sourceDomain: 'local',
+        namespaceId: 12,
         name: 'Alice',
         avatar: '/a.webp',
         bio: '',
@@ -173,7 +175,7 @@ describe('WebdbService native SQLite routing', () => {
     expect(
       await service.queryGroupMembers({
         threadId: 9,
-        afterIdentity: 'local\u0000home.example\u0000aaron',
+        afterIdentity: JSON.stringify([12, 'home.example', 'aaron']),
         take: 20,
         search: 'ali',
       }),
@@ -184,7 +186,7 @@ describe('WebdbService native SQLite routing', () => {
         args: {
           userId: 42,
           threadId: 9,
-          afterIdentity: 'local\u0000home.example\u0000aaron',
+          afterIdentity: JSON.stringify([12, 'home.example', 'aaron']),
           take: 20,
           search: 'ali',
         },

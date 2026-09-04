@@ -16,7 +16,7 @@ import {
   user,
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
@@ -334,7 +334,6 @@ describe('per-peer state feed', () => {
         account: `rev-${suffix}`,
         name: 'revision member',
         domain: 'local',
-        sourceDomain: 'local',
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

@@ -5,12 +5,12 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageReportStatus } from '../database/enums.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import {
   message,
   messageReport,
   messageThread,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../database/schema.js';
 import type {
@@ -33,10 +33,10 @@ export class MessageReportService {
   async create(userId: number, dto: CreateMessageReportsDto) {
     const seqs = [...new Set(dto.seqs)];
     return this.database.db.transaction(async (tx) => {
-      const participant = await tx.query.threadParticipant.findFirst({
+      const participant = await tx.query.accountThreadState.findFirst({
         where: and(
-          eq(threadParticipant.threadId, dto.threadId),
-          eq(threadParticipant.accountId, userId),
+          eq(accountThreadState.threadId, dto.threadId),
+          eq(accountThreadState.accountId, userId),
         ),
         columns: { id: true },
       });

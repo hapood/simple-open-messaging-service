@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
-import { and, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { dataDirectory } from '../common/data-directory.js';
@@ -10,6 +10,70 @@ import { MessageThreadType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { loadFederationConfig } from './federation.config.js';
+
+function currentThreadResourceAuthorizationSql(
+  threadId: typeof tables.message.threadId,
+  signerDomain: string,
+  signerNamespaceId: number,
+) {
+  return sql`(
+    EXISTS (
+      SELECT 1
+      FROM "ThreadAudience" audience
+      JOIN "MessageThread" authorized_thread
+        ON authorized_thread.id = audience."threadId"
+      LEFT JOIN "Group" authorized_group
+        ON authorized_group.id = authorized_thread."groupId"
+      WHERE audience."threadId" = ${threadId}
+        AND audience."targetDomain" = ${signerDomain}
+        AND audience."targetNamespaceId" = ${signerNamespaceId}
+        AND audience."localUserId" IS NULL
+        AND (authorized_thread.type = 'P2P'
+          OR authorized_group.domain = 'local')
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM "MessageThread" mirror_thread
+      JOIN "Group" mirror_group ON mirror_group.id = mirror_thread."groupId"
+      JOIN "AccountThreadState" local_state
+        ON local_state."threadId" = mirror_thread.id
+      JOIN "User" local_identity
+        ON local_identity.id = local_state."accountId"
+       AND local_identity.domain = 'local'
+       AND local_identity."namespaceId" = 0
+      JOIN "RelationshipPair" pair
+        ON pair."threadId" = mirror_thread.id
+       AND pair.kind = 'GROUP_MEMBER'
+      JOIN "RelationshipIntent" intent
+        ON intent."pairId" = pair.id
+       AND ((pair."endpointAType" = 'GROUP'
+             AND pair."endpointAAccount" = mirror_group.account
+             AND pair."endpointADomain" = mirror_group.domain
+             AND pair."endpointANamespaceId" = ${signerNamespaceId}
+             AND pair."endpointBType" = 'USER'
+             AND pair."endpointBAccount" = local_identity.account
+             AND pair."endpointBDomain" = 'local'
+             AND pair."endpointBNamespaceId" = ${signerNamespaceId}
+             AND intent."authorSide" = 'B')
+         OR (pair."endpointBType" = 'GROUP'
+             AND pair."endpointBAccount" = mirror_group.account
+             AND pair."endpointBDomain" = mirror_group.domain
+             AND pair."endpointBNamespaceId" = ${signerNamespaceId}
+             AND pair."endpointAType" = 'USER'
+             AND pair."endpointAAccount" = local_identity.account
+             AND pair."endpointADomain" = 'local'
+             AND pair."endpointANamespaceId" = ${signerNamespaceId}
+             AND intent."authorSide" = 'A'))
+      WHERE mirror_thread.id = ${threadId}
+        AND mirror_thread.type = 'GROUP'
+        AND mirror_group.domain = ${signerDomain}
+        AND mirror_group."namespaceId" = ${signerNamespaceId}
+        AND (intent.status = 'ACCEPTED'
+          OR (intent.status = 'REQUESTED'
+            AND intent."expiresAt" > CURRENT_TIMESTAMP))
+    )
+  )`;
+}
 
 /** Authorizes peer reads of durable message assets and forward-bundle closures. */
 @Injectable()
@@ -44,21 +108,17 @@ export class FederationPeerResourceService {
         tables.messageThread,
         eq(tables.messageThread.id, tables.message.threadId),
       )
-      .innerJoin(
-        tables.threadAudience,
-        and(
-          eq(tables.threadAudience.threadId, tables.message.threadId),
-          eq(tables.threadAudience.targetDomain, signerDomain),
-          eq(tables.threadAudience.targetNamespaceId, signerNamespaceId),
-          isNull(tables.threadAudience.localUserId),
-        ),
-      )
       .where(
         and(
           eq(tables.message.creatorAccount, normalizeAccount(fromAccount)),
           isNotNull(tables.message.creatorDomain),
           eq(tables.message.isDeleted, false),
           eq(tables.message.seq, sourceSeq),
+          currentThreadResourceAuthorizationSql(
+            tables.message.threadId,
+            signerDomain,
+            signerNamespaceId,
+          ),
         ),
       );
     let sourceMessage: { id: bigint; threadId: number } | undefined;
@@ -124,19 +184,15 @@ export class FederationPeerResourceService {
         tables.message,
         eq(tables.message.id, tables.forwardMessage.messageId),
       )
-      .innerJoin(
-        tables.threadAudience,
-        and(
-          eq(tables.threadAudience.threadId, tables.message.threadId),
-          eq(tables.threadAudience.targetDomain, signerDomain),
-          eq(tables.threadAudience.targetNamespaceId, signerNamespaceId),
-          isNull(tables.threadAudience.localUserId),
-        ),
-      )
       .where(
         and(
           eq(tables.forwardMessage.bundleId, bundleId),
           eq(tables.message.isDeleted, false),
+          currentThreadResourceAuthorizationSql(
+            tables.message.threadId,
+            signerDomain,
+            signerNamespaceId,
+          ),
         ),
       )
       .limit(1);
@@ -231,16 +287,38 @@ export class FederationPeerResourceService {
     }
     if (toAccount.startsWith('!')) return false;
     const recipient = await this.database.db
-      .select({ id: tables.user.id })
-      .from(tables.threadMember)
-      .innerJoin(tables.user, eq(tables.user.id, tables.threadMember.userId))
+      .select({ id: tables.relationshipPair.id })
+      .from(tables.relationshipPair)
       .where(
         and(
-          eq(tables.threadMember.threadId, threadId),
-          eq(tables.user.account, normalizeAccount(toAccount)),
-          eq(tables.user.domain, signerDomain),
-          eq(tables.user.namespaceId, signerNamespaceId),
-          ne(tables.user.domain, 'local'),
+          eq(tables.relationshipPair.threadId, threadId),
+          eq(tables.relationshipPair.kind, 'P2P'),
+          or(
+            and(
+              eq(tables.relationshipPair.endpointAType, 'USER'),
+              eq(
+                tables.relationshipPair.endpointAAccount,
+                normalizeAccount(toAccount),
+              ),
+              eq(tables.relationshipPair.endpointADomain, signerDomain),
+              eq(
+                tables.relationshipPair.endpointANamespaceId,
+                signerNamespaceId,
+              ),
+            ),
+            and(
+              eq(tables.relationshipPair.endpointBType, 'USER'),
+              eq(
+                tables.relationshipPair.endpointBAccount,
+                normalizeAccount(toAccount),
+              ),
+              eq(tables.relationshipPair.endpointBDomain, signerDomain),
+              eq(
+                tables.relationshipPair.endpointBNamespaceId,
+                signerNamespaceId,
+              ),
+            ),
+          ),
         ),
       )
       .limit(1);

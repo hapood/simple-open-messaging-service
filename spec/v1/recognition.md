@@ -21,29 +21,46 @@ The sole protocol meaning of B returning `OK` is:
 
 > B has confirmed that the request came from A and durably committed the directional fact “A recognizes B.”
 
-One Recognize completes only one direction. It does not mean B recognizes A or that the connection is healthy. B's retrieval of A's well-known document to validate A's request is authentication only. B MUST explicitly express recognition of A through reverse `B → A Recognize`.
+One Recognize notifies one direction. It does not by itself mean B recognizes A
+or that the connection is healthy. B's retrieval of A's well-known document to
+validate A's request is authentication only. B MUST explicitly express its
+recognition of A, either through reverse `B → A Recognize` or by returning a
+valid `available` or `degraded` Health result to A.
 
-Complete establishment consists of two opposite Recognize operations:
+Complete establishment consists of two opposite recognition facts, but does
+not require two Recognize HTTP operations:
 
 ```text
-A recognizes B  ── B returns OK
-B recognizes A  ── A returns OK
+A recognizes B  ── B returns Recognize OK
+B recognizes A  ── A receives reverse Recognize or positive Health
 ```
 
-The peer becomes `available` only after both directions of recognition, service readiness on both sides, and identity and policy requirements converge. The usual evidence is two Recognize `OK` responses. If the first `OK` is lost, the caller MAY idempotently retry the original direction. Health provides only reachability evidence and cannot replace a lost Recognize `OK`. Reverse Recognize does not provide that confirmation either because both sides may initiate concurrently and independently. The caller MUST idempotently retry its original Recognize until it receives a valid `OK` or an authenticated hard error. Recognize does not exchange feed cursors, initialize business mirrors, or prove user, group, or message permissions.
+Recognition direction facts and peer availability are independent. A node enters
+`degraded` after it has validated and pinned the peer identity, made the local
+recognition decision, and durably prepared its receive path. It becomes
+`available` when an authenticated request or other valid protocol round trip
+supplies current reachability evidence. An inbound first Recognize qualifies
+once its identity validation, pinning, recognition decision, and receive-path
+preparation commit successfully. A valid Health `available` or `degraded`
+result also asserts that the responder recognizes the requester and is prepared
+to receive its Federation traffic. The requester MUST treat that assertion as
+confirmation of the inbound recognition fact. A missing outbound Recognize
+`OK` remains independently durable and retryable; Health cannot replace that
+`OK`. Recognize does not exchange feed cursors, initialize business mirrors, or
+prove user, group, or message permissions.
 
 ## 2. Operation overview
 
-| Item                   | Recognize                         | Health                                                                              |
-| ---------------------- | --------------------------------- | ----------------------------------------------------------------------------------- |
-| Method                 | `POST`                            | `GET`                                                                               |
-| Path                   | `/s2s/v1/recognize`               | `/s2s/v1/health`                                                                    |
-| Query                  | None; signed `@query` is `?`      | None; signed `@query` is `?`                                                        |
-| Request                | Closed empty JSON object          | Zero-byte body                                                                      |
-| Request auth           | bootstrap signed                  | status signed                                                                       |
-| Success                | HTTP `200`, bare `RecognizeOk`    | HTTP `200`, bare `HealthResult`                                                     |
-| Idempotency coordinate | `(signerDomain, recipientDomain)` | Side-effect-free query                                                              |
-| State effect           | Commits one recognition direction | Handler has no side effect; caller may update remote availability from the response |
+| Item                   | Recognize                                                     | Health                                                                              |
+| ---------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Method                 | `POST`                                                        | `GET`                                                                               |
+| Path                   | `/s2s/v1/recognize`                                           | `/s2s/v1/health`                                                                    |
+| Query                  | None; signed `@query` is `?`                                  | None; signed `@query` is `?`                                                        |
+| Request                | Closed empty JSON object                                      | Zero-byte body                                                                      |
+| Request auth           | bootstrap signed                                              | status signed                                                                       |
+| Success                | HTTP `200`, bare `RecognizeOk`                                | HTTP `200`, bare `HealthResult`                                                     |
+| Idempotency coordinate | `(signerDomain, recipientDomain)`                             | Side-effect-free at the responder                                                   |
+| State effect           | Commits one recognition direction and local receive readiness | A positive result confirms recognition to the requester and may update reachability |
 
 ```ts
 type EmptyRequest = Record<string, never>;
@@ -63,38 +80,45 @@ The objects listed here are closed. Every listed field is required; duplicate an
 
 The following names describe protocol facts and do not require an implementation to use identically named database fields:
 
-| Protocol fact                  | Meaning                                                                 | Becomes true when                                                                                                                |
-| ------------------------------ | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `recognizesPeer`               | The local node validated and recognizes the peer root identity          | The local node atomically pins the peer root before sending Recognize                                                            |
-| `outboundRecognitionConfirmed` | The peer committed “the local node recognizes the peer”                 | The local node receives valid `OK` for its original Recognize direction                                                          |
-| `inboundRecognitionConfirmed`  | The local node committed “the peer recognizes the local node”           | The local node successfully processes inbound Recognize, before returning `OK`                                                   |
-| `lightweightInboundReady`      | The local node can safely accept the peer's lightweight requests        | Atomically with inbound confirmation before returning `OK`                                                                       |
-| `localServiceAvailable`        | The local node is ready to provide post-recognition service to the peer | Atomically before sending reverse Recognize; or before returning `OK` when receiving reverse Recognize                           |
-| `remoteServiceReachable`       | The peer's service and one valid protocol round trip have been observed | Valid Health `available`/`degraded`, reverse Recognize `OK`, or any normally authenticated and processed S2S request or response |
+| Protocol fact                  | Meaning                                                                      | Becomes true when                                                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recognizesPeer`               | The local node validated and recognizes the peer root identity               | The local node atomically pins the peer root before sending Recognize                                                                                                                          |
+| `outboundRecognitionConfirmed` | The peer committed “the local node recognizes the peer”                      | The local node receives valid `OK` for its original Recognize direction                                                                                                                        |
+| `inboundRecognitionConfirmed`  | The local node has evidence that the peer recognizes the local node          | The local node successfully processes inbound Recognize, or receives valid Health `available`/`degraded` from that peer                                                                        |
+| `lightweightInboundReady`      | The local node can safely accept the peer's lightweight requests             | Atomically with inbound confirmation before returning `OK`                                                                                                                                     |
+| `localServiceAvailable`        | The local node has durably prepared its receive path for the recognized peer | Atomically before sending any Recognize; or, for an inbound first Recognize, before returning `OK`                                                                                             |
+| `remoteServiceReachable`       | Current authenticated communication with the pinned peer has been observed   | Any authenticated request, including the first Recognize once its preparation commits; valid Health `available`/`degraded`; valid Recognize `OK`; or another definitive authenticated response |
 
 The peer lifecycle is this closed abstract protocol model. Its labels state only
 whether communication with the peer may continue automatically and do not
 require an implementation to store one same-named enum or to duplicate every
 failure cause as a lifecycle value:
 
-| State          | Exact definition                                                                                                                                                                                           |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unrecognized` | No usable pinned/recognition identity exists.                                                                                                                                                              |
-| `establishing` | The peer is pinned and recognized, but bidirectional Recognize or service-readiness facts have not converged; only handshake control operations and directionally opened lightweight requests are allowed. |
-| `available`    | Bidirectional recognition, service readiness, a valid round trip, identity, version, and policy are all valid, with no unresolved transport degradation.                                                   |
-| `degraded`     | Bidirectional recognition is established, but current reachability evidence is absent or a retryable transport or service failure occurred.                                                                |
-| `halted`       | Verifiable hard-failure evidence exists; automatic Recognize, Health retries, and data-plane communication stop pending local administrator action.                                                        |
+| State          | Exact definition                                                                                                                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `unrecognized` | No usable pinned/recognition identity exists.                                                                                                                                                          |
+| `establishing` | Identity validation, pinning, policy admission, or local receive-path preparation is in progress but has not committed. It MUST NOT remain the durable state once the node is ready to send Recognize. |
+| `available`    | The peer identity is pinned and locally recognized, the receive path is prepared, and current authenticated reachability evidence exists, with no unresolved transport degradation.                    |
+| `degraded`     | The peer identity is pinned and locally recognized and the receive path is prepared, but current reachability has not yet been established or a retryable transport or service failure occurred.       |
+| `halted`       | Verifiable hard-failure evidence exists; automatic Recognize, Health retries, and data-plane communication stop pending local administrator action.                                                    |
 
 A node MUST retain outside the lifecycle the original evidence and reason causing `halted`, such as a stable HTTP error from the target peer, a local policy block, pinned-root contradiction, or absence of a common version. Each cause retains its distinct wire error and security meaning but is not a lifecycle state. An implementation MAY use additional pending or diagnostic fields but MUST NOT persist Health's `unavailable` result as a same-named lifecycle state.
 
-Health's `available | degraded | unavailable` is a privacy projection of local state and query permission, not the lifecycle enum. Health MAY provide reachability evidence for transitions between local `available` and `degraded`; it MUST NOT commit or invent a recognition-direction fact or cause the local peer to enter `halted`. An ordinary operation MUST NOT authorize solely from the `available` or `degraded` label. If complete bidirectional recognition facts, pinned identity, common version, policy, and operation-specific business authorization remain valid, a transport-only `degraded` peer MAY still send and receive the ordinary data plane. An `establishing` peer MAY use only `recognize`, `health`, and directionally opened `feed-heads`.
+Health's `available | degraded | unavailable` is a privacy projection of local
+state and query permission. A valid `available` or `degraded` result is also the
+responder's recognition assertion to the requester; the requester MUST record
+that inbound confirmation. Health MAY provide reachability evidence for
+transitions between local `available` and `degraded`, but MUST NOT supply a
+missing outbound Recognize `OK` or cause the local peer to enter `halted`. An
+ordinary operation MUST NOT authorize solely from a lifecycle label. Admission
+also requires the applicable recognition evidence, valid identity/version/policy
+state, and the operation's business authorization.
 
 Local `available` is calculated as:
 
 ```text
 available =
-  outboundRecognitionConfirmed
-  AND inboundRecognitionConfirmed
+  recognizesPeer
   AND localServiceAvailable
   AND remoteServiceReachable
   AND pinned identity is valid
@@ -106,11 +130,11 @@ available =
 ```mermaid
 stateDiagram-v2
     [*] --> unrecognized
-    unrecognized --> establishing: pin peer root and initiate recognition
-    establishing --> establishing: await bidirectional Recognize convergence
-    establishing --> available: bidirectional Recognize + reachability evidence
+    unrecognized --> establishing: validate identity and prepare receive path
+    establishing --> degraded: atomically pin, recognize, prepare, and retain Recognize work
+    degraded --> available: authenticated request or valid protocol round trip
     available --> degraded: Health unavailable / transient failure
-    degraded --> available: Health available/degraded / valid protocol round trip
+    degraded --> degraded: Recognize direction work remains independent
     unrecognized --> halted: local policy hard stop
     establishing --> halted: verifiable hard failure
     available --> halted: verifiable hard failure
@@ -122,19 +146,18 @@ Externally observable state transitions MUST be equivalent to this table.
 changes in the same row; no peer or recovery path may observe a prohibited
 intermediate authorization state.
 
-| Event                                                                                                     | Prior state                               | Local fact change                                                                                        | Next state and handling                                           |
-| --------------------------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Initiate recognition and pin peer root                                                                    | `unrecognized`                            | Set `recognizesPeer`; retain pending Recognize work                                                      | `establishing`                                                    |
-| Successfully process inbound Recognize                                                                    | `establishing` / `available` / `degraded` | Set inbound confirmation and lightweight gate                                                            | Recompute; this request alone cannot supply outbound confirmation |
-| Receive Recognize `OK` for the local direction                                                            | `establishing`                            | Set outbound confirmation                                                                                | Recompute                                                         |
-| Health returns `available` / `degraded`                                                                   | `establishing` / `degraded` / `available` | Set only remote reachable and clear transport degradation; do not supply direction facts                 | Recompute                                                         |
-| Health returns `unavailable`, times out, or is invalid                                                    | `available` / `degraded`                  | Clear remote reachable and record transport degradation                                                  | `degraded`; do not enter `halted`                                 |
-| Health returns `unavailable`, times out, or is invalid                                                    | `establishing`                            | Retain unconverged direction facts and record reachability failure                                       | Remain `establishing`                                             |
-| Successfully authenticate and process a normal S2S request or definitive response                         | `available` / `degraded`                  | Set remote reachable and clear transport-only degradation; do not supply recognition direction facts     | Recompute                                                         |
-| Network failure, timeout, or HTTP `503`                                                                   | `available` / `degraded`                  | Clear remote reachable; retain pin, direction facts, and business state                                  | `degraded`                                                        |
-| Retryable Recognize failure                                                                               | `establishing`                            | Retain pin, committed direction facts, and retry work                                                    | Remain `establishing`                                             |
-| Authenticated hard-error response from the target peer, or independently validated hard-security evidence | Any non-`halted`                          | Retain original response or evidence and cause, clear runtime reachability, stop automatic communication | `halted`                                                          |
-| Local administrative policy hard stop                                                                     | Any non-`halted`                          | Record local policy cause and stop automatic communication                                               | `halted`                                                          |
+| Event                                                                                                                                                 | Prior state                     | Local fact change                                                                                                                                                                                                    | Next state and handling                         |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Commit outbound recognition preparation                                                                                                               | `unrecognized` / `establishing` | Pin and recognize the peer, prepare the receive path, retain pending Recognize work                                                                                                                                  | `degraded`                                      |
+| Successfully process inbound Recognize                                                                                                                | Any non-`halted`                | Atomically pin or verify and recognize the peer, prepare the receive path, set inbound confirmation and lightweight gate, retain reverse Recognize work, and mark the authenticated request as reachability evidence | `available`; never supply outbound confirmation |
+| Receive Recognize `OK` for the local direction                                                                                                        | `degraded` / `available`        | Set outbound confirmation and treat the definitive response as reachability evidence                                                                                                                                 | Recompute                                       |
+| Health returns `available` / `degraded`                                                                                                               | `degraded` / `available`        | Confirm inbound recognition, open the prepared inbound gate, set remote reachable, and clear transport degradation                                                                                                   | `available`                                     |
+| Health returns `unavailable`, times out, or is invalid                                                                                                | `available` / `degraded`        | Clear remote reachable and record transport degradation                                                                                                                                                              | `degraded`; do not enter `halted`               |
+| Successfully authenticate any other request from a pinned and locally recognized peer with a prepared receive path, or validate a definitive response | `available` / `degraded`        | Set remote reachable and clear transport degradation; do not supply recognition direction facts                                                                                                                      | `available`                                     |
+| Network failure, timeout, or HTTP `503`                                                                                                               | `available` / `degraded`        | Clear remote reachable; retain pin, direction facts, and business state                                                                                                                                              | `degraded`                                      |
+| Retryable Recognize failure                                                                                                                           | `degraded`                      | Retain pin, committed direction facts, receive readiness, and retry work                                                                                                                                             | Remain `degraded`                               |
+| Authenticated hard-error response from the target peer, or independently validated hard-security evidence                                             | Any non-`halted`                | Retain original response or evidence and cause, clear runtime reachability, stop automatic communication                                                                                                             | `halted`                                        |
+| Local administrative policy hard stop                                                                                                                 | Any non-`halted`                | Record local policy cause and stop automatic communication                                                                                                                                                           | `halted`                                        |
 
 Only an HTTP `409` carrying a fatal code registered here from the target peer of this request, over the same hostname-verified TLS connection and authority, or a locally validated hard pinned-root, version, or policy conflict MAY trigger `halted`. An unauthenticated proxy response, TLS or connection failure, timeout, HTTP `503`, malformed response, or Health `unavailable` MUST NOT trigger `halted`; an established peer enters `degraded` for those availability failures.
 
@@ -142,21 +165,38 @@ After entering `halted`, the protocol defines no automatic recovery path or admi
 
 Operation gates are calculated separately from lifecycle:
 
-| Operation class                                     | Required gate                                                                                                                                                           |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                 |
-| `health`                                            | status signed; failures uniformly project as `unavailable`                                                                                                              |
-| `feed-heads`                                        | `lightweightInboundReady` in that signer direction                                                                                                                      |
-| Ordinary recognized data                            | Pinned identity, both direction confirmations, common version, policy, and operation-specific business authorization; transport-only `degraded` does not close the gate |
-| Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it                                                                        |
+| Operation class                                     | Required gate                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                                                                                  |
+| `health`                                            | status signed; failures uniformly project as `unavailable`                                                                                                                                                                                                                                                               |
+| `feed-heads`                                        | `lightweightInboundReady` in that signer direction                                                                                                                                                                                                                                                                       |
+| Ordinary recognized data sent by the local node     | Pinned and locally recognized peer, prepared receive path, confirmed outbound Recognize delivery, peer recognition confirmed by reverse Recognize or positive Health, current authenticated reachability with no unresolved transport degradation, common version, policy, and operation-specific business authorization |
+| Ordinary recognized data received from the peer     | Pinned and locally recognized peer, prepared receive path, the peer's recognition of the local node confirmed by its Recognize, common version, policy, and operation-specific business authorization                                                                                                                    |
+| Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it                                                                                                                                                                                                                         |
 
 Sending Recognize, enqueuing a retry, reading well-known, or merely validating a request signature MUST NOT set the corresponding confirmed fact early. A connected network socket is not a recognition fact. A transient disconnect MUST NOT delete an identity pin or direction fact, although it MAY change current availability from `available` to `degraded`.
 
-After Recognize is sent, a timeout, DNS/TLS/connect failure, interrupted response, or retryable server failure retains the already established `recognizesPeer` fact and remains `establishing`; it MUST NOT invent outbound confirmation. `degraded` applies only to a peer with completed bidirectional recognition and impaired current reachability. An unconverged handshake uses `establishing`.
+After Recognize is sent, a timeout, DNS/TLS/connect failure, interrupted
+response, or retryable server failure retains the already committed
+`recognizesPeer`, prepared receive path, and `degraded` state. It MUST NOT invent
+outbound confirmation. Recognition direction work continues independently from
+the availability lifecycle.
 
-Ordinary feed, call, user, media, and forward-bundle operations use the `recognized signed` context from protocol.md and do not use the cached `available` label as a protocol gate. The only lightweight request is `feed-heads`. Before sending Recognize `OK`, the receiver MUST be ready to accept it from that signer. The sender MAY send it in that direction only after receiving `OK`. Its lossy, non-durable payload does not open another data-plane operation before the handshake converges.
+Ordinary feed, call, user, media, and forward-bundle operations use the
+`recognized signed` context from protocol.md and do not use the cached
+`available` label as a protocol gate. A sender MUST have both its delivered
+Recognize fact and the peer's recognition assertion. A receiver uses the
+requester's Recognize fact plus its own local recognition decision; it MUST NOT
+require successful delivery of a redundant reverse notification before accepting
+otherwise authorized traffic. A valid request whose signature can be
+authenticated through an already prepared receive path refreshes availability.
 
-`localServiceAvailable` is distinct from local peer lifecycle `available`: the former means “this server is ready” and MAY become true before sending the reverse request, while the latter also requires successful confirmation of the remote peer. Health returns a privacy-safe view of the local lifecycle. Both Health `available` and `degraded` mean that a recognition relationship exists and the signed peer may query it.
+`localServiceAvailable` is distinct from local peer lifecycle `available`: the
+former means “this server is ready to receive from the recognized peer,” while
+the latter additionally records current authenticated reachability. Health
+returns a privacy-safe view of the local lifecycle. Both Health `available` and
+`degraded` mean that the requester's identity is pinned and locally recognized
+and the receive path is prepared.
 
 ## 4. Identity verification, recognition, and pinning
 
@@ -169,11 +209,16 @@ Before sending Recognize to peer domain `B`, A MUST:
 3. Select the highest common major version and require the selected version to be `1`, matching the request path.
 4. Strictly decode `rootKey.ed25519` to exactly 32 bytes.
 5. Validate at least one currently valid, root-authorized signing-key certificate for B.
-6. Atomically pin B's root public key, record `recognizesPeer`, and set the peer lifecycle to `establishing` before constructing and sending the HTTP request.
+6. Atomically pin B's root public key, record `recognizesPeer`, prepare the local receive path, and retain retryable Recognize work before constructing and sending the HTTP request. The committed lifecycle MUST be at least `degraded`; it MAY remain `available` if A already has current authenticated reachability evidence for B.
 
 Successfully reading well-known alone does not constitute recognition. The caller MAY send Recognize only after completing these checks and making the local recognition decision. For an already pinned peer, the newly read root MUST byte-for-byte match the pin.
 
-Step 6 is the mandatory commit boundary for the initiator. The local recognition and `establishing` state remain valid even if the subsequent operation times out, the connection resets, or the server returns HTTP `503`. Only a hard rejection or security failure defined in Section 8 can make this recognition unavailable. An implementation MUST NOT misclassify ordinary network uncertainty as rejection or identity loss.
+Step 6 is the mandatory commit boundary for the initiator. The local recognition,
+receive readiness, and `degraded` state remain valid even if the subsequent
+operation times out, the connection resets, or the server returns HTTP `503`.
+Only a hard rejection or security failure defined in Section 8 can make this
+recognition unavailable. An implementation MUST NOT misclassify ordinary
+network uncertainty as rejection or identity loss.
 
 ### 4.2 The recipient validates the recognition claim
 
@@ -185,7 +230,11 @@ After receiving A's Recognize request, B MUST:
 4. If a root pin or prior authenticated record exists for A, require the newly obtained root to match it byte for byte.
 5. Apply local admission policy and verify that B currently permits establishing this peer.
 
-Fetching and validating A's well-known document proves only that the request was made with A's current Federation signing key. Until B's reverse Recognize succeeds, this step MUST NOT be described as B having received A's reverse confirmation of B.
+Fetching and validating A's well-known document proves only that the request was
+made with A's current Federation signing key. B's subsequent atomic pinning,
+policy decision, and receive-path preparation establish B's local recognition
+of A. A learns that fact when it successfully processes B's reverse Recognize
+or receives B's valid `available` or `degraded` Health result.
 
 ### 4.3 Root and signing-key continuity
 
@@ -214,10 +263,19 @@ The request MUST be constructed in the common order defined in protocol.md: fina
 After all validation and policy checks succeed, B MUST atomically complete the following before returning a response:
 
 1. Pin or verify A's root identity.
-2. Commit `inboundRecognitionConfirmed` while preserving the time of first confirmation.
-3. Commit `lightweightInboundReady`, so a `feed-heads` sent by A immediately after receiving `OK` is not rejected by an unready admission gate.
-4. Ensure that reverse `B → A Recognize` work will execute and can resume after crash recovery.
-5. If `recognizesPeer(A)` existed before B began processing the request, B MUST set `localServiceAvailable` before returning `OK`. B MUST NOT set `outboundRecognitionConfirmed` merely because of this inbound request: it may be the reverse direction or an independently initiated concurrent request, and does not prove that A committed a Recognize previously sent by B.
+2. Apply B's local admission policy and commit `recognizesPeer(A)`.
+3. Prepare B's receive path and commit `localServiceAvailable`.
+4. Commit `inboundRecognitionConfirmed` while preserving the time of first confirmation.
+5. Commit `lightweightInboundReady`.
+6. Durably ensure that reverse `B → A Recognize` work will execute and can resume after crash recovery.
+7. Treat this authenticated Recognize as current reachability evidence and set B's peer lifecycle to `available`.
+
+B MUST NOT set `outboundRecognitionConfirmed` merely because of this inbound
+request: it may be the reverse direction or an independently initiated
+concurrent request, and does not prove that A committed a Recognize previously
+sent by B. A first bootstrap Recognize MAY establish the prepared peer facts and
+the `available` lifecycle in the same externally indivisible commit because the
+successfully authenticated request itself is current reachability evidence.
 
 After a successful commit, return a closed `RecognizeOk` JSON object. The formatted JSON below is a complete valid response; whitespace and line breaks have no application semantics:
 
@@ -237,9 +295,10 @@ one externally indivisible commit. A may adopt
 `outboundRecognitionConfirmed` only after receiving HTTP `200`, strictly
 validating the `RecognizeOk` shape above, and confirming that the response came
 from the same TLS connection and authority as the request. A timeout or network
-error cannot substitute for this confirmation. A peer with an incomplete
-handshake remains `establishing`; only a peer that previously completed
-bidirectional recognition may enter `degraded`.
+error cannot substitute for this confirmation. Missing direction confirmation
+retains its retry work but does not prevent the already prepared peer from
+remaining `degraded` or from becoming `available` through later authenticated
+reachability evidence.
 
 The response does not use an additional detached signature. Hostname-verified
 HTTPS authenticates the responder, while B's indivisible durable commit and the
@@ -247,21 +306,21 @@ fixed response semantics confirm the request direction fact.
 
 ### 5.3 Preflight before reverse Recognize
 
-After successfully committing `A → B` and returning the first `OK`, B MUST
-complete local preparation before starting `B → A`. Before sending the HTTP
-request, B MUST make the following effects durably recoverable as one externally
-indivisible commit:
+The Section 5.2 commit is also the reverse-Recognize preflight. B MUST return the
+first `OK` before dispatching network work for `B → A`, but all identity pinning,
+local recognition, receive-path preparation, an at-least-`degraded` lifecycle
+state, and
+durable reverse-work state MUST already be committed before that response.
 
-1. Make and persist `recognizesPeer(A)`; the A root used during validation becomes the pinned identity anchor.
-2. Prepare to process authorized requests that A may subsequently send, including the state needed by both lightweight-hint receive paths.
-3. Set `localServiceAvailable`, so A's subsequent valid Health query can return at least `degraded` rather than `unavailable`.
-4. Durably record pending reverse-Recognize work, so a crash cannot leave the service prepared but the reverse recognition permanently unsent.
-
-B MAY send the reverse HTTP Recognize only after that commit. The protocol does
-not prescribe a database transaction, queue, or worker representation.
-`localServiceAvailable` means B is ready; it does not mean A received the
-reverse request. B therefore MUST NOT assume `remoteServiceReachable` before
-receiving A's reverse `OK`.
+B MAY dispatch the reverse HTTP Recognize only after the first response has
+been returned. The protocol does not prescribe a database transaction, queue,
+or worker representation. `localServiceAvailable` means B is ready to receive;
+it does not mean A received the reverse request. B therefore MUST NOT invent
+`outboundRecognitionConfirmed`. A later authenticated request from A may prove
+current reachability and promote B to `available`. Reverse Recognize remains the
+proactive notification and convergence path until its own valid `OK` is
+committed; A need not wait for it when positive Health has already supplied the
+same inbound recognition assertion.
 
 ## 6. Complete sequence
 
@@ -273,21 +332,21 @@ sequenceDiagram
 
     A->>B: GET /.well-known/somfp
     B-->>A: B versions, root, signing certificates
-    Note over A: Validate and pin B root<br/>A recognizes B
+    Note over A: Atomically pin and recognize B,<br/>prepare receive path; status = degraded
     A->>B: POST /s2s/v1/recognize {}
-    Note over B: Fetch A well-known and verify signature<br/>Atomically commit inboundRecognitionConfirmed<br/>and lightweightInboundReady
+    Note over B: Verify and pin A; atomically recognize A,<br/>prepare receive path and reverse work;<br/>authenticated request makes status = available
     B-->>A: 200 {ok: true}
-    Note over A: Commit outboundRecognitionConfirmed<br/>feed-heads may now be sent to B
+    Note over A: Commit outboundRecognitionConfirmed<br/>and authenticated reachability; status = available
 
-    Note over B: Pin A root and prepare service before sending<br/>Health can return at least degraded
+    Note over B: Return the first OK before dispatching reverse network work
     B->>A: POST /s2s/v1/recognize {}
-    Note over A: Commit inbound fact, lightweight gate,<br/>and localServiceAvailable<br/>Do not infer outbound from reverse request
+    Note over A: Commit inbound fact; authenticated request<br/>refreshes reachability without supplying outbound confirmation
     A-->>B: 200 {ok: true}
-    Note over B: Commit outboundRecognitionConfirmed<br/>and remoteServiceReachable; status = available
+    Note over B: Commit outboundRecognitionConfirmed<br/>and authenticated reachability; status = available
 
     A->>B: GET /s2s/v1/health
     B-->>A: 200 {status: available | degraded}
-    Note over A: Health updates only remoteServiceReachable<br/>status = available once all facts converge
+    Note over A: Positive Health confirms B recognizes A<br/>and refreshes reachability
 
     Note over A,B: Both peers are available<br/>Ordinary signed S2S operations are allowed
 ```
@@ -305,9 +364,9 @@ sequenceDiagram
     A->>B: Recognize A → B
     Note over B: Commit "A recognizes B" and lightweight receive gate
     B--xA: 200 OK lost or timed out
-    Note over A: Retain B root and recognizesPeer<br/>status = establishing
+    Note over A: Retain B root, receive readiness,<br/>and retry work; status = degraded
 
-    Note over B: Prepare service before sending<br/>Health status is at least degraded
+    Note over B: First request committed recognition,<br/>receive readiness, reverse work, and reachability<br/>status = available
     B->>A: Reverse Recognize B → A
     Note over A: Prepare service and commit lightweight gate<br/>Reverse request does not infer outbound
     A-->>B: 200 {ok: true}
@@ -315,14 +374,18 @@ sequenceDiagram
 
     A->>B: Health (event-triggered, not periodic polling)
     B-->>A: 200 {status: available | degraded}
-    Note over A: Update reachability only<br/>Do not infer outbound confirmation<br/>still establishing
+    Note over A: Confirm inbound recognition and reachability<br/>Do not infer outbound confirmation<br/>status remains available
 
     A->>B: Idempotently retry original-direction Recognize
     B-->>A: 200 {ok: true}
-    Note over A: Commit outboundRecognitionConfirmed<br/>status = available once all facts converge
+    Note over A: Commit outboundRecognitionConfirmed<br/>availability remains independent
 ```
 
-If A's first request never reached B, B does not initiate reverse Recognize because of that request. A remains `establishing` and retries under Section 8. If both parties independently initiate Recognize, the same rules converge through the two idempotent direction facts.
+If A's first request never reached B, B does not initiate reverse Recognize
+because of that request. A remains `degraded` with retryable outbound work. If
+both parties independently initiate Recognize, the same rules converge through
+the idempotent direction facts; positive Health confirms inbound recognition
+but never replaces a missing outbound Recognize `OK`.
 
 ## 7. Retries, duplicates, and concurrency
 
@@ -331,7 +394,7 @@ The application-level idempotency coordinate for Recognize is `(signerDomain, re
 - First success in a direction: commit the direction fact and return `OK`.
 - Duplicate request with the same root identity: MUST NOT reset the first-confirmation time, cursor, mirror, or application authorization; return the same `OK` semantics and ensure missing reverse-Recognize work can continue.
 - Same domain with a different root: MUST fail as an identity mismatch and MUST NOT replace the pin.
-- Concurrent directions: MAY commit independently. Each direction is confirmed only by its own valid `OK`; an implementation MUST NOT infer an outbound fact merely from an existing `recognizesPeer` fact or a Health result. The final result MUST equal either serial ordering.
+- Concurrent directions: MAY commit independently. A valid Recognize `OK` confirms its outbound direction; positive Health confirms only the requester's inbound recognition fact and MUST NOT supply a missing outbound `OK`. The final result MUST equal either serial ordering.
 - Lost response: retain direction facts already committed by the recipient; the sender keeps outbound unconfirmed and safely retries Recognize.
 
 Each HTTP retry uses the same JSON application semantics but MUST regenerate `Date`, `created`, `expires`, and the HTTP signature. Because the body contains neither time nor nonce, its bytes and `Content-Digest` MAY remain unchanged.
@@ -369,29 +432,44 @@ not identity mismatch.
 
 ### 8.2 Requester A: consuming the response and updating local state
 
-A is already `establishing` before the HTTP request is sent, but MUST NOT infer that B committed merely because the request was sent. A MUST handle the result as follows:
+A is already prepared and `degraded` before the HTTP request is sent, but MUST NOT infer that B committed merely because the request was sent. A MUST handle the result as follows:
 
-| Result observed by A                                                  | A's local state                                     | Required action by A                                                                  |
-| --------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| HTTP `200` with valid `{"ok":true}`                                   | Set outbound confirmed; recompute from all facts    | Await reverse Recognize; hints may be sent in the direction that returned `OK`        |
-| Timeout, DNS/connect failure, TLS interruption, or truncated response | Keep outbound unconfirmed and remain `establishing` | Retry with backoff; MUST NOT revoke the pinned root                                   |
-| HTTP `503`                                                            | Keep outbound unconfirmed and remain `establishing` | Retain the pin and back off using code retry information or local policy              |
-| HTTP `200` with an invalid body or non-`OK` result                    | Remain `establishing`                               | Record a protocol-response error; do not treat it as success or retry in a tight loop |
-| Malformed, bad signature, or binding violation                        | Retain lifecycle, pin, and committed facts          | Stop identical automatic retries; resume after fixing the request or implementation   |
-| HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`                | `halted`; retain version reason                     | Stop automatic communication; do not transparently downgrade                          |
-| HTTP `409` + `FEDERATION_PEER_BLOCKED`                                | `halted`; retain remote-blocked reason              | Stop automatic communication                                                          |
-| HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; clear reachability and retain old pin     | Fail closed and stop automatic communication                                          |
-| A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence      | MUST NOT continue the handshake as an ordinary network error                          |
+| Result observed by A                                                  | A's local state                                  | Required action by A                                                                           |
+| --------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| HTTP `200` with valid `{"ok":true}`                                   | Set outbound confirmed; recompute from all facts | Await reverse Recognize or query Health; hints may be sent in the direction that returned `OK` |
+| Timeout, DNS/connect failure, TLS interruption, or truncated response | Keep outbound unconfirmed and remain `degraded`  | Retry with backoff; MUST NOT revoke the pinned root                                            |
+| HTTP `503`                                                            | Keep outbound unconfirmed and remain `degraded`  | Retain the pin and back off using code retry information or local policy                       |
+| HTTP `200` with an invalid body or non-`OK` result                    | Remain `degraded`                                | Record a protocol-response error; do not treat it as success or retry in a tight loop          |
+| Malformed, bad signature, or binding violation                        | Retain lifecycle, pin, and committed facts       | Stop identical automatic retries; resume after fixing the request or implementation            |
+| HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`                | `halted`; retain version reason                  | Stop automatic communication; do not transparently downgrade                                   |
+| HTTP `409` + `FEDERATION_PEER_BLOCKED`                                | `halted`; retain remote-blocked reason           | Stop automatic communication                                                                   |
+| HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; clear reachability and retain old pin  | Fail closed and stop automatic communication                                                   |
+| A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence   | MUST NOT continue the handshake as an ordinary network error                                   |
 
 An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the three fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST take the safer action defined in protocol.md, but MUST NOT replace or delete a root pin without an identity contradiction.
 
 ### 8.3 Lost responses and reverse-Recognize convergence
 
-Valid `OK` advances A's outbound confirmation. A subsequent valid reverse Recognize from B triggers only A's service preparation and Health convergence; it cannot independently prove that B committed the earlier direction. Health updates reachability only. Only a valid `OK` from an idempotent retry in the original direction MAY supply outbound confirmation missing because the response was lost.
+Valid `OK` advances A's outbound confirmation. A subsequent valid reverse
+Recognize from B, or a valid `available`/`degraded` Health result from B,
+confirms that B recognizes A. Neither can independently prove that B committed
+the earlier A-to-B direction. Only a valid `OK` from an idempotent retry in the
+original direction MAY supply outbound confirmation missing because the
+response was lost.
 
-If the first `A → B` attempt does not yield a valid `OK`, A remains `establishing` and MUST NOT become `available`. B can initiate reverse Recognize only after successfully validating and committing the request. If only the response was lost after commit, B MUST still continue the reverse flow. Reverse Recognize itself does not prove that B committed the first direction. A MUST retain the missing outbound confirmation and idempotently retry the original direction; no Health result may fill that fact.
+If the first `A → B` attempt does not yield a valid `OK`, A retains its prepared
+`degraded` state and MUST keep the missing outbound confirmation explicit. B can
+initiate reverse Recognize only after successfully validating and committing
+the request. If only the response was lost after commit, B MUST still continue
+the reverse flow. Reverse Recognize itself does not prove that B committed the
+first direction. A MUST idempotently retry the original direction; no Health or
+ordinary request may fill the missing outbound fact.
 
-If the first `OK` succeeds but reverse `B → A` fails, completed direction facts MUST be retained and both parties remain `establishing`. B retries the reverse request according to the error class or awaits administrator action. It MUST NOT roll back the first recognition or open the ordinary data plane as compensation.
+If the first `OK` succeeds but reverse `B → A` fails, completed direction facts
+MUST be retained. Both parties remain at least `degraded`, and either may be
+`available` when independent authenticated reachability evidence exists. B
+retries the reverse request according to the error class or awaits
+administrator action. Availability MUST NOT cancel the missing direction work.
 
 ### 8.4 Blocklist
 
@@ -443,11 +521,16 @@ B MUST return exactly one of the following three closed objects:
 { "status": "unavailable" }
 ```
 
-Only when the request validates against A's identity pinned by B, and both body binding and query authorization are valid, MAY B return `available` or `degraded`:
+Only when the request validates against A's identity pinned and locally
+recognized by B, and both body binding and query authorization are valid, MAY B
+return `available` or `degraded`. The response projects the state at request
+admission; after successful authentication, the request itself refreshes B's
+reachability state, so a response may report the previously observed
+`degraded` state while B commits `available` for subsequent operations:
 
 - Return `available` when B's local peer lifecycle is `available`.
-- Return `degraded` when B has committed `inboundRecognitionConfirmed(A)` and `localServiceAvailable=true`, but B's own outbound confirmation, remote round trip, or recoverable transport state has not converged. A reverse-Recognize sender MUST prepare its service before sending the HTTP request. If the original `A → B` was committed, A's subsequent Health receives at least `degraded`. If the parties only initiated concurrently and B has not committed `A → B`, B MUST return `unavailable`.
-- Both `available` and `degraded` prove that B committed the inbound direction fact “A recognizes B,” recognizes A's pinned identity, and successfully completed this signed request round trip. They differ only in B's own view of connection state.
+- Return `degraded` when B has pinned and locally recognized A and prepared its receive path, but current reachability was absent at admission. Missing outbound Recognize confirmation MAY coexist with either Health result and remains independently retryable.
+- Both `available` and `degraded` prove that B recognizes A's pinned identity and has prepared its receive path. A MUST consume either result as inbound recognition confirmation; neither result supplies a missing outbound Recognize `OK`.
 
 The following cases MUST uniformly return HTTP `200` with `{"status":"unavailable"}`:
 
@@ -463,20 +546,37 @@ This `unavailable` result is only an external privacy projection; it does not er
 
 ### 9.2 Requester A: consuming a Health result
 
-| Result observed by A                                | Local action A MUST take                                                                                                                                      |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Valid `available` or `degraded`                     | Set only remote reachable and clear transport-only degradation; do not set outbound confirmed or another direction fact                                       |
-| Valid `unavailable`                                 | For an established peer, clear remote reachable and enter `degraded`; an `establishing` peer remains unchanged; retain pins and direction facts in both cases |
-| Timeout, network error, HTTP `503`, or invalid body | Handle reachability like `unavailable`; accept no state assertion from the response                                                                           |
-| HTTP `400`, `401`, or another unexpected status     | Treat only this query as failed; do not change peer lifecycle solely for this reason                                                                          |
+| Result observed by A                                | Local action A MUST take                                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Valid `available` or `degraded`                     | Confirm inbound recognition and prepared inbound admission, set remote reachable, and clear availability degradation; do not set outbound confirmed |
+| Valid `unavailable`                                 | Clear remote reachable and enter or retain `degraded`; retain pins, receive readiness, and direction facts                                          |
+| Timeout, network error, HTTP `503`, or invalid body | Handle reachability like `unavailable`; accept no state assertion from the response                                                                 |
+| HTTP `400`, `401`, or another unexpected status     | Treat only this query as failed; do not change peer lifecycle solely for this reason                                                                |
 
-A receiving valid `available` or `degraded` atomically becomes `available` if its bidirectional recognition facts were independently completed and `localServiceAvailable`, identity, version, and policy are all valid. B returning `degraded` does not prevent this transition because the value describes B's own observation. If direction facts have not converged, A MUST remain `establishing` and continue Recognize; it MUST NOT use Health to bypass the handshake.
+A receiving valid `available` or `degraded` MUST record that B recognizes A and
+is prepared to receive A's Federation traffic. A atomically becomes `available`
+when its pinned identity, local recognition, receive readiness, version, and
+policy remain valid. A missing outbound Recognize `OK` and its retry work remain
+unchanged.
 
 A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted` solely because of that result. `halted` requires either an authenticated, non-automatically-recoverable HTTP error from the target peer as defined in Section 8 or hard security evidence independently verified by A.
 
 ### 9.3 Other reachability evidence and convergence optimization
 
-In addition to Health, a normal S2S request initiated by a recognized peer that is successfully authenticated and processed, or a validated success or definitive application response to a locally initiated request, MAY serve as fresh evidence of `remoteServiceReachable` and clear transport-only degradation. An application rejection MAY also restore reachability when it proves that the peer processed the request normally. A malformed proxy response, network error, unverifiable response, or `5xx` provides no such evidence. This rule MUST NOT invent an unestablished recognition direction fact.
+In addition to Health, every request whose signer is successfully authenticated
+against a pinned, locally recognized, and receive-ready peer MUST serve as fresh
+evidence of `remoteServiceReachable`, regardless of whether later shape or
+operation-specific business authorization succeeds. Recognize, Health,
+`feed-heads`, and ordinary operations all qualify. A first bootstrap Recognize
+qualifies atomically once its identity validation, pinning, recognition
+decision, and receive-path preparation succeed. A validated success or
+definitive application response to
+a locally initiated request also supplies reachability evidence. An
+unauthenticated request, malformed or unverifiable response, network error, or
+`5xx` provides no such evidence. This general reachability rule alone MUST NOT
+invent an unestablished recognition fact or cancel its retry work; the positive
+Health assertion defined in Section 9.2 is the explicit inbound-confirmation
+path.
 
 When B sends reverse Recognize and receives A's `OK`, B MAY omit an additional Health call to A: before returning that reverse `OK`, A completed `localServiceAvailable` under Section 5.2, so the `OK` also provides equivalent evidence of `remoteServiceReachable`. Because the first `OK` may have been lost, A MUST continue idempotently retrying the original-direction Recognize. No status returned by B's Health can supply A's missing outbound confirmation.
 

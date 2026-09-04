@@ -21,9 +21,9 @@ export interface NotifAction {
 }
 
 export interface NotificationDescriptor {
-  /** Stable id; posting the same tag REPLACES (coalesce). `'soms-away'` = the away-summary; unique = new. */
+  /** Stable per-thread id; posting the same tag replaces that conversation's prior notification. */
   tag: string;
-  /** Template/action discriminator: `'thread-message'` | `'clear'` | (extensible). */
+  /** Template/action discriminator: `'thread-message'` today; extensible for future notification kinds. */
   kind: string;
   title: string;
   body: string;

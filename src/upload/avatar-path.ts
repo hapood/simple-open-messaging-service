@@ -4,49 +4,18 @@ import {
   type ValidationArguments,
 } from 'class-validator';
 
-/**
- * Avatar path/shape helpers — the single source of truth for the multi-size avatar pipeline's size
- * list and the URL/filename shapes it emits. Shared by:
- *  - {@link UploadService.saveAvatars} (writer) — imports AVATAR_SIZES/AVATAR_MAX,
- *  - the {@link IsValidAvatarPath} DTO validator (rejects /uploads/cas/ + external URLs for
- *    Group.avatar, so a group avatar can never sit under the per-object authz gate's shards/ scope),
- *  - avatar URL parsing and responsive-size selection.
- *
- * URL shape: `/uploads/avatars/<base>-<size>.webp`. `<base>` = `${Date.now()}-${randomBytes(6).hex}`
- * (hyphenated); `<size>` ∈ AVATAR_SIZES.
- */
+/** A validated avatar is stored once, with an extension derived from its actual bytes. */
+export const AVATAR_URL_RE =
+  /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/;
 
-/** Avatar multi-size output widths (px). sharp re-encodes each; the largest is the representative URL.
- *  Single backend source — UploadService reads this, the regexes below embed it. Keep sorted asc. */
-export const AVATAR_SIZES = [32, 64, 128, 256, 512] as const;
-
-/** The representative (largest) size — the URL stored on User.avatar / Group.avatar. */
-export const AVATAR_MAX = 512;
-
-const SIZE_ALT = AVATAR_SIZES.join('|');
-
-/** Matches an avatar URL: `/uploads/avatars/<base>-<size>.webp`. Captures `<base>`. The literal
- *  `avatars/` segment + the absence of any other `/` after it distinguishes it from `/uploads/cas/*`
- *  NEVER matches (shards has extra path segments) — so a group avatar can never be pointed at gated
- *  chat media. External (`https://`) and `javascript:` URLs likewise fail. */
-export const AVATAR_URL_RE = new RegExp(
-  `^/uploads/avatars/([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
-);
-
-/** True iff `value` is a valid avatar URL OR the empty string (empty = clear the avatar). The empty
- *  allowance is what @IsValidAvatarPath builds on so a client can unset a group avatar. */
+/** True iff `value` is a server avatar URL or the empty-string clear sentinel. */
 export function isAvatarUrlOrEmpty(value: unknown): boolean {
   return (
     typeof value === 'string' && (value === '' || AVATAR_URL_RE.test(value))
   );
 }
 
-/**
- * class-validator decorator: the field must be a server-produced avatar URL (or empty). Used on
- * Group.avatar (create + update) so the value can only ever be an /uploads/avatars/ path the avatar
- * pipeline emitted — never a /uploads/cas/ chat-media URL (which the per-object authz gate would
- * 401) nor an external URL (which the server does not control/cleanup).
- */
+/** Require a server-produced avatar path, excluding CAS, external, and traversal URLs. */
 export function IsValidAvatarPath(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({

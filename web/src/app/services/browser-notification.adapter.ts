@@ -1,6 +1,9 @@
 import { NotificationAdapter } from './notification-adapter';
 import { NotificationPrefsService } from './notification-prefs.service';
-import type { NotificationDescriptor, NotifAction } from './notification-descriptor.model';
+import type {
+  NotificationDescriptor,
+  NotifAction,
+} from './notification-descriptor.model';
 
 /** The SW registration scope the foreground path renders through. The push service worker
  *  (web/public/push/sw-push.js) is registered at `/push/` by WebPushService.subscribeAndRegister whenever
@@ -9,9 +12,8 @@ import type { NotificationDescriptor, NotifAction } from './notification-descrip
  *  deep-link work — the SW's `notificationclick` fires for SW-shown notifications only. */
 const SW_SCOPE = '/push/';
 
-/** The `tag` prefix shared by every SOMS shade notification (`soms-away` summary, `soms-thread-<id>` per-
- *  thread) — used by {@link BrowserNotificationAdapter.clear} to close only ours among a registration's
- *  active notifications. Mirrors the backend `AWAY_SUMMARY_TAG` / per-thread tag template. */
+/** Prefix shared by every SOMS per-thread shade notification. Used by
+ * {@link BrowserNotificationAdapter.clear} to close only ours among a registration's active notifications. */
 const SOMS_TAG_PREFIX = 'soms-';
 
 /** A Web Notifications API action button — `{action, title}` (the descriptor's `NotifAction` uses `id` for
@@ -29,7 +31,9 @@ interface WebNotificationAction {
  * `style` has no API equivalent and is dropped; `type:'text'` (inline reply) is a future action not shipped
  * today, so it is folded out for now. Pure + exported for unit test.
  */
-export function mapActions(actions: NotifAction[] | undefined): WebNotificationAction[] {
+export function mapActions(
+  actions: NotifAction[] | undefined,
+): WebNotificationAction[] {
   return (actions ?? []).map((a) => ({ action: a.id, title: a.title }));
 }
 
@@ -45,8 +49,7 @@ export function mapActions(actions: NotifAction[] | undefined): WebNotificationA
  *  - `tag` (+ `renotify`) → the replace-by-tag primitive (one shade entry, re-banner on replace);
  *  - `icon` → the composited stacked-avatar PNG (null → omit, the browser shows its default);
  *  - `silent` → the quiet flag (falls back to the Sound pref when the descriptor leaves it unset);
- *  - `actions` → the native action buttons (mapped via {@link mapActions});
- *  - `kind:'clear'` → `.close()` the tagged notification (server-driven cancel).
+ *  - `actions` → the native action buttons (mapped via {@link mapActions}).
  *
  * The app-level master (`enabled`) is the in-app mute (the browser permission itself is terminal).
  */
@@ -55,9 +58,9 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
    *  not yet looked up; `null` = looked up + absent (fall back to in-page `new Notification`). */
   private swReg: ServiceWorkerRegistration | null | undefined;
 
-  /** Live in-page Notifications from the FALLBACK path only (keyed by `tag`), so `clear()` / `kind:'clear'`
-   *  can close them when no SW registration is available yet. SW-rendered notifications are closed via
-   *  `getNotifications()` instead and never enter this map. */
+  /** Live in-page Notifications from the FALLBACK path only (keyed by `tag`), so `clear()` can close them
+   * when no SW registration is available yet. SW-rendered notifications are closed via `getNotifications()`
+   * instead and never enter this map. */
   private readonly active = new Map<string, Notification>();
 
   /** In-flight `render()` promises. `clear()` drains this BEFORE `getNotifications()` so a showNotification
@@ -69,12 +72,9 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
   }
 
   async showDescriptor(d: NotificationDescriptor): Promise<void> {
-    if (d.kind === 'clear') {
-      await this.closeByTag(d.tag);
-      return;
-    }
     if (!this.prefs.enabled()) return; // app-level master (the permission is terminal; this is the mute)
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (!('Notification' in window) || Notification.permission !== 'granted')
+      return;
     // Track the in-flight render so `clear()` can await it before getNotifications().
     const p = this.render(d);
     this.pending.add(p);
@@ -163,31 +163,12 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
     if (this.swReg !== undefined) return this.swReg;
     try {
       this.swReg =
-        'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration(SW_SCOPE) : null;
+        'serviceWorker' in navigator
+          ? await navigator.serviceWorker.getRegistration(SW_SCOPE)
+          : null;
     } catch {
       this.swReg = null;
     }
     return this.swReg ?? null;
-  }
-
-  /** Close notifications carrying `tag` (a `kind:'clear'` server-driven cancel). Mirrors sw-push's clear path. */
-  private async closeByTag(tag: string): Promise<void> {
-    const reg = await this.swRegistration();
-    if (reg) {
-      try {
-        for (const n of await reg.getNotifications({ tag })) n.close();
-      } catch {
-        /* best-effort */
-      }
-    }
-    const inPage = this.active.get(tag);
-    if (inPage) {
-      try {
-        inPage.close();
-      } catch {
-        /* best-effort */
-      }
-      this.active.delete(tag);
-    }
   }
 }

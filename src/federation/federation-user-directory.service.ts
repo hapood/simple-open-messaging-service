@@ -67,7 +67,6 @@ export class FederationUserDirectoryService {
       where: and(
         eq(tables.user.account, normalizedAccount),
         eq(tables.user.domain, domain),
-        eq(tables.user.sourceDomain, domain),
         eq(tables.user.namespaceId, namespaceId),
       ),
       columns: { id: true },
@@ -76,7 +75,6 @@ export class FederationUserDirectoryService {
     return upsertSourceUserInTx(tx, {
       account: normalizedAccount,
       domain,
-      sourceDomain: domain,
       namespaceId,
       name: normalizedAccount,
       profileRev: 0,

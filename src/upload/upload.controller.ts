@@ -208,8 +208,8 @@ export class UploadController {
 
   /**
    * Avatar upload (user + group avatars): multipart/form-data, field file=<image>. Same image
-   * validation as /upload (consumeImage + magic-byte), then the sharp multi-size webp avatar
-   * pipeline (saveAvatars). Returns { avatar: representativeUrl } — the frontend stores it verbatim
+   * validation as /upload (consumeImage + magic-byte), then stores one wire-safe avatar without
+   * transforming its bytes. Returns { avatar } — the frontend stores it verbatim
    * as Group.avatar (create/update). User avatars are submitted as base64 together with name and bio;
    * this endpoint is the canonical upload for GROUP avatars so they land in
    * uploads/avatars/ (outside the per-object authz gate's shards/ scope) instead of generic /upload
@@ -220,8 +220,7 @@ export class UploadController {
   @HttpCode(HttpStatus.OK)
   @Post('upload/avatar')
   @ApiOperation({
-    summary:
-      'Upload avatar image (multi-size webp, returns representative url)',
+    summary: 'Upload one federation-sized avatar without transformation',
   })
   @ApiConsumes('multipart/form-data')
   async uploadAvatar(@Request() req: FastifyRequest) {
@@ -239,7 +238,7 @@ export class UploadController {
       );
     }
     try {
-      const avatar = await this.uploadService.saveAvatars(img.buffer);
+      const avatar = await this.uploadService.saveAvatar(img.buffer);
       return { avatar };
     } catch {
       // sharp decode failure (corrupt / pixel-bomb / non-image past the magic-byte check) → invalid.

@@ -263,7 +263,11 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
     const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
-    const creator = `${bundle.id}\u0000${message.author.domain}\u0000${message.author.account}`;
+    const creator = JSON.stringify([
+      bundle.id,
+      message.author.domain,
+      message.author.account,
+    ]);
     const quoteTarget = message.quoteTargetId
       ? bundle.messages.find(
           (candidate) => candidate.id === message.quoteTargetId,
@@ -288,7 +292,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       msgId: id,
       creator,
       isSelf: false,
-      name: message.author.displayName || message.author.account,
+      name: message.profile?.displayName || message.author.account,
       avatar: this.avatarUrl(message, bundle),
       avatarIdentityId: creator,
       avatarAccount: message.author.account,
@@ -313,7 +317,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       quote: quoteTarget
         ? {
             author:
-              quoteTarget.author.displayName || quoteTarget.author.account,
+              quoteTarget.profile?.displayName || quoteTarget.author.account,
             body: snapshotPreview(quoteTarget),
             seq: message.quoteTargetId,
           }
@@ -334,7 +338,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     message: ForwardManifestMessage,
     _bundle: ForwardWireChild,
   ): string {
-    const digest = message.author.avatarDigest;
+    const digest = message.profile?.avatarDigest;
     if (!digest) return '';
     const asset = this.closure()?.assets.find(
       (candidate) => candidate.kind === 'avatar' && candidate.digest === digest,

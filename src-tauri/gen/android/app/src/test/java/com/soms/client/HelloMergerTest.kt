@@ -17,37 +17,37 @@ class HelloMergerTest {
     fun hello_seeds_then_incremental_frames_patch_their_fields() {
         var c = HelloMerger.merge(
             null, "HELLO",
-            """{"userId":1,"stateRevision":5,"profileRev":2}""",
+            """{"userId":1,"stateFeedEndId":5,"profileRev":2}""",
         )
         assertEquals(1, c!!.getInt("userId"))
-        assertEquals(5, c.getInt("stateRevision"))
+        assertEquals(5, c.getInt("stateFeedEndId"))
 
-        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":6}""")
-        assertEquals(6, c!!.getInt("stateRevision"))
+        c = HelloMerger.merge(c, "STATE_FEED_UPDATED", """{"feedId":6}""")
+        assertEquals(6, c!!.getInt("stateFeedEndId"))
 
-        c = HelloMerger.merge(c, "NEW_MESSAGE", """{"threadId":7,"seq":9,"ts":123}""")
+        c = HelloMerger.merge(c, "UNRELATED_EVENT", """{"threadId":7,"seq":9,"ts":123}""")
         assertFalse(c!!.has("latestMessage"))
     }
 
     @Test
-    fun state_revision_is_monotonic_out_of_order_dropped() {
-        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateRevision":5}""")
-        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":9}""")
-        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":8}""")
-        assertEquals(9L, c!!.getLong("stateRevision"))
+    fun state_feed_end_is_monotonic_out_of_order_dropped() {
+        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateFeedEndId":5}""")
+        c = HelloMerger.merge(c, "STATE_FEED_UPDATED", """{"feedId":9}""")
+        c = HelloMerger.merge(c, "STATE_FEED_UPDATED", """{"feedId":8}""")
+        assertEquals(9L, c!!.getLong("stateFeedEndId"))
     }
 
     @Test
     fun incremental_before_hello_is_dropped_no_partial_cache() {
-        assertNull(HelloMerger.merge(null, "STATE_REV_UPDATED", """{"stateRevision":6}"""))
+        assertNull(HelloMerger.merge(null, "STATE_FEED_UPDATED", """{"feedId":6}"""))
     }
 
     @Test
     fun malformed_frame_leaves_cache_untouched() {
-        val c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateRevision":5}""")
+        val c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateFeedEndId":5}""")
         // Malformed JSON on an incremental → cache unchanged (not nulled, not corrupted).
-        val c2 = HelloMerger.merge(c, "STATE_REV_UPDATED", "{not json")
+        val c2 = HelloMerger.merge(c, "STATE_FEED_UPDATED", "{not json")
         assertEquals(1, c2!!.getInt("userId"))
-        assertEquals(5, c2.getInt("stateRevision"))
+        assertEquals(5, c2.getInt("stateFeedEndId"))
     }
 }

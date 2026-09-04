@@ -7,7 +7,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import {
   type FederationContext,
   FederationNamespaceService,

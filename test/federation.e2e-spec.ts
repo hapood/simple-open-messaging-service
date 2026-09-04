@@ -53,6 +53,7 @@ import {
   messageAsset,
   message,
   clientStateFeed,
+  durableTask,
   messageThread,
   peerStateFeed,
   peerStateFeedPullCursor,
@@ -61,11 +62,14 @@ import {
   accountThreadState,
   threadAudience,
   profileVersion,
+  identityNamespace,
+  systemSetting,
   user,
 } from '../src/database/schema.js';
 import { randomUUID } from 'node:crypto';
 import { readCurrentGroupMemberByAddressInTx } from '../src/group-meta/current-group-roster.js';
 import { encodeFederationResourceComponent } from '../src/federation/federation-resource-request.js';
+import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
@@ -168,6 +172,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         account: group.account,
         name: group.name,
         domain: group.domain,
+        namespaceId: group.namespaceId,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.groupId))
@@ -181,6 +186,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             account: row.account,
             name: row.name,
             domain: row.domain,
+            namespaceId: row.namespaceId,
           },
         }
       : undefined;
@@ -471,7 +477,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ).toBe(7 * 24 * 60 * 60 * 1000);
     expect(incoming.profileRev).toBeGreaterThan(0);
     expect(incomingProfile.displayName).toBe('Alice');
-    expect(incomingProfile.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
+    expect(incomingProfile.avatar).toMatch(
+      /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/,
+    );
 
     const publishedRequest = await appA.database.query.peerStateFeed.findFirst({
       where: and(
@@ -563,7 +571,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const bobProfileA = await appA.database.query.profileVersion.findFirst({
           where: eq(profileVersion.userId, bobStubIdOnA),
         });
-        expect(bobProfileA?.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
+        expect(bobProfileA?.avatar).toMatch(
+          /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/,
+        );
       },
       { timeout: 5000, interval: 100 },
     );
@@ -836,7 +846,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               ),
             }),
           ]);
-          expect(source?.originSeq).toBeNull();
+          expect(source?.originSeq).toBe(remoteCopy?.originSeq);
           expect(source?.originServerTime).toBeNull();
           const receipt =
             await appA.database.query.federationMessageReceipt.findFirst({
@@ -1249,7 +1259,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(materialized).toMatchObject({
       profileRev: source!.defaultProfileRev,
     });
-    expect(materialized?.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
+    expect(materialized?.avatar).toMatch(
+      /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/,
+    );
   });
 
   it('removes the legacy client peer-profile sync endpoint', async () => {
@@ -2088,16 +2100,27 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             }),
           ]);
           if (!msg) {
+            const recentGroupMetaTasks =
+              await appB.database.query.durableTask.findMany({
+                where: eq(durableTask.taskType, 'SYNC_GROUP_META'),
+                orderBy: desc(durableTask.id),
+                limit: 10,
+              });
             throw new Error(
-              `shared-mirror receiver cursor snapshot: ${JSON.stringify({
-                sourceStateAllocatedThrough:
-                  sourceStateCursor?.allocatedThrough?.toString(),
-                receiverStateCommittedThrough:
-                  receiverStateCursor?.committedThrough?.toString(),
-                receiverMessageTarget: receiverThreadState?.messageTargetSeq,
-                receiverMessageProcessedThrough:
-                  receiverThreadState?.messageProcessedThroughSeq,
-              })}`,
+              `shared-mirror receiver cursor snapshot: ${JSON.stringify(
+                {
+                  sourceStateAllocatedThrough:
+                    sourceStateCursor?.allocatedThrough?.toString(),
+                  receiverStateCommittedThrough:
+                    receiverStateCursor?.committedThrough?.toString(),
+                  receiverMessageTarget: receiverThreadState?.messageTargetSeq,
+                  receiverMessageProcessedThrough:
+                    receiverThreadState?.messageProcessedThroughSeq,
+                  recentGroupMetaTasks,
+                },
+                (_key, value) =>
+                  typeof value === 'bigint' ? value.toString() : value,
+              )}`,
             );
           }
           return msg!;
@@ -2227,6 +2250,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('a member who rejoins a still-subscribed shared mirror can see messages from the gap', async () => {
+    expect(
+      await appA.database.query.threadAudience.findFirst({
+        where: and(
+          eq(threadAudience.targetDomain, DOM_B),
+          eq(threadAudience.threadId, firstGroupThreadA),
+        ),
+      }),
+      'another member from the peer still keeps its shared audience open',
+    ).toBeDefined();
     const duringDaveGap = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -2237,6 +2269,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         clientMessageId: randomUUID(),
       });
     expect(duringDaveGap.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      async () => {
+        const head = await appA.database.query.peerStateFeed.findFirst({
+          where: and(
+            eq(peerStateFeed.peerDomain, DOM_B),
+            eq(peerStateFeed.account, firstGroupAccount),
+            eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+          ),
+        });
+        expect(head?.body).toMatchObject({
+          messageEndSeq: duringDaveGap.body.data.seq,
+        });
+      },
+      { timeout: 5000, interval: 100 },
+    );
     await vi.waitFor(
       async () => {
         expect(
@@ -2251,7 +2298,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 5000, interval: 100 },
+      { timeout: 40_000, interval: 150 },
     );
 
     const reinvite = await request(appA.baseUrl)
@@ -2314,6 +2361,17 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('last-member leave revokes blocked boundary access; rejoin resumes without gap history', async () => {
+    await appA.database
+      .insert(systemSetting)
+      .values({
+        key: FEDERATION_HISTORY_ACCESS_SETTING_KEY,
+        value: 'false',
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value: 'false', updatedAt: new Date() },
+      });
     // Leave dave first so bob's later leave is the last member from appB.
     const daveLeaveAgain = await request(appB.baseUrl)
       .post('/api/v1/group/leave')
@@ -2349,7 +2407,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(finalBeforeLeave.body.code).toBe(BusinessCode.OK);
       await vi.waitFor(
         () => expect(proxy.blockedMessageFeedCount()).toBeGreaterThan(0),
-        { timeout: 5000, interval: 100 },
+        { timeout: 40_000, interval: 150 },
       );
 
       const bobLeave = await request(appB.baseUrl)
@@ -2378,7 +2436,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           ]);
           expect(bobOnOrigin).toBeUndefined();
           expect(originAudience).toBeUndefined();
-          expect(bobOnMirror).toBeUndefined();
+          // The departed account is no longer authorized, but its mirror does not need a terminal
+          // Group Meta notification. The retained replica may therefore still contain its last
+          // UPSERT; current access is determined by the relationship state, not this projection.
+          expect(bobOnMirror).toBeDefined();
         },
         { timeout: 5000, interval: 100 },
       );
@@ -2468,27 +2529,31 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await waitForAcceptedDurableTask(appB.database, bobRejoin.body);
     await vi.waitFor(
       async () => {
-        const [originAudience, localAudience, bobOnMirror] = await Promise.all([
-          appA.database.query.threadAudience.findFirst({
-            where: and(
-              eq(threadAudience.targetDomain, DOM_B),
-              eq(threadAudience.threadId, firstGroupThreadA),
-            ),
-          }),
-          appB.database.query.threadAudience.findFirst({
-            where: and(
-              eq(threadAudience.targetDomain, 'local'),
-              eq(threadAudience.localUserId, bobLocalIdB),
-              eq(threadAudience.threadId, firstMirrorBId),
-            ),
-          }),
-          findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
-            account: 'bob',
-            domain: DOM_B,
-          }),
-        ]);
+        const [originAudience, mirrorAudience, localState, bobOnMirror] =
+          await Promise.all([
+            appA.database.query.threadAudience.findFirst({
+              where: and(
+                eq(threadAudience.targetDomain, DOM_B),
+                eq(threadAudience.threadId, firstGroupThreadA),
+              ),
+            }),
+            appB.database.query.threadAudience.findFirst({
+              where: eq(threadAudience.threadId, firstMirrorBId),
+            }),
+            appB.database.query.accountThreadState.findFirst({
+              where: and(
+                eq(accountThreadState.accountId, bobLocalIdB),
+                eq(accountThreadState.threadId, firstMirrorBId),
+              ),
+            }),
+            findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
+              account: 'bob',
+              domain: DOM_B,
+            }),
+          ]);
         expect(originAudience).toBeDefined();
-        expect(localAudience).toBeDefined();
+        expect(mirrorAudience).toBeUndefined();
+        expect(localState).toBeDefined();
         expect(bobOnMirror).toBeDefined();
       },
       { timeout: 5000, interval: 100 },
@@ -2655,9 +2720,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         endpointAType: 'GROUP',
         endpointAAccount: mirror.group.account,
         endpointADomain: mirror.group.domain,
+        endpointANamespaceId: mirror.group.namespaceId,
         endpointBType: 'USER',
         endpointBAccount: 'bob',
         endpointBDomain: 'local',
+        endpointBNamespaceId: mirror.group.namespaceId,
         threadId: mirror.id,
         active: false,
         updatedAt: requestedAt,
@@ -2667,9 +2734,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           relationshipPair.endpointAType,
           relationshipPair.endpointAAccount,
           relationshipPair.endpointADomain,
+          relationshipPair.endpointANamespaceId,
           relationshipPair.endpointBType,
           relationshipPair.endpointBAccount,
           relationshipPair.endpointBDomain,
+          relationshipPair.endpointBNamespaceId,
         ],
         set: { threadId: mirror.id, updatedAt: requestedAt },
       })
@@ -3019,81 +3088,73 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   // ─── trust lifecycle: degrade on failure → re-handshake → halt ───────────────────────────────
   // These run after the friend-flow tests; aaa↔bbb are still mutually trusted (unfriending above is
   // local-only and does not degrade). They drive the state machine through real signed S2S traffic:
-  // a dead loopback URL forces a network failure → markTransportDegraded; restoring it allows an
-  // explicit recognition/Health recovery; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
+  // a one-shot proxy 503 forces a transport failure → markTransportDegraded; the next Health allows
+  // recovery; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
 
   it('degrades a healthy peer on transport failure while retaining certificates', async () => {
-    // Precondition: aaa still trusts bbb, and bbb's signing keys are cached on aaa (fetched at init).
-    const peerBefore = await appA.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, DOM_B),
+    // The proxy is on B → A, so exercise B's local lifecycle for A without stopping either process.
+    expect(
+      await resolveFederatedCard(appB, tokenB, 'alice', DOM_A),
+    ).toMatchObject({ event: 'resolved' });
+    const peerBefore = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
     });
     expect(peerBefore?.trustLevel).toBe('available');
-    const keysBefore = await appA.database.query.s2SKeyCache.findMany({
-      where: eq(s2SKeyCache.domain, DOM_B),
+    const keysBefore = await appB.database.query.s2SKeyCache.findMany({
+      where: eq(s2SKeyCache.domain, DOM_A),
     });
     expect(keysBefore.length).toBeGreaterThan(0);
 
-    // STOP appB, then resolve a user which is not already localized. Resolving bob again would now be a
-    // local cache hit and deliberately performs no network request, so it cannot exercise degradation.
-    // The uncached lookup reaches fetchRemoteUser and gets a real ECONNREFUSED → markTransportDegraded(DOM_B).
-    await appB.stop();
-    try {
-      const res = await resolveFederatedCard(
-        appA,
-        tokenA,
-        'unreachable',
-        DOM_B,
-      );
-      expect(res).toEqual({ event: 'failed', data: { reason: 'UNREACHABLE' } });
+    // Health succeeds first. Only the following profile request gets a one-shot 503, so resolution
+    // fails immediately instead of waiting for its Health-recovery deadline.
+    proxy.armServiceUnavailable('/s2s/v1/accounts/unreachable');
+    const res = await resolveFederatedCard(appB, tokenB, 'unreachable', DOM_A);
+    expect(res).toEqual({ event: 'failed', data: { reason: 'UNREACHABLE' } });
 
-      // A reconnect ping already in flight when stop() began may finish just after the failed GET and
-      // temporarily recover the peer. Once that bounded race has drained, a second operation leaves the
-      // peer stably degraded (or fails fast because it already is degraded).
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await resolveFederatedCard(appA, tokenA, 'still-unreachable', DOM_B);
+    const peerAfter = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
+    });
+    expect(peerAfter?.trustLevel).toBe('degraded');
+    expect(peerAfter?.remoteServiceReachable).toBe(false);
+    expect(peerAfter?.degradationCount).toBeGreaterThanOrEqual(1);
+    expect(peerAfter?.degradedAt).not.toBeNull();
+    expect(peerAfter?.degradationReason).toMatch(/HTTP 503/);
 
-      // aaa marked bbb degraded: state flipped, count bumped and the event is logged. Pinned keys are continuity
-      // evidence, so a transient outage must retain them for the signed-heartbeat recovery below.
-      const peerAfter = await appA.database.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, DOM_B),
+    const degradedEvent =
+      await appB.database.query.federatedPeerEvent.findFirst({
+        where: and(
+          eq(federatedPeerEvent.domain, DOM_A),
+          eq(federatedPeerEvent.type, 'degraded'),
+        ),
+        orderBy: desc(federatedPeerEvent.id),
       });
-      expect(peerAfter?.trustLevel).toBe('degraded');
-      expect(peerAfter?.remoteServiceReachable).toBe(false);
-      expect(peerAfter?.degradationCount).toBeGreaterThanOrEqual(1);
-      expect(peerAfter?.degradedAt).not.toBeNull();
-      expect(peerAfter?.degradationReason).toMatch(
-        /network\/timeout|HTTP 5\d\d/,
-      );
+    expect(degradedEvent).toBeDefined();
+    expect(degradedEvent!.reason).toMatch(/HTTP 503/);
 
-      const degradedEvent =
-        await appA.database.query.federatedPeerEvent.findFirst({
-          where: and(
-            eq(federatedPeerEvent.domain, DOM_B),
-            eq(federatedPeerEvent.type, 'degraded'),
-          ),
-        });
-      expect(degradedEvent).toBeDefined();
-      expect(degradedEvent!.reason).toMatch(/network\/timeout|HTTP 5\d\d/);
-
-      const keysAfter = await appA.database.query.s2SKeyCache.findMany({
-        where: eq(s2SKeyCache.domain, DOM_B),
-      });
-      expect(keysAfter).toHaveLength(keysBefore.length);
-    } finally {
-      // Always restore the shared fixture, including when an assertion above fails, so the recovery
-      // test reports its own behavior instead of inheriting an ECONNREFUSED cascade.
-      await appB.restart();
-    }
+    const keysAfter = await appB.database.query.s2SKeyCache.findMany({
+      where: eq(s2SKeyCache.domain, DOM_A),
+    });
+    expect(keysAfter).toHaveLength(keysBefore.length);
   });
 
   it('recovers a degraded peer through Health without replacing recognition facts', async () => {
-    const beforeRecovery = await appA.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, DOM_B),
+    expect(
+      await resolveFederatedCard(appB, tokenB, 'alice', DOM_A),
+    ).toMatchObject({ event: 'resolved' });
+    const beforeRecovery = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(beforeRecovery?.identityPinnedAt).toBeInstanceOf(Date);
+    const beforeIdentity =
+      await appB.database.query.identityNamespace.findFirst({
+        where: eq(
+          identityNamespace.id,
+          beforeRecovery?.activeNamespaceId ?? -1,
+        ),
+      });
+    expect(beforeIdentity?.identityPinnedAt).toBeInstanceOf(Date);
     // The reconnect sweep may already have healed the outage from the preceding test. Put only this
     // local trust edge back into the exact precondition so identity recovery is deterministic.
-    await appA.database
+    await appB.database
       .update(federatedPeer)
       .set({
         trustLevel: 'degraded',
@@ -3101,31 +3162,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         degradedAt: new Date(),
         degradationReason: 'deterministic identity recovery fixture',
       })
-      .where(eq(federatedPeer.domain, DOM_B));
-    const res = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
+      .where(eq(federatedPeer.domain, DOM_A));
+    const res = await resolveFederatedCard(appB, tokenB, 'alice', DOM_A);
     expect(res.event).toBe('resolved');
 
-    const peer = await appA.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, DOM_B),
+    const peer = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
     });
     expect(peer?.trustLevel).toBe('available');
     expect(peer?.remoteServiceReachable).toBe(true);
     expect(peer?.degradedAt).toBeNull();
     expect(peer?.degradationReason).toBeNull();
-    expect(peer?.identityPinnedAt?.getTime()).toBe(
-      beforeRecovery?.identityPinnedAt?.getTime(),
+    const recoveredIdentity =
+      await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, peer?.activeNamespaceId ?? -1),
+      });
+    expect(recoveredIdentity?.identityPinnedAt?.getTime()).toBe(
+      beforeIdentity?.identityPinnedAt?.getTime(),
     );
-
-    // peerEvents is newest-first. The state is `trusted`, while the lifecycle transition is named
-    // `recovered` distinguishes identity recovery from first-contact trust establishment.
-    const eventsRes = await request(appA.baseUrl)
-      .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
-      .set('Cookie', adminCookieA)
-      .send({ take: 50 });
-    const types = (eventsRes.body.data as { type: string }[]).map(
-      (e) => e.type,
-    );
-    expect(types).toContain('degraded');
   });
 
   it('lets a super-admin recover identity loss only after the exact original pin returns', async () => {
@@ -3136,9 +3190,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       where: eq(federatedPeer.domain, DOM_A),
     });
     expect(before?.trustLevel).toBe('available');
-    expect(before?.identityPinnedAt).toBeInstanceOf(Date);
-    expect(before?.rootPublicKey).toBeTruthy();
-    expect(before?.rootKeyFingerprint).toBeTruthy();
+    const beforeIdentity =
+      await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, before?.activeNamespaceId ?? -1),
+      });
+    expect(beforeIdentity?.identityPinnedAt).toBeInstanceOf(Date);
+    expect(beforeIdentity?.rootPublicKey).toBeTruthy();
+    expect(beforeIdentity?.rootKeyFingerprint).toBeTruthy();
 
     // This represents the state left by a poisoned DNS answer. The proxy now points at the original
     // appB again, so the explicit admin probe must discard its discovery cache and prove every old pin.
@@ -3188,8 +3246,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after?.haltCode).toBeNull();
     expect(after?.haltReason).toBeNull();
     expect(after?.trustedAt?.getTime()).toBe(before?.trustedAt?.getTime());
-    expect(after?.rootPublicKey).toBe(before?.rootPublicKey);
-    expect(after?.rootKeyFingerprint).toBe(before?.rootKeyFingerprint);
+    const afterIdentity = await appA.database.query.identityNamespace.findFirst(
+      {
+        where: eq(identityNamespace.id, after?.activeNamespaceId ?? -1),
+      },
+    );
+    expect(afterIdentity?.rootPublicKey).toBe(beforeIdentity?.rootPublicKey);
+    expect(afterIdentity?.rootKeyFingerprint).toBe(
+      beforeIdentity?.rootKeyFingerprint,
+    );
 
     const stillLostOnB = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),

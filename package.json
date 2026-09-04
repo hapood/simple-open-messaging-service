@@ -21,6 +21,7 @@
     "dev:fe:build": "npm run build:debug --prefix web && npm run build:debug --prefix admin-web && node scripts/package-web-bundle.mjs",
     "dev:reset": "node dev/federation-lab/reset.mjs",
     "federation:p2p": "node dev/federation-lab/p2p/run.mjs",
+    "federation:consistency": "node dev/federation-lab/p2p/run.mjs",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "vitest run",
     "test:watch": "vitest",

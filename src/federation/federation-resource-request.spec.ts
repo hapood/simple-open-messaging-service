@@ -96,8 +96,8 @@ describe('Federation resource raw request validation', () => {
   });
 
   it('rejects a GET body, Content-Type, and non-zero Content-Length', () => {
-    const url = '/s2s/v1/users/alice';
-    const spec = { pathPrefix: '/s2s/v1/users/', pathName: 'account' };
+    const url = '/s2s/v1/accounts/alice';
+    const spec = { pathPrefix: '/s2s/v1/accounts/', pathName: 'account' };
     expectMalformed(() =>
       parseFederationResourceRequest(request(url, { rawBody: '{}' }), spec),
     );

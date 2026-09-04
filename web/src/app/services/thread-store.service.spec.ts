@@ -55,8 +55,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let queryReadDeltaSpy: Mock;
   let queryUserInfoSpy: Mock;
   let advanceCursorSpy: Mock;
-  let applyFriendRequestStateRevisionSpy: Mock;
-  let applyFriendIntentStateRevisionSpy: Mock;
+  let applyRelationshipRequestStateRevisionSpy: Mock;
+  let applyRelationshipIntentStateRevisionSpy: Mock;
   let applyGroupJoinRequestHeadSpy: Mock;
   let clearGroupJoinRequestHeadSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
@@ -183,12 +183,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               if (profile.id === sessionProfile()?.id)
                 sessionProfile.set(profile);
             },
-            applyFriendRequestStateRevision:
-              (applyFriendRequestStateRevisionSpy = vi
+            applyRelationshipRequestStateRevision:
+              (applyRelationshipRequestStateRevisionSpy = vi
                 .fn()
-                .mockName('applyFriendRequestStateRevision')),
-            applyFriendIntentStateRevision: (applyFriendIntentStateRevisionSpy =
-              vi.fn().mockName('applyFriendIntentStateRevision')),
+                .mockName('applyRelationshipRequestStateRevision')),
+            applyRelationshipIntentStateRevision:
+              (applyRelationshipIntentStateRevisionSpy = vi
+                .fn()
+                .mockName('applyRelationshipIntentStateRevision')),
             markRead: () => of({ code: 0 }),
           },
         },
@@ -297,6 +299,48 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await repo.load();
   }
 
+  async function emitThreadContentHead(
+    threadId: number,
+    seq: number,
+    tombstoneEndSeq = 0,
+  ): Promise<void> {
+    const after = cursorSignal() ?? 1;
+    if (cursorSignal() === undefined) cursorSignal.set(after);
+    const feedId = after + 1;
+    queryStateFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          items: [
+            {
+              feedId,
+              account: '',
+              domain: 'local',
+              namespaceId: 0,
+              eventType: 'THREAD_CONTENT_HEAD',
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: {
+                threadId,
+                messageEndSeq: seq,
+                tombstoneEndSeq,
+              },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: feedId,
+          stateFeedEndId: feedId,
+        },
+      }),
+    );
+    eventSubject.next({
+      event: 'STATE_FEED_UPDATED',
+      data: { feedId },
+    });
+    await flush(20);
+  }
+
   // ── eager cache-paint (load — the instant pre-HELLO boot path) ─────────────────────────────────
 
   it('load() eager-paints the IDB cache INSTANTLY (pre-HELLO) + flips READY', async () => {
@@ -337,9 +381,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await flush(20);
     const items = repo.items();
     expect(items[0].lastMessagePreview).toBe('hello world');
-    expect(items[0].lastMessageSenderId).toBe(
-      '[0,"local","local","u77"]',
-    );
+    expect(items[0].lastMessageSenderId).toBe('[0,"local","u77"]');
   });
 
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
@@ -370,24 +412,23 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.error()).toBe('');
   });
 
-  // ── live NEW_MESSAGE (identity-only signal — no body) ─────────────────────────────────────────
+  // ── live THREAD_CONTENT_HEAD projections ──────────────────────────────────────────────────────
 
-  it('onNewMessage reorders to the tier head but does not bump unread (server-authoritative)', async () => {
+  it('a content head advances the HWM without changing list presentation or unread', async () => {
     await populate([
       p2p(1, 11, { lastMessageAt: 100 }),
       p2p(2, 22, { lastMessageAt: 200 }),
     ]);
+    const initialOrder = repo.items().map((item) => item.threadId);
 
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, ts: 300 },
-    });
-    await flush(20);
+    await emitThreadContentHead(1, 100);
 
     const items = repo.items();
-    expect(items[0].threadId).toBe(1); // moved to the head of the unpinned tier (lastMessageAt 300)
+    expect(items.map((item) => item.threadId)).toEqual(initialOrder);
     expect(repo.latestSeq(1)).toBe(100);
-    expect(items[0].lastMessageSeq).toBe(100);
+    const changed = items.find((item) => item.threadId === 1);
+    expect(changed?.lastMessageSeq).toBe(100);
+    expect(changed?.lastMessageAt).toBe(100);
     // unreadCount is NOT bumped — it is server-authoritative, applied by the missed-summary pull.
     expect(items[0].unreadCount).toBe(0);
     const rec = await (await webdb.db()).get('threads', 1);
@@ -395,22 +436,13 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(rec?.lastMessageSeq).toBe(100);
   });
 
-  it('buffers only the newest NEW_MESSAGE while a read commit is pending, then replays it', async () => {
+  it('buffers only the newest content head while a read commit is pending', async () => {
     await populate([p2p(1, 11, { lastMessageSeq: 4, lastMessageAt: 100 })]);
     repo.beginReadCommit(1);
 
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 5, ts: 200 },
-    });
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 7, ts: 300 },
-    });
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 6, ts: 250 },
-    });
+    await emitThreadContentHead(1, 5);
+    await emitThreadContentHead(1, 7);
+    await emitThreadContentHead(1, 6);
     expect(repo.items()[0].lastMessageSeq).toBe(4);
     expect(repo.readCommitPending().has(1)).toBe(true);
 
@@ -420,19 +452,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0]).toEqual(
       expect.objectContaining({
         lastMessageSeq: 7,
-        lastMessageAt: 300,
+        lastMessageAt: 100,
       }),
     );
   });
 
-  it('onNewMessage does not badge the open thread', async () => {
+  it('a content head does not badge the open thread', async () => {
     await populate([p2p(1, 11)]);
     await repo.setOpenThread(1);
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, ts: 300 },
-    });
-    await flush();
+    await emitThreadContentHead(1, 100);
     expect(repo.items()[0].unreadCount).toBe(0);
   });
 
@@ -451,22 +479,18 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0]).toMatchObject({ threadId: 7, role: 'MEMBER' });
   });
 
-  it('onNewMessage discards an out-of-order/redelivered seq (per-thread HWM guard)', async () => {
+  it('a duplicate content head does not emit a second message signal', async () => {
     await populate([p2p(1, 11, { lastMessageAt: 100 })]);
-    // A newer seq advances lastMessageAt...
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, ts: 300 },
-    });
-    await flush();
-    expect(repo.items()[0].lastMessageAt).toBe(300);
-    // ...an older seq is discarded by the HWM guard — no regression of recency.
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 50, ts: 999 },
-    });
-    await flush();
-    expect(repo.items()[0].lastMessageAt).toBe(300);
+    const signals: Array<{ threadId: number; seq: number }> = [];
+    const subscription = repo.threadSeq$.subscribe((signal) =>
+      signals.push(signal),
+    );
+    await emitThreadContentHead(1, 100);
+    expect(repo.items()[0].lastMessageAt).toBe(100);
+    await emitThreadContentHead(1, 100);
+    expect(repo.items()[0].lastMessageAt).toBe(100);
+    expect(signals).toEqual([{ threadId: 1, seq: 100 }]);
+    subscription.unsubscribe();
   });
 
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────
@@ -684,21 +708,30 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
                 peer,
               },
             },
+            {
+              feedId: 4,
+              account: '',
+              domain: 'local',
+              namespaceId: 0,
+              eventType: 'THREAD_CONTENT_HEAD',
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: {
+                threadId: 9,
+                messageEndSeq: 7,
+                tombstoneEndSeq: 0,
+              },
+            },
           ],
           hasMore: false,
-          scannedThrough: 3,
-          stateFeedEndId: 3,
+          scannedThrough: 4,
+          stateFeedEndId: 4,
         },
       }),
     );
     eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 9, seq: 7, ts: 300 },
-    });
-
-    eventSubject.next({
       event: 'STATE_FEED_UPDATED',
-      data: { feedId: 3 },
+      data: { feedId: 4 },
     });
     await flush(30);
 
@@ -708,7 +741,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         friendshipActive: true,
         conversationState: 'ACTIVE',
         lastMessageSeq: 7,
-        lastMessageAt: 300,
       }),
     ]);
   });
@@ -854,7 +886,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(queryStateFeedSpy.mock.calls[1][0]).toEqual(
       expect.objectContaining({ after: 2, through: 3 }),
     );
-    expect(applyFriendIntentStateRevisionSpy).not.toHaveBeenCalled();
+    expect(applyRelationshipIntentStateRevisionSpy).not.toHaveBeenCalled();
 
     secondPage.next({
       code: 0,
@@ -887,8 +919,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     secondPage.complete();
     await flush(10);
 
-    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledTimes(1);
-    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(3);
+    expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledTimes(1);
+    expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledWith(3);
   });
 
   it('records a local HWM without guessing the unread badge', async () => {

@@ -3,17 +3,14 @@ import { rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { federationLabNodes } from './topology.mjs';
 
 const labDir = dirname(fileURLToPath(import.meta.url));
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
 if (!baseDatabaseUrl)
   throw new Error('DATABASE_URL is required in the repository .env');
 
-const databases = [
-  'soms_fed_lab_alpha',
-  'soms_fed_lab_bravo',
-  'soms_fed_lab_charlie',
-];
+const databases = federationLabNodes.map((node) => node.database);
 const admin = new URL(baseDatabaseUrl);
 admin.pathname = '/postgres';
 const client = new Client({ connectionString: admin.toString() });

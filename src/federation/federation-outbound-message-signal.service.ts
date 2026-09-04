@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { and, eq, isNull } from 'drizzle-orm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
-import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
+import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
 /** Routes durable message and tombstone wake-ups to directly interested peers. */
 @Injectable()
@@ -17,7 +17,7 @@ export class FederationOutboundMessageSignalService {
   constructor(
     private readonly database: DatabaseService,
     private readonly threadContentHeads: FederationThreadContentHeadService,
-    private readonly statePull: FederationStatePullService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async notifyGroupLeave(threadId: number): Promise<void> {
@@ -33,7 +33,9 @@ export class FederationOutboundMessageSignalService {
         .limit(1);
       const originDomain = thread?.domain;
       if (!originDomain || originDomain === 'local') return;
-      await this.statePull.pushDiscoveryHwm(originDomain);
+      this.events.emit(FEDERATION_STATE_FEED_PUSH, {
+        peerDomain: originDomain,
+      });
     } catch (error) {
       this.logger.debug(
         `notifyGroupLeave(${threadId}) failed: ${(error as Error).message}`,
@@ -48,9 +50,12 @@ export class FederationOutboundMessageSignalService {
     fetchedFromDomain?: string,
   ): Promise<void> {
     try {
-      const [thread, participants] = await Promise.all([
+      const [thread, peerAudiences, authorAuthorization] = await Promise.all([
         this.database.db
-          .select({ groupDomain: tables.group.domain })
+          .select({
+            type: tables.messageThread.type,
+            groupDomain: tables.group.domain,
+          })
           .from(tables.messageThread)
           .leftJoin(
             tables.group,
@@ -60,39 +65,31 @@ export class FederationOutboundMessageSignalService {
           .limit(1)
           .then((rows) => rows[0]),
         this.database.db
-          .select({
-            userId: tables.threadMember.userId,
-            user: {
-              account: tables.user.account,
-              domain: tables.user.domain,
-            },
-          })
-          .from(tables.threadMember)
-          .innerJoin(
-            tables.user,
-            eq(tables.user.id, tables.threadMember.userId),
-          )
-          .where(eq(tables.threadMember.threadId, threadId)),
-      ]);
-      if (!thread) return;
-      const authorization = await Promise.all(
-        participants.map((participant) =>
-          isThreadMutuallyAuthorized(
-            this.database.db,
-            participant.userId,
-            threadId,
+          .select({ domain: tables.threadAudience.targetDomain })
+          .from(tables.threadAudience)
+          .where(
+            and(
+              eq(tables.threadAudience.threadId, threadId),
+              isNull(tables.threadAudience.localUserId),
+            ),
           ),
-        ),
-      );
-      const active = participants.filter((_, index) => authorization[index]);
-      if (
-        !active.some(
-          ({ user }) =>
-            user.account === authorAddress.account &&
-            user.domain === authorAddress.domain,
-        )
-      )
-        return;
+        this.database.db.execute<{ authorized: boolean }>(sql`
+          SELECT EXISTS (
+            SELECT 1
+            FROM "RelationshipPair" pair
+            WHERE pair."threadId" = ${threadId}
+              AND pair.active = true
+              AND pair.kind IN ('P2P', 'GROUP_MEMBER')
+              AND ((pair."endpointAType" = 'USER'
+                    AND pair."endpointAAccount" = ${authorAddress.account}
+                    AND pair."endpointADomain" = ${authorAddress.domain})
+                OR (pair."endpointBType" = 'USER'
+                    AND pair."endpointBAccount" = ${authorAddress.account}
+                    AND pair."endpointBDomain" = ${authorAddress.domain}))
+          ) AS authorized
+        `),
+      ]);
+      if (!thread || !authorAuthorization.rows[0]?.authorized) return;
       if (fetchedFromDomain)
         void this.offerAndPush(fetchedFromDomain, threadId, latestSeq).catch(
           (error) =>
@@ -102,21 +99,13 @@ export class FederationOutboundMessageSignalService {
         );
 
       const destinations = new Set<string>();
-      if (!thread.groupDomain) {
-        for (const { user } of active) {
-          if (
-            (user.account === authorAddress.account &&
-              user.domain === authorAddress.domain) ||
-            user.domain === 'local' ||
-            user.domain === fetchedFromDomain
-          )
-            continue;
-          destinations.add(user.domain);
-        }
+      if (thread.type === 'P2P') {
+        for (const audience of peerAudiences)
+          if (audience.domain !== authorAddress.domain)
+            destinations.add(audience.domain);
       } else if (thread.groupDomain === 'local') {
-        for (const { user } of active)
-          if (user.domain !== 'local') destinations.add(user.domain);
-      } else {
+        for (const audience of peerAudiences) destinations.add(audience.domain);
+      } else if (thread.groupDomain) {
         destinations.add(thread.groupDomain);
       }
       if (fetchedFromDomain) destinations.delete(fetchedFromDomain);
@@ -134,19 +123,42 @@ export class FederationOutboundMessageSignalService {
   }
 
   async signalDeletion(threadId: number): Promise<void> {
-    const peers = await this.database.db
-      .selectDistinct({ domain: tables.threadAudience.targetDomain })
-      .from(tables.threadAudience)
-      .where(
-        and(
-          eq(tables.threadAudience.threadId, threadId),
-          isNull(tables.threadAudience.localUserId),
+    const [thread, audiences] = await Promise.all([
+      this.database.db
+        .select({
+          type: tables.messageThread.type,
+          groupDomain: tables.group.domain,
+        })
+        .from(tables.messageThread)
+        .leftJoin(
+          tables.group,
+          eq(tables.group.id, tables.messageThread.groupId),
+        )
+        .where(eq(tables.messageThread.id, threadId))
+        .limit(1)
+        .then((rows) => rows[0]),
+      this.database.db
+        .selectDistinct({ domain: tables.threadAudience.targetDomain })
+        .from(tables.threadAudience)
+        .where(
+          and(
+            eq(tables.threadAudience.threadId, threadId),
+            isNull(tables.threadAudience.localUserId),
+          ),
         ),
-      );
+    ]);
+    if (!thread) return;
+    const peers = new Set<string>(
+      thread.type === 'GROUP' &&
+        thread.groupDomain !== null &&
+        thread.groupDomain !== 'local'
+        ? [thread.groupDomain]
+        : audiences.map(({ domain }) => domain),
+    );
     await Promise.all(
-      peers.map(async ({ domain }) => {
+      [...peers].map(async (domain) => {
         await this.threadContentHeads.offerCommitted(domain, threadId);
-        await this.statePull.pushDiscoveryHwm(domain);
+        this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain: domain });
       }),
     );
   }
@@ -161,6 +173,6 @@ export class FederationOutboundMessageSignalService {
       threadId,
       messageSeq,
     );
-    await this.statePull.pushDiscoveryHwm(peerDomain);
+    this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
   }
 }

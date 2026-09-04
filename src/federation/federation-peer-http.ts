@@ -1,7 +1,10 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { DiscoveryService } from './discovery.service.js';
-import { S2sResponseError } from './federation-errors.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { SignatureService } from './signature.service.js';
@@ -54,8 +57,9 @@ export class FederationPeerHttp {
           `POST network/timeout: ${(error as Error).message}`,
           operationStartedAt,
         );
-        throw new Error(
+        throw new FederationTransportError(
           `S2S POST to ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
+          { cause: error },
         );
       }
 
@@ -140,8 +144,9 @@ export class FederationPeerHttp {
           `GET ${path} network/timeout: ${(error as Error).message}`,
           operationStartedAt,
         );
-        throw new Error(
+        throw new FederationTransportError(
           `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
+          { cause: error },
         );
       }
 

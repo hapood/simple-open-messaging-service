@@ -3,12 +3,12 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { relationshipPair, threadMember } from '../src/database/schema.js';
+import { relationshipPair } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
 
 describe('group creation authorization', () => {
@@ -50,7 +50,7 @@ describe('group creation authorization', () => {
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
   });
 
-  it('uses the local participant and active pair instead of roster projection as send authority', async () => {
+  it('uses the active group relationship as send authority', async () => {
     const owner = await seedUserWithSession(app, 'group-pair-authority');
     const authorization = `Bearer ${owner.token}`;
     const created = await request(app.getHttpServer())
@@ -62,14 +62,6 @@ describe('group creation authorization', () => {
     );
     const threadId = created.body.data.threadId as number;
 
-    await database.db
-      .delete(threadMember)
-      .where(
-        and(
-          eq(threadMember.threadId, threadId),
-          eq(threadMember.userId, owner.id),
-        ),
-      );
     const whileActive = await request(app.getHttpServer())
       .post('/api/v1/send-message')
       .set('Authorization', authorization)

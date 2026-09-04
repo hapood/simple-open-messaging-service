@@ -16,7 +16,7 @@ export interface FederationResetPreview {
   activeNamespaceId: number;
   haltReason: string | null;
   foreignUserCount: number;
-  participantCount: number;
+  groupMetaMemberFactCount: number;
   affectedThreadCount: number;
   authoredMessageCount: number;
   relationshipCount: number;
@@ -68,15 +68,25 @@ export class FederationResetService {
       const result = await tx.execute<PreviewCounts>(sql`
         WITH remote_users AS (
           SELECT id FROM "User" WHERE "namespaceId" = ${namespaceId}
+        ), remote_group_meta_facts AS (
+          SELECT member_fact."groupId"
+          FROM "GroupMetaMemberFeed" member_fact
+          JOIN remote_users remote_user
+            ON remote_user.id = member_fact."memberUserId"
         ), affected_threads AS (
-          SELECT DISTINCT member."threadId"
-          FROM "ThreadMember" member
-          JOIN remote_users remote_user ON remote_user.id = member."userId"
+          SELECT pair."threadId"
+          FROM "RelationshipPair" pair
+          WHERE pair."threadId" IS NOT NULL
+            AND (pair."endpointANamespaceId" = ${namespaceId}
+              OR pair."endpointBNamespaceId" = ${namespaceId})
+          UNION
+          SELECT thread.id
+          FROM remote_group_meta_facts member_fact
+          JOIN "MessageThread" thread ON thread."groupId" = member_fact."groupId"
         )
         SELECT
           (SELECT count(*)::int FROM remote_users) AS "foreignUserCount",
-          (SELECT count(*)::int FROM "ThreadMember" member
-            JOIN remote_users remote_user ON remote_user.id = member."userId") AS "participantCount",
+          (SELECT count(*)::int FROM remote_group_meta_facts) AS "groupMetaMemberFactCount",
           (SELECT count(*)::int FROM affected_threads) AS "affectedThreadCount",
           (SELECT count(*)::int FROM "Message"
             WHERE "creatorNamespaceId" = ${namespaceId}
@@ -133,7 +143,7 @@ export class FederationResetService {
         SELECT thread.id AS "threadId",
           array_agg(participant."accountId" ORDER BY participant."accountId") AS "recipientUserIds"
         FROM "MessageThread" thread
-        JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
+        JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
         WHERE thread."authorityNamespaceId" = ${archived.namespaceId}
         GROUP BY thread.id
         ORDER BY thread.id

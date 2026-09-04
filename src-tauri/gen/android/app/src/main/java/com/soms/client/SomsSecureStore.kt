@@ -80,7 +80,7 @@ object SomsSecureStore {
     }
 
     /** The no-expiry session token (POST /auth/login, app client) — the single native credential that
-     *  authenticates the Kotlin-owned /events stream AND the background `/notifications/missed` fetches
+     *  authenticates the Kotlin-owned /events stream AND the background `/notification-feed/query` fetches
      *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
      *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
      *  on login and clears it on logout. */
@@ -194,7 +194,7 @@ object SomsSecureStore {
 
     /** The ACTIVE origin — the secondary when the mode is "secondary" (RealtimeService flipped to the LAN
      *  origin), else the primary. Use this — NOT [getApiOrigin] — for every native network path that must
-     *  follow Kotlin's origin decision: the background `/notifications/missed` fetch + the avatar/notif-icon
+     *  follow Kotlin's origin decision: the background `/notification-feed/query` fetch + the avatar/notif-icon
      *  fetch in SomsMessagingService (FCM / WorkManager / the RealtimeService away-coalesce all route through
      *  those). Without it a device on the LAN secondary would route background traffic at the hairpin-
      *  unreachable primary and silently drop every background notification. The /events stream follows via

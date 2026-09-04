@@ -14,6 +14,14 @@ export class S2sResponseError extends Error {
   }
 }
 
+/** A transport or timeout failure before a valid S2S response was received. */
+export class FederationTransportError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'FederationTransportError';
+  }
+}
+
 /** A well-formed feed item whose local relationship/thread context no longer exists. */
 export class FederationMessageContextError extends Error {
   constructor(message: string) {

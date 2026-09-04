@@ -10,7 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import {
   message,
   messageThread,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
@@ -128,7 +128,7 @@ describe('client state feed + notification feed', () => {
 
   // ── /user/state-feed ───────────────────────────────────────────────────────────────────────
 
-  it('publishes paired message/tombstone heads and preview identities in the sole state feed', async () => {
+  it('publishes paired message/tombstone high-water marks in the sole state feed', async () => {
     const res = await getState({ after: 0, take: 200, mode: 'full' });
     expect(res.body.code).toBe(0);
     const heads = res.body.data.items.filter(
@@ -141,11 +141,10 @@ describe('client state feed + notification feed', () => {
       heads.find(
         (item: { body: { threadId: number } }) => item.body.threadId === tBob,
       )?.body,
-    ).toMatchObject({
+    ).toEqual({
       threadId: tBob,
       messageEndSeq: 3,
       tombstoneEndSeq: 0,
-      preview: { seq: 3, text: 'Bob-2' },
     });
   });
 
@@ -192,11 +191,10 @@ describe('client state feed + notification feed', () => {
         item.body.threadId === tAlice,
     );
     expect(alice.feedId).toBeGreaterThan(previous.feedId);
-    expect(alice.body).toMatchObject({
+    expect(alice.body).toEqual({
       threadId: tAlice,
       messageEndSeq: 4,
       tombstoneEndSeq: 0,
-      preview: { seq: 4, text: 'self-only' },
     });
 
     const withdrawn = await request(app.getHttpServer())
@@ -214,11 +212,10 @@ describe('client state feed + notification feed', () => {
         item.eventType === 'THREAD_CONTENT_HEAD' &&
         item.body.threadId === tAlice,
     );
-    expect(withdrawnHead.body).toMatchObject({
+    expect(withdrawnHead.body).toEqual({
       threadId: tAlice,
       messageEndSeq: 5,
       tombstoneEndSeq: 1,
-      preview: { seq: 4, text: '', senderId: null },
     });
 
     const filteredTombstones = await request(app.getHttpServer())
@@ -240,11 +237,18 @@ describe('client state feed + notification feed', () => {
 
   // ── /notification-feed/query ─────────────────────────────────────────────────────────────────
 
-  it('notification feed at the current end returns a clear descriptor', async () => {
+  it('notification feed at the current end is an empty delta', async () => {
     const state = await getState({ after: 0, take: 200, mode: 'full' });
     const res = await postMissed({ after: state.body.data.stateFeedEndId });
-    expect(res.body.data.notifications).toHaveLength(1);
-    expect(res.body.data.notifications[0].kind).toBe('clear');
+    expect(res.body.data.notifications).toEqual([]);
+  });
+
+  it('emits no descriptor for changed threads with no remaining notification range', async () => {
+    const res = await postMissed({
+      after: 0,
+      threadHwms: { [tAlice]: 3, [tBob]: 3, [tCarol]: 3 },
+    });
+    expect(res.body.data.notifications).toEqual([]);
   });
 
   it('missed: returns one message-preview descriptor per conversation (en)', async () => {
@@ -297,19 +301,19 @@ describe('client state feed + notification feed', () => {
 
   it('missed: a blocked sender is excluded from the aggregation', async () => {
     // Block Carol's peer → her 3 messages drop out: Alice 1,2 + Bob 0,1,2 = 5, 2 senders.
-    const participant = await database.db.query.threadParticipant.findFirst({
+    const participant = await database.db.query.accountThreadState.findFirst({
       where: and(
-        eq(threadParticipant.accountId, recipientId),
-        eq(threadParticipant.threadId, tCarol),
+        eq(accountThreadState.accountId, recipientId),
+        eq(accountThreadState.threadId, tCarol),
       ),
       columns: { id: true },
     });
     if (!participant)
       throw new Error('recipient thread participant is missing');
     await database.db
-      .update(threadParticipant)
+      .update(accountThreadState)
       .set({ blocked: true, updatedAt: new Date() })
-      .where(eq(threadParticipant.id, participant.id));
+      .where(eq(accountThreadState.id, participant.id));
     const res = await postMissed(
       { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
@@ -323,19 +327,19 @@ describe('client state feed + notification feed', () => {
 
   it('missed: a muted thread is excluded from the aggregation', async () => {
     // Mute Bob's thread → Bob's 3 messages drop out: Alice 1,2 + Carol 0,1,2 = 5, 2 senders.
-    const participant = await database.db.query.threadParticipant.findFirst({
+    const participant = await database.db.query.accountThreadState.findFirst({
       where: and(
-        eq(threadParticipant.accountId, recipientId),
-        eq(threadParticipant.threadId, tBob),
+        eq(accountThreadState.accountId, recipientId),
+        eq(accountThreadState.threadId, tBob),
       ),
       columns: { id: true },
     });
     if (!participant)
       throw new Error('recipient thread participant is missing');
     await database.db
-      .update(threadParticipant)
+      .update(accountThreadState)
       .set({ muted: true })
-      .where(eq(threadParticipant.id, participant.id));
+      .where(eq(accountThreadState.id, participant.id));
     const res = await postMissed(
       { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
@@ -345,13 +349,5 @@ describe('client state feed + notification feed', () => {
         (d: { data: { threadId: number } }) => d.data.threadId,
       ),
     ).toEqual([tCarol, tAlice]);
-  });
-
-  it('notification feed at the current end returns no conversation descriptors', async () => {
-    const state = await getState({ after: 0, take: 200, mode: 'full' });
-    const res = await postMissed({ after: state.body.data.stateFeedEndId });
-    expect(res.body.data.notifications).toEqual([
-      expect.objectContaining({ kind: 'clear' }),
-    ]);
   });
 });

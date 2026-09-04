@@ -93,7 +93,6 @@ describe('federated message deletion transaction ordering', () => {
         account: 'bob',
         name: 'Bob',
         domain: peerDomain,
-        sourceDomain: peerDomain,
         namespaceId,
         updatedAt: now,
       })

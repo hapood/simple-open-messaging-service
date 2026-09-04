@@ -7,7 +7,6 @@ describe('FederationGroupRosterProjectionService', () => {
       {
         groupId: 5,
         threadId: 3,
-        remoteGroupMetaFeedId: 4n,
       },
     ]);
     const select = vi.fn(() => ({
@@ -26,8 +25,8 @@ describe('FederationGroupRosterProjectionService', () => {
       { select, update, execute, insert, delete: remove } as never,
       {
         peerDomain: 'origin.example',
+        namespaceId: 7,
         groupAccount: '!group',
-        revision: 5n,
         active: true,
         dissolved: false,
         owner: { account: 'owner', domain: 'origin.example' },

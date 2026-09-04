@@ -20,7 +20,7 @@ describe('FederationResetService', () => {
         rows: [
           {
             foreignUserCount: 3,
-            participantCount: 4,
+            groupMetaMemberFactCount: 4,
             affectedThreadCount: 2,
             authoredMessageCount: 9,
             relationshipCount: 1,
@@ -45,7 +45,7 @@ describe('FederationResetService', () => {
       activeNamespaceId: 12,
       haltReason: 'pinned root changed',
       foreignUserCount: 3,
-      participantCount: 4,
+      groupMetaMemberFactCount: 4,
       affectedThreadCount: 2,
       authoredMessageCount: 9,
       relationshipCount: 1,

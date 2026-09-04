@@ -3,7 +3,7 @@ import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import type { AlbumImage } from '../message-cards/chat-item';
+import { MEDIA_STATUS, type AlbumImage } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
@@ -11,6 +11,7 @@ import { MediaSaveService } from '../../services/media-save.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import { MsgService } from '../../services/message.service';
 import { ToastService } from '../../services/toast.service';
+import { MediaAvailabilityService } from '../../services/media-availability.service';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { GalleryViewerComponent } from './gallery-viewer.component';
 
@@ -50,6 +51,18 @@ describe('GalleryViewerComponent — deferred image actions', () => {
         },
         { provide: MsgService, useValue: {} },
         { provide: MessageRepository, useValue: {} },
+        {
+          provide: MediaAvailabilityService,
+          useValue: {
+            register: vi.fn(() => ({
+              status: signal(MEDIA_STATUS.READY),
+              subscribe: vi.fn(() => () => undefined),
+              onWithdrawn: vi.fn(() => () => undefined),
+              unregister: vi.fn(),
+            })),
+            retry: vi.fn().mockResolvedValue(MEDIA_STATUS.READY),
+          },
+        },
         { provide: MediaSaveService, useValue: {} },
         { provide: ToastService, useValue: toast },
       ],
@@ -286,9 +299,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     const retry = vi
       .spyOn(internals, 'retryVideoAt')
       .mockReturnValue(undefined);
-    const save = vi
-      .spyOn(internals, 'saveVideo')
-      .mockResolvedValue(undefined);
+    const save = vi.spyOn(internals, 'saveVideo').mockResolvedValue(undefined);
     const action = layer.querySelector<HTMLButtonElement>(
       '.gv-video-error__action',
     )!;

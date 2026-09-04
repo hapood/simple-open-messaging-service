@@ -21,7 +21,7 @@ function message(
   return {
     type: 'msg',
     msgId: 1,
-    creator: 'local\u0000local\u0000me',
+    creator: JSON.stringify([0, 'local', 'me']),
     isSelf: false,
     name: '张三',
     text: '你好',

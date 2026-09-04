@@ -69,7 +69,7 @@ export class S2sRecognitionController {
     this.assertEmptyGet(req);
     const headers = this.verify.extractHeaders(req);
     const signer = this.verify.parseSigner(headers);
-    if (!(await this.recognition.hasPinnedIdentity(signer.domain))) {
+    if (!(await this.recognition.hasPreparedPeer(signer.domain))) {
       return this.unavailableHealth();
     }
     let publicKey: Uint8Array | null;
@@ -97,6 +97,7 @@ export class S2sRecognitionController {
     }
     const status = await this.recognition.queryHealth(signer.domain);
     if (status === 'unavailable') return this.unavailableHealth();
+    await this.recognition.markReachable(signer.domain);
     return { status } as const;
   }
 

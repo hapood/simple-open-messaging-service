@@ -20,7 +20,7 @@ import { seedUserWithSession } from './seed.js';
 import {
   waitForAcceptedDurableTasks,
   waitForDurableTask,
-  waitForLocalFriendInvite,
+  waitForLocalRelationshipRequest,
 } from './durable-task-helpers.js';
 
 describe('group disband task fan-out', () => {
@@ -51,7 +51,7 @@ describe('group disband task fan-out', () => {
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ account: member.account, domain: 'local' });
-    const inviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
       sent.body.data.taskId,
       owner.id,
@@ -60,7 +60,7 @@ describe('group disband task fan-out', () => {
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ inviteId });
+      .send({ account: owner.account, domain: 'local' });
     await waitForDurableTask(database.db, accepted.body.data.taskId);
 
     const created = await request(app.getHttpServer())

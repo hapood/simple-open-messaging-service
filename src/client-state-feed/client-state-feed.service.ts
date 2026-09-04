@@ -476,7 +476,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
   }
 
   /** Publish only compacted profile and shared Group Meta heads after a mirror round commits. */
-  async publishGroupStateToLocalAudiencesInTx(
+  async publishGroupStateToLocalAccountsInTx(
     tx: DatabaseTransaction,
     threadId: number,
   ): Promise<PendingClientStateFeedUpdate[]> {
@@ -507,13 +507,23 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const consumers = await tx.execute<{
       userId: number;
     }>(sql`
-      SELECT audience."localUserId" AS "userId"
-      FROM "ThreadAudience" audience
-      WHERE audience."threadId" = ${threadId}
-        AND audience."targetDomain" = 'local'
-        AND audience."targetNamespaceId" = 0
-        AND audience."localUserId" IS NOT NULL
-      ORDER BY audience."localUserId"
+      SELECT DISTINCT participant."accountId" AS "userId"
+      FROM "AccountThreadState" participant
+      JOIN "User" identity ON identity.id = participant."accountId"
+      JOIN "RelationshipPair" pair
+        ON pair."threadId" = participant."threadId"
+       AND pair.kind = 'GROUP_MEMBER'
+       AND pair.active = true
+       AND ((pair."endpointAType" = 'USER'
+             AND pair."endpointAAccount" = identity.account
+             AND pair."endpointADomain" = 'local')
+         OR (pair."endpointBType" = 'USER'
+             AND pair."endpointBAccount" = identity.account
+             AND pair."endpointBDomain" = 'local'))
+      WHERE participant."threadId" = ${threadId}
+        AND identity.domain = 'local'
+        AND identity."namespaceId" = 0
+      ORDER BY participant."accountId"
     `);
     const pending: PendingClientStateFeedUpdate[] = [];
     for (const { userId } of consumers.rows) {

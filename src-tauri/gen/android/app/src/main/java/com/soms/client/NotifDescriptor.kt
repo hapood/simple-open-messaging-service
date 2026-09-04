@@ -7,15 +7,14 @@ import org.json.JSONObject
  * The server-authored notification descriptor — the Kotlin mirror of the backend `NotificationDescriptor`
  * (src/notification/notification-descriptor.ts). The backend decides BOTH the content (localized title/body
  * + composited stacked-avatar `icon`) AND the presentation semantics (`tag` = replace-by-id, `kind` =
- * template incl. `"clear"` = cancel, `actions` = buttons). The native renderer
+ * template, `actions` = buttons). The native renderer
  * [SomsMessagingService.renderDescriptor] maps it onto `NotificationCompat` with zero composition logic:
  *  - `body`    → `BigTextStyle` (a coalesced cross-thread count summary, not a per-person conversation);
  *  - `icon`    → `setLargeIcon` (the fetched stacked-avatar PNG);
  *  - `tag`     → the stable [SomsMessagingService.AWAY_NOTIF_ID] (replace-by-id);
  *  - `renotify`→ `setOnlyAlertOnce(!renotify)`; `silent` → `setSilent`;
- *  - `kind:"clear"` → cancel the tagged notification.
  *
- * Parsed from the `data.notifications[]` array of the `POST /notifications/missed` envelope.
+ * Parsed from the `data.notifications[]` array of the `POST /notification-feed/query` envelope.
  */
 data class NotifAction(
     val id: String,

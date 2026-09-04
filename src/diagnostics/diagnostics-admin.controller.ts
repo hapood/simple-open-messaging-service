@@ -27,7 +27,7 @@ import { DiagnosticsGcService } from './diagnostics-gc.service.js';
  * Admin console diagnostics endpoints: list reports (with reporter identity), stream-download a bundle,
  * and trigger GC. Read endpoints (list/download) carry no @Roles (open to every admin role incl.
  * VIEWER); the GC mutation requires ADMIN+ and is audited. Mirrors AdminController + the
- * MediaAssetGcController shape. Declared in AdminModule's controllers array (which imports
+ * Declared in AdminModule's controllers array (which imports
  * DiagnosticsModule for the services) — the same pattern every other admin controller uses.
  *
  * Handlers return raw data (download is @Raw — binary stream); the global SerializeInterceptor wraps the

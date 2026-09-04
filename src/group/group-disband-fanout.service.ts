@@ -1,31 +1,29 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { domainCommand, threadMember } from '../database/schema.js';
-import { DomainCommandType } from '../domain-command/domain-command.constants.js';
-import type { DomainCommand } from '../domain-command/domain-command.types.js';
-
-const FANOUT_PAGE_SIZE = 100;
+import { durableTask } from '../database/schema.js';
+import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import type { DurableTask } from '../durable-task/durable-task.types.js';
 
 @Injectable()
 export class GroupDisbandFanoutService {
   constructor(private readonly database: DatabaseService) {}
 
-  /** Insert one roster page and checkpoint its last user ID in the same short transaction. */
-  async insertNextPage(
-    parent: DomainCommand,
+  /** Admit exactly one member-revocation child and advance the pair cursor atomically. */
+  async insertNextMember(
+    parent: DurableTask,
     threadId: number,
-    deleteForUserId: number | null,
   ): Promise<boolean> {
     return this.database.db.transaction(async (tx) => {
       const locked = await tx.execute<{
-        id: bigint;
+        id: string;
         status: string;
-        commandType: string;
-        progressCursor: number | null;
+        taskType: string;
+        afterPairId: string;
       }>(sql`
-        SELECT id, status, "commandType", "progressCursor"
-        FROM "DomainCommand"
+        SELECT id, status, "taskType",
+          COALESCE(checkpoint ->> 'afterPairId', '0') AS "afterPairId"
+        FROM "DurableTask"
         WHERE id = ${parent.id}
         FOR UPDATE
       `);
@@ -33,45 +31,65 @@ export class GroupDisbandFanoutService {
       if (
         !current ||
         current.status !== 'PROCESSING' ||
-        current.commandType !== DomainCommandType.DISBAND_GROUP
+        current.taskType !== DurableTaskType.DISBAND_GROUP
       ) {
         throw new Error('disband parent is not checkpointable');
       }
-      const cursor = current.progressCursor ?? 0;
-      const page = await tx
-        .select({ userId: threadMember.userId })
-        .from(threadMember)
-        .where(
-          and(
-            eq(threadMember.threadId, threadId),
-            eq(threadMember.left, false),
-            gt(threadMember.userId, cursor),
-          ),
+      const afterPairId = readCursor(current.afterPairId);
+      const next = await tx.execute<{
+        pairId: string;
+        memberUserId: number;
+      }>(sql`
+        SELECT pair.id AS "pairId", member.id AS "memberUserId"
+        FROM "RelationshipPair" pair
+        JOIN "User" member ON (
+          pair."endpointAType" = 'USER'
+          AND member.account = pair."endpointAAccount"
+          AND member.domain = pair."endpointADomain"
+          AND (member."namespaceId" = 0
+            OR member."namespaceId" = pair."endpointANamespaceId")
+        ) OR (
+          pair."endpointBType" = 'USER'
+          AND member.account = pair."endpointBAccount"
+          AND member.domain = pair."endpointBDomain"
+          AND (member."namespaceId" = 0
+            OR member."namespaceId" = pair."endpointBNamespaceId")
         )
-        .orderBy(asc(threadMember.userId))
-        .limit(FANOUT_PAGE_SIZE);
-      if (page.length === 0) return false;
+        WHERE pair."threadId" = ${threadId}
+          AND pair.kind = 'GROUP_MEMBER'
+          AND pair.active = true
+          AND pair.id > ${afterPairId}
+        ORDER BY pair.id
+        LIMIT 1
+      `);
+      const member = next.rows[0];
+      if (!member) return false;
+      const pairId = BigInt(member.pairId);
 
-      await tx.insert(domainCommand).values(
-        page.map(({ userId }) => ({
-          parentCommandId: parent.id,
-          aggregateType: 'GROUP' as const,
-          aggregateKey: parent.aggregateKey,
-          commandType: DomainCommandType.REVOKE_DISSOLVED_GROUP_MEMBER,
-          actorUserId: parent.actorUserId,
-          payload: {
-            threadId,
-            memberUserId: userId,
-            deleteData: userId === deleteForUserId,
-          },
-          status: 'PENDING' as const,
-        })),
-      );
+      await tx.insert(durableTask).values({
+        parentTaskId: parent.id,
+        kind: 'MUTATION',
+        scopeType: 'GROUP',
+        scopeKey: parent.scopeKey,
+        taskType: DurableTaskType.REVOKE_DISSOLVED_GROUP_MEMBER,
+        actorUserId: parent.actorUserId,
+        payload: {
+          threadId,
+          memberUserId: member.memberUserId,
+        },
+        status: 'PENDING',
+      });
       await tx
-        .update(domainCommand)
-        .set({ progressCursor: page.at(-1)!.userId })
-        .where(eq(domainCommand.id, parent.id));
+        .update(durableTask)
+        .set({ checkpoint: { afterPairId: pairId.toString() } })
+        .where(eq(durableTask.id, parent.id));
       return true;
     });
   }
+}
+
+function readCursor(value: string): bigint {
+  if (!/^(0|[1-9]\d*)$/.test(value))
+    throw new Error('invalid disband relationship-pair checkpoint');
+  return BigInt(value);
 }

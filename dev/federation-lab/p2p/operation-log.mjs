@@ -1,7 +1,5 @@
 import { federationLabNodes } from '../topology.mjs';
 
-export const P2P_OPERATION_LOG_SCHEMA_VERSION = 3;
-
 function directionKey(author, subject) {
   if (author === subject) throw new Error('an intent requires two users');
   return `${author}->${subject}`;

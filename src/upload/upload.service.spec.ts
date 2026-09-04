@@ -87,8 +87,8 @@ describe('UploadService.detectFamily — magic-byte family resolution', () => {
 describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   function target() {
     const svc = new UploadService({} as never, mediaMetadata as never);
-    vi.spyOn(svc, 'saveAvatars').mockResolvedValue(
-      '/uploads/avatars/avatar-512.webp',
+    vi.spyOn(svc, 'saveAvatar').mockResolvedValue(
+      '/uploads/avatars/avatar.png',
     );
     return svc;
   }
@@ -96,25 +96,40 @@ describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   it('accepts canonical base64 whose declared dimensions match the image', async () => {
     const svc = target();
     await expect(
-      svc.saveAvatarFromWire({ b64: ONE_PIXEL_PNG_BASE64, w: 1, h: 1 }),
-    ).resolves.toBe('/uploads/avatars/avatar-512.webp');
-    expect(svc.saveAvatars).toHaveBeenCalledOnce();
+      svc.saveAvatarFromWire({
+        b64: ONE_PIXEL_PNG_BASE64,
+        w: 1,
+        h: 1,
+        mimeType: 'image/png',
+      }),
+    ).resolves.toBe('/uploads/avatars/avatar.png');
+    expect(svc.saveAvatar).toHaveBeenCalledOnce();
   });
 
   it('rejects malformed or non-canonical base64 before localization', async () => {
     const svc = target();
     await expect(
-      svc.saveAvatarFromWire({ b64: 'not base64', w: 1, h: 1 }),
+      svc.saveAvatarFromWire({
+        b64: 'not base64',
+        w: 1,
+        h: 1,
+        mimeType: 'image/png',
+      }),
     ).rejects.toThrow('base64 is invalid');
-    expect(svc.saveAvatars).not.toHaveBeenCalled();
+    expect(svc.saveAvatar).not.toHaveBeenCalled();
   });
 
   it('rejects declared dimensions that differ from decoded image metadata', async () => {
     const svc = target();
     await expect(
-      svc.saveAvatarFromWire({ b64: ONE_PIXEL_PNG_BASE64, w: 2, h: 1 }),
+      svc.saveAvatarFromWire({
+        b64: ONE_PIXEL_PNG_BASE64,
+        w: 2,
+        h: 1,
+        mimeType: 'image/png',
+      }),
     ).rejects.toThrow('dimensions do not match');
-    expect(svc.saveAvatars).not.toHaveBeenCalled();
+    expect(svc.saveAvatar).not.toHaveBeenCalled();
   });
 
   it('rejects unsafe dimensions without 32-bit coercion', async () => {
@@ -124,8 +139,50 @@ describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
         b64: ONE_PIXEL_PNG_BASE64,
         w: Number.MAX_SAFE_INTEGER + 1,
         h: 1,
+        mimeType: 'image/png',
       }),
     ).rejects.toThrow('dimensions are invalid');
+  });
+
+  it('rejects an image whose media type does not match the bytes', async () => {
+    const svc = target();
+    await expect(
+      svc.saveAvatarFromWire({
+        b64: ONE_PIXEL_PNG_BASE64,
+        w: 1,
+        h: 1,
+        mimeType: 'image/webp',
+      }),
+    ).rejects.toThrow('media type does not match');
+    expect(svc.saveAvatar).not.toHaveBeenCalled();
+  });
+});
+
+describe('UploadService.saveAvatar — byte-preserving storage', () => {
+  let root: string | undefined;
+  const svc = new UploadService({} as never, mediaMetadata as never);
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-avatar-'));
+    Object.defineProperty(svc, 'uploadDir', {
+      configurable: true,
+      value: root,
+    });
+  });
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  it('stores one accepted image with exactly the uploaded bytes', async () => {
+    const source = Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64');
+    const url = await svc.saveAvatar(source);
+
+    expect(url).toMatch(/^\/uploads\/avatars\/.+\.png$/);
+    await expect(
+      readFile(join(root!, url.slice('/uploads/'.length))),
+    ).resolves.toEqual(source);
   });
 });
 

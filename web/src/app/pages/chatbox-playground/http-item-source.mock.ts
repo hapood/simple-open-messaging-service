@@ -22,12 +22,19 @@ import type {
   ChatItemData,
   ChatMsgData,
 } from '../../components/message-cards/chat-item';
-import type { StandardResponse, User } from '../../services/model';
+import {
+  parseUserIdentityKey,
+  type StandardResponse,
+  type User,
+} from '../../services/model';
 
 const mockCreatorKey = (id: number): string =>
-  `mock.local\u0000mock.local\u0000user-${id}`;
-const mockCreatorId = (key: string): number =>
-  Number(key.slice(key.lastIndexOf('user-') + 5));
+  JSON.stringify([0, 'mock.local', `user-${id}`]);
+const mockCreatorId = (key: string): number => {
+  const account = parseUserIdentityKey(key)?.account;
+  const match = account ? /^user-(\d+)$/.exec(account) : null;
+  return match ? Number(match[1]) : Number.NaN;
+};
 
 function mockUser(id: number, account: string): readonly [number, User] {
   return [

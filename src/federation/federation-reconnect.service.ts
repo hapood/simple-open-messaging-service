@@ -1,6 +1,9 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
+import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
+import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
 /** 60s reconnect sweep cadence (§4.3). Module-scope so @Interval can read it at decoration time. */
 const SWEEP_MS = 60_000;
@@ -11,12 +14,10 @@ const RECONCILE_MS = 5 * 60_000;
 const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
 
 /**
- * The 60s reconnect sweep (§4.3) — drives the self-healing the design's resilience story leans on.
- * Without it, a transport-degraded peer stays degraded until user traffic happens to retry it; this
- * sweep makes availability recovery active and bounded.
- *
- * Each tick retries missing idempotent recognition facts or probes an established pinned relationship
- * with Health. Recovery then exchanges ephemeral feed revisions and drains state before messages.
+ * The 60s reconnect sweep retries missing idempotent recognition directions. Periodic reachability
+ * probing belongs to FederationHealthSchedulerService, whose bounded queue prevents slow Health
+ * requests from accumulating here. After recognition recovery, this service exchanges ephemeral feed
+ * revisions and drains state before messages.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.
@@ -26,7 +27,11 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private readonly logger = new Logger(FederationReconnectService.name);
   private readonly inFlight = new Set<string>();
 
-  constructor(private readonly federation: FederationService) {}
+  constructor(
+    private readonly federation: FederationService,
+    private readonly threadContentHeads: FederationThreadContentHeadService,
+    private readonly events: EventEmitter2,
+  ) {}
 
   onApplicationBootstrap(): void {
     void this.reconcileTrustedPeers().catch((error) =>
@@ -36,7 +41,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     );
   }
 
-  /** 60s reconnect sweep (§4.3). Registered with @nestjs/schedule; cleared on shutdown. */
+  /** 60s recognition-recovery sweep. Registered with @nestjs/schedule; cleared on shutdown. */
   @Interval(SWEEP_MS)
   periodicSweep(): void {
     void this.sweep().catch((e) =>
@@ -78,7 +83,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    await this.federation.rebuildAndPushDiscoveryHwm(domain);
+    await this.rebuildAndScheduleStateFeedPush(domain);
     await this.federation.pullStateFromPeer(domain);
   }
 
@@ -102,8 +107,13 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   /** One peer's recovery sequence. Identity is verified before any ping or data operation. Each step
    *  throws on failure (peer still down) → the caller logs and the next sweep retries. */
   private async recover(domain: string): Promise<void> {
-    await this.federation.recoverPeerTrust(domain);
-    await this.federation.rebuildAndPushDiscoveryHwm(domain);
+    await this.federation.recoverPeerRecognition(domain);
+    await this.rebuildAndScheduleStateFeedPush(domain);
     await this.federation.pullStateFromPeer(domain);
+  }
+
+  private async rebuildAndScheduleStateFeedPush(domain: string): Promise<void> {
+    await this.threadContentHeads.fill(domain);
+    this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain: domain });
   }
 }

@@ -22,14 +22,17 @@ export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
 export type FederationRecognitionStage =
   | 'DISCOVERING'
   | 'VERIFYING_IDENTITY'
-  | 'CONNECTING'
-  | 'WAITING_FOR_PEER';
+  | 'CONNECTING';
 
 @Injectable()
 export class FederationRecognitionService {
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationRecognitionService.name);
   private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly healthInFlight = new Map<
+    string,
+    Promise<FederationHealthStatus>
+  >();
   private readonly progress = new Map<
     string,
     {
@@ -111,9 +114,8 @@ export class FederationRecognitionService {
         localServiceAvailable: true,
       },
     });
-    // Health is an availability probe, not a bootstrap operation. A peer may legitimately answer
-    // `degraded` while this side has no post-reset recognition row at all; treating that response as
-    // sufficient would let ensurePeerTrusted return before the local authorization facts exist.
+    // Health cannot prepare or pin a peer and cannot replace the OK for our outbound Recognize. Once
+    // prepared, however, a positive Health result is the peer's recognition acknowledgement.
     if (
       peer?.activeNamespaceId == null ||
       !peer.recognizesPeer ||
@@ -129,6 +131,20 @@ export class FederationRecognitionService {
 
   async checkHealth(peerDomain: string): Promise<FederationHealthStatus> {
     const domain = this.normalizeDomain(peerDomain);
+    const existing = this.healthInFlight.get(domain);
+    if (existing) return existing;
+    const run = this.runHealthCheck(domain).finally(() => {
+      if (this.healthInFlight.get(domain) === run) {
+        this.healthInFlight.delete(domain);
+      }
+    });
+    this.healthInFlight.set(domain, run);
+    return run;
+  }
+
+  private async runHealthCheck(
+    domain: string,
+  ): Promise<FederationHealthStatus> {
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/health`);
     const body = '';
@@ -213,31 +229,41 @@ export class FederationRecognitionService {
       const next = {
         ...peer,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
+        recognizesPeer: true,
         inboundRecognitionConfirmed: true,
         lightweightInboundReady: true,
-        localServiceAvailable:
-          peer?.localServiceAvailable || peer?.recognizesPeer || false,
+        localServiceAvailable: true,
+        remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
       await tx
         .insert(tables.federatedPeer)
         .values({
           domain: normalized,
-          trustLevel: 'establishing',
+          trustLevel: 'available',
+          recognizesPeer: true,
           inboundRecognitionConfirmed: true,
           inboundRecognizedAt: now,
           lightweightInboundReady: true,
+          localServiceAvailable: true,
+          remoteServiceReachable: true,
           reverseRecognitionPending: !peer?.outboundRecognitionConfirmed,
+          trustedAt: now,
+          lastSuccessAt: now,
         })
         .onConflictDoUpdate({
           target: tables.federatedPeer.domain,
           set: {
+            recognizesPeer: true,
             inboundRecognitionConfirmed: true,
             inboundRecognizedAt: peer?.inboundRecognizedAt ?? now,
             lightweightInboundReady: true,
-            localServiceAvailable:
-              peer?.localServiceAvailable || peer?.recognizesPeer || false,
+            localServiceAvailable: true,
+            remoteServiceReachable: true,
             reverseRecognitionPending: !peer?.outboundRecognitionConfirmed,
+            lastSuccessAt: now,
+            degradedAt: null,
+            degradationReason: null,
             trustLevel,
             trustedAt:
               trustLevel === 'available'
@@ -282,7 +308,7 @@ export class FederationRecognitionService {
     if (
       !peer ||
       peer.activeNamespaceId === null ||
-      !peer.inboundRecognitionConfirmed ||
+      !peer.recognizesPeer ||
       !peer.localServiceAvailable ||
       peer.trustLevel === 'halted'
     ) {
@@ -291,15 +317,22 @@ export class FederationRecognitionService {
     return peer.trustLevel === 'available' ? 'available' : 'degraded';
   }
 
-  async hasPinnedIdentity(domain: string): Promise<boolean> {
+  async hasPreparedPeer(domain: string): Promise<boolean> {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, this.normalizeDomain(domain)),
       columns: {
         activeNamespaceId: true,
         trustLevel: true,
+        recognizesPeer: true,
+        localServiceAvailable: true,
       },
     });
-    return peer?.activeNamespaceId != null && peer.trustLevel !== 'halted';
+    return (
+      peer?.activeNamespaceId != null &&
+      peer.trustLevel !== 'halted' &&
+      peer.recognizesPeer &&
+      peer.localServiceAvailable
+    );
   }
 
   async applyHealthResult(
@@ -313,17 +346,28 @@ export class FederationRecognitionService {
     }
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
-      if (!peer || !peer.identityPinnedAt || peer.trustLevel === 'halted')
+      if (
+        !peer ||
+        !peer.identityPinnedAt ||
+        !peer.recognizesPeer ||
+        !peer.localServiceAvailable ||
+        peer.trustLevel === 'halted'
+      )
         return;
       const now = new Date();
       const next = {
         ...peer,
+        inboundRecognitionConfirmed: true,
+        lightweightInboundReady: true,
         remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
       await tx
         .update(tables.federatedPeer)
         .set({
+          inboundRecognitionConfirmed: true,
+          inboundRecognizedAt: peer.inboundRecognizedAt ?? now,
+          lightweightInboundReady: true,
           remoteServiceReachable: true,
           lastSuccessAt: now,
           degradedAt: null,
@@ -342,7 +386,13 @@ export class FederationRecognitionService {
     const normalized = this.normalizeDomain(domain);
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
-      if (!peer || !peer.identityPinnedAt || peer.trustLevel === 'halted')
+      if (
+        !peer ||
+        !peer.identityPinnedAt ||
+        !peer.recognizesPeer ||
+        !peer.localServiceAvailable ||
+        peer.trustLevel === 'halted'
+      )
         return;
       const now = new Date();
       const trustLevel = this.lifecycle({
@@ -494,46 +544,6 @@ export class FederationRecognitionService {
     } finally {
       release();
     }
-    this.publishProgress(domain, 'WAITING_FOR_PEER');
-    await this.awaitBidirectionalConvergence(domain);
-  }
-
-  private async awaitBidirectionalConvergence(domain: string): Promise<void> {
-    const deadline =
-      Date.now() + this.transportConfig.get().callTimeoutSec * 1000;
-    let lastStatus: FederationHealthStatus = 'unavailable';
-    while (Date.now() < deadline) {
-      const peer = await this.database.db.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, domain),
-        columns: {
-          trustLevel: true,
-          recognizesPeer: true,
-          outboundRecognitionConfirmed: true,
-          inboundRecognitionConfirmed: true,
-          localServiceAvailable: true,
-          remoteServiceReachable: true,
-        },
-      });
-      if (
-        peer?.recognizesPeer &&
-        peer.outboundRecognitionConfirmed &&
-        peer.inboundRecognitionConfirmed &&
-        peer.localServiceAvailable &&
-        peer.remoteServiceReachable
-      ) {
-        if (peer.trustLevel !== 'available') await this.markReachable(domain);
-        return;
-      }
-      try {
-        lastStatus = await this.checkHealth(domain);
-      } catch {
-        // The reverse Recognize may still be crossing; retry only within this initiating operation.
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error(
-      `bidirectional Recognize with ${domain} did not converge (Health=${lastStatus})`,
-    );
   }
 
   private async prepareOutbound(
@@ -564,7 +574,7 @@ export class FederationRecognitionService {
         .insert(tables.federatedPeer)
         .values({
           domain,
-          trustLevel: 'establishing',
+          trustLevel: 'degraded',
           recognizesPeer: true,
           localServiceAvailable: true,
         })
@@ -683,12 +693,8 @@ export class FederationRecognitionService {
       return 'halted';
     }
     if (!peer.identityPinnedAt) return 'unrecognized';
-    const established =
-      peer.recognizesPeer &&
-      peer.outboundRecognitionConfirmed &&
-      peer.inboundRecognitionConfirmed &&
-      peer.localServiceAvailable;
-    if (!established) return 'establishing';
+    if (!peer.recognizesPeer || !peer.localServiceAvailable)
+      return 'establishing';
     return peer.remoteServiceReachable ? 'available' : 'degraded';
   }
 

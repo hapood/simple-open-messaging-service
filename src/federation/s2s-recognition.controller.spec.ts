@@ -21,9 +21,10 @@ describe('S2sRecognitionController Health privacy projection', () => {
       verifyWithPublicKey: vi.fn(),
     };
     const recognition = {
-      hasPinnedIdentity: vi.fn().mockResolvedValue(true),
+      hasPreparedPeer: vi.fn().mockResolvedValue(true),
       captureContext: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       queryHealth: vi.fn(),
+      markReachable: vi.fn().mockResolvedValue(undefined),
     };
     const controller = new S2sRecognitionController(
       { assertAvailable: vi.fn() } as never,
@@ -51,6 +52,25 @@ describe('S2sRecognitionController Health privacy projection', () => {
     );
     expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
+  });
+
+  it('returns the admission status before refreshing authenticated reachability', async () => {
+    const { controller, discovery, recognition } = target();
+    discovery.getPublicKey.mockResolvedValue(new Uint8Array(32));
+    recognition.queryHealth.mockResolvedValue('degraded');
+
+    await expect(
+      controller.health({
+        url: '/s2s/v1/health',
+        rawBody: Buffer.alloc(0),
+        headers: {},
+      } as never),
+    ).resolves.toEqual({ status: 'degraded' });
+
+    expect(recognition.queryHealth).toHaveBeenCalledBefore(
+      recognition.markReachable,
+    );
+    expect(recognition.markReachable).toHaveBeenCalledWith('peer.example');
   });
 
   it.each([
@@ -96,33 +116,69 @@ describe('S2sRecognitionController Health privacy projection', () => {
 });
 
 describe('FederationRecognitionService health transitions', () => {
-  it('replays the latest recognition stage to re-entrant subscribers', () => {
-    const service = new FederationRecognitionService(
+  function service() {
+    return new FederationRecognitionService(
       {} as never,
       {} as never,
       {} as never,
       {} as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
+      {} as never,
     );
+  }
+
+  it('replays the latest recognition stage to re-entrant subscribers', () => {
+    const recognition = service();
     const first = vi.fn();
     const second = vi.fn();
-    const unsubscribeFirst = service.subscribeProgress('peer.example', first);
+    const unsubscribeFirst = recognition.subscribeProgress(
+      'peer.example',
+      first,
+    );
     (
-      service as unknown as {
-        publishProgress(domain: string, stage: 'WAITING_FOR_PEER'): void;
+      recognition as unknown as {
+        publishProgress(domain: string, stage: 'CONNECTING'): void;
       }
-    ).publishProgress('peer.example', 'WAITING_FOR_PEER');
+    ).publishProgress('peer.example', 'CONNECTING');
 
-    const unsubscribeSecond = service.subscribeProgress('peer.example', second);
+    const unsubscribeSecond = recognition.subscribeProgress(
+      'peer.example',
+      second,
+    );
 
-    expect(first).toHaveBeenLastCalledWith('WAITING_FOR_PEER');
-    expect(second).toHaveBeenCalledExactlyOnceWith('WAITING_FOR_PEER');
+    expect(first).toHaveBeenLastCalledWith('CONNECTING');
+    expect(second).toHaveBeenCalledExactlyOnceWith('CONNECTING');
     unsubscribeFirst();
     unsubscribeSecond();
   });
 
+  it('derives availability independently from recognition direction facts', () => {
+    const recognition = service();
+    const lifecycle = (
+      recognition as unknown as {
+        lifecycle(peer: Record<string, unknown>): string;
+      }
+    ).lifecycle.bind(recognition);
+    const prepared = {
+      trustLevel: 'degraded',
+      identityPinnedAt: new Date(),
+      recognizesPeer: true,
+      localServiceAvailable: true,
+      outboundRecognitionConfirmed: false,
+      inboundRecognitionConfirmed: false,
+    };
+
+    expect(lifecycle({ ...prepared, remoteServiceReachable: false })).toBe(
+      'degraded',
+    );
+    expect(lifecycle({ ...prepared, remoteServiceReachable: true })).toBe(
+      'available',
+    );
+  });
+
   it('degrades local availability when Health returns unavailable', async () => {
     const service = new FederationRecognitionService(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -140,11 +196,84 @@ describe('FederationRecognitionService health transitions', () => {
       'Health unavailable',
     );
   });
+
+  it.each(['available', 'degraded'] as const)(
+    'confirms peer recognition when Health returns %s',
+    async (status) => {
+      const updateValues = vi.fn();
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn((values: unknown) => {
+            updateValues(values);
+            return { where: vi.fn().mockResolvedValue(undefined) };
+          }),
+        }),
+      };
+      const database = {
+        db: {
+          transaction: vi.fn(
+            async (operation: (value: typeof tx) => Promise<void>) =>
+              operation(tx),
+          ),
+        },
+      };
+      const recognition = new FederationRecognitionService(
+        database as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+      vi.spyOn(recognition as never, 'lockPeer').mockResolvedValue({
+        trustLevel: 'degraded',
+        identityPinnedAt: new Date(),
+        recognizesPeer: true,
+        localServiceAvailable: true,
+        inboundRecognitionConfirmed: false,
+        inboundRecognizedAt: null,
+        lightweightInboundReady: false,
+      });
+
+      await recognition.applyHealthResult('peer.example', status);
+
+      expect(updateValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inboundRecognitionConfirmed: true,
+          inboundRecognizedAt: expect.any(Date),
+          lightweightInboundReady: true,
+          remoteServiceReachable: true,
+        }),
+      );
+    },
+  );
+
+  it('coalesces concurrent Health checks for the same domain', async () => {
+    const recognition = service();
+    let complete!: (status: 'available') => void;
+    const pending = new Promise<'available'>((resolve) => {
+      complete = resolve;
+    });
+    const runHealthCheck = vi
+      .spyOn(recognition as never, 'runHealthCheck')
+      .mockReturnValue(pending);
+
+    const first = recognition.checkHealth('peer.example');
+    const second = recognition.checkHealth('peer.example');
+
+    expect(runHealthCheck).toHaveBeenCalledExactlyOnceWith('peer.example');
+    complete('available');
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      'available',
+      'available',
+    ]);
+  });
 });
 
 describe('FederationRecognitionService Recognize HTTP classification', () => {
   function subject() {
     const service = new FederationRecognitionService(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

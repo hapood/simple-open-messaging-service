@@ -3,7 +3,6 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
-  IsBoolean,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -27,30 +26,6 @@ export class UserIdDto {
   @IsInt()
   @Min(1)
   userId!: number;
-}
-
-export class DeleteFriendDto {
-  @ApiProperty({ example: 'alice', description: 'Friend account' })
-  @IsString()
-  @IsNotEmpty()
-  account!: string;
-
-  @ApiPropertyOptional({
-    example: 'peer.example',
-    description: 'Friend home domain. Omit for a local account.',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(63)
-  domain?: string;
-
-  @ApiPropertyOptional({
-    default: false,
-    description: 'Also delete this chat for the caller',
-  })
-  @IsOptional()
-  @IsBoolean()
-  deleteData?: boolean;
 }
 
 /** Exact account lookup input. POST /user/resolve accepts local/our-domain lookup; the temporary
@@ -110,21 +85,6 @@ export class UserSearchDto {
   @IsInt()
   @Min(1)
   take?: number;
-}
-
-/** Pre-flight trust check for a federated address search: has mutual trust with this peer domain
- *  already been established? Drives the client's first-contact affordance — a "Connecting to
- *  <domain>…" banner shown only when a handshake is actually expected (the server knows whether a
- *  FederatedPeer 'trusted' row exists), rather than guessed from request latency. */
-export class PeerTrustStatusDto {
-  @ApiProperty({
-    example: 'bbb.local',
-    description: 'Peer domain (the part after @ in a federated address)',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
 }
 
 /**

@@ -81,7 +81,7 @@ export class AppComponent {
   // live for the whole session.
   private readonly sseLifecycle = inject(SseLifecycleService);
   // UnreadAttentionService prefixes the window/tab title with "(N)" + posts a system notification
-  // when a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
+  // when a durable content head advances while the window is unfocused. Covers PC desktop + browser. Eagerly
   // constructed so the focus listener + SSE subscription are live for the whole session.
   private readonly attention = inject(UnreadAttentionService);
   // BackgroundSyncService owns the Android 6-hour keep-alive poller preference. Eagerly constructed

@@ -115,8 +115,8 @@ describe('formatSseFrame', () => {
   // No `id:` (Last-Event-ID) line is ever emitted — replay is unused (the missed-summary pull + HELLO
   // handshake reconcile gaps), so formatSseFrame carries no resume cursor.
   it('emits the event/data fields and the blank-line terminator (no id line)', () => {
-    expect(formatSseFrame('NEW_MESSAGE', { hello: 'world' })).toBe(
-      'event: NEW_MESSAGE\ndata: {"hello":"world"}\n\n',
+    expect(formatSseFrame('EXAMPLE_EVENT', { hello: 'world' })).toBe(
+      'event: EXAMPLE_EVENT\ndata: {"hello":"world"}\n\n',
     );
   });
 
@@ -148,7 +148,7 @@ describe('formatSseFrame', () => {
   it('nested Date / BigInt inside objects and arrays are recursively converted; null is preserved', () => {
     expect(
       payloadOf(
-        formatSseFrame('STATE_REV_UPDATED', {
+        formatSseFrame('STATE_FEED_UPDATED', {
           pinnedAt: new Date(0),
           nullable: null,
           rows: [{ id: 1n, at: new Date(1_700_000_000_000) }],

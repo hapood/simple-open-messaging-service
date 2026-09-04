@@ -3,4 +3,4 @@
 // src/app/services/sw-notif-protocol.ts (SOMS_NOTIF_MSG). The push service worker loads this via
 // importScripts so its endpoint + SW↔page message types stay in lockstep with the Angular app.
 self.__SOMS_API_PREFIX__ = "/api/v1";
-self.__SOMS_NOTIF_MSG__ = { DISMISS: "soms-notif-dismiss", OPEN: "soms-notif-open" };
+self.__SOMS_NOTIF_MSG__ = { DISMISS: "soms-notif-dismiss", OPEN: "soms-notif-open", CLAIM: "soms-notif-claim" };

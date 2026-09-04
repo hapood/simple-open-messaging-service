@@ -7,9 +7,7 @@ export const FEDERATION_STATE_EVENT_TYPES = [
 export type FederationStateEventType =
   (typeof FEDERATION_STATE_EVENT_TYPES)[number];
 
-const federationStateEventTypes = new Set<string>(
-  FEDERATION_STATE_EVENT_TYPES,
-);
+const federationStateEventTypes = new Set<string>(FEDERATION_STATE_EVENT_TYPES);
 
 export function isFederationStateEventType(
   value: unknown,

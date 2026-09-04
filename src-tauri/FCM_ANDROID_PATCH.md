@@ -2,7 +2,7 @@
 
 > **Status (2026-07):** `gen/android/` is now **version-controlled** (Tauri's default — only
 > `gen/schemas` is gitignored). All patches below are committed in-tree, so they survive a fresh clone
-> and **no longer need re-applying** after `tauri android init`. This file is now a *reference* for what
+> and **no longer need re-applying** after `tauri android init`. This file is now a _reference_ for what
 > the native side contains and the invariants that must hold — not a re-apply runbook. The "re-apply"
 > guidance below applies only if you deliberately regenerate `gen/android` (e.g. a Tauri major bump).
 
@@ -82,6 +82,7 @@ implementation("com.google.firebase:firebase-messaging")
 ### 4. `gen/android/app/src/main/java/com/soms/client/MainActivity.kt`
 
 Replace the stock 11-line `MainActivity` with the version that:
+
 - captures the cold-start deep-link `EXTRA_THREAD_ID` into `DeepLinkState` in `onCreate`,
 - flips `SomsMessagingService.appInForeground` in `onResume`/`onStop`,
 - injects the pending deep link via `evaluateJavascript` in `onResume`,
@@ -119,7 +120,7 @@ See the current on-disk `MainActivity.kt` for the canonical text.
   fields the server publishes). Read by the worker, the realtime service, and `SomsFirebase` at process
   start; written by the JS bridge (token + origin + firebase config) and both push paths (cursor).
 - `NotificationSyncWorker.kt` — `CoroutineWorker`, ~6h periodic. Skips when foreground/logged-out/no
-  origin; OkHttp-POSTs `/notifications/missed` with the notification token; posts a localized local
+  origin; OkHttp-POSTs `/notification-feed/query` with the session token; posts a localized local
   notification per fresh thread (or an aggregated summary when many), advancing the shared cursor.
 
 The webview reference is obtained from `WryActivity.onWebViewCreate` (the idiomatic Tauri v2 hook), not
@@ -163,6 +164,7 @@ way (the on-disk files are canonical, these are the rules that must hold):
 - **`SomsMessagingService.parseSnapshotArray`** — the per-item `JSONObject` loop local MUST NOT be
   named `it`. Inside `mid.takeIf { … }` the implicit `it` is `mid` (a String), so `it.has(...)` /
   `it.isNull(...)` fail with "Unresolved reference". Name it `obj` (or anything but `it`):
+
   ```kotlin
   val obj = arr.optJSONObject(i) ?: continue
   …
@@ -186,7 +188,7 @@ way (the on-disk files are canonical, these are the rules that must hold):
   }
   ```
 
-## Release signing (optional — needed only to install a *release* APK)
+## Release signing (optional — needed only to install a _release_ APK)
 
 The signing config is **already wired** in `gen/android/app/build.gradle.kts`: it loads
 `keystore.properties` when present and applies a `signingConfigs.release` to the release build type
@@ -213,13 +215,13 @@ release build.
 
 ## IPC contract (webview ↔ Kotlin)
 
-| Direction | Carrier | Mechanism |
-|---|---|---|
-| Kotlin → JS (token rotation, warm deep link) | `WebView.evaluateJavascript` calling a global hook (`window.__SOMS_FCM_TOKEN__`, `window.__SOMS_DEEP_LINK__`) | Mirrors the origin init-script pattern |
-| JS → Kotlin (token read, permission request) | `@JavascriptInterface` named `SomsFcm`, attached in `onWebViewCreate` | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern |
-| JS → Kotlin (firebase client config hand-off) | `SomsFcm.setFirebaseConfig(json)` / `getFirebaseConfig()` `@JavascriptInterface` | web fetches the server's 4 fields and hands them to native, which persists + (re)initializes FirebaseApp; null clears it |
-| Backend → client (public firebase config) | `GET /api/v1/shell/compat` (`@Public`) | its `firebase` field contains the 4 client fields when configured, else `{configured:false}` |
-| JS → backend (register HTTP) | `POST /api/v1/devices/register` | standard |
+| Direction                                     | Carrier                                                                                                       | Mechanism                                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Kotlin → JS (token rotation, warm deep link)  | `WebView.evaluateJavascript` calling a global hook (`window.__SOMS_FCM_TOKEN__`, `window.__SOMS_DEEP_LINK__`) | Mirrors the origin init-script pattern                                                                                   |
+| JS → Kotlin (token read, permission request)  | `@JavascriptInterface` named `SomsFcm`, attached in `onWebViewCreate`                                         | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern                                                                        |
+| JS → Kotlin (firebase client config hand-off) | `SomsFcm.setFirebaseConfig(json)` / `getFirebaseConfig()` `@JavascriptInterface`                              | web fetches the server's 4 fields and hands them to native, which persists + (re)initializes FirebaseApp; null clears it |
+| Backend → client (public firebase config)     | `GET /api/v1/shell/compat` (`@Public`)                                                                        | its `firebase` field contains the 4 client fields when configured, else `{configured:false}`                             |
+| JS → backend (register HTTP)                  | `POST /api/v1/devices/register`                                                                               | standard                                                                                                                 |
 
 No `@tauri-apps/api` dependency, no Tauri event permission, no custom Rust plugin — the bridge reuses
 the codebase's existing global-injection + `@JavascriptInterface` style.
@@ -242,10 +244,10 @@ Hardware-back is routed to the web nav state machine (`NavStateMachineService`),
 (pane → aside → chat → home) and finishes the activity when the stack is empty. This replaces the default
 (WryActivity's webview-history traversal, disabled via `TauriActivity.handleBackNavigation = false`).
 
-| Direction | Carrier | Mechanism |
-|---|---|---|
-| Kotlin → JS (hardware-back press) | `OnBackPressedDispatcher` callback in `MainActivity.onCreate` → `SomsBridge.eval("window.__SOMS_BACK__ && window.__SOMS_BACK__();")` | Same `evaluateJavascript`-global-hook pattern as the token/deep-link emissions |
-| JS → Kotlin (exit at home) | `@JavascriptInterface` named `SomsBack` (`exit()`), attached in `onWebViewCreate` | Same `@JavascriptInterface` pattern as `SomsFcm`; `exit()` finishes the activity on the UI thread |
+| Direction                         | Carrier                                                                                                                              | Mechanism                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Kotlin → JS (hardware-back press) | `OnBackPressedDispatcher` callback in `MainActivity.onCreate` → `SomsBridge.eval("window.__SOMS_BACK__ && window.__SOMS_BACK__();")` | Same `evaluateJavascript`-global-hook pattern as the token/deep-link emissions                    |
+| JS → Kotlin (exit at home)        | `@JavascriptInterface` named `SomsBack` (`exit()`), attached in `onWebViewCreate`                                                    | Same `@JavascriptInterface` pattern as `SomsFcm`; `exit()` finishes the activity on the UI thread |
 
 JS registers `window.__SOMS_BACK__` at boot (`AppComponent`, gated `isTauri() && isAndroid()`): it calls
 `nav.back()`; if that returns `false` (at home), it calls `window.SomsBack.exit()`. Desktop/browser have no
@@ -258,10 +260,10 @@ status bar overlays the top of the web content. `env(safe-area-inset-top)` retur
 WebView (it forwards cutout insets, not the status bar), so the web layer can't learn the inset from CSS
 alone. The native shell measures it and injects it.
 
-| Direction | Carrier | Mechanism |
-|---|---|---|
-| JS → Kotlin (read insets) | `@JavascriptInterface` named `SomsShell` (`getSafeInsets()`), attached in `onWebViewCreate` | Same `@JavascriptInterface` pattern as `SomsFcm`/`SomsBack` |
-| Kotlin → JS (inset change, e.g. rotation) | `WebView.evaluateJavascript` setting `--soms-safe-top`/`--soms-safe-bottom` on `:root` | Same `evaluateJavascript` pattern as the token/deep-link emissions |
+| Direction                                 | Carrier                                                                                     | Mechanism                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| JS → Kotlin (read insets)                 | `@JavascriptInterface` named `SomsShell` (`getSafeInsets()`), attached in `onWebViewCreate` | Same `@JavascriptInterface` pattern as `SomsFcm`/`SomsBack`        |
+| Kotlin → JS (inset change, e.g. rotation) | `WebView.evaluateJavascript` setting `--soms-safe-top`/`--soms-safe-bottom` on `:root`      | Same `evaluateJavascript` pattern as the token/deep-link emissions |
 
 - `MainActivity.installInsetsListener()` (called from `onCreate`) registers a
   `ViewCompat.setOnApplyWindowInsetsListener` on `android.R.id.content`. It reads

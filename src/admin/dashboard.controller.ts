@@ -9,12 +9,11 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { DashboardService } from './dashboard.service.js';
-import { MediaAssetGcService } from './media-asset-gc.service.js';
+import { MediaStorageStatsService } from './media-storage-stats.service.js';
 
 /**
  * Read-only admin endpoints open to every admin role (no @Roles) — VIEWER included. Today: the
- * dashboard overview + the media storage breakdown (the GC triggers themselves live in
- * MediaAssetGcController and are SUPER_ADMIN-only; the *view* of storage is read-only).
+ * dashboard overview + the read-only media storage breakdown.
  *
  * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope.
  */
@@ -25,7 +24,7 @@ import { MediaAssetGcService } from './media-asset-gc.service.js';
 export class DashboardController {
   constructor(
     private readonly dashboard: DashboardService,
-    private readonly gc: MediaAssetGcService,
+    private readonly mediaStorage: MediaStorageStatsService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -43,10 +42,9 @@ export class DashboardController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/stats')
   @ApiOperation({
-    summary:
-      'Media storage overview: DB bytes/count/reclaimable + on-disk per-extension breakdown',
+    summary: 'Read-only media storage totals from the database and CAS',
   })
   async mediaStats() {
-    return this.gc.stats();
+    return this.mediaStorage.read();
   }
 }

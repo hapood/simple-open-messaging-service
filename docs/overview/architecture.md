@@ -56,8 +56,8 @@ feature modules and controllers. Modules marked `@Global()` are shared app-wide.
 | **RelationshipModule**               | [src/relationship/](../../src/relationship/)                 | `RelationshipService` — directed user/group relationship facts, pair reconciliation and request projections; delegates roster writes to AccountThreadStateService                                                                                                         |
 | **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                     | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
 | **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)           | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
-| **UploadModule**                     | [src/upload/](../../src/upload/)                             | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                               |
-| **PushModule**                       | [src/push/](../../src/push/)                                 | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection                                                                                                                                                                            |
+| **UploadModule**                     | [src/upload/](../../src/upload/)                             | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), and validated byte-preserving avatar storage                                                               |
+| **PushModule**                       | [src/push/](../../src/push/)                                 | `PushService` — FCM (Android) / Web Push dispatch; suppresses only the exact device session that owns a live SSE connection                                                                                                                                               |
 | **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                     | Server-to-server protocol: identity/signatures, directional recognition, bounded Health scheduling, durable tasks, compacted per-peer state feed, message feeds, and media/message pull                                                                                   |
 | **QuotaModule** (`@Global`)          | [src/quota/](../../src/quota/)                               | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters                                                                                                                                                                   |
 | **CallsModule**                      | [src/calls/](../../src/calls/)                               | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media)                                                                          |
@@ -71,6 +71,12 @@ coalesced while the previous round remains active, so slow requests cannot
 accumulate rounds. Concurrent callers for the same domain share one in-flight
 Health request. The scheduler controls admission; the transport request still
 uses the shared per-domain request slot and timeout.
+
+A locally `degraded` peer retains its identity pin, recognition facts, and
+business state, but the ordinary outbound data plane remains closed. Only
+recognition recovery and Health probes continue; a successful authenticated
+Health round trip clears the transport degradation and reopens ordinary
+outbound traffic.
 
 Federated address resolution has no mutating `ensure trust` operation. It reads
 the two local recognition-direction facts, explicitly starts recognition only
@@ -228,9 +234,11 @@ mirror; the latest operation per member defines current state.
 independent fact containing one local account's role, read, and presentation
 state. Both tables reference the thread but never each other. Neither table
 grants access. Passive federation query permission reads the publisher-authored
-`RelationshipIntent`; mutually confirmed sends and content-head publication read
-`RelationshipPair.active` and, for GROUP, the current peer-level
-`ThreadAudience`.
+`RelationshipIntent`; mutually confirmed sends read `RelationshipPair.active`.
+For a locally hosted group, peer content-head publication additionally uses the
+current `ThreadAudience`. A remote-group mirror has no audience row: local
+conversation state is represented by `AccountThreadState`, and outbound heads
+are addressed directly to the authority recorded by the group.
 
 Friend and group requests use the same pair of directed account facts. User/user
 pairs become P2P relationships; user/group pairs become memberships; group/group
@@ -288,9 +296,22 @@ Two consistency boundaries are deliberate:
   reconnect, or restart rather than clearing immediately.
 
 3. `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, then routes the committed
-   Client State Feed high-water marks through the per-account SSE throttle. Offline recipients still receive a
-   Push payload named `NEW_MESSAGE`; that closed-app wake is separate from the SSE protocol and carries no
-   durable state authority.
+   Client State Feed high-water marks through the per-account SSE throttle. A registered device session receives
+   the `NEW_MESSAGE` Push wake only when that exact session has no live SSE connection. An online browser page or
+   native service instead owns notification aggregation from `STATE_FEED_UPDATED`; other devices are unaffected.
+   The message wake is exactly `{ type, messageEndSeq }`; Push remains separate from the SSE protocol and carries
+   no durable state authority. Incoming-call Push uses the same exact-session ownership rule while still ringing
+   every other eligible offline device.
+   Browser pages continuously checkpoint their successfully processed foreground State Feed cursor in a
+   service-worker-visible IndexedDB. When a Push races an SSE reconnect, the worker asks a responsive page with
+   healthy SSE to claim notification aggregation; otherwise it queries from that checkpoint itself. Android
+   applies the same ownership rule using its SQLite notification cursor and native realtime service. Session
+   revocation and automatic expiry remove the session's Push registration in the same database transaction.
+
+   Notification queries are deltas: each returned descriptor adds or replaces one conversation card, while
+   an empty result changes nothing. Clients therefore never erase unrelated conversation cards when
+   processing a repeated or partially overlapping wake-up.
+
 4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 
 ### Local System Messages

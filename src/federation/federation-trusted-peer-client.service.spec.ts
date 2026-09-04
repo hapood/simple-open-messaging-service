@@ -6,8 +6,7 @@ import { FederationTrustedPeerClient } from './federation-trusted-peer-client.se
 function makeSubject() {
   const peerHttp = { get: vi.fn() };
   const peerLifecycle = {
-    ensureTrusted: vi.fn().mockResolvedValue(undefined),
-    recoverTrust: vi.fn().mockResolvedValue(undefined),
+    checkOutboundReady: vi.fn().mockResolvedValue(undefined),
   };
   return {
     subject: new FederationTrustedPeerClient(
@@ -25,41 +24,32 @@ describe('FederationTrustedPeerClient', () => {
     const operation = vi.fn().mockResolvedValue('ok');
 
     await expect(subject.run('peer.example', operation)).resolves.toBe('ok');
-    expect(peerLifecycle.ensureTrusted).toHaveBeenCalledWith('peer.example');
+    expect(peerLifecycle.checkOutboundReady).toHaveBeenCalledWith(
+      'peer.example',
+    );
     expect(operation).toHaveBeenCalledOnce();
   });
 
-  it('recovers recognition and retries that specific peer response once', async () => {
+  it('does not run the operation when the directional check fails', async () => {
     const { subject, peerLifecycle } = makeSubject();
-    const operation = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new S2sResponseError(
-          'recognition required',
-          409,
-          BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-        ),
-      )
-      .mockResolvedValueOnce('recovered');
+    const error = new Error('outbound recognition is incomplete');
+    peerLifecycle.checkOutboundReady.mockRejectedValue(error);
+    const operation = vi.fn();
 
-    await expect(subject.run('peer.example', operation)).resolves.toBe(
-      'recovered',
-    );
-    expect(peerLifecycle.recoverTrust).toHaveBeenCalledWith('peer.example');
-    expect(operation).toHaveBeenCalledTimes(2);
+    await expect(subject.run('peer.example', operation)).rejects.toBe(error);
+    expect(operation).not.toHaveBeenCalled();
   });
 
-  it('does not retry unrelated peer failures', async () => {
-    const { subject, peerLifecycle } = makeSubject();
+  it('does not recover or retry a recognition-required peer response', async () => {
+    const { subject } = makeSubject();
     const error = new S2sResponseError(
-      'group dissolved',
-      200,
-      BusinessCode.GROUP_DISSOLVED,
+      'recognition required',
+      401,
+      BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
     );
     const operation = vi.fn().mockRejectedValue(error);
 
     await expect(subject.run('peer.example', operation)).rejects.toBe(error);
-    expect(peerLifecycle.recoverTrust).not.toHaveBeenCalled();
     expect(operation).toHaveBeenCalledOnce();
   });
 });

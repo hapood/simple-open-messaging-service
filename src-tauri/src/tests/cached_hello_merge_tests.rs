@@ -25,7 +25,7 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
 
     merge_cached_hello(
         &c,
-        "NEW_MESSAGE",
+        "UNRELATED_EVENT",
         &serde_json::json!({"threadId":7,"seq":9,"ts":123}),
     );
     assert!(get(&c).get("latestMessage").is_none());

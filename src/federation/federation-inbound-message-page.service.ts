@@ -266,9 +266,8 @@ export class FederationInboundMessagePageService {
             }
             if (sequencePolicy) {
               if (
-                (localSourceMessage.originSeq !== null &&
-                  localSourceMessage.originSeq !== item.seq) ||
-                (localSourceMessage.federationSourceDomain !== null &&
+                localSourceMessage.federationSourceDomain !== null &&
+                (localSourceMessage.originSeq !== item.seq ||
                   localSourceMessage.federationSourceDomain !== domain)
               ) {
                 throw new BusinessException(

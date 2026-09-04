@@ -23,15 +23,15 @@ export function planFeedRecipientIds(
     .map((candidate) => candidate.userId);
 }
 
-/** Pure local wake-up policy. SSE synchronizes every unblocked recipient; notification Push additionally
- * respects mute and suppresses a user-authored message for its creator. */
+/** Pure local delivery policy. State Feed wake-ups cover every unblocked recipient; notification Push
+ * additionally respects mute settings and suppresses delivery back to a message's creator. */
 export function planLiveDelivery(
   candidates: readonly LiveRecipientCandidate[],
   creatorId: number | null,
-): { sseUserIds: number[]; pushUserIds: number[] } {
+): { wakeUserIds: number[]; pushUserIds: number[] } {
   const live = candidates.filter((candidate) => !candidate.blocked);
   return {
-    sseUserIds: live.map((candidate) => candidate.userId),
+    wakeUserIds: live.map((candidate) => candidate.userId),
     pushUserIds: live
       .filter((candidate) => !candidate.muted && candidate.userId !== creatorId)
       .map((candidate) => candidate.userId),

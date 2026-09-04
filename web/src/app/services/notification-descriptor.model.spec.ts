@@ -14,7 +14,7 @@ import {
  * additionally pinned end-to-end by `test/notification-action.e2e-spec.ts` (server-side contract).
  *
  * (A stronger check — bidirectional assignability with the OpenAPI-GENERATED type — is possible once the
- *  `/notifications/missed` response carries a typed DTO and `npm run gen:api` regenerates `api-types.ts`.)
+ *  `/notification-feed/query` response carries a typed DTO and `npm run gen:api` regenerates `api-types.ts`.)
  */
 
 /** The exact field contract every client renders — mirrors the backend `NotificationDescriptor`. */

@@ -12,11 +12,7 @@ import {
   isEffectiveRelationshipIntent,
   type RelationshipIntentStatus,
 } from './relationship-intent-state.js';
-import {
-  groupBusinessScopeKey,
-  lockBusinessScopeInTx,
-  userPairBusinessScopeKey,
-} from './business-scope-lock.js';
+import { lockBusinessAccountsInTx } from './business-scope-lock.js';
 
 export type { RelationshipIntentStatus } from './relationship-intent-state.js';
 
@@ -122,10 +118,7 @@ export class RelationshipIntentService {
     | undefined
   > {
     const key = await this.prepareP2PAddressKeyInTx(tx, localUserId, remote);
-    await lockBusinessScopeInTx(
-      tx,
-      userPairBusinessScopeKey([key.endpointA, key.endpointB]),
-    );
+    await lockBusinessAccountsInTx(tx, [key.endpointA, key.endpointB]);
     const locked = await tx.execute<{
       id: string;
       active: boolean;
@@ -405,7 +398,6 @@ export class RelationshipIntentService {
       pair.id,
       params.active,
     );
-    await this.refreshGroupFederationAuthorizationInTx(tx, params.groupId);
     if (changed && !params.active)
       await tx.execute(sql`
         UPDATE "MessageThread" thread
@@ -416,9 +408,28 @@ export class RelationshipIntentService {
           AND thread."groupId" = group_profile.id
           AND group_profile.id = ${params.groupId}
           AND group_profile.domain <> 'local'
-          AND group_profile."federationAuthorized" = false
           AND member.id = ${params.memberUserId}
           AND member.domain = 'local'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "RelationshipPair" remaining_pair
+            WHERE remaining_pair."threadId" = thread.id
+              AND remaining_pair.kind = 'GROUP_MEMBER'
+              AND remaining_pair.active = true
+              AND (
+                (remaining_pair."endpointAType" = 'GROUP'
+                  AND remaining_pair."endpointAAccount" = group_profile.account
+                  AND remaining_pair."endpointADomain" = group_profile.domain
+                  AND remaining_pair."endpointBType" = 'USER'
+                  AND remaining_pair."endpointBDomain" = 'local')
+                OR
+                (remaining_pair."endpointBType" = 'GROUP'
+                  AND remaining_pair."endpointBAccount" = group_profile.account
+                  AND remaining_pair."endpointBDomain" = group_profile.domain
+                  AND remaining_pair."endpointAType" = 'USER'
+                  AND remaining_pair."endpointADomain" = 'local')
+              )
+          )
       `);
     return changed;
   }
@@ -551,7 +562,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     address: { account: string; domain: string },
   ): Promise<void> {
-    await lockBusinessScopeInTx(tx, groupBusinessScopeKey(address));
+    await lockBusinessAccountsInTx(tx, [address]);
   }
 
   private async writeAuthoredIntentOnPairInTx(
@@ -756,10 +767,7 @@ export class RelationshipIntentService {
         namespaceId: relationshipNamespaceId,
       },
     ].sort((left, right) => this.compareEndpoints(left, right));
-    await lockBusinessScopeInTx(
-      tx,
-      userPairBusinessScopeKey([endpoints[0]!, endpoints[1]!]),
-    );
+    await lockBusinessAccountsInTx(tx, [endpoints[0]!, endpoints[1]!]);
     const pair = await this.lockCanonicalPairInTx(tx, {
       kind: 'P2P',
       endpointA: endpoints[0]!,
@@ -789,10 +797,7 @@ export class RelationshipIntentService {
     remoteSide: 'A' | 'B';
   }> {
     const key = await this.prepareP2PAddressKeyInTx(tx, localUserId, remote);
-    await lockBusinessScopeInTx(
-      tx,
-      userPairBusinessScopeKey([key.endpointA, key.endpointB]),
-    );
+    await lockBusinessAccountsInTx(tx, [key.endpointA, key.endpointB]);
     const pair = await this.lockCanonicalPairInTx(tx, key);
     await this.lockIntentRowsInTx(tx, pair.id);
     return {
@@ -948,46 +953,6 @@ export class RelationshipIntentService {
       .where(eq(relationshipIntent.pairId, pairId))
       .orderBy(relationshipIntent.authorSide)
       .for('update');
-  }
-
-  /** Rebuilds the remote-group authorization projection after a serialized member-pair change. */
-  private async refreshGroupFederationAuthorizationInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-  ): Promise<void> {
-    await tx.execute(sql`
-      WITH authorization_projection AS (
-        SELECT group_profile.id,
-          group_profile.domain <> 'local'
-          AND EXISTS (
-            SELECT 1
-            FROM "RelationshipPair" pair
-            WHERE pair.kind = 'GROUP_MEMBER'
-              AND pair.active = true
-              AND (
-                (pair."endpointAType" = 'GROUP'
-                  AND pair."endpointAAccount" = group_profile.account
-                  AND pair."endpointADomain" = group_profile.domain
-                  AND pair."endpointBType" = 'USER'
-                  AND pair."endpointBDomain" = 'local')
-                OR
-                (pair."endpointBType" = 'GROUP'
-                  AND pair."endpointBAccount" = group_profile.account
-                  AND pair."endpointBDomain" = group_profile.domain
-                  AND pair."endpointAType" = 'USER'
-                  AND pair."endpointADomain" = 'local')
-              )
-          ) AS value
-        FROM "Group" group_profile
-        WHERE group_profile.id = ${groupId}
-      )
-      UPDATE "Group" group_profile
-      SET "federationAuthorized" = authorization_projection.value,
-        "updatedAt" = CURRENT_TIMESTAMP
-      FROM authorization_projection
-      WHERE group_profile.id = authorization_projection.id
-        AND group_profile."federationAuthorized" IS DISTINCT FROM authorization_projection.value
-    `);
   }
 
   private async readIntentInTx(

@@ -7,7 +7,7 @@ export interface InlineProfileAvatar {
   height: number;
 }
 
-/** Public user profile as transmitted over federation. */
+/** Public user or group profile as transmitted over federation. */
 export interface S2SProfile {
   account: string;
   domain: string;

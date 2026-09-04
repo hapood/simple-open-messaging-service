@@ -1,65 +1,8 @@
 import { request } from '@/api/client';
 import type { MediaStats } from '@/types/api';
 
-export interface GcResult {
-  reapedRows: number;
-  reapedFiles: number;
-  sweptTmp: number;
-}
-
-export interface ForwardBundleGcResult {
-  orphanBundles: number;
-  orphanAssets: number;
-  orphanBytes: string;
-}
-
 export function getMediaStats(): Promise<MediaStats> {
   return request<MediaStats>('/admin/media/stats');
-}
-
-export type MediaGcTaskKind = 'gc' | 'reconcile';
-export type MediaGcTaskStatus =
-  | 'running'
-  | 'cancelling'
-  | 'completed'
-  | 'cancelled'
-  | 'failed';
-
-export interface MediaGcTask {
-  id: string;
-  kind: MediaGcTaskKind;
-  status: MediaGcTaskStatus;
-  phase: string;
-  directory: string | null;
-  file: string | null;
-  fileSize: string | null;
-  scannedFiles: number;
-  scannedBytes: string;
-  deletedFiles: number;
-  deletedBytes: string;
-  startedAt: number;
-  finishedAt: number | null;
-  result?: GcResult | ReconcileResult;
-  error?: string;
-}
-
-export function triggerMediaGc(): Promise<MediaGcTask> {
-  return request<MediaGcTask>('/admin/media/gc');
-}
-
-export interface ReconcileResult {
-  deletedOrphanFiles: number;
-  deletedTombstoneFiles: number;
-  markedMissingReadyDeleted: number;
-  skippedPending: number;
-  skippedDeleting: number;
-}
-
-export interface PendingAsset {
-  digest: string;
-  bytes: string;
-  stateChangedAt: number;
-  pendingMediaCount: number;
 }
 
 export interface ResumableUploadSession {
@@ -76,51 +19,51 @@ export interface ResumableUploadSession {
   updatedAt: number;
 }
 
-export interface PendingFederatedDeletion {
+export interface FederationDownloadFile {
   id: string;
-  thread: {
-    id: number;
-    type: 'P2P' | 'GROUP';
-    group?: { account: string; domain: string };
-  };
-  creator: { id: number; account: string; domain: string };
-  originSeq: number;
-  authorityDomain: string;
-  sourceDomain: string;
-  remoteFeedId: string;
-  type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
-  deletedAt: number;
-  receivedAt: number;
-  updatedAt: number;
-  matchedMessage: { seq: number; isDeleted: boolean } | null;
+  digest: string;
+  kind: string;
+  status: string;
+  bytesTotal: string;
+  bytesReceived: string;
+  errorKind: string | null;
+  updatedAt: string;
 }
 
-export interface PendingFederatedDeletionPage {
-  list: PendingFederatedDeletion[];
-  total: number;
+export interface FederationDownloadBatch {
+  batchId: string;
+  threadId: number;
+  messageSeq: number;
+  creator: { account: string; domain: string };
+  originSeq: number | null;
+  contentType: string;
+  status: string;
+  fileCnt: number;
+  anyFailed: boolean;
+  failReason: string | null;
+  originDomain: string | null;
+  updatedAt: string;
+  files: FederationDownloadFile[];
 }
 
-export function listPendingFederatedDeletions(params: {
-  skip: number;
-  take: number;
-}): Promise<PendingFederatedDeletionPage> {
-  return request('/admin/media/pending-federated-deletions', params);
+export function listFederationDownloads(): Promise<{
+  batches: FederationDownloadBatch[];
+}> {
+  return request('/admin/media/downloads');
 }
 
-export function reconcileMedia(): Promise<MediaGcTask> {
-  return request<MediaGcTask>('/admin/media/reconcile');
+export function retryFederationDownload(batchId: string) {
+  return request<{ batchId: string; resetFiles: number }>(
+    `/admin/media/downloads/${batchId}/retry`,
+  );
 }
 
-export function cancelMediaTask(id: string): Promise<MediaGcTask> {
-  return request<MediaGcTask>(`/admin/media/tasks/${id}/cancel`);
-}
-
-export function getCurrentMediaTask(): Promise<MediaGcTask | null> {
-  return request<MediaGcTask | null>('/admin/media/tasks/current');
-}
-
-export function listPendingAssets(): Promise<PendingAsset[]> {
-  return request<PendingAsset[]>('/admin/media/pending/list');
+export function cleanFederationDownload(batchId: string) {
+  return request<{
+    clearedBatch: boolean;
+    clearedDependents: number;
+    fileRows: number;
+  }>(`/admin/media/downloads/${batchId}/clean`);
 }
 
 export function listResumableUploads(): Promise<ResumableUploadSession[]> {
@@ -133,19 +76,4 @@ export function abortResumableUpload(
   return request<{ uploadId: string; status: 'ABORTED' }>(
     `/admin/media/uploads/${uploadId}/abort`,
   );
-}
-
-export function forceTerminatePending(digest: string) {
-  return request<{ terminated: boolean; busy: boolean }>(
-    '/admin/media/pending/force-terminate',
-    { digest },
-  );
-}
-
-export function inspectForwardBundles(): Promise<ForwardBundleGcResult> {
-  return request<ForwardBundleGcResult>('/admin/media/forward-bundles/inspect');
-}
-
-export function gcForwardBundles(): Promise<ForwardBundleGcResult> {
-  return request<ForwardBundleGcResult>('/admin/media/forward-bundles/gc');
 }

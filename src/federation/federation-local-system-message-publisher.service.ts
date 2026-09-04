@@ -1,12 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { SseService } from '../gateway/sse.service.js';
 import {
   MessageService,
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 
 export interface FederationLocalSystemMessage {
   actorUserId: number;
@@ -26,21 +25,20 @@ export class FederationLocalSystemMessagePublisher {
 
   constructor(
     private readonly messages: MessageService,
-    private readonly participants: ThreadParticipantService,
-    private readonly sse: SseService,
+    private readonly participants: AccountThreadStateService,
     private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
   async publish(status: FederationLocalSystemMessage): Promise<void> {
     if (status.message && status.recipientUserIds) {
-      for (const recipientUserId of status.recipientUserIds)
-        this.sse.onNewMessage(
-          recipientUserId,
-          status.threadId,
-          status.message.seq,
-          status.message.createdAt.getTime(),
-          await this.clientStateFeed.readEndId(recipientUserId),
-        );
+      this.clientStateFeed.notifyFeedUpdates(
+        await Promise.all(
+          status.recipientUserIds.map(async (userId) => ({
+            userId,
+            feedId: await this.clientStateFeed.readEndId(userId),
+          })),
+        ),
+      );
       return;
     }
     const message = await this.messages.tryWriteSystemMessage(
@@ -57,20 +55,22 @@ export class FederationLocalSystemMessagePublisher {
       const recipients = status.recipientUserIds
         ? status.recipientUserIds.map((userId) => ({ userId, blocked: false }))
         : await this.participants.getActiveParticipantUserIds(status.threadId);
-      for (const recipient of recipients) {
-        if (
-          !recipient.blocked &&
-          (status.recipientUserIds !== undefined ||
-            recipient.userId !== status.actorUserId)
+      const wakeUserIds = recipients
+        .filter(
+          (recipient) =>
+            !recipient.blocked &&
+            (status.recipientUserIds !== undefined ||
+              recipient.userId !== status.actorUserId),
         )
-          this.sse.onNewMessage(
-            recipient.userId,
-            status.threadId,
-            message.seq,
-            message.createdAt.getTime(),
-            await this.clientStateFeed.readEndId(recipient.userId),
-          );
-      }
+        .map((recipient) => recipient.userId);
+      this.clientStateFeed.notifyFeedUpdates(
+        await Promise.all(
+          wakeUserIds.map(async (userId) => ({
+            userId,
+            feedId: await this.clientStateFeed.readEndId(userId),
+          })),
+        ),
+      );
     } catch (error) {
       this.logger.error(
         `failed to publish local system message ${status.type} for thread ${status.threadId}: ${(error as Error).message}`,

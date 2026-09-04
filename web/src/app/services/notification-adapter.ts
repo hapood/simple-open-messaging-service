@@ -8,7 +8,7 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * the realtime downlink (`websocket.service.ts` selects one transport by platform in its constructor).
  *
  * The server-authored {@link NotificationDescriptor} carries BOTH the content AND the presentation
- * semantics (`tag` = replace-in-place vs new, `kind` = template incl. `'clear'` = cancel, `icon`, `body`,
+ * semantics (`tag` = replace-in-place vs new, `kind` = template, `icon`, `body`,
  * `actions`). Each adapter maps it onto its platform's NATIVE notification bridge:
  *  - {@link BrowserNotificationAdapter} — the Web Notifications API (`new Notification`); `tag` → replace,
  *    `icon` → the composited stacked avatar, `actions` → buttons.
@@ -18,12 +18,12 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  *    path is dormant — Android notifications come from the native FCM/WorkManager paths).
  *
  * `showDescriptor(d)` is the single display call every adapter implements; `clear()` is a lifecycle method
- * (dismiss on focus regain). A `kind:'clear'` descriptor also dismisses (server-driven cancel). Both are
- * async — the browser adapter awaits its SW registration's `showNotification` / `getNotifications`.
+ * (dismiss on focus regain). Both are async — the browser adapter awaits its SW registration's
+ * `showNotification` / `getNotifications`.
  */
 export abstract class NotificationAdapter {
-  /** Show / update / dismiss a notification per the server-authored descriptor. `tag` is the replace-by-id
-   *  primitive (same tag replaces; unique tags stack). `kind:'clear'` cancels the tagged notification. */
+  /** Show or update a notification per the server-authored descriptor. `tag` is the replace-by-id primitive
+   * (same tag replaces; unique tags stack). */
   abstract showDescriptor(d: NotificationDescriptor): Promise<void>;
 
   /** Dismiss the active notification — the facade calls this when the window regains focus. */

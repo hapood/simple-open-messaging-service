@@ -2,17 +2,18 @@ import { inject, Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { messageCreatorKey, parseUserIdentityKey } from './model';
+import { ProfileResolutionService } from './profile-resolution.service';
 
 export interface ResolvedMemberProfile {
   identityKey: string;
   account: string;
   domain: string;
-  profileSourceDomain: string;
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   isOwner: boolean;
   name: string;
   avatar: string;
+  bio: string;
   profileRev: number;
   profileMessageSeq: number | null;
   profileResolved: boolean;
@@ -22,6 +23,8 @@ export interface ResolvedMemberProfile {
 @Injectable({ providedIn: 'root' })
 export class MemberProfileRepository {
   private readonly webdb = inject(WebdbService);
+  private readonly profileResolutions = inject(ProfileResolutionService);
+  private readonly resolutionsInFlight = new Set<string>();
   readonly changed$ = new Subject<readonly number[]>();
 
   notifyChanged(threadIds: readonly number[]): void {
@@ -33,18 +36,14 @@ export class MemberProfileRepository {
     params: { afterIdentity?: string; take: number; search?: string },
   ): Promise<ResolvedMemberProfile[]> {
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });
-    return members.map((member) => ({
-      identityKey: messageCreatorKey(
-        {
-          account: member.account,
-          domain: member.domain,
-          namespaceId: member.namespaceId,
-        },
-        member.sourceDomain,
-      ),
+    const resolved = members.map((member) => ({
+      identityKey: messageCreatorKey({
+        account: member.account,
+        domain: member.domain,
+        namespaceId: member.namespaceId,
+      }),
       account: member.account,
       domain: member.domain,
-      profileSourceDomain: member.sourceDomain,
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
@@ -56,12 +55,17 @@ export class MemberProfileRepository {
         member.resolvedProfileRev === member.profileRev
           ? (member.profileAvatar ?? member.user.avatar)
           : '',
-      profileRev: member.profileRev ?? member.user.profileRev,
+      bio:
+        member.resolvedProfileRev === member.profileRev
+          ? member.profileBio
+          : '',
+      profileRev: member.profileRev,
       profileMessageSeq: member.profileMessageSeq ?? null,
       profileResolved:
-        (member.profileRev ?? member.user.profileRev) ===
-        (member.resolvedProfileRev ?? member.user.profileRev),
+        member.profileRev === member.resolvedProfileRev,
     }));
+    for (const member of resolved) this.resolveGroupMetaProfile(threadId, member);
+    return resolved;
   }
 
   async getByIdentity(
@@ -74,15 +78,13 @@ export class MemberProfileRepository {
       threadId,
       identity.account,
       identity.domain,
-      identity.sourceDomain,
       identity.namespaceId,
     );
     if (!member) return undefined;
-    return {
+    const resolved: ResolvedMemberProfile = {
       identityKey,
       account: member.account,
       domain: member.domain,
-      profileSourceDomain: member.sourceDomain,
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
@@ -94,12 +96,17 @@ export class MemberProfileRepository {
         member.resolvedProfileRev === member.profileRev
           ? (member.profileAvatar ?? member.user.avatar)
           : '',
-      profileRev: member.profileRev ?? member.user.profileRev,
+      bio:
+        member.resolvedProfileRev === member.profileRev
+          ? member.profileBio
+          : '',
+      profileRev: member.profileRev,
       profileMessageSeq: member.profileMessageSeq ?? null,
       profileResolved:
-        (member.profileRev ?? member.user.profileRev) ===
-        (member.resolvedProfileRev ?? member.user.profileRev),
+        member.profileRev === member.resolvedProfileRev,
     };
+    this.resolveGroupMetaProfile(threadId, resolved);
+    return resolved;
   }
 
   async recordMessageProfile(
@@ -107,7 +114,6 @@ export class MemberProfileRepository {
     identity: {
       account: string;
       domain: string;
-      sourceDomain: string;
       namespaceId: number;
     },
     profileRev: number,
@@ -129,10 +135,9 @@ export class MemberProfileRepository {
     identity: {
       account: string;
       domain: string;
-      sourceDomain: string;
       namespaceId: number;
     },
-    profile: { rev: number; name: string; avatar: string },
+    profile: { rev: number; name: string; avatar: string; bio: string },
   ): Promise<void> {
     if (
       await this.webdb.storeGroupMemberResolvedProfile(
@@ -142,5 +147,48 @@ export class MemberProfileRepository {
       )
     )
       this.notifyChanged([threadId]);
+  }
+
+  private resolveGroupMetaProfile(
+    threadId: number,
+    member: ResolvedMemberProfile,
+  ): void {
+    if (member.profileResolved || member.profileMessageSeq !== null) return;
+    const key = JSON.stringify([
+      threadId,
+      member.account,
+      member.domain,
+      member.profileRev,
+    ]);
+    if (this.resolutionsInFlight.has(key)) return;
+    this.resolutionsInFlight.add(key);
+    this.profileResolutions
+      .resolve({
+        threadId,
+        memberAccount: member.account,
+        memberDomain: member.domain,
+      })
+      .subscribe({
+        next: (profile) => {
+          void this.storeResolvedProfile(
+            threadId,
+            {
+              account: member.account,
+              domain: member.domain,
+              namespaceId: member.namespaceId,
+            },
+            {
+              rev: profile.rev,
+              name: profile.name,
+              avatar: profile.avatarBase64
+                ? `data:image/webp;base64,${profile.avatarBase64}`
+                : '',
+              bio: profile.bio,
+            },
+          );
+        },
+        error: () => this.resolutionsInFlight.delete(key),
+        complete: () => this.resolutionsInFlight.delete(key),
+      });
   }
 }

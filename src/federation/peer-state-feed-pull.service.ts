@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -10,7 +10,10 @@ import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error
 
 export interface PeerStateFeedPullCallbacks {
   fetch(after?: bigint, through?: bigint): Promise<PeerStateFeedPage>;
-  apply(tx: DatabaseTransaction, page: PeerStateFeedPage): Promise<void>;
+  apply(
+    tx: DatabaseTransaction,
+    page: PeerStateFeedPage,
+  ): Promise<void>;
   /** Start a replacement rebuild after the publisher rejects our cursor. The
    * callback and corrected cursor are committed together, before the first
    * replacement page is requested. */

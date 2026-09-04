@@ -11,7 +11,7 @@ import {
   federationThreadHistoryGap,
   message,
   messageThread,
-  threadParticipant,
+  accountThreadState,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
@@ -108,9 +108,9 @@ describe('client message history gaps', () => {
 
   it('clips a full gap to the participant visibility window', async () => {
     await database.db
-      .update(threadParticipant)
-      .set({ messageVisibleBeforeSeq: 31 })
-      .where(eq(threadParticipant.accountId, viewerId));
+      .update(accountThreadState)
+      .set({ messageVisibleThroughSeq: 30 })
+      .where(eq(accountThreadState.accountId, viewerId));
 
     const response = await queryMessages({ after: 10, through: 20, take: 10 });
 

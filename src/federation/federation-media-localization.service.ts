@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MediaStatus } from '../common/media-status.js';
@@ -447,24 +447,55 @@ export class FederationMediaLocalizationService {
         peerDomain: thread.group.domain,
       };
     }
-    const [peer] = await this.database.db
-      .select({ account: tables.user.account })
-      .from(tables.threadMember)
-      .innerJoin(tables.user, eq(tables.user.id, tables.threadMember.userId))
+    const [pair] = await this.database.db
+      .select({
+        endpointAAccount: tables.relationshipPair.endpointAAccount,
+        endpointADomain: tables.relationshipPair.endpointADomain,
+        endpointANamespaceId: tables.relationshipPair.endpointANamespaceId,
+        endpointBAccount: tables.relationshipPair.endpointBAccount,
+      })
+      .from(tables.relationshipPair)
       .where(
         and(
-          eq(tables.threadMember.threadId, threadId),
-          eq(tables.threadMember.left, false),
+          eq(tables.relationshipPair.threadId, threadId),
+          eq(tables.relationshipPair.kind, 'P2P'),
+          eq(tables.relationshipPair.active, true),
           or(
-            ne(tables.user.account, creatorAccount),
-            ne(tables.user.domain, creatorDomain),
-            ne(tables.user.namespaceId, creatorNamespaceId),
+            and(
+              eq(tables.relationshipPair.endpointAType, 'USER'),
+              eq(tables.relationshipPair.endpointAAccount, creatorAccount),
+              eq(tables.relationshipPair.endpointADomain, creatorDomain),
+              eq(
+                tables.relationshipPair.endpointANamespaceId,
+                creatorNamespaceId,
+              ),
+            ),
+            and(
+              eq(tables.relationshipPair.endpointBType, 'USER'),
+              eq(tables.relationshipPair.endpointBAccount, creatorAccount),
+              eq(tables.relationshipPair.endpointBDomain, creatorDomain),
+              eq(
+                tables.relationshipPair.endpointBNamespaceId,
+                creatorNamespaceId,
+              ),
+            ),
           ),
         ),
       )
       .limit(1);
+    if (!pair) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'message thread is no longer mutually authorized',
+      );
+    }
     return {
-      toAccount: peer?.account ?? creatorAccount,
+      toAccount:
+        pair.endpointAAccount === creatorAccount &&
+        pair.endpointADomain === creatorDomain &&
+        pair.endpointANamespaceId === creatorNamespaceId
+          ? pair.endpointBAccount
+          : pair.endpointAAccount,
       peerDomain: creatorDomain,
     };
   }

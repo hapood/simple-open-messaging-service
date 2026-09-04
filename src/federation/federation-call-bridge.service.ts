@@ -13,7 +13,7 @@ import {
   toS2SCallWireFrame,
 } from '../calls/federated-call-protocol.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import {
   FederationCallDelivery,
   type OutboundCallFrameParams,
@@ -31,7 +31,7 @@ export class FederationCallBridgeService {
     private readonly database: DatabaseService,
     private readonly peerHttp: FederationPeerHttp,
     private readonly users: FederationUserDirectoryService,
-    private readonly participants: ThreadParticipantService,
+    private readonly participants: AccountThreadStateService,
     private readonly quota: QuotaService,
     private readonly eventEmitter: EventEmitter2,
   ) {}

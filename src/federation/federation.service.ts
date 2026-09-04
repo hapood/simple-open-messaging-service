@@ -33,7 +33,6 @@ import {
 } from '../relationship/relationship.service.js';
 import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
 import type { PublicMessage } from '../message/message.service.js';
-import { openFederatedAudienceInTx } from './federation-audience.js';
 import { type OutboundCallFrameParams } from './federation-call-delivery.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
@@ -72,7 +71,7 @@ import { FederationGroupRelationshipService } from './federation-group-relations
 import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { assertServerGroupCapacityInTx } from '../group/group-capacity.js';
-import { FEDERATION_STATE_FEED_PUSH } from './federation-thread-round.events.js';
+import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import {
   FederationNamespaceService,
@@ -102,6 +101,10 @@ import { ProfileResolutionCoordinatorService } from './profile-resolution-coordi
 import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { readCurrentGroupMemberInTx } from '../group-meta/current-group-roster.js';
+import {
+  lockBusinessAccountsInTx,
+  type BusinessScopeAddress,
+} from '../relationship/business-scope-lock.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -454,12 +457,6 @@ export class FederationService {
         ),
         columns: {
           id: true,
-          account: true,
-          name: true,
-          avatar: true,
-          description: true,
-          defaultProfileRev: true,
-          namespaceId: true,
         },
       });
       if (!groupState)
@@ -471,57 +468,18 @@ export class FederationService {
         where: eq(tables.messageThread.groupId, groupState.id),
         columns: { id: true },
       });
-      const member = await tx.query.user.findFirst({
-        where: eq(tables.user.id, memberUserId),
-        columns: { account: true },
-      });
-      if (!thread || !member)
+      if (!thread)
         throw new BusinessException(
           BusinessCode.INVITE_NOT_FOUND,
           'group request not found',
         );
-      const allocated =
-        await this.relationshipMutations.writeMemberRelationshipIntentInTx(
-          tx,
-          thread.id,
-          memberUserId,
-          'REVOKED',
-          clientFeedUpdates,
-        );
-      const endpoints = clientGroupIntentEndpoints(
-        account,
-        member.account,
-        'MEMBER',
+      return this.relationshipMutations.writeMemberRelationshipIntentInTx(
+        tx,
+        thread.id,
+        memberUserId,
+        'REVOKED',
+        clientFeedUpdates,
       );
-      const feedId = await this.clientStateFeed.writeInTx(tx, {
-        userId: memberUserId,
-        namespaceId: groupState.namespaceId,
-        account: endpoints.account,
-        domain: 'local',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: endpoints.subjectAccount,
-        subjectDomain: domain,
-        body: {
-          status: 'REVOKED',
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-          direction: 'OUTGOING',
-          threadId: thread.id,
-          group: {
-            account,
-            domain,
-            isLocal: storedDomain === 'local',
-            name: groupState.name,
-            avatar: groupState.avatar,
-            description: groupState.description,
-            profileRev: groupState.defaultProfileRev,
-          },
-        },
-      });
-      if (feedId !== null)
-        clientFeedUpdates.push({ userId: memberUserId, feedId });
-      return allocated;
     });
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.pushStateFeedDomains(state.keys());
@@ -821,17 +779,6 @@ export class FederationService {
           'ACCEPTED',
           clientFeedUpdates,
         );
-      if (thread.groupDomain !== 'local') {
-        await tx
-          .insert(tables.threadAudience)
-          .values({
-            targetDomain: 'local',
-            localUserId: memberUserId,
-            threadId,
-          })
-          .onConflictDoNothing();
-        await openFederatedAudienceInTx(tx, thread.groupDomain, threadId);
-      }
       return {
         allocated,
         clientFeedUpdates,
@@ -908,6 +855,43 @@ export class FederationService {
           AND intent."expiresAt" <= CURRENT_TIMESTAMP
         ORDER BY intent."expiresAt", intent."pairId", intent."authorSide"
       `);
+      const businessAddresses: BusinessScopeAddress[] = [];
+      for (const request of expired.rows) {
+        if (request.kind === 'P2P') {
+          businessAddresses.push(
+            {
+              account: request.authorAccount,
+              domain: request.authorDomain,
+            },
+            {
+              account: request.subjectAccount,
+              domain: request.subjectDomain,
+            },
+          );
+        } else {
+          businessAddresses.push(
+            request.authorSide === 'A'
+              ? {
+                  account: request.authorAccount,
+                  domain: request.authorDomain,
+                }
+              : {
+                  account: request.subjectAccount,
+                  domain: request.subjectDomain,
+                },
+          );
+        }
+      }
+      await lockBusinessAccountsInTx(tx, businessAddresses);
+      await this.stateFeed.lockTargetsInTx(
+        tx,
+        expired.rows
+          .filter((request) => request.subjectDomain !== 'local')
+          .map((request) => ({
+            peerDomain: request.subjectDomain,
+            namespaceId: request.subjectNamespaceId,
+          })),
+      );
       const allocated = new Map<string, bigint>();
       let count = 0;
       for (const request of expired.rows) {
@@ -1351,16 +1335,6 @@ export class FederationService {
 
   async capturePeerResponseToken(domain: string): Promise<PeerResponseToken> {
     return this.threadAccess.capturePeerResponseToken(domain);
-  }
-
-  /** Lightweight, ephemeral discovery wake-up. The receiver never persists this advertised HWM. */
-  async pushDiscoveryHwm(domain: string): Promise<void> {
-    await this.statePull.pushDiscoveryHwm(domain);
-  }
-
-  /** Rebuild compacted thread heads after startup/reconnect before publishing the State Feed HWM. */
-  async rebuildAndPushDiscoveryHwm(domain: string): Promise<void> {
-    await this.statePull.rebuildAndPushDiscoveryHwm(domain);
   }
 
   async pullStateFeedPage(

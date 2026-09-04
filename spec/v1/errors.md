@@ -23,14 +23,14 @@ JSON responses MUST use `Content-Type: application/json`. HTTP status expresses 
 
 Federation v1 JSON endpoints define only these non-success HTTP statuses:
 
-|  HTTP | Layer semantics                                                                                   | Peer lifecycle                                                                    |
-| ----: | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `400` | HTTP, JSON, or protocol shape cannot enter application processing                                 | No change                                                                         |
-| `401` | Request authentication, signature, certificate, or identity binding failed                        | No direct change                                                                  |
-| `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code                                       |
-| `503` | The target peer is temporarily unable to provide federation service                               | An established peer enters `degraded`; a peer in handshake remains `establishing` |
+|  HTTP | Layer semantics                                                                                   | Peer lifecycle                                                                            |
+| ----: | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `400` | HTTP, JSON, or protocol shape cannot enter application processing                                 | No change                                                                                 |
+| `401` | Request authentication, signature, certificate, or identity binding failed                        | No direct change                                                                          |
+| `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code                                               |
+| `503` | The target peer is temporarily unable to provide federation service                               | A prepared peer enters or remains `degraded`; pre-commit establishment state is unchanged |
 
-Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Health `200 unavailable` have the same availability-degradation effect as HTTP `503`.
+Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. The application result itself MUST NOT change recognition-direction or business-authorization facts. Independently, the successfully authenticated request or a definitive authenticated response is reachability evidence and may move a prepared peer from `degraded` to `available` as defined by recognition.md. Network failure, timeout, and Health `200 unavailable` have the same availability-degradation effect as HTTP `503`.
 
 Raw media response statuses `206` and `416`, with their associated headers, belong to HTTP Range semantics and are explicit exceptions to the JSON status set above.
 
@@ -53,11 +53,11 @@ An unknown non-zero code in HTTP `200` MUST be treated as an application failure
 
 A peer-lifecycle action MUST be determined jointly by response provenance, HTTP status, and, where required, stable code:
 
-| Class                          | Wire characteristics                                                                                                 | Peer lifecycle action                                                                            |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Hard stop                      | A hostname-verified target peer or authority returns HTTP `409` with a fatal code explicitly listed in this registry | Record the exact code and evidence, enter `halted`, and stop automatic communication             |
-| Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Health `unavailable`                                                       | An established peer enters `degraded`; an incomplete handshake remains `establishing`            |
-| Current-request failure        | HTTP `400`, `401`, or a non-zero application code in HTTP `200`                                                      | Correct or handle the current operation according to code; do not directly change peer lifecycle |
+| Class                          | Wire characteristics                                                                                                 | Peer lifecycle action                                                                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hard stop                      | A hostname-verified target peer or authority returns HTTP `409` with a fatal code explicitly listed in this registry | Record the exact code and evidence, enter `halted`, and stop automatic communication                                                                                 |
+| Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Health `unavailable`                                                       | A prepared peer enters or remains `degraded`; retain pins, receive readiness, direction facts, and retry work                                                        |
+| Current-request failure        | HTTP `400`, `401`, or a non-zero application code in HTTP `200`                                                      | Correct or handle the current operation according to code; do not alter direction or business facts. Separately authenticated communication may refresh reachability |
 
 HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined with `FEDERATION_PEER_BLOCKED`, `FEDERATION_IDENTITY_MISMATCH`, or `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` is a hard stop for the peer relationship. A status/code conflict, unknown code, or response not provably originating from the target peer MUST NOT trigger `halted`.
 
@@ -70,7 +70,7 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | 10004 | `FORBIDDEN`                                        |  200 | The current application identity may not access the resource; MUST NOT retry unchanged.                                                                                                                                                                      |
 | 10005 | `RATE_LIMITED`                                     |  503 | The peer is temporarily rate-limiting; retry using locally bounded, jittered backoff.                                                                                                                                                                        |
 | 10999 | `INTERNAL`                                         |  503 | Retain pins and cursors; retry with backoff.                                                                                                                                                                                                                 |
-| 50001 | `FEDERATION_RECOGNITION_REQUIRED`                  |  401 | The operation lacks a required pinned identity or bidirectional recognition fact. Stop data-plane requests and complete the missing recognition. Transport-only `degraded` MUST NOT produce this error.                                                      |
+| 50001 | `FEDERATION_RECOGNITION_REQUIRED`                  |  401 | The operation lacks a pinned and locally recognized peer, prepared receive path, or either required recognition-direction confirmation. Complete the missing direction. Lifecycle `degraded` alone MUST NOT produce this error.                              |
 | 50002 | `FEDERATION_BAD_SIGNATURE`                         |  401 | Stop unchanged retries and audit the signature, digest, keyId, or certificate; MUST NOT accept response data.                                                                                                                                                |
 | 50003 | `FEDERATION_BINDING_VIOLATION`                     |  401 | Correct signer/body/address binding; MUST NOT retry unchanged.                                                                                                                                                                                               |
 | 50007 | `FEDERATION_MALFORMED`                             |  400 | Correct the JSON/header profile, primitive type, time parameter, query, media type, or content coding; MUST NOT retry unchanged.                                                                                                                             |
@@ -191,15 +191,15 @@ Federation v1 application quotas use only `data.retryAfter`. HTTP `Retry-After` 
 
 Unless an operation document explicitly defines a stricter mapping, the common HTTP validation pipeline for a signed request MUST use the table below. This table only disambiguates common validation failures that could map to multiple codes; it does not repeat lifecycle, discovery, or operation-specific application errors. These conditions MUST NOT map to another 4xx response.
 
-| Condition                                                                                             | HTTP / code                                                          |
-| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Invalid JSON/header/query/path shape, duplicate security header, signature profile, or time parameter | `400 FEDERATION_MALFORMED`                                           |
-| `Content-Type`, content coding, or character encoding violates v1                                     | `400 FEDERATION_MALFORMED`                                           |
-| Request, header, or body exceeds the recipient's finite local HTTP/JSON limit before parsing          | `400 FEDERATION_MALFORMED`                                           |
-| Content-Digest mismatch, Ed25519 verification failure, unauthorized keyId, or invalid certificate     | `401 FEDERATION_BAD_SIGNATURE`                                       |
-| Signer is not bound to body, address, or resource identity                                            | `401 FEDERATION_BINDING_VIOLATION`                                   |
-| Pinned identity or bidirectional recognition facts are insufficient, with no identity contradiction   | `401 FEDERATION_RECOGNITION_REQUIRED`                                |
-| Transport-only `degraded`, with recognition, identity, and authorization otherwise valid              | Continue processing; MUST NOT return an error solely for this reason |
+| Condition                                                                                                                                           | HTTP / code                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Invalid JSON/header/query/path shape, duplicate security header, signature profile, or time parameter                                               | `400 FEDERATION_MALFORMED`                                           |
+| `Content-Type`, content coding, or character encoding violates v1                                                                                   | `400 FEDERATION_MALFORMED`                                           |
+| Request, header, or body exceeds the recipient's finite local HTTP/JSON limit before parsing                                                        | `400 FEDERATION_MALFORMED`                                           |
+| Content-Digest mismatch, Ed25519 verification failure, unauthorized keyId, or invalid certificate                                                   | `401 FEDERATION_BAD_SIGNATURE`                                       |
+| Signer is not bound to body, address, or resource identity                                                                                          | `401 FEDERATION_BINDING_VIOLATION`                                   |
+| Pinned identity, local recognition, receive readiness, or either recognition-direction confirmation is insufficient, with no identity contradiction | `401 FEDERATION_RECOGNITION_REQUIRED`                                |
+| Transport-only `degraded`, with recognition, identity, and authorization otherwise valid                                                            | Continue processing; MUST NOT return an error solely for this reason |
 
 Block, identity contradiction, protocol version, local identity, application quota, and server-failure mappings use the registry above and the corresponding operation documents directly and are not repeated here.
 

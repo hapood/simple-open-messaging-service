@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BusinessCode } from '../common/business-code.js';
 import { ContentType } from '../database/enums.js';
 import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 
@@ -58,6 +59,99 @@ function setup(options?: {
 }
 
 describe('FederationMediaLocalizationService', () => {
+  it('derives the P2P recipient from the active relationship pair', async () => {
+    const threadLimit = vi
+      .fn()
+      .mockResolvedValue([{ type: 'P2P', group: null }]);
+    const pairLimit = vi.fn().mockResolvedValue([
+      {
+        endpointAAccount: 'alice',
+        endpointADomain: 'peer.example',
+        endpointANamespaceId: 4,
+        endpointBAccount: 'alice',
+      },
+    ]);
+    const select = vi
+      .fn()
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: threadLimit }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: pairLimit }),
+        }),
+      });
+    const database = { db: { select } };
+    const service = new FederationMediaLocalizationService(
+      database as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.resolveForwardAssetAuth({
+        threadId: 11,
+        creatorAccount: 'alice',
+        creatorDomain: 'peer.example',
+        creatorNamespaceId: 4,
+        originSeq: 9,
+      } as never),
+    ).resolves.toEqual({
+      fromAccount: 'alice',
+      fromDomain: 'peer.example',
+      toAccount: 'alice',
+      sourceSeq: 9,
+    });
+  });
+
+  it('rejects P2P media localization without an active relationship pair', async () => {
+    const select = vi
+      .fn()
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ type: 'P2P', group: null }]),
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+    const service = new FederationMediaLocalizationService(
+      { db: { select } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.resolveForwardAssetAuth({
+        threadId: 11,
+        creatorAccount: 'alice',
+        creatorDomain: 'peer.example',
+        creatorNamespaceId: 4,
+        originSeq: 9,
+      } as never),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+  });
+
   it('returns ready without transport work for a visible non-media message', async () => {
     const { service, mediaRanges } = setup({
       visibleMessage: { contentType: ContentType.PURE_TEXT },

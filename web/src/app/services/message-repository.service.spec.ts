@@ -9,7 +9,7 @@ import { WebsocketService } from './websocket.service';
 import { UserService } from './user.service';
 import type { Message } from './model';
 
-/** Flush the microtask + macrotask queue so async IDB writes + the NEW_MESSAGE handler settle. */
+/** Flush the microtask + macrotask queue so asynchronous local cache writes settle. */
 function flush(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -224,11 +224,7 @@ describe('MessageRepository', () => {
         },
       }),
     );
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      status: 0,
-      data: { threadId: 42, seq: 11, ts: 11_000 },
-    });
+    repo.applyThreadContentHead(42, 11, true);
 
     const result = await repo.queryBrowserMessageHistory(42, {
       kind: 'newer',
@@ -346,13 +342,8 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe(12);
   });
 
-  it('does not fetch tombstone bodies before the chatbox is opened', async () => {
+  it('does not fetch a pending tombstone target before the chatbox is opened', async () => {
     await repo.updateTombstoneTarget(42, 9);
-    eventSubject.next({
-      event: 'DELETED_MESSAGE_UPDATED',
-      status: 0,
-      data: { threadId: 42, deletionSeq: 9, stateFeedId: 4 },
-    });
     await flush();
 
     expect(queryDeletedMessagesSpy).not.toHaveBeenCalled();

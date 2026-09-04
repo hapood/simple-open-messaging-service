@@ -75,7 +75,7 @@ export class FederationThreadSyncStateService {
       deletionRecoveryThroughSeq: number | null;
       deletionRecoveryMaxMessageSeq: number | null;
       authorizationEpoch: number;
-      activeGapId: bigint | string | null;
+      activeGapId: string | null;
       historyBoundaryReached: boolean;
     }>(sql`
       SELECT "messageTargetSeq", "messageProcessedThroughSeq",
@@ -171,7 +171,7 @@ export class FederationThreadSyncStateService {
       const newGapEndSeq = nextMessageProcessedThroughSeq;
       if (newGapStartSeq <= newGapEndSeq) {
         const overlaps = await tx.execute<{
-          id: bigint | string;
+          id: string;
           startSeq: number;
           endSeq: number;
           messageSeqOffset: number;
@@ -465,7 +465,7 @@ export class FederationThreadSyncStateService {
       throw new Error('reverse round authorization epoch changed');
 
     const stateResult = await tx.execute<{
-      activeGapId: bigint | string | null;
+      activeGapId: string | null;
     }>(sql`
       SELECT "activeGapId"
       FROM "FederationThreadSyncState"
@@ -589,7 +589,7 @@ export class FederationThreadSyncStateService {
     if ((epoch.rows ?? []).length === 0) {
       throw new Error('reverse round authorization epoch changed');
     }
-    const state = await tx.execute<{ activeGapId: bigint | string | null }>(sql`
+    const state = await tx.execute<{ activeGapId: string | null }>(sql`
       SELECT "activeGapId"
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}

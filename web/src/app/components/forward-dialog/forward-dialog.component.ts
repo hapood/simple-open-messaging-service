@@ -173,17 +173,19 @@ export class ForwardDialogComponent {
     if (!self) return null;
     return {
       ...original,
-      creator: messageCreatorKey(
-        { account: self.account, domain: 'local', namespaceId: 0 },
-        'local',
-      ),
+      creator: messageCreatorKey({
+        account: self.account,
+        domain: 'local',
+        namespaceId: 0,
+      }),
       isSelf: true,
       name: self?.name || self?.account || original.name,
       avatar: self?.avatar || undefined,
-      avatarIdentityId: messageCreatorKey(
-        { account: self.account, domain: 'local', namespaceId: 0 },
-        'local',
-      ),
+      avatarIdentityId: messageCreatorKey({
+        account: self.account,
+        domain: 'local',
+        namespaceId: 0,
+      }),
       avatarAccount: self?.account,
       avatarDomain: self?.domain,
       quote: undefined,
@@ -299,10 +301,11 @@ export class ForwardDialogComponent {
   private selfCreatorKey(): string {
     const self = this.user.sessionProfile();
     if (!self) throw new Error('session profile is required to forward');
-    return messageCreatorKey(
-      { account: self.account, domain: 'local', namespaceId: 0 },
-      'local',
-    );
+    return messageCreatorKey({
+      account: self.account,
+      domain: 'local',
+      namespaceId: 0,
+    });
   }
 
   private readRecentThreadIds(): number[] {

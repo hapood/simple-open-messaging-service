@@ -24,12 +24,10 @@ import {
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { ensureLocalAccountThreadStateInTx } from '../account-thread-state/local-account-thread-state.js';
 import { upsertSourceUserInTx } from '../user/source-user.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
 import { FederationGroupMetaTaskCoordinator } from './federation-group-meta-task-coordinator.service.js';
-import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
 import type { FederationThreadAddress } from './federation-message-feed.service.js';
 import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import {
@@ -83,9 +81,7 @@ export interface StatePageEffect {
   }>;
 }
 
-export type StatePageApplyResult =
-  | StatePageEffect
-  | { dependencyPending: true; taskId: bigint };
+export type StatePageApplyResult = StatePageEffect;
 
 /** Applies validated peer State Feed pages inside the pull worker's transaction. */
 @Injectable()
@@ -101,7 +97,6 @@ export class FederationStateFeedConsumerService {
     private readonly message: MessageService,
     private readonly relationshipMutations: FederationRelationshipMutationService,
     private readonly groupRelationships: FederationGroupRelationshipService,
-    private readonly groupRosterProjection: FederationGroupRosterProjectionService,
     private readonly groupMetaTasks: FederationGroupMetaTaskCoordinator,
   ) {}
 
@@ -429,6 +424,14 @@ export class FederationStateFeedConsumerService {
             }
             continue;
           }
+          await this.relationshipIntents.lockPairInTx(
+            tx,
+            localUser.id,
+            remoteUser.id,
+          );
+          await this.stateFeed.lockTargetsInTx(tx, [
+            { peerDomain, namespaceId },
+          ]);
           const effect = await this.relationships.applyRemoteP2PIntentInTx(tx, {
             localUserId: localUser.id,
             peerUserId: remoteUser.id,
@@ -1086,30 +1089,13 @@ export class FederationStateFeedConsumerService {
             )
             .limit(1);
           if (!mirror) continue;
-          const dependency = await this.groupMetaTasks.ensureInTx(tx, {
+          await this.groupMetaTasks.ensureInTx(tx, {
             groupId: mirror.groupId,
             groupAccount: item.account,
             peerDomain,
             namespaceId,
             through: BigInt(groupMetaFeedEndId),
           });
-          if (!dependency.ready)
-            return { dependencyPending: true, taskId: dependency.taskId };
-          const groupEffect = await this.applyCommittedGroupMetaInTx(
-            tx,
-            peerDomain,
-            namespaceId,
-            item.account,
-          );
-          if (groupEffect.threadId > 0)
-            clientFeedUpdates.push(
-              ...(await this.clientStateFeed.publishGroupStateToLocalAudiencesInTx(
-                tx,
-                groupEffect.threadId,
-              )),
-            );
-          statePushDomains.push(...groupEffect.statePushDomains);
-          localSystemMessages.push(...groupEffect.systemMessages);
         } else if (item.eventType === 'THREAD_CONTENT_HEAD') {
           const body = item.body as {
             messageEndSeq?: unknown;
@@ -1206,87 +1192,6 @@ export class FederationStateFeedConsumerService {
     };
   }
 
-  private async applyCommittedGroupMetaInTx(
-    tx: DatabaseTransaction,
-    peerDomain: string,
-    namespaceId: number,
-    account: string,
-  ) {
-    const [mirror] = await tx
-      .select({
-        groupId: tables.group.id,
-        threadId: tables.messageThread.id,
-      })
-      .from(tables.group)
-      .innerJoin(
-        tables.messageThread,
-        eq(tables.messageThread.groupId, tables.group.id),
-      )
-      .where(
-        and(
-          eq(tables.group.account, account),
-          eq(tables.group.domain, peerDomain),
-          eq(tables.group.namespaceId, namespaceId),
-        ),
-      )
-      .limit(1);
-    if (!mirror) throw new Error('group-meta mirror thread is missing');
-    const roster = await tx.execute<{
-      account: string;
-      domain: string;
-      role: GroupRole;
-      localUserId: number | null;
-    }>(sql`
-      SELECT latest.account, latest.domain,
-             latest.body ->> 'role' AS role,
-             local_identity.id AS "localUserId"
-      FROM (
-        SELECT DISTINCT ON (member_identity.domain, member_identity.account)
-          member_identity.account,
-          member_identity.domain,
-          member_fact.operation,
-          member_fact.body
-        FROM "GroupMetaMemberFeed" member_fact
-        JOIN "User" member_identity
-          ON member_identity.id = member_fact."memberUserId"
-        WHERE member_fact."groupId" = ${mirror.groupId}
-        ORDER BY member_identity.domain, member_identity.account,
-                 member_fact."feedId" DESC
-      ) latest
-      LEFT JOIN "User" local_identity
-        ON latest.domain = ${this.config.domain}
-       AND local_identity.account = latest.account
-       AND local_identity.domain = 'local'
-       AND local_identity."namespaceId" = 0
-      WHERE latest.operation = 'UPSERT'
-    `);
-    const owners = roster.rows.filter(
-      (member) => member.role === GroupRole.OWNER,
-    );
-    if (roster.rows.length > 0 && owners.length !== 1)
-      throw new Error('group-meta roster must have exactly one owner');
-    for (const member of roster.rows) {
-      if (member.localUserId === null) continue;
-      await ensureLocalAccountThreadStateInTx(tx, {
-        threadId: mirror.threadId,
-        localUserId: member.localUserId,
-        role: member.role,
-      });
-    }
-    return this.groupRosterProjection.applyInTx(tx, {
-      peerDomain,
-      namespaceId,
-      groupAccount: account,
-      active: roster.rows.some((member) => member.localUserId !== null),
-      dissolved: roster.rows.length === 0,
-      owner:
-        owners.length === 0
-          ? null
-          : { account: owners[0]!.account, domain: owners[0]!.domain },
-      changes: [],
-    });
-  }
-
   private async resolveStateFeedTargetInTransaction(
     tx: DatabaseTransaction,
     sourceDomain: string,
@@ -1325,16 +1230,28 @@ export class FederationStateFeedConsumerService {
              group_user.domain AS "groupDomain"
       FROM "MessageThread" message_thread
       JOIN "Group" group_user ON group_user.id = message_thread."groupId"
-      JOIN "ThreadAudience" audience
-        ON audience."threadId" = message_thread.id
-       AND audience."targetDomain" = ${sourceDomain}
-       AND audience."targetNamespaceId" = ${namespaceId}
-       AND audience."localUserId" IS NULL
       WHERE message_thread.type = 'GROUP'
         AND group_user.account = ${normalizeAccount(thread.account)}
-        AND (group_user.domain = 'local'
-          OR group_user."namespaceId" = ${namespaceId})
-        AND group_user.domain IN (${sourceDomain}, 'local')
+        AND (
+          (group_user.domain = 'local'
+            AND group_user."namespaceId" = 0
+            AND EXISTS (
+              SELECT 1
+              FROM "ThreadAudience" audience
+              WHERE audience."threadId" = message_thread.id
+                AND audience."targetDomain" = ${sourceDomain}
+                AND audience."targetNamespaceId" = ${namespaceId}
+                AND audience."localUserId" IS NULL
+            ))
+          OR
+          (group_user.domain = ${sourceDomain}
+            AND group_user."namespaceId" = ${namespaceId}
+            AND EXISTS (
+              SELECT 1
+              FROM "AccountThreadState" local_state
+              WHERE local_state."threadId" = message_thread.id
+            ))
+        )
       LIMIT 1
     `);
     const resolved = result.rows[0];

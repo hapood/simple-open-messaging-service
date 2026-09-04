@@ -12,7 +12,6 @@ import {
 } from '../forward/forward-bundle.service.js';
 import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import { recordHostedGroupSentBoundaries } from '../message/hosted-group-sent-boundaries.js';
 import type { Message } from '../message/message.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
@@ -247,16 +246,7 @@ export class FederationInboundMessageStoreService {
           updatedAt: new Date(),
         })
         .returning({ id: tables.message.id });
-      await this.recordGroupMemberProfileReference(
-        tx,
-        threadId,
-        creator,
-        namespaceId,
-        incoming.profileRev,
-        seq,
-      );
       if (!sequencePolicy) {
-        await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
         await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
       }
       await tx.insert(tables.pendingMedia).values({
@@ -342,17 +332,6 @@ export class FederationInboundMessageStoreService {
         updatedAt: new Date(),
       })
       .returning();
-    await this.recordGroupMemberProfileReference(
-      tx,
-      threadId,
-      creator,
-      namespaceId,
-      incoming.profileRev,
-      seq,
-    );
-    if (!sequencePolicy) {
-      await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
-    }
     let localDeletionSeq: number | null = null;
     if (tombstone && !sequencePolicy) {
       const deletion = await DeletedMessageService.ensureFactInTx(tx, {
@@ -403,30 +382,6 @@ export class FederationInboundMessageStoreService {
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
-  }
-
-  private async recordGroupMemberProfileReference(
-    tx: DatabaseTransaction,
-    threadId: number,
-    creator: { account: string; domain: string },
-    namespaceId: number,
-    profileRev: number,
-    messageSeq: number,
-  ): Promise<void> {
-    await tx.execute(sql`
-      UPDATE "ThreadMember" membership
-      SET "profileRev" = ${profileRev},
-          "profileMessageSeq" = ${messageSeq},
-          "updatedAt" = CURRENT_TIMESTAMP
-      FROM "User" member
-      WHERE membership."threadId" = ${threadId}
-        AND member.id = membership."userId"
-        AND member.account = ${creator.account}
-        AND member.domain = ${creator.domain}
-        AND member."namespaceId" = ${creator.domain === this.config.domain ? 0 : namespaceId}
-        AND (membership."profileMessageSeq" IS NULL
-          OR membership."profileMessageSeq" < ${messageSeq})
-    `);
   }
 
   async resolveLocalQuoteSeq(

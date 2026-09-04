@@ -40,6 +40,16 @@ export class ProfileResolutionController {
           },
           additionalProperties: false,
         },
+        {
+          type: 'object',
+          required: ['threadId', 'memberAccount', 'memberDomain'],
+          properties: {
+            threadId: { type: 'integer', minimum: 1 },
+            memberAccount: { type: 'string' },
+            memberDomain: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
       ],
     },
   })
@@ -53,12 +63,20 @@ export class ProfileResolutionController {
             status: { type: 'string', enum: ['READY'] },
             profile: {
               type: 'object',
-              required: ['account', 'domain', 'rev', 'name', 'avatarBase64'],
+              required: [
+                'account',
+                'domain',
+                'rev',
+                'name',
+                'bio',
+                'avatarBase64',
+              ],
               properties: {
                 account: { type: 'string' },
                 domain: { type: 'string' },
                 rev: { type: 'integer', minimum: 0 },
                 name: { type: 'string' },
+                bio: { type: 'string' },
                 avatarBase64: { type: 'string', nullable: true },
               },
               additionalProperties: false,
@@ -83,7 +101,8 @@ export class ProfileResolutionController {
     @Body()
     body:
       | { account: string; domain: string; rev: number }
-      | { threadId: number; messageSeq: number },
+      | { threadId: number; messageSeq: number }
+      | { threadId: number; memberAccount: string; memberDomain: string },
   ) {
     return this.coordinator.start(req.user.userId, body);
   }

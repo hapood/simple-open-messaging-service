@@ -13,7 +13,7 @@ const unlinkAsync = promisify(unlink);
 const DEFAULT_RETENTION_DAYS = 90;
 
 /**
- * Garbage collection for diagnostic bundles, mirroring MediaAssetGcService's shape. Uploaded blobs ARE
+ * Garbage collection for diagnostic bundles. Uploaded blobs ARE
  * hard-deletable (unlike DB rows, which are soft-deleted), so expired reports both set isDeleted AND
  * unlink their file. A file shared by identical bundles (same sha256) is unlinked only once no remaining
  * row references it. Admin-triggered (POST admin/diagnostics/gc); a daily @Cron can be wired later,

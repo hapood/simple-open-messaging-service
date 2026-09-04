@@ -136,19 +136,6 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     expect(foreign.close).not.toHaveBeenCalled();
   });
 
-  it('kind:"clear" closes notifications by tag', async () => {
-    const same = { tag: 'soms-away', close: vi.fn().mockName('closeAway') };
-    getRegistration.mockResolvedValue(fakeReg([same]));
-    const adapter = new BrowserNotificationAdapter(prefs);
-    await adapter.showDescriptor({
-      ...threadDescriptor,
-      kind: 'clear',
-      tag: 'soms-away',
-    });
-    expect(same.close).toHaveBeenCalledTimes(1);
-    expect(showNotification).not.toHaveBeenCalled();
-  });
-
   it('falls back to in-page new Notification (no actions) when no SW registration is available', async () => {
     getRegistration.mockResolvedValue(null);
     const adapter = new BrowserNotificationAdapter(prefs);

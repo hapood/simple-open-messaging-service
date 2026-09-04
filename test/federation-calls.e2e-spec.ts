@@ -2,10 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   bootFederationPair,
-  truncateFederationDbs,
   FED_DOMAIN_A,
   FED_DOMAIN_B,
   type FedApp,
@@ -18,8 +17,8 @@ import {
   waitForSseEvent,
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { MessageThreadType } from '../src/database/enums.js';
-import { message, threadMember, user } from '../src/database/schema.js';
+import { message, user } from '../src/database/schema.js';
+import { findP2PRelationship } from './seed.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
@@ -41,14 +40,23 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
   let proxy: S2sProxy;
   let tokenErin: string;
   let tokenFrank: string;
+  let erinId: number;
+  let frankId: number;
   let frankStubIdOnA: number; // appA's stub of frank (foreign) — the `calleeUserId` erin dials
   let erinStubIdOnB: number; // appB's stub of erin (foreign) — the bubble's creator on the pulled copy
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
-    await truncateFederationDbs(appA, appB);
-    ({ token: tokenErin } = await registerAndLogin(appA, 'erin', 'Erin'));
-    ({ token: tokenFrank } = await registerAndLogin(appB, 'frank', 'Frank'));
+    ({ id: erinId, token: tokenErin } = await registerAndLogin(
+      appA,
+      'erin',
+      'Erin',
+    ));
+    ({ id: frankId, token: tokenFrank } = await registerAndLogin(
+      appB,
+      'frank',
+      'Frank',
+    ));
 
     const friendship = await establishFederatedFriendship({
       local: appA,
@@ -71,16 +79,12 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     erinStubIdOnB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
-        const [activeOnA, activeOnB] = await Promise.all([
-          appA.database.query.threadMember.findFirst({
-            where: and(eq(threadMember.userId, frankStubIdOnA)),
-          }),
-          appB.database.query.threadMember.findFirst({
-            where: and(eq(threadMember.userId, erinStubIdOnB)),
-          }),
+        const [relationshipOnA, relationshipOnB] = await Promise.all([
+          findP2PRelationship(appA.database, erinId, frankStubIdOnA),
+          findP2PRelationship(appB.database, frankId, erinStubIdOnB),
         ]);
-        expect(activeOnA).toBeDefined();
-        expect(activeOnB).toBeDefined();
+        expect(relationshipOnA.pair).toMatchObject({ active: true });
+        expect(relationshipOnB.pair).toMatchObject({ active: true });
       },
       { timeout: 5000, interval: 100 },
     );
@@ -297,21 +301,21 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(JSON.parse(onA.content).outcome).toBe('declined');
 
       // The bubble pulls to appB — find frank's P2P thread with erin's stub, then the CALL row by originSeq.
-      const frankThreadB = await appB.database.query.threadMember.findFirst({
-        where: and(
-          eq(threadMember.userId, erinStubIdOnB),
-          sql`exists (select 1 from "MessageThread" mt where mt.id = "threadMember"."threadId" and mt.type = ${MessageThreadType.P2P})`,
-        ),
-        columns: { threadId: true },
-      });
+      const frankRelationship = await findP2PRelationship(
+        appB.database,
+        frankId,
+        erinStubIdOnB,
+      );
+      expect(frankRelationship.pair).toBeDefined();
+      const frankThreadId = frankRelationship.pair!.threadId!;
       const onB = await pollFor(() =>
         appB.database.query.message.findFirst({
           where: and(
-            eq(message.threadId, frankThreadB!.threadId),
+            eq(message.threadId, frankThreadId),
             eq(message.creatorAccount, 'erin'),
             eq(message.creatorDomain, DOM_A),
-            // A local source keeps originSeq null until its delivery receipt returns; its wire source
-            // coordinate is the local seq in that interval.
+            // The wire source coordinate is the original local seq even if a later delivery receipt
+            // replaces the source row's provisional originSeq.
             eq(message.originSeq, onA.originSeq ?? onA.seq),
             eq(message.contentType, 'CALL'),
           ),

@@ -8,21 +8,18 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import type { FastifyRequest } from 'fastify';
 import { Public } from '../common/public.decorator.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { AdminRole } from '../database/enums.js';
 import { FederationService } from '../federation/federation.service.js';
-import { SseService } from '../gateway/sse.service.js';
 import {
   AdminListMessageReportsDto,
   ResolveMessageReportsDto,
 } from '../message/message-report.dto.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
@@ -36,10 +33,7 @@ import { Audit } from './audit.decorator.js';
 export class MessageReportAdminController {
   constructor(
     private readonly reports: MessageReportService,
-    private readonly participants: ThreadParticipantService,
-    private readonly sse: SseService,
     private readonly federation: FederationService,
-    private readonly clientStateFeed: ClientStateFeedService,
     private readonly fanout: MessageFanoutService,
   ) {}
 
@@ -68,17 +62,6 @@ export class MessageReportAdminController {
     }
     const result = await this.reports.resolve(adminId, dto);
     for (const deletion of result.deletions) {
-      const participants = await this.participants.getActiveParticipantUserIds(
-        deletion.threadId,
-      );
-      for (const participant of participants) {
-        this.sse.onDeletedMessageUpdated(
-          participant.userId,
-          deletion.threadId,
-          deletion.deletionSeq,
-          await this.clientStateFeed.readEndId(participant.userId),
-        );
-      }
       void this.federation.notifyOnSend(
         deletion.creator,
         deletion.threadId,

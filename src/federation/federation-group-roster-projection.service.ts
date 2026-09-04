@@ -11,7 +11,7 @@ export interface GroupRosterProjectionChange {
   afterRole: GroupRole | null;
 }
 
-/** Commits the validated remote roster revision after source-scoped User and ThreadMember changes. */
+/** Applies local group-shell effects after a mirrored Group Meta round commits. */
 @Injectable()
 export class FederationGroupRosterProjectionService {
   async applyInTx(
@@ -20,7 +20,6 @@ export class FederationGroupRosterProjectionService {
       peerDomain: string;
       namespaceId: number;
       groupAccount: string;
-      revision: bigint;
       active: boolean;
       dissolved: boolean;
       owner: { account: string; domain: string } | null;
@@ -38,7 +37,6 @@ export class FederationGroupRosterProjectionService {
       .select({
         groupId: tables.group.id,
         threadId: tables.messageThread.id,
-        remoteGroupMetaFeedId: tables.group.remoteGroupMetaFeedId,
       })
       .from(tables.group)
       .innerJoin(
@@ -53,13 +51,9 @@ export class FederationGroupRosterProjectionService {
         ),
       )
       .limit(1);
-    if (
-      !mirror ||
-      (mirror.remoteGroupMetaFeedId !== null &&
-        mirror.remoteGroupMetaFeedId >= params.revision)
-    )
+    if (!mirror)
       return {
-        threadId: mirror?.threadId ?? 0,
+        threadId: 0,
         users: [],
         statePushDomains: [],
         systemMessages: [],
@@ -72,7 +66,6 @@ export class FederationGroupRosterProjectionService {
     await tx
       .update(tables.group)
       .set({
-        remoteGroupMetaFeedId: params.revision,
         dissolvedAt: params.dissolved ? new Date() : null,
         updatedAt: new Date(),
       })

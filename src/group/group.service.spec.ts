@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group, threadMember } from '../database/schema.js';
+import { group, profileVersion } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
 
@@ -8,14 +8,18 @@ type SelectResult = unknown[];
 
 function createTx(options: {
   selects: SelectResult[];
+  insertResults?: unknown[][];
   updateResults?: unknown[][];
   deleteResults?: unknown[][];
   userDomain?: string;
+  executeResults?: Array<{ rows: unknown[] }>;
 }) {
   const selects = [...options.selects];
+  const insertResults = [...(options.insertResults ?? [])];
   const updateResults = [...(options.updateResults ?? [])];
   const deleteResults = [...(options.deleteResults ?? [])];
   const sets: unknown[] = [];
+  const inserted: Array<{ table: unknown; value: unknown }> = [];
   const select = vi.fn(() => {
     const result = selects.shift() ?? [];
     const query = {
@@ -44,6 +48,19 @@ function createTx(options: {
     };
     return query;
   });
+  const insert = vi.fn((table: unknown) => {
+    const returningResult = insertResults.shift() ?? [];
+    const query = {
+      values: vi.fn((value: unknown) => {
+        inserted.push({ table, value });
+        return query;
+      }),
+      returning: vi.fn(() => Promise.resolve(returningResult)),
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(undefined).then(resolve),
+    };
+    return query;
+  });
   const deleteFrom = vi.fn(() => {
     const returningResult = deleteResults.shift() ?? [];
     const query = {
@@ -54,13 +71,18 @@ function createTx(options: {
     };
     return query;
   });
-  const execute = vi.fn().mockResolvedValue({ rows: [{ authorized: true }] });
+  const executeResults = [...(options.executeResults ?? [])];
+  const execute = vi.fn(() =>
+    Promise.resolve(executeResults.shift() ?? { rows: [{ authorized: true }] }),
+  );
   return {
     select,
+    insert,
     update,
     delete: deleteFrom,
     execute,
     sets,
+    inserted,
     query: {
       user: {
         findFirst: vi
@@ -78,6 +100,7 @@ function createService(
   federationOverrides: object,
   messages?: object,
   messageFanout?: object,
+  authoritativeGroupMetaOverrides: object = {},
 ) {
   const database = {
     db: {
@@ -86,7 +109,6 @@ function createService(
   };
   const federation = {
     lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
-    writeGroupStateInTx: vi.fn().mockResolvedValue(new Map()),
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     reconcileGroupJoinRequestManagerInTx: vi.fn().mockResolvedValue(undefined),
@@ -95,15 +117,21 @@ function createService(
     ...federationOverrides,
   };
   const clientStateFeed = {
-    recordGroupStateInTx: vi.fn().mockResolvedValue([]),
     notifyFeedUpdated: vi.fn(),
     notifyFeedUpdates: vi.fn(),
+  };
+  const authoritativeGroupMeta = {
+    applyRoleFactsInTx: vi.fn().mockResolvedValue(undefined),
+    applyProfileFactInTx: vi.fn().mockResolvedValue(undefined),
+    finalizeInTx: vi.fn().mockResolvedValue(undefined),
+    ...authoritativeGroupMetaOverrides,
   };
   return new GroupService(
     database as never,
     federation as never,
     federation as never,
     clientStateFeed as never,
+    authoritativeGroupMeta as never,
     messages as never,
     messageFanout as never,
   );
@@ -111,23 +139,35 @@ function createService(
 
 describe('GroupService membership lifecycle', () => {
   it('rejects administrator role changes when the operator is only an admin', async () => {
-    const transaction = vi.fn();
-    const database = {
-      db: {
-        query: {
-          threadMember: {
-            findFirst: vi.fn().mockResolvedValue({ role: GroupRole.ADMIN }),
+    const tx = createTx({
+      selects: [
+        [
+          {
+            groupId: 5,
+            groupAccount: '!group',
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
           },
+        ],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.ADMIN,
+              profileRev: 3,
+              available: true,
+            },
+          ],
         },
-        transaction,
-      },
-    };
-    const service = new GroupService(
-      database as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+      ],
+    });
+    const service = createService(tx, {});
 
     await expect(
       service.setRole({
@@ -137,7 +177,220 @@ describe('GroupService membership lifecycle', () => {
         operatorUserId: 1,
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_FORBIDDEN });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(tx.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('admits role fan-out after the dependent manager projection', async () => {
+    const tx = createTx({
+      selects: [
+        [
+          {
+            groupId: 5,
+            groupAccount: '!group',
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
+          },
+        ],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 3,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'member',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.MEMBER,
+              profileRev: 6,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+      ],
+    });
+    const applyRoleFactsInTx = vi.fn().mockResolvedValue(undefined);
+    const finalizeInTx = vi.fn().mockResolvedValue(undefined);
+    const reconcileGroupJoinRequestManagerInTx = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    const service = createService(
+      tx,
+      { reconcileGroupJoinRequestManagerInTx },
+      undefined,
+      undefined,
+      { applyRoleFactsInTx, finalizeInTx },
+    );
+
+    await service.setRole({
+      threadId: 10,
+      targetUserId: 2,
+      role: GroupRole.ADMIN,
+      operatorUserId: 1,
+    });
+
+    expect(applyRoleFactsInTx).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        threadId: 10,
+        groupId: 5,
+        changes: [
+          expect.objectContaining({
+            role: GroupRole.ADMIN,
+            member: expect.objectContaining({ profileRev: 6 }),
+          }),
+        ],
+      }),
+    );
+    expect(applyRoleFactsInTx.mock.invocationCallOrder[0]).toBeLessThan(
+      reconcileGroupJoinRequestManagerInTx.mock.invocationCallOrder[0],
+    );
+    expect(
+      reconcileGroupJoinRequestManagerInTx.mock.invocationCallOrder[0],
+    ).toBeLessThan(finalizeInTx.mock.invocationCallOrder[0]);
+  });
+
+  it('writes a changed group profile fact and then admits head fan-out', async () => {
+    const current = {
+      id: 99,
+      account: '!group',
+      domain: 'local',
+      namespaceId: 0,
+      name: 'Old name',
+      description: 'Old bio',
+      avatar: 'old-avatar',
+      defaultProfileRev: 3,
+      dissolvedAt: null,
+    };
+    const updated = {
+      ...current,
+      name: 'New name',
+      description: 'New bio',
+      defaultProfileRev: 4,
+    };
+    const tx = createTx({
+      selects: [[{ group: current }], [{ groupId: 99 }]],
+      updateResults: [[updated]],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 2,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+      ],
+    });
+    const applyProfileFactInTx = vi.fn().mockResolvedValue(undefined);
+    const finalizeInTx = vi.fn().mockResolvedValue(undefined);
+    const service = createService(tx, {}, undefined, undefined, {
+      applyProfileFactInTx,
+      finalizeInTx,
+    });
+
+    await expect(
+      service.updateGroup({
+        threadId: 10,
+        operatorUserId: 1,
+        name: 'New name',
+        description: 'New bio',
+      }),
+    ).resolves.toBe(updated);
+
+    expect(tx.inserted).toEqual([
+      {
+        table: profileVersion,
+        value: {
+          groupId: 99,
+          profileRev: 4,
+          displayName: 'New name',
+          avatar: 'old-avatar',
+          bio: 'New bio',
+        },
+      },
+    ]);
+    expect(applyProfileFactInTx).toHaveBeenCalledWith(tx, 99, 4);
+    expect(finalizeInTx).toHaveBeenCalledWith(tx, {
+      threadId: 10,
+      groupAccount: '!group',
+    });
+    expect(applyProfileFactInTx.mock.invocationCallOrder[0]).toBeLessThan(
+      finalizeInTx.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not allocate a profile revision for an unchanged group profile', async () => {
+    const current = {
+      id: 99,
+      account: '!group',
+      domain: 'local',
+      namespaceId: 0,
+      name: 'Same name',
+      description: 'Same bio',
+      avatar: 'same-avatar',
+      defaultProfileRev: 3,
+      dissolvedAt: null,
+    };
+    const tx = createTx({
+      selects: [[{ group: current }], [{ groupId: 99 }]],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.ADMIN,
+              profileRev: 2,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+      ],
+    });
+    const applyProfileFactInTx = vi.fn().mockResolvedValue(undefined);
+    const finalizeInTx = vi.fn().mockResolvedValue(undefined);
+    const service = createService(tx, {}, undefined, undefined, {
+      applyProfileFactInTx,
+      finalizeInTx,
+    });
+
+    await expect(
+      service.updateGroup({
+        threadId: 10,
+        operatorUserId: 1,
+        name: 'Same name',
+      }),
+    ).resolves.toBe(current);
+
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(applyProfileFactInTx).not.toHaveBeenCalled();
+    expect(finalizeInTx).not.toHaveBeenCalled();
   });
 
   it('rejects an owner leaving while another active member remains', async () => {
@@ -145,12 +398,27 @@ describe('GroupService membership lifecycle', () => {
       selects: [
         [
           {
-            role: GroupRole.OWNER,
             groupId: 99,
             groupDomain: 'local',
+            dissolvedAt: null,
           },
         ],
-        [{ value: 2 }],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ status: 'ACCEPTED' }] },
       ],
     });
     const service = createService(tx, {});
@@ -159,8 +427,6 @@ describe('GroupService membership lifecycle', () => {
       service.leaveGroup({
         userId: 1,
         threadId: 10,
-        role: GroupRole.OWNER,
-        deleteData: false,
       }),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.GROUP_OWNER_MUST_TRANSFER,
@@ -173,19 +439,30 @@ describe('GroupService membership lifecycle', () => {
       selects: [
         [
           {
-            role: GroupRole.ADMIN,
             groupId: 99,
             groupDomain: 'local',
+            dissolvedAt: null,
           },
         ],
-        [],
-        [{ groupId: 99 }],
-        [],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'admin',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.ADMIN,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [] },
       ],
     });
-    tx.execute
-      .mockResolvedValueOnce({ rows: [{ authorized: true }] })
-      .mockResolvedValue({ rows: [{ authorized: false }] });
     const reconcileGroupJoinRequestManagerInTx = vi
       .fn()
       .mockResolvedValue(undefined);
@@ -196,8 +473,6 @@ describe('GroupService membership lifecycle', () => {
     await service.leaveGroup({
       userId: 2,
       threadId: 10,
-      role: GroupRole.ADMIN,
-      deleteData: false,
     });
 
     expect(reconcileGroupJoinRequestManagerInTx).toHaveBeenCalledWith(
@@ -213,14 +488,28 @@ describe('GroupService membership lifecycle', () => {
       selects: [
         [
           {
-            role: GroupRole.MEMBER,
             groupId: 99,
             groupDomain: 'local',
+            dissolvedAt: null,
           },
         ],
-        [],
-        [{ groupId: 99 }],
-        [],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'member',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.MEMBER,
+              profileRev: 2,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [] },
       ],
     });
     const writeMemberRelationshipIntentInTx = vi
@@ -237,8 +526,6 @@ describe('GroupService membership lifecycle', () => {
     await service.leaveGroup({
       userId: 2,
       threadId: 10,
-      role: GroupRole.MEMBER,
-      deleteData: false,
     });
 
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
@@ -265,8 +552,33 @@ describe('GroupService membership lifecycle', () => {
 
   it('commits only the terminal group marker before member fan-out', async () => {
     const tx = createTx({
-      selects: [[{ groupId: 99, groupDomain: 'local', role: GroupRole.OWNER }]],
+      selects: [
+        [
+          {
+            groupId: 99,
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
+          },
+        ],
+      ],
       updateResults: [[{ id: 1 }]],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+      ],
     });
     const service = createService(tx, {});
 
@@ -283,15 +595,38 @@ describe('GroupService membership lifecycle', () => {
 
   it('treats an already committed terminal marker as idempotent', async () => {
     const tx = createTx({
-      selects: [[{ groupId: 99, groupDomain: 'local', role: GroupRole.OWNER }]],
-      updateResults: [[]],
+      selects: [
+        [
+          {
+            groupId: 99,
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: new Date(),
+          },
+        ],
+      ],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+      ],
     });
     const service = createService(tx, {});
 
     await expect(
       service.markGroupDissolved({ threadId: 10, operatorUserId: 1 }),
     ).resolves.toEqual({ transitioned: false });
-    expect(tx.update).toHaveBeenCalledTimes(1);
+    expect(tx.update).not.toHaveBeenCalled();
   });
 
   it('delegates each dissolved member to the existing leave transaction in fan-out mode', async () => {
@@ -299,19 +634,16 @@ describe('GroupService membership lifecycle', () => {
     const service = createService(tx, {});
     const leaveGroup = vi
       .spyOn(service, 'leaveGroup')
-      .mockResolvedValue({ transitioned: true, remainingMemberIds: [] });
+      .mockResolvedValue({ transitioned: true });
 
     await service.revokeDissolvedGroupMember({
       threadId: 10,
       memberUserId: 2,
-      deleteData: true,
     });
 
     expect(leaveGroup).toHaveBeenCalledWith({
       userId: 2,
       threadId: 10,
-      role: null,
-      deleteData: true,
       dissolvedFanout: true,
     });
   });
@@ -328,6 +660,22 @@ describe('GroupService membership lifecycle', () => {
         ],
       ],
       userDomain: 'local',
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'member',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ status: 'ACCEPTED' }] },
+      ],
     });
     const writeMemberRelationshipIntentInTx = vi
       .fn()
@@ -343,8 +691,6 @@ describe('GroupService membership lifecycle', () => {
     await service.leaveGroup({
       userId: 2,
       threadId: 10,
-      role: null,
-      deleteData: false,
       dissolvedFanout: true,
     });
 
@@ -375,13 +721,44 @@ describe('GroupService membership lifecycle', () => {
     async (targetRole) => {
       const tx = createTx({
         selects: [
-          [{ id: 7, role: GroupRole.ADMIN }],
           [
             {
-              member: { id: 8, role: targetRole },
-              domain: 'local',
+              groupId: 99,
+              groupDomain: 'local',
+              namespaceId: 0,
+              dissolvedAt: null,
             },
           ],
+        ],
+        executeResults: [
+          {
+            rows: [
+              {
+                userId: 1,
+                account: 'admin',
+                domain: 'local',
+                namespaceId: 0,
+                role: GroupRole.ADMIN,
+                profileRev: 1,
+                available: true,
+              },
+            ],
+          },
+          {
+            rows: [
+              {
+                userId: 2,
+                account: 'target',
+                domain: 'local',
+                namespaceId: 0,
+                role: targetRole,
+                profileRev: 2,
+                available: true,
+              },
+            ],
+          },
+          { rows: [{ authorized: true }] },
+          { rows: [{ authorized: true }] },
         ],
       });
       const service = createService(tx, {});
@@ -398,30 +775,70 @@ describe('GroupService membership lifecycle', () => {
   );
 
   it('revokes a kicked participant and makes an absent repeat a no-op', async () => {
-    const target = {
-      id: 8,
-      role: GroupRole.MEMBER,
-    };
     const tx = createTx({
       selects: [
         [
           {
-            id: 7,
-            role: GroupRole.OWNER,
+            groupId: 99,
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
           },
         ],
-        [{ member: target, domain: 'local' }],
-        [{ userId: 1 }, { userId: 2 }],
-        [{ groupId: 99 }],
         [
           {
-            id: 7,
-            role: GroupRole.OWNER,
+            groupId: 99,
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
           },
         ],
-        [],
       ],
-      updateResults: [[{ id: 8 }], []],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'member',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.MEMBER,
+              profileRev: 2,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+        { rows: [{ authorized: true }] },
+        { rows: [{ userId: 1 }, { userId: 2 }] },
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        { rows: [] },
+      ],
     });
     const systemMessage = {
       threadId: 10,
@@ -467,32 +884,65 @@ describe('GroupService membership lifecycle', () => {
       selects: [
         [
           {
-            id: 7,
-            role: GroupRole.OWNER,
+            groupId: 99,
+            groupDomain: 'local',
+            namespaceId: 0,
+            dissolvedAt: null,
           },
         ],
-        [
-          {
-            member: {
-              id: 8,
-              role: GroupRole.MEMBER,
-            },
-            domain: 'local',
-          },
-        ],
-        [{ userId: 1 }, { userId: 2 }],
-        [{ groupId: 99 }],
       ],
-      updateResults: [[{ id: 8 }], []],
+      executeResults: [
+        {
+          rows: [
+            {
+              userId: 1,
+              account: 'owner',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.OWNER,
+              profileRev: 1,
+              available: true,
+            },
+          ],
+        },
+        {
+          rows: [
+            {
+              userId: 2,
+              account: 'member',
+              domain: 'local',
+              namespaceId: 0,
+              role: GroupRole.MEMBER,
+              profileRev: 2,
+              available: true,
+            },
+          ],
+        },
+        { rows: [{ authorized: true }] },
+        { rows: [{ authorized: true }] },
+        { rows: [{ userId: 1 }, { userId: 2 }] },
+      ],
     });
-    const rollback = new Error('group state write failed');
-    const federation = {
-      writeGroupStateInTx: vi.fn().mockRejectedValue(rollback),
+    const rollback = new Error('group relationship write failed');
+    const writeGroupRelationshipIntentInTx = vi
+      .fn()
+      .mockRejectedValue(rollback);
+    const messages = {
+      writeSystemMessageInTx: vi.fn().mockResolvedValue({
+        message: { threadId: 10, seq: 9, creator: null, createdAt: new Date() },
+      }),
     };
-    const service = createService(tx, federation);
+    const messageFanout = { dispatchToUsers: vi.fn() };
+    const service = createService(
+      tx,
+      { writeGroupRelationshipIntentInTx },
+      messages,
+      messageFanout,
+    );
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).rejects.toBe(rollback);
+    expect(messageFanout.dispatchToUsers).not.toHaveBeenCalled();
   });
 });

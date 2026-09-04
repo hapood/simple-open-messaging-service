@@ -189,10 +189,11 @@ export class ThreadListComponent implements OnInit {
     if (
       self &&
       t.lastMessageSenderId ===
-        messagePreviewSenderKey(
-          { account: self.account, domain: 'local', namespaceId: 0 },
-          'local',
-        )
+        messagePreviewSenderKey({
+          account: self.account,
+          domain: 'local',
+          namespaceId: 0,
+        })
     )
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
     return base;

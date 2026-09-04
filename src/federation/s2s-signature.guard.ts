@@ -29,11 +29,12 @@ import { FederationRecognitionService } from './federation-recognition.service.j
  * before any network key fetch, and a transient key-fetch failure never becomes a permanent 401:
  *
  *   1. missing/malformed Signature-Input / keyId            → 401 FEDERATION_MALFORMED       (no retry)
- *   2. bilateral recognition facts incomplete              → 401 FEDERATION_RECOGNITION_REQUIRED
+ *   2. local recognition or receive readiness incomplete   → 401 FEDERATION_RECOGNITION_REQUIRED
  *   3. key fetch transient failure (.well-known unreachable)→ 500 INTERNAL (RETRY)
  *   4. keyId not in the peer's published key set            → 401 FEDERATION_BAD_SIGNATURE    (no retry)
  *   5. signature invalid / body tampered                    → 401 FEDERATION_BAD_SIGNATURE    (no retry)
- *   6. from.domain != signer.domain (bodies with `from`)     → 401 FEDERATION_BINDING_VIOLATION(no retry)
+ *   6. either recognition direction incomplete              → 401 FEDERATION_RECOGNITION_REQUIRED
+ *   7. from.domain != signer.domain (bodies with `from`)     → 401 FEDERATION_BINDING_VIOLATION(no retry)
  *
  * On success, attaches `req.peer = { domain, keyId }` for the handler. A plain CanActivate, not
  * Passport-based.
@@ -88,28 +89,18 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.CONFLICT,
       );
     }
-    if (!peer || peer.activeNamespaceId === null) {
+    if (
+      !peer ||
+      peer.activeNamespaceId === null ||
+      !peer.recognizesPeer ||
+      !peer.localServiceAvailable
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
         `${signerDomain} is not recognized`,
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const lightweight = req.url?.startsWith('/s2s/v1/feed-heads');
-    const admitted = lightweight
-      ? peer.inboundRecognitionConfirmed && peer.lightweightInboundReady
-      : peer.recognizesPeer &&
-        peer.outboundRecognitionConfirmed &&
-        peer.inboundRecognitionConfirmed &&
-        peer.localServiceAvailable;
-    if (!admitted) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-        `${signerDomain} recognition is incomplete`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-
     // 3-5. Fetch the signer's key (.well-known, fetch-on-miss) + verify the signature over the raw body.
     await this.verify.fetchAndVerify(
       this.verify.signedRequest(req),
@@ -118,6 +109,25 @@ export class S2sSignatureGuard implements CanActivate {
       signerDomain,
       peer.activeNamespaceId,
     );
+
+    // Authentication itself proves current reachability. Later binding, shape, or business rejection
+    // must not erase that observation or manufacture a recognition-direction fact.
+    await this.recognition.markReachable(signerDomain);
+
+    // Recognition authorization follows authentication. For an inbound operation, the peer's
+    // committed Recognize plus our local recognition and prepared path are sufficient; delivery of
+    // our redundant reverse notification is an outbound concern and cannot block this receive path.
+    const lightweight = req.url?.startsWith('/s2s/v1/feed-heads');
+    const admitted = lightweight
+      ? peer.inboundRecognitionConfirmed && peer.lightweightInboundReady
+      : peer.inboundRecognitionConfirmed;
+    if (!admitted) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
+        `${signerDomain} recognition is incomplete`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
 
     // 6. Binding rule (bodies carrying a `from` field; GETs have none): the asserted sender must live
     // on the signer's domain, so a recognized peer can't forge users of another peer. `from` is a
@@ -144,7 +154,6 @@ export class S2sSignatureGuard implements CanActivate {
       keyId,
       signatureExpiresAtSec: expires,
     };
-    await this.recognition.markReachable(signerDomain);
     return true;
   }
 }

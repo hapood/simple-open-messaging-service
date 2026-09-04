@@ -35,10 +35,11 @@ export class ContactCardShareService {
     const preview: ChatMsgData = {
       type: 'msg',
       msgId: -1,
-      creator: messageCreatorKey(
-        { account: self.account, domain: 'local', namespaceId: 0 },
-        'local',
-      ),
+      creator: messageCreatorKey({
+        account: self.account,
+        domain: 'local',
+        namespaceId: 0,
+      }),
       isSelf: true,
       name: self.name,
       text: content,

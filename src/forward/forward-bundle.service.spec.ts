@@ -16,6 +16,8 @@ function sourceRow(childDepth: number) {
     threadId: 4,
     creatorAccount: 'alice',
     creatorDomain: 'local',
+    creatorNamespaceId: 0,
+    profileRev: 1,
     contentType: ContentType.FORWARD,
     content: JSON.stringify({ version: 1, bundleId: 'child' }),
     createdAt: new Date('2026-07-31T00:00:00Z'),
@@ -81,7 +83,15 @@ function databaseFake(childDepth: number, tx?: unknown) {
   ]);
   return {
     db: {
-      execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
+      execute: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            authorized: true,
+            displayName: 'Alice',
+            avatar: '',
+          },
+        ],
+      }),
       select: vi.fn(() => {
         const query = {
           from: () => query,
@@ -91,7 +101,7 @@ function databaseFake(childDepth: number, tx?: unknown) {
         return query;
       }),
       query: {
-        threadParticipant: {
+        accountThreadState: {
           findMany: findMemberships,
         },
         message: {
@@ -122,7 +132,8 @@ function databaseFake(childDepth: number, tx?: unknown) {
             messages: [
               {
                 id: 1,
-                author: { displayName: 'A', account: 'a', domain: 'local' },
+                author: { account: 'a', domain: 'local' },
+                profile: { displayName: 'A' },
                 contentType: 'PURE_TEXT',
                 content: JSON.stringify({ text: 'nested' }),
                 sentAt: 1,
@@ -137,11 +148,8 @@ function databaseFake(childDepth: number, tx?: unknown) {
               messages: [
                 {
                   id: 1,
-                  author: {
-                    displayName: 'A',
-                    account: 'a',
-                    domain: 'local',
-                  },
+                  author: { account: 'a', domain: 'local' },
+                  profile: { displayName: 'A' },
                   contentType: 'PURE_TEXT',
                   content: JSON.stringify({ text: 'nested' }),
                   sentAt: 1,
@@ -224,10 +232,10 @@ describe('ForwardBundleService', () => {
       expect(
         service['summaryLine']({
           author: {
-            displayName: 'Alice',
             account: 'alice',
             domain: 'local',
           },
+          profile: { displayName: 'Alice' },
           contentType,
           content,
         } as never),
@@ -268,7 +276,8 @@ describe('ForwardBundleService', () => {
       messages: [
         {
           id: 1,
-          author: { displayName: 'A', account: 'a', domain: 'remote.test' },
+          author: { account: 'a', domain: 'remote.test' },
+          profile: { displayName: 'A' },
           contentType: ContentType.FORWARD,
           content: JSON.stringify({
             bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -288,7 +297,8 @@ describe('ForwardBundleService', () => {
         messages: [
           {
             id: 1,
-            author: { displayName: 'B', account: 'b', domain: 'remote.test' },
+            author: { account: 'b', domain: 'remote.test' },
+            profile: { displayName: 'B' },
             contentType: ContentType.PURE_TEXT,
             content: JSON.stringify({ text: 'nested' }),
             sentAt: 1,
@@ -476,6 +486,58 @@ describe('ForwardBundleService', () => {
     expect(prepared.messages[0].quoteTargetId).toBeUndefined();
   });
 
+  it('omits the optional profile when the exact message revision is unavailable', async () => {
+    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    database.db.execute
+      .mockResolvedValueOnce({ rows: [{ authorized: true }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const service = forwardService(database);
+
+    const prepared = await service.prepareFromMessages(9, [
+      { threadId: 4, seq: 7 },
+    ]);
+
+    expect(prepared.messages[0].author).toEqual({
+      account: 'alice',
+      domain: process.env.SOMS_DOMAIN ?? 'local',
+    });
+    expect(prepared.messages[0].profile).toBeUndefined();
+  });
+
+  it('keeps a known avatarless exact profile without inventing an avatar', async () => {
+    const database = databaseFake(0);
+    const service = forwardService(database);
+
+    const prepared = await service.prepareFromMessages(9, [
+      { threadId: 4, seq: 7 },
+    ]);
+
+    expect(prepared.messages[0].profile).toEqual({ displayName: 'Alice' });
+    expect(prepared.assets).toEqual([]);
+  });
+
+  it('omits the complete profile when its referenced avatar cannot be snapshotted', async () => {
+    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    database.db.execute.mockResolvedValue({
+      rows: [
+        {
+          authorized: true,
+          displayName: 'Alice',
+          avatar: '/uploads/missing.webp',
+        },
+      ],
+    });
+    const service = forwardService(database);
+    vi.spyOn(service, 'snapshotAvatarForMessage').mockResolvedValue(null);
+
+    const prepared = await service.prepareFromMessages(9, [
+      { threadId: 4, seq: 7 },
+    ]);
+
+    expect(prepared.messages[0].profile).toBeUndefined();
+    expect(prepared.assets).toEqual([]);
+  });
+
   it('reuses cleared-history filters when resolving quote previews', async () => {
     const clearedSeq = 3;
     const reply = textQueryRow(
@@ -484,7 +546,7 @@ describe('ForwardBundleService', () => {
       'Bob',
     );
     const database = databaseFake(0) as ReturnType<typeof databaseFake>;
-    database.db.query.threadParticipant.findMany.mockResolvedValueOnce([
+    database.db.query.accountThreadState.findMany.mockResolvedValueOnce([
       {
         threadId: 4,
         clearedSeq,
@@ -511,7 +573,7 @@ describe('ForwardBundleService', () => {
     'rejects a source message hidden by %s',
     async (_label, clearedSeq, blocked) => {
       const database = databaseFake(0) as ReturnType<typeof databaseFake>;
-      database.db.query.threadParticipant.findMany.mockResolvedValueOnce([
+      database.db.query.accountThreadState.findMany.mockResolvedValueOnce([
         {
           threadId: 4,
           clearedSeq,
@@ -570,7 +632,8 @@ describe('ForwardBundleService', () => {
       'non-positive message id',
       {
         id: 0,
-        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { account: 'a', domain: 'peer.test' },
+        profile: { displayName: 'A' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'hello' }),
         sentAt: 1,
@@ -580,7 +643,8 @@ describe('ForwardBundleService', () => {
       'missing quote target',
       {
         id: 1,
-        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { account: 'a', domain: 'peer.test' },
+        profile: { displayName: 'A' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
@@ -591,7 +655,8 @@ describe('ForwardBundleService', () => {
       'null quote descriptor',
       {
         id: 1,
-        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { account: 'a', domain: 'peer.test' },
+        profile: { displayName: 'A' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
@@ -638,7 +703,8 @@ describe('ForwardBundleService', () => {
     const card = (bundleId: string) => JSON.stringify({ bundleId });
     const message = (childBundleId: string) => ({
       id: 1,
-      author: { displayName: 'A', account: 'alice', domain: 'peer.test' },
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'A' },
       contentType: ContentType.FORWARD,
       content: card(childBundleId),
       sentAt: 1,
@@ -687,10 +753,10 @@ describe('ForwardBundleService', () => {
           {
             id: 1,
             author: {
-              displayName: 'A',
               account: 'alice',
               domain: 'peer.test',
             },
+            profile: { displayName: 'A' },
             contentType: ContentType.FORWARD,
             content: JSON.stringify({ bundleId: 'different' }),
             sentAt: 1,
@@ -705,11 +771,39 @@ describe('ForwardBundleService', () => {
     });
   });
 
+  it('rejects legacy display fields mixed into the author identity', async () => {
+    const service = forwardService({});
+
+    await expect(
+      service.importClosure('peer.test', {
+        id: 'root',
+        messages: [
+          {
+            id: 1,
+            author: {
+              account: 'alice',
+              domain: 'peer.test',
+              displayName: 'Alice',
+            },
+            contentType: ContentType.PURE_TEXT,
+            content: JSON.stringify({ text: 'hello' }),
+            sentAt: 1,
+          },
+        ],
+        children: [],
+        assets: [],
+      } as never),
+    ).rejects.toMatchObject<Partial<BusinessException>>({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+  });
+
   it('rejects federated closure JSON over the wire limit', async () => {
     const messages = [
       {
         id: 1,
-        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { account: 'a', domain: 'peer.test' },
+        profile: { displayName: 'A' },
         contentType: 'PURE_TEXT',
         content: 'x'.repeat(FORWARD_MAX_WIRE_JSON_BYTES),
         sentAt: 1,

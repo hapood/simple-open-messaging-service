@@ -115,10 +115,13 @@ describe('AdminBootstrapService', () => {
     const userCreate = userInsert.mock.calls[0][0] as Record<string, unknown>;
     expect(userCreate.account).toBe('admin');
     expect(userCreate.domain).toBe('local');
-    expect(userCreate.sourceDomain).toBe('local');
+    expect(userCreate.namespaceId).toBe(0);
 
     expect(accountInsert).toHaveBeenCalledTimes(1);
-    const accountCreate = accountInsert.mock.calls[0][0] as Record<string, unknown>;
+    const accountCreate = accountInsert.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
     expect(accountCreate.id).toBe(42);
     expect(accountCreate.hashPwd).not.toBe('s3cret-bootstrap-pw');
     expect(typeof accountCreate.hashPwd).toBe('string');

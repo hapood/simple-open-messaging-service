@@ -28,6 +28,7 @@ import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.consta
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import {
   parseFederationResourceRequest,
+  parseFederationFixedResourceRequest,
   parseFederationRange,
   requireAccount,
   requireBundleId,
@@ -373,7 +374,7 @@ export class S2sController {
     const profile = await this.federation.getStoredUserProfile(
       author.account,
       author.domain,
-      req.peer!.namespaceId,
+      author.domain === this.federation.ourDomain ? 0 : req.peer!.namespaceId,
       item.profileRev,
     );
     if (!profile) {
@@ -387,8 +388,71 @@ export class S2sController {
       domain: profile.domain,
       profileRev: profile.profileRev,
       displayName: profile.displayName,
+      bio: profile.bio,
       avatar: profile.avatar,
     };
+  }
+
+  @Get('group-member-profile')
+  async getGroupMemberProfile(@Req() req: FastifyRequest) {
+    const query = parseFederationFixedResourceRequest(req, {
+      path: '/s2s/v1/group-member-profile',
+      query: [
+        { name: 'account' },
+        { name: 'memberAccount' },
+        { name: 'memberDomain' },
+        { name: 'rev' },
+      ],
+    });
+    const account = requireAccount(query.account, 'account');
+    if (!account.startsWith('!')) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'account must be a GroupAccount',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const memberAccount = requireUserAccount(
+      query.memberAccount,
+      'memberAccount',
+    );
+    const memberDomain = requireDomain(query.memberDomain, 'memberDomain');
+    const rev = requireSafeDecimal(query.rev, 'rev');
+    if (rev < 1) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'rev must be positive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const peerDomain = this.signerDomain(req);
+    const allocation = await this.groupMetaFeed.resolveAllocatedMemberProfile(
+      peerDomain,
+      req.peer!.namespaceId,
+      account,
+      memberAccount,
+      memberDomain,
+      rev,
+    );
+    if (!allocation) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
+        'member profile revision is not allocated to this peer',
+      );
+    }
+    const profile = await this.federation.getStoredUserProfile(
+      memberAccount,
+      memberDomain,
+      allocation.memberNamespaceId,
+      rev,
+    );
+    if (!profile) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'allocated member profile revision is unavailable',
+      );
+    }
+    return profile;
   }
 
   @Get('state-feed')
@@ -441,25 +505,26 @@ export class S2sController {
     return null;
   }
 
-  @Get('users/:account')
-  async getUserProfile(@Req() req: FastifyRequest) {
+  @Get('accounts/:account')
+  async getAccountProfile(@Req() req: FastifyRequest) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/users/',
+      pathPrefix: '/s2s/v1/accounts/',
       pathName: 'account',
     });
-    const account = requireUserAccount(parsed.pathValue, 'account');
-    // The endpoint serves OUR users only, so the domain is implicitly ours. The account is the sole
-    // path segment — no `@`-joined address on the wire (the `@` is a UI input aid, split client-side).
+    const account = requireAccount(parsed.pathValue, 'account');
+    // The endpoint serves OUR users and groups only, so the domain is implicitly ours. The account is
+    // the sole path segment — no `@`-joined address on the wire (the `@` is a UI input aid, split
+    // client-side).
     const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const profile = await this.resourceOperation(() =>
-      this.federation.getLocalUserProfile(address),
+      this.federation.getLocalAccountProfile(address),
     );
     if (!profile) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `user ${account} not found`,
+        `account ${account} not found`,
       );
     }
     return profile;

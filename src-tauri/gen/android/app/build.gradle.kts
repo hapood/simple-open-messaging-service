@@ -133,7 +133,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     // Local GMS diagnostics for Settings → FCM health check (missing / disabled / update-required).
     implementation("com.google.android.gms:play-services-base:18.5.0")
-    // NotificationSyncWorker (国内 fallback — polls /notifications/missed on a ~6h periodic, since FCM
+    // NotificationSyncWorker (国内 fallback — polls /notification-feed/query on a ~6h periodic, since FCM
     // is blocked in mainland China). WorkManager schedules the poll; EncryptedSharedPreferences guards
     // the session token + dedup cursor; OkHttp does the HTTPS POST. See FCM_ANDROID_PATCH.md.
     implementation("androidx.work:work-runtime-ktx:2.10.0")

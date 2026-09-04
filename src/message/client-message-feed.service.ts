@@ -4,28 +4,16 @@ import { isThreadMutuallyAuthorized } from '../relationship/relationship-authori
 import {
   account,
   clientStateFeed,
-  deletedMessage,
-  message,
   messageThread,
   accountThreadState,
   user,
 } from '../database/schema.js';
 import { planFeedRecipientIds } from './message-delivery-plan.js';
-import { deriveMessagePreview } from '../../shared/message-preview.js';
-
-type ClientThreadPreview = {
-  seq: number;
-  text: string;
-  senderId: string | null;
-  createdAt: number;
-};
 
 type ClientThreadContentHead = {
   threadId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  peerProfileMessageSeq: number | null;
-  preview: ClientThreadPreview;
 };
 
 /** Transactional writer for THREAD_CONTENT_HEAD in the one device-facing ClientStateFeed.
@@ -67,50 +55,10 @@ export class ClientThreadContentHeadWriter {
     await this.lockOwner(tx, userId);
     const current = await this.readHead(tx, userId, threadId);
     if (current && current.messageEndSeq >= messageEndSeq) return;
-    const source = await tx.query.message.findFirst({
-      where: and(
-        eq(message.threadId, threadId),
-        eq(message.seq, messageEndSeq),
-      ),
-      columns: {
-        seq: true,
-        contentType: true,
-        content: true,
-        creatorAccount: true,
-        creatorDomain: true,
-        creatorNamespaceId: true,
-        federationSourceDomain: true,
-        isDeleted: true,
-        createdAt: true,
-      },
-    });
-    if (!source)
-      throw new Error(`missing message ${threadId}:${messageEndSeq}`);
     await this.publishHeadForUser(tx, userId, threadId, {
       threadId,
       messageEndSeq,
       tombstoneEndSeq: current?.tombstoneEndSeq ?? 0,
-      peerProfileMessageSeq: await this.latestPeerProfileMessageSeq(
-        tx,
-        userId,
-        threadId,
-        messageEndSeq,
-      ),
-      preview: source.isDeleted
-        ? this.emptyPreview(source.seq, source.createdAt.getTime())
-        : {
-            seq: source.seq,
-            text: deriveMessagePreview(source.contentType, source.content),
-            createdAt: source.createdAt.getTime(),
-            senderId:
-              source.creatorAccount === null || source.creatorDomain === null
-                ? null
-                : JSON.stringify([
-                    source.creatorNamespaceId,
-                    source.creatorDomain,
-                    source.creatorAccount,
-                  ]),
-          },
     });
   }
 
@@ -118,7 +66,6 @@ export class ClientThreadContentHeadWriter {
     tx: DatabaseTransaction,
     threadId: number,
     tombstoneEndSeq: number,
-    opts?: { clearPreviewMessageSeq?: number },
   ): Promise<void> {
     const userIds = await this.activeUserIds(tx, threadId);
     for (const userId of userIds) {
@@ -131,45 +78,10 @@ export class ClientThreadContentHeadWriter {
       });
       if (!thread || thread.curSeq < 1)
         throw new Error(`missing message head for thread ${threadId}`);
-      const fallbackMessage = current
-        ? undefined
-        : await tx.query.message.findFirst({
-            where: and(
-              eq(message.threadId, threadId),
-              eq(message.seq, thread.curSeq),
-            ),
-            columns: { createdAt: true },
-          });
-      if (!current && !fallbackMessage)
-        throw new Error(`missing latest message for thread ${threadId}`);
-      const previewCreatedAt =
-        current?.preview.createdAt ?? fallbackMessage!.createdAt.getTime();
-      const deletion = await tx.query.deletedMessage.findFirst({
-        where: and(
-          eq(deletedMessage.threadId, threadId),
-          eq(deletedMessage.deletionSeq, tombstoneEndSeq),
-        ),
-        columns: { messageSeq: true },
-      });
-      if (!deletion)
-        throw new Error(`missing tombstone ${threadId}:${tombstoneEndSeq}`);
       await this.publishHeadForUser(tx, userId, threadId, {
         threadId,
         messageEndSeq: current?.messageEndSeq ?? thread.curSeq,
         tombstoneEndSeq,
-        peerProfileMessageSeq: await this.latestPeerProfileMessageSeq(
-          tx,
-          userId,
-          threadId,
-          current?.messageEndSeq ?? thread.curSeq,
-        ),
-        preview:
-          opts?.clearPreviewMessageSeq !== undefined
-            ? this.emptyPreview(opts.clearPreviewMessageSeq, previewCreatedAt)
-            : current?.preview.seq === deletion.messageSeq
-              ? this.emptyPreview(deletion.messageSeq, previewCreatedAt)
-              : (current?.preview ??
-                this.emptyPreview(thread.curSeq, previewCreatedAt)),
       });
     }
   }
@@ -227,35 +139,6 @@ export class ClientThreadContentHeadWriter {
 
   private static compactionKey(threadId: number): string {
     return JSON.stringify(['THREAD_CONTENT_HEAD', threadId]);
-  }
-
-  private static emptyPreview(
-    seq: number,
-    createdAt: number,
-  ): ClientThreadPreview {
-    return { seq, text: '', senderId: null, createdAt };
-  }
-
-  private static async latestPeerProfileMessageSeq(
-    tx: DatabaseTransaction,
-    userId: number,
-    threadId: number,
-    throughSeq: number,
-  ): Promise<number | null> {
-    const result = await tx.execute<{ seq: number | null }>(sql`
-      SELECT MAX(authored.seq)::integer AS seq
-      FROM "Message" authored
-      JOIN "User" self ON self.id = ${userId}
-      WHERE authored."threadId" = ${threadId}
-        AND authored.seq <= ${throughSeq}
-        AND authored."localState" = 'READY'
-        AND authored."isDeleted" = false
-        AND authored."creatorAccount" IS NOT NULL
-        AND authored."creatorDomain" IS NOT NULL
-        AND (authored."creatorAccount" <> self.account
-          OR authored."creatorDomain" <> 'local')
-    `);
-    return result.rows[0]?.seq ?? null;
   }
 
   private static async activeUserIds(

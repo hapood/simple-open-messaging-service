@@ -19,7 +19,8 @@ export async function openFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
   threadId: number,
-): Promise<void> {
+  groupMetaVisibleAfter = 0n,
+): Promise<boolean> {
   const namespaceId = await resolveAudienceNamespaceInTx(
     tx,
     peerDomain,
@@ -38,7 +39,7 @@ export async function openFederatedAudienceInTx(
   const messageAccessAfterSeq = federationHistoryAccessEnabled(setting?.value)
     ? 0
     : thread.curSeq;
-  await tx
+  const inserted = await tx
     .insert(threadAudience)
     .values({
       targetDomain: peerDomain,
@@ -46,11 +47,14 @@ export async function openFederatedAudienceInTx(
       localUserId: null,
       threadId,
       messageAccessAfterSeq,
+      groupMetaVisibleAfter,
     })
     .onConflictDoNothing({
       target: [threadAudience.targetNamespaceId, threadAudience.threadId],
       where: sql`${threadAudience.targetDomain} <> 'local'`,
-    });
+    })
+    .returning({ id: threadAudience.id });
+  return inserted.length > 0;
 }
 
 /** Close the current audience and remove its compacted thread-content projection. */
@@ -58,7 +62,7 @@ export async function closeFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
   threadId: number,
-): Promise<void> {
+): Promise<boolean> {
   const localDomain = loadFederationConfig().domain;
   const namespaceId = await resolveAudienceNamespaceInTx(
     tx,
@@ -84,28 +88,28 @@ export async function closeFederatedAudienceInTx(
            END AS "subjectDomain"
     FROM "MessageThread" thread
     LEFT JOIN "Group" group_state ON group_state.id = thread."groupId"
+    LEFT JOIN "RelationshipPair" pair
+      ON pair."threadId" = thread.id AND pair.kind = 'P2P'
     LEFT JOIN LATERAL (
-      SELECT member.account
-      FROM "ThreadMember" link
-      JOIN "User" member ON member.id = link."userId"
-      WHERE link."threadId" = thread.id
-        AND member.domain = 'local'
-        AND member."namespaceId" = 0
-      LIMIT 1
+      SELECT CASE
+               WHEN pair."endpointADomain" = 'local' THEN pair."endpointAAccount"
+               WHEN pair."endpointBDomain" = 'local' THEN pair."endpointBAccount"
+             END AS account
     ) local_user ON true
     LEFT JOIN LATERAL (
-      SELECT member.account
-      FROM "ThreadMember" link
-      JOIN "User" member ON member.id = link."userId"
-      WHERE link."threadId" = thread.id
-        AND member.domain = ${peerDomain}
-        AND member."namespaceId" = ${namespaceId}
-      LIMIT 1
+      SELECT CASE
+               WHEN pair."endpointADomain" = ${peerDomain}
+                 AND pair."endpointANamespaceId" = ${namespaceId}
+                 THEN pair."endpointAAccount"
+               WHEN pair."endpointBDomain" = ${peerDomain}
+                 AND pair."endpointBNamespaceId" = ${namespaceId}
+                 THEN pair."endpointBAccount"
+             END AS account
     ) peer_user ON true
     WHERE thread.id = ${threadId}
     LIMIT 1
   `);
-  await tx
+  const deleted = await tx
     .delete(threadAudience)
     .where(
       and(
@@ -114,7 +118,8 @@ export async function closeFederatedAudienceInTx(
         eq(threadAudience.threadId, threadId),
         isNull(threadAudience.localUserId),
       ),
-    );
+    )
+    .returning({ id: threadAudience.id });
   const key = address.rows[0];
   if (key)
     await tx
@@ -130,6 +135,7 @@ export async function closeFederatedAudienceInTx(
           eq(peerStateFeed.subjectDomain, key.subjectDomain),
         ),
       );
+  return deleted.length > 0;
 }
 
 async function resolveAudienceNamespaceInTx(
@@ -151,11 +157,6 @@ async function resolveAudienceNamespaceInTx(
       FROM "MessageThread" thread
       JOIN "Group" group_profile ON group_profile.id = thread."groupId"
       WHERE thread.id = ${threadId} AND group_profile.domain = ${peerDomain}
-      UNION
-      SELECT member."namespaceId"
-      FROM "ThreadMember" link
-      JOIN "User" member ON member.id = link."userId"
-      WHERE link."threadId" = ${threadId} AND member.domain = ${peerDomain}
     ) candidate
     WHERE candidate."namespaceId" > 0
     LIMIT 2

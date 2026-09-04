@@ -2,7 +2,7 @@ import type { Mock } from 'vitest';
 /**
  * HttpItemSource unit tests — production data layer, signal-only live contract (no DOM, no kernel).
  *
- * The DB-layer {@link MessageRepository} owns the identity-only NEW_MESSAGE SSE and emits `liveSignal$`;
+ * The DB-layer {@link MessageRepository} turns durable content heads into `liveSignal$` updates;
  * this source filters that signal to its thread and treats it as "newer data exists, go pull." The kernel
  * pulls the body through the repository history walker on the next source demand, and rawToItems shapes
  * messages only at pull time. This is what keeps a self-send echo /
@@ -75,7 +75,7 @@ function pendingItem(cid: string, id = -1) {
     data: {
       type: 'msg',
       msgId: id,
-      creator: '0\u0000local\u0000local\u0000me',
+      creator: JSON.stringify([0, 'local', 'me']),
       isSelf: true,
       name: 'Me',
       text: 'hi',
@@ -141,7 +141,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       .mockImplementation(
         async (
           _threadId: number,
-          _cleared: number | undefined,
           demand:
             | { kind: 'latest'; count: number }
             | {
@@ -265,7 +264,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         .fn()
         .mockName('getUser')
         .mockImplementation(
-          async (account: string, domain: string, sourceDomain: string) => {
+          async (account: string, domain: string, namespaceId: number) => {
             const user = users.find(
               (candidate) =>
                 candidate.account.toLowerCase() === account &&
@@ -273,9 +272,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
             );
             return user
               ? {
-                  identity: `${sourceDomain}\u0000${domain}\u0000${account}`,
+                  identity: JSON.stringify([namespaceId, domain, account]),
                   kind: 'user',
-                  sourceServer: sourceDomain,
                   ...user,
                   account,
                 }
@@ -623,7 +621,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     expect(queryHistory.mock.lastCall).toEqual([
       42,
-      undefined,
       { kind: 'older', before: 10, count: 50 },
     ]);
   });
@@ -1132,7 +1129,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
       expect(items.map((item) => item.id)).toEqual([40, 41]);
       expect(queryNative).toHaveBeenCalledTimes(1);
-      expect(queryNative).toHaveBeenCalledWith(42, undefined, {
+      expect(queryNative).toHaveBeenCalledWith(42, {
         kind: 'around',
         anchor: 40,
         olderCount: 20,
@@ -1184,12 +1181,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       });
       expect(older.map((item) => item.id)).toEqual([20]);
       expect(newer.map((item) => item.id)).toEqual([31]);
-      expect(queryNative).toHaveBeenNthCalledWith(2, 42, undefined, {
+      expect(queryNative).toHaveBeenNthCalledWith(2, 42, {
         kind: 'older',
         before: 21,
         count: 50,
       });
-      expect(queryNative).toHaveBeenNthCalledWith(3, 42, undefined, {
+      expect(queryNative).toHaveBeenNthCalledWith(3, 42, {
         kind: 'newer',
         after: 30,
         count: 50,

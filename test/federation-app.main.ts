@@ -19,6 +19,7 @@ import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
@@ -136,6 +137,7 @@ async function main(): Promise<void> {
     .compile();
   const adapter = new FastifyAdapter();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
+  app.useLogger(moduleRef.get(Logger, { strict: false }));
   const federation = moduleRef.get(FederationService, { strict: false });
   const scheduler = moduleRef.get(FederationThreadRoundSchedulerService, {
     strict: false,

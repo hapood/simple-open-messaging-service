@@ -18,8 +18,8 @@ function msg(msgId: number, isSelf = true): CbItem<ChatItemData> {
     type: 'msg',
     msgId,
     creator: isSelf
-      ? 'mock.local\u0000mock.local\u0000user-1'
-      : 'mock.local\u0000mock.local\u0000user-2',
+      ? JSON.stringify([0, 'mock.local', 'user-1'])
+      : JSON.stringify([0, 'mock.local', 'user-2']),
     isSelf,
     name: isSelf ? 'Me' : 'Alice',
     text: 'x',
@@ -178,22 +178,22 @@ describe('MockItemSource (cursor contract)', () => {
     const self = items.find(
       (i) =>
         i.data.type === 'msg' &&
-        i.data.creator === 'mock.local\u0000mock.local\u0000user-1',
+        i.data.creator === JSON.stringify([0, 'mock.local', 'user-1']),
     )!;
     const other = items.find(
       (i) =>
         i.data.type === 'msg' &&
-        i.data.creator === 'mock.local\u0000mock.local\u0000user-2',
+        i.data.creator === JSON.stringify([0, 'mock.local', 'user-2']),
     )!;
     expect(self.data.name).toBe('Me'); // ensureProfiles from MockUserService (buildItems raw msg name placeholder '')
     expect(self.data.isSelf).toBe(true); // isSelf = creator === userId(1)
     expect(self.data.avatarIdentityId).toBe(
-      'mock.local\u0000mock.local\u0000user-1',
+      JSON.stringify([0, 'mock.local', 'user-1']),
     );
     expect(other.data.name).toBe('Alice');
     expect(other.data.isSelf).toBe(false);
     expect(other.data.avatarIdentityId).toBe(
-      'mock.local\u0000mock.local\u0000user-2',
+      JSON.stringify([0, 'mock.local', 'user-2']),
     );
   });
 

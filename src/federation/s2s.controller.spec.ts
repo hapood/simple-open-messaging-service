@@ -5,6 +5,7 @@ import { S2sController } from './s2s.controller.js';
 
 function target() {
   const federation = {
+    ourDomain: 'local.example',
     resolveMediaFile: vi.fn().mockResolvedValue({
       absPath: '/unused',
       bytes: 16,
@@ -12,6 +13,14 @@ function target() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
     pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
+    getStoredUserProfile: vi.fn().mockResolvedValue({
+      account: 'alice',
+      domain: 'member.example',
+      profileRev: 4,
+      displayName: 'Alice',
+      bio: 'Member biography',
+      avatar: null,
+    }),
   };
   const messageFeedPull = { advertise: vi.fn() };
   const tombstonePull = { advertise: vi.fn() };
@@ -48,7 +57,12 @@ function target() {
       }),
     ),
   };
-  const groupMetaFeed = { serve: vi.fn().mockResolvedValue({}) };
+  const groupMetaFeed = {
+    serve: vi.fn().mockResolvedValue({}),
+    resolveAllocatedMemberProfile: vi
+      .fn()
+      .mockResolvedValue({ memberNamespaceId: 12 }),
+  };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
@@ -458,6 +472,100 @@ describe('S2sController group-meta modes', () => {
       status: 400,
     });
     expect(groupMetaFeed.serve).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2sController message author profiles', () => {
+  it('reads a locally authored message profile from namespace zero', async () => {
+    const { controller, federation, messageFeed } = target();
+    messageFeed.query.mockResolvedValueOnce({
+      messages: [
+        {
+          thread: { account: 'alice', peerAccount: 'bob' },
+          authorRef: 'THREAD_ACCOUNT',
+          seq: 12,
+          profileRev: 4,
+        },
+      ],
+      scannedThrough: 12,
+      hasMore: false,
+    });
+    federation.getStoredUserProfile.mockResolvedValueOnce({
+      account: 'alice',
+      domain: 'local.example',
+      profileRev: 4,
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+    });
+    const req = {
+      method: 'GET',
+      url: '/s2s/v1/message-author-profile?account=alice&peerAccount=bob&messageSeq=12',
+      query: { account: 'alice', peerAccount: 'bob', messageSeq: '12' },
+      peer: { domain: 'peer.example', namespaceId: 7 },
+    } as unknown as FastifyRequest;
+
+    await controller.getMessageAuthorProfile(req, 'alice', 'bob', '12');
+
+    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+      'alice',
+      'local.example',
+      0,
+      4,
+    );
+  });
+});
+
+describe('S2sController group member profiles', () => {
+  it('uses the exact Group Meta allocation and returns the complete profile', async () => {
+    const { controller, federation, groupMetaFeed } = target();
+    const req = {
+      method: 'GET',
+      url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=4',
+      rawBody: Buffer.alloc(0),
+      headers: {},
+      peer: { domain: 'mirror.example', namespaceId: 7 },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.getGroupMemberProfile(req)).resolves.toEqual({
+      account: 'alice',
+      domain: 'member.example',
+      profileRev: 4,
+      displayName: 'Alice',
+      bio: 'Member biography',
+      avatar: null,
+    });
+    expect(groupMetaFeed.resolveAllocatedMemberProfile).toHaveBeenCalledWith(
+      'mirror.example',
+      7,
+      '!group',
+      'alice',
+      'member.example',
+      4,
+    );
+    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+      'alice',
+      'member.example',
+      12,
+      4,
+    );
+  });
+
+  it('rejects a zero revision before reading an allocation', async () => {
+    const { controller, groupMetaFeed } = target();
+    const req = {
+      method: 'GET',
+      url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=0',
+      rawBody: Buffer.alloc(0),
+      headers: {},
+      peer: { domain: 'mirror.example', namespaceId: 7 },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(groupMetaFeed.resolveAllocatedMemberProfile).not.toHaveBeenCalled();
   });
 });
 

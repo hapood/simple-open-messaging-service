@@ -1078,22 +1078,9 @@ export class UserService {
   }
 }
 
-/** Avatar edge sizes (aligned with the backend UploadService.AVATAR_SIZES). */
-const AVATAR_SIZES = [32, 64, 128, 256, 512] as const;
-export type AvatarSize = (typeof AVATAR_SIZES)[number];
-
-/**
- * Derive a multi-size avatar URL: swap the representative URL (/uploads/<base>-512.webp) for the requested
- * size. Returns the input unchanged when base is empty or not a local multi-size image (regex miss), so a
- * default avatar can fall through.
- */
-export function avatarUrl(
-  base: string | undefined | null,
-  size: AvatarSize,
-): string {
-  return base && AVATAR_SIZES.includes(size)
-    ? base.replace(/-\d+\.webp$/, `-${size}.webp`)
-    : (base ?? '');
+/** Return the one canonical avatar resource without deriving local variants. */
+export function avatarUrl(base: string | undefined | null): string {
+  return base ?? '';
 }
 
 /**

@@ -27,8 +27,31 @@ browser-facing ports `3101`–`3103` bind to `0.0.0.0`, so another device on the
 
 Install Caddy plus the repository, web, and admin dependencies first, and configure a reachable
 PostgreSQL `DATABASE_URL` in the repository `.env`. The configured PostgreSQL user must be able to
-create the three lab databases. The normal development entry point builds the backend, starts both
-frontend development servers with HMR, and starts the lab:
+create the three lab databases.
+
+For database-native deadlock diagnostics, enable PostgreSQL's logging collector and lock-wait
+logging. A suitable development configuration is:
+
+```conf
+logging_collector = on
+log_destination = 'stderr'
+log_directory = 'log'
+log_filename = 'postgresql-%a.log'
+log_rotation_age = '1d'
+log_rotation_size = 0
+log_truncate_on_rotation = on
+log_line_prefix = '%m [%p] xid=%x db=%d user=%u app=%a client=%r '
+log_lock_waits = on
+log_min_error_statement = error
+log_error_verbosity = verbose
+```
+
+`logging_collector` requires a PostgreSQL restart. Superusers can enumerate and read the resulting
+files through `pg_ls_logdir()` and `pg_read_file()`, which also works when the database data directory
+is inside a container or VM that does not share the application's filesystem.
+
+The normal development entry point builds the backend, starts both frontend development servers with
+HMR, and starts the lab:
 
 ```bash
 npm run dev
@@ -52,37 +75,69 @@ Use `Ctrl+C` to stop all six child processes. Starting the backend recreates all
 before applying migrations. Node identity files and workload reports persist under
 `dev/federation-lab/runtime/`, while database records always start empty.
 
-The P2P consistency workload attaches to these same running backends. Its administrator and user
+The federation consistency workload attaches to these same running backends. Its administrator and user
 actors live only in the workload process, while every account and session is created through the real
 HTTP API and persists in the lab databases. A workload does not stop or reset the lab when it exits,
 so its final state remains available through the three browser URLs for manual inspection.
 
-The runner provisions and OTP-authenticates 20 users on each node, then generates operations online
-in rounds. It chooses an ordered pair, observes the converged authoritative facts, submits the selected
-action through `/relationship/request`, `/relationship/accept`, or `/relationship/revoke`, and appends
-the real admission and task result to the operation journal. It polls the existing administrator task
-list for `PENDING`, `PROCESSING`, and `ASYNC_PROCESSING` activity. After the round barrier is idle, it
-allows five seconds for federation delivery before selecting the next round:
+The runner provisions and OTP-authenticates 5 users on each node. Half of the seeded users receive
+an initial biography and avatar. It then makes 5 seeded owner selections per node and creates 5
+groups there, half with an initial description and avatar. Each round samples 3 ordinary users and 3
+groups, restricting user-to-group selection to that 3×3 state window. When those users already have
+membership, intent, or manager-request state with a group, one randomly ordered stateful group is
+retained in the window and the remaining group slots stay uniformly random. At most one operation per
+group uses a round snapshot. Each online decision first gives a unary user-or-group profile update 5%
+probability. Otherwise the binary selector always picks a user first, then gives user and group targets
+equal weight. Stateful combinations in the window are considered before untouched combinations, while
+the final action is still selected only from the operations legal in the observed facts. A P2P direction retains the existing friend
+request/accept/reject/revoke state machine. A user-to-group direction derives its legal actions from a
+fresh database snapshot of the roster, both relationship intents, manager request projections,
+friendships, and authored messages.
+
+An active group member enters the message branch with 90% probability. That branch withdraws one of
+the actor's live authored workload messages with 5% probability (or sends when none exists); 5% of new
+sends are FILE or two-part GALLERY messages. The remaining 10% chooses uniformly among the membership
+and role operations the actor may actually perform. Non-members use invitation/application actions.
+The owner never leaves directly and the workload never dissolves a group. At most one operation for a
+given group is admitted in one round, so roster-dependent decisions from the same snapshot cannot
+invalidate each other inside that round.
+
+Admissions are globally paced at 10 operation starts per second by default, with slow requests allowed
+to overlap. The runner polls the administrator task list for `PENDING`, `PROCESSING`, and
+`ASYNC_PROCESSING` activity. After the round barrier is idle, it polls the incremental Oracle until
+the round's federated state converges before observing the next state:
 
 ```bash
 npm run federation:p2p
+# Equivalent, clearer name for the expanded workload:
+npm run federation:consistency
 ```
 
 `ADMIN_BOOTSTRAP_PASSWORD` must match the bootstrap administrator used by the running lab. The runner
 temporarily changes the OTP login rate-limit policy and request-quota defaults through the admin API,
 restores the previous configuration before exiting, and writes token-free reports below
 `dev/federation-lab/runtime/p2p-runs/`. The journal contains no credentials, OTPs, cookies, or session
-tokens. After operations stop, the final auditor samples `RelationshipPair.active` directly. A
-cross-node pair is a final friendship only when it is active on both endpoint home nodes; the audit
-requires that equality for three consecutive samples. Inactive row existence, historical friendship,
-and intent fields are outside this phase's acceptance gate. Console output includes provisioning,
-per-round selection and endpoint counts, admission throughput, active task IDs, convergence samples,
-audit differences, the random seed, and artifact paths.
+tokens. After operations stop, the final auditor repeatedly reads all three databases. It compares P2P
+active pairs and directed intents, group directed intents and every materialized roster, and all
+non-system workload messages on nodes that host final roster members. Every live message must have
+integer `seq` and `originSeq`, identical content, and no unexplained sequence gap. Withdrawn messages
+must have a tombstone and are the only permitted gaps. FILE/GALLERY assets must have successful
+transfer state, a live `MediaAsset`, and a physical CAS shard on every compared node. The complete
+oracle also resolves every positive profile reference through the same authorization-scoped client
+API used by the UI. It compares the exact revision's name and biography, requires every referenced
+avatar file to exist and compares its exact SHA-256 digest. Accepted avatars are stored and federated
+byte-for-byte, so any transformation or corruption is a consistency failure. Current P2P
+display falls back to its effective relationship reference when there is no later message; group
+member display selects the latest member-authored message reference and otherwise the current roster
+reference; the group thread profile follows the latest Group Meta group-profile reference. The oracle
+must pass for the configured number of consecutive samples. Console output includes
+provisioning, per-round selections, admission throughput, active task IDs, convergence samples, audit
+differences, the random seed, and artifact paths.
 Add `--verbose` to print every successful operation.
-The default P2P baseline uses three nodes with 20 users each. It does not stop the lab or remove its
+The default baseline uses three nodes with 5 users and 5 groups each. It does not stop the lab or remove its
 data. Run it against a fresh lab; repeating the same account prefix correctly fails with an
 already-existing account. Smaller diagnostic runs may be used while developing the harness, but do
-not replace the 3-by-20 acceptance run.
+not replace the 3-by-5-user/5-group acceptance run.
 
 To test prebuilt assets rather than frontend development servers, run:
 

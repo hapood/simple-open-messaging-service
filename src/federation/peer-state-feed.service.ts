@@ -63,6 +63,11 @@ export interface PeerStateFeedPage {
   hasMore: boolean;
 }
 
+export interface PeerStateFeedTargetKey {
+  peerDomain: string;
+  namespaceId: number;
+}
+
 const DEFAULT_TAKE = 100;
 const MAX_TAKE = 200;
 
@@ -105,6 +110,47 @@ export class PeerStateFeedService {
       .onConflictDoNothing();
   }
 
+  /**
+   * Acquires peer feed allocators in their global order. Transactions that can
+   * also allocate client state must call this after their business-scope locks
+   * and before the first Account allocator is touched.
+   */
+  async lockTargetsInTx(
+    tx: DatabaseTransaction,
+    targets: readonly PeerStateFeedTargetKey[],
+  ): Promise<void> {
+    const ordered = [
+      ...new Map(
+        targets.map((target) => [
+          `${target.peerDomain}\u0000${target.namespaceId}`,
+          target,
+        ]),
+      ).values(),
+    ].sort(
+      (left, right) =>
+        left.peerDomain.localeCompare(right.peerDomain) ||
+        left.namespaceId - right.namespaceId,
+    );
+    for (const target of ordered) {
+      await this.initializePeerInTx(tx, target.peerDomain, target.namespaceId);
+      const locked = await tx
+        .select({ namespaceId: peerStateFeedTarget.namespaceId })
+        .from(peerStateFeedTarget)
+        .where(
+          and(
+            eq(peerStateFeedTarget.peerDomain, target.peerDomain),
+            eq(peerStateFeedTarget.namespaceId, target.namespaceId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (!locked[0])
+        throw new Error(
+          `missing state feed target for ${target.peerDomain}/${target.namespaceId}`,
+        );
+    }
+  }
+
   async deleteProjectionInTx(
     tx: DatabaseTransaction,
     key: Omit<PeerStateFeedWrite, 'body'>,
@@ -140,6 +186,7 @@ export class PeerStateFeedService {
         a.subjectDomain.localeCompare(b.subjectDomain) ||
         a.subjectAccount.localeCompare(b.subjectAccount),
     );
+    await this.lockTargetsInTx(tx, ordered);
     for (const write of ordered) {
       // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
       // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
@@ -165,15 +212,6 @@ export class PeerStateFeedService {
           'state address key is incomplete or has an invalid directional subject',
         );
       }
-      await this.initializePeerInTx(tx, write.peerDomain, write.namespaceId);
-      // The allocator row is the per-peer serialization point. Locking before reading the compacted
-      // key prevents two concurrent writers from both observing the old value and burning a feed ID.
-      await tx
-        .select({ feedId: peerStateFeedTarget.allocatedThrough })
-        .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
-        .for('update')
-        .limit(1);
       const [current] = await tx
         .select({
           body: peerStateFeed.body,

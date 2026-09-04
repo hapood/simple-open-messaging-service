@@ -19,7 +19,8 @@ import { PushService } from '../push/push.service.js';
 /**
  * Device registration for FCM push. The client obtains an FCM registration token from the platform
  * Firebase SDK and links it to the logged-in account via POST /devices/register; the server fans out
- * data-only FCM messages to these tokens on NEW_MESSAGE for recipients with no live SSE connection.
+ * data-only `NEW_MESSAGE` payloads to registered devices. Delivery is suppressed only when the exact
+ * authenticated device session has a live SSE connection.
  *
  * Token lifecycle: re-register (upsert on token) on every token rotation / app start, bumping
  * lastSeenAt; DELETE on logout so the server stops pushing to a logged-out device. The Android client
@@ -43,7 +44,11 @@ export class DeviceController {
     @Request() req: FastifyRequest,
     @Body() dto: RegisterDeviceDto,
   ): Promise<void> {
-    await this.pushService.registerToken(req.user.userId, dto);
+    await this.pushService.registerToken(
+      req.user.userId,
+      req.user.sessionId as number,
+      dto,
+    );
   }
 
   @HttpCode(HttpStatus.OK)

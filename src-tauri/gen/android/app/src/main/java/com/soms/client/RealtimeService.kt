@@ -26,9 +26,8 @@ import org.json.JSONObject
  *  the legitimate debug surface for a headless service (distinct from the web no-console.log rule). */
 private const val TAG = "SomsFgs"
 
-/** Coalesce window for the background away-notification: a burst of NEW_MESSAGE frames collapses into one
- *  summary fetch + one notification (cancel + reschedule on each new frame). */
-private const val COALESCE_DELAY_MS = 500L
+/** Coalesce a burst of durable State Feed wakes into one notification projection pull. */
+private const val NOTIFICATION_COALESCE_MS = 500L
 
 /**
  * The single native-owned realtime channel. A (optionally foreground) service holding a long-lived SSE
@@ -37,7 +36,7 @@ private const val COALESCE_DELAY_MS = 500L
  * consumes the frames this service forwards via `window.__SOMS_EVENT__`. (Web/desktop still run their own
  * `sse.worker.ts`.) Supersedes `MessageSyncService`, which held a *parallel* `/notifications/stream`
  * alongside the WebView's `/events` — two connections swapping on fg/bg, neither handing data to the
- * other. One session token now authenticates both this stream and the background `/notifications/missed`
+ * other. One session token now authenticates both this stream and the background `/notification-feed/query`
  * fetchers (FCM / WorkManager).
  *
  * **Lifecycle (the service must run while foregrounded — the WebView's only event source is this stream):**
@@ -53,15 +52,12 @@ private const val COALESCE_DELAY_MS = 500L
  *
  * **Foreground** ([SomsMessagingService.appInForeground] true): every named event is forwarded to the
  * WebView via `window.__SOMS_EVENT__(type, data)` — the JS `WebsocketService` feeds the existing
- * `eventSubject`, so all downstream consumers are unchanged. OkHttp's built-in `Last-Event-ID` resume
- * (NEW_MESSAGE frames carry `id` = message id) bridges transient drops; a fresh connect after a process
- * restart is backstopped by the WebView's HWM catch-up on resume.
+ * `eventSubject`, so all downstream consumers are unchanged. Durable State Feed cursors bridge transient
+ * drops; a fresh connect after a process restart is backstopped by the WebView's catch-up on resume.
  *
- * **Background:** the WebView is suspended, so forwarding is pointless; a NEW_MESSAGE instead triggers a
- * debounced fetch (`/notifications/missed` — the server-authored descriptor) rendered as ONE coalesced
- * away-notification via [SomsMessagingService.renderAwayNotification]. Non-message events are UI-only
- * and dropped — the WebView's HWM catch-up + threadlist refresh cover them on resume, so no frame is lost.
- * FORCE_LOGOUT is forwarded (so JS logs out) then stops the service.
+ * **Background:** the WebView is suspended. `STATE_FEED_UPDATED` wakes the native notification projection;
+ * the server suppresses FCM only while this exact session owns the live SSE stream. Other durable events
+ * are recovered from their cursors on resume. Ephemeral call events still reach the native call owner.
  *
  * Connection state is pushed to the WebView via `window.__SOMS_CONN_STATE__` so the ConnectionBanner
  * reflects Kotlin-owned connect/reconnect/close (the JS side cannot observe the native socket).
@@ -82,12 +78,8 @@ class RealtimeService : Service() {
     @Volatile private var eventSource: EventSource? = null
     private val handler = Handler(Looper.getMainLooper())
 
-    /** Single-thread executor for the background away-notification fetch+render — keeps the SYNCHRONOUS
-     *  /notifications/missed call (and the icon fetch) off the main thread. Android forbids network on the
-     *  UI thread (NetworkOnMainThreadException); [awayCoalesceTask] is posted to the main-looper [handler]
-     *  for debounce timing, so it hops the actual work onto here. Serial so a burst of coalesces can't race
-     *  the notification's replace-by-id. Shut down in [onDestroy]. */
-    private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsAwayIo") }
+    /** Single-thread executor for blocking origin probes and notification projection pulls. */
+    private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsRealtimeIo") }
     private var attempt = 0
 
     /** Single-flight lock for [establishConnection]. Probes + the open decision are serialized through this so
@@ -146,10 +138,9 @@ class RealtimeService : Service() {
         when (intent?.action) {
             ACTION_FOREGROUND -> {
                 // App visible: the process has foreground priority, so the connection survives without FGS
-                // status — cancel any background NEW_MESSAGE debounce, drop the persistent notification
-                // (annoying while in use), but keep the stream.
-                SomsLog.i("Rt") { "onStartCommand foreground (cancel away debounce + drop persistent notification)" }
-                handler.removeCallbacks(awayCoalesceTask)
+                // status. Drop the persistent notification (annoying while in use), but keep the stream.
+                SomsLog.i("Rt") { "onStartCommand foreground (drop persistent notification)" }
+                handler.removeCallbacks(notificationProjectionTask)
                 dropForegroundNotification()
             }
             ACTION_RETRY -> {
@@ -362,15 +353,15 @@ class RealtimeService : Service() {
                 // unchanged. `data` is the server-serialized JSON, valid as a JS expression.
                 SomsLog.d("Rt") { "branch=foreground → forwardToJs (WebView is suspended if appInFg lags reality)" }
                 forwardToJs(type, data)
-            } else if (type == "NEW_MESSAGE") {
-                // Background: the WebView is suspended. Coalesce a burst of messages into ONE away-
-                // notification via a debounced summary fetch (the same surface FCM/WorkManager use).
-                SomsLog.d("Rt") { "branch=background NEW_MESSAGE → scheduleAwayCoalesce" }
-                scheduleAwayCoalesce()
+            } else if (type == "STATE_FEED_UPDATED") {
+                // The WebView is suspended, so native code takes over notification aggregation for this
+                // live device session. The query remains cursor-based; this SSE frame is only a wake.
+                SomsLog.d("Rt") { "branch=background STATE_FEED_UPDATED → schedule notification projection" }
+                scheduleNotificationProjection()
             } else {
-                // Background non-message events are UI-only; the HWM catch-up + threadlist refresh cover them
-                // on resume, so they're deliberately dropped here.
-                SomsLog.d("Rt") { "branch=background non-message → dropped (resume catch-up covers it)" }
+                // Background durable events are recovered by cursor on resume. Message notification wakes
+                // arrive independently through FCM, so the SSE stream does not own notification rendering.
+                SomsLog.d("Rt") { "branch=background → dropped (resume catch-up covers it)" }
             }
         }
 
@@ -489,26 +480,13 @@ class RealtimeService : Service() {
         SomsBridge.eval("window.__SOMS_CONN_STATE__ && window.__SOMS_CONN_STATE__(${SomsBridge.jsonStr(state)});")
     }
 
-    /** Debounced away-notification: collapse a burst of background NEW_MESSAGE frames into one summary
-     *  fetch + one coalesced notification (cancel + reschedule on each new frame). */
-    private fun scheduleAwayCoalesce() {
-        handler.removeCallbacks(awayCoalesceTask)
-        handler.postDelayed(awayCoalesceTask, COALESCE_DELAY_MS)
-        SomsLog.d("Rt") { "scheduleAwayCoalesce posted (debounce ${COALESCE_DELAY_MS}ms)" }
+    private fun scheduleNotificationProjection() {
+        handler.removeCallbacks(notificationProjectionTask)
+        handler.postDelayed(notificationProjectionTask, NOTIFICATION_COALESCE_MS)
     }
 
-    private val awayCoalesceTask = Runnable {
-        // The app may have resumed during the debounce. Activity lifecycle is authoritative on Android;
-        // never start a stale /notifications/missed fetch after foregrounding.
-        if (SomsMessagingService.appInForeground) {
-            SomsLog.d("Rt") { "awayCoalesceTask skipped: app is foreground" }
-            return@Runnable
-        }
-        // renderAwayNotification does a SYNCHRONOUS network fetch — it MUST run off the main thread
-        // (NetworkOnMainThreadException otherwise). This Runnable is on the main-looper handler for the
-        // debounce timing; hop the fetch+render onto ioExecutor. NotificationManager.notify is thread-safe,
-        // so rendering stays on the bg thread (no hop back to main). Shared entry point with FCM/WorkManager.
-        SomsLog.d("Rt") { "awayCoalesceTask firing → renderAwayNotification (off-main)" }
+    private val notificationProjectionTask = Runnable {
+        if (SomsMessagingService.appInForeground) return@Runnable
         ioExecutor.execute {
             SomsMessagingService.renderAwayNotification(this@RealtimeService, allowAlert = true)
         }
@@ -578,8 +556,8 @@ class RealtimeService : Service() {
          *  only fires on transitions). Volatile: written on the SSE thread, read on the JS bridge thread. */
         @Volatile
         var connState: String = "closed"
-        /** The last HELLO frame merged with every incremental revision frame (STATE_REV_UPDATED /
-         *  NEW_MESSAGE) — the FRESH handshake a re-attached
+        /** The last HELLO frame merged with every incremental revision frame (for example,
+         *  STATE_FEED_UPDATED) — the FRESH handshake a re-attached
          *  WebView needs, since a retained open `/events` stream does NOT re-push HELLO on its own (it is
          *  sent once per register). Stored as a NATIVE JSONObject (deserialized once on HELLO, mutated in
          *  place by [cacheHelloFrame], serialized once by [replayCachedHello]) — no per-frame parse/reserialize.

@@ -9,7 +9,7 @@ import org.json.JSONObject
  * test in src-tauri/src/lib.rs) WITHOUT instantiating the Android `Service`.
  *
  * HELLO replaces the cache wholesale; each incremental revision frame patches its matching field IN PLACE
- * (cheap — one deserialize on HELLO + one serialize at replay). `stateRevision` is monotonic — an
+ * (cheap — one deserialize on HELLO + one serialize at replay). `stateFeedEndId` is monotonic — an
  * out-of-order (older) value is dropped so a stale push can't regress replay state. A frame before the
  * first HELLO yields null (no partial cached handshake). Best-effort: a
  * malformed frame leaves the cache untouched.
@@ -24,10 +24,10 @@ object HelloMerger {
     else {
       val c = cached ?: return null
       when (type) {
-        "STATE_REV_UPDATED" -> {
-          val inc = JSONObject(data).optLong("stateRevision", Long.MIN_VALUE)
-          if (inc != Long.MIN_VALUE && inc >= c.optLong("stateRevision", Long.MIN_VALUE)) {
-            c.put("stateRevision", inc)
+        "STATE_FEED_UPDATED" -> {
+          val inc = JSONObject(data).optLong("feedId", Long.MIN_VALUE)
+          if (inc != Long.MIN_VALUE && inc >= c.optLong("stateFeedEndId", Long.MIN_VALUE)) {
+            c.put("stateFeedEndId", inc)
           }
         }
       }

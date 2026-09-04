@@ -7,7 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { user } from '../src/database/schema';
+import { pushToken, user } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUser, seedSession } from './seed';
 
@@ -72,6 +72,16 @@ describe('Session management + login-policy e2e', () => {
     const { id: userId } = await seedUser(app, 'revbyid');
     const aSession = await seedSession(app, userId, 'app');
     const bSession = await seedSession(app, userId, 'web');
+    await request(app.getHttpServer())
+      .post('/api/v1/devices/register')
+      .set('Authorization', `Bearer ${aSession}`)
+      .send({ token: 'fcm-token-a', platform: 'ANDROID' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/devices/register')
+      .set('Authorization', `Bearer ${bSession}`)
+      .send({ token: 'fcm-token-b', platform: 'ANDROID' })
+      .expect(200);
 
     // Find B's row id via the list authed as A (B is the non-current row).
     const list = await request(app.getHttpServer())
@@ -87,6 +97,12 @@ describe('Session management + login-policy e2e', () => {
       .set('Authorization', `Bearer ${aSession}`)
       .send({ id: bRow.id });
     expect(revoke.body.code).toBe(0);
+
+    const registrations = await database.db
+      .select({ token: pushToken.token })
+      .from(pushToken)
+      .where(eq(pushToken.userId, userId));
+    expect(registrations).toEqual([{ token: 'fcm-token-a' }]);
 
     // B is revoked → 401. revokeById drops its persistent validation entry immediately.
     const afterB = await request(app.getHttpServer())
@@ -133,11 +149,27 @@ describe('Session management + login-policy e2e', () => {
     // which is not the credential authorizing the operation.
     const tokenA = await seedSession(app, userId, 'app');
     const tokenB = await seedSession(app, userId, 'app');
+    await request(app.getHttpServer())
+      .post('/api/v1/devices/register')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ token: 'logout-all-token-a', platform: 'ANDROID' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/devices/register')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ token: 'logout-all-token-b', platform: 'ANDROID' })
+      .expect(200);
 
     const logoutAll = await request(app.getHttpServer())
       .post('/api/v1/auth/logout-all')
       .set('Authorization', `Bearer ${tokenA}`);
     expect(logoutAll.body.code).toBe(0);
+
+    const registrations = await database.db
+      .select({ id: pushToken.id })
+      .from(pushToken)
+      .where(eq(pushToken.userId, userId));
+    expect(registrations).toEqual([]);
 
     const guarded = await request(app.getHttpServer())
       .post('/api/v1/auth/sessions')

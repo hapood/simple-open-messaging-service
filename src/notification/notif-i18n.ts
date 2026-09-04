@@ -83,7 +83,7 @@ function distinctNames(items: SummaryItem[]): string[] {
  * convention. Overflow implies ≥1000 messages so the lone-sender `one` template never applies.
  *
  * Returns the empty string only when there is nothing to summarize (no unread items) — the caller turns
- * that into a `kind:'clear'` descriptor (cancel the prior notification) rather than posting an empty body.
+ * that into no notification rather than posting an empty body.
  */
 export function buildSummaryBody(
   items: SummaryItem[],

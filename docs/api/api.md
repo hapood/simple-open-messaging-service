@@ -119,7 +119,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 - `my-profile`: current user info (password hash omitted).
 - `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
-- `update-avatar`: `multipart/form-data` `file` → `sharp` multi-size webp (32/64/128/256/512, EXIF-oriented, cover-cropped, bomb-guarded); returns `{ avatar }` (the 512px URL).
+- `update-avatar`: `multipart/form-data` `file` → validates the image, federation byte limit, and maximum 512×512 dimensions, then stores the accepted bytes unchanged as one avatar resource; returns `{ avatar }`.
 
 ### GET `/user/state-feed` — Client state feed
 
@@ -356,11 +356,12 @@ See the [Android calls client contract](../platform/android/calls.md).
 
 > Controllers: [device.controller.ts](../../src/controller/device.controller.ts) · [notification.controller.ts](../../src/controller/notification.controller.ts)
 
-- `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB; a device's token is re-owned to the current user on re-register).
+- `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB). Registration binds the token to the current authenticated session; re-registering re-owns it to that session.
 - `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
 - `GET /user/state-feed` — the single device-facing state feed, including paired thread content heads.
-- `POST /notification-feed/query` — build away-notification descriptors from changed threads.
+- `POST /notification-feed/query` — build an away-notification delta from changed threads. Each descriptor
+  adds or replaces the notification for its thread; an empty result is a no-op.
 - `POST /notifications/action` — dispatch a notification action such as mark-read or inline reply.
 
 ---
@@ -372,7 +373,7 @@ See the [Android calls client contract](../platform/android/calls.md).
 ### POST `/upload` — Upload (chat media / avatar)
 
 - **Body**: `multipart/form-data`, field `file`; for chat media, plus `w`/`h` form fields. Allowed: jpg/png/gif/webp (magic-number validated). Size limit per type (video up to ~100 MB; `@fastify/multipart` 100 MB part cap).
-- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`; filename, MIME and message type remain message metadata. Avatars use the separate `sharp` multi-size webp pipeline. The returned `/uploads/cas/<dd>/<dd>/<digest>` URL is gated by `MediaAccessService` and only READY assets are readable.
+- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`; filename, MIME and message type remain message metadata. Avatars use a separate validated, byte-preserving single-file path. The returned `/uploads/cas/<dd>/<dd>/<digest>` URL is gated by `MediaAccessService` and only READY assets are readable.
 - **Response `data`**: `{ url, w, h }` (chat) or `{ avatar }` (avatar).
 - **Media serving**: `/uploads/*` is served by `@fastify/static` with a root `preHandler` that honors the httpOnly `media_token` cookie **or** a `Bearer` header (resolved by `BearerAuthService`), plus per-object CAS-shard authorization. (Avatars are public.)
 
@@ -437,7 +438,10 @@ data: <json>
 
 There are no dedicated group, profile, friend/request, thread-metadata, message-head, or read-state SSE
 events. Those changes are committed to the Client State Feed first and SSE carries only
-`STATE_FEED_UPDATED`. Offline Push may still use the payload type `NEW_MESSAGE`; it is not an SSE event.
+`STATE_FEED_UPDATED`. Out-of-band Push may still use the payload type `NEW_MESSAGE`; it is suppressed only
+for the exact device session that has a live SSE takeover, carries only `{ type, messageEndSeq }`, and is not
+an SSE event. Incoming-call Push follows the same per-session takeover rule while remaining eligible on the
+user's other offline devices.
 
 > Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from the local Client State Feed cursor through `HELLO.stateFeedEndId`, and message bodies are caught up from per-thread cursors through each `THREAD_CONTENT_HEAD.messageEndSeq` (the stream does not replay history — no `Last-Event-ID`).
 

@@ -57,6 +57,7 @@ export class FederationInboundMessageRouteService {
     sourceDomain: string,
     namespaceId: number,
   ): Promise<FederationInboundMessageRoute> {
+    const author = this.messageAuthor(item, sourceDomain);
     let threadRows: Array<{
       threadId: number;
       federationVersion: number;
@@ -81,8 +82,49 @@ export class FederationInboundMessageRouteService {
         FOR SHARE OF thread
       `);
       threadRows = result.rows;
+      if (threadRows.length === 0 && author.domain === sourceDomain) {
+        const memberResult = await tx.execute<{
+          threadId: number;
+          federationVersion: number;
+          toAccount: string;
+        }>(sql`
+          SELECT thread.id AS "threadId",
+                 thread."federationVersion",
+                 group_user.account AS "toAccount"
+          FROM "RelationshipPair" pair
+          JOIN "MessageThread" thread ON thread.id = pair."threadId"
+          JOIN "Group" group_user ON group_user.id = thread."groupId"
+          WHERE pair.kind = 'GROUP_MEMBER'
+            AND pair.active = true
+            AND thread.type = 'GROUP'
+            AND group_user.account = ${normalizeAccount(item.thread.account)}
+            AND group_user.domain = 'local'
+            AND group_user."namespaceId" = 0
+            AND (
+              (pair."endpointAType" = 'GROUP'
+                AND pair."endpointAAccount" = group_user.account
+                AND pair."endpointADomain" = 'local'
+                AND pair."endpointANamespaceId" = ${namespaceId}
+                AND pair."endpointBType" = 'USER'
+                AND pair."endpointBAccount" = ${normalizeAccount(author.account)}
+                AND pair."endpointBDomain" = ${sourceDomain}
+                AND pair."endpointBNamespaceId" = ${namespaceId})
+              OR
+              (pair."endpointBType" = 'GROUP'
+                AND pair."endpointBAccount" = group_user.account
+                AND pair."endpointBDomain" = 'local'
+                AND pair."endpointBNamespaceId" = ${namespaceId}
+                AND pair."endpointAType" = 'USER'
+                AND pair."endpointAAccount" = ${normalizeAccount(author.account)}
+                AND pair."endpointADomain" = ${sourceDomain}
+                AND pair."endpointANamespaceId" = ${namespaceId})
+            )
+          LIMIT 1
+          FOR SHARE OF pair, thread
+        `);
+        threadRows = memberResult.rows;
+      }
     } else {
-      const author = this.messageAuthor(item, sourceDomain);
       const selfAuthored = author.domain === this.config.domain;
       const expectedAuthorAccount = selfAuthored
         ? item.thread.peerAccount
@@ -146,7 +188,6 @@ export class FederationInboundMessageRouteService {
         'missed message has no retained local thread',
       );
     }
-    const author = this.messageAuthor(item, sourceDomain);
     const creatorAccount = normalizeAccount(author.account);
     const creatorDomain =
       author.domain === this.config.domain ? 'local' : author.domain;
@@ -159,18 +200,32 @@ export class FederationInboundMessageRouteService {
             FOR SHARE OF participant
           `)
         : await tx.execute<{ userId: number }>(sql`
-            SELECT audience."localUserId" AS "userId"
-            FROM "ThreadAudience" audience
-            WHERE audience."threadId" = ${route.threadId}
-              AND audience."targetDomain" = 'local'
-              AND audience."localUserId" IS NOT NULL
-            FOR SHARE OF audience
+            SELECT participant."accountId" AS "userId"
+            FROM "AccountThreadState" participant
+            WHERE participant."threadId" = ${route.threadId}
+            FOR SHARE OF participant
           `);
+    const recipients = recipientRows.rows.map((row) => row.userId);
+    if (!('peerAccount' in item.thread)) {
+      const recipientAuthorization: boolean[] = [];
+      for (const userId of recipients)
+        recipientAuthorization.push(
+          await isThreadMutuallyAuthorized(tx, userId, route.threadId),
+        );
+      return {
+        ...route,
+        creatorAccount,
+        creatorDomain,
+        recipients: recipients.filter(
+          (_, index) => recipientAuthorization[index],
+        ),
+      };
+    }
     return {
       ...route,
       creatorAccount,
       creatorDomain,
-      recipients: recipientRows.rows.map((row) => row.userId),
+      recipients,
     };
   }
 
@@ -201,6 +256,7 @@ export class FederationInboundMessageRouteService {
       JOIN "Group" group_user ON group_user.id = message_thread."groupId"
       WHERE message_thread.type = 'GROUP'
         AND group_user.account = ${normalizeAccount(thread.account)}
+        AND group_user.domain = ${sourceDomain}
         AND group_user."namespaceId" = ${namespaceId}
       LIMIT 1
       FOR SHARE OF message_thread

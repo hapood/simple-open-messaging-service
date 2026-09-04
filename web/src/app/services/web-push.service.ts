@@ -4,6 +4,8 @@ import { TranslocoService } from '@jsverse/transloco';
 import { apiPrefix } from './constants';
 import { isTauri } from './runtime';
 import { ToastService } from './toast.service';
+import { clientDeviceId } from '../lib/client-device-id';
+import { resetNotificationSince } from './browser-notification-checkpoint';
 
 /**
  * Standard Web Push (Push API + VAPID) for the browser/PWA build. Covers every browser that implements
@@ -35,7 +37,9 @@ export class WebPushService {
    *  is true for HTTPS and for `localhost`, exactly the origins where the prompt CAN show. Reactive
    *  so the Settings toggle + category summary update live as the user grants/revokes. */
   readonly permission = signal<NotificationPermission | 'unsupported'>(
-    typeof Notification !== 'undefined' && window.isSecureContext ? Notification.permission : 'unsupported',
+    typeof Notification !== 'undefined' && window.isSecureContext
+      ? Notification.permission
+      : 'unsupported',
   );
 
   /** Wire up at app boot (AppComponent), after a session is restored. No-op when unsupported.
@@ -47,8 +51,14 @@ export class WebPushService {
     this.refreshPermission();
     // Re-sync when the user returns to the tab — they may have flipped the site permission in the
     // browser's site settings while away (the app can't observe that change otherwise).
-    window.addEventListener('focus', () => this.refreshPermission(), { passive: true });
-    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('showNotification' in window)) {
+    window.addEventListener('focus', () => this.refreshPermission(), {
+      passive: true,
+    });
+    if (
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window) ||
+      !('showNotification' in window)
+    ) {
       return; // no Web Push surface — in-tab Notification (UnreadAttentionService) may still work.
     }
     if (this.permission() === 'granted') {
@@ -77,13 +87,18 @@ export class WebPushService {
   /** Called by AuthService.logout BEFORE it clears the access token. Unsubscribes + unregisters. */
   async unregister(): Promise<void> {
     if (isTauri()) return;
+    await resetNotificationSince();
     const endpoint = this.registeredEndpoint;
     if (!endpoint) return;
     this.registeredEndpoint = null;
     // Unregister from the backend (best-effort; the access token is still live at this point).
     this.http
       .delete(`${apiPrefix()}/devices/register/${encodeURIComponent(endpoint)}`)
-      .subscribe({ error: () => { /* a stale endpoint is pruned on next send */ } });
+      .subscribe({
+        error: () => {
+          /* a stale endpoint is pruned on next send */
+        },
+      });
     // Unsubscribe the browser-side subscription so the push service stops holding a channel.
     try {
       const reg = await navigator.serviceWorker.getRegistration('/push/');
@@ -96,7 +111,7 @@ export class WebPushService {
 
   /** User-clicked permission request (the Settings → Notifications toggle). The toggle is about LOCAL
    *  notifications: the instant the browser grants permission, {@link UnreadAttentionService} posts
-   *  `new Notification(...)` on every background NEW_MESSAGE — pure JS → system notification, with no
+   *  `new Notification(...)` after a background content-head advance — pure JS → system notification, with no
    *  server, no VAPID, no subscription. That is the whole job, and it's complete the moment permission
    *  is granted.
    *
@@ -106,7 +121,8 @@ export class WebPushService {
    *  be called from a click handler: modern browsers block `Notification.requestPermission()` outside a
    *  user gesture (why {@link init} doesn't request). */
   async enable(): Promise<NotificationPermission | 'unsupported'> {
-    if (typeof Notification === 'undefined' || !window.isSecureContext) return 'unsupported';
+    if (typeof Notification === 'undefined' || !window.isSecureContext)
+      return 'unsupported';
     // The toggle is only clickable from 'default', but guard for direct callers anyway.
     const perm =
       Notification.permission === 'default'
@@ -137,12 +153,18 @@ export class WebPushService {
    *  and the common "VAPID not configured yet" deploy state must NOT surface a scary toast. Assumes
    *  permission is ALREADY `'granted'` (requested in {@link enable}). */
   private async subscribeAndRegister(): Promise<void> {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (
+      typeof Notification === 'undefined' ||
+      Notification.permission !== 'granted'
+    )
+      return;
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     // 1. Register the push SW (scope '/push/' — ngsw owns '/').
     let reg: ServiceWorkerRegistration;
     try {
-      reg = await navigator.serviceWorker.register('./push/sw-push.js', { scope: './push/' });
+      reg = await navigator.serviceWorker.register('./push/sw-push.js', {
+        scope: './push/',
+      });
     } catch {
       return; // SW registration failed — local notifications still work without Web Push.
     }
@@ -168,12 +190,21 @@ export class WebPushService {
       .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
         token: sub.endpoint,
         platform: 'WEB',
-        p256dh: sub.getKey('p256dh') ? base64UrlEncode(sub.getKey('p256dh')!) : undefined,
-        auth: sub.getKey('auth') ? base64UrlEncode(sub.getKey('auth')!) : undefined,
+        deviceId: clientDeviceId(),
+        p256dh: sub.getKey('p256dh')
+          ? base64UrlEncode(sub.getKey('p256dh')!)
+          : undefined,
+        auth: sub.getKey('auth')
+          ? base64UrlEncode(sub.getKey('auth')!)
+          : undefined,
       })
       .subscribe({
-        next: (r) => { if (r.code === 0) this.registeredEndpoint = sub.endpoint; },
-        error: () => { /* best-effort: a failed registration is retried or pruned on the next send */ },
+        next: (r) => {
+          if (r.code === 0) this.registeredEndpoint = sub.endpoint;
+        },
+        error: () => {
+          /* best-effort: a failed registration is retried or pruned on the next send */
+        },
       });
   }
 

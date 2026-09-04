@@ -17,7 +17,7 @@
  * [Dedup] incoming pushes are identity-only signals; message bodies have a single authoritative path through
  *  the repository history walker. This source therefore does not suppress queried ids. Cursor paging keeps pages disjoint,
  *  while the kernel rejects overlap with rows that are currently mounted.
- * [SSE] NEW_MESSAGE advances the repository-owned per-thread newer ceiling and re-checks this viewport's
+ * A durable THREAD_CONTENT_HEAD advances the repository-owned per-thread newer ceiling and re-checks this viewport's
  *  pending newer demand. It never asks the kernel to retry; the kernel only observes a demand resolving
  *  with actual items.
  */
@@ -203,7 +203,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
     this.onNewerAvailable = live.onNewerAvailable ?? (() => {});
-    // The DB-layer MessageRepository owns the identity-only NEW_MESSAGE SSE and emits liveSignal$.
+    // MessageRepository turns committed content heads into per-thread live signals.
     // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
     // Filter to THIS thread. Multiple mounted sources share the repository's thread state while keeping
     // their viewport demand/cancellation lifecycle independent.
@@ -512,7 +512,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * `persistedLatestSeq` is the server-authored `ConversationItem.lastMessageSeq` stored with the thread
    * row. It is deliberately independent from the messages cache: after a fresh install, storage migration,
    * or cache eviction the thread can truthfully say "latest = 258" while the local messages table is empty.
-   * `liveLatestSeq` covers a newer NEW_MESSAGE observed after that thread snapshot. Whichever is greater is
+   * `liveLatestSeq` covers a newer content head observed after that thread snapshot. Whichever is greater is
    * the remote target; if it leads `loadedSeq`, signal the kernel to perform its forced newest-page pull.
    */
   finishLocalInit(

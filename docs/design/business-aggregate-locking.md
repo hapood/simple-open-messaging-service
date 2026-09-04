@@ -5,17 +5,17 @@ normative documents under [`spec/v1`](../../spec/v1/).
 
 ## 1. Purpose
 
-The application has two business aggregates whose mutations must be serialized:
-a pair of users and a group. Mutations may originate from a local API request or
-an inbound federation intent. An aggregate can also be created for the first
-time while another transaction is accepting, revoking, joining, leaving, or
-otherwise updating it. Database rows alone cannot serialize that bootstrap
-interval because the rows may not exist yet.
+Every user and group is identified by one account address. Mutations may
+originate from a local API request or an inbound federation intent. An
+aggregate can also be created for the first time while another transaction is
+accepting, revoking, joining, leaving, or otherwise updating it. Database rows
+alone cannot serialize that bootstrap interval because the rows may not exist
+yet.
 
-Every aggregate mutation therefore starts with one transaction-scoped
-PostgreSQL advisory lock for the logical business scope. Existing database rows
-are then locked in one fixed order and all mutation decisions are made from data
-re-read after those locks were acquired.
+Every aggregate mutation therefore starts with transaction-scoped PostgreSQL
+advisory locks for its participating account addresses. Existing database rows
+are then locked in one fixed order and all mutation decisions are made from
+data re-read after those locks were acquired.
 
 The advisory lock closes the bootstrap gap; it does not replace row locks.
 Row locks still protect concrete records, foreign-key projections, and code
@@ -23,22 +23,18 @@ that does not participate in business-scope locking.
 
 ## 2. Canonical scopes
 
-A user address is represented as the pair `[domain, account]`. Domains are
-lowercased before key construction. Account strings remain unchanged.
-
-For a user-pair aggregate, the two addresses are sorted lexicographically by
-domain and then account. The lock key is the JSON encoding of:
+A user or group address is represented as the pair `[domain, account]`.
+Domains are lowercased before key construction. Account strings remain
+unchanged. Both kinds of identity use the same lock-key shape:
 
 ```text
-["business-scope", "USER_PAIR", [domainA, accountA], [domainB, accountB]]
+["business-scope", "ACCOUNT", domain, account]
 ```
 
-For a group aggregate, the group's address is the complete scope. The lock key
-is the JSON encoding of:
-
-```text
-["business-scope", "GROUP", groupDomain, groupAccount]
-```
+A P2P mutation locks both user addresses. A group mutation locks the group
+address; the account may therefore begin with `!`. When one transaction needs
+multiple address locks, it deduplicates and sorts their complete encoded keys
+before acquiring any of them.
 
 The representation deliberately keeps domain and account in separate JSON
 values. It does not concatenate an address with a punctuation separator. The
@@ -54,28 +50,42 @@ therefore cannot leave a stale business lock behind.
 
 ## 3. Lock order
 
-User-pair mutations acquire resources in this order:
+Transactions that publish state to both peers and local accounts use this
+global allocator order after acquiring their business aggregate locks:
 
 ```text
-USER_PAIR advisory scope
+PeerStateFeedTarget (peer domain, then namespace id)
+Account state-feed allocator (account id)
+```
+
+All peer allocator rows needed by a transaction are prelocked before its first
+client-state write. This includes fan-out pages and maintenance sweeps that may
+touch more than one peer. It prevents one transaction from holding an Account
+allocator while waiting for a peer allocator as another transaction waits in
+the opposite direction.
+
+P2P mutations acquire resources in this order:
+
+```text
+ACCOUNT advisory scopes for both users (canonical address order)
 RelationshipPair
 MessageThread
 RelationshipIntent A
 RelationshipIntent B
-ThreadParticipant (accountId order)
+AccountThreadState (accountId order)
 ```
 
 Group mutations acquire resources in this order:
 
 ```text
-GROUP advisory scope
+ACCOUNT advisory scope for the group
 Group
 MessageThread
 RelationshipPair
 RelationshipIntent A
 RelationshipIntent B
-ThreadMember (userId order)
-ThreadParticipant (accountId order)
+GroupMetaFeed allocator or replica cursor
+AccountThreadState (accountId order)
 ```
 
 Missing rows are skipped without changing the relative order of rows that do
@@ -83,11 +93,11 @@ exist. When multiple projection rows are needed, their identifiers are sorted
 before locking. Intent rows are always locked in canonical author-side order,
 never in caller or local-versus-remote order.
 
-The group address identifies the whole group aggregate, not one member's
+The group account address identifies the whole group aggregate, not one member's
 relationship with that group. The shared scope serializes participating group
 mutations for different members as well as changes to the group itself. This
-allows group metadata, membership projections, and
-`Group.federationAuthorized` to be rebuilt from a stable aggregate state.
+allows canonical group metadata and mirrored Group Meta replicas to be rebuilt
+from a stable aggregate state.
 
 ## 4. Bootstrap and revalidation
 
@@ -106,38 +116,49 @@ change concurrently are evaluated again from the locked state.
 
 ## 5. Covered transitions
 
-The user-pair scope applies whenever the pair aggregate is updated. Current
+Both user account scopes apply whenever a P2P pair aggregate is updated. Current
 entry points include local friend requests, acceptance, rejection or revocation,
 established relationship termination, and equivalent inbound federation
 `ACCEPTED` or `REVOKED` transitions.
 
-The group scope applies whenever the group aggregate is updated. Current entry
+The group account scope applies whenever the group aggregate is updated. Current entry
 points include requests and invitations to join, acceptance, rejection or
 revocation, member leave and removal, and equivalent inbound federation
 transitions. Local and federated entry points use the same locking primitive;
 the source of an intent only determines which canonical author-side row may be
 changed.
 
-For a remote group, `Group.federationAuthorized` is refreshed inside the same
-locked transaction after an active group-member pair changes. It is true when
-at least one active `GROUP_MEMBER` pair connects the remote group to a local
-user. Local groups always retain false.
+When a local member leaves a remote group, the same locked transaction checks
+whether another active `GROUP_MEMBER` pair still connects that group to a local
+user. The thread authorization epoch advances only after the last such local
+member leaves; this aggregate condition is derived from the relationship facts
+and is not persisted separately on the group.
 
 Read-only endpoints do not need the advisory lock. A caller that already holds
-the canonical scope may use lower-level helpers, but it must preserve the row
-order above and must not acquire a second business scope in the same transaction
-without a separately defined cross-scope ordering rule.
+the required account scopes may use lower-level helpers, but it must preserve
+the global address and row orders above.
 
 ## 6. Transaction boundary
 
 A relationship command has one caller-owned database transaction. The command
 service accepts that transaction and does not open an inner transaction. The
 business advisory lock, lock-protected re-read, intent transition, active-pair
-fold, membership projections, federation authorization projection, and durable
-client or peer feed writes all commit or roll back together. Profile and Group
-Meta projection processing is part of this transaction. When a successful
-transition first materializes a Group, MessageThread, ThreadMember, or
-ThreadParticipant, that creation is part of the same transaction as well.
+fold, canonical Group Meta append, federation authorization projection, and
+head-fan-out task admission all commit or roll back together. Audience
+enumeration, State Feed head writes, and network profile resolution are not part
+of this transaction. When a successful transition first materializes a Group,
+MessageThread, or AccountThreadState, that creation is part of the applicable
+transaction as well. No `ThreadMember` table is retained: P2P endpoints come
+from `RelationshipPair`, while group membership comes from canonical Group Meta
+or its validated replica.
+
+A committed member-authored `REQUESTED` selects the immutable `profileRev` and
+may offer that exact revision to the global profile coordinator only after the
+request transaction commits. The coordinator performs no work inside the
+relationship transaction or group lock. A later activation transaction folds
+the current intents and appends the member `UPSERT` with the revision already
+selected by the effective request; it never waits for profile retrieval or
+revalidates profile availability.
 
 SSE delivery, lightweight federation notifications, and State Feed high-water
 mark pushes occur only after that transaction commits. Here, "push" means the

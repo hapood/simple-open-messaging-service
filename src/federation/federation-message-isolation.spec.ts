@@ -128,12 +128,14 @@ describe('federation message context isolation', () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
-    const onNewMessage = vi.fn();
-    const onDeletedMessageUpdated = vi.fn();
     const signalOutbound = vi.fn();
     const signalDeletionOutbound = vi.fn();
+    const notifyFeedUpdates = vi.fn();
     Object.assign(service, {
-      sse: { onNewMessage, onDeletedMessageUpdated },
+      clientStateFeed: {
+        readEndId: vi.fn(),
+        notifyFeedUpdates,
+      },
       forwardBundles: { rebuildLinkCards: vi.fn() },
       signalOutbound,
       signalDeletionOutbound,
@@ -159,10 +161,91 @@ describe('federation message context isolation', () => {
       },
     ] as never);
 
-    expect(onNewMessage).not.toHaveBeenCalled();
-    expect(onDeletedMessageUpdated).not.toHaveBeenCalled();
     expect(signalOutbound).not.toHaveBeenCalled();
     expect(signalDeletionOutbound).not.toHaveBeenCalled();
+    expect(notifyFeedUpdates).not.toHaveBeenCalled();
+  });
+
+  it('publishes a committed live message through the client state-feed throttler', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const readEndId = vi
+      .fn()
+      .mockResolvedValueOnce(11)
+      .mockResolvedValueOnce(17);
+    const notifyFeedUpdates = vi.fn();
+    Object.assign(service, {
+      clientStateFeed: { readEndId, notifyFeedUpdates },
+      forwardBundles: { rebuildLinkCards: vi.fn() },
+      linkPreview: { buildCardContent: vi.fn() },
+      signalOutbound: vi.fn().mockResolvedValue(undefined),
+      signalDeletionOutbound: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await service.publishMessageQueryEffects('origin.test', [
+      {
+        kind: 'message',
+        historical: false,
+        threadId: 9,
+        originSeq: 70,
+        recipients: [8, 7, 8],
+        toAccount: 'alice',
+        author: { account: 'bob', domain: 'origin.test' },
+        message: {
+          seq: 12,
+          profileRev: 0,
+          creatorAccount: 'bob',
+          creatorDomain: 'origin.test',
+          createdAt: new Date(),
+          isDeleted: false,
+        },
+      },
+    ] as never);
+
+    expect(readEndId.mock.calls).toEqual([[8], [7]]);
+    expect(notifyFeedUpdates).toHaveBeenCalledWith([
+      { userId: 8, feedId: 11 },
+      { userId: 7, feedId: 17 },
+    ]);
+  });
+
+  it('publishes a committed tombstone through the client state-feed throttler', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const readEndId = vi
+      .fn()
+      .mockResolvedValueOnce(23)
+      .mockResolvedValueOnce(29);
+    const notifyFeedUpdates = vi.fn();
+    const publishSatisfiedQuoteDependencies = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    Object.assign(service, {
+      clientStateFeed: { readEndId, notifyFeedUpdates },
+      inboundMessageCommits: {
+        applyTombstonesInTransaction: vi.fn().mockResolvedValue({
+          quoteDependencies: [],
+          recipientUserIds: [4, 6],
+        }),
+        publishSatisfiedQuoteDependencies,
+      },
+    });
+
+    const publication = await service.applyForwardTombstonePageInTransaction(
+      {} as never,
+      {} as never,
+    );
+    expect(notifyFeedUpdates).not.toHaveBeenCalled();
+    await publication.publish();
+
+    expect(readEndId.mock.calls).toEqual([[4], [6]]);
+    expect(notifyFeedUpdates).toHaveBeenCalledWith([
+      { userId: 4, feedId: 23 },
+      { userId: 6, feedId: 29 },
+    ]);
+    expect(publishSatisfiedQuoteDependencies).toHaveBeenCalledWith([]);
   });
 
   it('records a self-authored feed item as a delivery receipt without inserting a duplicate', async () => {

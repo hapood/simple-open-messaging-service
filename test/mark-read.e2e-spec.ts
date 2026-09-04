@@ -11,7 +11,7 @@ import {
   account as accountTable,
   message,
   messageThread,
-  threadParticipant,
+  accountThreadState,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed';
@@ -59,10 +59,10 @@ describe('POST /thread/mark-read authoritative state', () => {
     threadId = thread.id;
     await seedAcceptedRelationship(database.db, viewerId, peerId, threadId);
     const viewerParticipant =
-      await database.db.query.threadParticipant.findFirst({
+      await database.db.query.accountThreadState.findFirst({
       where: and(
-        eq(threadParticipant.threadId, threadId),
-        eq(threadParticipant.accountId, viewerId),
+        eq(accountThreadState.threadId, threadId),
+        eq(accountThreadState.accountId, viewerId),
       ),
       columns: { id: true },
     });
@@ -125,9 +125,9 @@ describe('POST /thread/mark-read authoritative state', () => {
 
     // Simulate a newer server cursor from another session; a stale local report cannot move it backwards.
     await database.db
-      .update(threadParticipant)
+      .update(accountThreadState)
       .set({ lastReadSeq: 3 })
-      .where(eq(threadParticipant.id, viewerParticipantId));
+      .where(eq(accountThreadState.id, viewerParticipantId));
     const monotonic = await commit(1);
     expect(monotonic.body.data).toBeUndefined();
     const secondDelta = await readDelta(1, 2);
@@ -152,8 +152,8 @@ describe('POST /thread/mark-read authoritative state', () => {
       database.db.query.account.findFirst({
         where: eq(accountTable.id, viewerId),
       }),
-      database.db.query.threadParticipant.findFirst({
-        where: eq(threadParticipant.id, viewerParticipantId),
+      database.db.query.accountThreadState.findFirst({
+        where: eq(accountThreadState.id, viewerParticipantId),
       }),
     ]);
     expect(viewer?.readRevision).toBe(3);

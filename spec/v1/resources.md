@@ -4,7 +4,7 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative.
 
-This document defines three Federation v1 read operations: public user profiles,
+This document defines three Federation v1 read operations: public account profiles,
 media resources, and forward bundles. Implementations MUST also follow the
 shared types and JSON rules in [Core Protocol Section 6](./protocol.md#6-common-protocol-rules),
 the response and error envelopes in [Core Protocol Section 7](./protocol.md#7-responses-errors-and-caller-actions),
@@ -50,33 +50,34 @@ An HTTP `200` business error still uses the JSON error envelope. Consumers
 MUST classify it by `Content-Type` and envelope before interpreting it as a
 resource response.
 
-## 2. User profiles
+## 2. Account profiles
 
 ### 2.1 Operation
 
 ```http
-GET /s2s/v1/users/:account
+GET /s2s/v1/accounts/:account
 ```
 
 | Property       | Requirement                                                    |
 | -------------- | -------------------------------------------------------------- |
-| Path variable  | `account: UserAccount`                                         |
+| Path variable  | `account: Account`                                             |
 | Query          | None                                                           |
 | Success        | HTTP `200` success envelope with Section 2.2 data              |
 | Business error | HTTP `200 NOT_FOUND` or `200 FEDERATION_PROFILE_NOT_DISCLOSED` |
 
-`account` MUST be a `UserAccount`, not a `GroupAccount`. The operation resolves
-only a user local to the publisher's own domain; a path, query, or header MUST
-NOT select another domain. Any `recognized signed` peer MAY query this public profile,
-but the query grants no P2P, group, message, or media permission.
+`account` MAY be a `UserAccount` or `GroupAccount`. The operation resolves only
+an account local to the publisher's own domain; a path, query, or header MUST NOT
+select another domain. Any `recognized signed` peer MAY query this public profile,
+but the query grants no P2P, group, message, or media permission. A dissolved group
+is unavailable and returns `NOT_FOUND`.
 
 ### 2.2 Successful response
 
 The success `data` is this closed object:
 
 ```ts
-interface PublicUserProfile {
-  account: UserAccount;
+interface PublicAccountProfile {
+  account: Account;
   domain: Domain;
   displayName: string;
   bio: string;
@@ -87,14 +88,14 @@ interface PublicUserProfile {
 
 Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 
-| Field         | Requirement                                                   |
-| ------------- | ------------------------------------------------------------- |
-| `account`     | Equal to the normalized path `account`                        |
-| `domain`      | Equal to the responding server's canonical logical authority  |
-| `displayName` | 1–30 code points, without unpaired surrogates                 |
-| `bio`         | 0–120 code points, without unpaired surrogates                |
-| `avatar`      | `null` or a shared `InlineProfileAvatar`                      |
-| `profileRev`  | Required, non-null, positive immutable revision for this user |
+| Field         | Requirement                                                  |
+| ------------- | ------------------------------------------------------------ |
+| `account`     | Equal to the normalized path `account`                       |
+| `domain`      | Equal to the responding server's canonical logical authority |
+| `displayName` | 1–30 code points, without unpaired surrogates                |
+| `bio`         | 0–120 code points, without unpaired surrogates               |
+| `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
+| `profileRev`  | Required, non-null, positive immutable account revision      |
 
 The shared inline-avatar validation rules apply. `avatar: null` explicitly
 means no avatar. Consumers store versions by `(account, domain, profileRev)`;
@@ -102,10 +103,10 @@ they MUST NOT replace one version merely because another revision is
 numerically greater or smaller. Unknown data fields MUST be rejected.
 
 Real profile revision allocation begins at `1`. The no-profile sentinel `0`
-cannot appear in a successful user-profile response. A reference carrying zero
+cannot appear in a successful account-profile response. A reference carrying zero
 requires no profile request.
 
-This is the add-friend user profile for exact-account lookup. It MUST NOT contain
+This is the public user-or-group profile for exact-account lookup. It MUST NOT contain
 relationship directions, group membership, presence, contact information,
 deletion reasons, or another peer's visibility state.
 State Feed and Group Meta do not publish display profiles. Established user and
@@ -118,7 +119,7 @@ needs the version selected by a message uses the exact-message-authorized
 [Message Author Profile](./message-author-profile.md). v1 defines no fuzzy user
 search or account-enumeration operation.
 
-All four Federation v1 profile retrieval operations—Public User Profile,
+All four Federation v1 profile retrieval operations—Public Account Profile,
 Authorized Profile, Group Member Profile, and Message Author Profile—return the
 same complete profile fields: `account`, `domain`, `displayName`, required
 `bio`, nullable `avatar`, and positive `profileRev`. Their authorization
@@ -127,8 +128,8 @@ coordinates differ; the returned snapshot shape does not.
 ### 2.3 Errors and application
 
 - A malformed path account returns HTTP `400 FEDERATION_MALFORMED`.
-- An account that is not an existing local user returns HTTP `200 NOT_FOUND`.
-- If the user does not disclose the public profile to this peer, the publisher
+- An account that is not an existing local user or live group returns HTTP `200 NOT_FOUND`.
+- If the account does not disclose the public profile to this peer, the publisher
   MAY return HTTP `200 FEDERATION_PROFILE_NOT_DISCLOSED` or privacy-collapse it
   to HTTP `200 NOT_FOUND`. A consumer MUST accept either and MUST NOT infer
   account existence from the distinction.
@@ -142,7 +143,7 @@ applying `profileRev`. An error response MUST NOT modify a saved profile.
 ### 2.4 Example
 
 ```http
-GET /s2s/v1/users/alice HTTP/1.1
+GET /s2s/v1/accounts/alice HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:

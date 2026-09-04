@@ -104,6 +104,33 @@ describe('PeerStateFeedPullService atomic item application', () => {
     expect(whereUpdate).not.toHaveBeenCalled();
   });
 
+  it('commits asynchronous work together with the item cursor', async () => {
+    const { service, order, whereUpdate } = harness();
+    const afterCommit = vi.fn();
+
+    await service.run('peer.test', 12, {
+      fetch: async () => ({
+        ...page('1'),
+        items: [
+          {
+            account: '!group',
+            eventType: 'GROUP_META_FEED_HEAD',
+            feedId: '1',
+            body: { groupMetaFeedEndId: '8' },
+          },
+        ],
+      }),
+      apply: async () => {
+        order.push('dependency');
+      },
+      afterCommit,
+    });
+
+    expect(order).toEqual(['dependency', 'cursor']);
+    expect(whereUpdate).toHaveBeenCalledOnce();
+    expect(afterCommit).toHaveBeenCalledOnce();
+  });
+
   it('keeps an earlier item committed when a later item fails', async () => {
     const { service, order } = harness();
     const apply = vi.fn(async (_tx: unknown, itemPage: PeerStateFeedPage) => {

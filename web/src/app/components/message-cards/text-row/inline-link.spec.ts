@@ -85,7 +85,7 @@ describe('TextRowComponent — inline link', () => {
     const data: ChatMsgData = {
       type: 'msg',
       msgId: 1,
-      creator: 'local\u0000local\u0000me',
+      creator: JSON.stringify([0, 'local', 'me']),
       isSelf: false,
       name: 'Alice',
       text: `Read ${url} now`,

@@ -27,7 +27,6 @@ function harness() {
   const publishMessage = vi.fn().mockResolvedValue(undefined);
   const publishTombstone = vi.fn().mockResolvedValue(undefined);
   const federation = {
-    fetchThreadResource: vi.fn(),
     applyForwardMessagePageInTransaction: vi.fn().mockResolvedValue({
       publish: publishMessage,
     }),
@@ -35,6 +34,7 @@ function harness() {
       publish: publishTombstone,
     }),
   };
+  const threadResources = { fetch: vi.fn() };
   const rounds = {
     runMessages: vi.fn(
       async (
@@ -113,6 +113,7 @@ function harness() {
   const executor = new FederationThreadForwardRoundExecutorService(
     database as never,
     rounds as never,
+    threadResources as never,
     federation as never,
     {
       resolve: vi.fn().mockResolvedValue({
@@ -127,6 +128,7 @@ function harness() {
     executor,
     rounds,
     federation,
+    threadResources,
     database,
     publishMessage,
     publishTombstone,
@@ -139,13 +141,13 @@ function harness() {
 describe('FederationThreadForwardRoundExecutorService', () => {
   it('commits a message page and its cursor independently', async () => {
     const h = harness();
-    h.federation.fetchThreadResource.mockResolvedValueOnce(
+    h.threadResources.fetch.mockResolvedValueOnce(
       response({ messages: [], scannedThrough: 60, hasMore: true }),
     );
 
     await h.executor.runMessages(31, 'origin.test', 7, 50);
 
-    expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
+    expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
       '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
       'origin.test',
@@ -160,13 +162,13 @@ describe('FederationThreadForwardRoundExecutorService', () => {
 
   it('commits an independently bounded tombstone page with its frozen cutoff', async () => {
     const h = harness();
-    h.federation.fetchThreadResource.mockResolvedValueOnce(
+    h.threadResources.fetch.mockResolvedValueOnce(
       response({ tombstones: [], scannedThrough: 9, hasMore: false }),
     );
 
     await h.executor.runTombstones(31, 'origin.test', 7, 50);
 
-    expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
+    expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
       '/s2s/v1/message-tombstones?account=%21group&after=4&through=9&take=50&includeSelf=true&maxMessageSeq=42',
       'origin.test',
@@ -199,13 +201,13 @@ describe('FederationThreadForwardRoundExecutorService', () => {
         return { targetSeq: 12, processed: true };
       },
     );
-    h.federation.fetchThreadResource.mockResolvedValueOnce(
+    h.threadResources.fetch.mockResolvedValueOnce(
       response({ tombstones: [], scannedThrough: 12, hasMore: false }),
     );
 
     await h.executor.runTombstones(31, 'origin.test', 7, 50);
 
-    expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
+    expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
       '/s2s/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true',
       'origin.test',
@@ -215,7 +217,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
 
   it('rejects a tombstone above the frozen recovery cutoff', async () => {
     const h = harness();
-    h.federation.fetchThreadResource.mockResolvedValueOnce(
+    h.threadResources.fetch.mockResolvedValueOnce(
       response({
         tombstones: [
           {

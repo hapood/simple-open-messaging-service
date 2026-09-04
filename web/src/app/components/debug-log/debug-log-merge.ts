@@ -207,7 +207,7 @@ export function reconcileSnapshot(
 }
 
 function lineKey(line: MergedLine): string {
-  return `${line.source}\u0000${line.ts ?? ''}\u0000${line.level}\u0000${line.raw}`;
+  return JSON.stringify([line.source, line.ts ?? '', line.level, line.raw]);
 }
 
 /** Compile the panel's search query without throwing into Angular computed state. */

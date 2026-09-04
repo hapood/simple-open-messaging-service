@@ -12,11 +12,11 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
+import { FederationService, S2sResponseError } from './federation.service.js';
 import {
-  FederationService,
-  S2sResponseError,
+  FederationThreadResourceClient,
   type FederationThreadResourceResponse,
-} from './federation.service.js';
+} from './federation-thread-resource-client.service.js';
 import type {
   FederationMessageFeedMessage,
   FederationMessageQueryPage,
@@ -44,6 +44,7 @@ export class FederationThreadReverseRoundExecutorService {
   constructor(
     private readonly database: DatabaseService,
     private readonly rounds: FederationThreadReverseRoundService,
+    private readonly threadResources: FederationThreadResourceClient,
     private readonly federation: FederationService,
     private readonly sources: FederationThreadSourceService,
   ) {}
@@ -102,13 +103,12 @@ export class FederationThreadReverseRoundExecutorService {
 
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
-      response =
-        await this.federation.fetchThreadResource<FederationMessageQueryPage>(
-          source.threadId,
-          `/s2s/v1/messages?${query.toString()}`,
-          source.peerDomain,
-          16 * 1024 * 1024,
-        );
+      response = await this.threadResources.fetch<FederationMessageQueryPage>(
+        source.threadId,
+        `/s2s/v1/messages?${query.toString()}`,
+        source.peerDomain,
+        16 * 1024 * 1024,
+      );
     } catch (error) {
       if (
         error instanceof S2sResponseError &&
@@ -218,13 +218,12 @@ export class FederationThreadReverseRoundExecutorService {
       const bundleId = this.parseForwardBundleId(item);
       let closure = byBundleId.get(bundleId);
       if (!closure) {
-        const response =
-          await this.federation.fetchThreadResource<ForwardWireBundle>(
-            source.threadId,
-            `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
-            source.peerDomain,
-            FORWARD_MAX_WIRE_JSON_BYTES,
-          );
+        const response = await this.threadResources.fetch<ForwardWireBundle>(
+          source.threadId,
+          `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
+          source.peerDomain,
+          FORWARD_MAX_WIRE_JSON_BYTES,
+        );
         this.assertSameAuthority(messageResponse, response);
         closure = response.data;
         byBundleId.set(bundleId, closure);

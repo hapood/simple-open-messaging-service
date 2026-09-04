@@ -15,7 +15,7 @@ import { AuditTargetLabelService } from './audit-target-label.service.js';
  *  - online: the in-memory SSE connection snapshot (live downlinks, aggregated per user).
  *  - activeSessions: active user session tokens (unrevoked, not past their sliding deadline).
  *  - federation: peer counts grouped by trustLevel.
- *  - media: total content bytes + asset count from MediaAsset + manually reclaimable reachability.
+ *  - media: total content bytes + asset count from MediaAsset.
  *    Uses the table aggregate, not a filesystem walk — reflects managed media and is O(1)-ish.
  *  - recentActions: the last 10 AdminActionLog rows (written by AdminAuditInterceptor).
  *
@@ -31,73 +31,52 @@ export class DashboardService {
 
   async summary() {
     const now = new Date();
-    const [
-      snap,
-      activeSessions,
-      fedGroups,
-      mediaAgg,
-      reclaimable,
-      recentActionRows,
-    ] = await Promise.all([
-      this.sseService.snapshot(),
-      this.database.db
-        .select({ value: count() })
-        .from(sessionToken)
-        .where(
-          and(
-            isNull(sessionToken.revokedAt),
-            or(isNull(sessionToken.expiresAt), gt(sessionToken.expiresAt, now)),
-          ),
-        )
-        .then(([row]) => row.value),
-      this.database.db
-        .select({ trustLevel: federatedPeer.trustLevel, value: count() })
-        .from(federatedPeer)
-        .groupBy(federatedPeer.trustLevel),
-      this.database.db
-        .select({
-          bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
-          assetCount: count(),
-          live: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = false)::int`,
-          deleted: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = true)::int`,
-        })
-        .from(mediaAsset)
-        .then(([row]) => row),
-      this.database.db
-        .execute<{ value: number }>(
-          sql`
-        SELECT count(*)::int AS value FROM "MediaAsset" asset
-        WHERE asset."isDeleted" = false
-          AND NOT EXISTS (
-            SELECT 1 FROM "MessageAsset" mm
-            JOIN "Message" message ON message.id = mm."messageId"
-            WHERE mm.digest = asset.digest AND message."isDeleted" = false
+    const [snap, activeSessions, fedGroups, mediaAgg, recentActionRows] =
+      await Promise.all([
+        this.sseService.snapshot(),
+        this.database.db
+          .select({ value: count() })
+          .from(sessionToken)
+          .where(
+            and(
+              isNull(sessionToken.revokedAt),
+              or(
+                isNull(sessionToken.expiresAt),
+                gt(sessionToken.expiresAt, now),
+              ),
+            ),
           )
-          AND NOT EXISTS (
-            SELECT 1 FROM "PendingMedia" pending
-            WHERE pending.digest = asset.digest
-              AND pending.status IN ('pending', 'failed')
-          )
-      `,
-        )
-        .then((result) => result.rows[0]?.value ?? 0),
-      this.database.db
-        .select({
-          id: adminActionLog.id,
-          action: adminActionLog.action,
-          targetType: adminActionLog.targetType,
-          targetId: adminActionLog.targetId,
-          adminId: adminActionLog.adminId,
-          adminRole: adminActionLog.adminRole,
-          status: adminActionLog.status,
-          errorMessage: adminActionLog.errorMessage,
-          ip: adminActionLog.ip,
-          at: adminActionLog.at,
-        })
-        .from(adminActionLog)
-        .orderBy(desc(adminActionLog.at))
-        .limit(10),
-    ]);
+          .then(([row]) => row.value),
+        this.database.db
+          .select({ trustLevel: federatedPeer.trustLevel, value: count() })
+          .from(federatedPeer)
+          .groupBy(federatedPeer.trustLevel),
+        this.database.db
+          .select({
+            bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
+            assetCount: count(),
+            live: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = false)::int`,
+            deleted: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = true)::int`,
+          })
+          .from(mediaAsset)
+          .then(([row]) => row),
+        this.database.db
+          .select({
+            id: adminActionLog.id,
+            action: adminActionLog.action,
+            targetType: adminActionLog.targetType,
+            targetId: adminActionLog.targetId,
+            adminId: adminActionLog.adminId,
+            adminRole: adminActionLog.adminRole,
+            status: adminActionLog.status,
+            errorMessage: adminActionLog.errorMessage,
+            ip: adminActionLog.ip,
+            at: adminActionLog.at,
+          })
+          .from(adminActionLog)
+          .orderBy(desc(adminActionLog.at))
+          .limit(10),
+      ]);
 
     const federation = {
       unrecognized: 0,
@@ -131,7 +110,6 @@ export class DashboardService {
         assetCount: mediaAgg.assetCount,
         live: mediaAgg.live,
         deleted: mediaAgg.deleted,
-        reclaimable,
       },
       recentActions,
     };

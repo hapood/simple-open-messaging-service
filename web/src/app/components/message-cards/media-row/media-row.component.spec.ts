@@ -316,7 +316,7 @@ function message(
   return {
     type: 'msg',
     msgId: images[0]?.msgId ?? 1,
-    creator: 'peer.test\u0000peer.test\u0000alice',
+    creator: JSON.stringify([1, 'peer.test', 'alice']),
     isSelf: false,
     name: 'Alice',
     text: '',

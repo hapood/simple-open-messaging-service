@@ -3,8 +3,9 @@ import type { DatabaseTransaction } from '../database/database.service.js';
 import { openFederatedAudienceInTx } from './federation-audience.js';
 
 function transaction(settingValue?: string) {
+  const returning = vi.fn().mockResolvedValue([{ id: 1n }]);
   const values = vi.fn().mockReturnValue({
-    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoNothing: vi.fn().mockReturnValue({ returning }),
   });
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ namespaceId: 7 }] }),
@@ -33,7 +34,9 @@ describe('openFederatedAudienceInTx history access', () => {
   it('allows retained history by default', async () => {
     const { tx, values } = transaction();
 
-    await openFederatedAudienceInTx(tx, 'peer.test', 11);
+    await expect(
+      openFederatedAudienceInTx(tx, 'peer.test', 11, 9n),
+    ).resolves.toBe(true);
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -41,6 +44,7 @@ describe('openFederatedAudienceInTx history access', () => {
         targetDomain: 'peer.test',
         targetNamespaceId: 7,
         messageAccessAfterSeq: 0,
+        groupMetaVisibleAfter: 9n,
       }),
     );
   });

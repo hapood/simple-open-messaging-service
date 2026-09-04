@@ -6,7 +6,7 @@ import { AdminController } from './admin.controller.js';
 import { AdminSettingsController } from './admin-settings.controller.js';
 import { AdminFederationController } from './admin-federation.controller.js';
 import { AdminQuotaController } from './admin-quota.controller.js';
-import { MediaAssetGcController } from './media-asset-gc.controller.js';
+import { MediaTransferAdminController } from './media-transfer-admin.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { AuditController } from './audit.controller.js';
 import { AdminManageController } from './admin-manage.controller.js';
@@ -19,7 +19,6 @@ import { WebAuthnService } from './webauthn.service.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
-import { MediaAssetGcService } from './media-asset-gc.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { DashboardService } from './dashboard.service.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
@@ -41,9 +40,10 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
 import { RateLimitMonitoringController } from './rate-limit-monitoring.controller.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { MessageModule } from '../message/message.module.js';
-import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
+import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { MessageReportAdminController } from './message-report-admin.controller.js';
-import { DomainCommandAdminController } from './domain-command-admin.controller.js';
+import { DurableTaskAdminController } from './durable-task-admin.controller.js';
+import { MediaStorageStatsService } from './media-storage-stats.service.js';
 
 @Module({
   imports: [
@@ -55,7 +55,6 @@ import { DomainCommandAdminController } from './domain-command-admin.controller.
     GatewayModule,
     // PushService (exported by PushModule) powers admin/push device-token management + test pushes.
     PushModule,
-    // UploadService lets MediaAssetGcService resolve CAS paths for manual cleanup.
     UploadModule,
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,
@@ -64,14 +63,14 @@ import { DomainCommandAdminController } from './domain-command-admin.controller.
     // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
     LoggerModule,
     MessageModule,
-    ThreadParticipantModule,
+    AccountThreadStateModule,
   ],
   controllers: [
     AdminController,
     AdminSettingsController,
     AdminFederationController,
     AdminQuotaController,
-    MediaAssetGcController,
+    MediaTransferAdminController,
     DashboardController,
     AuditController,
     AdminManageController,
@@ -82,7 +81,7 @@ import { DomainCommandAdminController } from './domain-command-admin.controller.
     LogViewerController,
     RateLimitMonitoringController,
     MessageReportAdminController,
-    DomainCommandAdminController,
+    DurableTaskAdminController,
   ],
   providers: [
     AdminAuthService,
@@ -90,13 +89,13 @@ import { DomainCommandAdminController } from './domain-command-admin.controller.
     WebAuthnService,
     AdminAuthGuard,
     AdminRolesGuard,
-    MediaAssetGcService,
     FederationSelfCheckService,
     FederationResetService,
     DashboardService,
     AuditTargetLabelService,
     AdminManageService,
     GroupManageService,
+    MediaStorageStatsService,
     // Self-seeds the bootstrap admin (account=admin) on every app start via OnApplicationBootstrap;
     // idempotent, decoupled from the deploy orchestrator. See admin-bootstrap.service.ts.
     AdminBootstrapService,

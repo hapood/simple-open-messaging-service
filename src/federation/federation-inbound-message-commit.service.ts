@@ -48,6 +48,11 @@ interface SatisfiedQuoteDependency {
   originSeq: number;
 }
 
+export interface ForwardTombstonePageEffect {
+  quoteDependencies: SatisfiedQuoteDependency[];
+  recipientUserIds: number[];
+}
+
 /** Commits fetched message and tombstone pages inside caller-owned cursor transactions. */
 @Injectable()
 export class FederationInboundMessageCommitService {
@@ -198,9 +203,10 @@ export class FederationInboundMessageCommitService {
   async applyTombstonesInTransaction(
     tx: DatabaseTransaction,
     params: ForwardTombstonePageCommit,
-  ): Promise<SatisfiedQuoteDependency[]> {
+  ): Promise<ForwardTombstonePageEffect> {
     await this.threadAccess.assertResourceResponseWritable(tx, params.response);
     const satisfied: SatisfiedQuoteDependency[] = [];
+    const recipientUserIds = new Set<number>();
     for (const item of params.response.data.tombstones) {
       if (
         !Number.isSafeInteger(item.deletionSeq) ||
@@ -231,6 +237,7 @@ export class FederationInboundMessageCommitService {
           'tombstone query returned an item for a different thread',
           HttpStatus.BAD_REQUEST,
         );
+      for (const userId of route.recipients) recipientUserIds.add(userId);
       const authorityDomain =
         route.groupOriginDomain ?? params.response.peerDomain;
       if (authorityDomain !== params.response.peerDomain)
@@ -258,7 +265,10 @@ export class FederationInboundMessageCommitService {
         originSeq: item.messageSeq,
       });
     }
-    return satisfied;
+    return {
+      quoteDependencies: satisfied,
+      recipientUserIds: [...recipientUserIds],
+    };
   }
 
   async publishSatisfiedQuoteDependencies(

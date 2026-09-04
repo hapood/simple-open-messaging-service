@@ -1,5 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { BusinessCode } from '../common/business-code.js';
 import { DatabaseService } from '../database/database.service.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
 
 const GLOBAL_LIMIT_KEY = 'federation:http:globalLimit';
 const PEER_LIMIT_KEY = 'federation:http:peerLimit';
@@ -7,6 +12,15 @@ const DEFAULT_GLOBAL_LIMIT = 16;
 const DEFAULT_PEER_LIMIT = 8;
 const MAX_LIMIT = 100;
 const CONFIG_TTL_MS = 5_000;
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 60_000;
+
+const RETRYABLE_CODES = new Set<number>([
+  BusinessCode.RATE_LIMITED,
+  BusinessCode.INTERNAL,
+  BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+  BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
+]);
 
 export interface FederationHttpLimits {
   global: number;
@@ -21,6 +35,7 @@ interface Waiter {
  * scheduler. Peers rotate round-robin, while requests within one peer retain FIFO order. */
 @Injectable()
 export class FederationHttpScheduler {
+  private readonly logger = new Logger(FederationHttpScheduler.name);
   private active = 0;
   private readonly activeByPeer = new Map<string, number>();
   private readonly queues = new Map<string, Waiter[]>();
@@ -45,6 +60,29 @@ export class FederationHttpScheduler {
       }
       this.pump();
     });
+  }
+
+  /** Retry one logical network operation after temporary failures. Each attempt
+   * must acquire its own ordinary HTTP slot through the transport path. */
+  async runWithRetry<T>(
+    peerDomain: string,
+    operationName: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isRetryableFederationNetworkError(error)) throw error;
+        attempt += 1;
+        const delayMs = retryDelay(attempt, retryAfterMs(error));
+        this.logger.warn(
+          `${operationName} for ${peerDomain} failed temporarily; retrying in ${delayMs}ms`,
+        );
+        await wait(delayMs);
+      }
+    }
   }
 
   invalidateLimits(): void {
@@ -124,6 +162,45 @@ export class FederationHttpScheduler {
       ? parsed
       : fallback;
   }
+}
+
+export function isRetryableFederationNetworkError(error: unknown): boolean {
+  if (error instanceof FederationTransportError) return true;
+  if (!(error instanceof S2sResponseError)) return false;
+  return (
+    error.status >= 500 ||
+    error.status === 408 ||
+    error.status === 429 ||
+    (error.code !== undefined && RETRYABLE_CODES.has(error.code))
+  );
+}
+
+function retryAfterMs(error: unknown): number {
+  if (!(error instanceof S2sResponseError)) return 0;
+  if (
+    typeof error.data !== 'object' ||
+    error.data === null ||
+    Array.isArray(error.data)
+  )
+    return 0;
+  const retryAfter = (error.data as Record<string, unknown>)['retryAfter'];
+  if (!Number.isSafeInteger(retryAfter) || Number(retryAfter) < 0) return 0;
+  return Math.min(2_147_483_647, Number(retryAfter) * 1_000);
+}
+
+function retryDelay(attempt: number, minimumDelayMs: number): number {
+  const exponential = Math.min(
+    RETRY_MAX_MS,
+    RETRY_BASE_MS * 2 ** (attempt - 1),
+  );
+  return Math.min(2_147_483_647, Math.max(exponential, minimumDelayMs));
+}
+
+function wait(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
 }
 
 export const federationHttpSettingKeys = {

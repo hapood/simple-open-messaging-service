@@ -493,7 +493,7 @@ export class UserController {
               formatSseFrame('progress', { stage: 'FETCHING_USER' }),
             );
           }
-          return this.federationService.fetchRemoteUser({ account, domain });
+          return this.federationService.fetchRemoteAccount({ account, domain });
         })(),
         deadline,
       ]);

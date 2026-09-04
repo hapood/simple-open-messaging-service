@@ -8,7 +8,7 @@ import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { AlbumImage, ChatItemData } from './chat-item';
 
 const creatorKey = (creator: number): string =>
-  `local\u0000local\u0000user-${creator}`;
+  JSON.stringify([0, 'local', `user-${creator}`]);
 
 /**
  * mergeAlbumItems unit tests: album-merge semantics + preservation of kernel correlation fields.

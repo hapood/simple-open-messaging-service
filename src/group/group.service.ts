@@ -19,7 +19,6 @@ import {
   messageThread,
   profileVersion,
   accountThreadState,
-  threadAudience,
   user,
 } from '../database/schema.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
@@ -30,7 +29,6 @@ import { ClientStateFeedService } from '../client-state-feed/client-state-feed.s
 import { FederationService } from '../federation/federation.service.js';
 import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
 import { AuthoritativeGroupMetaMutationService } from '../federation/authoritative-group-meta-mutation.service.js';
-import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -900,33 +898,6 @@ export class GroupService {
               },
             )
           : new Map<string, bigint>();
-      if (
-        transitioned &&
-        outgoing.rows[0]?.active === true &&
-        thread.groupDomain !== 'local'
-      ) {
-        await tx
-          .delete(threadAudience)
-          .where(
-            and(
-              eq(threadAudience.targetDomain, 'local'),
-              eq(threadAudience.localUserId, params.userId),
-              eq(threadAudience.threadId, params.threadId),
-            ),
-          );
-        await closeFederatedAudienceInTx(
-          tx,
-          thread.groupDomain,
-          params.threadId,
-        );
-        await tx
-          .update(messageThread)
-          .set({
-            authorizationEpoch: sql`${messageThread.authorizationEpoch} + 1`,
-            updatedAt: now,
-          })
-          .where(eq(messageThread.id, params.threadId));
-      }
       let groupRequestState = new Map<string, bigint>();
       if (transitioned && thread.groupDomain === 'local') {
         groupRequestState =

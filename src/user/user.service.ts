@@ -79,7 +79,8 @@ export class UserService {
         );
       }
       const nextRev = current.defaultProfileRev + 1;
-      const avatar = data.avatar === undefined ? current.avatar : data.avatar ?? '';
+      const avatar =
+        data.avatar === undefined ? current.avatar : (data.avatar ?? '');
       await tx.insert(profileVersion).values({
         userId,
         profileRev: nextRev,
@@ -146,7 +147,7 @@ export class UserService {
     const where = and(
       eq(user.availability, 'AVAILABLE'),
       eq(user.domain, 'local'),
-      eq(user.sourceDomain, 'local'),
+      eq(user.namespaceId, 0),
       or(ilike(user.account, `%${q}%`), ilike(user.name, `%${q}%`)),
     );
     const [list, total] = await Promise.all([
@@ -188,15 +189,11 @@ export class UserService {
           name: params.name,
           avatar: '',
           namespaceId: 0,
+          defaultProfileRev: 1,
           updatedAt: new Date(),
         })
         .onConflictDoNothing({
-          target: [
-            user.account,
-            user.domain,
-            user.sourceDomain,
-            user.namespaceId,
-          ],
+          target: [user.account, user.domain, user.namespaceId],
         })
         .returning({ id: user.id, account: user.account });
       if (!newUser) return { status: 2 };
@@ -206,7 +203,7 @@ export class UserService {
       });
       await tx.insert(profileVersion).values({
         userId: newUser.id,
-        profileRev: 0,
+        profileRev: 1,
         displayName: params.name,
         avatar: '',
         bio: '',
@@ -222,7 +219,7 @@ export class UserService {
 export type UserLookup = {
   id?: number;
   account_domain?: { account: string; domain: string };
-  sourceDomain?: string;
+  namespaceId?: number;
   availability?: 'AVAILABLE' | 'REMOVED';
 };
 
@@ -233,7 +230,7 @@ const publicUserColumns = {
   avatar: user.avatar,
   bio: user.bio,
   domain: user.domain,
-  sourceDomain: user.sourceDomain,
+  namespaceId: user.namespaceId,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
   availability: user.availability,
@@ -258,7 +255,11 @@ function userLookupCondition(where: UserLookup) {
       ? and(
           eq(user.account, where.account_domain.account),
           eq(user.domain, where.account_domain.domain),
-          eq(user.sourceDomain, where.sourceDomain ?? 'local'),
+          where.namespaceId === undefined
+            ? where.account_domain.domain === 'local'
+              ? eq(user.namespaceId, 0)
+              : undefined
+            : eq(user.namespaceId, where.namespaceId),
         )
       : undefined;
   if (!unique) throw new Error('user lookup requires id or account_domain');

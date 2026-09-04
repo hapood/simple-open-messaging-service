@@ -27,9 +27,9 @@ end instead.
 
 The device-facing projection has one feed: `ClientStateFeed`. Each compacted
 `THREAD_CONTENT_HEAD` publishes a thread's required `messageEndSeq` and
-`tombstoneEndSeq` together, plus `{ seq, text, senderId }` for its preview. If
-the currently advertised preview message is withdrawn, the transaction
-publishes an empty preview carrying that withdrawn message's sequence. The
+`tombstoneEndSeq` together. It contains neither presentation data nor a profile
+selection hint. Message catch-up derives previews, while a mounted chat resolves
+the exact author profile from each message's immutable profile reference. The
 thread-level deletion query uses `DeletedMessage.deletionSeq` directly. A federation pending fact is deduplicated by
 `(sourceDomain, thread, remoteDeletionSeq)`, because a source may reuse the same
 thread-local deletion sequence in different threads.
@@ -42,8 +42,9 @@ message sequence and the then-current `tombstoneEndSeq`. Every page of the
 initial tombstone loop sends the frozen values as `maxMessageSeq` and `through`
 until the frozen deletion end is reached. Later rounds omit `maxMessageSeq` and
 use the newly published tombstone end as `through`. Message-body and
-tombstone-body request loops remain independent. `DELETED_MESSAGE_UPDATED` SSE
-only wakes the same state-feed/tombstone path; it introduces no cursor.
+tombstone-body request loops remain independent. The ordinary
+`STATE_FEED_UPDATED` wake covers tombstone-head changes; there is no separate
+deletion SSE event.
 
 The browser and native clients persist tombstones in their ordinary message store. Applying a deletion page and advancing its HWM is one transaction. A later or concurrent message-page write cannot replace a tombstone. Mounted messages are removed; a deleted member of a merged media album rebuilds the row from the remaining members with viewport-anchor compensation. Message-scoped viewers and menus close when their target is deleted.
 

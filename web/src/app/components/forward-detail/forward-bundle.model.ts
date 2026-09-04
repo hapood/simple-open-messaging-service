@@ -11,9 +11,11 @@ export interface ForwardManifestMessage {
   /** Canonical 1-based Bundle-local id; absent only on legacy v1 snapshots. */
   id?: number;
   author: {
-    displayName: string;
     account: string;
     domain: string;
+  };
+  profile?: {
+    displayName: string;
     avatarDigest?: string;
   };
   contentType: string;

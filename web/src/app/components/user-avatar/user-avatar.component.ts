@@ -225,7 +225,7 @@ export class UserAvatarComponent {
     const account = this.account() ?? '';
     const domain = this.federatedMarkerDomain()?.toLowerCase() || 'local';
     const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
-    const n = account ? `${namespace}\u0000${domain}\u0000${account}` : '';
+    const n = account ? JSON.stringify([namespace, domain, account]) : '';
     let h = 0;
     for (let i = 0; i < n.length; i++)
       h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0;

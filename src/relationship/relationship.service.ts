@@ -31,6 +31,7 @@ import {
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
+import { lockBusinessAccountsInTx } from './business-scope-lock.js';
 
 /** Relationship-request TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -223,6 +224,15 @@ export class RelationshipService {
     const trimmed = note.slice(0, 255);
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
+      const local = await tx.query.user.findFirst({
+        where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
+        columns: { account: true, domain: true },
+      });
+      if (!local) throw new Error('local relationship endpoint does not exist');
+      await lockBusinessAccountsInTx(tx, [
+        local,
+        { account, domain: remoteDomain },
+      ]);
       const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
       const remote = await tx.query.user.findFirst({
         where: and(
@@ -1094,9 +1104,21 @@ export class RelationshipService {
     );
     let threadId = pair.threadId;
     if (threadId === null) {
+      const remoteEndpoints = [pair.endpointA, pair.endpointB].filter(
+        (endpoint) => endpoint.domain !== 'local',
+      );
+      if (remoteEndpoints.length > 1)
+        throw new Error('P2P thread cannot have two remote endpoints');
+      const authorityNamespaceId = remoteEndpoints[0]?.namespaceId ?? 0;
+      if (remoteEndpoints.length === 1 && authorityNamespaceId === 0)
+        throw new Error('federated P2P thread requires a remote namespace');
       const [thread] = await tx
         .insert(messageThread)
-        .values({ type: MessageThreadType.P2P, updatedAt: new Date() })
+        .values({
+          type: MessageThreadType.P2P,
+          authorityNamespaceId,
+          updatedAt: new Date(),
+        })
         .returning({ id: messageThread.id });
       threadId = thread.id;
       await tx
@@ -1154,8 +1176,8 @@ export class RelationshipService {
     `);
   }
 
-  /** Re-open the retained relationship. History stays on the same thread; only messages committed
-   * after this transition enter the peer feed. */
+  /** Re-open the retained relationship on the same thread. The configured federation history-access
+   * policy determines whether the recreated peer audience can query retained messages. */
   private async reactivateP2PFriendshipInTx(
     tx: DatabaseTransaction,
     threadId: number,

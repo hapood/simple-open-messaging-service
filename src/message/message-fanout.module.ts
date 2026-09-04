@@ -5,7 +5,7 @@ import { NotificationActionService } from '../notification/notification-action.s
 import { AwayNotificationService } from '../notification/away-notification.service.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
-import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
+import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { MessageModule } from './message.module.js';
 import { UserModule } from '../user/user.module.js';
 import { GroupModule } from '../group/group.module.js';
@@ -13,10 +13,10 @@ import { UploadModule } from '../upload/upload.module.js';
 
 /**
  * @Global so MessageController (text send), UploadController (staged-media promote), and any future
- * commit site can inject {@link MessageFanoutService} and run the unified NEW_MESSAGE fan-out.
+ * commit site can inject {@link MessageFanoutService} and run the unified post-commit fan-out.
  *
  * NotificationQueryService moves here from AppModule's providers (its dependencies — MessageService
- * (MessageModule), UserService, GroupService, ThreadParticipantService — are imported below). It stays
+ * (MessageModule), UserService, GroupService, AccountThreadStateService — are imported below). It stays
  * injectable app-wide because
  * this module is @Global.
  *
@@ -30,7 +30,7 @@ import { UploadModule } from '../upload/upload.module.js';
   imports: [
     GatewayModule,
     PushModule,
-    ThreadParticipantModule,
+    AccountThreadStateModule,
     MessageModule,
     UserModule,
     GroupModule,

@@ -22,15 +22,18 @@ describe('PushService — identity-only payloads', () => {
     findMany: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
   };
+  let insertValues: ReturnType<typeof vi.fn>;
+  let onConflictDoUpdate: ReturnType<typeof vi.fn>;
   let settings: {
     isWebPushConfigured: boolean;
     getVapid: ReturnType<typeof vi.fn>;
   };
-  let sse: { isUserOnline: ReturnType<typeof vi.fn> };
-
+  let sse: { isSessionOnline: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     sendNotification.mockReset();
     pushToken = { findMany: vi.fn(), findFirst: vi.fn() };
+    onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    insertValues = vi.fn(() => ({ onConflictDoUpdate }));
     settings = {
       isWebPushConfigured: true,
       getVapid: vi.fn(() => ({
@@ -39,41 +42,196 @@ describe('PushService — identity-only payloads', () => {
         privateKey: 'sk',
       })),
     };
-    sse = { isUserOnline: vi.fn(() => false) };
+    sse = { isSessionOnline: vi.fn(() => false) };
     svc = new PushService(
-      { db: { query: { pushToken } } } as never,
+      {
+        db: {
+          query: { pushToken },
+          insert: vi.fn(() => ({ values: insertValues })),
+        },
+      } as never,
       sse as never,
       settings as never,
       '/definitely-not-present/soms-firebase-service-account.json',
     );
   });
 
-  it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", ts, threadId, seq } (no body/preview/contentType/msgid)', async () => {
+  it('binds a registered Push token to the authenticated session', async () => {
+    await svc.registerToken(5, 17, {
+      token: 'token-a',
+      platform: 'ANDROID',
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 5, sessionId: 17, token: 'token-a' }),
+    );
+    expect(onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({ userId: 5, sessionId: 17 }),
+      }),
+    );
+  });
+
+  it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", messageEndSeq }', async () => {
     pushToken.findMany.mockResolvedValue([
       {
+        userId: 1,
+        sessionId: 10,
         token: 'https://fcm/x',
+        deviceId: 'browser-a',
         platform: 'WEB',
         webP256dh: 'p256',
         webAuth: 'auth',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
       },
     ]);
-    await svc.dispatchForMessage([{ userId: 1 }], 42, 7);
+    await svc.dispatchForMessage([{ userId: 1 }], 7);
     expect(sendNotification).toHaveBeenCalledTimes(1);
     const data = JSON.parse(sendNotification.mock.calls[0][1]);
-    expect(Object.keys(data).sort()).toEqual(['seq', 'threadId', 'ts', 'type']);
+    expect(Object.keys(data).sort()).toEqual(['messageEndSeq', 'type']);
     expect(data).toMatchObject({
       type: 'NEW_MESSAGE',
-      threadId: '42',
-      seq: '7',
+      messageEndSeq: '7',
     });
-    expect(typeof data.ts).toBe('string'); // FCM requires string values; Web Push JSON-stringifies
   });
 
-  it('dispatchForMessage skips recipients with a live SSE connection (no double-delivery)', async () => {
-    sse.isUserOnline.mockReturnValue(true);
-    await svc.dispatchForMessage([{ userId: 1 }], 42, 7);
-    expect(pushToken.findMany).not.toHaveBeenCalled();
+  it('dispatchForMessage deduplicates users without applying a user-wide online filter', async () => {
+    pushToken.findMany.mockResolvedValue([]);
+    await svc.dispatchForMessage([{ userId: 1 }, { userId: 1 }], 7);
+    expect(pushToken.findMany).toHaveBeenCalledOnce();
+  });
+
+  it('skips only the online device session and still sends to another device', async () => {
+    sse.isSessionOnline.mockImplementation(
+      (_userId: number, sessionId: number) => sessionId === 10,
+    );
+    pushToken.findMany.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/a',
+        deviceId: 'browser-a',
+        platform: 'WEB',
+        webP256dh: 'p256-a',
+        webAuth: 'auth-a',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      },
+      {
+        userId: 1,
+        sessionId: 11,
+        token: 'https://push/b',
+        deviceId: 'browser-b',
+        platform: 'WEB',
+        webP256dh: 'p256-b',
+        webAuth: 'auth-b',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      },
+    ]);
+
+    await svc.dispatchForMessage([{ userId: 1 }], 7);
+
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(sendNotification.mock.calls[0][0]).toMatchObject({
+      endpoint: 'https://push/b',
+    });
+  });
+
+  it('does not wake a revoked or expired authenticated session', async () => {
+    pushToken.findMany.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/revoked',
+        platform: 'WEB',
+        webP256dh: 'p256-a',
+        webAuth: 'auth-a',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: new Date(),
+        },
+      },
+      {
+        userId: 1,
+        sessionId: 11,
+        token: 'https://push/expired',
+        platform: 'WEB',
+        webP256dh: 'p256-b',
+        webAuth: 'auth-b',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() - 60_000),
+          revokedAt: null,
+        },
+      },
+    ]);
+
+    await svc.dispatchForMessage([{ userId: 1 }], 7);
+
     expect(sendNotification).not.toHaveBeenCalled();
+    expect(sse.isSessionOnline).not.toHaveBeenCalled();
+  });
+
+  it('sends an incoming call only to valid sessions without live SSE', async () => {
+    sse.isSessionOnline.mockImplementation(
+      (_userId: number, sessionId: number) => sessionId === 10,
+    );
+    pushToken.findMany.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/online',
+        platform: 'WEB',
+        webP256dh: 'p256-a',
+        webAuth: 'auth-a',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      },
+      {
+        userId: 1,
+        sessionId: 11,
+        token: 'https://push/offline',
+        platform: 'WEB',
+        webP256dh: 'p256-b',
+        webAuth: 'auth-b',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      },
+    ]);
+
+    await svc.dispatchForCall(1, {
+      callSid: 'call-1',
+      callerUserId: 2,
+      callerName: 'Alice',
+      callerAvatar: '',
+      callerAccount: 'alice',
+      callerDomain: 'example.test',
+      threadId: 42,
+      callType: 'AUDIO',
+    });
+
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(sendNotification.mock.calls[0][0]).toMatchObject({
+      endpoint: 'https://push/offline',
+    });
   });
 
   it('sendTestPush emits { type:"ADMIN_TEST", ts, title, body }', async () => {

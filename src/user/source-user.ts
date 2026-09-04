@@ -6,7 +6,6 @@ import { user } from '../database/schema.js';
 export interface SourceUserProfile {
   account: string;
   domain: string;
-  sourceDomain: string;
   namespaceId: number;
   name: string;
   avatar?: string | null;
@@ -27,7 +26,6 @@ export async function upsertSourceUserInTx(
     .values({
       account,
       domain: profile.domain,
-      sourceDomain: profile.sourceDomain,
       namespaceId: profile.namespaceId,
       name: profile.name,
       avatar: profile.avatar ?? '',
@@ -37,7 +35,7 @@ export async function upsertSourceUserInTx(
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: [user.account, user.domain, user.sourceDomain, user.namespaceId],
+      target: [user.account, user.domain, user.namespaceId],
       set: {
         name: profile.name,
         avatar: profile.avatar ?? '',
@@ -55,7 +53,6 @@ export async function upsertSourceUserInTx(
     where: and(
       eq(user.account, account),
       eq(user.domain, profile.domain),
-      eq(user.sourceDomain, profile.sourceDomain),
       eq(user.namespaceId, profile.namespaceId),
     ),
     columns: { id: true },

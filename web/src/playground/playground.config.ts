@@ -91,11 +91,10 @@ const playgroundUserService = {
     avatar: '',
     domain: 'local',
   }),
-  sendFriendInvite: () =>
-    of({ code: 0, message: 'ok', data: { inviteId: 'playground-invite' } }),
-  sendFederatedFriendInvite: () =>
-    of({ code: 0, message: 'ok', data: { inviteId: 'playground-invite' } }),
-  deleteFriend: () => of({ code: 0, message: 'ok' }),
+  requestRelationship: () =>
+    of({ code: 0, message: 'ok', data: { taskId: 'playground-task' } }),
+  revokeRelationship: () =>
+    of({ code: 0, message: 'ok', data: { taskId: 'playground-task' } }),
 };
 
 function readCspNonce(): string | null {

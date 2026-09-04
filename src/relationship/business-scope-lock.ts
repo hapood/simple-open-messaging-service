@@ -6,33 +6,25 @@ export interface BusinessScopeAddress {
   domain: string;
 }
 
-export function userPairBusinessScopeKey(
-  endpoints: readonly [BusinessScopeAddress, BusinessScopeAddress],
-): string {
-  const ordered = endpoints
-    .map((endpoint) => [endpoint.domain.toLowerCase(), endpoint.account])
-    .sort((left, right) =>
-      left[0] === right[0]
-        ? left[1]!.localeCompare(right[1]!)
-        : left[0]!.localeCompare(right[0]!),
-    );
-  return JSON.stringify(['business-scope', 'USER_PAIR', ...ordered]);
-}
-
-export function groupBusinessScopeKey(address: BusinessScopeAddress): string {
+export function businessAccountScopeKey(address: BusinessScopeAddress): string {
   return JSON.stringify([
     'business-scope',
-    'GROUP',
+    'ACCOUNT',
     address.domain.toLowerCase(),
     address.account,
   ]);
 }
 
-export async function lockBusinessScopeInTx(
+/** Locks every participating user or group address in one global order. */
+export async function lockBusinessAccountsInTx(
   tx: DatabaseTransaction,
-  key: string,
+  addresses: readonly BusinessScopeAddress[],
 ): Promise<void> {
-  await tx.execute(sql`
-    SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))
-  `);
+  const keys = [
+    ...new Set(addresses.map((address) => businessAccountScopeKey(address))),
+  ].sort();
+  for (const key of keys)
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))
+    `);
 }

@@ -24,6 +24,11 @@ export interface ParsedResourceRequest {
   query: Record<string, string>;
 }
 
+export interface FixedResourceRequestSpec {
+  path: string;
+  query: QueryField[];
+}
+
 function malformed(message: string): never {
   throw new BusinessException(
     BusinessCode.FEDERATION_MALFORMED,
@@ -68,11 +73,10 @@ function singleHeader(
   return value;
 }
 
-/** Validate the exact raw GET target before operation-specific scalar checks. */
-export function parseFederationResourceRequest(
-  req: FastifyRequest,
-  spec: ResourceRequestSpec,
-): ParsedResourceRequest {
+function splitResourceGetTarget(req: FastifyRequest): {
+  rawPath: string;
+  rawQuery: string | undefined;
+} {
   if (req.method.toUpperCase() !== 'GET')
     malformed('resource method must be GET');
   if ((req.rawBody?.length ?? 0) !== 0)
@@ -90,17 +94,16 @@ export function parseFederationResourceRequest(
   const question = rawTarget.indexOf('?');
   const rawPath = question < 0 ? rawTarget : rawTarget.slice(0, question);
   const rawQuery = question < 0 ? undefined : rawTarget.slice(question + 1);
-  if (!rawPath.startsWith(spec.pathPrefix))
-    malformed(`invalid ${spec.pathName} path`);
-  const rawPathValue = rawPath.slice(spec.pathPrefix.length);
-  if (!rawPathValue || rawPathValue.includes('/'))
-    malformed(`invalid ${spec.pathName} path`);
-  const pathValue = decodeComponent(rawPathValue, spec.pathName);
+  return { rawPath, rawQuery };
+}
 
-  const fields = spec.query ?? [];
+function parseOrderedQuery(
+  rawQuery: string | undefined,
+  fields: QueryField[],
+): Record<string, string> {
   if (fields.length === 0) {
     if (rawQuery !== undefined) malformed('query parameters are not allowed');
-    return { pathValue, query: {} };
+    return {};
   }
   if (rawQuery === undefined || rawQuery === '')
     malformed('required query parameters are missing');
@@ -125,7 +128,33 @@ export function parseFederationResourceRequest(
   }
   if (parts.length < fields.length && !fields[parts.length]?.optional)
     malformed('required query parameters are missing');
-  return { pathValue, query };
+  return query;
+}
+
+/** Validate the exact raw GET target before operation-specific scalar checks. */
+export function parseFederationResourceRequest(
+  req: FastifyRequest,
+  spec: ResourceRequestSpec,
+): ParsedResourceRequest {
+  const { rawPath, rawQuery } = splitResourceGetTarget(req);
+  if (!rawPath.startsWith(spec.pathPrefix))
+    malformed(`invalid ${spec.pathName} path`);
+  const rawPathValue = rawPath.slice(spec.pathPrefix.length);
+  if (!rawPathValue || rawPathValue.includes('/'))
+    malformed(`invalid ${spec.pathName} path`);
+  const pathValue = decodeComponent(rawPathValue, spec.pathName);
+
+  return { pathValue, query: parseOrderedQuery(rawQuery, spec.query ?? []) };
+}
+
+/** Validate a fixed-path resource request with an exact ordered raw query. */
+export function parseFederationFixedResourceRequest(
+  req: FastifyRequest,
+  spec: FixedResourceRequestSpec,
+): Record<string, string> {
+  const { rawPath, rawQuery } = splitResourceGetTarget(req);
+  if (rawPath !== spec.path) malformed('invalid resource path');
+  return parseOrderedQuery(rawQuery, spec.query);
 }
 
 export function requireUserAccount(value: string, name: string): string {

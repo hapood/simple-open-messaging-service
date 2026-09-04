@@ -126,6 +126,11 @@ persist `MessageThread.authorityNamespaceId`, and persist namespace IDs on remot
 message authors. SQLite enforces references with foreign keys. IndexedDB cannot declare foreign
 keys, so its repositories validate the same references within the write transaction.
 
+Client `User` and group-member rows do not persist a separate source domain. Their
+`namespaceId` identifies the registered publisher namespace, while `domain` remains the claimed
+wire address. UI identity keys and roster cursors encode the explicit JSON tuple
+`[namespaceId, domain, account]`; pagination compares those fields directly.
+
 There is no namespace-activation client-state event. Registration is an optimistic, monotonic client
 projection: the first newly discovered namespace for a remote domain is active; a newly discovered
 greater ID becomes active and archives every smaller ID for that domain. Rediscovering a known row

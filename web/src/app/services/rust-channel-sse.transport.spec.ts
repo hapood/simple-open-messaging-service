@@ -145,14 +145,14 @@ describe('RustChannelSseTransport', () => {
     make(rec.sink).start();
     await flush();
     t.emit('soms-sse-event', {
-      event: 'NEW_MESSAGE',
+      event: 'STATE_FEED_UPDATED',
       status: 0,
       message: 'new message',
       data: { id: 5 },
     });
     expect(rec.events).toEqual([
       {
-        event: 'NEW_MESSAGE',
+        event: 'STATE_FEED_UPDATED',
         status: 0,
         message: 'new message',
         data: { id: 5 },
@@ -276,7 +276,7 @@ describe('RustChannelSseTransport', () => {
     expect(rec.states[rec.states.length - 1]).toBe('closed');
     // Listeners detached → a Rust emit no longer reaches the sink.
     t.emit('soms-sse-event', {
-      event: 'NEW_MESSAGE',
+      event: 'STATE_FEED_UPDATED',
       status: 0,
       message: 'new message',
       data: { id: 9 },

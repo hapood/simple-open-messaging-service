@@ -27,19 +27,19 @@ import java.util.concurrent.TimeUnit
  * FCM message handler + the single source of notification rendering for ALL background paths.
  *
  * The backend (`PushService.dispatchForMessage`) sends data-only high-priority messages carrying the
- * identity-only wake-up — `{ type, ts, threadId, seq }`. There is no `notification` field, so the OS does
+ * identity-only wake-up — `{ type, messageEndSeq }`. There is no `notification` field, so the OS does
  * NOT auto-display anything: this service is always invoked (even when the OS has killed the app) and pulls
- * `POST /notifications/missed`, whose `data.notifications[]` carry the server-authored descriptor(s) — the
+ * `POST /notification-feed/query`, whose `data.notifications[]` carry the server-authored descriptor(s) — the
  * localized title/body + composited stacked-avatar icon + tag/renotify/kind semantics. [renderDescriptor]
  * maps each descriptor onto `NotificationCompat` with zero composition logic. The same descriptor is
  * rendered by the Web Push SW and the foreground Angular adapter — one source of truth.
  *
  * Foreground suppression: when the activity is visible (`appInForeground == true`) the live SSE connection
- * already delivered the message to the in-app UI, so FCM is a no-op. The server ALSO skips FCM for
- * recipients with a live SSE connection (`SseService.isUserOnline`); this flag is the client-side backstop
- * for the brief heartbeat-gap overlap.
+ * already delivered the durable State Feed wake to the in-app UI, so FCM is a no-op. The server sends Push
+ * unless this exact authenticated device session has a live SSE connection. In that case the native
+ * realtime service takes over background notification aggregation from `STATE_FEED_UPDATED`.
  *
- * All three background paths (FCM real-time, the RealtimeService background path, the WorkManager 6h poll)
+ * All background paths (FCM, live-SSE takeover, and the WorkManager 6h poll)
  * converge on [renderAwayNotification] → one coalesced away-notification at the stable [AWAY_NOTIF_ID]
  * (the descriptor's `tag` maps onto that id — replace-by-id, never stacks).
  */
@@ -47,7 +47,7 @@ class SomsMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(msg: RemoteMessage) {
         // Data-only: msg.notification is null; everything is in msg.data. Identity-only wake-up — the
-        // push carries { type, ts, threadId, seq } (no body); route on `type`.
+        // push carries { type, messageEndSeq } (no body or notification cursor); route on `type`.
         val data = msg.data
         when (data["type"]) {
             "FCM_HEALTH_PROBE" -> {
@@ -181,6 +181,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
+        private val notificationProjectionGate = NotificationProjectionGate()
 
         private fun acknowledgeFcmProbe(ctx: Context, probeId: String) {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
@@ -201,11 +202,9 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Fetch the server-authored notification descriptors from `/notifications/missed` (no cursor → the
-         *  current unread snapshot — the server-localized title/body + composited stacked-avatar icon), using
-         *  the session token + the device locale. Shared by all three background paths (FCM re-query on each
-         *  push, the WorkManager poll, the RealtimeService debounced background coalesce). Null on any
-         *  failure (auth/network/parse) — callers simply skip rendering. */
+        /** Fetch a server-authored notification delta from `/notification-feed/query`, starting after the
+         * persisted notification cursor and using the session token + device locale. Shared by all three
+         * background paths (FCM, WorkManager, RealtimeService). Null on auth/network/parse failure. */
         fun fetchDescriptors(ctx: Context): List<NotifDescriptor>? {
             val token = SomsSecureStore.getSessionToken(ctx)
             val origin = SomsSecureStore.getActiveOrigin(ctx)
@@ -261,29 +260,40 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  ([fetchDescriptors] → OkHttp `execute`), so the caller MUST be off the main thread: FCM's
          *  onMessageReceived and WorkManager's doWork already are; RealtimeService hops via its ioExecutor. */
         fun renderAwayNotification(ctx: Context, allowAlert: Boolean) {
+            if (!notificationProjectionGate.tryStart(allowAlert)) return
+            var nextAllowAlert: Boolean? = allowAlert
+            while (nextAllowAlert != null) {
+                val currentAllowAlert = nextAllowAlert
+                runCatching { renderAwayNotificationOnce(ctx, currentAllowAlert) }
+                    .onFailure { e ->
+                        SomsLog.w("Notif", e) {
+                            "renderAwayNotification failed ${e.javaClass.simpleName}: ${e.message}"
+                        }
+                    }
+                nextAllowAlert = notificationProjectionGate.nextOrFinish()
+            }
+        }
+
+        private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean) {
             val descriptors = fetchDescriptors(ctx)
             if (descriptors == null) {
                 SomsLog.w("Notif") { "renderAwayNotification: fetchDescriptors=null → skip" }
                 return
             }
             if (descriptors.isEmpty()) {
-                SomsLog.d("Notif") { "renderAwayNotification: descriptors empty → clear stale cards" }
+                SomsLog.d("Notif") { "renderAwayNotification: descriptors empty → no-op" }
+                return
             }
             renderDescriptors(ctx, descriptors, allowAlert)
         }
 
-        /** Render one stable notification per conversation. Every background entry point uses the same
-         *  process-wide five-second alert throttle. An empty snapshot cancels stale cards without erasing
-         *  dismiss HWMs. */
+        /** Apply a notification delta. Every background entry point uses the same process-wide alert
+         * throttle; threads absent from the delta remain unchanged. */
         fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>, allowAlert: Boolean) {
+            if (descriptors.isEmpty()) return
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: run {
                 SomsLog.w("Notif") { "renderDescriptors: NotificationManager unavailable → skip" }
-                return
-            }
-            if (descriptors.isEmpty()) {
-                SomsLog.d("Notif") { "renderDescriptors: empty → clear all message notifs" }
-                cancelMessageNotifications(ctx)
                 return
             }
             nm.cancel(AWAY_NOTIF_ID)
@@ -303,8 +313,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             allowAlert: Boolean,
         ) {
             // The server already dropped dismissed-0 threads (it counted each from the client's threadHwms), so
-            // `descriptors` is the visible set; stable notification ids replace each conversation in place.
-            val wantIds = HashSet<Int>()
+            // stable notification ids replace each named conversation in place. This is a delta: notifications
+            // for threads absent from this response remain untouched.
             val policy = ClientStateDb.getNotificationAlertPolicy(ctx)
             var alertSlot = allowAlert && when (policy) {
                 "cooldown_2s" -> alertThrottle2s.tryClaim()
@@ -315,7 +325,6 @@ class SomsMessagingService : FirebaseMessagingService() {
                 val tid = d.data.optInt("threadId", -1)
                 if (tid < 0) continue
                 val id = threadNotifId(tid)
-                wantIds.add(id)
                 val alertThisCard = if (policy == "once_per_thread") allowAlert else alertSlot
                 postThreadNotification(
                     ctx,
@@ -327,8 +336,6 @@ class SomsMessagingService : FirebaseMessagingService() {
                 )
                 if (policy != "once_per_thread") alertSlot = false
             }
-            // Cancel stale cards no longer present in the server snapshot.
-            cancelThreadNotificationsExcept(nm, wantIds)
             nm.cancel(LEGACY_GROUP_SUMMARY_ID)
             SomsLog.i("Notif") { "renderDescriptors: ${descriptors.size} conversation cards appInFg=$appInForeground" }
         }
@@ -465,7 +472,6 @@ class SomsMessagingService : FirebaseMessagingService() {
 
         /**
          * Render one server-authored descriptor onto `NotificationCompat`:
-         *  - `kind:"clear"` → cancel the tagged notification;
          *  - `body` → `BigTextStyle` (the coalesced "X sent you N messages" — a count summary, not a
          *    per-person conversation, so BigTextStyle, not MessagingStyle);
          *  - `icon` → `setLargeIcon` (the fetched stacked-avatar PNG; null on fetch failure → omitted);
@@ -477,11 +483,6 @@ class SomsMessagingService : FirebaseMessagingService() {
         fun renderDescriptor(ctx: Context, d: NotifDescriptor) {
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
-            if (d.kind == "clear") {
-                SomsLog.d("Notif") { "renderDescriptor kind=clear → cancel AWAY" }
-                nm.cancel(AWAY_NOTIF_ID)
-                return
-            }
             val largeIcon = d.icon?.let { fetchBitmap(ctx, it) }
                 ?: LetterAvatar.render(ctx, d.title) // no/failed composite → letter tile (in-app palette + name hash)
             SomsLog.d("Notif") { "renderDescriptor iconUrl='${d.icon}' → ${if (d.icon != null) "composite" else "letter-fallback"}" }

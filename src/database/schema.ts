@@ -857,7 +857,7 @@ export const message = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
-    /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
+    /** Direct publisher for originSeq. Null while originSeq is the local original's provisional seq. */
     federationSourceDomain: varchar({ length: 255 }),
     sourceNamespaceId: integer(),
     /** Local materialization state. STUB and FAILED are client-visible placeholders; only READY
@@ -873,7 +873,7 @@ export const message = pgTable(
     ),
     check(
       'Message_origin_seq_check',
-      sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
+      sql`${table.contentType} = 'SYSTEM' OR ${table.originSeq} > 0`,
     ),
     uniqueIndex('Message_clientMessageId_key').using(
       'btree',
@@ -1268,47 +1268,6 @@ export const federatedPeerEvent = pgTable(
   ],
 );
 
-export const pushToken = pgTable(
-  'PushToken',
-  {
-    id: serial().primaryKey().notNull(),
-    userId: integer().notNull(),
-    token: varchar({ length: 500 }).notNull(),
-    deviceId: varchar({ length: 127 }),
-    platform: pushPlatform().notNull(),
-    webP256dh: varchar('webP256dh', { length: 255 }),
-    webAuth: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    lastSeenAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('PushToken_token_key').using(
-      'btree',
-      table.token.asc().nullsLast().op('text_ops'),
-    ),
-    index('PushToken_userId_idx').using(
-      'btree',
-      table.userId.asc().nullsLast().op('int4_ops'),
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'PushToken_userId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-  ],
-);
-
 export const adminActionLog = pgTable(
   'AdminActionLog',
   {
@@ -1619,9 +1578,6 @@ export const group = pgTable(
     description: varchar({ length: 255 }).default('').notNull(),
     /** Local authoring default; federation peers can only resolve explicit references. */
     defaultProfileRev: integer().default(0).notNull(),
-    /** Whether this remote group currently has federation authorization through at least one
-     * active local member relationship. Local groups always retain false. */
-    federationAuthorized: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1651,10 +1607,6 @@ export const group = pgTable(
     check(
       'Group_defaultProfileRev_check',
       sql`${table.defaultProfileRev} >= 0`,
-    ),
-    check(
-      'Group_local_federationAuthorized_check',
-      sql`${table.domain} <> 'local' OR ${table.federationAuthorized} = false`,
     ),
   ],
 );
@@ -2471,6 +2423,59 @@ export const sessionToken = pgTable(
       'SessionToken_auto_terminate_days_check',
       sql`${table.autoTerminateDays} IN (7, 30, 90, 180, 365)`,
     ),
+  ],
+);
+
+export const pushToken = pgTable(
+  'PushToken',
+  {
+    id: serial().primaryKey().notNull(),
+    userId: integer().notNull(),
+    sessionId: integer().notNull(),
+    token: varchar({ length: 500 }).notNull(),
+    deviceId: varchar({ length: 127 }),
+    platform: pushPlatform().notNull(),
+    webP256dh: varchar('webP256dh', { length: 255 }),
+    webAuth: varchar({ length: 255 }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    lastSeenAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('PushToken_token_key').using(
+      'btree',
+      table.token.asc().nullsLast().op('text_ops'),
+    ),
+    index('PushToken_userId_idx').using(
+      'btree',
+      table.userId.asc().nullsLast().op('int4_ops'),
+    ),
+    index('PushToken_sessionId_idx').using(
+      'btree',
+      table.sessionId.asc().nullsLast().op('int4_ops'),
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [account.id],
+      name: 'PushToken_userId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+    foreignKey({
+      columns: [table.sessionId],
+      foreignColumns: [sessionToken.id],
+      name: 'PushToken_sessionId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
   ],
 );
 

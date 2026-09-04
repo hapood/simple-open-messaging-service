@@ -132,6 +132,12 @@ request. `REQUESTED -> ACCEPTED` and the later `REVOKED` transition retain that
 same value. A new request flow after revocation selects the author's chosen
 revision, normally its local default, or zero when it has none.
 
+While `REQUESTED` remains unexpired or the direction is `ACCEPTED`, the source
+MUST allow the receiver to resolve that positive exact reference through
+[Authorized Profile](./authorized-profile.md). This grant applies equally when
+the receiver-hosted endpoint is a user or a group and ends when the direction
+expires or becomes `REVOKED`.
+
 A profile update by itself MUST NOT mutate or republish a
 `RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its
 `profileRev`. Consequently, a peer with no later peer-authored message keeps

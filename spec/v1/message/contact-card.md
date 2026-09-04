@@ -59,8 +59,8 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   2.2](../resources.md#22-successful-response). Because a card transports the
   decoded resource instead of padded Base64, its `BlobDescriptor.bytes` MUST be
   in the inclusive range 1–786,432. A consumer MUST verify the actual byte
-  count, digest, image decoding, real dimensions, and
-  `width * height <= 16000000`
+  count, digest, image decoding, real dimensions, and the 512-pixel maximum
+  for each dimension
   before displaying it.
 - A consumer MUST NOT fetch a user profile merely because `avatarDigest` is
   absent or the corresponding resource cannot be downloaded.

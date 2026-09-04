@@ -1,5 +1,7 @@
 use log::warn;
 
+#[cfg(desktop)]
+use crate::secure_storage;
 use crate::{
     activate_origin, persist_origin, persist_origin_secondary, pick_origin_race,
     send_with_headers_deadline, validate_origin, HeadersError, OriginMode, ProxyState,

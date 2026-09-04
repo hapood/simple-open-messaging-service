@@ -83,7 +83,7 @@ export class LinkRowComponent {
 
   /** The parsed card payload, derived from `data().text` so an in-place update re-parses automatically:
    *  the optimistic bare `{ url }` card is swapped for the server-built rich card (title/image/...) via
-   *  the NEW_MESSAGE echo, which routes through CbElement.update (setInput('data') + detectChanges) —
+   *  the canonical message refresh, which routes through CbElement.update (setInput('data') + detectChanges) —
    *  NOT a remount — so a ngOnInit-once parse would freeze the bare card. A computed re-derives on data
    *  change. */
   readonly link = computed<LinkCard>(() => {
