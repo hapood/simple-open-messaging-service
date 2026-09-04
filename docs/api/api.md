@@ -126,8 +126,10 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - **Query**: `after`, optional `through`, `take`, and `mode=full|delta`. Returns a bounded page of
   compacted thread, profile, member-profile, request, and client-state changes after the client's
   only durable device-feed cursor. `THREAD_CONTENT_HEAD` carries required `messageEndSeq` and
-  `tombstoneEndSeq` values together with `preview: { seq, text, senderId }`. The response carries the
-  current feed end and the next cursor for deterministic catch-up.
+  `tombstoneEndSeq` high-water marks. It carries no message preview or profile-selection hint: message
+  catch-up owns list presentation, and exact author profiles are resolved only when the client reads the
+  corresponding message. The response carries the current feed end and the next cursor for deterministic
+  catch-up.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
@@ -157,8 +159,8 @@ Friend and group requests use the same directed facts. `RelationshipIntent(A,B)`
 `RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,
 one account is the group account and the other is the member account; `authorUserId` identifies which
 side authored the intent. There are no separate invite, join, friend-request, or group-membership
-request tables. The former polymorphic `Invite` table has been removed. REST
-`intentId` values are stringified ids of the corresponding directed fact.
+request tables. The former polymorphic `Invite` table has been removed. Public relationship
+operations select the counterparty by Address; database intent ids are not part of the API contract.
 See the [relationship intent state machine](../overview/relationship-intent-state-machine.md) for
 the complete transition, pair-folding, and projection-side-effect rules.
 
@@ -169,8 +171,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
   optional untrusted request-card snapshot obtained by the preceding temporary resolve. Database user
   ids are not part of the client identity contract.
 - **Response data**: `{ taskId: string, status: "PENDING" }`. Success means the task was durably accepted,
-  not that the relationship transaction has completed. The resulting `intentId` arrives through the
-  Client State Feed.
+  not that the relationship transaction has completed. Completion arrives through the Client State Feed.
 - Execution upserts the caller's directed request. A new request expires after seven days; an explicit
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
@@ -196,8 +197,8 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/accept` — Accept an incoming relationship request
 
-- **Body**: `{ intentId }` for a stored local request, or `{ account, domain }` for an addressed
-  request. Address form supports local group invitations and federated user/group requests.
+- **Body**: `{ account, domain }`. Address selection supports local and federated user requests as
+  well as local and federated group invitations.
 - For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
   active only when both directed intents are effective.
 - For a group invitation, the group mirror becomes active only after the origin's state snapshot
@@ -230,7 +231,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 ### POST `/send-message` — Send message
 
 - **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
-- **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` pushes an identity-only `NEW_MESSAGE` wake-up to live participants and notifies offline recipients. `clientMessageId` is the send-idempotency key (a retry returns the original message).
+- **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, wakes live clients through `STATE_FEED_UPDATED`, and notifies offline recipients through Push. `clientMessageId` is the send-idempotency key (a retry returns the original message).
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
 ### POST `/send-media` — Send media (staged)
@@ -412,10 +413,10 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor,
-`stateRevision`, and `activeCall`. `stateRevision` covers hydrated thread state (including group/roster
-invalidation and per-user settings/read state), cached profile changes, source-scoped member profiles, and
-incoming friend requests. Heartbeat: a `: ping` comment frame every 25s.
+On connect the server pushes a **`HELLO`** frame with `stateFeedEndId` and `activeCall`.
+`stateFeedEndId` bounds catch-up for hydrated thread state (including group/roster invalidation and per-user
+settings/read state), cached profile changes, source-scoped member profiles, incoming friend requests, and
+paired thread content heads. Heartbeat: a `: ping` comment frame every 25s.
 
 ### Frame format
 
@@ -426,20 +427,19 @@ data: <json>
 
 ### Event list (backend → frontend)
 
-| Event                        | Purpose                                            | Recovery source                           |
-| ---------------------------- | -------------------------------------------------- | ----------------------------------------- |
-| `HELLO`                      | connection handshake and current high-water marks  | sent on every connection                  |
-| `STATE_REV_UPDATED`          | identity-only unified client-state wake            | `HELLO.stateRevision` + ranged state pull |
-| `NEW_MESSAGE`                | identity-only message wake `{ threadId, seq, ts }` | missed-message/message query              |
-| `DELETED_MESSAGE_UPDATED`    | identity-only deletion-log wake                    | deletion HWM/log                          |
-| `MEDIA_STATUS`               | media-localization completion wake                 | message/media query                       |
-| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling      | active-call snapshot/new negotiation      |
-| `FORCE_LOGOUT`               | terminate a revoked session                        | authentication state                      |
+| Event                        | Purpose                                           | Recovery source                            |
+| ---------------------------- | ------------------------------------------------- | ------------------------------------------ |
+| `HELLO`                      | connection handshake and current high-water marks | sent on every connection                   |
+| `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }` | `HELLO.stateFeedEndId` + ranged state pull |
+| `MEDIA_STATUS`               | media-localization completion wake                | message/media query                        |
+| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling     | active-call snapshot/new negotiation       |
+| `FORCE_LOGOUT`               | terminate a revoked session                       | authentication state                       |
 
-There are no dedicated group, profile, friend/request, thread-metadata, or read-state SSE events. Those
-changes are committed to the unified state log first and SSE carries only `STATE_REV_UPDATED`.
+There are no dedicated group, profile, friend/request, thread-metadata, message-head, or read-state SSE
+events. Those changes are committed to the Client State Feed first and SSE carries only
+`STATE_FEED_UPDATED`. Offline Push may still use the payload type `NEW_MESSAGE`; it is not an SSE event.
 
-> Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from `stateRevision`, and messages are caught up from the per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
+> Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from the local Client State Feed cursor through `HELLO.stateFeedEndId`, and message bodies are caught up from per-thread cursors through each `THREAD_CONTENT_HEAD.messageEndSeq` (the stream does not replay history — no `Last-Event-ID`).
 
 ### Client → Server
 

@@ -11,9 +11,9 @@ import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 import {
-  waitForAcceptedDomainCommand,
-  waitForLocalFriendInvite,
-} from './domain-command-helpers.js';
+  waitForAcceptedDurableTask,
+  waitForLocalRelationshipRequest,
+} from './durable-task-helpers.js';
 import { findP2PRelationship } from './seed.js';
 
 /**
@@ -84,21 +84,21 @@ describe('LINK message send (single instance)', () => {
 
     // Alice befriends Bob → both get the P2P thread.
     const invite = await request(baseUrl)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob' });
+      .send({ account: 'bob', domain: 'local' });
     expect(invite.body.code).toBe(0);
-    const inviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.commandId,
+      invite.body.data.taskId,
       alice.id,
       bob.id,
     );
     const accept = await request(baseUrl)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId });
-    await waitForAcceptedDomainCommand(database.db, accept.body);
+      .send({ account: alice.account, domain: 'local' });
+    await waitForAcceptedDurableTask(database.db, accept.body);
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
     if (threadId === null || threadId === undefined)
@@ -145,21 +145,21 @@ describe('LINK message send (single instance)', () => {
     const alice = await registerAndLogin(appLike, 'alice2', 'Alice2');
     const bob = await registerAndLogin(appLike, 'bob2', 'Bob2');
     const invite = await request(baseUrl)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob2' })
+      .send({ account: 'bob2', domain: 'local' })
       .expect((res) => expect(res.body.code).toBe(0));
-    const inviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.commandId,
+      invite.body.data.taskId,
       alice.id,
       bob.id,
     );
     const accept = await request(baseUrl)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId });
-    await waitForAcceptedDomainCommand(database.db, accept.body);
+      .send({ account: alice.account, domain: 'local' });
+    await waitForAcceptedDurableTask(database.db, accept.body);
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
     if (threadId === null || threadId === undefined)

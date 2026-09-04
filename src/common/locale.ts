@@ -3,7 +3,7 @@
  *
  * The backend has no other i18n surface today: business outcomes travel as numeric `BusinessCode` values
  * (translated client-side), and the one prior dotted-key convention (`ApiResult.messageKey`, set only by the
- * invite controller) is a CLIENT-side translation hint. This module is the first time the backend itself
+ * relationship controller) is a CLIENT-side translation hint. This module is the first time the backend itself
  * localizes a rendered string — the notification descriptor's title/body — so it owns the locale pick.
  *
  * Stateless by design: the locale is negotiated per request from `Accept-Language` (the caller's runtime

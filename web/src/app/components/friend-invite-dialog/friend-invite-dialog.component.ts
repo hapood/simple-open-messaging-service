@@ -56,7 +56,7 @@ export class FriendInviteDialogComponent {
   readonly displayUserName = displayUserName;
   readonly avatarIdentity = computed(() => {
     const user = this.user();
-    return `${user.domain ?? 'local'}\u0000${user.account}`;
+    return JSON.stringify([user.domain ?? 'local', user.account]);
   });
 
   cancel(): void {
@@ -74,23 +74,14 @@ export class FriendInviteDialogComponent {
       ? await this.avatarRepo.getCachedDataUrl(avatarIdentity, user.avatar)
       : undefined;
     const note = this.note().trim().slice(0, 255);
-    const request = user.isGroup
-      ? this.groupService.requestFederatedJoin({
-          account: user.account,
-          domain: user.domain,
-          displayName: user.name,
-          avatar,
-          note,
-        })
-      : (user.domain || 'local') === 'local'
-        ? this.userService.sendFriendInvite({ account: user.account, note })
-        : this.userService.sendFederatedFriendInvite({
-            account: user.account,
-            domain: user.domain,
-            displayName: user.name,
-            avatar,
-            note,
-          });
+    const request = this.userService.requestRelationship({
+      account: user.account,
+      domain: user.domain || 'local',
+      ...((user.domain || 'local') === 'local'
+        ? {}
+        : { displayName: user.name, avatar }),
+      note,
+    });
     request.subscribe({
       next: (res) => {
         if (res.code === 0) {

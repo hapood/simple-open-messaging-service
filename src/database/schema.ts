@@ -2106,77 +2106,6 @@ export const groupMetaProfileFeed = pgTable(
   ],
 );
 
-/** Address-based federated friend intent. Pending/revoked intents deliberately do not require a
- * foreign User stub; the stub is materialized only after an ACCEPTED state proves the remote account
- * and the local user have converged. displayName/avatar are request-card snapshots, never identity
- * authority. */
-export const federatedFriendRequest = pgTable(
-  'FederatedFriendRequest',
-  {
-    localUserId: integer().notNull(),
-    remoteAccount: varchar({ length: 31 }).notNull(),
-    remoteDomain: varchar({ length: 63 }).notNull(),
-    namespaceId: integer().notNull(),
-    direction: varchar({ length: 16 }).notNull(),
-    status: varchar({ length: 16 }).notNull(),
-    note: varchar({ length: 255 }).default('').notNull(),
-    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    displayName: varchar({ length: 30 }),
-    avatar: text(),
-    profileRevision: integer().default(0).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [
-        table.localUserId,
-        table.namespaceId,
-        table.remoteAccount,
-        table.direction,
-      ],
-      name: 'FederatedFriendRequest_pkey',
-    }),
-    index('FederatedFriendRequest_pending_idx').on(
-      table.localUserId,
-      table.direction,
-      table.status,
-      table.expiresAt,
-    ),
-    foreignKey({
-      columns: [table.localUserId],
-      foreignColumns: [account.id],
-      name: 'FederatedFriendRequest_localUserId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.remoteDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'FederatedFriendRequest_namespace_fkey',
-    }).onDelete('restrict'),
-    check(
-      'FederatedFriendRequest_direction_check',
-      sql`${table.direction} IN ('INCOMING', 'OUTGOING')`,
-    ),
-    check(
-      'FederatedFriendRequest_status_check',
-      sql`${table.status} IN ('REQUESTED', 'ACCEPTED', 'REVOKED')`,
-    ),
-    check(
-      'FederatedFriendRequest_profileRevision_check',
-      sql`${table.profileRevision} >= 0`,
-    ),
-    check(
-      'FederatedFriendRequest_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'ACCEPTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NULL) OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
-    ),
-  ],
-);
-
 export const peerStateFeedPullCursor = pgTable(
   'PeerStateFeedPullCursor',
   {
@@ -2260,7 +2189,6 @@ export const relationshipPair = pgTable(
     endpointBNamespaceId: integer().default(0).notNull(),
     threadId: integer(),
     active: boolean().default(false).notNull(),
-    revision: integer().default(0).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2325,7 +2253,6 @@ export const relationshipPair = pgTable(
       'RelationshipPair_distinct_endpoints_check',
       sql`(${table.endpointAType}, ${table.endpointAAccount}, ${table.endpointADomain}) <> (${table.endpointBType}, ${table.endpointBAccount}, ${table.endpointBDomain})`,
     ),
-    check('RelationshipPair_revision_check', sql`${table.revision} >= 0`),
   ],
 );
 

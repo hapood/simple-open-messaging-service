@@ -62,7 +62,7 @@ export enum BusinessCode {
 
   // 20xxx friend / invite state
   FRIEND_SELF = 20001, // cannot invite / friend yourself
-  FRIEND_NOT_FOUND = 20002, // cannot unfriend someone who is not your friend (delete-friend on a non-edge)
+  FRIEND_NOT_FOUND = 20002, // the requested relationship does not exist
   FRIEND_INVALID_TARGET = 20004, // cannot befriend this target (e.g. a `!`-group account)
   INVITE_NOT_FOUND = 20010, // invite does not exist or is no longer pending
   INVITE_EXPIRED = 20011, // invite is past its expiresAt
@@ -89,7 +89,7 @@ export enum BusinessCode {
   // 50xxx federation (S2S). Ordinary operation outcomes use HTTP 200 and the code carries the
   // business meaning. Only malformed/authentication failures (400/401), temporary service
   // unavailability (503), and registered peer-relationship conflicts (409) use non-200 JSON responses.
-  FEDERATION_RECOGNITION_REQUIRED = 50001, // required bilateral recognition facts are incomplete (401)
+  FEDERATION_RECOGNITION_REQUIRED = 50001, // required directional recognition prerequisites are incomplete (401)
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
   FEDERATION_DUPLICATE = 50004, // (origin, opId) already applied (HTTP 200 idempotent result)

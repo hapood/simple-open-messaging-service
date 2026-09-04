@@ -3,9 +3,9 @@ import { eq } from 'drizzle-orm';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { user } from '../database/schema.js';
-import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
+import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { InviteService } from './invite.service.js';
+import { RelationshipService } from './relationship.service.js';
 
 type AfterClose = (
   tx: DatabaseTransaction,
@@ -13,23 +13,23 @@ type AfterClose = (
 ) => Promise<void>;
 
 @Injectable()
-export class FriendInviteCommandExecutionService {
+export class RelationshipRequestTaskExecutionService {
   private readonly logger = new Logger(
-    FriendInviteCommandExecutionService.name,
+    RelationshipRequestTaskExecutionService.name,
   );
 
   constructor(
-    private readonly inviteService: InviteService,
-    private readonly relationshipCommands: FederationRelationshipCommandService,
+    private readonly relationships: RelationshipService,
+    private readonly relationshipMutations: FederationRelationshipMutationService,
     private readonly federationService: FederationService,
     private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
-  async accept(inviteId: string, actorUserId: number): Promise<void> {
+  async accept(peerUserId: number, actorUserId: number): Promise<void> {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.inviteService.acceptInvite(
-      inviteId,
+    await this.relationships.acceptRelationshipRequest(
+      peerUserId,
       actorUserId,
       async (tx, peerUserId) => {
         const peer = await tx.query.user.findFirst({
@@ -37,7 +37,7 @@ export class FriendInviteCommandExecutionService {
           columns: { domain: true },
         });
         if (peer?.domain !== 'local') {
-          statePeers = await this.relationshipCommands.writeFriendIntentInTx(
+          statePeers = await this.relationshipMutations.writeP2PIntentInTx(
             tx,
             actorUserId,
             peerUserId,
@@ -48,7 +48,7 @@ export class FriendInviteCommandExecutionService {
           );
         } else {
           clientFeedUpdates.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
+            ...(await this.relationships.writeLocalP2PIntentInTx(
               tx,
               actorUserId,
               peerUserId,
@@ -62,19 +62,27 @@ export class FriendInviteCommandExecutionService {
     this.notifyAfterCommit(
       clientFeedUpdates,
       statePeers,
-      'friend invite acceptance',
+      'relationship request acceptance',
     );
   }
 
-  reject(inviteId: string, actorUserId: number): Promise<void> {
+  reject(peerUserId: number, actorUserId: number): Promise<void> {
     return this.closeDirection(actorUserId, (afterClose) =>
-      this.inviteService.rejectInvite(inviteId, actorUserId, afterClose),
+      this.relationships.rejectRelationshipRequest(
+        peerUserId,
+        actorUserId,
+        afterClose,
+      ),
     );
   }
 
-  revoke(inviteId: string, actorUserId: number): Promise<void> {
+  revoke(peerUserId: number, actorUserId: number): Promise<void> {
     return this.closeDirection(actorUserId, (afterClose) =>
-      this.inviteService.revokeInvite(inviteId, actorUserId, afterClose),
+      this.relationships.revokeRelationshipRequest(
+        peerUserId,
+        actorUserId,
+        afterClose,
+      ),
     );
   }
 
@@ -90,7 +98,7 @@ export class FriendInviteCommandExecutionService {
         columns: { domain: true },
       });
       if (peer?.domain !== 'local') {
-        statePeers = await this.relationshipCommands.writeFriendIntentInTx(
+        statePeers = await this.relationshipMutations.writeP2PIntentInTx(
           tx,
           actorUserId,
           peerUserId,
@@ -100,7 +108,7 @@ export class FriendInviteCommandExecutionService {
         );
       } else {
         clientFeedUpdates.push(
-          ...(await this.inviteService.writeLocalFriendIntentInTx(
+          ...(await this.relationships.writeLocalP2PIntentInTx(
             tx,
             actorUserId,
             peerUserId,
@@ -113,7 +121,7 @@ export class FriendInviteCommandExecutionService {
     this.notifyAfterCommit(
       clientFeedUpdates,
       statePeers,
-      'friend invite closure',
+      'relationship request closure',
     );
   }
 

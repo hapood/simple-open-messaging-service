@@ -53,9 +53,8 @@ const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
   'WAITING_FOR_PEER',
   'FETCHING_USER',
 ];
-// A pending invite row in the Pending / Sent tabs. `id` is the invite's BigInt id (string) — the
-// accept/revoke payload. The peer profile (name/avatar/domain/…) is embedded on the invite
-// (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
+// A relationship-request row derived from the local state-feed projection. `projectionKey` identifies
+// the cached row; actions use a local intent id when available and otherwise the exact Address.
 type PendingReq = {
   id: string;
   projectionKey: string;
@@ -102,12 +101,7 @@ type RelationshipState =
 })
 export class FriendRequestsComponent implements OnDestroy {
   readonly searchText = signal('');
-  /** When set, the in-flight federated resolve is a FIRST-CONTACT handshake with this peer domain. The
-   *  server's peer-trust-status pre-check reported the domain untrusted (no FederatedPeer 'trusted'
-   *  row), so the resolve WILL run the init handshake (up to the S2S call timeout) — show a small
-   *  "Connecting to <domain>…" banner with a Cancel button so the UI never appears frozen. Cleared the
-   *  instant the resolve settles. An already-trusted domain never sets this: its resolve is fast and
-   *  stays on the plain "Searching…" hint. This is a known server-side fact, not a latency guess. */
+  /** Set when the server reports recognition or Health progress for a federated resolve. */
   readonly connectingDomain = signal<string | null>(null);
   readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
   readonly federationStageKey = computed(
@@ -122,7 +116,6 @@ export class FriendRequestsComponent implements OnDestroy {
       percent: (current / FEDERATED_RESOLVE_STAGES.length) * 100,
     };
   });
-  private trustSub: Subscription | undefined;
   private searchSub: Subscription | undefined;
   /** Exact account resolution always yields zero or one row. */
   readonly localResults = signal<User[]>([]);
@@ -202,9 +195,10 @@ export class FriendRequestsComponent implements OnDestroy {
     this.runInviteAction(
       req,
       () =>
-        req.kind === 'GROUP'
-          ? this.userService.revokeInvite(this.inviteAction(req))
-          : this.userService.rejectInvite({ inviteId: req.id }),
+        this.userService.revokeRelationship({
+          account: req.account!,
+          domain: req.domain || 'local',
+        }),
       (res) => {
         if (res.code === 0) {
           this.pendingReqList.update((items) =>
@@ -237,7 +231,7 @@ export class FriendRequestsComponent implements OnDestroy {
     private profileResolutions: ProfileResolutionService,
   ) {
     effect(() => {
-      const revision = this.userService.friendIntentStateRevision();
+      const revision = this.userService.relationshipIntentStateRevision();
       if (
         !this.inviteListsInitialized ||
         this.observedRequestRevision === undefined ||
@@ -255,7 +249,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
   setTab(tab: number) {
     this.activeTab.set(tab);
-    if (tab === 1) this.userService.markFriendReqRead();
+    if (tab === 1) this.userService.markRelationshipRequestsRead();
   }
 
   async refreshIncomingTab(): Promise<void> {
@@ -333,9 +327,10 @@ export class FriendRequestsComponent implements OnDestroy {
     const runResolve = () => {
       this.searchSub = domain
         ? this.userService
-            .resolveFederatedUser({ account, domain }, (stage) =>
-              this.federationStage.set(stage),
-            )
+            .resolveFederatedUser({ account, domain }, (stage) => {
+              this.connectingDomain.set(domain);
+              this.federationStage.set(stage);
+            })
             .subscribe({
               next: ({ user, relationship }) => {
                 this.connectingDomain.set(null);
@@ -387,28 +382,7 @@ export class FriendRequestsComponent implements OnDestroy {
           });
     };
 
-    if (domain) {
-      // A federated address MAY need the init handshake. Whether it does is a known server-side fact
-      // (a FederatedPeer 'trusted' row), NOT a latency guess — ask first (peer-trust-status, a cheap
-      // local lookup). Only an untrusted domain means a first-contact handshake will run during the
-      // resolve, so only then surface the "Connecting to <domain>…" banner. An already-trusted domain
-      // resolves fast and stays on the plain "Searching…" hint.
-      this.trustSub = this.userService.peerTrustStatus({ domain }).subscribe({
-        next: (res) => {
-          if (res.code === 0 && !res.data!.trusted) {
-            this.connectingDomain.set(domain);
-            this.federationStage.set('DISCOVERING');
-          }
-          runResolve();
-        },
-        error: () => {
-          // Pre-flight itself failed (rare) — fall through to the resolve, which surfaces its own error.
-          runResolve();
-        },
-      });
-    } else {
-      runResolve();
-    }
+    runResolve();
   }
 
   /** A single exact account has been resolved: check the P2P relationship
@@ -501,11 +475,9 @@ export class FriendRequestsComponent implements OnDestroy {
     }
   }
 
-  /** Abort any in-flight trust pre-check or resolve and drop the connecting banner. The init handshake
-   *  is idempotent, so a partial/aborted one is safe to re-run on the next search. */
+  /** Abort any in-flight resolve and drop the connecting banner. Recognition is idempotent, so an
+   * interrupted attempt is safe to repeat on the next search. */
   private cancelInFlight() {
-    this.trustSub?.unsubscribe();
-    this.trustSub = undefined;
     this.searchSub?.unsubscribe();
     this.searchSub = undefined;
     this.connectingDomain.set(null);
@@ -532,7 +504,7 @@ export class FriendRequestsComponent implements OnDestroy {
     if (!this.pendingReqList().some((item) => item.id === req.id)) return;
     this.runInviteAction(
       req,
-      () => this.userService.acceptInvite(this.inviteAction(req)),
+      () => this.userService.acceptRelationship(this.inviteAction(req)),
       (res) => {
         if (res.code === 0) {
           // Keep the action terminal while the durable projection and the peer's federated
@@ -551,7 +523,9 @@ export class FriendRequestsComponent implements OnDestroy {
           // accepted state; the later state-feed delta authoritatively reconciles the retained history
           // row after both federated halves converge. A forced reload here only exposed a spurious loading footer and
           // cannot make peer acknowledgement arrive sooner.
-          void this.userService.markFriendRequestAccepted(req.projectionKey);
+          void this.userService.markRelationshipRequestAccepted(
+            req.projectionKey,
+          );
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
           this.pendingReqList.update((items) =>
@@ -574,7 +548,11 @@ export class FriendRequestsComponent implements OnDestroy {
   cancelSent(req: PendingReq) {
     this.runInviteAction(
       req,
-      () => this.userService.revokeInvite(this.inviteAction(req)),
+      () =>
+        this.userService.revokeRelationship({
+          account: req.account!,
+          domain: req.domain || 'local',
+        }),
       (res) => {
         if (res.code === 0) {
           // Keep the tombstone visible so the sent-request history reflects the final state.
@@ -644,22 +622,17 @@ export class FriendRequestsComponent implements OnDestroy {
     for (const entry of subscriptions) entry.subscription?.unsubscribe();
   }
 
-  private inviteAction(
-    req: PendingReq,
-  ): { inviteId: string } | { account: string; domain: string } {
-    if (req.kind === 'GROUP' && req.account && req.domain)
-      return { account: req.account, domain: req.domain };
-    if (req.kind === 'GROUP' && req.account) return { inviteId: req.account };
-    return req.domain !== 'local' && req.account && req.domain
-      ? { account: req.account, domain: req.domain }
-      : { inviteId: req.id };
+  private inviteAction(req: PendingReq): { account: string; domain: string } {
+    if (!req.account || !req.domain)
+      throw new Error('relationship request projection has no Address');
+    return { account: req.account, domain: req.domain };
   }
 
   private projectionToPending(projection: FriendRequestProjection): PendingReq {
     if (projection.kind === 'FRIEND') {
       const peer = projection.peer!;
       return {
-        id: projection.inviteId ?? projection.key,
+        id: projection.key,
         projectionKey: projection.key,
         direction: projection.direction,
         peerId: this.userIdentity(peer),
@@ -684,10 +657,10 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     const group = projection.group!;
     return {
-      id: projection.inviteId ?? projection.key,
+      id: projection.key,
       projectionKey: projection.key,
       direction: projection.direction,
-      peerId: `pending-group:${group.domain}\u0000${group.account}`,
+      peerId: JSON.stringify(['pending-group', group.domain, group.account]),
       name: group.name,
       avatar: group.avatar,
       account: group.account,
@@ -714,7 +687,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   private addressIdentity(account: string, domain: string): string {
-    return `${domain || 'local'}\u0000${account}`;
+    return JSON.stringify([domain || 'local', account]);
   }
 
   relativeDate(timestamp: number): string {
@@ -749,8 +722,8 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     this.toPendingErrTxt.set('');
 
-    // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
-    // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
+    // The page is read entirely from the local relationship-request projection. The state feed embeds
+    // the pending profile snapshot, so rendering does not depend on a legacy server-side invite list.
     try {
       const page = await this.userService.listLocalFriendRequests(
         'INCOMING',
@@ -877,12 +850,13 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
-    this.observedRequestRevision = this.userService.friendIntentStateRevision();
+    this.observedRequestRevision =
+      this.userService.relationshipIntentStateRevision();
     this.inviteListsInitialized = true;
     void Promise.all([
       this.loadIncomingInvites(true),
       this.loadOutgoingInvites(true),
     ]);
-    if (initialTab === 1) this.userService.markFriendReqRead();
+    if (initialTab === 1) this.userService.markRelationshipRequestsRead();
   }
 }

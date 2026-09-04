@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
+import { normalizeAccount } from '../common/account.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
   messageThread,
@@ -62,6 +63,104 @@ type RawIntent = {
  * owning relationship transaction after all state-machine side effects have been determined. */
 @Injectable()
 export class RelationshipIntentService {
+  /** Apply a remote-authored P2P fact without requiring a materialized remote User. */
+  async applyRemoteP2PIntentByAddressInTx(
+    tx: DatabaseTransaction,
+    params: {
+      localUserId: number;
+      remote: { account: string; domain: string; namespaceId: number };
+      status: RelationshipIntentStatus;
+      profileRev: number;
+      note: string;
+      requestedAt: Date | null;
+      expiresAt: Date | null;
+    },
+  ) {
+    const located = await this.lockP2PAddressPairInTx(
+      tx,
+      params.localUserId,
+      params.remote,
+    );
+    const result = await this.applyRemoteIntentOnPairInTx(tx, {
+      pair: located.pair,
+      authorSide: located.remoteSide,
+      status: params.status,
+      profileRev: params.profileRev,
+      note: params.note,
+      requestedAt: params.requestedAt,
+      expiresAt: params.expiresAt,
+    });
+    return {
+      ...result,
+      ...located,
+      localIntent: await this.readIntentInTx(
+        tx,
+        located.pair.id,
+        located.localSide,
+      ),
+      remoteIntent: await this.readIntentInTx(
+        tx,
+        located.pair.id,
+        located.remoteSide,
+      ),
+    };
+  }
+
+  /** Read and lock an existing P2P relationship by Address without creating identity or pair rows. */
+  async readP2PRelationshipByAddressInTx(
+    tx: DatabaseTransaction,
+    localUserId: number,
+    remote: { account: string; domain: string; namespaceId: number },
+  ): Promise<
+    | {
+        pair: LockedPair;
+        localSide: 'A' | 'B';
+        remoteSide: 'A' | 'B';
+        localIntent: RelationshipIntentState | undefined;
+        remoteIntent: RelationshipIntentState | undefined;
+      }
+    | undefined
+  > {
+    const key = await this.prepareP2PAddressKeyInTx(tx, localUserId, remote);
+    await lockBusinessScopeInTx(
+      tx,
+      userPairBusinessScopeKey([key.endpointA, key.endpointB]),
+    );
+    const locked = await tx.execute<{
+      id: string;
+      active: boolean;
+      threadId: number | null;
+    }>(sql`
+      SELECT id, active, "threadId" FROM "RelationshipPair"
+      WHERE kind = 'P2P'
+        AND "endpointAType" = 'USER'
+        AND "endpointAAccount" = ${key.endpointA.account}
+        AND "endpointADomain" = ${key.endpointA.domain}
+        AND "endpointANamespaceId" = ${key.endpointA.namespaceId}
+        AND "endpointBType" = 'USER'
+        AND "endpointBAccount" = ${key.endpointB.account}
+        AND "endpointBDomain" = ${key.endpointB.domain}
+        AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
+      FOR UPDATE
+    `);
+    const row = locked.rows[0];
+    if (!row) return undefined;
+    const pair: LockedPair = {
+      ...key,
+      id: BigInt(row.id),
+      active: row.active,
+      threadId: row.threadId,
+    };
+    await this.lockIntentRowsInTx(tx, pair.id);
+    return {
+      pair,
+      localSide: key.localSide,
+      remoteSide: key.remoteSide,
+      localIntent: await this.readIntentInTx(tx, pair.id, key.localSide),
+      remoteIntent: await this.readIntentInTx(tx, pair.id, key.remoteSide),
+    };
+  }
+
   async writeP2PAuthoredIntentInTx(
     tx: DatabaseTransaction,
     params: {
@@ -158,22 +257,6 @@ export class RelationshipIntentService {
       reverseChanged,
       shouldBeActive: await this.shouldBeActiveInTx(tx, pair.id),
     };
-  }
-
-  async hasValidInviteInTx(
-    tx: DatabaseTransaction,
-    authorUserId: number,
-    subjectUserId: number,
-  ): Promise<boolean> {
-    const pair = await this.lockUserPairMutationInTx(
-      tx,
-      authorUserId,
-      subjectUserId,
-      null,
-    );
-    const authorSide = await this.userSideInPair(tx, pair, authorUserId);
-    const intent = await this.readIntentInTx(tx, pair.id, authorSide);
-    return isEffectiveRelationshipIntent(intent, new Date());
   }
 
   async hasValidGroupInviteInTx(
@@ -340,6 +423,24 @@ export class RelationshipIntentService {
     return changed;
   }
 
+  /** Reads the member-authored profile reference captured for the current membership interval. */
+  async readGroupMemberProfileRevInTx(
+    tx: DatabaseTransaction,
+    params: {
+      groupId: number;
+      memberUserId: number;
+      threadId: number;
+    },
+  ): Promise<number> {
+    const pair = await this.lockGroupMutationInTx(tx, params);
+    const intent = await this.readIntentInTx(tx, pair.id, 'B');
+    if (!intent)
+      throw new Error('active group member has no member-authored intent');
+    if (!Number.isSafeInteger(intent.profileRev) || intent.profileRev < 0)
+      throw new Error('active group member has an invalid profile revision');
+    return intent.profileRev;
+  }
+
   /** Acquires the canonical lock set for every local or federated group-relationship mutation. */
   async lockGroupMutationInTx(
     tx: DatabaseTransaction,
@@ -438,13 +539,7 @@ export class RelationshipIntentService {
       sql`, `,
     );
     await tx.execute(sql`
-      SELECT id FROM "ThreadMember"
-      WHERE "threadId" = ${params.threadId} AND "userId" IN (${userIds})
-      ORDER BY "userId"
-      FOR UPDATE
-    `);
-    await tx.execute(sql`
-      SELECT id FROM "ThreadParticipant"
+      SELECT id FROM "AccountThreadState"
       WHERE "threadId" = ${params.threadId} AND "accountId" IN (${userIds})
       ORDER BY "accountId"
       FOR UPDATE
@@ -684,6 +779,69 @@ export class RelationshipIntentService {
     return pair;
   }
 
+  private async lockP2PAddressPairInTx(
+    tx: DatabaseTransaction,
+    localUserId: number,
+    remote: { account: string; domain: string; namespaceId: number },
+  ): Promise<{
+    pair: LockedPair;
+    localSide: 'A' | 'B';
+    remoteSide: 'A' | 'B';
+  }> {
+    const key = await this.prepareP2PAddressKeyInTx(tx, localUserId, remote);
+    await lockBusinessScopeInTx(
+      tx,
+      userPairBusinessScopeKey([key.endpointA, key.endpointB]),
+    );
+    const pair = await this.lockCanonicalPairInTx(tx, key);
+    await this.lockIntentRowsInTx(tx, pair.id);
+    return {
+      pair,
+      localSide: key.localSide,
+      remoteSide: key.remoteSide,
+    };
+  }
+
+  private async prepareP2PAddressKeyInTx(
+    tx: DatabaseTransaction,
+    localUserId: number,
+    remote: { account: string; domain: string; namespaceId: number },
+  ): Promise<PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' }> {
+    const local = await tx.query.user.findFirst({
+      where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
+      columns: { account: true, domain: true, namespaceId: true },
+    });
+    if (!local) throw new Error('local relationship endpoint does not exist');
+    const relationshipNamespaceId = this.relationshipNamespaceId(
+      local.namespaceId,
+      remote.namespaceId,
+    );
+    const localEndpoint: RelationshipEndpoint = {
+      type: 'USER',
+      account: local.account,
+      domain: local.domain,
+      namespaceId: relationshipNamespaceId,
+    };
+    const remoteEndpoint: RelationshipEndpoint = {
+      type: 'USER',
+      account: normalizeAccount(remote.account),
+      domain: remote.domain.trim().toLowerCase(),
+      namespaceId: relationshipNamespaceId,
+    };
+    const endpoints = [localEndpoint, remoteEndpoint].sort((left, right) =>
+      this.compareEndpoints(left, right),
+    );
+    const localSide = endpoints[0] === localEndpoint ? 'A' : 'B';
+    return {
+      kind: 'P2P',
+      endpointA: endpoints[0]!,
+      endpointB: endpoints[1]!,
+      threadId: null,
+      localSide,
+      remoteSide: localSide === 'A' ? 'B' : 'A',
+    };
+  }
+
   private async lockCanonicalPairInTx(
     tx: DatabaseTransaction,
     key: PairKey,
@@ -726,7 +884,7 @@ export class RelationshipIntentService {
           ),
         );
     const locked = await tx.execute<{
-      id: bigint;
+      id: string;
       active: boolean;
       threadId: number | null;
     }>(sql`
@@ -758,10 +916,9 @@ export class RelationshipIntentService {
   ): Promise<boolean> {
     const changed = await tx.execute(sql`
       UPDATE "RelationshipPair"
-      SET active = ${active}, revision = revision + 1,
-        "updatedAt" = CURRENT_TIMESTAMP
+      SET active = ${active}, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${pairId} AND active IS DISTINCT FROM ${active}
-      RETURNING revision
+      RETURNING id
     `);
     return (changed.rowCount ?? 0) > 0;
   }
@@ -917,8 +1074,11 @@ export class RelationshipIntentService {
     left: RelationshipEndpoint,
     right: RelationshipEndpoint,
   ): number {
-    return `${left.type}\u0000${left.domain}\u0000${left.account}\u0000${left.namespaceId}`.localeCompare(
-      `${right.type}\u0000${right.domain}\u0000${right.account}\u0000${right.namespaceId}`,
+    return (
+      left.type.localeCompare(right.type) ||
+      left.domain.localeCompare(right.domain) ||
+      left.account.localeCompare(right.account) ||
+      left.namespaceId - right.namespaceId
     );
   }
 

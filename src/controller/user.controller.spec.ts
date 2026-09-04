@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { FastifyRequest } from 'fastify';
 import { UserController } from './user.controller.js';
 
@@ -77,56 +78,88 @@ describe('UserController.queryStateFeed', () => {
   });
 });
 
-describe('UserController.deleteFriend', () => {
-  it('validates the relationship and queues its existing thread transaction', async () => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({ id: 9, account: 'bob', domain: 'local' })
-        .mockResolvedValueOnce({ id: 7, account: 'alice', domain: 'local' }),
+describe('UserController.resolveFederatedUserStream', () => {
+  it('completes explicit recognition and Health before fetching a profile', async () => {
+    const calls: string[] = [];
+    const federationService = {
+      ourDomain: 'local.example',
+      hasCompletePeerRecognition: vi.fn().mockResolvedValue(false),
+      checkPeerOutboundReady: vi.fn(async () => {
+        calls.push('directions');
+      }),
+      checkPeerHealth: vi.fn(async () => {
+        calls.push('health');
+        return 'degraded';
+      }),
+      fetchRemoteUser: vi.fn(async () => {
+        calls.push('profile');
+        return {
+          account: 'bob',
+          domain: 'peer.example',
+          displayName: 'Bob',
+          avatar: null,
+          bio: '',
+          profileRev: 1,
+        };
+      }),
     };
-    const participantService = {
-      findP2PThreadBetween: vi.fn().mockResolvedValue(12),
-      findLatestP2PThreadBetween: vi.fn(),
-      endP2P: vi.fn(),
+    const federationRecognition = {
+      subscribeProgress: vi.fn(
+        (_domain: string, listener: (stage: 'DISCOVERING') => void) => {
+          listener('DISCOVERING');
+          return vi.fn();
+        },
+      ),
+      recognize: vi.fn(async () => {
+        calls.push('recognize');
+      }),
     };
-    const domainCommands = {
-      enqueue: vi.fn().mockResolvedValue({ commandId: 95n }),
+    const inviteService = {
+      federatedRelationshipStatus: vi.fn().mockResolvedValue('NONE'),
     };
     const controller = new UserController(
-      userService as never,
-      participantService as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      { ourDomain: 'local.test' } as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
-      domainCommands as never,
+      {} as never,
+      federationService as never,
+      federationRecognition as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      inviteService as never,
+      {} as never,
+    );
+    const raw = new EventEmitter() as EventEmitter & {
+      chunks: string[];
+      writeHead: ReturnType<typeof vi.fn>;
+      write: (chunk: string) => boolean;
+      end: () => void;
+    };
+    raw.chunks = [];
+    raw.writeHead = vi.fn();
+    raw.write = (chunk: string) => {
+      raw.chunks.push(chunk);
+      return true;
+    };
+    raw.end = () => raw.emit('close');
+    const reply = { hijack: vi.fn(), raw };
+    const req = {
+      user: { userId: 7 },
+      headers: {},
+    } as unknown as FastifyRequest;
+
+    await controller.resolveFederatedUserStream(
+      req,
+      { account: 'bob', domain: 'peer.example' },
+      reply as never,
     );
 
-    await expect(
-      controller.deleteFriend({ user: { userId: 7 } } as never, {
-        account: ' Bob ',
-        deleteData: true,
-      }),
-    ).resolves.toEqual({ commandId: '95', status: 'PENDING' });
-    expect(domainCommands.enqueue).toHaveBeenCalledWith({
-      aggregate: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
-        ],
-      },
-      commandType: 'END_FRIENDSHIP',
-      actorUserId: 7,
-      payload: { threadId: 12, deleteData: true },
-    });
-    expect(participantService.endP2P).not.toHaveBeenCalled();
+    expect(calls).toEqual(['recognize', 'health', 'directions', 'profile']);
+    expect(raw.chunks.join('')).toContain('"stage":"WAITING_FOR_PEER"');
+    expect(raw.chunks.join('')).toContain('"stage":"FETCHING_USER"');
+    expect(raw.chunks.join('')).toContain('event: resolved');
   });
 });

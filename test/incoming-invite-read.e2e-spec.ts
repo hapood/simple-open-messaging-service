@@ -58,7 +58,7 @@ describe('incoming invitation read watermark', () => {
     const auth = { Authorization: `Bearer ${seeded.token}` };
 
     const advanced = await request(app.getHttpServer())
-      .post('/api/v1/invite/incoming/read')
+      .post('/api/v1/relationship/requests/read')
       .set(auth)
       .send({ readThroughFeedId: 1 })
       .expect(200);
@@ -83,7 +83,7 @@ describe('incoming invitation read watermark', () => {
     });
 
     const replay = await request(app.getHttpServer())
-      .post('/api/v1/invite/incoming/read')
+      .post('/api/v1/relationship/requests/read')
       .set(auth)
       .send({ readThroughFeedId: 0 })
       .expect(200);
@@ -95,7 +95,7 @@ describe('incoming invitation read watermark', () => {
     expect(owner?.stateFeedAllocatedThrough).toBe(2);
 
     await request(app.getHttpServer())
-      .post('/api/v1/invite/incoming/read')
+      .post('/api/v1/relationship/requests/read')
       .set(auth)
       .send({ readThroughFeedId: 3 })
       .expect(400);

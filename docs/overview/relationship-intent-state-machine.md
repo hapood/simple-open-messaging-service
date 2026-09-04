@@ -61,9 +61,10 @@ REV + *   = UNCONFIRMED
 
 Runtime authorization requires two effective directions and at least one persisted `ACK`.
 `RelationshipPair.active` materializes this folded result and is the fact read by
-runtime permission checks. `ThreadMember` retains roster linkage, role, and
-history visibility; `ThreadParticipant` retains local account settings. Neither
-table grants access.
+runtime permission checks. A P2P thread's two identities are the pair endpoints;
+canonical or replicated Group Meta retains group roster state, role, and its
+profile reference. `AccountThreadState` retains local account settings. None of
+these projections grants access.
 
 For a group/member pair, direction supplies the business meaning without another state machine:
 
@@ -99,6 +100,17 @@ Repeated delivery of the same committed fact has the same result as applying it 
 | Group invitation projection  | Server        | Render group-authored invitations waiting for members in group management  |
 
 Rebuilding a projection from the same directed intents cannot change the folded relationship.
+
+## Retention and shell cleanup
+
+`REVOKED` has no expiry and is retained as the author's current directional
+fact. Neither ordinary relationship-shell cleanup nor media cleanup physically
+deletes `RelationshipPair` or `RelationshipIntent`. The shell cleanup may
+delete an inactive, message-free P2P `MessageThread` and its local
+`AccountThreadState` rows; the pair's nullable `threadId` is cleared by its
+foreign-key action while both directed facts remain. A later request reuses the
+same canonical pair and overwrites only its author's direction through the
+state machine above.
 
 ## User-view request projection
 
@@ -201,7 +213,7 @@ presentation concerns and cannot affect membership.
 - An expired incoming request is a no-op for the authoritative pair and every projection.
 
 Relevant implementation entry points are
-[`RelationshipIntentService`](../../src/invite/relationship-intent.service.ts),
-[`deriveRelationshipIntentTransition`](../../src/invite/relationship-intent-state.ts), and the client
+[`RelationshipIntentService`](../../src/relationship/relationship-intent.service.ts),
+[`deriveRelationshipIntentTransition`](../../src/relationship/relationship-intent-state.ts), and the client
 request projection in
 [`FriendRequestProjection`](../../web/src/app/services/friend-request-state.ts).

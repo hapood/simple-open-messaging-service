@@ -43,7 +43,7 @@ export class HomeComponent implements OnInit {
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
   // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
-  // constructors: ThreadRepository routes NEW_MESSAGE / STATE_REV_UPDATED and reconnect refresh.
+  // constructors: ThreadRepository routes State Feed / attention revisions and reconnect refresh.
   // Group roster invalidation is emitted locally only after
   // the corresponding durable state delta has been applied.
   // Injecting them here guarantees their subscriptions are alive for the whole home-route session
@@ -59,6 +59,6 @@ export class HomeComponent implements OnInit {
 
     // Friend-lifecycle signals no longer need a dedicated SSE subscription here:
     //  - FRIEND_REQUEST badge: armed by the unified state delta and compared with this device's seen cursor.
-    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by STATE_REV_UPDATED.
+    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by STATE_FEED_UPDATED.
   }
 }

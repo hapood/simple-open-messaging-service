@@ -9,22 +9,18 @@ import {
   relationshipIntent,
   group,
   messageThread,
-  threadMember,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../src/database/schema.js';
-import { InviteService } from '../src/invite/invite.service.js';
-import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
+import { RelationshipService } from '../src/relationship/relationship.service.js';
+import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import {
-  findP2PRelationship,
-  seedFederatedPeerNamespace,
-} from './seed.js';
+import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 
 describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
   let database: DatabaseService;
-  let invites: InviteService;
+  let relationships: RelationshipService;
   let relationships: RelationshipIntentService;
 
   beforeAll(async () => {
@@ -33,7 +29,7 @@ describe('federation directed-state boundaries', () => {
     }).compile();
     database = mod.get(DatabaseService);
     relationships = new RelationshipIntentService();
-    invites = new InviteService(
+    relationships = new RelationshipService(
       database,
       {} as never,
       new ClientStateFeedService(database, {
@@ -58,7 +54,6 @@ describe('federation directed-state boundaries', () => {
             account: `boundary-local-${suffix}`,
             name: 'local',
             domain: 'local',
-            sourceDomain: 'local',
             namespaceId: 0,
             updatedAt: new Date(),
           },
@@ -66,7 +61,6 @@ describe('federation directed-state boundaries', () => {
             account: `boundary-peer-${suffix}`,
             name: 'peer',
             domain: 'peer.test',
-            sourceDomain: 'peer.test',
             namespaceId: peerNamespaceId,
             updatedAt: new Date(),
           },
@@ -133,10 +127,11 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'ACCEPTED',
+        profileRev: 1,
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -174,7 +169,13 @@ describe('federation directed-state boundaries', () => {
     const { local, peer } = await createPair(`o-${Date.now().toString(36)}`);
 
     await database.db.transaction((tx) =>
-      invites.writeLocalFriendIntentInTx(tx, local.id, peer.id, true, 'hello'),
+      relationships.writeLocalP2PIntentInTx(
+        tx,
+        local.id,
+        peer.id,
+        true,
+        'hello',
+      ),
     );
 
     const relationship = await findP2PRelationship(
@@ -209,10 +210,11 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'REQUESTED',
+        profileRev: 1,
         note: 'peer request',
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
@@ -237,16 +239,65 @@ describe('federation directed-state boundaries', () => {
     expect(
       (await findP2PRelationship(database.db, local.id, peer.id)).pair,
     ).toMatchObject({ active: true, threadId: effect.threadId });
-    expect(
-      await database.db.query.threadMember.findMany({
-        where: eq(threadMember.threadId, effect.threadId!),
-      }),
-    ).toHaveLength(2);
     const localParticipants = await database.db
-      .select({ id: threadParticipant.id })
-      .from(threadParticipant)
-      .where(eq(threadParticipant.threadId, effect.threadId!));
+      .select({ id: accountThreadState.id })
+      .from(accountThreadState)
+      .where(eq(accountThreadState.threadId, effect.threadId!));
     expect(localParticipants).toHaveLength(1);
+  });
+
+  it('closes stale addressed requests when a remote revoke closes the pair', async () => {
+    const { local, peer } = await createPair(
+      `ar-${Date.now().toString(36).slice(-6)}`,
+    );
+    const requestedAt = new Date();
+    const expiresAt = new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000);
+    await seedIntents(local.id, peer.id, [
+      {
+        author: 'local',
+        status: 'REQUESTED',
+        requestedAt,
+        expiresAt,
+      },
+      {
+        author: 'peer',
+        status: 'REQUESTED',
+        requestedAt,
+        expiresAt,
+      },
+    ]);
+    await database.db.transaction((tx) =>
+      relationships.applyRemoteP2PIntentInTx(tx, {
+        localUserId: local.id,
+        peerUserId: peer.id,
+        status: 'REVOKED',
+        profileRev: 1,
+        note: '',
+        requestedAt: null,
+        expiresAt: null,
+        origin: 'peer.test',
+      }),
+    );
+
+    const relationship = await findP2PRelationship(
+      database.db,
+      local.id,
+      peer.id,
+    );
+    await expect(
+      database.db.query.relationshipIntent.findMany({
+        where: eq(relationshipIntent.pairId, relationship.pair!.id),
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: 'REVOKED',
+        expiresAt: null,
+      }),
+      expect.objectContaining({
+        status: 'REVOKED',
+        expiresAt: null,
+      }),
+    ]);
   });
 
   it('confirms ACCEPTED + REQUESTED without waiting for a second acknowledgement', async () => {
@@ -265,10 +316,11 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'REQUESTED',
+        profileRev: 1,
         note: 'peer request',
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
@@ -304,10 +356,11 @@ describe('federation directed-state boundaries', () => {
     const remoteRequestedAt = new Date();
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'REQUESTED',
+        profileRev: 1,
         note: 'fresh',
         requestedAt: remoteRequestedAt,
         expiresAt: new Date(remoteRequestedAt.getTime() + 24 * 60 * 60 * 1000),
@@ -364,10 +417,11 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'ACCEPTED',
+        profileRev: 1,
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -412,10 +466,11 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     const effect = await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
         status: 'ACCEPTED',
+        profileRev: 1,
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -459,7 +514,7 @@ describe('federation directed-state boundaries', () => {
     ]);
 
     await database.db.transaction((tx) =>
-      invites.writeLocalFriendIntentInTx(
+      relationships.writeLocalP2PIntentInTx(
         tx,
         local.id,
         peer.id,
@@ -502,7 +557,7 @@ describe('federation directed-state boundaries', () => {
       })
       .returning({ id: messageThread.id });
 
-    const firstId = await invites.createGroupInvite(
+    const firstId = await relationships.createGroupInvite(
       owner.id,
       thread.id,
       target.id,
@@ -516,7 +571,7 @@ describe('federation directed-state boundaries', () => {
         expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       })
       .where(eq(relationshipIntent.id, BigInt(firstId)));
-    const secondId = await invites.createGroupInvite(
+    const secondId = await relationships.createGroupInvite(
       owner.id,
       thread.id,
       target.id,

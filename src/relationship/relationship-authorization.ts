@@ -6,7 +6,7 @@ import type {
 
 type QueryExecutor = Database | DatabaseTransaction;
 
-const endpointMatchesUserSql = (
+export const relationshipEndpointMatchesUserSql = (
   pairAlias: SQLWrapper,
   side: 'A' | 'B',
   identityAlias: SQLWrapper,
@@ -30,6 +30,19 @@ const pairNamespaceMatchesUsersSql = (
     ELSE ${secondIdentityAlias}."namespaceId"
   END`;
 
+export const relationshipPairMatchesUsersSql = (
+  pairAlias: SQLWrapper,
+  firstIdentityAlias: SQLWrapper,
+  secondIdentityAlias: SQLWrapper,
+) => sql`${pairNamespaceMatchesUsersSql(pairAlias, firstIdentityAlias, secondIdentityAlias)}
+  AND ((
+    ${relationshipEndpointMatchesUserSql(pairAlias, 'A', firstIdentityAlias)}
+    AND ${relationshipEndpointMatchesUserSql(pairAlias, 'B', secondIdentityAlias)}
+  ) OR (
+    ${relationshipEndpointMatchesUserSql(pairAlias, 'B', firstIdentityAlias)}
+    AND ${relationshipEndpointMatchesUserSql(pairAlias, 'A', secondIdentityAlias)}
+  ))`;
+
 /** One directed intent for a fixed Pair endpoint. This is request/one-way authority only. */
 export const effectiveRelationshipIntentSql = (
   authorUserId: SQLWrapper | number,
@@ -42,12 +55,12 @@ export const effectiveRelationshipIntentSql = (
   JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
   WHERE ${pairNamespaceMatchesUsersSql(sql`pair`, sql`author_identity`, sql`subject_identity`)}
     AND (
-      (${endpointMatchesUserSql(sql`pair`, 'A', sql`author_identity`)}
-       AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`subject_identity`)}
+      (${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`author_identity`)}
+       AND ${relationshipEndpointMatchesUserSql(sql`pair`, 'B', sql`subject_identity`)}
        AND intent."authorSide" = 'A')
       OR
-      (${endpointMatchesUserSql(sql`pair`, 'B', sql`author_identity`)}
-       AND ${endpointMatchesUserSql(sql`pair`, 'A', sql`subject_identity`)}
+      (${relationshipEndpointMatchesUserSql(sql`pair`, 'B', sql`author_identity`)}
+       AND ${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`subject_identity`)}
        AND intent."authorSide" = 'B')
     )
     AND (intent.status = 'ACCEPTED'
@@ -64,14 +77,7 @@ export const mutuallyAuthorizedSql = (
   JOIN "User" first_identity ON first_identity.id = ${firstUserId}
   JOIN "User" second_identity ON second_identity.id = ${secondUserId}
   WHERE pair.active = true
-    AND ${pairNamespaceMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
-    AND ((
-      ${endpointMatchesUserSql(sql`pair`, 'A', sql`first_identity`)}
-      AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`second_identity`)}
-    ) OR (
-      ${endpointMatchesUserSql(sql`pair`, 'B', sql`first_identity`)}
-      AND ${endpointMatchesUserSql(sql`pair`, 'A', sql`second_identity`)}
-    ))
+    AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
 )`;
 
 export async function isPairMutuallyAuthorized(
@@ -98,8 +104,8 @@ export async function isThreadMutuallyAuthorized(
       WHERE pair."threadId" = ${threadId}
         AND pair.active = true
         AND (
-          (${endpointMatchesUserSql(sql`pair`, 'A', sql`identity`)})
-          OR (${endpointMatchesUserSql(sql`pair`, 'B', sql`identity`)})
+          (${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`identity`)})
+          OR (${relationshipEndpointMatchesUserSql(sql`pair`, 'B', sql`identity`)})
         )
     ) AS authorized
   `);

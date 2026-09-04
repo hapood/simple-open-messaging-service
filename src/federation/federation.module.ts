@@ -6,6 +6,14 @@ import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationGroupMembershipService } from './federation-group-membership.service.js';
+import { AuthoritativeGroupMetaMutationService } from './authoritative-group-meta-mutation.service.js';
+import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
+import { FederationGroupMetaTaskCoordinator } from './federation-group-meta-task-coordinator.service.js';
+import { GroupMetaSyncTaskExecutionService } from './group-meta-sync-task-execution.service.js';
+import {
+  GroupMetaSyncAsyncTaskHandler,
+  GroupMetaSyncHandoffTaskHandler,
+} from './group-meta-sync-task.handlers.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
 import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
@@ -13,8 +21,8 @@ import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
-import { InviteModule } from '../invite/invite.module.js';
-import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
+import { RelationshipModule } from '../relationship/relationship.module.js';
+import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
@@ -39,11 +47,11 @@ import { FederationThreadSourceService } from './federation-thread-source.servic
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
-import { FederationProfileStatePublisher } from './federation-profile-state-publisher.service.js';
-import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
+import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationHealthSchedulerService } from './federation-health-scheduler.service.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
@@ -68,24 +76,28 @@ import { ProfileResolutionController } from './profile-resolution.controller.js'
 import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
-import { DomainCommandModule } from '../domain-command/domain-command.module.js';
-import { FederatedFriendCommandExecutionService } from './federated-friend-command-execution.service.js';
+import { FederationDownloadAdminService } from './federation-download-admin.service.js';
+import { DurableTaskModule } from '../durable-task/durable-task.module.js';
+import { FederatedRelationshipRequestTaskExecutionService } from './federated-relationship-request-task-execution.service.js';
 import {
-  AcceptAddressedFriendRequestCommandHandler,
-  RevokeAddressedFriendRequestCommandHandler,
-  SendFederatedFriendInviteCommandHandler,
-} from './federated-friend-command.handlers.js';
-import { FederatedGroupCommandExecutionService } from './federated-group-command-execution.service.js';
+  AcceptAddressedRelationshipRequestTaskHandler,
+  RevokeAddressedRelationshipRequestTaskHandler,
+  SendFederatedRelationshipRequestTaskHandler,
+} from './federated-relationship-request-task.handlers.js';
+import { FederatedGroupTaskExecutionService } from './federated-group-task-execution.service.js';
 import {
-  AcceptAddressedGroupInvitationCommandHandler,
-  RequestFederatedGroupJoinCommandHandler,
-  RevokeFederatedGroupJoinCommandHandler,
-} from './federated-group-command.handlers.js';
+  AcceptAddressedGroupInvitationTaskHandler,
+  RequestFederatedGroupJoinTaskHandler,
+  RevokeFederatedGroupJoinTaskHandler,
+} from './federated-group-task.handlers.js';
+import { GroupProjectionTaskExecutionService } from './group-projection-task-execution.service.js';
+import { GroupMetaHeadFanoutTaskHandler } from './group-projection-task.handlers.js';
+import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-membership-finalizer.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
- * FederationService needs InviteService (InviteModule, unified invite deliver/accept), MessageService
- * (MessageModule, card write on outbound group invite), ThreadParticipantService (relationship reads +
+ * FederationService needs RelationshipService (RelationshipModule, unified relationship transitions), MessageService
+ * (MessageModule, card write on outbound group invite), AccountThreadStateService (relationship reads +
  * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). DatabaseService
  * is provided globally by DatabaseModule.
  *
@@ -98,14 +110,14 @@ import {
     // EventEmitterModule is NOT global (only forRoot() lives in AppModule) — import it here so
     // FederationService can emitAsync('call.frame.inbound') for the inbound S2S call bridge.
     EventEmitterModule,
-    InviteModule,
-    ThreadParticipantModule,
+    RelationshipModule,
+    AccountThreadStateModule,
     GatewayModule,
     UploadModule,
     MessageModule,
     LinkPreviewModule,
     ForwardBundleModule,
-    DomainCommandModule,
+    DurableTaskModule,
   ],
   controllers: [
     WellKnownController,
@@ -120,20 +132,24 @@ import {
     S2sVerifyService,
     S2sSignatureGuard,
     FederationPeerLifecycle,
+    FederationHealthSchedulerService,
     FederationPeerHttp,
     ProfileResolutionCoordinatorService,
     FederationMediaRangeClient,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
     FederationInboundMediaBatchService,
-    FederatedFriendCommandExecutionService,
-    SendFederatedFriendInviteCommandHandler,
-    AcceptAddressedFriendRequestCommandHandler,
-    RevokeAddressedFriendRequestCommandHandler,
-    FederatedGroupCommandExecutionService,
-    RequestFederatedGroupJoinCommandHandler,
-    RevokeFederatedGroupJoinCommandHandler,
-    AcceptAddressedGroupInvitationCommandHandler,
+    FederationDownloadAdminService,
+    FederatedRelationshipRequestTaskExecutionService,
+    SendFederatedRelationshipRequestTaskHandler,
+    AcceptAddressedRelationshipRequestTaskHandler,
+    RevokeAddressedRelationshipRequestTaskHandler,
+    FederatedGroupTaskExecutionService,
+    RequestFederatedGroupJoinTaskHandler,
+    RevokeFederatedGroupJoinTaskHandler,
+    AcceptAddressedGroupInvitationTaskHandler,
+    GroupProjectionTaskExecutionService,
+    GroupMetaHeadFanoutTaskHandler,
     FederationUserDirectoryService,
     FederationCallBridgeService,
     FederationThreadAccessService,
@@ -153,6 +169,12 @@ import {
     FederationThreadQueryDenialService,
     FederationService,
     FederationGroupMembershipService,
+    AuthoritativeGroupMembershipFinalizer,
+    FederationGroupMetaClient,
+    FederationGroupMetaTaskCoordinator,
+    GroupMetaSyncTaskExecutionService,
+    GroupMetaSyncHandoffTaskHandler,
+    GroupMetaSyncAsyncTaskHandler,
     FederationGroupRequestProjectionService,
     FederationGroupRelationshipService,
     FederationGroupRosterProjectionService,
@@ -167,6 +189,7 @@ import {
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
+    AuthoritativeGroupMetaMutationService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
@@ -175,8 +198,7 @@ import {
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,
-    FederationProfileStatePublisher,
-    FederationRelationshipCommandService,
+    FederationRelationshipMutationService,
     FederationNamespaceService,
     ProfileResolutionCoordinatorService,
     FederationStateFeedConsumerService,
@@ -193,9 +215,11 @@ import {
     FederationHttpScheduler,
     FederationTransportConfigService,
     FederationDownloadRecoveryService,
+    FederationDownloadAdminService,
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
+    AuthoritativeGroupMetaMutationService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
@@ -204,8 +228,7 @@ import {
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,
-    FederationProfileStatePublisher,
-    FederationRelationshipCommandService,
+    FederationRelationshipMutationService,
     FederationNamespaceService,
   ],
 })

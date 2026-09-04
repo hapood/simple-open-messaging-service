@@ -32,7 +32,14 @@ export function relationshipIntentKey(input: {
   subjectAccount: string;
   subjectDomain: string;
 }): string {
-  return `${input.namespaceId}\u0000${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`;
+  return JSON.stringify([
+    'relationship',
+    input.namespaceId,
+    input.domain,
+    input.account,
+    input.subjectDomain,
+    input.subjectAccount,
+  ]);
 }
 
 export function reverseRelationshipIntentKey(input: {
@@ -42,7 +49,14 @@ export function reverseRelationshipIntentKey(input: {
   subjectAccount: string;
   subjectDomain: string;
 }): string {
-  return `${input.namespaceId}\u0000${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
+  return JSON.stringify([
+    'relationship',
+    input.namespaceId,
+    input.subjectDomain,
+    input.subjectAccount,
+    input.domain,
+    input.account,
+  ]);
 }
 
 export function relationshipFactsAreActive(
@@ -73,7 +87,6 @@ export interface FriendRequestProjection {
   status: FriendRequestProjectionStatus;
   expiresAt: number;
   localThreadId: number | null;
-  inviteId?: string;
   note: string;
   requestedAt: number;
   peer?: FriendRequestPeer;
@@ -101,7 +114,6 @@ export interface FriendIntentProjectionInput {
   status: FriendRequestIntentStatus;
   direction: FriendRequestDirection;
   localThreadId: number | null;
-  inviteId?: string;
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
@@ -142,10 +154,25 @@ export function friendRequestKey(
   targetDirection: FriendRequestDirection,
 ): string {
   const sameAuthoredDirection = input.direction === targetDirection;
-  const authored = sameAuthoredDirection
-    ? `${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`
-    : `${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
-  return `friend:${input.namespaceId}:${JSON.stringify(authored)}`;
+  return JSON.stringify(
+    sameAuthoredDirection
+      ? [
+          'friend',
+          input.namespaceId,
+          input.domain,
+          input.account,
+          input.subjectDomain,
+          input.subjectAccount,
+        ]
+      : [
+          'friend',
+          input.namespaceId,
+          input.subjectDomain,
+          input.subjectAccount,
+          input.domain,
+          input.account,
+        ],
+  );
 }
 
 export function groupRequestKey(
@@ -154,7 +181,7 @@ export function groupRequestKey(
   account: string,
   direction: FriendRequestDirection,
 ): string {
-  return `group:${namespaceId}:${domain}\u0000${account}:${direction}`;
+  return JSON.stringify(['group', namespaceId, domain, account, direction]);
 }
 
 export interface ProjectionTransition {
@@ -184,7 +211,6 @@ export function applyFriendIntentToProjection(
     status: 'REQUESTED',
     expiresAt,
     localThreadId: input.localThreadId,
-    inviteId: input.inviteId,
     note: input.note,
     requestedAt: input.requestedAt ?? 0,
     peer: input.peer,
@@ -236,7 +262,6 @@ export function applyGroupIntentToProjection(
     status: 'REQUESTED',
     expiresAt,
     localThreadId: input.threadId,
-    inviteId: input.account,
     note: input.note,
     requestedAt: input.requestedAt ?? 0,
     group: input.group,

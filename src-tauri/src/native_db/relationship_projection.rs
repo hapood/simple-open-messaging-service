@@ -10,7 +10,7 @@ fn save_request_projection(
     payload: &Value,
 ) -> Result<(), String> {
     tx.execute(
-        "INSERT INTO friend_requests(user_id, stable_key, payload_json) VALUES(?1, ?2, ?3)
+        "INSERT INTO relationship_requests(user_id, stable_key, payload_json) VALUES(?1, ?2, ?3)
          ON CONFLICT(user_id, stable_key) DO UPDATE SET payload_json=excluded.payload_json",
         params![user_id, key, json_text(payload)?],
     )
@@ -127,7 +127,7 @@ pub(super) fn update_live_request_projection(
 ) -> Result<(), String> {
     let current: Option<String> = tx
         .query_row(
-            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            "SELECT payload_json FROM relationship_requests WHERE user_id=?1 AND stable_key=?2",
             params![user_id, key],
             |row| row.get(0),
         )
@@ -149,7 +149,7 @@ pub(super) fn update_live_request_projection(
     save_request_projection(tx, user_id, key, &projection)
 }
 
-pub(super) fn apply_friend_request_effect(
+pub(super) fn apply_relationship_request_effect(
     tx: &Transaction<'_>,
     user_id: i64,
     revision: i64,
@@ -202,7 +202,7 @@ pub(super) fn apply_friend_request_effect(
     };
     let prior_actionable: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM friend_requests
+            "SELECT EXISTS(SELECT 1 FROM relationship_requests
              WHERE user_id=?1 AND stable_key=?2
                AND json_extract(payload_json,'$.status')='REQUESTED')",
             params![user_id, key],
@@ -228,7 +228,6 @@ pub(super) fn apply_friend_request_effect(
         "status": "REQUESTED",
         "expiresAt": expires_at,
         "localThreadId": body.get("localThreadId").cloned().unwrap_or(Value::Null),
-        "inviteId": body.get("inviteId").cloned().unwrap_or(Value::Null),
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
         "peer": peer,
@@ -238,7 +237,7 @@ pub(super) fn apply_friend_request_effect(
     save_request_projection(tx, user_id, &key, &projection)?;
     if direction == "INCOMING" && !prior_actionable {
         tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipRequestStateRevision',?2)
              ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
             params![user_id, revision.to_string()],
         )
@@ -305,7 +304,6 @@ pub(super) fn apply_group_request_effect(
         "status": "REQUESTED",
         "expiresAt": expires_at,
         "localThreadId": body.get("threadId").cloned().unwrap_or(Value::Null),
-        "inviteId": group_account,
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
         "group": group,
@@ -315,7 +313,7 @@ pub(super) fn apply_group_request_effect(
     });
     let prior_actionable: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM friend_requests
+            "SELECT EXISTS(SELECT 1 FROM relationship_requests
              WHERE user_id=?1 AND stable_key=?2
                AND json_extract(payload_json,'$.status')='REQUESTED')",
             params![user_id, key],
@@ -325,7 +323,7 @@ pub(super) fn apply_group_request_effect(
     save_request_projection(tx, user_id, &key, &projection)?;
     if direction == "INCOMING" && !prior_actionable {
         tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipRequestStateRevision',?2)
              ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
             params![user_id, revision.to_string()],
         )

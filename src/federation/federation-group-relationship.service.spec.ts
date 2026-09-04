@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { GroupRole } from '../database/enums.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
 
 describe('FederationGroupRelationshipService', () => {
@@ -16,11 +17,23 @@ describe('FederationGroupRelationshipService', () => {
         changed: true,
       }),
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
+      readGroupMemberProfileRevInTx: vi.fn().mockResolvedValue(4),
     };
-    const groupMembership = { syncFromActiveInTx: vi.fn() };
+    const groupMembership = {
+      syncFromActiveInTx: vi
+        .fn()
+        .mockResolvedValue({ canonicalRosterChanged: true }),
+    };
+    const membershipFinalizer = {
+      finalizeInTx: vi.fn().mockResolvedValue({
+        audienceChanged: true,
+        fanoutTaskCreated: true,
+      }),
+    };
     const service = new FederationGroupRelationshipService(
       relationshipIntents as never,
       groupMembership as never,
+      membershipFinalizer as never,
     );
 
     const result = await service.writeAuthoredIntentInTx({} as never, {
@@ -30,6 +43,7 @@ describe('FederationGroupRelationshipService', () => {
       author: 'MEMBER',
       hostedLocally: true,
       status: 'ACCEPTED',
+      initialRole: GroupRole.OWNER,
     });
 
     expect(relationshipIntents.setGroupPairActiveInTx).toHaveBeenCalledWith(
@@ -38,10 +52,39 @@ describe('FederationGroupRelationshipService', () => {
     );
     expect(groupMembership.syncFromActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      { threadId: 3, memberUserId: 7, active: true, hostedLocally: true },
+      {
+        threadId: 3,
+        groupId: 5,
+        memberUserId: 7,
+        active: true,
+        hostedLocally: true,
+        memberProfileRev: 4,
+        initialRole: 'OWNER',
+      },
     );
     expect(result).toEqual(
-      expect.objectContaining({ active: true, pairChanged: true }),
+      expect.objectContaining({
+        active: true,
+        pairChanged: true,
+        canonicalRosterChanged: true,
+        audienceChanged: true,
+        fanoutTaskCreated: true,
+      }),
+    );
+    expect(membershipFinalizer.finalizeInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        threadId: 3,
+        groupId: 5,
+        memberUserId: 7,
+        active: true,
+        canonicalRosterChanged: true,
+      },
+    );
+    expect(
+      groupMembership.syncFromActiveInTx.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      membershipFinalizer.finalizeInTx.mock.invocationCallOrder[0],
     );
   });
 
@@ -59,10 +102,21 @@ describe('FederationGroupRelationshipService', () => {
       }),
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
-    const groupMembership = { syncFromActiveInTx: vi.fn() };
+    const groupMembership = {
+      syncFromActiveInTx: vi
+        .fn()
+        .mockResolvedValue({ canonicalRosterChanged: true }),
+    };
+    const membershipFinalizer = {
+      finalizeInTx: vi.fn().mockResolvedValue({
+        audienceChanged: true,
+        fanoutTaskCreated: true,
+      }),
+    };
     const service = new FederationGroupRelationshipService(
       relationshipIntents as never,
       groupMembership as never,
+      membershipFinalizer as never,
     );
 
     await service.writeAuthoredIntentInTx({} as never, {
@@ -80,7 +134,13 @@ describe('FederationGroupRelationshipService', () => {
     );
     expect(groupMembership.syncFromActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      { threadId: 3, memberUserId: 7, active: false, hostedLocally: true },
+      {
+        threadId: 3,
+        groupId: 5,
+        memberUserId: 7,
+        active: false,
+        hostedLocally: true,
+      },
     );
   });
 
@@ -89,12 +149,21 @@ describe('FederationGroupRelationshipService', () => {
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = {
-      syncFromActiveInTx: vi.fn().mockResolvedValue(undefined),
+      syncFromActiveInTx: vi
+        .fn()
+        .mockResolvedValue({ canonicalRosterChanged: true }),
+    };
+    const membershipFinalizer = {
+      finalizeInTx: vi.fn().mockResolvedValue({
+        audienceChanged: true,
+        fanoutTaskCreated: true,
+      }),
     };
     const afterPairDeactivated = vi.fn().mockResolvedValue('boundary');
     const service = new FederationGroupRelationshipService(
       relationshipIntents as never,
       groupMembership as never,
+      membershipFinalizer as never,
     );
 
     const result = await service.deactivateAfterInTx({} as never, {
@@ -105,7 +174,13 @@ describe('FederationGroupRelationshipService', () => {
       afterPairDeactivated,
     });
 
-    expect(result).toEqual({ pairChanged: true, effect: 'boundary' });
+    expect(result).toEqual({
+      pairChanged: true,
+      canonicalRosterChanged: true,
+      audienceChanged: true,
+      fanoutTaskCreated: true,
+      effect: 'boundary',
+    });
     expect(
       relationshipIntents.setGroupPairActiveInTx.mock.invocationCallOrder[0],
     ).toBeLessThan(afterPairDeactivated.mock.invocationCallOrder[0]);
@@ -118,10 +193,21 @@ describe('FederationGroupRelationshipService', () => {
     const relationshipIntents = {
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
-    const groupMembership = { syncFromActiveInTx: vi.fn() };
+    const groupMembership = {
+      syncFromActiveInTx: vi
+        .fn()
+        .mockResolvedValue({ canonicalRosterChanged: false }),
+    };
+    const membershipFinalizer = {
+      finalizeInTx: vi.fn().mockResolvedValue({
+        audienceChanged: false,
+        fanoutTaskCreated: false,
+      }),
+    };
     const service = new FederationGroupRelationshipService(
       relationshipIntents as never,
       groupMembership as never,
+      membershipFinalizer as never,
     );
 
     await service.syncActiveInTx({} as never, {
@@ -137,6 +223,7 @@ describe('FederationGroupRelationshipService', () => {
       expect.anything(),
       {
         threadId: 3,
+        groupId: 5,
         memberUserId: 7,
         active: true,
         hostedLocally: false,

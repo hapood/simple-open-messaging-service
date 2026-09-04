@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
@@ -12,7 +12,6 @@ import { DatabaseService } from '../database/database.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ClientGroupMetaFeedService } from './client-group-meta-feed.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 
 export interface ClientStateFeedWrite {
@@ -42,17 +41,35 @@ export interface PendingClientStateFeedUpdate {
 
 /** Device-facing compacted state feed. Account.stateFeedAllocatedThrough is the shared allocator. */
 @Injectable()
-export class ClientStateFeedService {
+export class ClientStateFeedService implements OnModuleDestroy {
+  private static readonly PUSH_COALESCE_MS = 1_000;
+  /** Process-lifetime, monotonic high watermark per client State Feed. It is
+   * intentionally not durable: reconnect recovery reads the database-backed
+   * feed head. A busy account must not consume another account's window. */
+  private readonly pushHighWatermarks = new Map<number, number>();
+  private readonly pendingPushTimers = new Map<
+    number,
+    ReturnType<typeof setTimeout>
+  >();
+
   constructor(
     private readonly database: DatabaseService,
     private readonly sse: SseService,
-    private readonly groupMetaFeed: ClientGroupMetaFeedService,
   ) {}
 
   notifyFeedUpdated(pending: PendingClientStateFeedUpdate): void {
-    this.sse.onStateFeedUpdated(pending.userId, {
-      feedId: pending.feedId,
-    });
+    const current = this.pushHighWatermarks.get(pending.userId) ?? 0;
+    if (pending.feedId <= current) return;
+    this.pushHighWatermarks.set(pending.userId, pending.feedId);
+    if (this.pendingPushTimers.has(pending.userId)) return;
+    const timer = setTimeout(() => {
+      this.pendingPushTimers.delete(pending.userId);
+      const feedId = this.pushHighWatermarks.get(pending.userId);
+      if (feedId === undefined) return;
+      this.sse.onStateFeedUpdated(pending.userId, { feedId });
+    }, ClientStateFeedService.PUSH_COALESCE_MS);
+    timer.unref?.();
+    this.pendingPushTimers.set(pending.userId, timer);
   }
 
   /** Publish one committed high-watermark hint per affected user. */
@@ -65,6 +82,12 @@ export class ClientStateFeedService {
       );
     for (const [userId, feedId] of highWatermarks)
       this.notifyFeedUpdated({ userId, feedId });
+  }
+
+  onModuleDestroy(): void {
+    for (const timer of this.pendingPushTimers.values()) clearTimeout(timer);
+    this.pendingPushTimers.clear();
+    this.pushHighWatermarks.clear();
   }
 
   async readEndId(userId: number): Promise<number> {
@@ -291,7 +314,7 @@ export class ClientStateFeedService {
   }
 
   /** Monotonically advance the account-wide incoming friend/group invitation read watermark. */
-  async markIncomingInvitesRead(
+  async markRelationshipRequestsRead(
     userId: number,
     requestedReadThrough: number,
   ): Promise<number> {
@@ -415,11 +438,28 @@ export class ClientStateFeedService {
             OR (intent."subjectAccount" = ${subject.account}
               AND intent."subjectDomain" = ${domain}))
         UNION ALL
-        SELECT 1 FROM "ClientGroupMetaMemberFeed" member
-        WHERE member."accountId" = ${ownerUserId}
-          AND member."memberAccount" = ${subject.account}
-          AND member."memberDomain" = ${domain}
-          AND member.operation = 'UPSERT'
+        SELECT 1
+        FROM "MessageThread" thread
+        JOIN "User" owner_identity ON owner_identity.id = ${ownerUserId}
+        JOIN "RelationshipPair" owner_pair
+          ON owner_pair."threadId" = thread.id
+         AND owner_pair.kind = 'GROUP_MEMBER'
+         AND owner_pair.active = true
+         AND ((owner_pair."endpointAType" = 'USER'
+               AND owner_pair."endpointAAccount" = owner_identity.account
+               AND owner_pair."endpointADomain" = owner_identity.domain)
+           OR (owner_pair."endpointBType" = 'USER'
+               AND owner_pair."endpointBAccount" = owner_identity.account
+               AND owner_pair."endpointBDomain" = owner_identity.domain))
+        WHERE thread.type = 'GROUP'
+          AND (
+            SELECT member_fact.operation
+            FROM "GroupMetaMemberFeed" member_fact
+            WHERE member_fact."groupId" = thread."groupId"
+              AND member_fact."memberUserId" = ${subjectUserId}
+            ORDER BY member_fact."feedId" DESC
+            LIMIT 1
+          ) = 'UPSERT'
       ) AS referenced
     `);
     if (references.rows[0]?.referenced) return;
@@ -435,7 +475,8 @@ export class ClientStateFeedService {
       );
   }
 
-  async recordGroupStateInTx(
+  /** Publish only compacted profile and shared Group Meta heads after a mirror round commits. */
+  async publishGroupStateToLocalAudiencesInTx(
     tx: DatabaseTransaction,
     threadId: number,
   ): Promise<PendingClientStateFeedUpdate[]> {
@@ -448,95 +489,34 @@ export class ClientStateFeedService {
       avatar: string;
       profileRev: number;
       namespaceId: number;
+      groupMetaFeedEndId: string;
     }>(sql`
       SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
              group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
-             group_state.avatar, group_state."defaultProfileRev" AS "profileRev"
+             group_state.avatar, group_state."defaultProfileRev" AS "profileRev",
+             COALESCE(meta_feed."feedEndId", 0)::text AS "groupMetaFeedEndId"
       FROM "MessageThread" thread
       JOIN "Group" group_state ON group_state.id = thread."groupId"
+      LEFT JOIN "GroupMetaFeed" meta_feed ON meta_feed."groupId" = group_state.id
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
       LIMIT 1
     `);
     const group = groupRows.rows[0];
     if (!group) return [];
-    const members = await tx.execute<{
+    const consumers = await tx.execute<{
       userId: number;
-      account: string;
-      domain: string;
-      role: string;
-      displayName: string;
-      avatar: string | null;
-      profileResolved: boolean;
-      profileRev: number;
-      profileMessageSeq: number | null;
-      namespaceId: number;
-      isLocalAccount: boolean;
-      isAuthorized: boolean;
     }>(sql`
-      SELECT member.id AS "userId", member.account, member.domain,
-             member."namespaceId",
-             COALESCE(membership.role, 'MEMBER') AS role,
-             COALESCE(exact_profile."displayName", member.account) AS "displayName",
-             NULLIF(exact_profile.avatar, '') AS avatar,
-             exact_profile.id IS NOT NULL AS "profileResolved",
-             CASE WHEN membership."profileMessageSeq" IS NULL
-               THEN member."defaultProfileRev"
-               ELSE membership."profileRev"
-             END AS "profileRev",
-             membership."profileMessageSeq" AS "profileMessageSeq",
-             EXISTS (SELECT 1 FROM "Account" local_account WHERE local_account.id = member.id)
-               AS "isLocalAccount",
-             EXISTS (
-               SELECT 1 FROM "RelationshipPair" pair
-               WHERE pair."threadId" = ${threadId} AND pair.active = true
-                 AND ((pair."endpointAType" = 'USER'
-                       AND pair."endpointAAccount" = member.account
-                       AND pair."endpointADomain" = member.domain
-                       AND (member."namespaceId" = 0
-                         OR pair."endpointANamespaceId" = member."namespaceId"))
-                   OR (pair."endpointBType" = 'USER'
-                       AND pair."endpointBAccount" = member.account
-                       AND pair."endpointBDomain" = member.domain
-                       AND (member."namespaceId" = 0
-                         OR pair."endpointBNamespaceId" = member."namespaceId")))
-             ) AS "isAuthorized"
-      FROM "ThreadMember" membership
-      JOIN "User" member ON member.id = membership."userId"
-      LEFT JOIN LATERAL (
-        SELECT version.id, version."displayName", version.avatar
-        FROM "ProfileVersion" version
-        WHERE version."userId" = member.id
-          AND version."profileRev" = CASE
-            WHEN membership."profileMessageSeq" IS NULL
-            THEN member."defaultProfileRev"
-            ELSE membership."profileRev"
-          END
-        LIMIT 1
-      ) exact_profile ON true
-      WHERE membership."threadId" = ${threadId}
-        AND membership."left" = false
-      ORDER BY member.domain, member.account
+      SELECT audience."localUserId" AS "userId"
+      FROM "ThreadAudience" audience
+      WHERE audience."threadId" = ${threadId}
+        AND audience."targetDomain" = 'local'
+        AND audience."targetNamespaceId" = 0
+        AND audience."localUserId" IS NOT NULL
+      ORDER BY audience."localUserId"
     `);
-    const memberProjection = members.rows.map((member) => ({
-      account: member.account,
-      domain: member.domain,
-      namespaceId: member.namespaceId,
-      body: {
-        role: member.role,
-        profileRev: member.profileRev,
-        profileMessageSeq: member.profileMessageSeq,
-        displayName: member.displayName,
-        avatar: member.avatar,
-        profileResolved: member.profileResolved,
-      },
-    }));
-    const localConsumers = members.rows
-      .filter((member) => member.isLocalAccount && member.isAuthorized)
-      .map((member) => member.userId)
-      .sort((a, b) => a - b);
     const pending: PendingClientStateFeedUpdate[] = [];
-    for (const userId of localConsumers) {
+    for (const { userId } of consumers.rows) {
       const profileFeedId = await this.writeInTx(tx, {
         userId,
         account: group.account,
@@ -554,12 +534,6 @@ export class ClientStateFeedService {
       });
       if (profileFeedId !== null)
         pending.push({ userId, feedId: profileFeedId });
-      const groupMetaFeedEndId = await this.groupMetaFeed.reconcileInTx(
-        tx,
-        userId,
-        group.groupId,
-        memberProjection,
-      );
       const feedId = await this.writeInTx(tx, {
         userId,
         account: group.account,
@@ -568,7 +542,7 @@ export class ClientStateFeedService {
         eventType: 'GROUP_META_FEED_HEAD',
         subjectAccount: '',
         subjectDomain: 'local',
-        body: { groupMetaFeedEndId: groupMetaFeedEndId.toString() },
+        body: { groupMetaFeedEndId: group.groupMetaFeedEndId },
       });
       if (feedId !== null) pending.push({ userId, feedId });
     }

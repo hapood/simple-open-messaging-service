@@ -46,33 +46,14 @@ export class GroupService {
     );
   }
 
-  requestFederatedJoin(params: {
-    account: string;
-    domain: string;
-    displayName: string;
-    avatar?: string;
-    note?: string;
-  }) {
-    return this.http.post<
-      StandardResponse<{
-        commandId: string;
-        status: 'PENDING';
-        inviteId?: string;
-        threadId?: number;
-        account?: string;
-        domain?: string;
-      }>
-    >(`${apiPrefix()}/group/federated-join-request`, params);
-  }
-
   /** Batch invite acceptance. Each validated target receives a durable GROUP command. */
   inviteUsers(params: { userIds: number[]; groupId: number }) {
     return this.http.post<
       StandardResponse<{
         invited: number[];
-        commands: Array<{
+        tasks: Array<{
           userId: number;
-          commandId: string;
+          taskId: string;
           status: 'PENDING';
         }>;
         skipped: { userId: number; reason: string }[];
@@ -95,21 +76,21 @@ export class GroupService {
     >(`${apiPrefix()}/group/invite-candidates`, params);
   }
 
-  leaveGroup(params: { groupId: number; deleteData?: boolean }) {
+  leaveGroup(params: { groupId: number }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/leave`, params);
   }
 
-  dissolveGroup(params: { groupId: number; deleteData?: boolean }) {
+  dissolveGroup(params: { groupId: number }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/dissolve`, params);
   }
 
   kickMember(params: { groupId: number; account: string; domain: string }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/kick`, params);
   }
 
@@ -119,7 +100,7 @@ export class GroupService {
     domain: string;
   }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/transfer`, params);
   }
 
@@ -131,7 +112,7 @@ export class GroupService {
     role: 'ADMIN' | 'MEMBER';
   }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/set-role`, params);
   }
 
@@ -184,19 +165,19 @@ export class GroupService {
 
   acceptJoinRequest(params: { groupId: number; requestId: string }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/join-request/accept`, params);
   }
 
   rejectJoinRequest(params: { groupId: number; requestId: string }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/join-request/reject`, params);
   }
 
   revokeInvitation(params: { groupId: number; requestId: string }) {
     return this.http.post<
-      StandardResponse<{ commandId: string; status: 'PENDING' }>
+      StandardResponse<{ taskId: string; status: 'PENDING' }>
     >(`${apiPrefix()}/group/invitation/revoke`, params);
   }
 }

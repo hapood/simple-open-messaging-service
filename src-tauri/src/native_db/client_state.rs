@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::relationship_projection::{
-    apply_friend_request_effect, apply_friend_thread_from_facts, apply_group_request_effect,
-    apply_relationship_intent_fact, materialize_group_thread_from_fact,
+    apply_friend_thread_from_facts, apply_group_request_effect, apply_relationship_intent_fact,
+    apply_relationship_request_effect, materialize_group_thread_from_fact,
     update_live_request_projection,
 };
 use super::{json_text, open, parse_json};
@@ -138,14 +138,14 @@ pub(crate) async fn native_db_archive_namespace(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_list_friend_requests(
+pub(crate) async fn native_db_list_relationship_requests(
     app: tauri::AppHandle,
     user_id: i64,
 ) -> Result<Vec<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         let mut stmt = conn
-            .prepare("SELECT payload_json FROM friend_requests WHERE user_id = ?1")
+            .prepare("SELECT payload_json FROM relationship_requests WHERE user_id = ?1")
             .map_err(|e| format!("prepare friend-request read: {e}"))?;
         let rows = stmt
             .query_map([user_id], |row| row.get::<_, String>(0))
@@ -161,7 +161,7 @@ pub(crate) async fn native_db_list_friend_requests(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_page_friend_requests(
+pub(crate) async fn native_db_page_relationship_requests(
     app: tauri::AppHandle,
     user_id: i64,
     bucket: String,
@@ -187,7 +187,7 @@ pub(crate) async fn native_db_page_friend_requests(
             .unwrap_or("\u{10ffff}");
         let mut stmt = conn
             .prepare(
-                "SELECT payload_json FROM friend_requests
+                "SELECT payload_json FROM relationship_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
                    AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')
@@ -220,7 +220,7 @@ pub(crate) async fn native_db_page_friend_requests(
             .collect::<Result<Vec<_>, _>>()?;
         let total = conn
             .query_row(
-                "SELECT COUNT(*) FROM friend_requests
+                "SELECT COUNT(*) FROM relationship_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
                    AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')",
@@ -230,7 +230,7 @@ pub(crate) async fn native_db_page_friend_requests(
             .map_err(|e| format!("count friend intents: {e}"))?;
         let actionable_total = conn
             .query_row(
-                "SELECT COUNT(*) FROM friend_requests
+                "SELECT COUNT(*) FROM relationship_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
                    AND json_extract(payload_json, '$.status') = 'REQUESTED'",
@@ -245,7 +245,7 @@ pub(crate) async fn native_db_page_friend_requests(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_mark_friend_request_accepted(
+pub(crate) async fn native_db_mark_relationship_request_accepted(
     app: tauri::AppHandle,
     user_id: i64,
     key: String,
@@ -264,22 +264,22 @@ pub(crate) async fn native_db_mark_friend_request_accepted(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_cleanup_friend_requests(
+pub(crate) async fn native_db_cleanup_relationship_requests(
     app: tauri::AppHandle,
     user_id: i64,
     now: i64,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
-        cleanup_friend_requests(&conn, user_id, now)
+        cleanup_relationship_requests(&conn, user_id, now)
     })
     .await
     .map_err(|e| format!("join friend-request cleanup: {e}"))?
 }
 
-fn cleanup_friend_requests(conn: &Connection, user_id: i64, now: i64) -> Result<(), String> {
+fn cleanup_relationship_requests(conn: &Connection, user_id: i64, now: i64) -> Result<(), String> {
     conn.execute(
-        "DELETE FROM friend_requests
+        "DELETE FROM relationship_requests
              WHERE user_id=?1
                AND CAST(json_extract(payload_json, '$.updatedAt') AS INTEGER) <= ?2 - 604800000",
         params![user_id, now],
@@ -374,7 +374,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin state-feed page: {e}"))?;
         if reset_projection {
-            tx.execute("DELETE FROM friend_requests WHERE user_id=?1", [user_id])
+            tx.execute("DELETE FROM relationship_requests WHERE user_id=?1", [user_id])
                 .map_err(|e| format!("clear state-feed friend requests: {e}"))?;
             tx.execute("DELETE FROM relationship_intents WHERE user_id=?1", [user_id])
                 .map_err(|e| format!("clear state-feed relationship intents: {e}"))?;
@@ -474,7 +474,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     }
                 }
             } else {
-                apply_friend_request_effect(
+                apply_relationship_request_effect(
                     &tx,
                     user_id,
                     op.feed_id
@@ -505,7 +505,6 @@ pub(crate) async fn native_db_apply_state_feed_page(
             if update.page.mode != "full" && update.page.mode != "delta" {
                 return Err("group-meta mode must be full or delta".into());
             }
-            let source_server = update.source_server;
             let payload: Option<String> = tx.query_row(
                 "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, update.thread_id], |row| row.get(0),
@@ -523,8 +522,8 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     tx.execute(
                         "UPDATE members SET left_state=1
                          WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                           AND member_domain=?4 AND source_domain=?5 AND namespace_id=?6",
-                        params![user_id, update.thread_id, item.account, item.domain, source_server, item.namespace_id],
+                           AND member_domain=?4 AND namespace_id=?5",
+                        params![user_id, update.thread_id, item.account, item.domain, item.namespace_id],
                     ).map_err(|e| format!("depart group member: {e}"))?;
                     continue;
                 }
@@ -540,25 +539,24 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     let profile = serde_json::json!({
                         "account": item.account,
                         "domain": item.domain,
-                        "sourceDomain": source_server,
                         "namespaceId": item.namespace_id,
                         "name": item.body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
                         "avatar": item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                        "bio": "",
+                        "bio": item.body.get("bio").and_then(Value::as_str).unwrap_or(""),
                         "availability": "AVAILABLE",
                         "profileRev": profile_rev,
                         "createdAt": now,
                         "updatedAt": now,
                     });
                     tx.execute(
-                        "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                         VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)
-                         ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
+                        "INSERT INTO users(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                         VALUES(?1,?2,?3,?4,NULL,?5,?6)
+                         ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
                            payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                          WHERE excluded.profile_rev >= users.profile_rev",
                         params![
-                            user_id, item.account, item.domain, source_server,
-                            item.namespace_id, json_text(&profile)?, profile_rev,
+                            user_id, item.account, item.domain, item.namespace_id,
+                            json_text(&profile)?, profile_rev,
                         ],
                     ).map_err(|e| format!("upsert group member user: {e}"))?;
                 }
@@ -567,26 +565,29 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     item.body.get("displayName").and_then(Value::as_str).unwrap_or(""));
                 let profile_avatar = profile_resolved.then(||
                     item.body.get("avatar").and_then(Value::as_str).unwrap_or(""));
+                let profile_bio = item.body.get("bio").and_then(Value::as_str).unwrap_or("");
                 tx.execute(
                     "INSERT INTO members(
-                       user_id,thread_id,member_account,member_domain,source_domain,namespace_id,role,left_state,
-                       profile_rev,profile_message_seq,resolved_profile_rev,profile_name,profile_avatar
-                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?9,?10,?11,?12)
-                     ON CONFLICT(user_id,thread_id,member_account,member_domain,source_domain,namespace_id)
+                       user_id,thread_id,member_account,member_domain,namespace_id,role,left_state,
+                       profile_rev,profile_message_seq,resolved_profile_rev,profile_name,profile_avatar,profile_bio
+                     ) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8,?9,?10,?11,?12)
+                     ON CONFLICT(user_id,thread_id,member_account,member_domain,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0,
                        profile_rev=excluded.profile_rev,profile_message_seq=excluded.profile_message_seq,
                        resolved_profile_rev=COALESCE(excluded.resolved_profile_rev,members.resolved_profile_rev),
                        profile_name=COALESCE(excluded.profile_name,members.profile_name),
-                       profile_avatar=COALESCE(excluded.profile_avatar,members.profile_avatar)",
+                       profile_avatar=COALESCE(excluded.profile_avatar,members.profile_avatar),
+                       profile_bio=CASE WHEN excluded.resolved_profile_rev IS NOT NULL
+                         THEN excluded.profile_bio ELSE members.profile_bio END",
                     params![
-                        user_id, update.thread_id, item.account, item.domain, source_server,
-                        item.namespace_id,
+                        user_id, update.thread_id, item.account, item.domain, item.namespace_id,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                         profile_rev,
                         profile_message_seq,
                         resolved_profile_rev,
                         profile_name,
                         profile_avatar,
+                        profile_bio,
                     ],
                 ).map_err(|e| format!("upsert group member: {e}"))?;
             }
@@ -655,7 +656,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                         ).map_err(|e| format!("apply group profile state: {e}"))?;
                     } else {
                         let profile = serde_json::json!({
-                            "account": account, "domain": domain, "sourceDomain": domain,
+                            "account": account, "domain": domain,
                             "namespaceId": namespace_id,
                             "name": body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
                             "avatar": body.get("avatar").and_then(Value::as_str).unwrap_or(""),
@@ -664,16 +665,16 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             "createdAt": now, "updatedAt": now,
                         });
                         tx.execute(
-                            "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                             VALUES(?1,?2,?3,?3,?4,NULL,?5,?6)
-                             ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
+                            "INSERT INTO users(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                             VALUES(?1,?2,?3,?4,NULL,?5,?6)
+                             ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
                                payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                              WHERE excluded.profile_rev >= users.profile_rev",
                             params![user_id, account, domain, namespace_id, json_text(&profile)?, profile_rev],
                         ).map_err(|e| format!("apply user profile state: {e}"))?;
                     }
                     tx.execute(
-                        "UPDATE friend_requests SET
+                        "UPDATE relationship_requests SET
                            payload_json=json_set(payload_json,
                              '$.group.name', ?4,
                              '$.group.avatar', ?5,
@@ -762,19 +763,6 @@ pub(crate) async fn native_db_apply_state_feed_page(
                         .get("tombstoneEndSeq")
                         .and_then(Value::as_i64)
                         .ok_or_else(|| "THREAD_CONTENT_HEAD has no tombstoneEndSeq".to_string())?;
-                    let preview = body
-                        .get("preview")
-                        .and_then(Value::as_object)
-                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no preview".to_string())?;
-                    let preview_seq = preview
-                        .get("seq")
-                        .and_then(Value::as_i64)
-                        .ok_or_else(|| "THREAD_CONTENT_HEAD preview has no seq".to_string())?;
-                    let preview_text = preview
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "THREAD_CONTENT_HEAD preview has no text".to_string())?;
-                    let preview_sender_id = preview.get("senderId").cloned().unwrap_or(Value::Null);
                     let payload: Option<String> = tx
                         .query_row(
                             "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
@@ -788,9 +776,6 @@ pub(crate) async fn native_db_apply_state_feed_page(
                         if let Some(object) = thread.as_object_mut() {
                             object.insert("lastMessageSeq".into(), Value::from(message_end_seq));
                             object.insert("tombstoneEndSeq".into(), Value::from(tombstone_end_seq));
-                            object.insert("lastMessagePreviewSeq".into(), Value::from(preview_seq));
-                            object.insert("lastMessagePreview".into(), Value::String(preview_text.to_string()));
-                            object.insert("lastMessageSenderId".into(), preview_sender_id);
                         }
                         tx.execute(
                             "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
@@ -843,7 +828,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             "INCOMING_INVITE_HEAD has no valid readThroughFeedId".to_string()
                         })?;
                     tx.execute(
-                        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'incomingInviteHead',?2)
+                        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipRequestReadHead',?2)
                          ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
                         params![user_id, serde_json::json!({
                             "readThroughFeedId": read_through

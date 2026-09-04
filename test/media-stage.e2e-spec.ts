@@ -20,7 +20,7 @@ import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
 import { BusinessCode } from '../src/common/business-code';
-import { InviteService } from '../src/invite/invite.service';
+import { RelationshipService } from '../src/relationship/relationship.service';
 import type { OutboundFilePayload } from '../src/upload/file-content';
 import { seedAcceptedRelationship } from './seed';
 
@@ -31,14 +31,14 @@ import { seedAcceptedRelationship } from './seed';
  * DELETE win-guard) directly against the real DB.
  *
  * Federated stage→localize→commit is covered by federation.e2e-spec.ts; the orphan/stale-pending GC
- * sweep is covered by media-gc.e2e-spec.ts.
+ * cleanup is owned by the corresponding transfer lifecycle.
  */
 describe('Local media send staging (PendingMedia, Phase 7)', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let messages: MessageService;
   let userQuota: UserQuotaService;
-  let invites: InviteService;
+  let relationships: RelationshipService;
 
   let threadId: number;
   let userId: number;
@@ -56,7 +56,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     database = app.get(DatabaseService);
     messages = app.get(MessageService);
     userQuota = app.get(UserQuotaService);
-    invites = app.get(InviteService);
+    relationships = app.get(RelationshipService);
 
     const now = new Date();
     const [createdUser] = await database.db
@@ -99,10 +99,9 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   afterAll(async () => {
     await database.pool
-      .query(
-        'DELETE FROM "ThreadParticipant" WHERE "threadId" = $1',
-        [threadId],
-      )
+      .query('DELETE FROM "AccountThreadState" WHERE "threadId" = $1', [
+        threadId,
+      ])
       .catch(() => {});
     await database.pool
       .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
@@ -148,7 +147,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       created: boolean,
     ) => {
       if (created) await userQuota.tick(userId, 'requests', tx);
-      await invites.writeLocalFriendIntentInTx(
+      await relationships.writeLocalP2PIntentInTx(
         tx,
         userId,
         inviteTargetIds[0],
@@ -158,35 +157,29 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     };
 
     expect(
-      await invites.createFriendInvite(
+      await relationships.createRelationshipRequest(
         userId,
         inviteTargetIds[0],
         '',
-        true,
-        undefined,
         writeAndCharge,
       ),
     ).toMatchObject({ status: 'created' });
     expect(
-      await invites.createFriendInvite(
+      await relationships.createRelationshipRequest(
         userId,
         inviteTargetIds[0],
         'updated',
-        true,
-        undefined,
         writeAndCharge,
       ),
     ).toMatchObject({ status: 'already-pending' });
     await expect(
-      invites.createFriendInvite(
+      relationships.createRelationshipRequest(
         userId,
         inviteTargetIds[1],
         '',
-        true,
-        undefined,
         async (tx, created) => {
           if (created) await userQuota.tick(userId, 'requests', tx);
-          await invites.writeLocalFriendIntentInTx(
+          await relationships.writeLocalP2PIntentInTx(
             tx,
             userId,
             inviteTargetIds[1],

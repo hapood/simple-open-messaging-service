@@ -31,15 +31,17 @@ export type Message = Omit<
   contentType: S['MessageResponseDto']['contentType'];
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
-  /** Federated media localize status (absent = ready). Carried on query-messages rows + NEW_MESSAGE
-   *  frames; one mounted-message service reconciles mount, reconnect and SSE updates. */
+  /** Federated media localize status (absent = ready). Carried on query-messages rows; one mounted-message
+   * service reconciles mount, reconnect and media-status updates. */
   mediaStatus?: MediaStatus;
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 
 export function messageCreatorKey(creator: MessageCreator): string;
 export function messageCreatorKey(creator: null): null;
-export function messageCreatorKey(creator: MessageCreator | null): string | null {
+export function messageCreatorKey(
+  creator: MessageCreator | null,
+): string | null {
   return creator === null
     ? null
     : JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
@@ -47,9 +49,7 @@ export function messageCreatorKey(creator: MessageCreator | null): string | null
 
 /** JSON-safe identity persisted inside ClientStateFeed preview bodies. PostgreSQL JSONB cannot store the
  * NUL-separated in-memory creator key, so durable thread previews use an explicit tuple encoding. */
-export function messagePreviewSenderKey(
-  creator: MessageCreator,
-): string {
+export function messagePreviewSenderKey(creator: MessageCreator): string {
   return JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
 }
 
@@ -99,8 +99,6 @@ type ConversationItemBase = {
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   lastMessageSeq?: number | null;
-  /** Latest visible peer-authored message whose exact profile revision drives a P2P row avatar. */
-  peerProfileMessageSeq?: number | null;
   /** Latest per-thread deletion-log target advertised by the unified content feed. */
   tombstoneEndSeq?: number;
   muted: boolean;
@@ -113,9 +111,7 @@ type ConversationItemBase = {
   conversationState?: 'ACTIVE' | 'READ_ONLY';
   lastReadSeq?: number | null;
   unreadCount: number;
-  // Latest-message preview state is projected from THREAD_CONTENT_HEAD. The preview seq is separate from
-  // lastMessageSeq because withdrawing the current preview publishes an empty preview for the withdrawn
-  // message after the replacement SYSTEM message has advanced the message head.
+  // Latest-message preview state is derived from message catch-up and the local message cache.
   lastMessagePreviewSeq?: number | null;
   lastMessagePreview?: string | null;
   lastMessageSenderId?: string | null;
@@ -281,10 +277,6 @@ export function displayUserAccount(u: {
   const account = u.account ?? '';
   return u.domain && u.domain !== 'local' ? `${account}@${u.domain}` : account;
 }
-
-/** An invite row (friend-add / group-invite). Friend request lists are projected from the compacted
- *  client state feed; inviter and recipient profiles are embedded (fromUser / toUser). */
-export type Invite = S['InviteDto'];
 
 export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';
 

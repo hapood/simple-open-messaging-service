@@ -7,8 +7,7 @@ import {
   forwardMessage,
   message,
   messageThread,
-  threadParticipant,
-  threadMember,
+  accountThreadState,
   user,
   userPreference,
   messageAsset,
@@ -16,6 +15,9 @@ import {
   adminActionLog,
   pendingMedia,
   group,
+  groupMetaFeed,
+  groupMetaMemberFeed,
+  groupMetaProfileFeed,
   loginCode,
   sessionToken,
   twoFactorBackupCode,
@@ -125,36 +127,24 @@ export const messageRelations = relations(message, ({ one, many }) => ({
   inboundPendingMedia: one(pendingMedia),
 }));
 
-export const threadParticipantRelations = relations(
-  threadParticipant,
+export const accountThreadStateRelations = relations(
+  accountThreadState,
   ({ one }) => ({
     account: one(account, {
-      fields: [threadParticipant.accountId],
+      fields: [accountThreadState.accountId],
       references: [account.id],
     }),
     messageThread: one(messageThread, {
-      fields: [threadParticipant.threadId],
+      fields: [accountThreadState.threadId],
       references: [messageThread.id],
     }),
   }),
 );
 
-export const threadMemberRelations = relations(threadMember, ({ one }) => ({
-  messageThread: one(messageThread, {
-    fields: [threadMember.threadId],
-    references: [messageThread.id],
-  }),
-  user: one(user, {
-    fields: [threadMember.userId],
-    references: [user.id],
-  }),
-}));
-
 export const messageThreadRelations = relations(
   messageThread,
   ({ one, many }) => ({
-    threadMembers: many(threadMember),
-    threadParticipants: many(threadParticipant),
+    accountThreadStates: many(accountThreadState),
     group: one(group, {
       fields: [messageThread.groupId],
       references: [group.id],
@@ -170,7 +160,6 @@ export const messageThreadRelations = relations(
 export const userRelations = relations(user, ({ one, many }) => ({
   account: one(account),
   admins: many(admin),
-  threadMembers: many(threadMember),
 }));
 
 export const accountRelations = relations(account, ({ one, many }) => ({
@@ -269,9 +258,39 @@ export const federationThreadSyncStateRelations = relations(
   }),
 );
 
-export const groupRelations = relations(group, ({ one }) => ({
+export const groupRelations = relations(group, ({ one, many }) => ({
   messageThread: one(messageThread),
+  metaFeed: one(groupMetaFeed),
+  metaProfile: one(groupMetaProfileFeed),
+  metaMembers: many(groupMetaMemberFeed),
 }));
+
+export const groupMetaFeedRelations = relations(groupMetaFeed, ({ one }) => ({
+  group: one(group, {
+    fields: [groupMetaFeed.groupId],
+    references: [group.id],
+  }),
+}));
+
+export const groupMetaMemberFeedRelations = relations(
+  groupMetaMemberFeed,
+  ({ one }) => ({
+    group: one(group, {
+      fields: [groupMetaMemberFeed.groupId],
+      references: [group.id],
+    }),
+  }),
+);
+
+export const groupMetaProfileFeedRelations = relations(
+  groupMetaProfileFeed,
+  ({ one }) => ({
+    group: one(group, {
+      fields: [groupMetaProfileFeed.groupId],
+      references: [group.id],
+    }),
+  }),
+);
 
 export const loginCodeRelations = relations(loginCode, ({ one }) => ({
   account: one(account, {

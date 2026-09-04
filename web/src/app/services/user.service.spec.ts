@@ -77,9 +77,9 @@ describe('UserService profile refresh', () => {
               .mockResolvedValue(undefined),
             getMeta: vi.fn().mockName('getMeta').mockResolvedValue(undefined),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            cleanupFriendRequests: vi
+            cleanupRelationshipRequests: vi
               .fn()
-              .mockName('cleanupFriendRequests')
+              .mockName('cleanupRelationshipRequests')
               .mockResolvedValue(undefined),
           },
         },
@@ -143,10 +143,9 @@ describe('UserService profile refresh', () => {
     expect(webdb.putMeta).toHaveBeenCalledWith('groupJoinRequestHeads', {
       '8': 20,
     });
-    expect(webdb.putMeta).toHaveBeenCalledWith(
-      'groupJoinRequestReadFeedIds',
-      { '8': 19 },
-    );
+    expect(webdb.putMeta).toHaveBeenCalledWith('groupJoinRequestReadFeedIds', {
+      '8': 19,
+    });
   });
 
   afterEach(() => {
@@ -216,20 +215,21 @@ describe('UserService profile refresh', () => {
   it('derives the friend-request badge from the synchronized read watermark', () => {
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyFriendRequestStateRevision(20);
+    svc.applyRelationshipRequestStateRevision(20);
     svc.seedStateFeedCursor(20);
     expect(svc.friendReqBadge()).toBe(true);
 
-    svc.markFriendReqRead();
+    svc.markRelationshipRequestsRead();
     httpMock
       .expectOne(
         (req) =>
-          req.method === 'POST' && req.url.endsWith('/invite/incoming/read'),
+          req.method === 'POST' &&
+          req.url.endsWith('/relationship/requests/read'),
       )
       .flush({ code: 0, data: { readThroughFeedId: 20 } });
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyFriendRequestStateRevision(21);
+    svc.applyRelationshipRequestStateRevision(21);
     expect(svc.friendReqBadge()).toBe(true);
   });
 });
@@ -244,7 +244,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     closeAndDelete: Mock;
     getMeta: Mock;
     putMeta: Mock;
-    cleanupFriendRequests: Mock;
+    cleanupRelationshipRequests: Mock;
   };
 
   beforeEach(async () => {
@@ -286,9 +286,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               domain: 'local',
             }),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            cleanupFriendRequests: vi
+            cleanupRelationshipRequests: vi
               .fn()
-              .mockName('cleanupFriendRequests')
+              .mockName('cleanupRelationshipRequests')
               .mockResolvedValue(undefined),
           },
         },
@@ -340,9 +340,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.establishSession(1, 0);
     await flush();
 
-    expect(webdb.cleanupFriendRequests).toHaveBeenCalledTimes(1);
+    expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
     expect(webdb.putMeta).toHaveBeenCalledWith(
-      'friendRequestCleanupAt',
+      'relationshipRequestCleanupAt',
       expect.any(Number),
     );
   });
@@ -350,7 +350,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('skips startup request garbage collection within the 24-hour interval', async () => {
     const recent = Date.now() - 1_000;
     webdb.getMeta.mockImplementation(async (key: string) => {
-      if (key === 'friendRequestCleanupAt') return recent;
+      if (key === 'relationshipRequestCleanupAt') return recent;
       if (key === 'selfProfile')
         return {
           id: 1,
@@ -366,13 +366,13 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.establishSession(1, 0);
     await flush();
 
-    expect(webdb.cleanupFriendRequests).not.toHaveBeenCalled();
+    expect(webdb.cleanupRelationshipRequests).not.toHaveBeenCalled();
   });
 
   it('runs startup request garbage collection when the 24-hour interval has elapsed', async () => {
     const stale = Date.now() - 86_400_000 - 1_000;
     webdb.getMeta.mockImplementation(async (key: string) => {
-      if (key === 'friendRequestCleanupAt') return stale;
+      if (key === 'relationshipRequestCleanupAt') return stale;
       if (key === 'selfProfile')
         return {
           id: 1,
@@ -388,13 +388,14 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.establishSession(1, 0);
     await flush();
 
-    expect(webdb.cleanupFriendRequests).toHaveBeenCalledTimes(1);
+    expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
   });
 
   it('restores the local invitation revision and synchronized read head', async () => {
     webdb.getMeta.mockImplementation(async (key: string) => {
-      if (key === 'friendRequestStateRevision') return 12;
-      if (key === 'incomingInviteHead') return { readThroughFeedId: 9 };
+      if (key === 'relationshipRequestStateRevision') return 12;
+      if (key === 'relationshipRequestReadHead')
+        return { readThroughFeedId: 9 };
       return {
         id: 1,
         profileRev: 0,
@@ -407,8 +408,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     await svc.establishSession(1, 0);
 
-    expect(svc.friendRequestStateRevision()).toBe(12);
-    expect(svc.incomingInviteReadThroughFeedId()).toBe(9);
+    expect(svc.relationshipRequestStateRevision()).toBe(12);
+    expect(svc.relationshipRequestReadThroughFeedId()).toBe(9);
     expect(svc.friendReqBadge()).toBe(true);
   });
 

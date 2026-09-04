@@ -42,11 +42,11 @@ describe('WebdbService', () => {
       expect(db!.name, 'per-user partition key').toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
-        'friendRequests',
         'groups',
         'members',
         'namespaces',
         'relationshipIntents',
+        'relationshipRequests',
         'settings',
         'threads',
         'users',
@@ -521,8 +521,10 @@ describe('WebdbService', () => {
         32,
       );
 
-      expect(await db!.getAll('friendRequests')).toHaveLength(1);
-      expect(await webdb.getFriendRequestPage('SENT', null, 20)).toMatchObject({
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
+      expect(
+        await webdb.getRelationshipRequestPage('SENT', null, 20),
+      ).toMatchObject({
         total: 1,
         actionableTotal: 1,
         items: [expect.objectContaining({ status: 'ACCEPTED' })],
@@ -562,15 +564,17 @@ describe('WebdbService', () => {
         ],
         40,
       );
-      const [projection] = await db!.getAll('friendRequests');
-      await webdb.markFriendRequestAccepted(projection.key);
-      expect(await db!.get('friendRequests', projection.key)).toMatchObject({
+      const [projection] = await db!.getAll('relationshipRequests');
+      await webdb.markRelationshipRequestAccepted(projection.key);
+      expect(
+        await db!.get('relationshipRequests', projection.key),
+      ).toMatchObject({
         bucket: 'RECEIVED',
         direction: 'INCOMING',
         status: 'ACCEPTED',
       });
       expect(
-        await webdb.getFriendRequestPage('RECEIVED', null, 20),
+        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
       ).toMatchObject({ total: 1, actionableTotal: 0 });
     });
 
@@ -609,21 +613,21 @@ describe('WebdbService', () => {
       });
 
       await webdb.applyStateFeedPage([event(10, 'INCOMING', 'REQUESTED')], 10);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(10);
+      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(10);
       expect(
-        await webdb.getFriendRequestPage('RECEIVED', null, 20),
+        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
       ).toMatchObject({ total: 1, actionableTotal: 1 });
 
       await webdb.applyStateFeedPage([event(11, 'OUTGOING', 'REVOKED')], 11);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(10);
-      expect(await db!.getAll('friendRequests')).toEqual([
+      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(10);
+      expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           bucket: 'RECEIVED',
           status: 'REVOKED',
           requestedSort: requestedAt,
         }),
       ]);
-      const rejectedPage = await webdb.getFriendRequestPage(
+      const rejectedPage = await webdb.getRelationshipRequestPage(
         'RECEIVED',
         null,
         20,
@@ -671,7 +675,7 @@ describe('WebdbService', () => {
         [incoming(30, { name: 'alice', avatar: '' })],
         30,
       );
-      expect(await db!.getAll('friendRequests')).toEqual([
+      expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           status: 'REQUESTED',
           peer: expect.objectContaining({ name: 'alice', avatar: '' }),
@@ -683,7 +687,7 @@ describe('WebdbService', () => {
         31,
       );
 
-      expect(await db!.getAll('friendRequests')).toEqual([
+      expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           status: 'REQUESTED',
           peer: expect.objectContaining({
@@ -693,7 +697,7 @@ describe('WebdbService', () => {
           }),
         }),
       ]);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(30);
+      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(30);
       expect(await webdb.getMeta('stateFeedId')).toBe(31);
     });
 
@@ -727,16 +731,18 @@ describe('WebdbService', () => {
       };
 
       await webdb.applyStateFeedPage([request], 20);
-      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
       expect(await db!.getAll('users')).toEqual([]);
 
-      await webdb.cleanupFriendRequests(expiresAt);
+      await webdb.cleanupRelationshipRequests(expiresAt);
 
-      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
       expect(await db!.getAll('users')).toEqual([]);
 
-      await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
-      expect(await db!.getAll('friendRequests')).toEqual([]);
+      await webdb.cleanupRelationshipRequests(
+        expiresAt + FRIEND_INTENT_RETENTION_MS,
+      );
+      expect(await db!.getAll('relationshipRequests')).toEqual([]);
     });
 
     it('garbage-collects an expired group invite without creating a Group row', async () => {
@@ -772,16 +778,18 @@ describe('WebdbService', () => {
       };
 
       await webdb.applyStateFeedPage([invite], 21);
-      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
       expect(await db!.getAll('groups')).toEqual([]);
 
-      await webdb.cleanupFriendRequests(expiresAt);
+      await webdb.cleanupRelationshipRequests(expiresAt);
 
-      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
       expect(await db!.getAll('groups')).toEqual([]);
 
-      await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
-      expect(await db!.getAll('friendRequests')).toEqual([]);
+      await webdb.cleanupRelationshipRequests(
+        expiresAt + FRIEND_INTENT_RETENTION_MS,
+      );
+      expect(await db!.getAll('relationshipRequests')).toEqual([]);
     });
 
     it('refreshes a pending group invite when its authoritative profile arrives', async () => {
@@ -832,7 +840,7 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage([invite, profile], 23);
 
-      expect(await db!.getAll('friendRequests')).toEqual([
+      expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           group: expect.objectContaining({
             name: 'Product Team',
@@ -882,7 +890,7 @@ describe('WebdbService', () => {
         22,
       );
 
-      expect(await db!.getAll('friendRequests')).toEqual([
+      expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           kind: 'GROUP',
           bucket: 'SENT',
@@ -913,7 +921,8 @@ describe('WebdbService', () => {
         namespaceId: 0,
         account: 'alice',
         domain: 'local',
-        sourceDomain: 'local',
+        profileRev: 1,
+        profileBio: '',
         role: 'MEMBER',
         left: false,
       });
@@ -938,7 +947,8 @@ describe('WebdbService', () => {
         namespaceId: 0,
         account: 'bob',
         domain: 'local',
-        sourceDomain: 'local',
+        profileRev: 1,
+        profileBio: '',
         role: 'MEMBER',
         left: false,
       });
@@ -978,7 +988,7 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(6);
     });
 
-    it('applies the paired message and tombstone head with its preview identity', async () => {
+    it('applies the paired message and tombstone high-water marks', async () => {
       await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
@@ -1000,7 +1010,6 @@ describe('WebdbService', () => {
               threadId: 7,
               messageEndSeq: 12,
               tombstoneEndSeq: 4,
-              preview: { seq: 11, text: '', senderId: null },
             },
           },
         ],
@@ -1010,9 +1019,6 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0]).toMatchObject({
         lastMessageSeq: 12,
         tombstoneEndSeq: 4,
-        lastMessagePreviewSeq: 11,
-        lastMessagePreview: '',
-        lastMessageSenderId: null,
       });
       expect(await webdb.getMeta('stateFeedId')).toBe(7);
     });
@@ -1149,6 +1155,7 @@ describe('WebdbService', () => {
                   profileRev: 1,
                   displayName: 'Self',
                   avatar: null,
+                  bio: '',
                 },
               },
               {
@@ -1162,6 +1169,7 @@ describe('WebdbService', () => {
                   profileRev: 6,
                   displayName: 'Alice',
                   avatar: '/a.webp',
+                  bio: 'About Alice',
                 },
               },
             ],
@@ -1182,7 +1190,6 @@ describe('WebdbService', () => {
         expect.objectContaining({
           account: 'alice',
           domain: 'home.example',
-          sourceDomain: 'local',
           user: expect.objectContaining({ name: 'Alice' }),
         }),
       ]);
@@ -1199,7 +1206,6 @@ describe('WebdbService', () => {
           {
             account: 'alice',
             domain: 'home.example',
-            sourceDomain: 'local',
             namespaceId: 12,
           },
           3,
@@ -1212,7 +1218,6 @@ describe('WebdbService', () => {
           {
             account: 'alice',
             domain: 'home.example',
-            sourceDomain: 'local',
             namespaceId: 12,
           },
           9,
@@ -1225,20 +1230,20 @@ describe('WebdbService', () => {
           {
             account: 'alice',
             domain: 'home.example',
-            sourceDomain: 'local',
             namespaceId: 12,
           },
-          { rev: 3, name: 'Alice in team', avatar: '/team.webp' },
+          { rev: 3, name: 'Alice in team', avatar: '/team.webp', bio: 'Team' },
         ),
       ).toBe(true);
       expect(
-        await webdb.getGroupMember(9, 'alice', 'home.example', 'local', 0),
+        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
       ).toMatchObject({
         profileRev: 3,
         profileMessageSeq: 20,
         resolvedProfileRev: 3,
         profileName: 'Alice in team',
         profileAvatar: '/team.webp',
+        profileBio: 'Team',
       });
 
       await webdb.applyStateFeedPage([], 4, [
@@ -1261,6 +1266,7 @@ describe('WebdbService', () => {
                   profileRev: 1,
                   displayName: 'Self',
                   avatar: null,
+                  bio: '',
                 },
               },
             ],
@@ -1421,6 +1427,7 @@ describe('WebdbService', () => {
                   profileRev: 1,
                   displayName: 'Alice',
                   avatar: null,
+                  bio: '',
                 },
               },
               {
@@ -1434,6 +1441,7 @@ describe('WebdbService', () => {
                   profileRev: 1,
                   displayName: 'Bob',
                   avatar: null,
+                  bio: '',
                 },
               },
             ],

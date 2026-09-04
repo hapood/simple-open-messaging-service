@@ -139,12 +139,10 @@ export async function waitForIncoming(receiver, initiator, timeoutMs) {
               candidate.subjectDomain === 'local' &&
               candidate.body?.direction === 'INCOMING' &&
               candidate.body?.status === 'REQUESTED' &&
-              candidate.body?.expiresAt > Date.now() &&
-              typeof candidate.body?.intentId === 'string',
+              candidate.body?.expiresAt > Date.now(),
           );
           if (item) {
             return {
-              id: item.body.intentId,
               relationship: 'INCOMING_PENDING',
               user: item.body.peer,
             };

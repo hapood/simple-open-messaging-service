@@ -1,19 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
+import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import { FederationService } from './federation.service.js';
-import { InviteService } from '../invite/invite.service.js';
+import { RelationshipService } from '../relationship/relationship.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 
 @Injectable()
-export class FederatedFriendCommandExecutionService {
+export class FederatedRelationshipRequestTaskExecutionService {
   private readonly logger = new Logger(
-    FederatedFriendCommandExecutionService.name,
+    FederatedRelationshipRequestTaskExecutionService.name,
   );
 
   constructor(
-    private readonly invites: InviteService,
-    private readonly relationships: FederationRelationshipCommandService,
+    private readonly relationshipService: RelationshipService,
+    private readonly relationships: FederationRelationshipMutationService,
     private readonly federation: FederationService,
     private readonly userQuota: UserQuotaService,
     private readonly clientStateFeed: ClientStateFeedService,
@@ -27,10 +27,9 @@ export class FederatedFriendCommandExecutionService {
     displayName: string;
     avatar?: string;
   }): Promise<void> {
-    await this.federation.ensurePeerTrusted(params.domain);
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.invites.createFederatedFriendInvite(
+    await this.relationshipService.createFederatedRelationshipRequest(
       params.actorUserId,
       params.account,
       params.domain,
@@ -38,17 +37,18 @@ export class FederatedFriendCommandExecutionService {
       { displayName: params.displayName, avatar: params.avatar },
       async (tx, state) => {
         await this.userQuota.tick(params.actorUserId, 'requests', tx);
-        statePeers = await this.relationships.writeAddressedFriendRequestInTx(
-          tx,
-          params.actorUserId,
-          {
-            account: params.account,
-            domain: params.domain,
-            namespaceId: state.namespaceId,
-          },
-          state,
-          clientFeedUpdates,
-        );
+        statePeers =
+          await this.relationships.writeAddressedRelationshipRequestInTx(
+            tx,
+            params.actorUserId,
+            {
+              account: params.account,
+              domain: params.domain,
+              namespaceId: state.namespaceId,
+            },
+            state,
+            clientFeedUpdates,
+          );
       },
     );
     this.notifyAfterCommit(clientFeedUpdates, statePeers, 'friend request');
@@ -71,10 +71,22 @@ export class FederatedFriendCommandExecutionService {
     account: string;
     domain: string;
   }): Promise<void> {
-    const statePeers = await this.federation.revokeAddressedOutgoingRequest(
-      params.actorUserId,
-      { account: params.account, domain: params.domain },
-    );
+    const relationship =
+      await this.relationshipService.federatedRelationshipStatus(
+        params.actorUserId,
+        params.account,
+        params.domain,
+      );
+    const statePeers =
+      relationship === 'INCOMING_PENDING'
+        ? await this.federation.revokeAddressedIncomingRelationship(
+            params.actorUserId,
+            { account: params.account, domain: params.domain },
+          )
+        : await this.federation.revokeAddressedOutgoingRequest(
+            params.actorUserId,
+            { account: params.account, domain: params.domain },
+          );
     this.wakePeers(statePeers, 'friend request revocation');
   }
 

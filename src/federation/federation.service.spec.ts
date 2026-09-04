@@ -11,9 +11,9 @@ import {
   S2sResponseError,
 } from './federation.service.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ContentType } from '../database/enums.js';
+import { ContentType, MessageThreadType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
-import { messageThread, threadMember } from '../database/schema.js';
+import { messageThread, threadAudience } from '../database/schema.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
@@ -103,8 +103,8 @@ describe('thread-query FORBIDDEN convergence', () => {
         secondIntent: { status: 'ACCEPTED' },
       }),
     };
-    const relationshipCommands = {
-      writeFriendIntentInTx: vi.fn().mockResolvedValue(allocated),
+    const relationshipMutations = {
+      writeP2PIntentInTx: vi.fn().mockResolvedValue(allocated),
     };
     const clientStateFeed = { notifyFeedUpdates: vi.fn() };
     const service = new FederationThreadQueryDenialService(
@@ -112,7 +112,7 @@ describe('thread-query FORBIDDEN convergence', () => {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
       } as never,
       relationshipIntents as never,
-      relationshipCommands as never,
+      relationshipMutations as never,
       clientStateFeed as never,
       { emit: vi.fn() } as never,
     );
@@ -120,7 +120,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       service,
       tx,
       relationshipIntents,
-      relationshipCommands,
+      relationshipMutations,
       clientStateFeed,
     };
   }
@@ -159,7 +159,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     const relationshipIntents = {
       lockGroupBusinessScopeInTx: vi.fn().mockResolvedValue(undefined),
     };
-    const relationshipCommands = {
+    const relationshipMutations = {
       lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
       writeMemberRelationshipIntentInTx: vi
         .fn()
@@ -174,7 +174,7 @@ describe('thread-query FORBIDDEN convergence', () => {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
       } as never,
       relationshipIntents as never,
-      relationshipCommands as never,
+      relationshipMutations as never,
       clientStateFeed as never,
       { emit: vi.fn() } as never,
     );
@@ -182,7 +182,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       service,
       tx,
       relationshipIntents,
-      relationshipCommands,
+      relationshipMutations,
       clientStateFeed,
     };
   }
@@ -194,7 +194,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('P2P_REVOKED');
     expect(
-      harness.relationshipCommands.writeFriendIntentInTx,
+      harness.relationshipMutations.writeP2PIntentInTx,
     ).toHaveBeenCalledWith(harness.tx, 1, 2, false, '', expect.any(Array));
     expect(harness.clientStateFeed.notifyFeedUpdates).toHaveBeenCalledOnce();
   });
@@ -206,7 +206,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('STALE');
     expect(
-      harness.relationshipCommands.writeFriendIntentInTx,
+      harness.relationshipMutations.writeP2PIntentInTx,
     ).not.toHaveBeenCalled();
   });
 
@@ -220,7 +220,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('GROUP_REVOKED');
     expect(
-      harness.relationshipCommands.lockGroupMutationInTx,
+      harness.relationshipMutations.lockGroupMutationInTx,
     ).toHaveBeenCalledWith(harness.tx, 31, 1, [1, 3]);
     expect(
       harness.relationshipIntents.lockGroupBusinessScopeInTx,
@@ -229,10 +229,10 @@ describe('thread-query FORBIDDEN convergence', () => {
       domain: 'peer.test',
     });
     expect(
-      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+      harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).toHaveBeenCalledTimes(2);
     expect(
-      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+      harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).toHaveBeenNthCalledWith(
       1,
       harness.tx,
@@ -242,7 +242,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       expect.any(Array),
     );
     expect(
-      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+      harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).toHaveBeenNthCalledWith(
       2,
       harness.tx,
@@ -252,7 +252,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       expect.any(Array),
     );
     expect(
-      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+      harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
   });
 
@@ -266,10 +266,10 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('GROUP_REVOKED');
     expect(
-      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+      harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).toHaveBeenCalledTimes(2);
     expect(
-      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+      harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).toHaveBeenNthCalledWith(
       1,
       harness.tx,
@@ -280,7 +280,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       expect.any(Array),
     );
     expect(
-      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+      harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).toHaveBeenNthCalledWith(
       2,
       harness.tx,
@@ -291,7 +291,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       expect.any(Array),
     );
     expect(
-      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+      harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
   });
 
@@ -304,10 +304,10 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('STALE');
     expect(
-      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+      harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
     expect(
-      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+      harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
   });
 });
@@ -315,7 +315,7 @@ describe('thread-query FORBIDDEN convergence', () => {
 describe('FederationProfileService resource path', () => {
   it('canonically percent-encodes a group account', async () => {
     const { profiles, peerHttp } = makeStubs();
-    const getSigned = vi.fn().mockResolvedValue({ profileRev: 0 });
+    const getSigned = vi.fn().mockResolvedValue({ profileRev: 1 });
     Object.assign(peerHttp, { get: getSigned });
 
     await profiles.fetchRemoteUser({
@@ -329,18 +329,21 @@ describe('FederationProfileService resource path', () => {
     );
   });
 
-  it('rejects a negative public profile revision', async () => {
-    const { profiles, peerHttp } = makeStubs();
-    const getSigned = vi.fn().mockResolvedValue({ profileRev: -1 });
-    Object.assign(peerHttp, { get: getSigned });
+  it.each([0, -1])(
+    'rejects a non-positive public profile revision (%i)',
+    async (profileRev) => {
+      const { profiles, peerHttp } = makeStubs();
+      const getSigned = vi.fn().mockResolvedValue({ profileRev });
+      Object.assign(peerHttp, { get: getSigned });
 
-    await expect(
-      profiles.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
-    ).rejects.toMatchObject({
-      code: BusinessCode.FEDERATION_MALFORMED,
-      status: 200,
-    });
-  });
+      await expect(
+        profiles.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
+      ).rejects.toMatchObject({
+        code: BusinessCode.FEDERATION_MALFORMED,
+        status: 200,
+      });
+    },
+  );
 
   it('projects the public profile with the canonical inline avatar shape', async () => {
     const { profiles } = makeStubs();
@@ -444,7 +447,7 @@ describe('federated group join request', () => {
       stateFeedConsumer: {
         ensureFederatedGroupRequestShellInTx: typeof ensureShell;
       };
-      relationshipCommands: {
+      relationshipMutations: {
         writeMemberRelationshipIntentInTx: typeof writeIntent;
       };
       clientStateFeed: { notifyFeedUpdates: () => void };
@@ -454,7 +457,7 @@ describe('federated group join request', () => {
     target.stateFeedConsumer = {
       ensureFederatedGroupRequestShellInTx: ensureShell,
     };
-    target.relationshipCommands = {
+    target.relationshipMutations = {
       writeMemberRelationshipIntentInTx: writeIntent,
     };
     target.clientStateFeed = { notifyFeedUpdates: vi.fn() };
@@ -500,13 +503,13 @@ describe('federated group join request', () => {
 function makeStubs() {
   const store = {
     messageThread: { findUnique: vi.fn() },
-    threadParticipant: { findMany: vi.fn() },
+    accountThreadState: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
     mediaAsset: { findFirst: vi.fn() },
     federationDeletedCursor: { findFirst: vi.fn().mockResolvedValue(null) },
     deletedParticipant: { findFirst: vi.fn() },
   };
-  const sse = { onDeletedMessageUpdated: vi.fn() };
+  const sse = { onMediaStatus: vi.fn() };
   const deletedMessages = {
     applyFederated: vi.fn(),
     advanceFederatedCursor: vi.fn(),
@@ -552,8 +555,14 @@ function makeStubs() {
                 ]
               : [];
           }
-          if (source === threadMember)
-            return store.threadParticipant.findMany();
+          if (source === threadAudience)
+            return [
+              ...new Set(
+                (await store.accountThreadState.findMany())
+                  .map((participant) => participant.user.domain)
+                  .filter((domain) => domain !== 'local'),
+              ),
+            ].map((domain) => ({ domain }));
           return [];
         };
         const query = {
@@ -579,8 +588,8 @@ function makeStubs() {
             return row ? { ...row, user: row.groupUser } : row;
           },
         },
-        threadParticipant: {
-          findMany: store.threadParticipant.findMany,
+        accountThreadState: {
+          findMany: store.accountThreadState.findMany,
           findFirst: store.deletedParticipant.findFirst,
         },
         federationDeletedCursor: {
@@ -714,7 +723,7 @@ function makeStubs() {
   const threadQueryDenials = new FederationThreadQueryDenialService(
     database as never,
     {} as never, // relationshipIntents
-    {} as never, // relationshipCommands
+    {} as never, // relationshipMutations
     {} as never, // clientStateFeed
     eventEmitter as never,
   );
@@ -726,7 +735,6 @@ function makeStubs() {
     users,
     callBridge,
     threadAccess,
-    threadResources,
     profiles,
     mediaLocalization,
     inboundMessageRoutes,
@@ -749,8 +757,7 @@ function makeStubs() {
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
     {} as never, // groupRelationships
-    {} as never, // profileStatePublisher
-    {} as never, // relationshipCommands
+    {} as never, // relationshipMutations
     namespaces as never,
     {} as never, // stateFeedConsumer
   );
@@ -984,6 +991,122 @@ describe('FederationPeerResourceService CAS error classification', () => {
       status: 503,
       bizCode: BusinessCode.INTERNAL,
     });
+  });
+});
+
+describe('FederationPeerResourceService media authorization gates', () => {
+  function target(options: {
+    currentAudience: boolean;
+    historicalPair: boolean;
+  }) {
+    const candidateWhere = vi.fn().mockResolvedValue(
+      options.currentAudience
+        ? [
+            {
+              messageId: 17n,
+              threadId: 11,
+              authorDomain: 'local',
+              threadType: MessageThreadType.P2P,
+              groupId: null,
+            },
+          ]
+        : [],
+    );
+    const pairLimit = vi
+      .fn()
+      .mockResolvedValue(options.historicalPair ? [{ id: 3n }] : []);
+    const select = vi.fn().mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: candidateWhere }),
+        }),
+      }),
+    });
+    if (options.currentAudience) {
+      select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: pairLimit }),
+        }),
+      });
+    }
+    const database = {
+      db: {
+        select,
+        query: {
+          messageAsset: {
+            findFirst: vi.fn().mockResolvedValue({ messageId: 17n }),
+          },
+        },
+      },
+    };
+    const service = new FederationPeerResourceService(
+      database as never,
+      {} as never,
+    );
+    vi.spyOn(service, 'resolveCasFile').mockResolvedValue({
+      absPath: '/cas/asset',
+      bytes: 4,
+    });
+    return { service, select };
+  }
+
+  it('requires a current thread audience before inspecting historical coordinates', async () => {
+    const { service, select } = target({
+      currentAudience: false,
+      historicalPair: true,
+    });
+
+    await expect(
+      service.resolveMediaFile(
+        'sender',
+        'recipient',
+        'chat.example',
+        'peer.example',
+        4,
+        'f'.repeat(64),
+        9,
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+    expect(select).toHaveBeenCalledOnce();
+  });
+
+  it('requires the P2P recipient to match the retained relationship pair', async () => {
+    const { service, select } = target({
+      currentAudience: true,
+      historicalPair: false,
+    });
+
+    await expect(
+      service.resolveMediaFile(
+        'sender',
+        'recipient',
+        'chat.example',
+        'peer.example',
+        4,
+        'f'.repeat(64),
+        9,
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+    expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves a message-bound asset after both authorization gates pass', async () => {
+    const { service } = target({
+      currentAudience: true,
+      historicalPair: true,
+    });
+
+    await expect(
+      service.resolveMediaFile(
+        'sender',
+        'recipient',
+        'chat.example',
+        'peer.example',
+        4,
+        'f'.repeat(64),
+        9,
+      ),
+    ).resolves.toEqual({ absPath: '/cas/asset', bytes: 4 });
   });
 });
 
@@ -1294,7 +1417,7 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    store.threadParticipant.findMany.mockResolvedValue([
+    store.accountThreadState.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(3, 'carol', 'c.com'),
@@ -1321,7 +1444,7 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    store.threadParticipant.findMany.mockResolvedValue([
+    store.accountThreadState.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(3, 'carol', 'c.com'),
@@ -1349,7 +1472,7 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
       groupUser: { account: '!grp', domain: 'local' },
     });
     // Two members on b.com (bob + dave) + one on c.com → dest set dedupes to {b.com, c.com}.
-    store.threadParticipant.findMany.mockResolvedValue([
+    store.accountThreadState.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(4, 'dave', 'b.com'),
@@ -1390,7 +1513,10 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
     });
-    store.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
+    store.accountThreadState.findMany.mockResolvedValue([
+      localUser(1, 'alice'),
+      foreignUser(2, '!grp', 'origin.com'),
+    ]);
 
     // A mirror's sole destination is the origin (the hub it pulls from).
     await outboundMessageSignals.signalMessage(
@@ -1413,13 +1539,13 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {
-    const { outboundMessageSignals, store } = makeStubs();
+    const { outboundMessageSignals, store, database } = makeStubs();
     const push = vi
       .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
 
     store.messageThread.findUnique.mockResolvedValue(null);
-    store.threadParticipant.findMany.mockResolvedValue([]);
+    store.accountThreadState.findMany.mockResolvedValue([]);
     await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
@@ -1431,9 +1557,12 @@ describe('FederationOutboundMessageSignalService — fixed-topology routing', ()
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    store.threadParticipant.findMany.mockResolvedValue([
+    store.accountThreadState.findMany.mockResolvedValue([
       foreignUser(99, 'x', 'b.com'),
     ]);
+    database.db.execute.mockResolvedValueOnce({
+      rows: [{ authorized: false }],
+    });
     await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },

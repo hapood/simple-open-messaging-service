@@ -36,7 +36,7 @@ This document describes the system architecture, module responsibilities, authen
 **Responsibility Separation Principle**
 
 - **HTTP handles "writes and queries"**: registration, login, sending messages, querying history, creating groups, invites, calls, federation — all go through HTTP `POST` (JSON body; `multipart/form-data` for uploads).
-- **SSE handles "push"**: the server pushes **identity-only signals** and the full message body one-way via SSE (`GET /api/v1/events`). SSE is a downstream-only channel — all client→server upstream business traffic goes through HTTP.
+- **SSE handles "push"**: the server pushes **identity-only signals** one-way via SSE (`GET /api/v1/events`). Message and state bodies remain in durable HTTP-queryable feeds. SSE is a downstream-only channel — all client→server upstream business traffic goes through HTTP.
 
 The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), global prefix `/api/v1` (excluding `/.well-known/somfp`).
 
@@ -45,30 +45,47 @@ The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves o
 The application root module [src/app.module.ts](../../src/app.module.ts) composes the
 feature modules and controllers. Modules marked `@Global()` are shared app-wide.
 
-| Module                               | Key Files                                                                  | Responsibilities                                                                                                                                                                                                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AuthModule**                       | [src/auth/](../../src/auth/)                                               | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
-| **UserModule**                       | [src/user/](../../src/user/)                                               | `UserService` — profile, register, friend/block helpers, and peer-trust status                                                                                                                                                                                            |
-| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, heartbeat, `HELLO`, durable-feed and message/media wake-ups, ephemeral call coordination, and `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for `HELLO`                            |
-| **MessageModule**                    | [src/message/](../../src/message/)                                         | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out                                                                                                               |
-| **GroupModule**                      | [src/group/](../../src/group/)                                             | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
-| **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (ThreadMember roster plus local ThreadParticipant state) + `ThreadAccessGuard`                                                                                                                                                                  |
-| **InviteModule**                     | [src/invite/](../../src/invite/)                                           | `InviteService` — directed friend/group request facts, pair reconciliation and friend-request badge; delegates roster writes to ThreadParticipantService                                                                                                                  |
-| **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                                   | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
-| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)                         | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
-| **UploadModule**                     | [src/upload/](../../src/upload/)                                           | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                               |
-| **PushModule**                       | [src/push/](../../src/push/)                                               | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection                                                                                                                                                                            |
-| **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                                   | Server-to-server protocol: identity/signatures, commands, compacted per-peer state feed, message miss feed, and media/message pull                                                                                                                                        |
-| **QuotaModule** (`@Global`)          | [src/quota/](../../src/quota/)                                             | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters                                                                                                                                                                   |
-| **CallsModule**                      | [src/calls/](../../src/calls/)                                             | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media)                                                                          |
-| **LinkPreviewModule**                | [src/link-preview/](../../src/link-preview/)                               | SSRF-safe OG fetch (`SafeFetchService`) + short-lived generation ownership and OpenGraph/CAS asset processing for `ContentType.LINK` cards                                                                                                                                |
-| **ShellModule**                      | [src/shell/](../../src/shell/)                                             | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`)                                                                                                                            |
-| **DiagnosticsModule**                | [src/diagnostics/](../../src/diagnostics/)                                 | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC                                                                                                                                                                                    |
-| **AdminModule**                      | [src/admin/](../../src/admin/)                                             | Admin console, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, management, GC, federation/quota controls, and `AdminAuditInterceptor` (`APP_INTERCEPTOR`)                                                     |
-| **LoggerModule**                     | [src/logger/](../../src/logger/)                                           | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService`                                                                                                                                                                               |
-| **KvStoreModule** (`@Global`)        | [src/kv-store/](../../src/kv-store/)                                       | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters                                                                                                                                                          |
-| **SettingsModule** (`@Global`)       | [src/settings/](../../src/settings/)                                       | `SettingsService` — runtime settings facade plus fixed-file VAPID loading and key status                                                                                                                                                                                  |
-| **DatabaseModule** (`@Global`)       | [src/database/database.service.ts](../../src/database/database.service.ts) | Single shared Drizzle / `node-postgres` pool; `@Global` so every module injects the same instance                                                                                                                                                                         |
+| Module                               | Key Files                                                    | Responsibilities                                                                                                                                                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AuthModule**                       | [src/auth/](../../src/auth/)                                 | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
+| **UserModule**                       | [src/user/](../../src/user/)                                 | `UserService` — profile, registration, and friend/block helpers                                                                                                                                                                                                           |
+| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                           | SSE downlink (`EventsController` + `SseService`): connection registry, heartbeat, `HELLO`, durable-feed/media wake-ups, ephemeral call coordination, and `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for `HELLO`                                        |
+| **MessageModule**                    | [src/message/](../../src/message/)                           | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` publishes compacted client content heads, coalesces their wake-ups, and dispatches offline Push                                                           |
+| **GroupModule**                      | [src/group/](../../src/group/)                               | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
+| **AccountThreadStateModule**         | [src/account-thread-state/](../../src/account-thread-state/) | `AccountThreadStateService` (local AccountThreadState state and pair-derived P2P endpoints) + `ThreadAccessGuard`                                                                                                                                                         |
+| **RelationshipModule**               | [src/relationship/](../../src/relationship/)                 | `RelationshipService` — directed user/group relationship facts, pair reconciliation and request projections; delegates roster writes to AccountThreadStateService                                                                                                         |
+| **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                     | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
+| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)           | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
+| **UploadModule**                     | [src/upload/](../../src/upload/)                             | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                               |
+| **PushModule**                       | [src/push/](../../src/push/)                                 | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection                                                                                                                                                                            |
+| **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                     | Server-to-server protocol: identity/signatures, directional recognition, bounded Health scheduling, durable tasks, compacted per-peer state feed, message feeds, and media/message pull                                                                                   |
+| **QuotaModule** (`@Global`)          | [src/quota/](../../src/quota/)                               | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters                                                                                                                                                                   |
+| **CallsModule**                      | [src/calls/](../../src/calls/)                               | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media)                                                                          |
+| **LinkPreviewModule**                | [src/link-preview/](../../src/link-preview/)                 | SSRF-safe OG fetch (`SafeFetchService`) + short-lived generation ownership and OpenGraph/CAS asset processing for `ContentType.LINK` cards                                                                                                                                |
+| **ShellModule**                      | [src/shell/](../../src/shell/)                               | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`)                                                                                                                            |
+
+Federation reachability checks use a dedicated scheduler. Each periodic round
+scans eligible peers by domain, keeps at most 32 pending domains in memory, and
+runs at most four Health requests concurrently. A new interval tick is
+coalesced while the previous round remains active, so slow requests cannot
+accumulate rounds. Concurrent callers for the same domain share one in-flight
+Health request. The scheduler controls admission; the transport request still
+uses the shared per-domain request slot and timeout.
+
+Federated address resolution has no mutating `ensure trust` operation. It reads
+the two local recognition-direction facts, explicitly starts recognition only
+when either fact is missing, and then checks signed Health once per second for
+up to 30 seconds. An `available` or `degraded` Health result is the peer's
+recognition acknowledgement, so the requester records the pending inbound fact
+before evaluating its outbound readiness gate. Recognition and Health progress
+is carried on the temporary resolve SSE; the client does not perform a separate
+trust pre-flight request.
+| **DiagnosticsModule** | [src/diagnostics/](../../src/diagnostics/) | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC |
+| **AdminModule** | [src/admin/](../../src/admin/) | Admin console, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, management, GC, federation/quota controls, and `AdminAuditInterceptor` (`APP_INTERCEPTOR`) |
+| **LoggerModule** | [src/logger/](../../src/logger/) | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService` |
+| **KvStoreModule** (`@Global`) | [src/kv-store/](../../src/kv-store/) | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters |
+| **SettingsModule** (`@Global`) | [src/settings/](../../src/settings/) | `SettingsService` — runtime settings facade plus fixed-file VAPID loading and key status |
+| **DatabaseModule** (`@Global`) | [src/database/database.service.ts](../../src/database/database.service.ts) | Single shared Drizzle / `node-postgres` pool; `@Global` so every module injects the same instance |
 
 > SOMS is **single-instance by design** — the in-process maps in `SseService`, `ThrottleGuard`, `BruteForceService`, `KvStoreService` are intentional (not a gap); there is no Redis layer, and multi-instance horizontal scaling is a non-goal.
 
@@ -99,7 +116,7 @@ The web client is an Angular (zoneless + Signal-driven) SPA. It runs in three sh
 **Repository layer (3-tier: UI ↔ repositories ↔ backend)** [web/src/app/services/](../../web/src/app/services/)
 
 - `WebdbService` — IndexedDB primitive, per-user DB (`soms-webdb-u<userId>`), object stores for messages / threads / avatars / profiles / meta.
-- `MessageRepository` (`message-repository.service.ts`) — sole issuer of message reads (`query-messages`) and sole consumer of the `NEW_MESSAGE` body cache; reads/writes through `WebdbService`.
+- `MessageRepository` (`message-repository.service.ts`) — sole issuer of message reads (`query-messages`). It advances each thread's query ceiling from durable `THREAD_CONTENT_HEAD` items and reads/writes through `WebdbService`.
 - `ThreadRepository` (`thread-store.service.ts`) — conversation/thread tier. The web client is **local-first**: on chat open it renders from IndexedDB, then reconciles with SSE + HTTP in the background (the production loading skeleton is only a cold-cache fallback).
 
 **Realtime transport** — `WebsocketService` (filename retained) is now a **facade** over three pluggable `RealtimeTransport` implementations ([realtime-transport.ts](../../web/src/app/services/realtime-transport.ts)): `WorkerSseTransport` (browser — SSE parsed inside `sse.worker.ts`, a Web Worker, off the main thread), `RustChannelSseTransport` (Tauri desktop — Rust-side supervisor), `NativeEventTransport` (Android — Kotlin `/events` bridge).
@@ -180,41 +197,47 @@ event: <EVENT_NAME>
 data: <json>
 ```
 
-| Event                      | Purpose                                            | Recovery source                           |
-| -------------------------- | -------------------------------------------------- | ----------------------------------------- |
-| `HELLO`                    | connection handshake and current high-water marks  | sent on every connection                  |
-| `STATE_REV_UPDATED`        | identity-only unified client-state wake            | `HELLO.stateRevision` + ranged state pull |
-| `NEW_MESSAGE`              | identity-only message wake `{ threadId, seq, ts }` | missed-message/message query              |
-| `DELETED_MESSAGE_UPDATED`  | identity-only deletion-log wake                    | deletion HWM/log                          |
-| `MEDIA_STATUS`             | media-localization completion wake                 | message/media query                       |
-| `CALL_EVENT`/`CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling      | active-call snapshot/new negotiation      |
-| `FORCE_LOGOUT`             | terminate a revoked session                        | authentication state                      |
+| Event                      | Purpose                                           | Recovery source                            |
+| -------------------------- | ------------------------------------------------- | ------------------------------------------ |
+| `HELLO`                    | connection handshake and current high-water marks | sent on every connection                   |
+| `STATE_FEED_UPDATED`       | identity-only Client State Feed wake `{ feedId }` | `HELLO.stateFeedEndId` + ranged state pull |
+| `MEDIA_STATUS`             | media-localization completion wake                | message/media query                        |
+| `CALL_EVENT`/`CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling     | active-call snapshot/new negotiation       |
+| `FORCE_LOGOUT`             | terminate a revoked session                       | authentication state                       |
 
-Group/profile/friend/request/thread-setting/read state has no dedicated SSE event. The mutation and its
-client-state revision commit atomically; SSE then carries only `STATE_REV_UPDATED`.
+Group/profile/friend/request/thread-setting/read/message-head state has no dedicated SSE event. The mutation
+and its Client State Feed item commit first; SSE then carries only the coalesced `STATE_FEED_UPDATED` high
+watermark. Coalescing is process-local and per account, and the highest observed `feedId` remains pending
+until emitted rather than being limited to one fixed timer window.
 
 ### Reconnection Recovery
 
-The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, the client catches up via HTTP from `stateRevision`, then pulls per-thread messages from its message cursors. The native client retains SSE out of process and replays HELLO on wake.
+The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, the client catches up via HTTP
+from its local Client State Feed cursor through `HELLO.stateFeedEndId`, then pulls per-thread message bodies up
+to the ceilings in `THREAD_CONTENT_HEAD`. The native client retains SSE out of process and replays HELLO on wake.
 
 ## Core Business Flows
 
 ### Threads, Participants, and Invites
 
-All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`).
-**`ThreadMember`** stores the source-correct roster and retains observed departures;
-P2P threads have exactly two rows. **`ThreadParticipant`** is the optional
+All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). A P2P
+thread's identities are the source-correct `RelationshipPair` endpoints. Group
+rosters use canonical Group Meta on the origin and a validated replica on a
+mirror; the latest operation per member defines current state.
+**`AccountThreadState`** is the optional
 independent fact containing one local account's role, read, and presentation
-state. Both tables reference the thread but never each other. Neither table grants access. Permission checks read the materialized
-`RelationshipPair.active` fact; `RelationshipIntent` remains the directed input
-to the existing relationship state machine.
+state. Both tables reference the thread but never each other. Neither table
+grants access. Passive federation query permission reads the publisher-authored
+`RelationshipIntent`; mutually confirmed sends and content-head publication read
+`RelationshipPair.active` and, for GROUP, the current peer-level
+`ThreadAudience`.
 
 Friend and group requests use the same pair of directed account facts. User/user
 pairs become P2P relationships; user/group pairs become memberships; group/group
-pairs are invalid. An unexpired `REQUESTED` immediately authorizes the target
-peer to query the publisher's direction, including a successful empty query on
-a new thread; it does not authorize the reverse direction. Initiating or
-accepting creates the local placeholder and thread. Crossed requests and a valid
+pairs are invalid. An unexpired source-authored `REQUESTED` grants the target
+peer passive query access, but publishes no content or Group Meta head until the
+relationship is mutually confirmed. Initiating or accepting creates the local
+placeholder and thread. Crossed requests and a valid
 peer `ACCEPTED` both upgrade a matching local `REQUESTED` to `ACCEPTED`; an
 already accepted direction creates no echo.
 For a P2P request shell, both member rows can be materialized immediately;
@@ -255,8 +278,8 @@ On chat close or thread switch, the client submits that HWM to `POST /thread/mar
 statement takes the maximum with the stored cursor and returns the authoritative capped count and mention set.
 
 While that request is in flight, the thread-list badge breathes and the client buffers only the newest
-`NEW_MESSAGE` SSE for that thread. After the response (or failure), it replays the buffered signal through the
-normal missed-summary pull, so the server remains the only unread-count authority.
+`THREAD_CONTENT_HEAD` for that thread. After the response (or failure), it applies the buffered durable head,
+so the server remains the only unread-count authority.
 
 Two consistency boundaries are deliberate:
 
@@ -264,7 +287,10 @@ Two consistency boundaries are deliberate:
 - Read state is not broadcast by a dedicated SSE. Other devices converge on their next existing unread pull,
   reconnect, or restart rather than clearing immediately.
 
-3. `MessageFanoutService` pushes `NEW_MESSAGE` to all participants via SSE (full body) + fires push for offline recipients.
+3. `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, then routes the committed
+   Client State Feed high-water marks through the per-account SSE throttle. Offline recipients still receive a
+   Push payload named `NEW_MESSAGE`; that closed-app wake is separate from the SSE protocol and carries no
+   durable state authority.
 4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 
 ### Local System Messages

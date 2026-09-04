@@ -1,8 +1,10 @@
 import {
   applyFederatedPendingProfileSnapshot,
-  InviteService,
-} from './invite.service.js';
+  RelationshipService,
+} from './relationship.service.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { messageThread, accountThreadState } from '../database/schema.js';
 
 describe('applyFederatedPendingProfileSnapshot', () => {
   const profile = {
@@ -27,16 +29,17 @@ describe('applyFederatedPendingProfileSnapshot', () => {
   });
 });
 
-describe('InviteService.friendRelationshipStatuses', () => {
+describe('RelationshipService.friendRelationshipStatuses', () => {
   process.env.SOMS_DOMAIN = 'local.test';
   const findMany = vi.fn();
   const getActiveP2PPeerUserIds = vi.fn();
+  const execute = vi.fn(async () => ({ rows: await findMany() }));
   const database = {
     db: {
-      execute: vi.fn(async () => ({ rows: await findMany() })),
+      execute,
     },
   };
-  const service = new InviteService(
+  const service = new RelationshipService(
     database as never,
     { getActiveP2PPeerUserIds } as never,
     {} as never,
@@ -60,8 +63,8 @@ describe('InviteService.friendRelationshipStatuses', () => {
       service.friendRelationshipStatuses(1, [2, 3, 4, 5, 5, 1]),
     ).resolves.toEqual([
       { userId: 2, status: 'FRIEND' },
-      { userId: 3, status: 'OUTGOING_PENDING', inviteId: '31' },
-      { userId: 4, status: 'INCOMING_PENDING', inviteId: '41' },
+      { userId: 3, status: 'OUTGOING_PENDING' },
+      { userId: 4, status: 'INCOMING_PENDING' },
       { userId: 5, status: 'NONE' },
     ]);
     expect(findMany).toHaveBeenCalledTimes(1);
@@ -74,9 +77,90 @@ describe('InviteService.friendRelationshipStatuses', () => {
     expect(findMany).not.toHaveBeenCalled();
     expect(getActiveP2PPeerUserIds).not.toHaveBeenCalled();
   });
+
+  it('binds a single requested peer as an IN-list scalar', async () => {
+    getActiveP2PPeerUserIds.mockResolvedValue([]);
+    findMany.mockResolvedValue([]);
+
+    await service.friendRelationshipStatuses(1, [2]);
+
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0][0]);
+    expect(query.sql).toContain('peer.id IN ($2)');
+    expect(query.sql).not.toContain('ANY');
+    expect(query.params).toEqual([1, 2]);
+  });
 });
 
-describe('InviteService local friend client-state projection', () => {
+describe('RelationshipService P2P shell storage', () => {
+  it('creates client participants only for local accounts', async () => {
+    const participantValues = vi.fn().mockReturnValue({
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const insert = vi.fn((table: unknown) => {
+      if (table !== accountThreadState) throw new Error('unexpected insert');
+      return { values: participantValues };
+    });
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 1 }]),
+        }),
+      }),
+      insert,
+    };
+    const service = new RelationshipService(
+      {} as never,
+      {} as never,
+      {} as never,
+      { lockPairInTx: vi.fn().mockResolvedValue({ threadId: 7 }) } as never,
+    );
+    const target = service as unknown as {
+      ensureP2PThreadShellInTx(
+        transaction: unknown,
+        firstUserId: number,
+        secondUserId: number,
+      ): Promise<number>;
+    };
+
+    await expect(target.ensureP2PThreadShellInTx(tx, 1, 2)).resolves.toBe(7);
+    expect(participantValues).toHaveBeenCalledExactlyOnceWith([
+      { accountId: 1, threadId: 7 },
+    ]);
+  });
+
+  it('cleans an unused shell without a separate endpoint projection table', async () => {
+    const deletedTables: unknown[] = [];
+    const tx = {
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [{ threadId: 7 }] })
+        .mockResolvedValueOnce({ rows: [] }),
+      delete: vi.fn((table: unknown) => {
+        deletedTables.push(table);
+        return {
+          where: vi.fn().mockResolvedValue(undefined),
+        };
+      }),
+    };
+    const service = new RelationshipService(
+      {
+        db: {
+          transaction: vi.fn(
+            async (run: (transaction: unknown) => Promise<unknown>) => run(tx),
+          ),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(service.cleanupExpiredRelationshipShells()).resolves.toBe(1);
+    expect(deletedTables).toEqual([accountThreadState, messageThread]);
+  });
+});
+
+describe('RelationshipService local relationship client-state projection', () => {
   it('projects both local and peer acknowledgements with the promoted local thread id', async () => {
     const alice = {
       id: 1,
@@ -121,7 +205,7 @@ describe('InviteService local friend client-state projection', () => {
     const writeInTx = vi
       .fn()
       .mockImplementation(async () => writeInTx.mock.calls.length);
-    const service = new InviteService(
+    const service = new RelationshipService(
       {} as never,
       {} as never,
       { writeInTx } as never,
@@ -150,7 +234,7 @@ describe('InviteService local friend client-state projection', () => {
       },
     };
 
-    await service.writeFriendRequestClientStateInTx(tx as never, 1, 2);
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, 2);
 
     expect(writeInTx).toHaveBeenCalledTimes(4);
     const ownerOne = writeInTx.mock.calls
@@ -220,7 +304,7 @@ describe('InviteService local friend client-state projection', () => {
       bio: '',
     };
     const writeInTx = vi.fn().mockResolvedValue(1);
-    const service = new InviteService(
+    const service = new RelationshipService(
       {} as never,
       {} as never,
       { writeInTx } as never,
@@ -265,7 +349,7 @@ describe('InviteService local friend client-state projection', () => {
       },
     };
 
-    await service.writeFriendRequestClientStateInTx(tx as never, 1, 2);
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, 2);
 
     expect(writeInTx).toHaveBeenCalledOnce();
     expect(writeInTx.mock.calls[0][1].body).toMatchObject({

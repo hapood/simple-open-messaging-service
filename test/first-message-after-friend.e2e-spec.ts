@@ -9,12 +9,13 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
   message,
+  account,
   clientStateFeed,
-  threadParticipant,
+  accountThreadState,
   threadAudience,
   user,
 } from '../src/database/schema';
-import { InviteService } from '../src/invite/invite.service';
+import { RelationshipService } from '../src/relationship/relationship.service';
 import {
   registerAndLogin,
   openSse,
@@ -22,17 +23,18 @@ import {
 } from './federation-test-helpers';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
 import {
-  waitForDomainCommand,
-  waitForLocalFriendInvite,
-} from './domain-command-helpers.js';
+  waitForDurableTask,
+  waitForLocalRelationshipRequest,
+} from './durable-task-helpers.js';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
  *
  * The bug itself lives in the frontend kernel (web/src/app/lib/chat-box/chat-box-scroller.ts loadNewer),
  * where it is pinned by a unit test. This spec locks the BACKEND delivery contract the kernel relies on:
- * on a brand-new (empty) P2P thread, the very first send must (a) commit the row, and (b) fan a NEW_MESSAGE
- * SSE frame to the other participant over the real wire. The backend has no empty-thread special-casing, so
+ * on a brand-new (empty) P2P thread, the very first send must commit the row, publish the receiver's
+ * THREAD_CONTENT_HEAD, and emit the throttled State Feed wake over the real wire. The backend has no
+ * empty-thread special-casing, so
  * this also guards against any future regression in the fan-out path (participant lookup, fire-and-forget
  * dispatch, SSE registry) that would break first-message delivery.
  *
@@ -76,30 +78,30 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
-    // 1. Alice sends the friend invite to Bob; Bob accepts → both sides get the new P2P thread.
+    // 1. Alice sends a relationship request to Bob; Bob accepts and both sides get the P2P thread.
     const invite = await request(baseUrl)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob' })
+      .send({ account: 'bob', domain: 'local' })
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
       });
-    const inviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.commandId,
+      invite.body.data.taskId,
       alice.id,
       bob.id,
     );
 
     const accept = await request(baseUrl)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId });
+      .send({ account: alice.account, domain: 'local' });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     expect(accept.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForDomainCommand(database.db, accept.body.data.commandId);
+    await waitForDurableTask(database.db, accept.body.data.taskId);
     const relationship = await findP2PRelationship(
       database.db,
       alice.id,
@@ -139,7 +141,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .where(eq(message.threadId, threadId));
     expect(emptyCount.count).toBeGreaterThanOrEqual(0);
 
-    // 2. Open Bob's SSE stream BEFORE the send so the NEW_MESSAGE frame is captured on the real wire.
+    const beforeFeed = await database.db.query.account.findFirst({
+      where: eq(account.id, bob.id),
+      columns: { stateFeedAllocatedThrough: true },
+    });
+    expect(beforeFeed).toBeDefined();
+    // 2. Open Bob's SSE stream before the send so the throttled durable-feed wake is captured.
     const reader = await openSse(baseUrl, bob.token);
     try {
       // 3. Alice sends the FIRST message into the empty thread.
@@ -150,21 +157,23 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(0);
 
-      // 4. The fan-out wrote a NEW_MESSAGE signal to Bob's stream. The frame is identity-only
-      //    { threadId, seq, ts } — the rendered body is never carried on the wire (single data source:
-      //    the client pulls it). Assert the signal targets this thread.
+      // 4. The client wake carries only the latest State Feed high watermark.
       const delivered = (await waitForSseEvent(
         reader,
         (event, data) =>
-          event === 'NEW_MESSAGE' &&
+          event === 'STATE_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { threadId?: number }).threadId === threadId,
-      )) as { seq: number };
-      expect(delivered).toBeDefined();
+          typeof (data as { feedId?: unknown }).feedId === 'number' &&
+          (data as { feedId: number }).feedId >
+            beforeFeed!.stateFeedAllocatedThrough,
+        10_000,
+      )) as { feedId: number };
+      expect(delivered.feedId).toBeGreaterThan(
+        beforeFeed!.stateFeedAllocatedThrough,
+      );
 
-      // 5. The row is committed and the SSE cursor identifies that exact row. The number of preceding
-      //    SYSTEM records is an implementation detail and must not be baked into this behavior test.
+      // 5. The row and Bob's compacted content head identify the same sequence.
       const [storedMessage] = await database.db
         .select()
         .from(message)
@@ -177,35 +186,74 @@ describe('First message after friend-add is delivered (single instance)', () => 
         .limit(1);
       expect(storedMessage).toBeDefined();
       expect(JSON.parse(storedMessage.content)).toEqual({ text: 'first!' });
-      expect(delivered.seq).toBe(storedMessage.seq);
       expect(Number(storedMessage.seq)).toBeGreaterThanOrEqual(0);
       expect(storedMessage.originSeq).toBeNull();
+      const head = await database.db.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, bob.id),
+          eq(
+            clientStateFeed.compactionKey,
+            JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
+          ),
+        ),
+      });
+      expect(head?.feedId).toBeGreaterThan(
+        beforeFeed!.stateFeedAllocatedThrough,
+      );
+      expect(head!.feedId).toBeLessThanOrEqual(delivered.feedId);
+      expect(head?.body).toMatchObject({
+        threadId,
+        messageEndSeq: storedMessage.seq,
+      });
     } finally {
       await reader.cancel();
     }
 
+    const beforeRevokeFeed = await database.db.query.account.findFirst({
+      where: eq(account.id, bob.id),
+      columns: { stateFeedAllocatedThrough: true },
+    });
+    expect(beforeRevokeFeed).toBeDefined();
     const deleteReader = await openSse(baseUrl, bob.token);
     try {
       const removed = await request(baseUrl)
-        .post('/api/v1/user/delete-friend')
+        .post('/api/v1/relationship/revoke')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ account: 'bob' });
+        .send({ account: 'bob', domain: 'local' });
       expect(removed.status).toBe(200);
       expect(removed.body.code).toBe(0);
       expect(removed.body.data).toMatchObject({ status: 'PENDING' });
-      await waitForDomainCommand(database.db, removed.body.data.commandId);
+      await waitForDurableTask(database.db, removed.body.data.taskId);
       const boundaryWake = (await waitForSseEvent(
         deleteReader,
         (event, data) =>
-          event === 'NEW_MESSAGE' &&
+          event === 'STATE_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { threadId?: number }).threadId === threadId,
-      )) as { seq: number };
+          typeof (data as { feedId?: unknown }).feedId === 'number' &&
+          (data as { feedId: number }).feedId >
+            beforeRevokeFeed!.stateFeedAllocatedThrough,
+        10_000,
+      )) as { feedId: number };
+      const boundaryHead = await database.db.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, bob.id),
+          eq(
+            clientStateFeed.compactionKey,
+            JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
+          ),
+        ),
+      });
+      expect(boundaryHead?.feedId).toBeGreaterThan(
+        beforeRevokeFeed!.stateFeedAllocatedThrough,
+      );
+      expect(boundaryHead!.feedId).toBeLessThanOrEqual(boundaryWake.feedId);
+      const boundarySeq = (boundaryHead!.body as { messageEndSeq: number })
+        .messageEndSeq;
       const boundary = await database.db.query.message.findFirst({
         where: and(
           eq(message.threadId, threadId),
-          eq(message.seq, boundaryWake.seq),
+          eq(message.seq, boundarySeq),
           eq(message.contentType, 'SYSTEM'),
         ),
       });
@@ -213,12 +261,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
         creatorAccount: null,
         creatorDomain: null,
       });
-      const participants = await database.db.query.threadParticipant.findMany({
-        where: eq(threadParticipant.threadId, threadId),
+      const participants = await database.db.query.accountThreadState.findMany({
+        where: eq(accountThreadState.threadId, threadId),
       });
       expect(
-        participants.map((participant) => participant.messageVisibleBeforeSeq),
-      ).toEqual([boundaryWake.seq + 1, boundaryWake.seq + 1]);
+        participants.map((participant) => participant.messageVisibleThroughSeq),
+      ).toEqual([boundarySeq, boundarySeq]);
       const projections = await database.db.query.clientStateFeed.findMany({
         where: eq(
           clientStateFeed.compactionKey,
@@ -229,7 +277,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         projections.every(
           (projection) =>
             (projection.body as { messageEndSeq?: number }).messageEndSeq ===
-            boundaryWake.seq,
+            boundarySeq,
         ),
       ).toBe(true);
       expect(projections.map((projection) => projection.userId).sort()).toEqual(
@@ -258,21 +306,20 @@ describe('First message after friend-add is delivered (single instance)', () => 
         account: 'bob',
         name: 'Bob',
         domain: 'peer.test',
-        sourceDomain: 'peer.test',
         namespaceId,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
 
-    const inviteService = app.get(InviteService);
+    const relationships = app.get(RelationshipService);
     await database.db.transaction(async (tx) => {
-      await inviteService.writeLocalFriendIntentInTx(
+      await relationships.writeLocalP2PIntentInTx(
         tx,
         alice.id,
         foreignBob.id,
         true,
       );
-      await inviteService.writeLocalFriendIntentInTx(
+      await relationships.writeLocalP2PIntentInTx(
         tx,
         foreignBob.id,
         alice.id,
@@ -319,25 +366,20 @@ describe('First message after friend-add is delivered (single instance)', () => 
         account: 'strict-bob',
         name: 'Bob',
         domain: 'strict-peer.test',
-        sourceDomain: 'strict-peer.test',
         namespaceId,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
-    const inviteService = app.get(InviteService);
+    const relationships = app.get(RelationshipService);
     await database.db.transaction((tx) =>
-      inviteService.writeLocalFriendIntentInTx(
-        tx,
-        alice.id,
-        foreignBob.id,
-        true,
-      ),
+      relationships.writeLocalP2PIntentInTx(tx, alice.id, foreignBob.id, true),
     );
     await database.db.transaction((tx) =>
-      inviteService.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: alice.id,
         peerUserId: foreignBob.id,
         status: 'REQUESTED',
+        profileRev: 1,
         note: 'crossed request',
         requestedAt: new Date(),
         expiresAt: new Date(Date.now() + 60_000),
@@ -352,10 +394,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(afterCrossedRequest?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
-      inviteService.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: alice.id,
         peerUserId: foreignBob.id,
         status: 'ACCEPTED',
+        profileRev: 1,
         note: 'crossed request',
         requestedAt: new Date(),
         expiresAt: null,

@@ -183,16 +183,12 @@ async function admitOperation(operation, actors, timeoutMs) {
   ) {
     const actor = actors.user(operation.requestSubject);
     const initiator = actors.user(operation.requestAuthor);
-    const invite = await waitForIncoming(actor, initiator, timeoutMs);
-    const intentId = String(invite.id);
+    await waitForIncoming(actor, initiator, timeoutMs);
     const endpoint =
       operation.type === 'ACCEPT_REQUEST'
         ? '/relationship/accept'
         : '/relationship/revoke';
-    const body =
-      operation.type === 'ACCEPT_REQUEST' && /^\d+$/.test(intentId)
-        ? { intentId }
-        : relationshipAddress(actor, initiator);
+    const body = relationshipAddress(actor, initiator);
     const accepted = await actor.post(
       endpoint,
       body,

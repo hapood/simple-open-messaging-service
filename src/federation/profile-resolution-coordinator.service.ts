@@ -1,15 +1,17 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
+import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
+import { S2sResponseError } from './federation-errors.js';
 import { FederationProfileService } from './federation-profile.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -19,6 +21,7 @@ export interface ResolvedClientProfile {
   domain: string;
   rev: number;
   name: string;
+  bio: string;
   avatarBase64: string | null;
 }
 
@@ -28,7 +31,8 @@ export type ProfileResolutionStart =
 
 type Selector =
   | { account: string; domain: string; rev: number }
-  | { threadId: number; messageSeq: number };
+  | { threadId: number; messageSeq: number }
+  | { threadId: number; memberAccount: string; memberDomain: string };
 
 interface InFlight {
   requestId: string;
@@ -38,6 +42,9 @@ interface InFlight {
 /** Application-wide exact-profile resolver with single-flight and a 1,000-entry access-ordered LRU. */
 @Injectable()
 export class ProfileResolutionCoordinatorService {
+  private readonly logger = new Logger(
+    ProfileResolutionCoordinatorService.name,
+  );
   private readonly config = loadFederationConfig();
   private readonly inFlight = new Map<string, InFlight>();
   private readonly cache = new Map<string, ResolvedClientProfile>();
@@ -89,6 +96,13 @@ export class ProfileResolutionCoordinatorService {
       })
       .catch((error: unknown) => {
         const reason = this.failureReason(error);
+        const detail =
+          error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : String(error);
+        const logMessage = `profile resolution ${flight.requestId} failed for ${normalized.account}@${normalized.domain} rev ${normalized.rev}: ${reason} (${detail})`;
+        if (reason === 'TEMPORARILY_UNAVAILABLE') this.logger.warn(logMessage);
+        else this.logger.debug(logMessage);
         for (const recipient of flight.users) {
           this.sse.onProfileFailed(recipient, {
             requestId: flight.requestId,
@@ -103,7 +117,7 @@ export class ProfileResolutionCoordinatorService {
   }
 
   private async normalizeAndAuthorize(userId: number, selector: Selector) {
-    if ('threadId' in selector) {
+    if ('threadId' in selector && 'messageSeq' in selector) {
       if (
         !(await isThreadMutuallyAuthorized(
           this.database.db,
@@ -141,6 +155,12 @@ export class ProfileResolutionCoordinatorService {
           'message author is unavailable',
         );
       }
+      if (message.profileRev === 0) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'message author has no profile',
+        );
+      }
       return {
         kind: 'message' as const,
         threadId: selector.threadId,
@@ -155,6 +175,75 @@ export class ProfileResolutionCoordinatorService {
         publisherMessageSeq: message.originSeq,
       };
     }
+    if ('threadId' in selector) {
+      const rows = await this.database.db.execute<{
+        groupAccount: string;
+        publisherDomain: string;
+        publisherNamespaceId: number;
+        memberNamespaceId: number;
+        profileRev: number;
+      }>(sql`
+        SELECT group_state.account AS "groupAccount",
+               group_state.domain AS "publisherDomain",
+               group_state."namespaceId" AS "publisherNamespaceId",
+               latest."memberNamespaceId",
+               (latest.body ->> 'profileRev')::integer AS "profileRev"
+        FROM "MessageThread" thread
+        JOIN "Group" group_state ON group_state.id = thread."groupId"
+        JOIN "User" viewer_identity ON viewer_identity.id = ${userId}
+        JOIN LATERAL (
+          SELECT member_identity."namespaceId" AS "memberNamespaceId",
+                 member_fact.operation,
+                 member_fact.body
+          FROM "GroupMetaMemberFeed" member_fact
+          JOIN "User" member_identity
+            ON member_identity.id = member_fact."memberUserId"
+          WHERE member_fact."groupId" = group_state.id
+            AND member_identity.account = ${normalizeAccount(selector.memberAccount)}
+            AND member_identity.domain = ${selector.memberDomain.toLowerCase()}
+          ORDER BY member_fact."feedId" DESC
+          LIMIT 1
+        ) latest ON true
+        WHERE thread.id = ${selector.threadId}
+          AND thread.type = 'GROUP'
+          AND EXISTS (
+            SELECT 1 FROM "RelationshipPair" viewer_pair
+            WHERE viewer_pair."threadId" = thread.id
+              AND viewer_pair.kind = 'GROUP_MEMBER'
+              AND viewer_pair.active = true
+              AND ((viewer_pair."endpointAType" = 'USER'
+                    AND viewer_pair."endpointAAccount" = viewer_identity.account
+                    AND viewer_pair."endpointADomain" = viewer_identity.domain)
+                OR (viewer_pair."endpointBType" = 'USER'
+                    AND viewer_pair."endpointBAccount" = viewer_identity.account
+                    AND viewer_pair."endpointBDomain" = viewer_identity.domain))
+          )
+          AND latest.operation = 'UPSERT'
+          AND jsonb_typeof(latest.body -> 'profileRev') = 'number'
+        LIMIT 1
+      `);
+      const allocated = rows.rows[0];
+      if (!allocated || allocated.profileRev < 1) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'group member profile is unavailable',
+        );
+      }
+      return {
+        kind: 'groupMember' as const,
+        threadId: selector.threadId,
+        groupAccount: allocated.groupAccount,
+        account: normalizeAccount(selector.memberAccount),
+        domain: selector.memberDomain.toLowerCase(),
+        rev: allocated.profileRev,
+        namespaceId: allocated.memberNamespaceId,
+        publisherDomain:
+          allocated.publisherDomain === 'local'
+            ? this.config.domain
+            : allocated.publisherDomain,
+        publisherNamespaceId: allocated.publisherNamespaceId,
+      };
+    }
     const account = selector.account.toLowerCase();
     const domain = selector.domain.toLowerCase();
     const allowed = await this.database.db.execute(sql`
@@ -167,7 +256,9 @@ export class ProfileResolutionCoordinatorService {
             SELECT 1 FROM "RelationshipIntent" intent
             JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
             WHERE intent."profileRev" = ${selector.rev}
-              AND intent.status IN ('REQUESTED', 'ACCEPTED')
+              AND (intent.status = 'ACCEPTED'
+                OR (intent.status = 'REQUESTED'
+                  AND intent."expiresAt" > CURRENT_TIMESTAMP))
               AND ((intent."authorSide" = 'A'
                 AND pair."endpointAAccount" = ${account}
                 AND pair."endpointADomain" = ${domain}
@@ -176,14 +267,6 @@ export class ProfileResolutionCoordinatorService {
                 AND pair."endpointBAccount" = ${account}
                 AND pair."endpointBDomain" = ${domain}
                 AND pair."endpointAAccount" = self.account))
-          )
-          OR EXISTS (
-            SELECT 1 FROM "FederatedFriendRequest" request
-            WHERE request."localUserId" = self.id
-              AND request."remoteAccount" = ${account}
-              AND request."remoteDomain" = ${domain}
-              AND request."profileRevision" = ${selector.rev}
-              AND request.status IN ('REQUESTED', 'ACCEPTED')
           )
           OR EXISTS (
             SELECT 1
@@ -201,22 +284,27 @@ export class ProfileResolutionCoordinatorService {
                 AND pair."endpointAType" = 'GROUP'
                 AND local_group.account = pair."endpointAAccount")
             )
-            JOIN "MessageThread" managed_thread
-              ON managed_thread."groupId" = local_group.id
-            JOIN "ThreadMember" manager
-              ON manager."threadId" = managed_thread.id
-              AND manager."userId" = self.id
+            JOIN LATERAL (
+              SELECT member_fact.operation, member_fact.body
+              FROM "GroupMetaMemberFeed" member_fact
+              WHERE member_fact."groupId" = local_group.id
+                AND member_fact."memberUserId" = self.id
+              ORDER BY member_fact."feedId" DESC
+              LIMIT 1
+            ) manager ON true
             WHERE intent."profileRev" = ${selector.rev}
-              AND intent.status IN ('REQUESTED', 'ACCEPTED')
+              AND (intent.status = 'ACCEPTED'
+                OR (intent.status = 'REQUESTED'
+                  AND intent."expiresAt" > CURRENT_TIMESTAMP))
               AND local_group.domain = 'local'
               AND local_group."namespaceId" = 0
-              AND manager.left = false
-              AND manager.role IN ('OWNER', 'ADMIN')
+              AND manager.operation = 'UPSERT'
+              AND manager.body ->> 'role' IN ('OWNER', 'ADMIN')
           )
           OR EXISTS (
             SELECT 1 FROM "Group" group_profile
             JOIN "MessageThread" thread ON thread."groupId" = group_profile.id
-            JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
+            JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
             WHERE participant."accountId" = self.id
               AND group_profile.account = ${account}
               AND group_profile.domain = ${domain}
@@ -260,7 +348,7 @@ export class ProfileResolutionCoordinatorService {
   private async resolve(
     selector: Awaited<ReturnType<typeof this.normalizeAndAuthorize>>,
   ) {
-    if (selector.domain === this.config.domain) {
+    if (selector.kind === 'account' && selector.domain === this.config.domain) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'profile revision is unavailable',
@@ -289,11 +377,27 @@ export class ProfileResolutionCoordinatorService {
         );
       }
       query.set('messageSeq', selector.publisherMessageSeq.toString());
-      const wire = await this.peerHttp.get<Omit<S2SProfile, 'bio'>>(
+      profile = await this.peerHttp.get<S2SProfile>(
         `/s2s/v1/message-author-profile?${query.toString()}`,
         selector.publisherDomain,
       );
-      profile = { ...wire, bio: '' };
+    } else if (selector.kind === 'groupMember') {
+      if (selector.publisherNamespaceId === 0) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'locally allocated group member profile is unavailable',
+        );
+      }
+      const query = new URLSearchParams({
+        account: selector.groupAccount,
+        memberAccount: selector.account,
+        memberDomain: selector.domain,
+        rev: selector.rev.toString(),
+      });
+      profile = await this.peerHttp.get<S2SProfile>(
+        `/s2s/v1/group-member-profile?${query.toString()}`,
+        selector.publisherDomain,
+      );
     } else {
       profile = await this.peerHttp.get<S2SProfile>(
         `/s2s/v1/profiles/${encodeFederationResourceComponent(selector.account)}?rev=${selector.rev}`,
@@ -311,19 +415,11 @@ export class ProfileResolutionCoordinatorService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    if (selector.kind === 'account') {
-      await this.profiles.materializeExactForeignProfile(
-        profile,
-        selector.domain,
-        selector.namespaceId,
-      );
-    } else {
-      await this.profiles.materializeReferencedUserProfile(
-        profile,
-        selector.publisherDomain!,
-        selector.namespaceId,
-      );
-    }
+    await this.profiles.materializeExactForeignProfile(
+      profile,
+      selector.kind === 'account' ? selector.domain : selector.publisherDomain!,
+      selector.namespaceId,
+    );
     return this.clientProfile(profile);
   }
 
@@ -333,6 +429,7 @@ export class ProfileResolutionCoordinatorService {
       domain: profile.domain,
       rev: profile.profileRev,
       name: profile.displayName,
+      bio: profile.bio,
       avatarBase64: profile.avatar?.base64 ?? null,
     };
   }
@@ -354,7 +451,7 @@ export class ProfileResolutionCoordinatorService {
         BusinessCode.VALIDATION_FAILED,
         'invalid profile selector',
       );
-    if ('threadId' in selector) {
+    if ('threadId' in selector && 'messageSeq' in selector) {
       if (
         Object.keys(selector).some(
           (key) => key !== 'threadId' && key !== 'messageSeq',
@@ -369,6 +466,24 @@ export class ProfileResolutionCoordinatorService {
           'invalid message profile selector',
         );
       }
+    } else if ('threadId' in selector) {
+      if (
+        Object.keys(selector).some(
+          (key) =>
+            key !== 'threadId' &&
+            key !== 'memberAccount' &&
+            key !== 'memberDomain',
+        ) ||
+        !Number.isSafeInteger(selector.threadId) ||
+        selector.threadId < 1 ||
+        !selector.memberAccount ||
+        !selector.memberDomain
+      ) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid group member profile selector',
+        );
+      }
     } else if (
       Object.keys(selector).some(
         (key) => key !== 'account' && key !== 'domain' && key !== 'rev',
@@ -376,7 +491,7 @@ export class ProfileResolutionCoordinatorService {
       !selector.account ||
       !selector.domain ||
       !Number.isSafeInteger(selector.rev) ||
-      selector.rev < 0
+      selector.rev < 1
     ) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -388,7 +503,12 @@ export class ProfileResolutionCoordinatorService {
   private failureReason(
     error: unknown,
   ): 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE' {
-    const code = error instanceof BusinessException ? error.bizCode : undefined;
+    const code =
+      error instanceof BusinessException
+        ? error.bizCode
+        : error instanceof S2sResponseError
+          ? error.code
+          : undefined;
     if (code === BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED)
       return 'NOT_DISCLOSED';
     if (code === BusinessCode.NOT_FOUND || code === BusinessCode.FORBIDDEN)

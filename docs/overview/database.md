@@ -221,7 +221,7 @@ target, and no Group Meta network read occurs inside that item transaction.
 
 Thread, profile, member-profile, request, and client-state entries use one
 compacted per-user feed. `THREAD_CONTENT_HEAD` stores required message and
-tombstone ends together with a preview identity. The client reads
+tombstone ends together. The client reads
 `GET /user/state-feed` after its sole device-feed cursor and applies each page
 and cursor atomically. There are no separate device message or tombstone feed
 tables.
@@ -287,7 +287,7 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — stable domain allow-list and recognition state. `activeNamespaceId` points to the currently verified identity namespace; `trustLevel` is `unrecognized | establishing | available | degraded | halted`; per-peer daily-quota overrides remain domain-scoped.
+- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `outboundRecognitionConfirmed` records delivery of this node's Recognize notification. `inboundRecognitionConfirmed` records evidence that the peer recognizes this node, supplied by either its Recognize notification or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; the successful Health states both confirm recognition while distinguishing current reachability quality. Per-peer daily-quota overrides remain domain-scoped.
 - **FederationNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
@@ -339,7 +339,10 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
-5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
+5. **Client state versioning**: thread membership, profile cache entries, requests, and compacted
+   `THREAD_CONTENT_HEAD` rows share the account's `stateFeedAllocatedThrough` coordinate. Clients persist
+   one Client State Feed cursor and delta-replay through the `stateFeedEndId` advertised by `HELLO` or
+   `STATE_FEED_UPDATED` rather than re-fetching the whole list.
 6. **Lifecycle is model-specific**: the origin appends bodyless Group Meta
    `DEPART`; mirrors and clients physically delete current member projections.
    Historical messages retain their own author Address and profile reference.

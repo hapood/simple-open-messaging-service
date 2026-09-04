@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FriendInviteCommandExecutionService } from './friend-invite-command-execution.service.js';
+import { RelationshipRequestTaskExecutionService } from './relationship-request-task-execution.service.js';
 
 function createHarness(peerDomain: string) {
   const tx = {
@@ -9,23 +9,23 @@ function createHarness(peerDomain: string) {
       },
     },
   };
-  const rejectInvite = vi.fn(
+  const rejectRelationshipRequest = vi.fn(
     async (
-      _inviteId: string,
+      _peerUserId: number,
       _actorUserId: number,
       afterClose: (transaction: typeof tx, peerUserId: number) => Promise<void>,
     ) => afterClose(tx, 9),
   );
-  const revokeInvite = vi.fn(
+  const revokeRelationshipRequest = vi.fn(
     async (
-      _inviteId: string,
+      _peerUserId: number,
       _actorUserId: number,
       afterClose: (transaction: typeof tx, peerUserId: number) => Promise<void>,
     ) => afterClose(tx, 9),
   );
-  const acceptInvite = vi.fn(
+  const acceptRelationshipRequest = vi.fn(
     async (
-      _inviteId: string,
+      _peerUserId: number,
       _actorUserId: number,
       afterAccept: (
         transaction: typeof tx,
@@ -33,53 +33,53 @@ function createHarness(peerDomain: string) {
       ) => Promise<void>,
     ) => {
       await afterAccept(tx, 9);
-      return { kind: 'FRIEND' as const, threadId: 12, fromUserId: 9 };
+      return { threadId: 12, fromUserId: 9 };
     },
   );
-  const writeLocalFriendIntentInTx = vi
+  const writeLocalP2PIntentInTx = vi
     .fn()
     .mockResolvedValue([{ userId: 7, feedId: 4 }]);
-  const writeFriendIntentInTx = vi
+  const writeP2PIntentInTx = vi
     .fn()
     .mockResolvedValue(new Map([['peer.test', 5n]]));
   const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
   const notifyFeedUpdates = vi.fn();
-  const service = new FriendInviteCommandExecutionService(
+  const service = new RelationshipRequestTaskExecutionService(
     {
-      acceptInvite,
-      rejectInvite,
-      revokeInvite,
-      writeLocalFriendIntentInTx,
+      acceptRelationshipRequest,
+      rejectRelationshipRequest,
+      revokeRelationshipRequest,
+      writeLocalP2PIntentInTx,
     } as never,
-    { writeFriendIntentInTx } as never,
+    { writeP2PIntentInTx } as never,
     { pushStateFeedDomains } as never,
     { notifyFeedUpdates } as never,
   );
   return {
     service,
     tx,
-    rejectInvite,
-    revokeInvite,
-    acceptInvite,
-    writeLocalFriendIntentInTx,
-    writeFriendIntentInTx,
+    rejectRelationshipRequest,
+    revokeRelationshipRequest,
+    acceptRelationshipRequest,
+    writeLocalP2PIntentInTx,
+    writeP2PIntentInTx,
     pushStateFeedDomains,
     notifyFeedUpdates,
   };
 }
 
-describe('FriendInviteCommandExecutionService', () => {
+describe('RelationshipRequestTaskExecutionService', () => {
   it('executes local acceptance through the original transaction', async () => {
     const harness = createHarness('local');
 
-    await harness.service.accept('40', 7);
+    await harness.service.accept(9, 7);
 
-    expect(harness.acceptInvite).toHaveBeenCalledWith(
-      '40',
+    expect(harness.acceptRelationshipRequest).toHaveBeenCalledWith(
+      9,
       7,
       expect.any(Function),
     );
-    expect(harness.writeLocalFriendIntentInTx).toHaveBeenCalledWith(
+    expect(harness.writeLocalP2PIntentInTx).toHaveBeenCalledWith(
       harness.tx,
       7,
       9,
@@ -91,21 +91,21 @@ describe('FriendInviteCommandExecutionService', () => {
   });
 
   it.each([
-    ['reject', '41'],
-    ['revoke', '42'],
+    ['reject', 9],
+    ['revoke', 9],
   ] as const)(
     'executes local %s through the original transaction',
-    async (operation, inviteId) => {
+    async (operation, peerUserId) => {
       const harness = createHarness('local');
 
-      await harness.service[operation](inviteId, 7);
+      await harness.service[operation](peerUserId, 7);
 
-      expect(harness[`${operation}Invite`]).toHaveBeenCalledWith(
-        inviteId,
+      expect(harness[`${operation}RelationshipRequest`]).toHaveBeenCalledWith(
+        peerUserId,
         7,
         expect.any(Function),
       );
-      expect(harness.writeLocalFriendIntentInTx).toHaveBeenCalledWith(
+      expect(harness.writeLocalP2PIntentInTx).toHaveBeenCalledWith(
         harness.tx,
         7,
         9,
@@ -120,9 +120,9 @@ describe('FriendInviteCommandExecutionService', () => {
   it('writes a federated close in the mutation transaction', async () => {
     const harness = createHarness('peer.test');
 
-    await harness.service.revoke('42', 7);
+    await harness.service.revoke(9, 7);
 
-    expect(harness.writeFriendIntentInTx).toHaveBeenCalledWith(
+    expect(harness.writeP2PIntentInTx).toHaveBeenCalledWith(
       harness.tx,
       7,
       9,
@@ -130,7 +130,7 @@ describe('FriendInviteCommandExecutionService', () => {
       '',
       expect.any(Array),
     );
-    expect(harness.writeLocalFriendIntentInTx).not.toHaveBeenCalled();
+    expect(harness.writeLocalP2PIntentInTx).not.toHaveBeenCalled();
     expect([...harness.pushStateFeedDomains.mock.calls[0][0]]).toEqual([
       'peer.test',
     ]);

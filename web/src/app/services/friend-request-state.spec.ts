@@ -21,7 +21,6 @@ const friendInput: FriendIntentProjectionInput = {
   status: 'REQUESTED',
   direction: 'OUTGOING',
   localThreadId: 7,
-  inviteId: '11',
   note: 'hello',
   requestedAt: 1_000,
   expiresAt: 10_000,

@@ -23,7 +23,6 @@ import {
   pendingMedia,
   quotaDailyUsage,
   relationshipPair,
-  threadMember,
   user,
 } from '../src/database/schema.js';
 import {
@@ -31,7 +30,6 @@ import {
   FED_DOMAIN_A,
   FED_DOMAIN_B,
   makePng,
-  truncateFederationDbs,
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
@@ -41,10 +39,11 @@ import {
   registerAndLogin,
   uploadAvatar,
 } from './federation-test-helpers.js';
+import { findP2PRelationship } from './seed.js';
 import {
-  waitForAcceptedDomainCommand,
-  waitForDomainCommand,
-} from './domain-command-helpers.js';
+  waitForAcceptedDurableTask,
+  waitForDurableTask,
+} from './durable-task-helpers.js';
 
 describe('federation durable missed transport (two nodes)', () => {
   let appA: FedApp;
@@ -59,7 +58,6 @@ describe('federation durable missed transport (two nodes)', () => {
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
-    await truncateFederationDbs(appA, appB);
     ({ id: aliceIdA, token: tokenA } = await registerAndLogin(
       appA,
       'missedalice',
@@ -90,14 +88,12 @@ describe('federation durable missed transport (two nodes)', () => {
     aliceStubIdB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
-        const active = await appB.database.query.threadMember.findFirst({
-          where: and(eq(threadMember.userId, aliceStubIdB)),
-        });
-        expect(active).toBeDefined();
-        const activeOnA = await appA.database.query.threadMember.findFirst({
-          where: and(eq(threadMember.userId, bobStubIdA)),
-        });
-        expect(activeOnA).toBeDefined();
+        const [relationshipOnA, relationshipOnB] = await Promise.all([
+          findP2PRelationship(appA.database, aliceIdA, bobStubIdA),
+          findP2PRelationship(appB.database, bobIdB, aliceStubIdB),
+        ]);
+        expect(relationshipOnA.pair).toMatchObject({ active: true });
+        expect(relationshipOnB.pair).toMatchObject({ active: true });
       },
       { timeout: 5000, interval: 100 },
     );
@@ -115,16 +111,18 @@ describe('federation durable missed transport (two nodes)', () => {
   });
 
   it('delivers through the state-feed and forward thread-round pipeline', async () => {
-    const bobThread = await appB.database.query.threadMember.findFirst({
-      where: and(eq(threadMember.userId, aliceStubIdB)),
-    });
-    expect(bobThread).toBeDefined();
+    const bobRelationship = await findP2PRelationship(
+      appB.database,
+      bobIdB,
+      aliceStubIdB,
+    );
+    expect(bobRelationship.pair).toMatchObject({ active: true });
 
     const sent = await request(appB.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenB}`)
       .send({
-        threadId: bobThread!.threadId,
+        threadId: bobRelationship.pair!.threadId!,
         content: 'durable missed only',
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
@@ -164,10 +162,12 @@ describe('federation durable missed transport (two nodes)', () => {
       where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
     });
     expect(bobStub).toBeDefined();
-    const aliceThread = await appA.database.query.threadMember.findFirst({
-      where: and(eq(threadMember.userId, bobStub!.id)),
-    });
-    expect(aliceThread).toBeDefined();
+    const aliceRelationship = await findP2PRelationship(
+      appA.database,
+      aliceIdA,
+      bobStub!.id,
+    );
+    expect(aliceRelationship.pair).toMatchObject({ active: true });
 
     const bytes = await makePng(147, 48);
     const clientMessageId = randomUUID();
@@ -176,7 +176,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .post('/api/v1/send-media')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        threadId: aliceThread!.threadId,
+        threadId: aliceRelationship.pair!.threadId!,
         contentType: 'IMAGE',
         clientMessageId,
       });
@@ -340,10 +340,12 @@ describe('federation durable missed transport (two nodes)', () => {
       where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
     });
     expect(bobStub).toBeDefined();
-    const aliceThread = await appA.database.query.threadMember.findFirst({
-      where: and(eq(threadMember.userId, bobStub!.id)),
-    });
-    expect(aliceThread).toBeDefined();
+    const aliceRelationship = await findP2PRelationship(
+      appA.database,
+      aliceIdA,
+      bobStub!.id,
+    );
+    expect(aliceRelationship.pair).toMatchObject({ active: true });
 
     const today = new Date();
     const quotaDate = new Date(
@@ -372,7 +374,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .post('/api/v1/send-media')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        threadId: aliceThread!.threadId,
+        threadId: aliceRelationship.pair!.threadId!,
         contentType: 'IMAGE',
         clientMessageId,
       });
@@ -481,24 +483,20 @@ describe('federation durable missed transport (two nodes)', () => {
   }, 60_000);
 
   it('converges a delayed-state unfriend and immediate re-add through current facts', async () => {
-    const [memberOnA, memberOnB] = await Promise.all([
-      appA.database.query.threadMember.findFirst({
-        where: eq(threadMember.userId, bobStubIdA),
-      }),
-      appB.database.query.threadMember.findFirst({
-        where: eq(threadMember.userId, aliceStubIdB),
-      }),
+    const [relationshipOnA, relationshipOnB] = await Promise.all([
+      findP2PRelationship(appA.database, aliceIdA, bobStubIdA),
+      findP2PRelationship(appB.database, bobIdB, aliceStubIdB),
     ]);
-    expect(memberOnA).toBeDefined();
-    expect(memberOnB).toBeDefined();
+    expect(relationshipOnA.pair).toMatchObject({ active: true });
+    expect(relationshipOnB.pair).toMatchObject({ active: true });
+    const threadOnA = relationshipOnA.pair!.threadId!;
+    const threadOnB = relationshipOnB.pair!.threadId!;
 
     const before = await vi.waitFor(
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, memberOnB!.threadId),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, threadOnB)),
           });
         expect(state).toBeDefined();
         expect(state!.messageProcessedThroughSeq).toBe(state!.messageTargetSeq);
@@ -513,7 +511,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        threadId: memberOnA!.threadId,
+        threadId: threadOnA,
         content: hiddenText,
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
@@ -525,13 +523,13 @@ describe('federation durable missed transport (two nodes)', () => {
     );
 
     const removed = await request(appA.baseUrl)
-      .post('/api/v1/user/delete-friend')
+      .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'missedbob', domain: FED_DOMAIN_B });
     expect(removed.body.code).toBe(BusinessCode.OK);
-    await waitForDomainCommand(appA.database, removed.body.data.commandId);
+    await waitForDurableTask(appA.database, removed.body.data.taskId);
     const restored = await request(appA.baseUrl)
-      .post('/api/v1/invite/federated-friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         account: 'missedbob',
@@ -540,7 +538,7 @@ describe('federation durable missed transport (two nodes)', () => {
         note: 'restore after compacted revoke',
       });
     expect(restored.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appA.database, restored.body);
+    await waitForAcceptedDurableTask(appA.database, restored.body);
     proxy.blockStateFeed(false);
 
     await vi.waitFor(
@@ -548,14 +546,12 @@ describe('federation durable missed transport (two nodes)', () => {
         const [pair, state] = await Promise.all([
           appB.database.query.relationshipPair.findFirst({
             where: and(
-              eq(relationshipPair.threadId, memberOnB!.threadId),
+              eq(relationshipPair.threadId, threadOnB),
               eq(relationshipPair.active, true),
             ),
           }),
           appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, memberOnB!.threadId),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, threadOnB)),
           }),
         ]);
         expect(pair).toBeDefined();
@@ -573,7 +569,7 @@ describe('federation durable missed transport (two nodes)', () => {
     expect(
       await appB.database.query.message.findFirst({
         where: and(
-          eq(message.threadId, memberOnB!.threadId),
+          eq(message.threadId, threadOnB),
           eq(message.content, JSON.stringify({ text: hiddenText })),
         ),
       }),
@@ -584,7 +580,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        threadId: memberOnA!.threadId,
+        threadId: threadOnA,
         content: liveText,
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
@@ -595,7 +591,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(
           await appB.database.query.message.findFirst({
             where: and(
-              eq(message.threadId, memberOnB!.threadId),
+              eq(message.threadId, threadOnB),
               eq(message.content, JSON.stringify({ text: liveText })),
             ),
           }),

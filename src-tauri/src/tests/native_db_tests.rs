@@ -1,6 +1,6 @@
 use super::{
-    apply_friend_request_effect, apply_group_request_effect, apply_relationship_intent_fact,
-    cleanup_friend_requests, decode_deleted_hwm, history_gap_is_owned, load_message_ranges,
+    apply_group_request_effect, apply_relationship_intent_fact, apply_relationship_request_effect,
+    cleanup_relationship_requests, decode_deleted_hwm, history_gap_is_owned, load_message_ranges,
     materialize_group_thread_from_fact, reduce_message_ranges, update_live_request_projection,
     validate_message_ranges, HistoryDirection, MessageInterval, MessageRange, MessageRangeState,
     ServerMessageRange,
@@ -313,7 +313,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
 fn request_connection() -> Connection {
     let conn = Connection::open_in_memory().expect("open request sqlite");
     conn.execute_batch(
-        "CREATE TABLE friend_requests(
+        "CREATE TABLE relationship_requests(
            user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, payload_json TEXT NOT NULL,
            PRIMARY KEY(user_id, stable_key)
          );
@@ -336,7 +336,6 @@ fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_
         "direction": direction,
         "status": status,
         "localThreadId": 7,
-        "inviteId": "9",
         "note": "hello",
         "requestedAt": if status == "REQUESTED" { serde_json::Value::from(requested_at.unwrap()) } else { serde_json::Value::Null },
         "expiresAt": expires_at,
@@ -355,7 +354,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         .unwrap()
         .as_millis() as i64;
     let tx = conn.transaction().unwrap();
-    apply_friend_request_effect(
+    apply_relationship_request_effect(
         &tx,
         1,
         10,
@@ -367,7 +366,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
     )
     .unwrap();
-    apply_friend_request_effect(
+    apply_relationship_request_effect(
         &tx,
         1,
         11,
@@ -382,9 +381,11 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     tx.commit().unwrap();
 
     let payload: String = conn
-        .query_row("SELECT payload_json FROM friend_requests", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT payload_json FROM relationship_requests",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
@@ -392,7 +393,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     assert_eq!(projection["requestedSort"], now);
     let revision: String = conn
         .query_row(
-            "SELECT value_json FROM sync_state WHERE key='friendRequestStateRevision'",
+            "SELECT value_json FROM sync_state WHERE key='relationshipRequestStateRevision'",
             [],
             |row| row.get(0),
         )
@@ -408,7 +409,7 @@ fn native_projection_persists_a_local_accept_side_effect() {
         .unwrap()
         .as_millis() as i64;
     let tx = conn.transaction().unwrap();
-    apply_friend_request_effect(
+    apply_relationship_request_effect(
         &tx,
         1,
         10,
@@ -421,7 +422,7 @@ fn native_projection_persists_a_local_accept_side_effect() {
     )
     .unwrap();
     let key: String = tx
-        .query_row("SELECT stable_key FROM friend_requests", [], |row| {
+        .query_row("SELECT stable_key FROM relationship_requests", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -429,9 +430,11 @@ fn native_projection_persists_a_local_accept_side_effect() {
     tx.commit().unwrap();
 
     let payload: String = conn
-        .query_row("SELECT payload_json FROM friend_requests", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT payload_json FROM relationship_requests",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
@@ -443,7 +446,7 @@ fn native_projection_persists_a_local_accept_side_effect() {
 fn native_cleanup_removes_expired_request_projections_after_retention() {
     let conn = request_connection();
     conn.execute(
-        "INSERT INTO friend_requests VALUES(1,'friend:test',?1)",
+        "INSERT INTO relationship_requests VALUES(1,'friend:test',?1)",
         [serde_json::json!({
             "direction": "OUTGOING",
             "status": "REQUESTED",
@@ -454,7 +457,7 @@ fn native_cleanup_removes_expired_request_projections_after_retention() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO friend_requests VALUES(1,'group:test',?1)",
+        "INSERT INTO relationship_requests VALUES(1,'group:test',?1)",
         [serde_json::json!({
             "direction": "INCOMING",
             "status": "REQUESTED",
@@ -464,18 +467,18 @@ fn native_cleanup_removes_expired_request_projections_after_retention() {
         .to_string()],
     )
     .unwrap();
-    cleanup_friend_requests(&conn, 1, 10).unwrap();
+    cleanup_relationship_requests(&conn, 1, 10).unwrap();
 
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM friend_requests", [], |row| {
+        conn.query_row("SELECT COUNT(*) FROM relationship_requests", [], |row| {
             row.get::<_, i64>(0)
         })
         .unwrap(),
         2
     );
-    cleanup_friend_requests(&conn, 1, 604_800_000).unwrap();
+    cleanup_relationship_requests(&conn, 1, 604_800_000).unwrap();
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM friend_requests", [], |row| {
+        conn.query_row("SELECT COUNT(*) FROM relationship_requests", [], |row| {
             row.get::<_, i64>(0)
         })
         .unwrap(),

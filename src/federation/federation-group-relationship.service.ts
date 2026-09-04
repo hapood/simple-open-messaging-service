@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import type { DatabaseTransaction } from '../database/database.service.js';
+import { GroupRole } from '../database/enums.js';
 import {
   RelationshipIntentService,
   type RelationshipIntentStatus,
-} from '../invite/relationship-intent.service.js';
+} from '../relationship/relationship-intent.service.js';
 import { FederationGroupMembershipService } from './federation-group-membership.service.js';
+import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-membership-finalizer.service.js';
 
 /** Applies an authored group intent and synchronizes every projection derived from pair.active. */
 @Injectable()
@@ -12,6 +14,7 @@ export class FederationGroupRelationshipService {
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
     private readonly groupMembership: FederationGroupMembershipService,
+    private readonly membershipFinalizer: AuthoritativeGroupMembershipFinalizer,
   ) {}
 
   async writeAuthoredIntentInTx(
@@ -25,7 +28,9 @@ export class FederationGroupRelationshipService {
       status: RelationshipIntentStatus;
       note?: string;
       expiresAt?: Date | null;
+      initialRole?: typeof GroupRole.OWNER;
       allowOwnerDeactivation?: boolean;
+      updateCanonicalRoster?: boolean;
     },
   ) {
     const membership =
@@ -39,17 +44,21 @@ export class FederationGroupRelationshipService {
         expiresAt: params.expiresAt,
       });
     const active = params.status !== 'REVOKED' && membership.shouldBeActive;
-    const pairChanged = await this.syncActiveInTx(tx, {
+    const synchronized = await this.syncActiveInTx(tx, {
       threadId: params.threadId,
       groupId: params.groupId,
       memberUserId: params.memberUserId,
       active,
       hostedLocally: params.hostedLocally,
+      ...(params.initialRole ? { initialRole: params.initialRole } : {}),
       ...(params.allowOwnerDeactivation
         ? { allowOwnerDeactivation: true }
         : {}),
+      ...(params.updateCanonicalRoster === false
+        ? { updateCanonicalRoster: false }
+        : {}),
     });
-    return { ...membership, active, pairChanged };
+    return { ...membership, active, ...synchronized };
   }
 
   async syncActiveInTx(
@@ -60,9 +69,16 @@ export class FederationGroupRelationshipService {
       memberUserId: number;
       active: boolean;
       hostedLocally: boolean;
+      initialRole?: typeof GroupRole.OWNER;
       allowOwnerDeactivation?: boolean;
+      updateCanonicalRoster?: boolean;
     },
-  ): Promise<boolean> {
+  ): Promise<{
+    pairChanged: boolean;
+    canonicalRosterChanged: boolean;
+    audienceChanged: boolean;
+    fanoutTaskCreated: boolean;
+  }> {
     const pairChanged = await this.relationshipIntents.setGroupPairActiveInTx(
       tx,
       {
@@ -72,16 +88,37 @@ export class FederationGroupRelationshipService {
         active: params.active,
       },
     );
-    await this.groupMembership.syncFromActiveInTx(tx, {
+    const memberProfileRev =
+      params.active && params.hostedLocally
+        ? await this.relationshipIntents.readGroupMemberProfileRevInTx(tx, {
+            threadId: params.threadId,
+            groupId: params.groupId,
+            memberUserId: params.memberUserId,
+          })
+        : undefined;
+    const membership = await this.groupMembership.syncFromActiveInTx(tx, {
       threadId: params.threadId,
+      groupId: params.groupId,
       memberUserId: params.memberUserId,
       active: params.active,
       hostedLocally: params.hostedLocally,
+      ...(params.initialRole ? { initialRole: params.initialRole } : {}),
+      ...(memberProfileRev === undefined ? {} : { memberProfileRev }),
       ...(params.allowOwnerDeactivation
         ? { allowOwnerDeactivation: true }
         : {}),
+      ...(params.updateCanonicalRoster === false
+        ? { updateCanonicalRoster: false }
+        : {}),
     });
-    return pairChanged;
+    const finalized = await this.membershipFinalizer.finalizeInTx(tx, {
+      threadId: params.threadId,
+      groupId: params.groupId,
+      memberUserId: params.memberUserId,
+      active: params.active,
+      canonicalRosterChanged: membership.canonicalRosterChanged,
+    });
+    return { pairChanged, ...membership, ...finalized };
   }
 
   async deactivateAfterInTx<T>(
@@ -93,7 +130,13 @@ export class FederationGroupRelationshipService {
       hostedLocally: boolean;
       afterPairDeactivated: () => Promise<T>;
     },
-  ): Promise<{ pairChanged: boolean; effect?: T }> {
+  ): Promise<{
+    pairChanged: boolean;
+    canonicalRosterChanged: boolean;
+    audienceChanged: boolean;
+    fanoutTaskCreated: boolean;
+    effect?: T;
+  }> {
     const pairChanged = await this.relationshipIntents.setGroupPairActiveInTx(
       tx,
       {
@@ -103,14 +146,28 @@ export class FederationGroupRelationshipService {
         active: false,
       },
     );
-    if (!pairChanged) return { pairChanged: false };
+    if (!pairChanged)
+      return {
+        pairChanged: false,
+        canonicalRosterChanged: false,
+        audienceChanged: false,
+        fanoutTaskCreated: false,
+      };
     const effect = await params.afterPairDeactivated();
-    await this.groupMembership.syncFromActiveInTx(tx, {
+    const membership = await this.groupMembership.syncFromActiveInTx(tx, {
       threadId: params.threadId,
+      groupId: params.groupId,
       memberUserId: params.memberUserId,
       active: false,
       hostedLocally: params.hostedLocally,
     });
-    return { pairChanged: true, effect };
+    const finalized = await this.membershipFinalizer.finalizeInTx(tx, {
+      threadId: params.threadId,
+      groupId: params.groupId,
+      memberUserId: params.memberUserId,
+      active: false,
+      canonicalRosterChanged: membership.canonicalRosterChanged,
+    });
+    return { pairChanged: true, ...membership, ...finalized, effect };
   }
 }

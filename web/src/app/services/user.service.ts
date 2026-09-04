@@ -37,14 +37,13 @@ export type FederatedResolveFailure =
   | 'UNREACHABLE'
   | 'UNKNOWN';
 
-type DomainCommandAccepted = {
-  commandId: string;
+type DurableTaskAccepted = {
+  taskId: string;
   status: 'PENDING';
 };
 
-type SendFriendInviteResponse = StandardResponse<
-  Partial<DomainCommandAccepted> & {
-    inviteId?: string;
+type RequestRelationshipResponse = StandardResponse<
+  Partial<DurableTaskAccepted> & {
     threadId?: number;
     account?: string;
     domain?: string;
@@ -74,7 +73,6 @@ interface ClientFriendIntentBase {
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
-  inviteId?: string;
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
@@ -233,8 +231,6 @@ export type ClientStateFeedItem =
         threadId: number;
         messageEndSeq: number;
         tombstoneEndSeq: number;
-        peerProfileMessageSeq?: number | null;
-        preview: { seq: number; text: string; senderId: string | null };
       };
     }
   | {
@@ -265,6 +261,7 @@ export interface ClientGroupMetaFeedPage {
           profileResolved?: boolean;
           displayName: string;
           avatar: string | null;
+          bio: string;
         }
       | Record<string, never>;
   }>;
@@ -299,18 +296,18 @@ export class UserService {
   private readonly _stateFeedCursor = signal<number | undefined>(undefined);
   readonly stateFeedCursor = this._stateFeedCursor.asReadonly();
 
-  /** Latest incoming friend-request state revision discovered through the unified state delta. */
-  readonly friendRequestStateRevision = signal(0);
-  /** Latest friend-intent revision applied in this renderer. Unlike the incoming-request revision, this
+  /** Latest incoming relationship-request revision discovered through the unified state delta. */
+  readonly relationshipRequestStateRevision = signal(0);
+  /** Latest relationship-intent revision applied in this renderer. Unlike the incoming-request revision, this
    *  also advances for terminal and outgoing changes so an open request dialog can refresh without
    *  turning those changes into an unread badge. */
-  readonly friendIntentStateRevision = signal(0);
-  /** Account-wide incoming-invitation read watermark, synchronized through the client state feed. */
-  readonly incomingInviteReadThroughFeedId = signal(0);
+  readonly relationshipIntentStateRevision = signal(0);
+  /** Account-wide relationship-request read watermark, synchronized through the client state feed. */
+  readonly relationshipRequestReadThroughFeedId = signal(0);
   readonly friendReqBadge = computed(
     () =>
-      this.friendRequestStateRevision() >
-      this.incomingInviteReadThroughFeedId(),
+      this.relationshipRequestStateRevision() >
+      this.relationshipRequestReadThroughFeedId(),
   );
   /** Latest application projection coordinate and read watermark, keyed by group thread. */
   readonly groupJoinRequestHeads = signal<
@@ -347,9 +344,9 @@ export class UserService {
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._stateFeedCursor.set(undefined);
-    this.friendRequestStateRevision.set(0);
-    this.friendIntentStateRevision.set(0);
-    this.incomingInviteReadThroughFeedId.set(0);
+    this.relationshipRequestStateRevision.set(0);
+    this.relationshipIntentStateRevision.set(0);
+    this.relationshipRequestReadThroughFeedId.set(0);
     this.groupJoinRequestHeads.set(new Map());
     this.profileFetch = undefined;
   }
@@ -384,20 +381,22 @@ export class UserService {
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
       await this.webdb.recreateForUser(String(userId));
     }
-    const [latest, inviteHead, groupHeads, groupReads] = await Promise.all([
-      this.webdb.getMeta('friendRequestStateRevision'),
-      this.webdb.getMeta('incomingInviteHead'),
-      this.webdb.getMeta('groupJoinRequestHeads'),
-      this.webdb.getMeta('groupJoinRequestReadFeedIds'),
-    ]);
-    this.friendRequestStateRevision.set(
+    const [latest, requestReadHead, groupHeads, groupReads] = await Promise.all(
+      [
+        this.webdb.getMeta('relationshipRequestStateRevision'),
+        this.webdb.getMeta('relationshipRequestReadHead'),
+        this.webdb.getMeta('groupJoinRequestHeads'),
+        this.webdb.getMeta('groupJoinRequestReadFeedIds'),
+      ],
+    );
+    this.relationshipRequestStateRevision.set(
       typeof latest === 'number' && latest >= 0 ? latest : 0,
     );
     const readThroughFeedId =
-      inviteHead && typeof inviteHead === 'object'
-        ? (inviteHead as { readThroughFeedId?: unknown }).readThroughFeedId
+      requestReadHead && typeof requestReadHead === 'object'
+        ? (requestReadHead as { readThroughFeedId?: unknown }).readThroughFeedId
         : undefined;
-    this.incomingInviteReadThroughFeedId.set(
+    this.relationshipRequestReadThroughFeedId.set(
       typeof readThroughFeedId === 'number' && readThroughFeedId >= 0
         ? readThroughFeedId
         : 0,
@@ -412,14 +411,18 @@ export class UserService {
         ]),
       ),
     );
-    const lastCleanup = await this.webdb.getMeta('friendRequestCleanupAt');
+    const lastCleanup = await this.webdb.getMeta(
+      'relationshipRequestCleanupAt',
+    );
     if (
       typeof lastCleanup !== 'number' ||
       Date.now() - lastCleanup >= 86_400_000
     ) {
       void this.webdb
-        .cleanupFriendRequests()
-        .then(() => this.webdb.putMeta('friendRequestCleanupAt', Date.now()));
+        .cleanupRelationshipRequests()
+        .then(() =>
+          this.webdb.putMeta('relationshipRequestCleanupAt', Date.now()),
+        );
     }
     void this.gateSelfProfile(userId, profileRev);
   }
@@ -462,46 +465,46 @@ export class UserService {
     }
   }
 
-  /** Publish a friend-request revision after the state delta and its cursor committed atomically. */
-  applyFriendRequestStateRevision(revision: number): void {
-    if (revision > this.friendRequestStateRevision())
-      this.friendRequestStateRevision.set(revision);
+  /** Publish a relationship-request revision after the state delta and its cursor committed atomically. */
+  applyRelationshipRequestStateRevision(revision: number): void {
+    if (revision > this.relationshipRequestStateRevision())
+      this.relationshipRequestStateRevision.set(revision);
   }
 
-  /** Publish any friend-intent change after its state delta has committed to the local database. */
-  applyFriendIntentStateRevision(revision: number): void {
-    if (revision > this.friendIntentStateRevision())
-      this.friendIntentStateRevision.set(revision);
+  /** Publish any relationship-intent change after its state delta has committed locally. */
+  applyRelationshipIntentStateRevision(revision: number): void {
+    if (revision > this.relationshipIntentStateRevision())
+      this.relationshipIntentStateRevision.set(revision);
   }
 
   /** Advance the account-wide read watermark to the state feed already applied by this client. */
-  markFriendReqRead(): void {
+  markRelationshipRequestsRead(): void {
     const readThroughFeedId = this.stateFeedCursor();
     if (
       readThroughFeedId === undefined ||
-      readThroughFeedId <= this.incomingInviteReadThroughFeedId()
+      readThroughFeedId <= this.relationshipRequestReadThroughFeedId()
     )
       return;
     this.http
       .post<
         StandardResponse<{ readThroughFeedId: number }>
-      >(`${apiPrefix()}/invite/incoming/read`, { readThroughFeedId })
+      >(`${apiPrefix()}/relationship/requests/read`, { readThroughFeedId })
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data)
-            this.applyIncomingInviteReadHead(res.data.readThroughFeedId);
+            this.applyRelationshipRequestReadHead(res.data.readThroughFeedId);
         },
         error: (error) =>
           console.error(
-            '[invite] failed to mark incoming requests read',
+            '[relationship] failed to mark incoming requests read',
             error,
           ),
       });
   }
 
-  applyIncomingInviteReadHead(readThroughFeedId: number): void {
-    if (readThroughFeedId > this.incomingInviteReadThroughFeedId())
-      this.incomingInviteReadThroughFeedId.set(readThroughFeedId);
+  applyRelationshipRequestReadHead(readThroughFeedId: number): void {
+    if (readThroughFeedId > this.relationshipRequestReadThroughFeedId())
+      this.relationshipRequestReadThroughFeedId.set(readThroughFeedId);
   }
 
   applyGroupJoinRequestHead(
@@ -768,7 +771,8 @@ export class UserService {
   startProfileResolution(
     selector:
       | { account: string; domain: string; rev: number }
-      | { threadId: number; messageSeq: number },
+      | { threadId: number; messageSeq: number }
+      | { threadId: number; memberAccount: string; memberDomain: string },
   ) {
     return this.http.post<
       StandardResponse<
@@ -779,6 +783,7 @@ export class UserService {
               domain: string;
               rev: number;
               name: string;
+              bio: string;
               avatarBase64: string | null;
             };
           }
@@ -953,36 +958,16 @@ export class UserService {
     );
   }
 
-  /** Pre-flight trust check for a federated handle search: has mutual trust with this peer domain been
-   *  established already? Drives the first-contact "Connecting to {domain}…" affordance — shown only
-   *  when the server reports the domain untrusted (a handshake IS expected during the resolve), never
-   *  guessed from latency. Cheap local allow-list lookup server-side (no network). */
-  peerTrustStatus(params: { domain: string }) {
-    return this.http.post<StandardResponse<{ trusted: boolean }>>(
-      `${apiPrefix()}/user/peer-trust-status`,
-      params,
-    );
-  }
-
-  /** Send a friend invite to a local account. On mutual auto-accept data carries threadId instead of
-   * inviteId. */
-  sendFriendInvite(params: { account: string; note?: string }) {
-    return this.http.post<SendFriendInviteResponse>(
-      `${apiPrefix()}/invite/friend`,
-      params,
-    );
-  }
-
-  /** Send a friend invite to an external Address through federation. */
-  sendFederatedFriendInvite(params: {
+  /** Author a relationship request toward one exact user or group Address. */
+  requestRelationship(params: {
     account: string;
     domain: string;
-    displayName: string;
+    displayName?: string;
     avatar?: string;
     note?: string;
   }) {
-    return this.http.post<SendFriendInviteResponse>(
-      `${apiPrefix()}/invite/federated-friend`,
+    return this.http.post<RequestRelationshipResponse>(
+      `${apiPrefix()}/relationship/request`,
       params,
     );
   }
@@ -1031,8 +1016,8 @@ export class UserService {
         total: 0,
         actionableTotal: 0,
       };
-    await this.webdb.cleanupFriendRequests();
-    const localPage = await this.webdb.getFriendRequestPage(
+    await this.webdb.cleanupRelationshipRequests();
+    const localPage = await this.webdb.getRelationshipRequestPage(
       direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
       cursor,
       take + 1,
@@ -1051,54 +1036,28 @@ export class UserService {
     };
   }
 
-  /** Accept an invite. Stored friend and group invitations are queued. */
-  acceptInvite(
-    params: { inviteId: string } | { account: string; domain: string },
-  ) {
+  /** Accept a stored user relationship request or group invitation. */
+  acceptRelationship(params: { account: string; domain: string }) {
     return this.http.post<
-      StandardResponse<Partial<DomainCommandAccepted> & { threadId?: number }>
-    >(`${apiPrefix()}/invite/accept`, params);
+      StandardResponse<Partial<DurableTaskAccepted> & { threadId?: number }>
+    >(`${apiPrefix()}/relationship/accept`, params);
   }
 
-  markFriendRequestAccepted(key: string): Promise<void> {
-    return this.webdb.markFriendRequestAccepted(key);
+  markRelationshipRequestAccepted(key: string): Promise<void> {
+    return this.webdb.markRelationshipRequestAccepted(key);
   }
 
   joinGroupRequest(params: { groupId: number }) {
-    return this.http.post<StandardResponse<DomainCommandAccepted>>(
+    return this.http.post<StandardResponse<DurableTaskAccepted>>(
       `${apiPrefix()}/group/join-request`,
       params,
     );
   }
 
-  /** Revoke my own outgoing invite by id. */
-  revokeInvite(
-    params: { inviteId: string } | { account: string; domain: string },
-  ) {
-    return this.http.post<StandardResponse<DomainCommandAccepted | undefined>>(
-      `${apiPrefix()}/invite/revoke`,
-      params,
-    );
-  }
-
-  rejectInvite(params: { inviteId: string }) {
-    return this.http.post<StandardResponse<DomainCommandAccepted>>(
-      `${apiPrefix()}/invite/reject`,
-      params,
-    );
-  }
-
-  /**
-   * Unfriend an approved P2P relationship. The established thread remains visible as read-only
-   * history unless the caller explicitly requests local data deletion.
-   */
-  deleteFriend(params: {
-    account: string;
-    domain?: string;
-    deleteData?: boolean;
-  }) {
-    return this.http.post<StandardResponse<DomainCommandAccepted>>(
-      `${apiPrefix()}/user/delete-friend`,
+  /** Revoke the current user relationship or pending request toward one exact Address. */
+  revokeRelationship(params: { account: string; domain: string }) {
+    return this.http.post<StandardResponse<DurableTaskAccepted>>(
+      `${apiPrefix()}/relationship/revoke`,
       params,
     );
   }

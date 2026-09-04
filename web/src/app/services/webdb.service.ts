@@ -15,6 +15,7 @@ import {
 import {
   createGroupConversation,
   createP2PConversation,
+  parseUserIdentityKey,
   type ConversationItem,
   type DeletedMessageItem,
   type Message,
@@ -78,7 +79,7 @@ export interface AvatarRecord {
   lastRender: number;
 }
 
-/** Source-scoped person profile. Its logical primary key mirrors backend User exactly. */
+/** Person profile. Its logical primary key mirrors backend User exactly. */
 export interface UserRecord {
   id?: number;
   name: string;
@@ -86,7 +87,6 @@ export interface UserRecord {
   avatar: string;
   bio: string;
   domain: string;
-  sourceDomain: string;
   namespaceId: number;
   availability: 'AVAILABLE' | 'REMOVED';
   createdAt: number;
@@ -123,30 +123,30 @@ interface NamespaceRegistryStore {
   };
 }
 
-/** One materialized roster member pointing to a source-scoped User logical key. */
+/** One materialized roster member pointing to a User logical key. */
 export interface MemberRecord {
   threadId: number;
   account: string;
   domain: string;
-  sourceDomain: string;
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   left: boolean;
   /** Profile reference selected by this group's metadata/message history. */
-  profileRev?: number;
+  profileRev: number;
   /** Message that most recently selected profileRev inside this group. */
   profileMessageSeq?: number | null;
   /** Exact resolved display data remains group-scoped instead of mutating the source User row. */
   resolvedProfileRev?: number;
   profileName?: string;
   profileAvatar?: string;
+  profileBio: string;
 }
 
 export interface ResolvedMemberRecord extends MemberRecord {
   user: UserRecord;
 }
 
-/** Compatibility shape for UI repositories while callers move from numeric cache aliases to logical keys. */
+/** UI profile view materialized from a User or Group cache row. */
 export interface ProfileRecord {
   identity: string;
   id: number;
@@ -156,9 +156,12 @@ export interface ProfileRecord {
   avatar: string;
   bio: string;
   domain: string;
+  profileRev: number;
+}
+
+export interface ProfileWriteRecord extends ProfileRecord {
   sourceServer: string;
   namespaceId: number;
-  profileRev: number;
 }
 
 export interface ClientGroupMetaApply {
@@ -234,7 +237,7 @@ export interface WebdbSchema extends DBSchema {
   };
   avatars: { key: string; value: AvatarRecord };
   users: {
-    key: [string, string, string, number];
+    key: [string, string, number];
     value: UserRecord;
     indexes: { address: [string, string, number]; id: number };
   };
@@ -244,7 +247,7 @@ export interface WebdbSchema extends DBSchema {
     indexes: { id: number };
   };
   members: {
-    key: [number, string, string, string, number];
+    key: [number, string, string, number];
     value: MemberRecord;
     indexes: {
       thread: number;
@@ -253,7 +256,7 @@ export interface WebdbSchema extends DBSchema {
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
-  friendRequests: {
+  relationshipRequests: {
     key: string;
     value: FriendRequestProjection;
     indexes: { bucketStatus: [string, string, number, string] };
@@ -279,7 +282,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 12;
+export const CACHE_SCHEMA_VERSION = 14;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 3;
 const IDB_FORMAT_VERSION = 1;
 
@@ -591,7 +594,7 @@ export class WebdbService implements OnDestroy {
       'groups',
       'members',
       'threads',
-      'friendRequests',
+      'relationshipRequests',
       'relationshipIntents',
       'settings',
     ] as const;
@@ -629,7 +632,7 @@ export class WebdbService implements OnDestroy {
           status: 'ACTIVE',
         });
         const users = db.createObjectStore('users', {
-          keyPath: ['account', 'domain', 'sourceDomain', 'namespaceId'],
+          keyPath: ['account', 'domain', 'namespaceId'],
         });
         users.createIndex('address', ['account', 'domain', 'namespaceId']);
         users.createIndex('id', 'id', { unique: true });
@@ -638,13 +641,7 @@ export class WebdbService implements OnDestroy {
         });
         groups.createIndex('id', 'id', { unique: true });
         const members = db.createObjectStore('members', {
-          keyPath: [
-            'threadId',
-            'account',
-            'domain',
-            'sourceDomain',
-            'namespaceId',
-          ],
+          keyPath: ['threadId', 'account', 'domain', 'namespaceId'],
         });
         members.createIndex('thread', 'threadId');
         members.createIndex('address', [
@@ -654,10 +651,13 @@ export class WebdbService implements OnDestroy {
           'namespaceId',
         ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
-        const friendRequests = db.createObjectStore('friendRequests', {
-          keyPath: 'key',
-        });
-        friendRequests.createIndex('bucketStatus', [
+        const relationshipRequests = db.createObjectStore(
+          'relationshipRequests',
+          {
+            keyPath: 'key',
+          },
+        );
+        relationshipRequests.createIndex('bucketStatus', [
           'bucket',
           'status',
           'requestedSort',
@@ -1109,7 +1109,7 @@ export class WebdbService implements OnDestroy {
     return this.runAccountOperation(() => this.getThreadsInternal());
   }
 
-  async getFriendRequestPage(
+  async getRelationshipRequestPage(
     bucket: 'RECEIVED' | 'SENT',
     cursor: string | null,
     take: number,
@@ -1124,7 +1124,7 @@ export class WebdbService implements OnDestroy {
           items: FriendRequestProjection[];
           total: number;
           actionableTotal: number;
-        }>('native_db_page_friend_requests', {
+        }>('native_db_page_relationship_requests', {
           userId: Number(this.currentUserId),
           bucket,
           cursor,
@@ -1132,7 +1132,7 @@ export class WebdbService implements OnDestroy {
         });
       const db = await this.db();
       const index = db
-        .transaction('friendRequests')
+        .transaction('relationshipRequests')
         .store.index('bucketStatus');
       const statuses = ['REQUESTED', 'ACCEPTED', 'REVOKED'] as const;
       const buckets = await Promise.all(
@@ -1169,36 +1169,38 @@ export class WebdbService implements OnDestroy {
     });
   }
 
-  async markFriendRequestAccepted(key: string): Promise<void> {
+  async markRelationshipRequestAccepted(key: string): Promise<void> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_mark_friend_request_accepted', {
+        await tauriInvoke('native_db_mark_relationship_request_accepted', {
           userId: Number(this.currentUserId),
           key,
         });
         return;
       }
       const db = await this.db();
-      const current = await db.get('friendRequests', key);
+      const current = await db.get('relationshipRequests', key);
       if (current)
-        await db.put('friendRequests', markProjectionAccepted(current));
+        await db.put('relationshipRequests', markProjectionAccepted(current));
     });
   }
 
-  async cleanupFriendRequests(now = Date.now()): Promise<void> {
+  async cleanupRelationshipRequests(now = Date.now()): Promise<void> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_cleanup_friend_requests', {
+        await tauriInvoke('native_db_cleanup_relationship_requests', {
           userId: Number(this.currentUserId),
           now,
         });
         return;
       }
       const db = await this.db();
-      const tx = db.transaction('friendRequests', 'readwrite');
-      for (const item of await tx.objectStore('friendRequests').getAll()) {
+      const tx = db.transaction('relationshipRequests', 'readwrite');
+      for (const item of await tx
+        .objectStore('relationshipRequests')
+        .getAll()) {
         if (!projectionIsExpired(item, now)) continue;
-        await tx.objectStore('friendRequests').delete(item.key);
+        await tx.objectStore('relationshipRequests').delete(item.key);
       }
       await tx.done;
     });
@@ -1387,14 +1389,14 @@ export class WebdbService implements OnDestroy {
         'users',
         'groups',
         'members',
-        'friendRequests',
+        'relationshipRequests',
         'relationshipIntents',
         'settings',
       ],
       'readwrite',
     );
     if (resetProjection) {
-      await tx.objectStore('friendRequests').clear();
+      await tx.objectStore('relationshipRequests').clear();
       await tx.objectStore('relationshipIntents').clear();
       await tx.objectStore('members').clear();
       const threads = tx.objectStore('threads');
@@ -1414,7 +1416,7 @@ export class WebdbService implements OnDestroy {
     const applyRequestProjectionEffect = async (
       op: ClientRelationshipIntentItem,
     ) => {
-      const store = tx.objectStore('friendRequests');
+      const store = tx.objectStore('relationshipRequests');
       if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
         const body = op.body as Omit<
           ClientGroupInviteIntent,
@@ -1460,7 +1462,7 @@ export class WebdbService implements OnDestroy {
         if (transition.record) await store.put(transition.record);
         if (transition.becameActionable)
           await tx.objectStore('settings').put({
-            key: 'friendRequestStateRevision',
+            key: 'relationshipRequestStateRevision',
             value: op.feedId,
           });
         return;
@@ -1499,7 +1501,7 @@ export class WebdbService implements OnDestroy {
       if (transition.record) await store.put(transition.record);
       if (transition.becameActionable)
         await tx.objectStore('settings').put({
-          key: 'friendRequestStateRevision',
+          key: 'relationshipRequestStateRevision',
           value: op.feedId,
         });
     };
@@ -1632,15 +1634,9 @@ export class WebdbService implements OnDestroy {
         .get(update.threadId);
       if (currentThread?.type !== 'GROUP') continue;
       for (const item of update.page.items) {
-        const sourceDomain = update.sourceServer;
         const previous = await members
           .index('address')
-          .get([
-            update.threadId,
-            item.account,
-            item.domain,
-            update.namespaceId,
-          ]);
+          .get([update.threadId, item.account, item.domain, item.namespaceId]);
         if (item.operation === 'DEPART') {
           if (previous) await members.put({ ...previous, left: true });
           continue;
@@ -1652,10 +1648,11 @@ export class WebdbService implements OnDestroy {
           profileResolved?: boolean;
           displayName: string;
           avatar: string | null;
+          bio: string;
         };
         const existingUser = await tx
           .objectStore('users')
-          .get([item.account, item.domain, sourceDomain, update.namespaceId]);
+          .get([item.account, item.domain, item.namespaceId]);
         if (
           body.profileResolved !== false &&
           (!existingUser || body.profileRev >= existingUser.profileRev)
@@ -1664,11 +1661,10 @@ export class WebdbService implements OnDestroy {
             ...(existingUser?.id === undefined ? {} : { id: existingUser.id }),
             account: item.account,
             domain: item.domain,
-            sourceDomain,
-            namespaceId: update.namespaceId,
+            namespaceId: item.namespaceId,
             name: body.displayName,
             avatar: body.avatar ?? '',
-            bio: existingUser?.bio ?? '',
+            bio: body.bio,
             availability: 'AVAILABLE',
             profileRev: body.profileRev,
             createdAt: existingUser?.createdAt ?? Date.now(),
@@ -1678,8 +1674,7 @@ export class WebdbService implements OnDestroy {
           threadId: update.threadId,
           account: item.account,
           domain: item.domain,
-          sourceDomain,
-          namespaceId: update.namespaceId,
+          namespaceId: item.namespaceId,
           role: body.role,
           left: false,
           profileRev: body.profileRev,
@@ -1696,6 +1691,10 @@ export class WebdbService implements OnDestroy {
             body.profileResolved !== false
               ? (body.avatar ?? '')
               : previous?.profileAvatar,
+          profileBio:
+            body.profileResolved !== false
+              ? body.bio
+              : (previous?.profileBio ?? ''),
         });
       }
       const currentMembers = await members
@@ -1757,23 +1756,17 @@ export class WebdbService implements OnDestroy {
             updatedAt: now,
           });
         } else {
-          const sourceDomain =
-            'sourceDomain' in body && typeof body.sourceDomain === 'string'
-              ? body.sourceDomain
-              : op.domain;
           const users = tx.objectStore('users');
           const namespaceId = op.namespaceId;
           const previous = await users.get([
             op.account,
             op.domain,
-            sourceDomain,
             namespaceId,
           ]);
           await users.put({
             id: previous?.id,
             account: op.account,
             domain: op.domain,
-            sourceDomain,
             namespaceId,
             availability: 'AVAILABLE',
             createdAt: previous?.createdAt ?? now,
@@ -1784,15 +1777,15 @@ export class WebdbService implements OnDestroy {
             profileRev: body.profileRev,
           });
         }
-        const friendRequests = tx.objectStore('friendRequests');
-        for (const request of await friendRequests.getAll()) {
+        const relationshipRequests = tx.objectStore('relationshipRequests');
+        for (const request of await relationshipRequests.getAll()) {
           if (request.kind === 'GROUP') {
             if (
               request.group?.account !== op.account ||
               request.group.domain !== op.domain
             )
               continue;
-            await friendRequests.put({
+            await relationshipRequests.put({
               ...request,
               group: {
                 ...request.group,
@@ -1809,7 +1802,6 @@ export class WebdbService implements OnDestroy {
         for (const thread of await threads.getAll()) {
           if (
             thread.type === 'P2P' &&
-            thread.peerProfileMessageSeq == null &&
             thread.peerUser.account === op.account &&
             (thread.peerUser.domain ?? '') === op.domain
           )
@@ -1878,7 +1870,7 @@ export class WebdbService implements OnDestroy {
       }
       if (op.eventType === 'INCOMING_INVITE_HEAD') {
         await tx.objectStore('settings').put({
-          key: 'incomingInviteHead',
+          key: 'relationshipRequestReadHead',
           value: op.body,
         });
         continue;
@@ -1890,10 +1882,6 @@ export class WebdbService implements OnDestroy {
             ...thread,
             lastMessageSeq: op.body.messageEndSeq,
             tombstoneEndSeq: op.body.tombstoneEndSeq,
-            peerProfileMessageSeq: op.body.peerProfileMessageSeq,
-            lastMessagePreviewSeq: op.body.preview.seq,
-            lastMessagePreview: op.body.preview.text,
-            lastMessageSenderId: op.body.preview.senderId,
           });
         continue;
       }
@@ -1993,7 +1981,6 @@ export class WebdbService implements OnDestroy {
   async getUser(
     account: string,
     domain: string,
-    sourceDomain: string,
     namespaceId: number,
   ): Promise<UserRecord | undefined> {
     return this.runAccountOperation(async () => {
@@ -2003,16 +1990,10 @@ export class WebdbService implements OnDestroy {
             userId: Number(this.currentUserId),
             account,
             domain,
-            sourceDomain,
             namespaceId,
           })) ?? undefined
         );
-      return (await this.db()).get('users', [
-        account,
-        domain,
-        sourceDomain,
-        namespaceId,
-      ]);
+      return (await this.db()).get('users', [account, domain, namespaceId]);
     });
   }
 
@@ -2037,6 +2018,9 @@ export class WebdbService implements OnDestroy {
       const db = await this.db();
       const result: ResolvedMemberRecord[] = [];
       const search = params.search?.trim().toLocaleLowerCase() ?? '';
+      const cursor = params.afterIdentity
+        ? parseUserIdentityKey(params.afterIdentity)
+        : null;
       const members = (
         await db
           .transaction('members')
@@ -2044,20 +2028,17 @@ export class WebdbService implements OnDestroy {
           .getAll(params.threadId)
       )
         .filter((member) => {
-          const identity = `${member.namespaceId}\u0000${member.sourceDomain}\u0000${member.domain}\u0000${member.account}`;
-          return !member.left && identity > (params.afterIdentity ?? '');
+          return (
+            !member.left &&
+            (!cursor || compareMemberIdentity(member, cursor) > 0)
+          );
         })
-        .sort((a, b) =>
-          `${a.namespaceId}\u0000${a.sourceDomain}\u0000${a.domain}\u0000${a.account}`.localeCompare(
-            `${b.namespaceId}\u0000${b.sourceDomain}\u0000${b.domain}\u0000${b.account}`,
-          ),
-        );
+        .sort(compareMemberIdentity);
       for (const member of members) {
         if (result.length >= params.take) break;
         const user = await db.get('users', [
           member.account,
           member.domain,
-          member.sourceDomain,
           member.namespaceId,
         ]);
         if (!user) continue;
@@ -2076,7 +2057,6 @@ export class WebdbService implements OnDestroy {
     threadId: number,
     account: string,
     domain: string,
-    sourceDomain: string,
     namespaceId: number,
   ): Promise<ResolvedMemberRecord | undefined> {
     return this.runAccountOperation(async () => {
@@ -2089,7 +2069,6 @@ export class WebdbService implements OnDestroy {
               threadId,
               account,
               domain,
-              sourceDomain,
               namespaceId,
             },
           )) ?? undefined
@@ -2099,16 +2078,10 @@ export class WebdbService implements OnDestroy {
         threadId,
         account,
         domain,
-        sourceDomain,
         namespaceId,
       ]);
       if (!member || member.left) return undefined;
-      const user = await db.get('users', [
-        account,
-        domain,
-        sourceDomain,
-        namespaceId,
-      ]);
+      const user = await db.get('users', [account, domain, namespaceId]);
       return user ? { ...member, user } : undefined;
     });
   }
@@ -2118,7 +2091,6 @@ export class WebdbService implements OnDestroy {
     identity: {
       account: string;
       domain: string;
-      sourceDomain: string;
       namespaceId: number;
     },
     profileRev: number,
@@ -2137,11 +2109,10 @@ export class WebdbService implements OnDestroy {
           },
         );
       const db = await this.db();
-      let key: [number, string, string, string, number] = [
+      let key: [number, string, string, number] = [
         threadId,
         identity.account,
         identity.domain,
-        identity.sourceDomain,
         identity.namespaceId,
       ];
       const tx = db.transaction('members', 'readwrite');
@@ -2157,7 +2128,6 @@ export class WebdbService implements OnDestroy {
             previous.threadId,
             previous.account,
             previous.domain,
-            previous.sourceDomain,
             previous.namespaceId,
           ];
       }
@@ -2184,10 +2154,9 @@ export class WebdbService implements OnDestroy {
     identity: {
       account: string;
       domain: string;
-      sourceDomain: string;
       namespaceId: number;
     },
-    profile: { rev: number; name: string; avatar: string },
+    profile: { rev: number; name: string; avatar: string; bio: string },
   ): Promise<boolean> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
@@ -2198,13 +2167,13 @@ export class WebdbService implements OnDestroy {
           profileRev: profile.rev,
           name: profile.name,
           avatar: profile.avatar,
+          bio: profile.bio,
         });
       const db = await this.db();
-      let key: [number, string, string, string, number] = [
+      let key: [number, string, string, number] = [
         threadId,
         identity.account,
         identity.domain,
-        identity.sourceDomain,
         identity.namespaceId,
       ];
       const tx = db.transaction('members', 'readwrite');
@@ -2220,7 +2189,6 @@ export class WebdbService implements OnDestroy {
             previous.threadId,
             previous.account,
             previous.domain,
-            previous.sourceDomain,
             previous.namespaceId,
           ];
       }
@@ -2233,6 +2201,7 @@ export class WebdbService implements OnDestroy {
         resolvedProfileRev: profile.rev,
         profileName: profile.name,
         profileAvatar: profile.avatar,
+        profileBio: profile.bio,
       });
       await tx.done;
       return true;
@@ -2252,17 +2221,28 @@ export class WebdbService implements OnDestroy {
     }
     const db = await this.db();
     if (identity.startsWith('a:')) {
-      const [domain, account] = identity.slice(2).split('\u0000');
-      if (!domain || !account) return undefined;
-      const matches = await db.getAllFromIndex(
-        'users',
-        'address',
-        IDBKeyRange.bound(
-          [account, domain, 0],
-          [account, domain, Number.MAX_SAFE_INTEGER],
-        ),
-      );
-      const record = matches.find((user) => user.sourceDomain === domain);
+      let address: unknown;
+      try {
+        address = JSON.parse(identity.slice(2));
+      } catch {
+        return undefined;
+      }
+      if (
+        !Array.isArray(address) ||
+        address.length !== 2 ||
+        typeof address[0] !== 'string' ||
+        typeof address[1] !== 'string'
+      )
+        return undefined;
+      const [domain, account] = address;
+      const namespace = (
+        await db.getAllFromIndex('namespaces', 'domain', domain)
+      )
+        .filter((item) => item.status === 'ACTIVE')
+        .sort((a, b) => b.namespaceId - a.namespaceId)[0];
+      const record = namespace
+        ? await db.get('users', [account, domain, namespace.namespaceId])
+        : undefined;
       return record ? this.userAsProfile(identity, record) : undefined;
     }
     const match = /^([ug])(\d+)$/.exec(identity);
@@ -2276,11 +2256,13 @@ export class WebdbService implements OnDestroy {
     return record ? this.groupAsProfile(identity, record) : undefined;
   }
 
-  async putProfile(record: ProfileRecord): Promise<boolean> {
+  async putProfile(record: ProfileWriteRecord): Promise<boolean> {
     return this.runAccountOperation(() => this.putProfileInternal(record));
   }
 
-  private async putProfileInternal(record: ProfileRecord): Promise<boolean> {
+  private async putProfileInternal(
+    record: ProfileWriteRecord,
+  ): Promise<boolean> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<boolean>('native_db_put_profile', {
         userId: Number(this.currentUserId),
@@ -2292,10 +2274,9 @@ export class WebdbService implements OnDestroy {
     const db = await this.db();
     if (record.kind === 'user') {
       const tx = db.transaction(['namespaces', 'users'], 'readwrite');
-      const key: [string, string, string, number] = [
+      const key: [string, string, number] = [
         record.account,
         record.domain,
-        record.sourceServer,
         record.namespaceId,
       ];
       const users = tx.objectStore('users');
@@ -2313,7 +2294,6 @@ export class WebdbService implements OnDestroy {
         id: record.id || previous?.id,
         account: record.account,
         domain: record.domain,
-        sourceDomain: record.sourceServer,
         namespaceId: record.namespaceId,
         name: record.name,
         avatar: record.avatar,
@@ -2370,8 +2350,6 @@ export class WebdbService implements OnDestroy {
       avatar: record.avatar,
       bio: record.bio,
       domain: record.domain,
-      sourceServer: record.sourceDomain,
-      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }
@@ -2386,8 +2364,6 @@ export class WebdbService implements OnDestroy {
       avatar: record.avatar,
       bio: record.description,
       domain: record.domain,
-      sourceServer: record.domain,
-      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }
@@ -2788,4 +2764,15 @@ export class WebdbService implements OnDestroy {
   ngOnDestroy(): void {
     void this.close();
   }
+}
+
+function compareMemberIdentity(
+  left: Pick<MemberRecord, 'namespaceId' | 'domain' | 'account'>,
+  right: Pick<MemberRecord, 'namespaceId' | 'domain' | 'account'>,
+): number {
+  return (
+    left.namespaceId - right.namespaceId ||
+    left.domain.localeCompare(right.domain) ||
+    left.account.localeCompare(right.account)
+  );
 }

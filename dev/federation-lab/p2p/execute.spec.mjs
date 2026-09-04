@@ -86,7 +86,7 @@ test('wait helpers use actual incoming and resolved API observations', async () 
   );
 });
 
-test('waitForIncoming reads a same-node invite id from the client state feed', async () => {
+test('waitForIncoming reads a same-node request from the client state feed', async () => {
   const initiator = {
     node: { name: 'alpha' },
     account: 'alice',
@@ -109,7 +109,6 @@ test('waitForIncoming reads a same-node invite id from the client state feed', a
           subjectAccount: 'bob',
           subjectDomain: 'local',
           body: {
-            intentId: '42',
             direction: 'INCOMING',
             status: 'REQUESTED',
             expiresAt: Date.now() + 60_000,
@@ -124,7 +123,6 @@ test('waitForIncoming reads a same-node invite id from the client state feed', a
   };
 
   assert.deepEqual(await waitForIncoming(receiver, initiator, 1_000), {
-    id: '42',
     relationship: 'INCOMING_PENDING',
     user: { account: 'alice' },
   });
@@ -164,7 +162,6 @@ test('waitForIncoming scans subsequent state-feed pages', async () => {
             subjectAccount: 'bob',
             subjectDomain: 'local',
             body: {
-              intentId: '43',
               direction: 'INCOMING',
               status: 'REQUESTED',
               expiresAt: Date.now() + 60_000,
@@ -175,6 +172,9 @@ test('waitForIncoming scans subsequent state-feed pages', async () => {
     },
   };
 
-  assert.equal((await waitForIncoming(receiver, initiator, 1_000)).id, '43');
+  assert.equal(
+    (await waitForIncoming(receiver, initiator, 1_000)).relationship,
+    'INCOMING_PENDING',
+  );
   assert.deepEqual(afterValues, [0, 5]);
 });

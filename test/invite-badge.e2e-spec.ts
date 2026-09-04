@@ -6,10 +6,10 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { InviteService } from '../src/invite/invite.service';
+import { RelationshipService } from '../src/relationship/relationship.service';
 import {
   account,
-  domainCommand,
+  durableTask,
   relationshipIntent,
   user,
 } from '../src/database/schema';
@@ -20,20 +20,20 @@ import {
   seedUserWithSession,
 } from './seed';
 import {
-  waitForDomainCommand,
-  waitForLocalFriendInvite,
-} from './domain-command-helpers.js';
+  waitForDurableTask,
+  waitForLocalRelationshipRequest,
+} from './durable-task-helpers.js';
 
 /**
  * Friend-request badge — the BACKEND half of the data contract.
  *
- * A new incoming request advances the recipient's unified stateRevision and appears as a compacted
- * CLIENT_STATE operation. Reading is a device-local client cursor and has no server endpoint/state.
+ * A new incoming request advances the recipient's Client State Feed and appears as a compacted
+ * relationship-request operation. Reading is a device-local client cursor and has no server endpoint/state.
  */
 describe('Friend-request client state e2e', () => {
   let app: INestApplication;
   let database: DatabaseService;
-  let invites: InviteService;
+  let relationships: RelationshipService;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -46,7 +46,7 @@ describe('Friend-request client state e2e', () => {
     await configureApp(app, adapter);
     await app.listen(0);
     database = app.get(DatabaseService);
-    invites = app.get(InviteService);
+    relationships = app.get(RelationshipService);
   });
 
   beforeEach(async () => {
@@ -58,7 +58,7 @@ describe('Friend-request client state e2e', () => {
     await app.close();
   });
 
-  it('a FRIEND invite advances unified stateRevision and emits an incoming CLIENT_STATE delta', async () => {
+  it('a relationship request advances the Client State Feed and emits an incoming request delta', async () => {
     const http = app.getHttpServer();
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
@@ -88,13 +88,13 @@ describe('Friend-request client state e2e', () => {
 
     // 4. A invites B → the PENDING row's creation advances MAX(updatedAt) over B's incoming FRIEND invites
     const invite = await request(http)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set(authA)
-      .send({ account: 'invitee' });
+      .send({ account: 'invitee', domain: 'local' });
     expect(invite.body.code).toBe(0);
-    const inviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.commandId,
+      invite.body.data.taskId,
       inviter.id,
       invitee.id,
     );
@@ -125,30 +125,29 @@ describe('Friend-request client state e2e', () => {
         body: expect.objectContaining({
           direction: 'INCOMING',
           status: 'REQUESTED',
-          inviteId,
         }),
       }),
     );
 
     const beforeInvalidAccept = await database.db
-      .select({ id: domainCommand.id })
-      .from(domainCommand);
+      .select({ id: durableTask.id })
+      .from(durableTask);
     const invalidAccept = await request(http)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set(authA)
-      .send({ inviteId });
-    expect(invalidAccept.body.code).toBe(20012);
+      .send({ account: 'invitee', domain: 'local' });
+    expect(invalidAccept.body.code).toBe(20010);
     expect(
-      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+      await database.db.select({ id: durableTask.id }).from(durableTask),
     ).toHaveLength(beforeInvalidAccept.length);
 
     const accepted = await request(http)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set(authB)
-      .send({ inviteId });
+      .send({ account: 'inviter', domain: 'local' });
     expect(accepted.body.code).toBe(0);
     expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForDomainCommand(database.db, accepted.body.data.commandId);
+    await waitForDurableTask(database.db, accepted.body.data.taskId);
     const acceptedHead = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
       columns: { stateFeedAllocatedThrough: true },
@@ -184,7 +183,6 @@ describe('Friend-request client state e2e', () => {
         account: 'expired-b',
         name: 'B',
         domain: peerDomain,
-        sourceDomain: peerDomain,
         namespaceId,
         updatedAt: new Date(),
       })
@@ -195,7 +193,7 @@ describe('Friend-request client state e2e', () => {
     );
 
     await database.db.transaction((tx) =>
-      invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true),
+      relationships.writeLocalP2PIntentInTx(tx, a.id, b.id, true),
     );
     const relationship = await findP2PRelationship(database.db, a.id, b.id);
     await database.db.transaction(async (tx) => {
@@ -208,10 +206,11 @@ describe('Friend-request client state e2e', () => {
             eq(relationshipIntent.authorSide, relationship.firstSide),
           ),
         );
-      await invites.applyRemoteFriendIntentInTx(tx, {
+      await relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
         peerUserId: b.id,
         status: 'REQUESTED',
+        profileRev: 0,
         note: 'arrived too late',
         requestedAt: pastRequestedAt,
         expiresAt: pastExpiresAt,
@@ -226,7 +225,7 @@ describe('Friend-request client state e2e', () => {
     await database.db.transaction(async (tx) => {
       // The same explicit request must renew an expired direction even when status and note are
       // unchanged. It refreshes its expiry, but cannot activate while the peer direction is expired.
-      await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
+      await relationships.writeLocalP2PIntentInTx(tx, a.id, b.id, true);
     });
     const renewedLocal = await database.db.query.relationshipIntent.findFirst({
       where: and(
@@ -241,10 +240,11 @@ describe('Friend-request client state e2e', () => {
 
     await database.db.transaction(async (tx) => {
       const now = new Date();
-      await invites.applyRemoteFriendIntentInTx(tx, {
+      await relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
         peerUserId: b.id,
         status: 'REQUESTED',
+        profileRev: 0,
         note: 'renewed',
         requestedAt: now,
         expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
@@ -259,10 +259,11 @@ describe('Friend-request client state e2e', () => {
     expect(pair?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
-      invites.applyRemoteFriendIntentInTx(tx, {
+      relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
         peerUserId: b.id,
         status: 'ACCEPTED',
+        profileRev: 0,
         note: 'renewed',
         requestedAt: new Date(),
         expiresAt: null,
@@ -285,13 +286,13 @@ describe('Friend-request client state e2e', () => {
     const authB = { Authorization: `Bearer ${b.token}` };
 
     const old = await request(app.getHttpServer())
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set(authA)
-      .send({ account: b.account, note: 'old A to B' });
+      .send({ account: b.account, domain: 'local', note: 'old A to B' });
     expect(old.body.code).toBe(0);
-    await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      old.body.data.commandId,
+      old.body.data.taskId,
       a.id,
       b.id,
     );
@@ -311,38 +312,40 @@ describe('Friend-request client state e2e', () => {
       );
 
     const reverse = await request(app.getHttpServer())
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set(authB)
-      .send({ account: a.account, note: 'new B to A' });
+      .send({ account: a.account, domain: 'local', note: 'new B to A' });
     expect(reverse.body.code).toBe(0);
-    await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       database.db,
-      reverse.body.data.commandId,
+      reverse.body.data.taskId,
       b.id,
       a.id,
     );
     let pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(false);
 
-    const incoming = await request(app.getHttpServer())
-      .post('/api/v1/invite/incoming')
-      .set(authA);
-    expect(incoming.body.code).toBe(0);
-    expect(incoming.body.data).toHaveLength(1);
-    expect(incoming.body.data[0]).toMatchObject({
-      fromUserId: b.id,
-      toUserId: a.id,
+    const incoming = await database.db.query.relationshipIntent.findFirst({
+      where: and(
+        eq(relationshipIntent.pairId, pair!.id),
+        eq(
+          relationshipIntent.authorSide,
+          relationship.firstSide === 'A' ? 'B' : 'A',
+        ),
+      ),
+    });
+    expect(incoming).toMatchObject({
       note: 'new B to A',
-      status: 'PENDING',
+      status: 'REQUESTED',
     });
 
     const accepted = await request(app.getHttpServer())
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set(authA)
-      .send({ inviteId: incoming.body.data[0].id });
+      .send({ account: b.account, domain: 'local' });
     expect(accepted.body.code).toBe(0);
     expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForDomainCommand(database.db, accepted.body.data.commandId);
+    await waitForDurableTask(database.db, accepted.body.data.taskId);
 
     const directions = await database.db.query.relationshipIntent.findMany({
       where: and(
@@ -356,42 +359,42 @@ describe('Friend-request client state e2e', () => {
     expect(pair?.threadId).toBeTypeOf('number');
   });
 
-  it('validates reject ownership before enqueue and executes a valid reject asynchronously', async () => {
+  it('rejects an unrelated Address and executes an incoming revoke asynchronously', async () => {
     const sender = await seedUserWithSession(app, 'reject-sender');
     const recipient = await seedUserWithSession(app, 'reject-recipient');
     const stranger = await seedUserWithSession(app, 'reject-stranger');
     const sent = await request(app.getHttpServer())
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${sender.token}`)
-      .send({ account: recipient.account });
-    const inviteId = await waitForLocalFriendInvite(
+      .send({ account: recipient.account, domain: 'local' });
+    await waitForLocalRelationshipRequest(
       database.db,
-      sent.body.data.commandId,
+      sent.body.data.taskId,
       sender.id,
       recipient.id,
     );
 
     const beforeInvalid = await database.db
-      .select({ id: domainCommand.id })
-      .from(domainCommand);
+      .select({ id: durableTask.id })
+      .from(durableTask);
     const invalid = await request(app.getHttpServer())
-      .post('/api/v1/invite/reject')
+      .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${stranger.token}`)
-      .send({ inviteId });
-    expect(invalid.body.code).toBe(20012);
+      .send({ account: sender.account, domain: 'local' });
+    expect(invalid.body.code).toBe(20002);
     expect(
-      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+      await database.db.select({ id: durableTask.id }).from(durableTask),
     ).toHaveLength(beforeInvalid.length);
 
     const rejected = await request(app.getHttpServer())
-      .post('/api/v1/invite/reject')
+      .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${recipient.token}`)
-      .send({ inviteId });
+      .send({ account: sender.account, domain: 'local' });
     expect(rejected.body).toMatchObject({
       code: 0,
       data: { status: 'PENDING' },
     });
-    await waitForDomainCommand(database.db, rejected.body.data.commandId);
+    await waitForDurableTask(database.db, rejected.body.data.taskId);
 
     const relationship = await findP2PRelationship(
       database.db,
@@ -408,41 +411,29 @@ describe('Friend-request client state e2e', () => {
     expect(reverse?.status).toBe('REVOKED');
   });
 
-  it('keeps addressed revoke direct but queues and executes local inviteId revoke', async () => {
+  it('queues and executes an outgoing local request revoke by Address', async () => {
     const sender = await seedUserWithSession(app, 'revoke-sender');
     const recipient = await seedUserWithSession(app, 'revoke-recipient');
     const sent = await request(app.getHttpServer())
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${sender.token}`)
-      .send({ account: recipient.account });
-    const inviteId = await waitForLocalFriendInvite(
+      .send({ account: recipient.account, domain: 'local' });
+    await waitForLocalRelationshipRequest(
       database.db,
-      sent.body.data.commandId,
+      sent.body.data.taskId,
       sender.id,
       recipient.id,
     );
 
-    const beforeInvalid = await database.db
-      .select({ id: domainCommand.id })
-      .from(domainCommand);
-    const invalid = await request(app.getHttpServer())
-      .post('/api/v1/invite/revoke')
-      .set('Authorization', `Bearer ${recipient.token}`)
-      .send({ inviteId });
-    expect(invalid.body.code).toBe(20012);
-    expect(
-      await database.db.select({ id: domainCommand.id }).from(domainCommand),
-    ).toHaveLength(beforeInvalid.length);
-
     const revoked = await request(app.getHttpServer())
-      .post('/api/v1/invite/revoke')
+      .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${sender.token}`)
-      .send({ inviteId });
+      .send({ account: recipient.account, domain: 'local' });
     expect(revoked.body).toMatchObject({
       code: 0,
       data: { status: 'PENDING' },
     });
-    await waitForDomainCommand(database.db, revoked.body.data.commandId);
+    await waitForDurableTask(database.db, revoked.body.data.taskId);
 
     const relationship = await findP2PRelationship(
       database.db,

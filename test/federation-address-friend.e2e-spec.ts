@@ -3,10 +3,8 @@ import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
 import {
   clientStateFeed,
-  federatedFriendRequest,
   message,
-  threadMember,
-  threadParticipant,
+  accountThreadState,
   user,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
@@ -15,13 +13,12 @@ import {
   bootFederationPair,
   FED_DOMAIN_A,
   FED_DOMAIN_B,
-  truncateFederationDbs,
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
 import { findP2PRelationship } from './seed.js';
-import { waitForAcceptedDomainCommand } from './domain-command-helpers.js';
+import { waitForAcceptedDurableTask } from './durable-task-helpers.js';
 
 describe('federated Address friend request shells', () => {
   let appA: FedApp;
@@ -34,7 +31,6 @@ describe('federated Address friend request shells', () => {
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
-    await truncateFederationDbs(appA, appB);
     ({ id: aliceId, token: aliceToken } = await registerAndLogin(
       appA,
       'address-alice',
@@ -87,7 +83,7 @@ describe('federated Address friend request shells', () => {
     ).toBeUndefined();
 
     const sent = await request(appA.baseUrl)
-      .post('/api/v1/invite/federated-friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         account: 'address-bob',
@@ -97,7 +93,7 @@ describe('federated Address friend request shells', () => {
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
     expect(sent.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForAcceptedDomainCommand(appA.database, sent.body);
+    await waitForAcceptedDurableTask(appA.database, sent.body);
     const requesterStub = await appA.database.query.user.findFirst({
       where: and(
         eq(user.account, 'address-bob'),
@@ -106,40 +102,44 @@ describe('federated Address friend request shells', () => {
     });
     expect(requesterStub).toBeDefined();
     const [requesterShell] = await appA.database
-      .select({ id: threadParticipant.id })
-      .from(threadParticipant)
-      .where(eq(threadParticipant.accountId, aliceId))
+      .select({ id: accountThreadState.id })
+      .from(accountThreadState)
+      .where(eq(accountThreadState.accountId, aliceId))
       .limit(1);
     expect(requesterShell).toBeDefined();
 
     const incoming = await vi.waitFor(
       async () => {
-        const row = await appB.database.query.federatedFriendRequest.findFirst({
-          where: and(
-            eq(federatedFriendRequest.localUserId, bobId),
-            eq(federatedFriendRequest.remoteAccount, 'address-alice'),
-            eq(federatedFriendRequest.remoteDomain, FED_DOMAIN_A),
-            eq(federatedFriendRequest.direction, 'INCOMING'),
-            eq(federatedFriendRequest.status, 'REQUESTED'),
-          ),
-        });
+        const rows = await appB.database.execute<{
+          requestedAt: Date;
+          expiresAt: Date;
+        }>(sql`
+          SELECT intent."requestedAt", intent."expiresAt"
+          FROM "RelationshipIntent" intent
+          JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+          WHERE pair.kind = 'P2P' AND intent.status = 'REQUESTED'
+            AND ((intent."authorSide" = 'A'
+                AND pair."endpointAAccount" = 'address-alice'
+                AND pair."endpointADomain" = ${FED_DOMAIN_A}
+                AND pair."endpointBAccount" = 'address-bob'
+                AND pair."endpointBDomain" = 'local')
+              OR (intent."authorSide" = 'B'
+                AND pair."endpointBAccount" = 'address-alice'
+                AND pair."endpointBDomain" = ${FED_DOMAIN_A}
+                AND pair."endpointAAccount" = 'address-bob'
+                AND pair."endpointADomain" = 'local'))
+          LIMIT 1
+        `);
+        const row = rows.rows[0];
         expect(row).toBeDefined();
         return row!;
       },
       { timeout: 10_000, interval: 100 },
     );
     expect(
-      incoming.expiresAt!.getTime() - incoming.requestedAt!.getTime(),
+      new Date(incoming.expiresAt).getTime() -
+        new Date(incoming.requestedAt).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
-    expect(
-      await appB.database.query.user.findFirst({
-        where: and(
-          eq(user.account, 'address-alice'),
-          eq(user.domain, FED_DOMAIN_A),
-        ),
-      }),
-    ).toMatchObject({ sourceDomain: FED_DOMAIN_A });
-
     const pendingClientIntent =
       await appB.database.query.clientStateFeed.findFirst({
         where: and(
@@ -157,15 +157,14 @@ describe('federated Address friend request shells', () => {
         direction: 'INCOMING',
       }),
     });
-
     const accepted = await request(appB.baseUrl)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
       .send({ account: 'address-alice', domain: FED_DOMAIN_A });
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDomainCommand(appB.database, accepted.body);
+    await waitForAcceptedDurableTask(appB.database, accepted.body);
 
     await vi.waitFor(
       async () => {

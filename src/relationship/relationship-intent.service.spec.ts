@@ -44,7 +44,6 @@ function transaction(pairChanged: boolean) {
       rows: [{ id: 9n, active: !pairChanged, threadId: 31 }],
     })
     .mockResolvedValueOnce({ rows: [] })
-    .mockResolvedValueOnce({ rows: [] })
     .mockResolvedValueOnce({ rowCount: pairChanged ? 1 : 0, rows: [] })
     .mockResolvedValueOnce({ rowCount: 1, rows: [] });
 
@@ -70,9 +69,9 @@ describe('RelationshipIntentService group federation authorization', () => {
     ).resolves.toBe(true);
 
     expect(forUpdate).toHaveBeenCalledWith('update');
-    expect(execute).toHaveBeenCalledTimes(9);
-    expect(execute.mock.invocationCallOrder[7]).toBeLessThan(
-      execute.mock.invocationCallOrder[8]!,
+    expect(execute).toHaveBeenCalledTimes(8);
+    expect(execute.mock.invocationCallOrder[6]).toBeLessThan(
+      execute.mock.invocationCallOrder[7]!,
     );
   });
 
@@ -89,7 +88,7 @@ describe('RelationshipIntentService group federation authorization', () => {
       }),
     ).resolves.toBe(false);
 
-    expect(execute).toHaveBeenCalledTimes(9);
+    expect(execute).toHaveBeenCalledTimes(8);
   });
 
   it('checks the thread epoch after a remote-group member deactivation', async () => {
@@ -105,11 +104,11 @@ describe('RelationshipIntentService group federation authorization', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(execute).toHaveBeenCalledTimes(10);
-    expect(JSON.stringify(execute.mock.calls[9]![0])).toContain(
+    expect(execute).toHaveBeenCalledTimes(9);
+    expect(JSON.stringify(execute.mock.calls[8]![0])).toContain(
       'authorizationEpoch',
     );
-    expect(JSON.stringify(execute.mock.calls[9]![0])).toContain(
+    expect(JSON.stringify(execute.mock.calls[8]![0])).toContain(
       'federationAuthorized',
     );
   });

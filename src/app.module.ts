@@ -14,9 +14,9 @@ import { GroupController } from './controller/group.controller.js';
 import { UploadModule } from './upload/upload.module.js';
 import { KvStoreModule } from './kv-store/kv-store.module.js';
 import { AdminModule } from './admin/admin.module.js';
-import { ThreadParticipantModule } from './thread-participant/thread-participant.module.js';
-import { InviteModule } from './invite/invite.module.js';
-import { InviteController } from './controller/invite.controller.js';
+import { AccountThreadStateModule } from './account-thread-state/account-thread-state.module.js';
+import { RelationshipModule } from './relationship/relationship.module.js';
+import { RelationshipController } from './controller/relationship.controller.js';
 import { PushModule } from './push/push.module.js';
 import { FederationModule } from './federation/federation.module.js';
 import { SettingsModule } from './settings/settings.module.js';
@@ -38,7 +38,7 @@ import { CallsController } from './controller/calls.controller.js';
 import { ForwardBundleModule } from './forward/forward-bundle.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { RateLimitModule } from './rate-limit/rate-limit.module.js';
-import { DomainCommandModule } from './domain-command/domain-command.module.js';
+import { DurableTaskModule } from './durable-task/durable-task.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -60,8 +60,8 @@ import { DomainCommandModule } from './domain-command/domain-command.module.js';
     GroupModule,
     UploadModule,
     AdminModule,
-    ThreadParticipantModule,
-    InviteModule,
+    AccountThreadStateModule,
+    RelationshipModule,
     PushModule,
     FederationModule,
     DatabaseModule,
@@ -74,14 +74,14 @@ import { DomainCommandModule } from './domain-command/domain-command.module.js';
     LinkPreviewModule,
     CallsModule,
     ForwardBundleModule,
-    DomainCommandModule,
+    DurableTaskModule,
   ],
   controllers: [
     MessageController,
     AuthController,
     UserController,
     GroupController,
-    InviteController,
+    RelationshipController,
     DeviceController,
     NotificationController,
     HealthController,

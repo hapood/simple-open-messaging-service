@@ -17,12 +17,12 @@ import {
   federationThreadHistoryGap,
   federationThreadSyncState,
   group,
+  groupMetaMemberFeed,
   message,
   messageThread,
   relationshipIntent,
   systemSetting,
   threadAudience,
-  threadMember,
   user,
 } from '../src/database/schema.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
@@ -31,7 +31,6 @@ import {
   FED_DOMAIN_A,
   FED_DOMAIN_B,
   makePng,
-  truncateFederationDbs,
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
@@ -42,10 +41,10 @@ import {
 } from './federation-test-helpers.js';
 import { findGroupRelationship } from './seed.js';
 import {
-  waitForAcceptedDomainCommand,
-  waitForAcceptedDomainCommands,
-  waitForLocalFriendInvite,
-} from './domain-command-helpers.js';
+  waitForAcceptedDurableTask,
+  waitForAcceptedDurableTasks,
+  waitForLocalRelationshipRequest,
+} from './durable-task-helpers.js';
 
 describe('federation reverse thread rounds (two nodes)', () => {
   let appA: FedApp;
@@ -60,7 +59,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
-    await truncateFederationDbs(appA, appB);
     const alice = await registerAndLogin(appA, 'reversealice', 'Reverse Alice');
     const bob = await registerAndLogin(appB, 'reversebob', 'Reverse Bob');
     tokenA = alice.token;
@@ -86,22 +84,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
     carolLocalIdA = carol.id;
     await uploadAvatar(appA, tokenCarol, await makePng(109));
     const localFriendRequest = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'reversecarol' });
+      .send({ account: 'reversecarol', domain: 'local' });
     expect(localFriendRequest.body.code).toBe(BusinessCode.OK);
-    const localFriendInviteId = await waitForLocalFriendInvite(
+    await waitForLocalRelationshipRequest(
       appA.database,
-      localFriendRequest.body.data.commandId,
+      localFriendRequest.body.data.taskId,
       alice.id,
       carol.id,
     );
     const localFriendAccepted = await request(appA.baseUrl)
-      .post('/api/v1/invite/accept')
+      .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${tokenCarol}`)
-      .send({ inviteId: localFriendInviteId });
+      .send({ account: 'reversealice', domain: 'local' });
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appA.database, localFriendAccepted.body);
+    await waitForAcceptedDurableTask(appA.database, localFriendAccepted.body);
   }, 120_000);
 
   afterEach(async () => {
@@ -151,7 +149,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(invited.body.code, JSON.stringify(invited.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDomainCommands(appA.database, invited.body);
+    await waitForAcceptedDurableTasks(appA.database, invited.body);
     const mirror = await vi.waitFor(
       async () => {
         const [row] = await appB.database
@@ -194,7 +192,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirror.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appB.database, joined.body);
+    await waitForAcceptedDurableTask(appB.database, joined.body);
     await vi.waitFor(
       async () => {
         expect(
@@ -215,7 +213,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     };
   }
 
-  it('publishes one paired client head with an empty preview when the federated current message is withdrawn', async () => {
+  it('publishes the paired client tombstone head when the federated current message is withdrawn', async () => {
     const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
       'withdraw-current-preview',
     );
@@ -269,10 +267,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
             ),
           ),
         });
-        expect(head?.body).toMatchObject({
+        expect(head?.body).toEqual({
           threadId: mirrorThreadId,
+          messageEndSeq: expect.any(Number),
           tombstoneEndSeq: expect.any(Number),
-          preview: { seq: mirrored.seq, text: '', senderId: null },
         });
         expect(
           (head!.body as { messageEndSeq: number }).messageEndSeq,
@@ -304,7 +302,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: originThreadId, userIds: [bobStubIdA] });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommands(appA.database, invited.body);
+    await waitForAcceptedDurableTasks(appA.database, invited.body);
 
     const mirror = await vi.waitFor(
       async () => {
@@ -348,7 +346,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirror.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appB.database, joined.body);
+    await waitForAcceptedDurableTask(appB.database, joined.body);
 
     await vi.waitFor(
       async () => {
@@ -449,6 +447,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(durableWhileStopped?.activeGapId).toBe(
       beforeRestart.state.activeGapId,
     );
+    expect(
+      (await findGroupRelationship(appB.database, mirror.groupId!, bobLocalIdB))
+        .pair,
+    ).toMatchObject({ active: true, threadId: mirror.id });
     await appB.start();
     await vi.waitFor(
       () => expect(proxy.blockedReverseMessageCount()).toBeGreaterThan(0),
@@ -544,13 +546,13 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: originThreadId, userIds: [carolLocalIdA] });
     expect(inviteCarol.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommands(appA.database, inviteCarol.body);
+    await waitForAcceptedDurableTasks(appA.database, inviteCarol.body);
     const joinCarol = await request(appA.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({ groupId: originThreadId });
     expect(joinCarol.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appA.database, joinCarol.body);
+    await waitForAcceptedDurableTask(appA.database, joinCarol.body);
 
     const departedHistoryText = 'history-from-departed-carol';
     const retainedWithdrawalText = 'retained-before-remote-leave';
@@ -572,9 +574,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const leaveCarol = await request(appA.baseUrl)
       .post('/api/v1/group/leave')
       .set('Authorization', `Bearer ${tokenCarol}`)
-      .send({ groupId: originThreadId, deleteData: false });
+      .send({ groupId: originThreadId });
     expect(leaveCarol.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appA.database, leaveCarol.body);
+    await waitForAcceptedDurableTask(appA.database, leaveCarol.body);
     const currentTail = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -594,7 +596,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       expect(invited.body.code, JSON.stringify(invited.body)).toBe(
         BusinessCode.OK,
       );
-      await waitForAcceptedDomainCommands(appA.database, invited.body);
+      await waitForAcceptedDurableTasks(appA.database, invited.body);
     };
     await inviteBob();
     const mirror = await vi.waitFor(
@@ -640,7 +642,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: mirror.id });
       expect(joined.body.code).toBe(BusinessCode.OK);
-      await waitForAcceptedDomainCommand(appB.database, joined.body);
+      await waitForAcceptedDurableTask(appB.database, joined.body);
     };
     await joinBob();
 
@@ -661,23 +663,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
             eq(message.content, JSON.stringify({ text: departedHistoryText })),
           ),
         });
-        expect(historicalMessage).toBeDefined();
-        const departedCarol = await appB.database.query.user.findFirst({
-          where: and(
-            eq(user.account, 'reversecarol'),
-            eq(user.domain, FED_DOMAIN_A),
-            eq(user.sourceDomain, FED_DOMAIN_A),
-          ),
+        expect(historicalMessage).toMatchObject({
+          creatorAccount: 'reversecarol',
+          creatorDomain: FED_DOMAIN_A,
         });
-        expect(departedCarol).toBeDefined();
-        expect(
-          await appB.database.query.threadMember.findFirst({
-            where: and(
-              eq(threadMember.threadId, mirror.id),
-              eq(threadMember.userId, departedCarol!.id),
+        const departedCarolFacts = await appB.database
+          .select({ feedId: groupMetaMemberFeed.feedId })
+          .from(groupMetaMemberFeed)
+          .innerJoin(user, eq(user.id, groupMetaMemberFeed.memberUserId))
+          .where(
+            and(
+              eq(groupMetaMemberFeed.groupId, mirror.groupId!),
+              eq(user.account, 'reversecarol'),
+              eq(user.domain, FED_DOMAIN_A),
             ),
-          }),
-        ).toMatchObject({ left: true });
+          );
+        expect(departedCarolFacts).toEqual([]);
       },
       { timeout: 20_000, interval: 100 },
     );
@@ -702,9 +703,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
       const left = await request(appB.baseUrl)
         .post('/api/v1/group/leave')
         .set('Authorization', `Bearer ${tokenB}`)
-        .send({ groupId: mirror.id, deleteData: false });
+        .send({ groupId: mirror.id });
       expect(left.body.code).toBe(BusinessCode.OK);
-      await waitForAcceptedDomainCommand(appB.database, left.body);
+      await waitForAcceptedDurableTask(appB.database, left.body);
       await vi.waitFor(
         async () => {
           expect(
@@ -1233,9 +1234,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const left = await request(appB.baseUrl)
       .post('/api/v1/group/leave')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: mirrorThreadId, deleteData: false });
+      .send({ groupId: mirrorThreadId });
     expect(left.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appB.database, left.body);
+    await waitForAcceptedDurableTask(appB.database, left.body);
     await vi.waitFor(
       async () => {
         expect(
@@ -1264,7 +1265,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(reinvited.body.code, JSON.stringify(reinvited.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDomainCommands(appA.database, reinvited.body);
+    await waitForAcceptedDurableTasks(appA.database, reinvited.body);
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -1289,7 +1290,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirrorThreadId });
     expect(rejoined.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDomainCommand(appB.database, rejoined.body);
+    await waitForAcceptedDurableTask(appB.database, rejoined.body);
     const newState = await vi.waitFor(
       async () => {
         const state =

@@ -21,8 +21,9 @@ describe('FriendRequestsComponent federated search progress', () => {
       resolve: (value: FriendIntentPage) => void;
     }> = [];
     const userService = {
-      friendRequestStateRevision: signal(0),
-      friendIntentStateRevision: signal(0),
+      sessionUserId: signal<number | null>(null),
+      relationshipRequestStateRevision: signal(0),
+      relationshipIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       listLocalFriendRequests: vi.fn().mockImplementation(
         () =>
@@ -61,7 +62,6 @@ describe('FriendRequestsComponent federated search progress', () => {
           status: 'REQUESTED' as const,
           expiresAt: Date.now() + 60_000,
           localThreadId: null,
-          inviteId: id,
           note: '',
           requestedAt: 1,
           requestedSort: 1,
@@ -89,7 +89,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     await older;
 
     expect(component.pendingReqList().map((request) => request.id)).toEqual([
-      '2',
+      'friend:2',
     ]);
   });
 
@@ -106,8 +106,9 @@ describe('FriendRequestsComponent federated search progress', () => {
         {
           provide: UserService,
           useValue: {
-            friendRequestStateRevision: signal(0),
-            friendIntentStateRevision: signal(0),
+            sessionUserId: signal<number | null>(null),
+            relationshipRequestStateRevision: signal(0),
+            relationshipIntentStateRevision: signal(0),
             friendReqBadge: signal(false),
           },
         },
@@ -136,14 +137,15 @@ describe('FriendRequestsComponent federated search progress', () => {
       total: 0,
     };
     const userService = {
-      friendRequestStateRevision: revision,
-      friendIntentStateRevision: revision,
+      sessionUserId: signal<number | null>(null),
+      relationshipRequestStateRevision: revision,
+      relationshipIntentStateRevision: revision,
       friendReqBadge: signal(false),
       listLocalFriendRequests: vi.fn().mockResolvedValue({
         ...emptyPage,
         actionableTotal: 0,
       }),
-      markFriendReqRead: vi.fn(),
+      markRelationshipRequestsRead: vi.fn(),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -165,7 +167,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     await fixture.whenStable();
 
     expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(2);
-    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
+    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(1);
     const component = fixture.componentInstance;
     const incomingReload = vi.spyOn(component, 'loadIncomingInvites');
     const outgoingReload = vi.spyOn(component, 'loadOutgoingInvites');
@@ -189,10 +191,10 @@ describe('FriendRequestsComponent federated search progress', () => {
       null,
       1,
     );
-    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
+    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(1);
 
     component.setTab(1);
-    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(2);
+    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(2);
   });
 
   it('uses exact resolution for a local account and exposes at most one result', async () => {
@@ -202,10 +204,11 @@ describe('FriendRequestsComponent federated search progress', () => {
       name: 'Alice',
     } as User;
     const userService = {
+      sessionUserId: signal<number | null>(null),
       sessionProfile: () => ({ id: 1 }),
-      friendIntentStateRevision: signal(0),
+      relationshipIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
-      markFriendReqRead: vi.fn(),
+      markRelationshipRequestsRead: vi.fn(),
       listLocalFriendRequests: vi.fn().mockResolvedValue({
         items: [],
         scannedThrough: null,
@@ -299,9 +302,6 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      peerTrustStatus: vi
-        .fn()
-        .mockReturnValue(of({ code: 0, data: { trusted: false } })),
       resolveFederatedUser: vi.fn().mockReturnValue(resolve),
     };
     TestBed.configureTestingModule({
@@ -324,10 +324,10 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    expect(component.connectingDomain()).toBe('peer.test');
     const progress = vi.mocked(userService.resolveFederatedUser).mock
       .lastCall![1] as (stage: 'WAITING_FOR_PEER') => void;
     progress('WAITING_FOR_PEER');
+    expect(component.connectingDomain()).toBe('peer.test');
     expect(component.federationStage()).toBe('WAITING_FOR_PEER');
     expect(component.federationProgress()).toEqual({
       current: 4,
@@ -351,9 +351,6 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      peerTrustStatus: vi
-        .fn()
-        .mockReturnValue(of({ code: 0, data: { trusted: true } })),
       resolveFederatedUser: vi
         .fn()
         .mockReturnValue(of({ user: local, relationship: 'FRIEND' })),
@@ -396,9 +393,6 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => self,
-      peerTrustStatus: vi
-        .fn()
-        .mockReturnValue(of({ code: 0, data: { trusted: true } })),
       resolveFederatedUser: vi
         .fn()
         .mockReturnValue(of({ user: self, relationship: 'NONE' })),
@@ -439,7 +433,6 @@ describe('FriendRequestsComponent federated search progress', () => {
     }>();
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      peerTrustStatus: () => of({ code: 0, data: { trusted: false } }),
       resolveFederatedUser: () => resolve,
     };
     TestBed.resetTestingModule();
@@ -473,7 +466,6 @@ describe('FriendRequestsComponent federated search progress', () => {
     const resolve = new Subject<never>();
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      peerTrustStatus: () => of({ code: 0, data: { trusted: true } }),
       resolveFederatedUser: () => resolve,
     };
     TestBed.resetTestingModule();
@@ -506,11 +498,11 @@ describe('FriendRequestsComponent federated search progress', () => {
     const acceptResult = new Subject<{ code: number }>();
     let resolveRefresh!: (value: FriendIntentPage) => void;
     const userService = {
-      friendRequestStateRevision: signal(0),
-      friendIntentStateRevision: signal(0),
+      relationshipRequestStateRevision: signal(0),
+      relationshipIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
-      acceptInvite: vi.fn().mockReturnValue(acceptResult),
-      markFriendRequestAccepted: vi.fn().mockResolvedValue(undefined),
+      acceptRelationship: vi.fn().mockReturnValue(acceptResult),
+      markRelationshipRequestAccepted: vi.fn().mockResolvedValue(undefined),
       listLocalFriendRequests: vi.fn().mockImplementation(
         () =>
           new Promise<FriendIntentPage>((resolve) => {
@@ -536,8 +528,10 @@ describe('FriendRequestsComponent federated search progress', () => {
       FriendRequestsComponent,
     ).componentInstance;
     const request = {
-      id: '41',
+      id: 'friend:41',
       projectionKey: 'friend:41',
+      account: 'alice',
+      domain: 'local',
       direction: 'INCOMING' as const,
       status: 0,
       date: 1,
@@ -548,7 +542,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.approve(request);
     component.approve(request);
 
-    expect(userService.acceptInvite).toHaveBeenCalledTimes(1);
+    expect(userService.acceptRelationship).toHaveBeenCalledTimes(1);
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
     const refresh = component.loadIncomingInvites(true);
@@ -571,7 +565,6 @@ describe('FriendRequestsComponent federated search progress', () => {
           status: 'REQUESTED',
           expiresAt: Date.now() + 60_000,
           localThreadId: null,
-          inviteId: request.id,
           requestedAt: 2,
           requestedSort: 2,
           updatedAt: 2,
@@ -603,7 +596,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.pendingReqList()[0]).toEqual(
       expect.objectContaining({ id: request.id, status: 1 }),
     );
-    expect(userService.markFriendRequestAccepted).toHaveBeenCalledWith(
+    expect(userService.markRelationshipRequestAccepted).toHaveBeenCalledWith(
       request.projectionKey,
     );
     expect(acceptResult.observed).toBe(false);

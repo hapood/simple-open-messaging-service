@@ -10,18 +10,14 @@ import {
   HttpCode,
   Logger,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyReply } from 'fastify';
 import { FederationDomainResolutionError } from '../federation/discovery.service.js';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
@@ -35,10 +31,8 @@ import { normalizeAccount } from '../common/account.js';
 import { UserResponseDto } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
-  DeleteFriendDto,
   UserResolveDto,
   UserSearchDto,
-  PeerTrustStatusDto,
   QueryUsersDto,
   UpdateProfileDto,
 } from '../dto/user.dto.js';
@@ -48,14 +42,14 @@ import {
   type S2SProfile,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
-import { InviteService } from '../invite/invite.service.js';
+import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
-import { DomainCommandQueueService } from '../domain-command/domain-command-queue.service.js';
-import { DomainCommandType } from '../domain-command/domain-command.constants.js';
-import { DomainCommandAcceptedDto } from '../dto/domain-command.dto.js';
+import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import { DurableTaskAcceptedDto } from '../dto/durable-task.dto.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
@@ -90,7 +84,7 @@ export class UserController {
 
   constructor(
     private readonly userService: UserService,
-    private readonly participantService: ThreadParticipantService,
+    private readonly participantService: AccountThreadStateService,
     private readonly authService: AuthService,
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
@@ -100,8 +94,8 @@ export class UserController {
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly clientGroupMetaFeed: ClientGroupMetaFeedService,
     private readonly userQuotaService: UserQuotaService,
-    private readonly inviteService: InviteService,
-    private readonly domainCommands: DomainCommandQueueService,
+    private readonly relationships: RelationshipService,
+    private readonly durableTasks: DurableTaskQueueService,
   ) {}
 
   @ApiBearerAuth()
@@ -350,70 +344,6 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/delete-friend')
-  @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
-  @ApiResultResponse(DomainCommandAcceptedDto)
-  async deleteFriend(
-    @Request() req: FastifyRequest,
-    @Body() dto: DeleteFriendDto,
-  ) {
-    const me = req.user.userId;
-    const account = normalizeAccount(dto.account);
-    const requestedDomain = dto.domain?.trim().toLowerCase();
-    const domain =
-      !requestedDomain || requestedDomain === this.federationService.ourDomain
-        ? 'local'
-        : requestedDomain;
-    const target = await this.userService.findUniqueUser({
-      account_domain: { account, domain },
-      sourceDomain: domain,
-    });
-    if (!target) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_NOT_FOUND,
-        `not friends with [${account}@${domain}]`,
-      );
-    }
-    if (me === target.id) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_SELF,
-        'can not unfriend self',
-      );
-    }
-    // Prefer the active edge. If it has already ended, retain the latest historical edge so a retry is
-    // successful and may still apply the caller's `deleteData` choice.
-    const activeThreadId = await this.participantService.findP2PThreadBetween(
-      me,
-      target.id,
-    );
-    const threadId =
-      activeThreadId ??
-      (await this.participantService.findLatestP2PThreadBetween(me, target.id));
-    if (threadId === null) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_NOT_FOUND,
-        `not friends with [${account}@${domain}]`,
-      );
-    }
-    const actor = await this.userService.findUniqueUser({ id: me });
-    if (!actor) throw new Error('authenticated user profile is missing');
-    const { commandId } = await this.domainCommands.enqueue({
-      aggregate: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: actor.account, domain: actor.domain },
-          { account: target.account, domain: target.domain },
-        ],
-      },
-      commandType: DomainCommandType.END_FRIENDSHIP,
-      actorUserId: me,
-      payload: { threadId, deleteData: dto.deleteData ?? false },
-    });
-    return { commandId: commandId.toString(), status: 'PENDING' as const };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
   @Post('user/query')
   @ApiOperation({
     summary: 'Look up users by account and domain in batch (≤100)',
@@ -423,26 +353,6 @@ export class UserController {
     return this.userService.queryUsers({
       where: { addresses: dto.addresses, availability: 'AVAILABLE' },
     });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/peer-trust-status')
-  @ApiOperation({
-    summary:
-      'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated address search.',
-  })
-  async peerTrustStatus(@Body() dto: PeerTrustStatusDto) {
-    if (dto.domain.trim().toLowerCase() === this.federationService.ourDomain) {
-      return { trusted: true };
-    }
-    // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
-    // resolve will run bidirectional recognition (first contact → banner) or resolve fast
-    // (trusted → no banner). A known server-side fact, not a latency guess: the rare
-    // already-trusted-but-failing case (peer reset / broken key → re-handshake) surfaces as an error
-    // from the resolve itself, not here.
-    const trusted = await this.federationService.isPeerTrusted(dto.domain);
-    return { trusted };
   }
 
   @ApiBearerAuth()
@@ -515,7 +425,7 @@ export class UserController {
         return;
       }
       const [relationship] =
-        await this.inviteService.friendRelationshipStatuses(req.user.userId, [
+        await this.relationships.friendRelationshipStatuses(req.user.userId, [
           localUser.id,
         ]);
       finish('resolved', {
@@ -524,13 +434,8 @@ export class UserController {
       });
       return;
     }
-    const unsubscribeProgress = this.federationRecognition.subscribeProgress(
-      domain,
-      (stage) => {
-        if (!closed) reply.raw.write(formatSseFrame('progress', { stage }));
-      },
-    );
-    reply.raw.once('close', unsubscribeProgress);
+    let unsubscribeProgress: () => void = () => undefined;
+    const deadlineAt = Date.now() + 30_000;
     const deadline = new Promise<never>((_, reject) => {
       const handle = setTimeout(
         () => reject(new Error('resolve deadline exceeded')),
@@ -541,7 +446,48 @@ export class UserController {
     try {
       const profile = await Promise.race([
         (async () => {
-          await this.federationService.ensurePeerTrusted(domain);
+          const recognitionComplete =
+            await this.federationService.hasCompletePeerRecognition(domain);
+          if (!recognitionComplete) {
+            unsubscribeProgress = this.federationRecognition.subscribeProgress(
+              domain,
+              (stage) => {
+                if (!closed) {
+                  reply.raw.write(formatSseFrame('progress', { stage }));
+                }
+              },
+            );
+            await this.federationRecognition.recognize(domain);
+          }
+          if (!closed) {
+            reply.raw.write(
+              formatSseFrame('progress', { stage: 'WAITING_FOR_PEER' }),
+            );
+          }
+          while (!closed && Date.now() < deadlineAt) {
+            try {
+              const status =
+                await this.federationService.checkPeerHealth(domain);
+              if (status === 'available' || status === 'degraded') {
+                await this.federationService.checkPeerOutboundReady(domain);
+                break;
+              }
+            } catch (error) {
+              if (
+                error instanceof FederationDomainResolutionError ||
+                (error instanceof BusinessException &&
+                  error.bizCode !==
+                    BusinessCode.FEDERATION_RECOGNITION_REQUIRED)
+              ) {
+                throw error;
+              }
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+          }
+          if (closed) throw new Error('resolve stream closed');
+          if (Date.now() >= deadlineAt) {
+            throw new Error('resolve deadline exceeded');
+          }
           if (!closed) {
             reply.raw.write(
               formatSseFrame('progress', { stage: 'FETCHING_USER' }),
@@ -553,7 +499,7 @@ export class UserController {
       ]);
       const relationship = profile.account.startsWith('!')
         ? 'NONE'
-        : await this.inviteService.federatedRelationshipStatus(
+        : await this.relationships.federatedRelationshipStatus(
             req.user.userId,
             account,
             domain,
@@ -563,6 +509,7 @@ export class UserController {
         relationship,
       });
     } catch (error) {
+      if (closed) return;
       const reason =
         (error as Error).message === 'resolve deadline exceeded'
           ? 'TIMEOUT'

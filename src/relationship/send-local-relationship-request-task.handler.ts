@@ -10,31 +10,31 @@ import { BusinessException } from '../common/business.exception.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { account, user } from '../database/schema.js';
-import { DomainCommandType } from '../domain-command/domain-command.constants.js';
-import { DomainCommandDispatcherService } from '../domain-command/domain-command-dispatcher.service.js';
+import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispatcher.service.js';
 import type {
-  DomainCommand,
-  DomainCommandHandler,
-} from '../domain-command/domain-command.types.js';
+  DurableTask,
+  DurableTaskHandler,
+} from '../durable-task/durable-task.types.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { InviteService } from './invite.service.js';
+import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
+import { RelationshipService } from './relationship.service.js';
 
 @Injectable()
-export class SendLocalFriendInviteCommandHandler
-  implements DomainCommandHandler, OnModuleInit, OnModuleDestroy
+export class SendLocalRelationshipRequestTaskHandler
+  implements DurableTaskHandler, OnModuleInit, OnModuleDestroy
 {
-  readonly commandType = DomainCommandType.SEND_LOCAL_FRIEND_INVITE;
+  readonly taskType = DurableTaskType.SEND_LOCAL_RELATIONSHIP_REQUEST;
   private readonly logger = new Logger(
-    SendLocalFriendInviteCommandHandler.name,
+    SendLocalRelationshipRequestTaskHandler.name,
   );
   private unregister?: () => void;
 
   constructor(
     private readonly database: DatabaseService,
-    private readonly dispatcher: DomainCommandDispatcherService,
-    private readonly inviteService: InviteService,
-    private readonly participantService: ThreadParticipantService,
+    private readonly dispatcher: DurableTaskDispatcherService,
+    private readonly relationships: RelationshipService,
+    private readonly participantService: AccountThreadStateService,
     private readonly userQuota: UserQuotaService,
     private readonly clientStateFeed: ClientStateFeedService,
   ) {}
@@ -47,17 +47,14 @@ export class SendLocalFriendInviteCommandHandler
     this.unregister?.();
   }
 
-  async execute(command: DomainCommand): Promise<void> {
-    const actorUserId = command.actorUserId;
-    const { targetUserId, note } = readPayload(command);
+  async execute(task: DurableTask): Promise<void> {
+    const actorUserId = task.actorUserId;
+    const { targetUserId, note } = readPayload(task);
     if (actorUserId === null) {
-      throw new Error('local friend command has no actor');
+      throw new Error('local relationship request task has no actor');
     }
     if (actorUserId === targetUserId) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_SELF,
-        'can not invite yourself',
-      );
+      throw new Error('can not request a relationship with yourself');
     }
 
     await this.assertUsersRemainEligible(actorUserId, targetUserId);
@@ -66,16 +63,14 @@ export class SendLocalFriendInviteCommandHandler
     }
 
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.inviteService.createFriendInvite(
+    await this.relationships.createRelationshipRequest(
       actorUserId,
       targetUserId,
       note,
-      true,
-      undefined,
       async (tx, created) => {
         if (created) await this.userQuota.tick(actorUserId, 'requests', tx);
         clientFeedUpdates.push(
-          ...(await this.inviteService.writeLocalFriendIntentInTx(
+          ...(await this.relationships.writeLocalP2PIntentInTx(
             tx,
             actorUserId,
             targetUserId,
@@ -87,12 +82,12 @@ export class SendLocalFriendInviteCommandHandler
     );
 
     // SSE is a post-commit convergence hint. A notification failure must not change the durable
-    // command outcome after the relationship transaction has committed.
+    // task outcome after the relationship transaction has committed.
     try {
       this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     } catch (error) {
       this.logger.warn(
-        'local friend command state-feed notification failed',
+        'local relationship request task state-feed notification failed',
         error,
       );
     }
@@ -114,7 +109,7 @@ export class SendLocalFriendInviteCommandHandler
         and(
           inArray(user.id, [actorUserId, targetUserId]),
           eq(user.domain, 'local'),
-          eq(user.sourceDomain, 'local'),
+          eq(user.namespaceId, 0),
         ),
       );
     const actor = identities.find(({ id }) => id === actorUserId);
@@ -122,7 +117,7 @@ export class SendLocalFriendInviteCommandHandler
     if (!actor || actor.availability !== 'AVAILABLE' || actor.disabledAt) {
       throw new BusinessException(
         BusinessCode.UNAUTHENTICATED,
-        'command actor is no longer available',
+        'task actor is no longer available',
       );
     }
     if (!target || target.availability !== 'AVAILABLE' || target.disabledAt) {
@@ -134,19 +129,21 @@ export class SendLocalFriendInviteCommandHandler
   }
 }
 
-function readPayload(command: DomainCommand): {
+function readPayload(task: DurableTask): {
   targetUserId: number;
   note: string;
 } {
-  if (command.aggregateType !== 'USER_PAIR') {
-    throw new Error('local friend command has the wrong aggregate type');
+  if (task.scopeType !== 'USER_PAIR') {
+    throw new Error('local relationship request task has the wrong scope type');
   }
-  const { targetUserId, note } = command.payload;
+  const { targetUserId, note } = task.payload;
   if (!Number.isSafeInteger(targetUserId) || (targetUserId as number) <= 0) {
-    throw new Error('local friend command has an invalid target user ID');
+    throw new Error(
+      'local relationship request task has an invalid target user ID',
+    );
   }
   if (typeof note !== 'string' || note.length > 255) {
-    throw new Error('local friend command has an invalid note');
+    throw new Error('local relationship request task has an invalid note');
   }
   return { targetUserId: targetUserId as number, note };
 }

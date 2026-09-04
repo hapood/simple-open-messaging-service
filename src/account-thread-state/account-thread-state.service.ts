@@ -403,7 +403,7 @@ export class AccountThreadStateService {
         `);
       await tx.execute(sql`
         UPDATE "RelationshipPair"
-        SET active = false, revision = revision + 1, "updatedAt" = CURRENT_TIMESTAMP
+        SET active = false, "updatedAt" = CURRENT_TIMESTAMP
         WHERE id = ${pairId} AND active = true
       `);
       if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {

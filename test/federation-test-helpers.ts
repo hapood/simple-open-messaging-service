@@ -5,13 +5,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import {
   account as accountTable,
   admin,
   relationshipPair,
   mediaAsset,
+  profileVersion,
   sessionToken,
   user,
 } from '../src/database/schema.js';
@@ -125,8 +126,8 @@ export async function registerAndLogin(
       .values({
         account,
         domain: 'local',
-        sourceDomain: 'local',
         name,
+        defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
@@ -134,6 +135,13 @@ export async function registerAndLogin(
       id: created.id,
       hashPwd: null,
       mustChangePassword: false,
+    });
+    await tx.insert(profileVersion).values({
+      userId: created.id,
+      profileRev: 1,
+      displayName: name,
+      avatar: '',
+      bio: '',
     });
     return created;
   });
@@ -203,7 +211,7 @@ export async function establishFederatedFriendship(params: {
       `federated card lookup failed: ${JSON.stringify(card.data)}`,
     );
   const sent = await request(params.local.baseUrl)
-    .post('/api/v1/invite/federated-friend')
+    .post('/api/v1/relationship/request')
     .set('Authorization', `Bearer ${params.localToken}`)
     .send({
       account: params.remoteAccount,
@@ -217,31 +225,32 @@ export async function establishFederatedFriendship(params: {
   let incomingFound = false;
   const requestDeadline = Date.now() + 30_000;
   while (Date.now() < requestDeadline) {
-    const incoming = await request(params.remote.baseUrl)
-      .post('/api/v1/invite/incoming')
-      .set('Authorization', `Bearer ${params.remoteToken}`)
-      .send({});
-    const matching = (
-      incoming.body.data as
-        | Array<{
-            id: string | number;
-            fromUser?: { account?: string; domain?: string };
-            toUser?: { account?: string };
-          }>
-        | undefined
-    )?.find(
-      (row) =>
-        row.fromUser?.account === params.localAccount &&
-        row.fromUser?.domain === params.localDomain &&
-        row.toUser?.account === params.remoteAccount,
-    );
-    incomingFound = matching !== undefined;
+    const incoming = await params.remote.database.execute(sql`
+      SELECT 1
+      FROM "RelationshipPair" pair
+      JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+      WHERE pair.kind = 'P2P'
+        AND intent.status = 'REQUESTED'
+        AND intent."expiresAt" > CURRENT_TIMESTAMP
+        AND ((intent."authorSide" = 'A'
+          AND pair."endpointAAccount" = ${params.localAccount}
+          AND pair."endpointADomain" = ${params.localDomain}
+          AND pair."endpointBAccount" = ${params.remoteAccount}
+          AND pair."endpointBDomain" = 'local')
+        OR (intent."authorSide" = 'B'
+          AND pair."endpointBAccount" = ${params.localAccount}
+          AND pair."endpointBDomain" = ${params.localDomain}
+          AND pair."endpointAAccount" = ${params.remoteAccount}
+          AND pair."endpointADomain" = 'local'))
+      LIMIT 1
+    `);
+    incomingFound = incoming.rows.length > 0;
     if (incomingFound) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (!incomingFound) throw new Error('federated request did not reach remote');
   const accepted = await request(params.remote.baseUrl)
-    .post('/api/v1/invite/accept')
+    .post('/api/v1/relationship/accept')
     .set('Authorization', `Bearer ${params.remoteToken}`)
     .send({ account: params.localAccount, domain: params.localDomain });
   if (accepted.body.code !== 0)
@@ -274,10 +283,10 @@ export async function establishFederatedFriendship(params: {
         first: { account: string; domain: string },
         second: { account: string; domain: string },
       ) =>
-        [first, second].sort((left, right) =>
-          `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
-            `USER\u0000${right.domain}\u0000${right.account}`,
-          ),
+        [first, second].sort(
+          (left, right) =>
+            left.domain.localeCompare(right.domain) ||
+            left.account.localeCompare(right.account),
         );
       const [localA, localB] = canonicalUserPair(
         { account: params.localAccount, domain: 'local' },
@@ -334,29 +343,76 @@ export async function getAdminCookie(
   account = 'admin',
 ): Promise<string> {
   const passwordHash = await new PasswordHasher().hash('Pass1234');
-  const u = await app.database.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(user)
+  await app.database.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ id: user.id })
+      .from(user)
+      .where(
+        and(
+          eq(user.account, account),
+          eq(user.domain, 'local'),
+          eq(user.namespaceId, 0),
+        ),
+      )
+      .limit(1);
+    const created =
+      existing ??
+      (
+        await tx
+          .insert(user)
+          .values({
+            account,
+            domain: 'local',
+            namespaceId: 0,
+            name: account,
+            defaultProfileRev: 1,
+            updatedAt: new Date(),
+          })
+          .returning({ id: user.id })
+      )[0];
+    await tx
+      .update(user)
+      .set({ name: account, defaultProfileRev: 1, updatedAt: new Date() })
+      .where(eq(user.id, created.id));
+    await tx
+      .insert(accountTable)
       .values({
-        account,
-        domain: 'local',
-        sourceDomain: 'local',
-        name: account,
+        id: created.id,
+        hashPwd: passwordHash,
+        mustChangePassword: false,
+      })
+      .onConflictDoUpdate({
+        target: accountTable.id,
+        set: {
+          hashPwd: passwordHash,
+          mustChangePassword: false,
+          disabledAt: null,
+          updatedAt: new Date(),
+        },
+      });
+    await tx
+      .insert(profileVersion)
+      .values({
+        userId: created.id,
+        profileRev: 1,
+        displayName: account,
+        avatar: '',
+        bio: '',
+      })
+      .onConflictDoNothing();
+    await tx
+      .insert(admin)
+      .values({
+        userId: created.id,
+        role: 'SUPER_ADMIN',
+        enabled: true,
         updatedAt: new Date(),
       })
-      .returning({ id: user.id });
-    await tx.insert(accountTable).values({
-      id: created.id,
-      hashPwd: passwordHash,
-      mustChangePassword: false,
-    });
+      .onConflictDoUpdate({
+        target: admin.userId,
+        set: { role: 'SUPER_ADMIN', enabled: true, updatedAt: new Date() },
+      });
     return created;
-  });
-  await app.database.insert(admin).values({
-    userId: u.id,
-    role: 'SUPER_ADMIN',
-    enabled: true,
-    updatedAt: new Date(),
   });
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')
