@@ -16,7 +16,7 @@ that publisher coordinate.
 
 ## 2. Durable state
 
-`FederationThreadSyncState` is keyed by `threadId` and stores:
+`FederationThreadSyncState` is keyed by `(threadId, namespaceId)` and stores:
 
 - the authorization epoch captured from MessageThread;
 - monotonic message and deletion targets discovered through State Feed;
@@ -24,13 +24,14 @@ that publisher coordinate.
 - the active recoverable history-gap id;
 - whether no recoverable reverse gap remains.
 
-The source identity is not repeated in the synchronization row. Its namespace
-is owned by `MessageThread.authorityNamespaceId`: local-only threads use
-namespace `0`, while a federated P2P thread and a mirrored group thread bind
-their remote authority namespace when the thread is created.
+The source namespace is explicit. A mirrored group pulls its authority's
+coordinate space, but a locally authoritative group receives independent
+submissions from multiple peers. Its local authority namespace (`0`) must not
+be used to identify those incoming streams. State Feed cursors and in-memory
+queue keys do not substitute for source-scoped durable message progress.
 
 `FederationThreadHistoryGap` stores an inclusive pending publisher interval
-`[startSeq, endSeq]` and its fixed non-negative `messageSeqOffset`. The
+`[startSeq, endSeq]` for `(threadId, namespaceId)` and its fixed non-negative `messageSeqOffset`. The
 boundaries are coordinates, not foreign keys to Message rows. A request for the
 active interval uses:
 
@@ -217,9 +218,12 @@ scheduler selects the next recoverable gap, if any.
 
 ## 6. STUB materialization
 
-An inbound media or unresolved-quote STUB owns its final Message identity and
+An inbound media STUB owns its final Message identity and
 sequence. PendingMedia references that Message and FileSyncProgress tracks its
 downloads. These rows do not belong to scheduler progress calculations.
+
+An unresolved text quote is not a STUB dependency. Its message is accepted with
+the scoped reference intact; target availability is resolved when reading.
 
 After every required file succeeds, an independent transaction:
 
@@ -253,7 +257,8 @@ namespace captured by the wake that started the round; it does not rediscover
 identity context between pages. PendingMedia never suppresses or creates
 scheduler work.
 
-On restart the scheduler reads every `FederationThreadSyncState`, revalidates
+On restart the scheduler reads every `FederationThreadSyncState`, resolves its
+explicit source namespace (not the thread authority namespace), revalidates
 that its relationship still provides an active source, enqueues unfinished
 forward and reverse work, drains every trusted peer's State Feed, and schedules
 a coalesced lightweight state push. Transport connection and request limits

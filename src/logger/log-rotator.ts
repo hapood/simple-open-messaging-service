@@ -28,8 +28,8 @@ import { dataDirectory } from '../common/data-directory.js';
  * Durability note: SonicBoom exposed a synchronous `flushSync` we once called on `process('exit')`; rfs is
  * a normal async Writable with no sync flush, so on a hard exit a sub-second of buffered lines may not
  * reach this file. That is an acceptable trade — the multistream also writes stdout, which Docker captures
- * (the durable record), and adopting rfs removes a large surface of bespoke rotation logic. The app does
- * not call `enableShutdownHooks`, so graceful drain hooks would not help on SIGTERM anyway.
+ * (the durable record), and adopting rfs removes a large surface of bespoke rotation logic.
+ * Signal-driven graceful shutdown cannot protect buffered output from a forced SIGKILL.
  */
 
 // Conventional fixed location (NOT operator-facing config): <cwd>/data/logs. In the Docker image

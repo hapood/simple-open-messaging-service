@@ -207,6 +207,15 @@ export class LabUserActor {
     );
   }
 
+  async forwardBundle(bundleId) {
+    const response = await get(
+      this.node,
+      `/forward-bundles/${encodeURIComponent(bundleId)}`,
+      { userToken: this.token },
+    );
+    return readEnvelope(response, `read forward bundle ${bundleId}`);
+  }
+
   async queryStateFeed({ mode = 'full', after = 0, take = 200, through }) {
     const query = new URLSearchParams({
       mode,
@@ -357,10 +366,12 @@ export class LabUserActor {
 }
 
 export class LabAdminActor {
-  constructor({ node, account, cookie }) {
+  constructor({ node, account, password, cookie }) {
     this.node = node;
     this.account = account;
+    this.password = password;
     this.cookie = cookie;
+    this.loginInFlight = null;
   }
 
   static async login({ node, password, account = 'admin' }) {
@@ -371,17 +382,42 @@ export class LabAdminActor {
     return new LabAdminActor({
       node,
       account,
+      password,
       cookie: adminCookie(response),
     });
   }
 
   async post(path, body = {}, operation = `admin ${path}`) {
-    const result = await post(this.node, path, {
-      body,
-      adminCookie: this.cookie,
-      operation: `${this.node.domain}: ${operation}`,
-    });
-    return result.data;
+    const request = () =>
+      post(this.node, path, {
+        body,
+        adminCookie: this.cookie,
+        operation: `${this.node.domain}: ${operation}`,
+      });
+    try {
+      return (await request()).data;
+    } catch (error) {
+      if (!(error instanceof LabApiError) || error.details?.status !== 401)
+        throw error;
+      await this.renewSession();
+      return (await request()).data;
+    }
+  }
+
+  async renewSession() {
+    if (!this.loginInFlight) {
+      this.loginInFlight = post(this.node, '/admin/login', {
+        body: { account: this.account, password: this.password },
+        operation: `${this.node.domain}: renew admin session`,
+      })
+        .then(({ response }) => {
+          this.cookie = adminCookie(response);
+        })
+        .finally(() => {
+          this.loginInFlight = null;
+        });
+    }
+    await this.loginInFlight;
   }
 
   async createAndLoginUser({ account, name }) {

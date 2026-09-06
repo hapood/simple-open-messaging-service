@@ -189,7 +189,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     await database.db
       .update(message)
-      .set({ creatorDomain: peerDomain, creatorNamespaceId: namespaceId })
+      .set({ creatorDomain: peerDomain })
       .where(and(eq(message.threadId, thread.id), eq(message.seq, 1)));
     const filtered = await service.query(
       peerDomain,

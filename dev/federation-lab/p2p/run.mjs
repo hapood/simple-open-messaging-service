@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { randomInt } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FederationLabActors } from './api-actors.mjs';
@@ -25,6 +25,8 @@ import {
   waitForFederationConvergence,
 } from './final-audit.mjs';
 import { resolveWorkloadProfiles } from './profile-resolution.mjs';
+import { summarizeCoverage } from './coverage.mjs';
+import { assertVerificationMode } from './verification-mode.mjs';
 
 const p2pDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(p2pDir, '..', 'runtime', 'p2p-runs');
@@ -72,6 +74,7 @@ function assertKnownOptions() {
     '--convergence-timeout-ms=',
     '--convergence-interval-ms=',
     '--convergence-samples=',
+    '--verify-mode=',
   ];
   const unknown = process.argv
     .slice(2)
@@ -138,7 +141,7 @@ function shadowOtp(configuration) {
 async function writeJson(runDir, filename, value) {
   await mkdir(runDir, { recursive: true });
   await writeFile(
-    join(runDir, filename),
+    join(runDir, `${filename}.tmp`),
     `${JSON.stringify(
       value,
       (_key, item) =>
@@ -151,6 +154,7 @@ async function writeJson(runDir, filename, value) {
     )}\n`,
     { mode: 0o600 },
   );
+  await rename(join(runDir, `${filename}.tmp`), join(runDir, filename));
 }
 
 function publicUserQuotaDefaults(value) {
@@ -232,9 +236,12 @@ async function main() {
   );
   const maximumPairs = (plan.length * (plan.length - 1)) / 2;
   const operationCount = integerOption('operations', 600, 1, 100_000);
+  const verifyMode = assertVerificationMode(
+    stringOption('verify-mode', 'round'),
+  );
   const roundSize = integerOption(
     'round-size',
-    Math.min(6, maximumPairs),
+    Math.min(10, maximumPairs),
     1,
     maximumPairs,
   );
@@ -265,6 +272,23 @@ async function main() {
     groups: [],
     operations: [],
   };
+  const journalVersions = new Map();
+  const persistOperationLog = async (value) => {
+    for (const operation of value.operations) {
+      const serialized = JSON.stringify(operation);
+      if (journalVersions.get(operation.id) === serialized) continue;
+      await appendFile(
+        join(runDir, 'operations.jsonl'),
+        `${JSON.stringify({
+          recordedAt: new Date().toISOString(),
+          operation,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      journalVersions.set(operation.id, serialized);
+    }
+    await writeJson(runDir, 'operations.json', value);
+  };
   const report = {
     schemaVersion: 1,
     phase: 'PROVISION_USERS_AND_GROUPS',
@@ -287,6 +311,7 @@ async function main() {
       prefix,
       seed,
       operationCount,
+      verifyMode,
       roundSize,
       taskTimeoutMs,
       progressEvery,
@@ -441,6 +466,7 @@ async function main() {
     schemaVersion: 1,
     phase: 'EXECUTE_OPERATIONS',
     runId,
+    verifyMode,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     finishedAt: null,
@@ -518,18 +544,30 @@ async function main() {
       actors,
       connections: workloadConnections,
       operationCount,
+      verifyMode,
       roundSize,
       concurrency,
       timeoutMs: taskTimeoutMs,
       progressEvery,
       operationsPerSecond,
-      onLog: (value) => writeJson(runDir, 'operations.json', value),
+      onLog: persistOperationLog,
     });
     execution.operationCount = operationLog.operations.length;
     execution.status = 'SUCCEEDED';
   } catch (error) {
     execution.status = 'FAILED';
     execution.error = error instanceof Error ? error.message : String(error);
+    await persistOperationLog(operationLog);
+    execution.operationCount = operationLog.operations.length;
+    if (error?.snapshot || error?.comparison) {
+      await writeJson(runDir, 'execution-failure.json', {
+        snapshot: error.snapshot,
+        comparison: error.comparison,
+        operationIds: operationLog.operations
+          .slice(-roundSize)
+          .map(({ id }) => id),
+      });
+    }
     throw error;
   } finally {
     if (workloadConnections) await closeP2pAuditDatabases(workloadConnections);
@@ -548,12 +586,13 @@ async function main() {
     }
     execution.finishedAt = new Date().toISOString();
     await writeJson(runDir, 'execution.json', execution);
+    await writeJson(runDir, 'coverage.json', summarizeCoverage(operationLog));
     console.log(`[p2p] execution report ${join(runDir, 'execution.json')}`);
   }
   if (execution.status !== 'SUCCEEDED') process.exitCode = 1;
   else
     console.log(
-      `[p2p] all ${execution.operationCount} online random operations SUCCEEDED`,
+      `[p2p] ${execution.operationCount} logical operations completed with expected outcomes`,
     );
 
   if (execution.status !== 'SUCCEEDED') return;
@@ -562,6 +601,7 @@ async function main() {
     schemaVersion: 1,
     phase: 'AUDIT_FINAL_FEDERATION_STATE',
     runId,
+    verifyMode,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     finishedAt: null,
@@ -583,6 +623,8 @@ async function main() {
       actors,
       groups: profileSnapshot.groups,
       profiles: profileSnapshot.profiles,
+      p2p: profileSnapshot.p2p,
+      p2pMessages: profileSnapshot.p2pMessages,
       log: operationLog,
       timeoutMs: taskTimeoutMs,
     });

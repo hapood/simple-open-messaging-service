@@ -29,3 +29,11 @@ export class FederationMessageContextError extends Error {
     this.name = 'FederationMessageContextError';
   }
 }
+
+/** Local membership no longer permits work queued while the source was active. */
+export class FederationThreadSourceInactiveError extends FederationMessageContextError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FederationThreadSourceInactiveError';
+  }
+}

@@ -18,12 +18,15 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
     kind === 'GROUP'
       ? {
           kind: 'GROUP',
+          localGroupAuthority: false,
+          namespaceId: 12,
           threadId: 31,
           peerDomain: 'origin.test',
           selector: { account: '!group' },
         }
       : {
           kind: 'P2P',
+          namespaceId: 12,
           threadId: 31,
           peerDomain: 'peer.test',
           selector: { account: 'bob', peerAccount: 'alice' },
@@ -56,6 +59,31 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
 }
 
 describe('FederationThreadReverseRoundExecutorService', () => {
+  it('requests only mirror-owned authors during an authoritative reverse scan', async () => {
+    const { source } = harness();
+    if (source.kind !== 'GROUP') throw new Error('expected group fixture');
+    source.localGroupAuthority = true;
+    const fetch = vi
+      .fn()
+      .mockResolvedValue({
+        data: { messages: [], scannedThrough: 40, hasMore: false },
+      });
+    const executor = Object.create(
+      FederationThreadReverseRoundExecutorService.prototype,
+    );
+    Object.assign(executor, { threadResources: { fetch } });
+    await executor.fetchMessages(source, {
+      before: 100,
+      through: 40,
+      take: 20,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      31,
+      '/s2s/v1/messages?account=%21group&before=100&through=40&take=20&includeSelf=false',
+      'origin.test',
+      16 * 1024 * 1024,
+    );
+  });
   it('executes one group gap without changing wire boundaries', async () => {
     const { executor, fetchMessages, commit, source, batch } = harness();
 

@@ -252,10 +252,12 @@ export const federationThreadSyncStateRelations = relations(
     activeGap: one(federationThreadHistoryGap, {
       fields: [
         federationThreadSyncState.threadId,
+        federationThreadSyncState.namespaceId,
         federationThreadSyncState.activeGapId,
       ],
       references: [
         federationThreadHistoryGap.threadId,
+        federationThreadHistoryGap.namespaceId,
         federationThreadHistoryGap.id,
       ],
     }),

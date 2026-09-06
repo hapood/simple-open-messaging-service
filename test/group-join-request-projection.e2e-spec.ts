@@ -272,9 +272,14 @@ describe('group join request projection', () => {
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, userIds: [member.id] });
+      .send({
+        groupId: threadId,
+        users: [{ account: member.account, domain: 'local' }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    expect(invited.body.data.invited).toEqual([member.id]);
+    expect(invited.body.data.invited).toEqual([
+      { account: member.account, domain: 'local' },
+    ]);
     await waitForAcceptedDurableTasks(
       app.get(DatabaseService).db,
       invited.body,
@@ -377,7 +382,10 @@ describe('group join request projection', () => {
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, userIds: [member.id] });
+      .send({
+        groupId: threadId,
+        users: [{ account: member.account, domain: 'local' }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(
       app.get(DatabaseService).db,

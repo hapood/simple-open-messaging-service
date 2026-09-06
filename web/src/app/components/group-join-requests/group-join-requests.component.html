@@ -173,7 +173,7 @@
           <p class="state">{{ 'common.loading' | transloco }}</p>
         } @else if (candidates().length > 0) {
           <div class="candidate-list">
-            @for (candidate of candidates(); track candidate.userId) {
+            @for (candidate of candidates(); track candidateKey(candidate)) {
               <article class="candidate-row">
                 <app-user-avatar
                   class="avatar"
@@ -203,7 +203,7 @@
                   type="button"
                   [disabled]="
                     candidate.state !== 'AVAILABLE' ||
-                    inviting().has(candidate.userId)
+                    inviting().has(candidateKey(candidate))
                   "
                   (click)="invite(candidate)"
                 >

@@ -40,7 +40,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 function createStore(tasks: DurableTask[]) {
   const findCheckpointedProcessing = vi.fn(
-    async (taskTypes: readonly string[], limit: number) =>
+    async (taskTypes: readonly string[], limit?: number) =>
       tasks
         .filter(
           ({ status, taskType: candidateType }) =>
@@ -59,7 +59,11 @@ function createStore(tasks: DurableTask[]) {
     return task;
   });
   const markSucceeded = vi.fn(async (id: bigint) => {
-    tasks.find((task) => task.id === id)!.status = 'SUCCEEDED';
+    const task = tasks.find((task) => task.id === id);
+    if (!task || task.status !== 'PROCESSING') {
+      throw new Error('processing task could not be finalized');
+    }
+    task.status = 'SUCCEEDED';
   });
   const markAsyncProcessing = vi.fn(async (id: bigint) => {
     const task = tasks.find((candidate) => candidate.id === id);
@@ -111,6 +115,63 @@ afterEach(() => {
 });
 
 describe('DurableTaskSchedulerService', () => {
+  it('captures recovery once and drains it across concurrency-limited batches', async () => {
+    process.env.DURABLE_TASK_MAX_CONCURRENCY = '1';
+    const tasks = [1n, 2n, 3n].map((id) => ({
+      ...makeTask(id),
+      taskType: 'FAN_OUT_GROUP_META_HEAD',
+      status: 'PROCESSING' as const,
+    }));
+    const harness = createStore(tasks);
+    const gates = tasks.map(() => deferred());
+    const dispatcher = new DurableTaskDispatcherService();
+    const execute = vi.fn(
+      (task: DurableTask) => gates[Number(task.id) - 1].promise,
+    );
+    dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
+    const scheduler = new DurableTaskSchedulerService(
+      harness.store,
+      dispatcher,
+      createAsyncScheduler(harness.store),
+    );
+    await scheduler.wake();
+    expect(execute).toHaveBeenCalledTimes(1);
+    for (let index = 0; index < tasks.length; index += 1) {
+      gates[index].resolve();
+      await vi.waitFor(() =>
+        expect(harness.markSucceeded).toHaveBeenCalledTimes(index + 1),
+      );
+      await scheduler.wake();
+      expect(execute).toHaveBeenCalledTimes(Math.min(index + 2, tasks.length));
+    }
+    expect(harness.store.findCheckpointedProcessing).toHaveBeenCalledOnce();
+    await scheduler.onApplicationShutdown();
+  });
+
+  it('does not scan locally executing tasks for recovery during polling', async () => {
+    const task = { ...makeTask(1n), taskType: 'FAN_OUT_GROUP_META_HEAD' };
+    const harness = createStore([task]);
+    const gate = deferred();
+    const dispatcher = new DurableTaskDispatcherService();
+    const execute = vi.fn(() => gate.promise);
+    dispatcher.register({ taskType: task.taskType, execute });
+    const scheduler = new DurableTaskSchedulerService(
+      harness.store,
+      dispatcher,
+      createAsyncScheduler(harness.store),
+    );
+    await scheduler.wake();
+    await scheduler.wake();
+    gate.resolve();
+    await vi.waitFor(() =>
+      expect(harness.markSucceeded).toHaveBeenCalledOnce(),
+    );
+    await scheduler.wake();
+    expect(harness.store.findCheckpointedProcessing).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    await scheduler.onApplicationShutdown();
+  });
+
   it('waits for an active execution and its terminal write during shutdown', async () => {
     const task = makeTask(1n);
     const harness = createStore([task]);
@@ -128,7 +189,10 @@ describe('DurableTaskSchedulerService', () => {
     await scheduler.wake();
 
     let stopped = false;
-    const shutdown = scheduler.onApplicationShutdown().then(() => {
+    const stop = scheduler.stop();
+    expect(scheduler.stop()).toBe(stop);
+    expect(scheduler.onApplicationShutdown()).toBe(stop);
+    const shutdown = stop.then(() => {
       stopped = true;
     });
     await Promise.resolve();

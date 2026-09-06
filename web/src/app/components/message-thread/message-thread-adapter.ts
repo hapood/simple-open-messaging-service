@@ -26,6 +26,7 @@ import type {
 } from '../../services/message.service';
 
 export interface MessageThreadLiveCallbacks {
+  onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   onNewerAvailable: (seq: number) => void;
   onMediaStatus: (seq: number, status: MediaStatus) => void;
   onProfile: (

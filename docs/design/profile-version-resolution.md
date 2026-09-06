@@ -134,7 +134,14 @@ paths:
 - message resolution: `(publisherDomain, normalizedThread, messageSeq)`; the
   remote response must match the revision carried by that message.
 
-The coordinator first checks durable local profile versions. A miss joins an
+For a native author, message and group-member selectors read the exact referenced
+revision from the native user in namespace zero, even when the reference arrived
+through a foreign authoritative group. Both `local` and the server's canonical
+domain identify that native author. A missing native revision returns `NOT_FOUND`;
+it never falls back to S2S, a foreign source-scoped self copy, or the latest revision.
+Thread and roster authorization still applies before resolving the profile.
+
+For foreign authors, the coordinator first checks durable profile versions. A miss joins an
 in-flight registry; equal immutable snapshot
 keys share one job and one backend-generated `requestId`. Message coordinates
 are candidate authorization proofs for the shared snapshot job rather than

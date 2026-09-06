@@ -66,10 +66,11 @@ export class DurableTaskStoreService {
 
   async findCheckpointedProcessing(
     taskTypes: readonly string[],
-    limit: number,
+    limit?: number,
   ): Promise<DurableTask[]> {
-    if (taskTypes.length === 0 || limit <= 0) return [];
-    return this.database.db
+    if (taskTypes.length === 0 || (limit !== undefined && limit <= 0))
+      return [];
+    const query = this.database.db
       .select()
       .from(durableTask)
       .where(
@@ -78,8 +79,8 @@ export class DurableTaskStoreService {
           inArray(durableTask.taskType, [...taskTypes]),
         ),
       )
-      .orderBy(asc(durableTask.id))
-      .limit(limit);
+      .orderBy(asc(durableTask.id));
+    return limit === undefined ? query : query.limit(limit);
   }
 
   async findAsyncProcessing(

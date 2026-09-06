@@ -1,6 +1,7 @@
 export type FederationReverseThreadSource =
   | {
       kind: 'GROUP';
+      localGroupAuthority: boolean;
       threadId: number;
       peerDomain: string;
       namespaceId: number;

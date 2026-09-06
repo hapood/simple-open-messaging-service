@@ -691,6 +691,7 @@ function makeStubs() {
     mediaRangeClient,
     {} as never,
     sse as never,
+    { signalMessage: vi.fn().mockResolvedValue(undefined) } as never,
   );
   const users = new FederationUserDirectoryService(database as never);
   const participantService = {};
@@ -853,13 +854,13 @@ describe('FederationService inbound call preflight', () => {
       payload: { callerAccount: 'alice', calleeAccount: 'bob' },
     };
 
-    await svc.handleCallFrame(frame, 'peer.example', 1_700_000_300);
+    await svc.handleCallFrame(frame, 'peer.example', 3, 1_700_000_300);
 
     expect(eventEmitter.emitAsync).toHaveBeenCalledExactlyOnceWith(
       'call.frame.incoming.preflight',
       {
         peerDomain: 'peer.example',
-        namespaceId: 1_700_000_300,
+        namespaceId: 3,
         frame: {
           callSid: frame.callId,
           callType: frame.mediaType,
@@ -1379,79 +1380,6 @@ describe('FederationThreadAccessService peer-bound response write gate', () => {
   });
 });
 
-describe('FederationService quote coordinates', () => {
-  it('maps a direct publisher targetSeq back to the receiver local seq', async () => {
-    const { inboundMessageStore } = makeStubs();
-    const legacy = {
-      user: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: 22, domain: 'peer.example' }]),
-      },
-      message: { findUnique: vi.fn().mockResolvedValue({ seq: 41 }) },
-    };
-    const tx = {
-      query: {
-        user: { findMany: legacy.user.findMany },
-        message: { findFirst: legacy.message.findUnique },
-      },
-    };
-    const resolveLocalQuoteSeq = (
-      inboundMessageStore as unknown as {
-        resolveLocalQuoteSeq: (
-          tx: unknown,
-          threadId: number,
-          sourceDomain: string,
-          namespaceId: number,
-          target: {
-            creator: { account: string; domain: string };
-            targetSeq: number;
-          },
-        ) => Promise<number>;
-      }
-    ).resolveLocalQuoteSeq.bind(inboundMessageStore);
-
-    await expect(
-      resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, {
-        creator: { account: 'alice', domain: 'peer.example' },
-        targetSeq: 7,
-      }),
-    ).resolves.toBe(41);
-    expect(legacy.message.findUnique).toHaveBeenCalled();
-  });
-
-  it('maps a peer receipt targetSeq back to the original local message', async () => {
-    const { inboundMessageStore } = makeStubs();
-    const messageFindFirst = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ id: 91n, seq: 12 });
-    const tx = {
-      query: {
-        message: { findFirst: messageFindFirst },
-        federationMessageReceipt: {
-          findFirst: vi.fn().mockResolvedValue({ messageId: 91n }),
-        },
-      },
-    };
-    const resolveLocalQuoteSeq = (
-      inboundMessageStore as unknown as {
-        resolveLocalQuoteSeq: (
-          tx: unknown,
-          threadId: number,
-          sourceDomain: string,
-          namespaceId: number,
-          target: { targetSeq: number },
-        ) => Promise<number>;
-      }
-    ).resolveLocalQuoteSeq.bind(inboundMessageStore);
-
-    await expect(
-      resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, { targetSeq: 44 }),
-    ).resolves.toBe(12);
-    expect(tx.query.federationMessageReceipt.findFirst).toHaveBeenCalled();
-  });
-});
 
 const localUser = (userId: number, account: string) => ({
   userId,

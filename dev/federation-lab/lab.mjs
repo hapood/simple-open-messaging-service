@@ -1,15 +1,10 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readlinkSync,
-  symlinkSync,
-} from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { stopLabChildren } from './shutdown.mjs';
 import {
   federationLabDatabaseUrl,
   federationLabNodes,
@@ -78,22 +73,6 @@ async function recreateDatabase(database) {
   } finally {
     await client.end();
   }
-}
-
-function ensureLink(target, path) {
-  try {
-    const stat = lstatSync(path);
-    if (
-      stat.isSymbolicLink() &&
-      resolve(dirname(path), readlinkSync(path)) === resolve(target)
-    ) {
-      return;
-    }
-    throw new Error(`${path} exists but is not a link to ${target}`);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
-  symlinkSync(target, path, 'dir');
 }
 
 async function waitForUrl(url, timeoutMs = 300_000) {
@@ -176,11 +155,21 @@ if (runBackend) {
     await run('npm', ['run', 'db:migrate'], {
       env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
     });
-    const cwd = join(runtimeDir, node.name);
-    mkdirSync(join(cwd, 'data'), { recursive: true });
-    ensureLink(join(root, 'package.json'), join(cwd, 'package.json'));
-    ensureLink(join(root, 'config'), join(cwd, 'config'));
-    ensureLink(join(root, 'shell-bundle'), join(cwd, 'shell-bundle'));
+    const nodeDir = join(runtimeDir, node.name);
+    mkdirSync(join(nodeDir, 'data'), { recursive: true });
+    // Backends run from the repository root and receive their mutable
+    // directory through SOMS_DATA_DIR. Earlier runs created per-node symlinks
+    // into the repository root instead; those encoded an environment-specific
+    // mount path (container vs host) and broke startup after switching, so
+    // retire any that are still around.
+    for (const name of ['package.json', 'config', 'shell-bundle']) {
+      const legacy = join(nodeDir, name);
+      try {
+        if (lstatSync(legacy).isSymbolicLink()) unlinkSync(legacy);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
   }
 }
 
@@ -196,6 +185,7 @@ function labEnvironment(node, peerRoutes) {
     SOMS_ALLOW_INSECURE_HTTP: '1',
     SOMS_DEV_FEDERATION_ROUTES: JSON.stringify(peerRoutes),
     DATABASE_URL: databaseUrl(node.database),
+    SOMS_DATA_DIR: join(runtimeDir, node.name, 'data'),
     LOG_DIR: join(runtimeDir, node.name, 'data', 'logs'),
     LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'warn',
   };
@@ -226,11 +216,22 @@ function stop(exitCode = 0) {
   if (stopping) return;
   stopping = true;
   process.exitCode = exitCode;
-  for (const child of children) child.kill('SIGTERM');
-  setTimeout(() => {
-    for (const child of children) child.kill('SIGKILL');
-    finish();
-  }, 1000);
+  console.log('[lab] stopping children gracefully (up to 60s)');
+  void stopLabChildren(children, {
+    onTimeout: (survivors) =>
+      console.warn(
+        `[lab] shutdown grace period expired; forcing ${survivors.length} remaining children to exit`,
+      ),
+  })
+    .then((graceful) => {
+      if (!graceful) process.exitCode = 1;
+      finish();
+    })
+    .catch((error) => {
+      console.error('[lab] shutdown failed', error);
+      process.exitCode = 1;
+      finish();
+    });
 }
 
 process.on('SIGINT', () => stop(0));
@@ -275,7 +276,7 @@ if (runBackend) {
     const peerRoutes = { ...routes };
     delete peerRoutes[node.domain];
     const child = spawn('node', [join(root, 'dist', 'src', 'main.js')], {
-      cwd: join(runtimeDir, node.name),
+      cwd: root,
       stdio: 'inherit',
       env: labEnvironment(node, peerRoutes),
     });

@@ -94,6 +94,7 @@ export class MessagePageLoadError extends Error {
 }
 
 export interface HttpItemSourceLiveOpts {
+  onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
   onNewerAvailable?: (seq: number) => void;
   /** A mediaStatus change landed for this thread through the shared availability service — the
@@ -115,6 +116,9 @@ export interface HttpItemSourceLiveOpts {
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
+  private readonly deletedQuoteSeqs = new Set<number>();
+  private readonly repliesByQuote = new Map<number, Set<number>>();
+  private deletedSub?: Subscription;
   private noOlder = false;
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
@@ -200,6 +204,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly memberProfiles?: MemberProfileRepository,
   ) {
     this.pending = outbox.forThread(conv.threadId);
+    this.deletedSub = repo.deletedLive$
+      .pipe(filter((event) => event.threadId === conv.threadId))
+      .subscribe(({ seqs }) => {
+        for (const seq of seqs) {
+          this.deletedQuoteSeqs.add(seq);
+          for (const replySeq of this.repliesByQuote.get(seq) ?? []) {
+            live.onQuoteDeleted?.(replySeq, seq);
+          }
+          for (const item of this.pending) {
+            if (item.data.quote?.seq !== seq) continue;
+            item.data.quote = { seq, unavailable: true };
+            live.onQuoteDeleted?.(item.id, seq);
+          }
+        }
+      });
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
     this.onNewerAvailable = live.onNewerAvailable ?? (() => {});
@@ -394,6 +413,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * pending UI, including after a pane remount. */
   getPending(): CbItem<ChatItemData>[] {
     return this.pending.filter((item) => {
+      if (
+        item.data.quote?.seq !== undefined &&
+        this.deletedQuoteSeqs.has(item.data.quote.seq)
+      ) {
+        item.data.quote = { seq: item.data.quote.seq, unavailable: true };
+      }
       if (item.data.type !== 'msg') return true;
       return !(
         item.data.contentType === 'IMAGE' ||
@@ -490,6 +515,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
+    this.deletedSub?.unsubscribe();
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
     this.mediaStatusSub?.unsubscribe();
@@ -531,7 +557,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
 
   private async rawToItems(msgs: Message[]): Promise<CbItem<ChatItemData>[]> {
+    const quoteSeqs = new Set<number>();
+    for (const message of msgs) {
+      if (message.contentType !== 'PURE_TEXT') continue;
+      const seq = requireTextMessageContent(message.content).quote?.seq;
+      if (seq === undefined) continue;
+      quoteSeqs.add(seq);
+      const replies = this.repliesByQuote.get(seq) ?? new Set<number>();
+      replies.add(message.seq);
+      this.repliesByQuote.set(seq, replies);
+    }
+    for (const item of this.pending) {
+      if (item.data.quote?.seq !== undefined)
+        quoteSeqs.add(item.data.quote.seq);
+    }
     await this.ensureProfiles(msgs);
+    if (quoteSeqs.size) {
+      for (const seq of await this.repo.getDeletedMessageSeqs(
+        this.conv.threadId,
+        [...quoteSeqs],
+      )) {
+        this.deletedQuoteSeqs.add(seq);
+      }
+    }
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = m.seq;
@@ -584,6 +632,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         id,
         data: this.toMsgData(m, images, file, callContent),
       };
+      if (
+        item.data.quote?.seq !== undefined &&
+        this.deletedQuoteSeqs.has(item.data.quote.seq)
+      ) {
+        item.data.quote = { seq: item.data.quote.seq, unavailable: true };
+      }
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
         // Single-trigger "lock" on the real side: the spinner→check→fade choreography plays on THIS real only when
@@ -742,6 +796,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return {
       type: 'msg',
       msgId: m.seq,
+      threadId: m.threadId,
       creator: creatorKey,
       isSelf: p.isSelf,
       isGroupConversation: this.conv.type === 'GROUP',
@@ -768,6 +823,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       quote: textContent?.quote
         ? {
             seq: textContent.quote.seq,
+            status: textContent.quote.status,
             ...(textContent.quote.author !== undefined
               ? { author: textContent.quote.author }
               : {}),

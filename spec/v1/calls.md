@@ -20,7 +20,7 @@ machine-readable validation resource and cannot override this text.
 
 Federation v1 provides:
 
-- ephemeral call state between a caller server and callee server;
+- a call lifecycle shared by the caller server and callee server;
 - transparent relay of endpoint-generated SDP, ICE, and protocol
   `video-state` payloads;
 - ringing, acceptance, connection, termination, and AUDIO-to-VIDEO upgrade
@@ -57,8 +57,8 @@ being inferred from SDP, ICE, or WebRTC transport state.
   server.
 - The **caller server** sends `incoming` and arbitrates the authoritative
   lifecycle result.
-- The **callee server** receives `incoming` and maintains the ephemeral peer
-  signaling state.
+- The **callee server** receives `incoming` and participates in the call
+  lifecycle and signaling exchange.
 - The **caller endpoint subsystem** is the local component or coordinated set
   of components that owns the caller-side `RTCPeerConnection` and produces or
   consumes caller-side WebRTC signaling and media.
@@ -116,8 +116,8 @@ restore transport-only degradation under the recognition rules.
 
 `halted` is a hard gate, not an availability cache. On entering it, a server
 MUST terminate every active call with that peer locally as `failed`, stop all
-non-terminal retries, and create the Section 10 tombstone. Later frames fail
-with the registered fatal reason before call-binding lookup. The policy,
+non-terminal retries, and apply the Section 10 terminal protection. Later frames
+fail with the registered fatal reason before call-binding lookup. The policy,
 identity, or version reason that caused the halt MUST be retained independently
 of the call lifecycle.
 
@@ -173,7 +173,6 @@ interface VideoState {
 interface CallFrameBase {
   callId: CanonicalUuid;
   operation: CallOperation;
-  mediaType: MediaType;
 }
 
 type CallSignalPayload =
@@ -196,6 +195,7 @@ type CallSignalPayload =
 type CallFrame =
   | (CallFrameBase & {
       operation: 'incoming';
+      mediaType: MediaType;
       payload: { callerAccount: UserAccount; calleeAccount: UserAccount };
     })
   | (CallFrameBase & {
@@ -206,17 +206,21 @@ type CallFrame =
       operation: 'connected';
       payload: { startedAt: EpochMilliseconds };
     })
-  | (CallFrameBase & { operation: 'video-upgraded'; mediaType: 'VIDEO' })
+  | (CallFrameBase & { operation: 'video-upgraded' })
   | (CallFrameBase & {
       operation: 'ended';
       payload: { endReason: CallEndReason };
     });
 ```
 
-`callId`, `operation`, and `mediaType` are required in every frame. Except for
-`video-upgraded`, `mediaType` MUST equal the receiver's current bound type.
-During upgrade negotiation it remains `AUDIO`; it becomes `VIDEO` only when
-`video-upgraded` is accepted. v1 does not permit downgrade to AUDIO.
+`callId` and `operation` are required in every frame. `mediaType` is required
+only on `incoming` and MUST be absent from every other operation, including
+`video-upgraded`. It declares the initial type bound to this call.
+
+The current business type changes only through the AUDIO-to-VIDEO transition in
+Section 9. Other frames refer to the existing call binding and neither assert
+nor change its current type. Receivers MUST NOT infer a business-type change
+from SDP, ICE, or `video-state`. v1 does not permit downgrade to AUDIO.
 
 `payload` is an operation-specific closed object. It is required only for
 `incoming`, `signal`, `connected`, and `ended`, and forbidden for every other
@@ -229,10 +233,24 @@ required by this profile.
 ## 5. Lifecycle state machine
 
 The caller server arbitrates terminal races and owns the authoritative result.
-The callee server maintains only the ephemeral protocol state needed to
-participate. The wire lifecycle has four stages: `ringing`, `accepted`,
-`connected`, and `terminal`. Internal pending states do not alter the observable
-rules below.
+The callee server participates in the lifecycle without publishing a competing
+authoritative result. The wire lifecycle has four stages: `ringing`, `accepted`,
+`connected`, and `terminal`. `none` denotes the absence of an active binding,
+not an additional active stage.
+
+A stage describes a server's committed protocol lifecycle for
+`(peer domain, callId)`. It is not endpoint UI state or
+`RTCPeerConnection.signalingState`, `iceConnectionState`, or `connectionState`.
+The two servers may temporarily observe different stages while a frame or its
+response is in flight. The receiver commits the transition before returning
+`200/code=0`; the sender regards that transition as federatively committed only
+after receiving that response, as specified in Section 6.
+
+Here, committing a transition means that subsequent frame handling follows its
+resulting protocol stage. A local acceptance or media-connection indication does
+not by itself confirm that the corresponding lifecycle frame was accepted by
+the peer. The term `pending` in the sequences below denotes that absence of
+confirmation, not an additional lifecycle stage.
 
 | Stage       | Entry                                                         | Meaning                                                                 |
 | ----------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -240,7 +258,7 @@ rules below.
 | `ringing`   | Accepted `incoming`                                           | Binding exists and awaits acceptance; endpoint alerting is not implied. |
 | `accepted`  | Accepted `accepted`                                           | The callee accepted; SDP/ICE negotiation may continue.                  |
 | `connected` | Accepted callee `connected(startedAt)`                        | The authoritative media connection was established.                     |
-| `terminal`  | First valid terminal frame or authoritative local termination | Irreversible; only the bounded tombstone remains.                       |
+| `terminal`  | First valid terminal frame or authoritative local termination | Irreversible; late-frame handling follows Section 10.                  |
 
 The `ringing` operation is an advisory acknowledgement that the callee
 endpoint actually began alerting the user. It does not change the `ringing`
@@ -248,13 +266,20 @@ stage.
 
 ```text
 none --incoming--> ringing --accepted--> accepted --connected--> connected
-ringing   --declined/missed/cancelled-----------------> terminal
+ringing   --declined/missed/cancelled/ended(failed)---> terminal
 accepted  --cancelled/ended(completed|timeout|failed)-> terminal
 connected --ended(completed|failed)-------------------> terminal
 
 connected/AUDIO --video-upgraded--> connected/VIDEO
 ringing(op), signal: no stage change
 ```
+
+The matrix describes the receiving server's first effective application of a
+valid frame. A successful no-op is a permitted duplicate or an event on an
+already traversed path. Other active-stage combinations are invalid; terminal
+handling follows Sections 7 and 10. The sender's local triggers and delivery
+prerequisites are specified in this section and Section 6; the matrix does not
+make both servers change stage simultaneously.
 
 | `operation`      | Direction        | First effective stage         | Result                     | Successful no-op                              |
 | ---------------- | ---------------- | ----------------------------- | -------------------------- | --------------------------------------------- |
@@ -266,7 +291,7 @@ ringing(op), signal: no stage change
 | `declined`       | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
 | `missed`         | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
 | `cancelled`      | caller → callee  | `ringing` or `accepted`       | Enter `terminal`           | Already terminal                              |
-| `ended`          | Either direction | `accepted` or `connected`     | Enter `terminal`           | Already terminal                              |
+| `ended`          | Either direction | Any active stage for `failed`; otherwise the end-reason table below | Enter `terminal` | Already terminal |
 | `signal`         | Section 8        | Section 8                     | Relay without stage change | Signal ID already processed                   |
 
 The callee server MUST send `ringing` only after its endpoint subsystem provides
@@ -300,14 +325,25 @@ federation timestamp.
 | `endReason` | Permitted stage           | Meaning                                                                       |
 | ----------- | ------------------------- | ----------------------------------------------------------------------------- |
 | `completed` | `accepted` or `connected` | Normal hang-up after acceptance, with or without a completed media connection |
-| `timeout`   | `accepted`                | Media did not connect within the local post-acceptance deadline               |
-| `failed`    | `accepted` or `connected` | Non-timeout technical failure or unrecoverable connected-media failure        |
+| `timeout`   | `accepted`                | The connection evidence defined for this server in Section 10 did not arrive before its post-acceptance deadline |
+| `failed`    | `ringing`, `accepted`, or `connected` | Non-timeout technical failure before or after acceptance or connection |
+
+Either server MAY originate `ended(failed)` for a technical failure in any
+active stage. A receiver with an active binding MUST allow this end reason in
+`ringing`, `accepted`, or `connected`, subject to the other frame validation
+rules. In particular, failure of an initial offer before user acceptance follows
+the failure-convergence rule in Section 8 without requiring an `accepted` event
+first. This transition does not assert user acceptance or media connection.
+
+This rule does not create a binding for an unknown call, bypass Section 6's
+delivery prerequisites, or change the permitted stages for `completed` and
+`timeout`. Terminal retries continue to follow Sections 7 and 10.
 
 ## 6. Commit, ordering, and races
 
 ### 6.1 Per-sender ordering
 
-A sender MUST serialize state-changing frames for the same
+A sender MUST send state-changing frames for the same
 `(peer domain, callId)` in creation order and await the previous HTTP response
 before sending a dependent state. On failure it retries the identical frame or
 terminates according to the caller action; it MUST NOT skip forward. A signal
@@ -320,32 +356,69 @@ acceptance is a successful historical no-op.
 
 The receiver MUST validate and commit a state transition before returning
 `200/code=0`. A sender regards it as federatively committed only after receiving
-that response. `CALL_CANCELLED` or `CALL_TERMINATED` terminates any dependent
-pending work. The callee MUST receive success for `signal(answer)` before
-sending a `connected` that depends on that answer. ICE remains independently
-deliverable and may arrive out of order.
+that response. On `CALL_CANCELLED` or `CALL_TERMINATED`, the sender MUST stop
+sending or retrying dependent non-terminal frames. The callee MUST receive
+success for `signal(answer)` before sending a `connected` that depends on that
+answer. ICE remains independently deliverable and may arrive out of order.
 
 ### 6.2 Normal sequence
 
+The following sequence illustrates the lifecycle and delivery prerequisites.
+Local arrows represent endpoint/server interactions, not prescribed local API
+operations or transports. Independent ICE and some HTTP responses are omitted.
+
 ```text
-caller server                         callee server
-     | incoming                            |
-     |------------------------------------>|
-     |<----------------------------- 200 --|
-     |<----------- ringing (advisory) -----|
-     | signal(offer)                       |
-     |------------------------------------>|
-     |<------------------------- accepted -|
-     |------------------------------- 200 >|
-     |<-------------------- signal(answer) |
-     |------------------------------- 200 >|
-     |<-------------- connected(startedAt) |
-     |------------------------------- 200 >|
+Caller endpoint    Caller server          Callee server     Callee endpoint
+      | initiate         |                     |                  |
+      |----------------->| [ringing]           |                  |
+      |                  | incoming            |                  |
+      |                  |-------------------->| [ringing]        |
+      |                  |<------- 200 --------|                  |
+      |                  |                     | alert request    |
+      |                  |                     |----------------->|
+      |                  |                     |<-- alerting -----|
+      |                  |<-- ringing ---------|                  |
+      |                  |    (advisory; may overlap acceptance)  |
+      | local offer      |                     |                  |
+      |----------------->| signal(offer)       |                  |
+      |                  |-------------------->|-- local offer -->|
+      |                  |                     |<-- acceptance ---|
+      |                  |                     | [accept pending] |
+      |                  |<----- accepted -----|                  |
+      |                  | [accepted]          |                  |
+      |                  |-------- 200 ------->| [accepted]       |
+      |                  |                     |<-- local answer -|
+      |                  |<-- signal(answer) --|                  |
+      |<-- local answer -|-------- 200 ------->|                  |
+      |                  |                     |<-- media up -----|
+      |                  |                     | [connect pending]|
+      |                  |<-- connected(t) ----|                  |
+      |                  | [connected]         |                  |
+      |                  |-------- 200 ------->| [connected]      |
+      |<-- connected(t) -|                     |                  |
 ```
 
-An initial offer may be sent after `incoming` succeeds and before acceptance.
-An answer is sent only after `accepted`. A `200` response acknowledges the
-frame itself; it is not an SDP answer.
+An initial offer MAY be sent after `incoming` succeeds and before acceptance.
+The callee server MUST establish the binding before returning success for
+`incoming`; the caller waits for that success before sending the offer. Thus
+an initial offer cannot precede its target binding through this sequence.
+
+The callee sends `signal(answer)` only after `accepted` succeeds, and sends a
+`connected` dependent on that answer only after `signal(answer)` succeeds.
+A local SDP answer is an endpoint/server interaction; `signal(answer)` is the
+S2S frame carrying that description. Neither is an HTTP response. Success for a
+signal acknowledges server-level acceptance, not endpoint application, as
+specified in Section 8.
+
+The pending annotations illustrate the interval before S2S success is observed.
+The receiver has already committed when it sends success. If that response is lost,
+the sender has not confirmed the commit and follows the retry and idempotency
+rules; it cannot infer that the receiver rejected or rolled back the frame.
+The diagram does not imply an atomic commit across both servers.
+
+The `ringing` advisory is outside these dependencies. It MAY arrive before or
+after `accepted`, or fail, without blocking acceptance. Local alert delivery and
+other independent work need not follow the illustrative scheduling above.
 
 ### 6.3 Acceptance/cancellation race
 
@@ -354,15 +427,49 @@ actual processing order, not by comparing wall clocks. If it committed
 cancellation first, late acceptance receives `CALL_CANCELLED`. If it committed
 acceptance first, the accepted state wins and a subsequent local hang-up uses
 `ended`. On the callee server, a valid caller `cancelled` terminates a call that
-is ringing, accepting, or accepted but not connected. No late event may revive
-a terminal call.
+is ringing or accepted, including while acceptance awaits confirmation, but
+not connected. Late-frame handling remains subject to Section 10.
+
+```text
+Callee server                         Caller server (authority)
+  accepted, awaiting confirmation ------->|
+                                         | still ringing: commit accepted
+                                         | cancelled: CALL_CANCELLED
+                                         | other terminal: CALL_TERMINATED
+
+Caller server                         Callee server
+  cancel before accepting accepted ----->|
+                                         | ringing / acceptance pending /
+                                         | accepted: enter terminal
+```
+
+Here `acceptance pending` denotes an unconfirmed local action, not another
+protocol stage. Endpoint acceptance alone does not override the caller's
+cancellation decision.
 
 ### 6.4 Bidirectional terminal events
 
 Both sides may send `ended` concurrently. The caller server's first committed
-terminal result is authoritative. The callee's ephemeral terminal record MUST
-NOT create a competing result. Both sides stop the call's media and active
+terminal result is authoritative. The callee MUST NOT publish a competing
+terminal result. Both sides stop the call's media and active
 semantics when entering `terminal`.
+
+### 6.5 Connection/timeout race
+
+Connection-deadline completion and confirmation of a lifecycle frame are
+different events. Section 10 defines the connection evidence for each server.
+The following cases use A for the caller server and B for the callee server.
+
+| Order | Result |
+| --- | --- |
+| B accepts its endpoint connection indication; A accepts `connected`; the success response to B is delayed or lost | B's connection deadline has already ceased. B follows bounded delivery retry rules and MUST NOT generate `ended(timeout)` merely because confirmation is missing. A handles a duplicate `connected` as a no-op. |
+| B accepts its endpoint connection indication; A commits its connection timeout before processing `connected` | A is terminal and returns `CALL_TERMINATED` to the late frame. B converges to terminal even though its endpoint connected locally. B's unconfirmed connection indication does not override A's result. |
+| A accepts `connected` before its connection timeout decision | A's connection deadline ceases. A MUST NOT subsequently originate `ended(timeout)` for that expired establishment timer. |
+| B commits its connection timeout before accepting an endpoint connection indication | B is terminal and MUST NOT originate a late `connected`. It sends `ended(timeout)` under the existing ordering rules; no endpoint event revives the call. |
+
+Each order is the relevant server's local processing order, not a comparison of
+`startedAt` values or clocks between servers. A late HTTP success MUST NOT
+revive a call that has already terminated locally.
 
 ## 7. Lifecycle idempotency
 
@@ -461,27 +568,64 @@ do not require one fixed side to remain the offerer.
 When the callee requests an upgrade, it first sends
 `video-state {"enabled":true}` and the caller creates the new offer. A caller
 request also results in a caller-generated offer. Offer, answer, and ICE frames
-remain `mediaType: "AUDIO"` during negotiation. Only after the caller endpoint
-successfully applies the corresponding answer does the caller server send:
+carry no business media type. The AUDIO-to-VIDEO business transition still
+requires `video-upgraded`; successful endpoint negotiation alone does not commit
+it. Only after the caller endpoint successfully applies the corresponding
+answer does the caller server send:
 
 ```json
 {
   "callId": "550e8400-e29b-41d4-a716-446655440000",
-  "operation": "video-upgraded",
-  "mediaType": "VIDEO"
+  "operation": "video-upgraded"
 }
 ```
 
 The callee does not send this frame or commit the upgrade merely after applying
-its local answer. Both sides change the current type only when this frame is
-accepted. Disabling a camera sends only `video-state` and does not downgrade
-the business type. ICE restart or renegotiation without new video media MUST
-NOT create `video-upgraded`.
+its local answer. The upgrade follows Section 6's confirmation rules:
 
-## 10. Tombstones, replay, and restart
+- The callee changes its current business type to VIDEO when it accepts
+  `video-upgraded`, before returning `200/code=0`.
+- The caller changes its current business type to VIDEO when it receives that
+  success response while the call is still active. Until then, the upgrade is
+  unconfirmed at the caller.
+- A missing response does not undo the callee's accepted upgrade. An identical
+  retry while active is a no-op under Section 7. A terminal response instead
+  ends the pending exchange under Sections 6 and 10.
+
+The caller's first terminal decision fixes the authoritative result using the
+business type it has confirmed at that point. If upgrade confirmation precedes
+termination, the final type is VIDEO; if termination precedes confirmation of
+an AUDIO call's upgrade, the final type remains AUDIO. A late success response
+MUST NOT revise that result. The callee's earlier observation of VIDEO does not
+authorize a competing terminal record. This is the protocol business type, not
+an assertion about every media track that may have been negotiated.
+
+Disabling a camera sends only `video-state` and does not downgrade the business
+type. ICE restart or renegotiation without new video media MUST NOT create
+`video-upgraded`.
+
+An independent signal may cross the upgrade frame or its HTTP response. Its
+arrival does not assert the sender's current business type, and the receiver
+validates it using the existing binding, direction, phase and signal-ID rules.
+An ICE signal created before the upgrade remains subject to endpoint WebRTC
+processing when delivered afterward; its age relative to the business upgrade
+is not itself a reason for server rejection. The same absence of a type snapshot
+prevents a crossing terminal frame from failing a media-type equality check.
+Neither rule relaxes terminal handling or signal validation.
+
+| Order | Required behavior |
+| --- | --- |
+| An ICE frame is sent during AUDIO; the upgrade is confirmed; that ICE then arrives | Validate and relay the bound signal under Section 8. Do not reject it merely because the business type is now VIDEO. |
+| The callee accepts `video-upgraded`; its HTTP response is delayed; an independent callee signal reaches the caller | Process the signal under Section 8. The signal neither confirms the pending upgrade nor changes the caller's business type. |
+| Upgrade success reaches the caller before it commits termination | The caller confirms VIDEO; its final record uses VIDEO. |
+| The caller commits termination before upgrade success reaches it | The caller's final record retains AUDIO; late upgrade success does not change it. The callee does not publish another result. |
+| The callee terminates before receiving `video-upgraded` | Terminal protection rejects the late upgrade with the retained terminal result. The upgrade cannot revive the call. |
+
+## 10. Terminal protection and request expiry
 
 After accepting `declined`, `cancelled`, `missed`, or `ended`, active state
-immediately becomes terminal and creates a bounded tombstone whose expiry is:
+immediately becomes terminal. The receiver MUST apply terminal protection
+(called a tombstone in this document) until:
 
 ```text
 min(terminal request Signature-Input.expires,
@@ -493,7 +637,8 @@ new signature MUST NOT extend the original tombstone. A locally generated
 terminal event uses that side's own terminal request expiry for the same
 calculation.
 
-The tombstone retains enough information for Sections 7 and 8. While present:
+During this protection period, the receiver MUST apply Sections 7 and 8 as
+follows:
 
 - every terminal frame is a no-op that does not replace the first result;
 - an already processed signal ID is a no-op;
@@ -503,16 +648,60 @@ The tombstone retains enough information for Sections 7 and 8. While present:
   and
 - no frame recreates or restores the call.
 
-After learning or committing a terminal result, a sender MUST atomically stop
-all non-terminal work and retries for that `callId`. It MUST NOT renew a
-signature to replay an old `incoming` or signal. Tombstones absorb in-flight
-replays within the signed request window; they are not a permanent call-ID
-registry. A restart may lose active media state but MUST retain unexpired
-tombstones. v1 defines no active-call recovery operation.
+After learning or committing a terminal result, a sender MUST stop originating
+and retrying non-terminal frames for that `callId`. It MUST NOT renew a
+signature to replay an old `incoming` or signal.
+
+Every request remains subject to the signature-time validation in
+[Transport Security, Section 3.5](./transport-security.md). Expired signed
+requests MUST be rejected regardless of the call's lifecycle or protection
+period. Signature validity alone does not override active-call idempotency or
+terminal protection.
+
+Terminal protection guarantees the late-frame behavior above only for its
+defined period; it does not guarantee that every in-flight request will arrive
+within that period. After protection expires, v1 does not require indefinite
+recognition of the historical call ID. The caller's prohibition on reusing a
+call ID for another call remains in force. v1 defines no active-call recovery
+operation.
 
 Both servers MUST use finite unanswered and post-acceptance connection
 deadlines. Their durations and relative ordering are local policy. On
 acceptance, the unanswered deadline ceases and the connection deadline begins.
+
+The post-acceptance connection deadline waits for the following evidence:
+
+| Server | Evidence that completes the connection deadline |
+| --- | --- |
+| Callee server | Its first accepted endpoint connection indication satisfying Section 5, which supplies the observation for `connected.startedAt`. |
+| Caller server | Its first validation and commit of the callee's `connected` frame. The caller endpoint's own connection indication is not a substitute. |
+
+Each server MUST cease its connection deadline when it accepts that evidence,
+without waiting for a later HTTP response. If the callee already accepted its
+endpoint connection indication before the connection deadline would begin,
+that deadline is already satisfied and MUST NOT subsequently produce a timeout.
+This does not bypass any prerequisite for sending `connected` or confirm its
+federation commit; Section 6 continues to govern those steps.
+
+Deadline completion and a timeout decision MUST respect the server's local
+processing order. Before committing a timeout, the server MUST verify that the
+call is still awaiting its connection evidence and has not terminated. Once the
+evidence is accepted, this establishment deadline MUST NOT restart because of a
+lost HTTP response, a duplicate lifecycle frame, or a later media disruption.
+An unrecoverable later media failure follows `ended(failed)`.
+
+Failure to deliver or confirm `connected` follows Section 11's retry and
+terminal-response rules. Attempts to obtain confirmation MUST be bounded by a
+finite local delivery deadline; retrying MUST NOT extend that deadline. If it
+expires without confirmation or a remote terminal result, the callee MUST end
+its local active call as a technical failure. Any terminal notification remains
+subject to Section 6's delivery prerequisites; this rule does not authorize
+skipping an unconfirmed predecessor.
+
+Missing confirmation MUST NOT be reclassified as failure to establish media at
+the callee or cause `ended(timeout)` there after the endpoint connection
+indication. The delivery deadline's duration is local policy; it creates no new
+wire field, lifecycle stage, or competing authoritative result.
 
 As a non-normative operational default, a deployment can use approximately 45
 seconds for both the unanswered and post-acceptance connection deadlines and a
@@ -523,8 +712,8 @@ A transient S2S delivery failure does not extend a lifecycle deadline. The
 bounded retry permitted by Section 11 may allow an identical frame to arrive
 before that deadline, but the protocol does not guarantee that waiting restores
 delivery or an active call. Once either side commits a terminal result, the
-late-frame and tombstone rules apply and no delayed lifecycle or signal frame
-may revive the call.
+late-frame rules apply throughout the terminal protection period; no delayed
+frame may revive the call during that period.
 
 | Timeout                                   | Sender        | Required frame   |
 | ----------------------------------------- | ------------- | ---------------- |
@@ -549,7 +738,7 @@ The receiver processes a frame in this order:
    according to Section 7 or 8 before new-transition checks.
 6. Only for a new `incoming`, validate account/domain binding and local call
    admission before creating the active binding.
-7. For another new frame, validate direction, stage, `mediaType`, and
+7. For another new frame, validate direction, stage, and
    operation-specific constraints; accept already traversed lifecycle events as
    no-ops.
 
@@ -588,10 +777,10 @@ is success. Implementations MUST NOT branch on human-readable `message` text.
 
 ```jsonl
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ringing","mediaType":"AUDIO"}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"accepted","mediaType":"AUDIO"}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"connected","mediaType":"AUDIO","payload":{"startedAt":1700000000100}}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ended","mediaType":"AUDIO","payload":{"endReason":"completed"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ringing"}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"accepted"}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"connected","payload":{"startedAt":1700000000100}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ended","payload":{"endReason":"completed"}}
 ```
 
 The common `callId` illustrates alternative frames; it does not imply that
@@ -600,9 +789,9 @@ one call traverses mutually exclusive terminal paths.
 ### 12.2 Signal frames
 
 ```jsonl
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"AUDIO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000001","signalType":"offer","data":"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"AUDIO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000003","signalType":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"}}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"VIDEO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000004","signalType":"video-state","data":"{\"enabled\":true}"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000001","signalType":"offer","data":"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000003","signalType":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000004","signalType":"video-state","data":"{\"enabled\":true}"}}
 ```
 
 ### 12.3 HTTP Message Signature

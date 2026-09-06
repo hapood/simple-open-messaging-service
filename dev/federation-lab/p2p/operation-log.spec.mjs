@@ -39,13 +39,31 @@ test('classifies a selected direction from database facts', () => {
     observeDirectedPair(pending, alice, bob).state,
     'OUTGOING_PENDING',
   );
-  assert.equal(
-    observeDirectedPair(pending, bob, alice).state,
-    'INCOMING_PENDING',
-  );
+  assert.equal(observeDirectedPair(pending, bob, alice).state, 'NONE');
 
   const active = consistencySnapshot({
     alpha: { all: [pair], active: [pair] },
   });
   assert.equal(observeDirectedPair(active, alice, bob).state, 'FRIEND');
+});
+
+test('uses locally received intents even when the author has changed its own copy', () => {
+  const state = consistencySnapshot({
+    alpha: { intents: [{ author: alice, subject: bob, status: 'REVOKED' }] },
+    bravo: {
+      all: [pair],
+      intents: [
+        {
+          author: alice,
+          subject: bob,
+          status: 'REQUESTED',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+      ],
+    },
+  });
+  const facts = observeDirectedPair(state, bob, alice);
+  assert.equal(facts.state, 'INCOMING_PENDING');
+  assert.equal(facts.incomingIntent, 'REQUESTED');
+  assert.equal(facts.observedOn, 'bravo');
 });

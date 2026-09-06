@@ -71,7 +71,12 @@ npm run dev:fe
 The backend command builds before starting all three Node processes. The frontend command starts
 Angular, Vite, and Caddy without connecting to PostgreSQL.
 
-Use `Ctrl+C` to stop all six child processes. Starting the backend recreates all three lab databases
+Use `Ctrl+C` to stop all six child processes. Shutdown stops new durable-task dispatch and waits
+for in-flight executions before unregistering handlers. Unstarted durable work remains available
+for startup recovery. The launcher waits up to 60 seconds, exits as soon as all children finish,
+and logs a warning and exits nonzero if it must force remaining children to stop.
+
+Starting the backend recreates all three lab databases
 before applying migrations. Node identity files and workload reports persist under
 `dev/federation-lab/runtime/`, while database records always start empty.
 
@@ -80,27 +85,36 @@ actors live only in the workload process, while every account and session is cre
 HTTP API and persists in the lab databases. A workload does not stop or reset the lab when it exits,
 so its final state remains available through the three browser URLs for manual inspection.
 
-The runner provisions and OTP-authenticates 5 users on each node. Half of the seeded users receive
-an initial biography and avatar. It then makes 5 seeded owner selections per node and creates 5
-groups there, half with an initial description and avatar. Each round samples 3 ordinary users and 3
-groups, restricting user-to-group selection to that 3×3 state window. When those users already have
-membership, intent, or manager-request state with a group, one randomly ordered stateful group is
-retained in the window and the remaining group slots stay uniformly random. At most one operation per
-group uses a round snapshot. Each online decision first gives a unary user-or-group profile update 5%
-probability. Otherwise the binary selector always picks a user first, then gives user and group targets
-equal weight. Stateful combinations in the window are considered before untouched combinations, while
-the final action is still selected only from the operations legal in the observed facts. A P2P direction retains the existing friend
-request/accept/reject/revoke state machine. A user-to-group direction derives its legal actions from a
-fresh database snapshot of the roster, both relationship intents, manager request projections,
-friendships, and authored messages.
+The runner provisions and OTP-authenticates 5 users on each node and creates 5 groups per node.
+The seed selects two distinct users and reserves one group for each as an active group. All other
+groups remain ordinary groups. Activity belongs to the group, so a new owner inherits its behavior
+after an ownership transfer.
 
-An active group member enters the message branch with 90% probability. That branch withdraws one of
-the actor's live authored workload messages with 5% probability (or sends when none exists); 5% of new
-sends are FILE or two-part GALLERY messages. The remaining 10% chooses uniformly among the membership
-and role operations the actor may actually perform. Non-members use invitation/application actions.
-The owner never leaves directly and the workload never dissolves a group. At most one operation for a
-given group is admitted in one round, so roster-dependent decisions from the same snapshot cannot
-invalidate each other inside that round.
+The selector samples a three-user/three-group window, weights active groups more heavily, and retains
+a stateful group when possible. Group candidates are weighted by attraction, pending management work,
+and whether the user previously left that active group. Active owners and administrators favor
+accepting applications. Active members rarely leave; a pending applicant usually waits instead of
+immediately revoking the request. A retained roster UPSERT alone never grants membership: the user's
+relationship must also be active, with only the local owner's missing-pair fallback allowed.
+
+Group messages include text, quotes, direct forwards, history forwards, files, and galleries.
+Established P2P friends usually send text or media and occasionally withdraw a message or remove the
+relationship. Re-established friendships retain their prior messages in the consistency comparison.
+The baseline admits at most one ordinary operation per group or P2P pair in a round.
+
+After half the random-operation budget has settled, the runner selects one active group and asks its
+current owner to dissolve it. The other active group survives until the end. Clients that observe
+dissolution stop selecting group actions; discovery returning NOT_FOUND or an explicit GROUP_DISSOLVED
+result is recorded as observed unavailability, not an unexplained admission failure. Other failures,
+including an unexpected permission rejection or transport ambiguity, still fail the run.
+
+Once an active group has members on different nodes, a bounded scenario sends one original, creates
+a remote quote plus DIRECT and HISTORY forwards, and withdraws the original after each step converges.
+It verifies public message reads and the forward bundle afterward. The scenario also repeats identical
+requests concurrently and after success using the same idempotency key. Ordinary eligible sends may
+also be retried. Attempts remain one logical operation. Scenario operations are additional to the
+random-operation budget. Failure to reach the scenario's membership preconditions is reported as
+missing coverage.
 
 Admissions are globally paced at 10 operation starts per second by default, with slow requests allowed
 to overlap. The runner polls the administrator task list for `PENDING`, `PROCESSING`, and
@@ -111,20 +125,91 @@ the round's federated state converges before observing the next state:
 npm run federation:p2p
 # Equivalent, clearer name for the expanded workload:
 npm run federation:consistency
+# Skip per-round convergence assertions; the full final oracle is still required:
+npm run federation:consistency -- --verify-mode=final
 ```
+
+`--verify-mode=round` is the default: every batch waits for two stable oracle
+samples and verifies the batch's effects. `--verify-mode=final` omits these
+intermediate assertions and convergence waits. Random batches do not wait for the
+durable queue to drain in final mode. They still observe current state and completed
+task outcomes for operation selection, without asserting those outcomes per round.
+Random relationship decisions use only the acting node's Pair and Intent view.
+An outgoing pending request can be cancelled by its sender; it does not schedule
+an accept/reject on the remote recipient. Accept/reject submits immediately,
+without waiting for an incoming request to reappear. A P2P admission rejection
+with `FRIEND_NOT_FOUND` is recorded as `OBSERVED_UNAVAILABLE` only when a fresh
+local observation confirms that the relationship is no longer available.
+An active relationship, unexpected error code, or fixed-scenario failure remains
+a test failure rather than being hidden as an expected race.
+For random cancellation of an observed outgoing pending request, a task-level
+`REJECTED / INVITE_ALREADY_HANDLED` is also recorded as `OBSERVED_UNAVAILABLE`:
+acceptance may have completed before the queued cancellation runs. The original
+result code is retained; this never turns cancellation into ending a friendship
+and never suppresses a `FAILED` task.
+After all operations, the harness drains the queue and checks all admission/task
+failures before the final oracle. Observational snapshots do not read/hash media bytes. The final audit
+still checks convergence, coverage, profiles, seq/originSeq, message content,
+tombstones, and actual media digests/lengths with the normal stable-sample policy.
+Final mode intentionally does not prove intermediate states that later operations
+overwrite, and failures are localized less precisely than in round mode.
+Final mode also skips the midpoint-wide lazy profile check: an observational
+snapshot may still select a viewer whose leave has already completed. Midpoint
+group dissolution still runs, and the final profile audit remains required.
+
+Fixed reference-withdrawal scenarios retain their narrow prerequisite waits
+(the remote target must be visible before it can be quoted or forwarded) and
+public-read checks. These do not invoke the global oracle in final mode. The
+chosen mode is recorded in provisioning, execution, and final audit reports.
+
+The default random batch size is 10 (capped by the available pair count), with a
+shared admission pacer limiting submission starts to 10 operations per second
+across batches. With full batches, round 50 means 500 random operations submitted;
+fixed scenarios do not increment the random round number. Progress is printed after
+submission, not with the previous round's count. State reads, slow API calls, and
+fixed-scenario prerequisites can lower actual throughput; the pacer does not burst
+to catch up after a pause. A final partial batch or insufficient eligible operations
+can contain fewer than 10 operations.
+
+FILE, IMAGE, VIDEO, AUDIO, and GALLERY carrier URLs are checked against each
+node's local thread/sequence before cross-node comparison uses their portable
+CAS paths. Metadata, item order, asset digests, and byte lengths remain exact checks.
 
 `ADMIN_BOOTSTRAP_PASSWORD` must match the bootstrap administrator used by the running lab. The runner
 temporarily changes the OTP login rate-limit policy and request-quota defaults through the admin API,
 restores the previous configuration before exiting, and writes token-free reports below
 `dev/federation-lab/runtime/p2p-runs/`. The journal contains no credentials, OTPs, cookies, or session
 tokens. After operations stop, the final auditor repeatedly reads all three databases. It compares P2P
-active pairs and directed intents, group directed intents and every materialized roster, and all
-non-system workload messages on nodes that host final roster members. Every live message must have
-integer `seq` and `originSeq`, identical content, and no unexplained sequence gap. Withdrawn messages
-must have a tombstone and are the only permitted gaps. FILE/GALLERY assets must have successful
-transfer state, a live `MediaAsset`, and a physical CAS shard on every compared node. The complete
+active pairs and directed intents, and current group rosters and roles. For each surviving group, it
+assembles the original-message set from the home databases of CURRENT active roster members, then
+compares that set with the authority and all current member peers. Historical authors and former
+member peers are excluded from message equality. Dissolved groups have terminal membership checks
+but no current-member message equality requirement. For active P2P pairs, both authors' original
+messages are compared on both endpoint nodes, including messages predating removal and re-addition.
+Selected messages must have positive integer coordinates, unique local seq within the owning thread,
+and seq at or below curSeq. Message identity is the author address and the author's immutable local seq.
+For a remote group submission, the authority's originSeq identifies that author-local seq, while the
+author's confirmed originSeq and other mirrors' originSeq identify the authority's seq. The auditor
+checks both directions and the source namespace; it does not require equal originSeq across all copies.
+A submission withdrawn before confirmation may retain its provisional coordinate because the message
+feed no longer returns its body. P2P author coordinates remain local. Selected-author seq
+values need not be contiguous because system messages and historical authors occupy other slots.
+Retained deleted messages must agree with the author and have local tombstones. A missing withdrawn
+body is accepted only with a deletion fact at the group authority (or P2P author), completed receiver
+history scanning with no gaps, caught-up message/deletion positions, and no pending deletion recovery.
+This does not exempt an undeleted retained copy after friendship reauthorization. Live message sets
+remain strict. Quote targets are compared by author address and immutable author-local seq: an unresolved local quote
+uses its publisher namespace and sourceSeq to resolve the target in the publisher's database, rather
+than requiring a local row for a previously withdrawn target. Audit snapshots include source namespaces,
+sync state, history gaps, and pending tombstones. FILE/GALLERY assets require
+live MediaAsset bindings and actual CAS bytes matching the submitted SHA-256 digest and size; retained
+transfer-task rows are not required after completed batches have been cleaned up. The complete
 oracle also resolves every positive profile reference through the same authorization-scoped client
-API used by the UI. It compares the exact revision's name and biography, requires every referenced
+API used by the UI. Before issuing profile requests, the harness opens an authenticated SSE stream
+per viewer and matches `PROFILE_RESOLVED` / `PROFILE_FAILED` by request ID, including events received
+before the HTTP response. Failures report the selector, request ID, and reason instead of repeatedly
+submitting requests until a generic timeout. Streams are closed when profile checks finish or fail.
+It compares the exact revision's name and biography, requires every referenced
 avatar file to exist and compares its exact SHA-256 digest. Accepted avatars are stored and federated
 byte-for-byte, so any transformation or corruption is a consistency failure. Current P2P
 display falls back to its effective relationship reference when there is no later message; group
@@ -133,7 +218,21 @@ reference; the group thread profile follows the latest Group Meta group-profile 
 must pass for the configured number of consecutive samples. Console output includes
 provisioning, per-round selections, admission throughput, active task IDs, convergence samples, audit
 differences, the random seed, and artifact paths.
-Add `--verbose` to print every successful operation.
+Three concurrent read workers each own a database connection and a REPEATABLE READ, READ ONLY
+transaction, giving one internally consistent snapshot per node. These are not a global snapshot;
+repeated convergence samples remain necessary. Successful command effects are checked after a round
+converges, before subsequent commands can supersede them.
+
+The runner writes append-only operation transitions to operations.jsonl, an atomic operations.json
+snapshot, coverage.json, and detailed execution-failure.json snapshots on Oracle failures. Coverage
+includes membership re-entry, re-established friendships, operation types, and fixed-scenario results.
+To recheck a failed run without creating accounts or changing state:
+
+```bash
+node dev/federation-lab/p2p/audit-run.mjs path/to/operations.json
+```
+
+This diagnostic does not exercise lazy profile APIs or claim complete workload coverage.
 The default baseline uses three nodes with 5 users and 5 groups each. It does not stop the lab or remove its
 data. Run it against a fresh lab; repeating the same account prefix correctly fails with an
 already-existing account. Smaller diagnostic runs may be used while developing the harness, but do

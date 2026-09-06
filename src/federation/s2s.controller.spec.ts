@@ -26,6 +26,7 @@ function target() {
   const tombstonePull = { advertise: vi.fn() };
   const roundScheduler = { wakeStateFeed: vi.fn() };
   const messageFeed = {
+    resolveAuthorProfileReference: vi.fn(),
     query: vi
       .fn()
       .mockResolvedValue({ messages: [], scannedThrough: 1, hasMore: false }),
@@ -476,19 +477,56 @@ describe('S2sController group-meta modes', () => {
 });
 
 describe('S2sController message author profiles', () => {
+  it('keeps requester authorization separate from a third-party author namespace', async () => {
+    const { controller, federation, messageFeed } = target();
+    messageFeed.resolveAuthorProfileReference.mockResolvedValueOnce({
+      account: 'carol',
+      domain: 'charlie.test',
+      namespaceId: 3,
+      profileRev: 7,
+    });
+    const req = {
+      query: { account: '!group', messageSeq: '12' },
+      peer: { domain: 'bravo.test', namespaceId: 2 },
+    } as unknown as FastifyRequest;
+    await controller.getMessageAuthorProfile(req, '!group', undefined, '12');
+    expect(messageFeed.resolveAuthorProfileReference).toHaveBeenCalledWith(
+      'bravo.test',
+      2,
+      { type: 'GROUP', account: '!group' },
+      12,
+    );
+    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+      'carol',
+      'charlie.test',
+      3,
+      7,
+    );
+  });
+
+  it('does not read profiles when message authorization fails', async () => {
+    const { controller, federation, messageFeed } = target();
+    const refusal = Object.assign(new Error('forbidden'), {
+      bizCode: BusinessCode.FORBIDDEN,
+    });
+    messageFeed.resolveAuthorProfileReference.mockRejectedValueOnce(refusal);
+    const req = {
+      query: { account: '!group', messageSeq: '12' },
+      peer: { domain: 'bravo.test', namespaceId: 2 },
+    } as unknown as FastifyRequest;
+    await expect(
+      controller.getMessageAuthorProfile(req, '!group', undefined, '12'),
+    ).rejects.toBe(refusal);
+    expect(federation.getStoredUserProfile).not.toHaveBeenCalled();
+  });
+
   it('reads a locally authored message profile from namespace zero', async () => {
     const { controller, federation, messageFeed } = target();
-    messageFeed.query.mockResolvedValueOnce({
-      messages: [
-        {
-          thread: { account: 'alice', peerAccount: 'bob' },
-          authorRef: 'THREAD_ACCOUNT',
-          seq: 12,
-          profileRev: 4,
-        },
-      ],
-      scannedThrough: 12,
-      hasMore: false,
+    messageFeed.resolveAuthorProfileReference.mockResolvedValueOnce({
+      account: 'alice',
+      domain: 'local.example',
+      namespaceId: 0,
+      profileRev: 4,
     });
     federation.getStoredUserProfile.mockResolvedValueOnce({
       account: 'alice',

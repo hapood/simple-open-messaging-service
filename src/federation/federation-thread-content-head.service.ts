@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -211,7 +211,7 @@ export class FederationThreadContentHeadService {
       .where(
         and(
           eq(deletedMessage.threadId, threadId),
-          isNull(deletedMessage.federationSourceDomain),
+          eq(deletedMessage.sourceNamespaceId, 0),
         ),
       );
     if (thread.threadType === 'GROUP') {

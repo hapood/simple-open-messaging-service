@@ -42,6 +42,43 @@ function makeSubject() {
 }
 
 describe('FederationCallBridgeService', () => {
+  it('short-circuits a handled incoming retry before admission or identity lookup', async () => {
+    const { subject, database, eventEmitter, users, participants, quota } =
+      makeSubject();
+    eventEmitter.emitAsync.mockResolvedValueOnce([true]);
+
+    await subject.handleFrame(
+      {
+        callId: callSid,
+        operation: 'incoming',
+        mediaType: 'AUDIO',
+        payload: { callerAccount: 'alice', calleeAccount: 'bob' },
+      },
+      'peer.example',
+      3,
+      Math.floor(Date.now() / 1000) + 300,
+    );
+
+    expect(eventEmitter.emitAsync).toHaveBeenCalledExactlyOnceWith(
+      'call.frame.incoming.preflight',
+      {
+        peerDomain: 'peer.example',
+        namespaceId: 3,
+        frame: {
+          callSid,
+          op: 'incoming',
+          callType: 'AUDIO',
+          payload: { fromAccount: 'alice', toAccount: 'bob' },
+        },
+      },
+    );
+    expect(database.db.query.callTombstone.findFirst).not.toHaveBeenCalled();
+    expect(quota.peek).not.toHaveBeenCalled();
+    expect(users.ensureForeignUser).not.toHaveBeenCalled();
+    expect(users.findLocalUserId).not.toHaveBeenCalled();
+    expect(participants.findP2PThreadBetween).not.toHaveBeenCalled();
+  });
+
   it('translates and sends an outbound incoming frame', async () => {
     const { subject, peerHttp, users } = makeSubject();
 
@@ -69,11 +106,36 @@ describe('FederationCallBridgeService', () => {
     );
   });
 
+  it('passes terminal signature expiry as transport metadata without changing the wire body', async () => {
+    const { subject, peerHttp } = makeSubject();
+    await subject.sendFrame(
+      {
+        fromLocalUserId: 17,
+        to: { account: 'bob', domain: 'peer.example' },
+        callSid,
+        op: 'ended',
+        endReason: 'completed',
+        signatureExpiresAtSec: 1_700_000_300,
+      },
+      'peer.example',
+    );
+    expect(peerHttp.post).toHaveBeenCalledWith(
+      '/s2s/v1/call',
+      JSON.stringify({
+        callId: callSid,
+        operation: 'ended',
+        payload: { endReason: 'completed' },
+      }),
+      'peer.example',
+      { signatureExpiresAtSec: 1_700_000_300 },
+    );
+  });
+
   it('forwards a non-incoming frame without identity resolution', async () => {
     const { subject, eventEmitter, users } = makeSubject();
 
     await subject.handleFrame(
-      { callId: callSid, operation: 'accepted', mediaType: 'AUDIO' },
+      { callId: callSid, operation: 'accepted' },
       'peer.example',
       3,
       1_700_000_000,
@@ -83,7 +145,7 @@ describe('FederationCallBridgeService', () => {
       peerDomain: 'peer.example',
       namespaceId: 3,
       signatureExpiresAtSec: 1_700_000_000,
-      frame: { callSid, op: 'accepted', callType: 'AUDIO' },
+      frame: { callSid, op: 'accepted' },
     });
     expect(users.ensureForeignUser).not.toHaveBeenCalled();
   });

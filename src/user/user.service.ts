@@ -216,10 +216,14 @@ export class UserService {
   }
 }
 
-export type UserLookup = {
-  id?: number;
-  account_domain?: { account: string; domain: string };
-  namespaceId?: number;
+export type UserLookup = (
+  | { id: number; account_domain?: never; namespaceId?: never }
+  | {
+      id?: never;
+      account_domain: { account: string; domain: string };
+      namespaceId: number;
+    }
+) & {
   availability?: 'AVAILABLE' | 'REMOVED';
 };
 
@@ -249,17 +253,16 @@ export type PublicUser = Pick<
 >;
 
 function userLookupCondition(where: UserLookup) {
+  if (where.account_domain && !Number.isInteger(where.namespaceId)) {
+    throw new Error('address lookup requires an explicit namespaceId');
+  }
   const unique = where.id
     ? eq(user.id, where.id)
     : where.account_domain
       ? and(
           eq(user.account, where.account_domain.account),
           eq(user.domain, where.account_domain.domain),
-          where.namespaceId === undefined
-            ? where.account_domain.domain === 'local'
-              ? eq(user.namespaceId, 0)
-              : undefined
-            : eq(user.namespaceId, where.namespaceId),
+          eq(user.namespaceId, where.namespaceId),
         )
       : undefined;
   if (!unique) throw new Error('user lookup requires id or account_domain');

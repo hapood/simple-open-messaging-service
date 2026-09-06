@@ -1,4 +1,16 @@
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../relationship/thread-content-lock.js', () => ({
+  lockThreadContentInTx: vi.fn().mockResolvedValue(true),
+  requireThreadContentLockInTx: vi.fn(
+    async (tx, threadId, held) => held ?? { tx, threadId },
+  ),
+  acquireThreadContentLockInTx: vi.fn(async (tx, threadId) => ({
+    tx,
+    threadId,
+  })),
+}));
 import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import {
@@ -27,6 +39,8 @@ const item = (sequence: string): FederationMessageFeedMessage => ({
   assets: [],
 });
 
+const dialect = new PgDialect();
+
 afterEach(() => vi.restoreAllMocks());
 
 function createMessagePageService() {
@@ -49,6 +63,103 @@ function createMessagePageService() {
 }
 
 describe('federation message context isolation', () => {
+  it.each([{ seq: 8 }, { originSeq: 8 }])(
+    'accepts a single quote coordinate %j at the envelope boundary',
+    (quoteTarget) => {
+      const validator = new FederationInboundMessageValidatorService();
+      expect(() =>
+        validator.assertEnvelope({ ...item('10'), quoteTarget }),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    null,
+    {},
+    { seq: 8, originSeq: 8 },
+    { targetSeq: 8 },
+    { seq: Number.MAX_SAFE_INTEGER },
+  ])(
+    'rejects invalid quote shape %j at the envelope boundary',
+    (quoteTarget) => {
+      const validator = new FederationInboundMessageValidatorService();
+      expect(() =>
+        validator.assertEnvelope({ ...item('10'), quoteTarget } as never),
+      ).toThrow();
+    },
+  );
+  it.each(
+    [false, true].flatMap((reverse) =>
+      ['SYSTEM', 'FORWARD', 'GALLERY'].map((contentType) => ({
+        reverse,
+        contentType,
+      })),
+    ),
+  )(
+    'continues past malformed $contentType data in a page (reverse=$reverse)',
+    async ({ reverse, contentType }) => {
+      const service = createMessagePageService();
+      const resolve = vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorAccount: 'alice',
+        creatorDomain: 'peer.test',
+      });
+      Object.assign(service, { resolveMissedThreadInTransaction: resolve });
+      const bad = item(reverse ? '71' : '69');
+      bad.contentType = contentType;
+      bad.content =
+        contentType === 'FORWARD' ? 'invalid-json' : '{"items":null}';
+      const good = { ...item('70'), authorRef: 'THREAD_ACCOUNT' as const };
+      const tx = {
+        execute: vi.fn().mockResolvedValue({ rows: [] }),
+        query: {
+          message: {
+            findFirst: vi.fn().mockResolvedValue({
+              originServerTime: new Date(good.createdAt),
+            }),
+          },
+        },
+      };
+      const options = reverse
+        ? {
+            sequencePolicy: {
+              kind: 'MAP_ORIGIN' as const,
+              beforeSeq: 100,
+              throughSeq: 40,
+              messageSeqOffset: 0,
+            },
+          }
+        : {};
+      await expect(
+        service.apply(
+          tx as never,
+          'peer.test',
+          [bad, good],
+          { namespaceId: 9 } as never,
+          options,
+        ),
+      ).resolves.toEqual([]);
+      expect(resolve).toHaveBeenCalledTimes(contentType === 'SYSTEM' ? 1 : 2);
+      expect(tx.query.message.findFirst).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not discard database failures as malformed peer messages', async () => {
+    const service = createMessagePageService();
+    Object.assign(service, {
+      resolveMissedThreadInTransaction: vi
+        .fn()
+        .mockRejectedValue(new Error('database unavailable')),
+    });
+    await expect(
+      service.apply(
+        { execute: vi.fn() } as never,
+        'peer.test',
+        [item('1')],
+        {} as never,
+      ),
+    ).rejects.toThrow('database unavailable');
+  });
   it('does not publish THREAD_CONTENT_HEAD when committing reverse history', async () => {
     const service = Object.create(
       FederationInboundMessageStoreService.prototype,
@@ -333,7 +444,6 @@ describe('federation message context isolation', () => {
 
     expect(update).not.toHaveBeenCalled();
     expect(receiptValues).toHaveBeenCalledWith({
-      peerDomain: 'group-origin.test',
       namespaceId: 9,
       threadId: 9,
       peerSeq: 1,
@@ -358,6 +468,13 @@ describe('federation message context isolation', () => {
       }),
     });
     const tx = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({
+            for: () => ({ limit: async () => [{ id: 9 }] }),
+          }),
+        }),
+      })),
       execute: vi.fn().mockResolvedValue({ rows: [] }),
       query: {
         message: {
@@ -394,12 +511,47 @@ describe('federation message context isolation', () => {
 
     expect(update).not.toHaveBeenCalled();
     expect(receiptValues).toHaveBeenCalledWith({
-      peerDomain: 'group-origin.test',
       namespaceId: 9,
       threadId: 9,
       peerSeq: 70,
       messageId: 1n,
     });
+  });
+
+  it('deduplicates inbound messages by immutable source namespace', async () => {
+    const service = createMessagePageService();
+    const findFirst = vi.fn().mockResolvedValue({
+      id: 1n,
+      originServerTime: new Date(1_700_000_001_000),
+    });
+    Object.assign(service, {
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorId: 7,
+        creatorAccount: 'bob',
+        creatorDomain: 'peer.test',
+        federationVersion: 0,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+      query: { message: { findFirst } },
+    };
+
+    const incoming = item('70');
+    incoming.createdAt = 1_700_000_001_000;
+    incoming.authorRef = 'THREAD_ACCOUNT';
+    await expect(
+      service.apply(tx as never, 'peer.test', [incoming], {
+        namespaceId: 22,
+      } as never),
+    ).resolves.toEqual([]);
+
+    const query = dialect.sqlToQuery(findFirst.mock.calls[0]![0].where as SQL);
+    expect(query.sql).toContain('"Message"."sourceNamespaceId"');
+    expect(query.params).toContain(22);
   });
 
   it('rejects a reverse page item below its persisted closure target before applying it', async () => {
@@ -553,14 +705,14 @@ describe('federation message context isolation', () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('authenticated peer domain'),
     );
-    expect(logger.error).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('unknown federated message content type'),
     );
   });
 
   it('logs and skips malformed wire data instead of aborting the page', async () => {
     const service = createMessagePageService();
-    const logger = { error: vi.fn() };
+    const logger = { error: vi.fn(), warn: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger,
@@ -577,21 +729,21 @@ describe('federation message context isolation', () => {
     await expect(
       service.apply(tx as never, 'peer.test', [malformed], {} as never),
     ).resolves.toEqual([]);
-    expect(logger.error).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('ignored invalid federated message'),
     );
-    const logged = String(logger.error.mock.calls[0]?.[0]);
+    const logged = String(logger.warn.mock.calls[0]?.[0]);
     expect(logged).toContain('contentSha256');
     expect(logged).toContain('contentBytes');
     expect(logged).not.toContain('secret-message-body-that-must-not-be-logged');
     expect(logged).not.toContain('attacker\nforged-log-line');
   });
 
-  it('aborts a reverse batch when one item cannot be staged', async () => {
+  it('warns and skips a malformed reverse item without aborting the batch', async () => {
     const service = createMessagePageService();
     Object.assign(service, {
       config: { domain: 'local.test' },
-      logger: { error: vi.fn() },
+      logger: { error: vi.fn(), warn: vi.fn() },
       assertPeerResponseWritable: vi.fn(),
     });
     const malformed = item('70');
@@ -613,7 +765,7 @@ describe('federation message context isolation', () => {
           },
         },
       ),
-    ).rejects.toThrow('unknown federated message content type');
+    ).resolves.toEqual([]);
     expect(execute).toHaveBeenCalledTimes(3);
   });
 
@@ -621,7 +773,7 @@ describe('federation message context isolation', () => {
     'uniformly logs and skips unknown content type %s',
     async (contentType) => {
       const service = createMessagePageService();
-      const logger = { error: vi.fn() };
+      const logger = { error: vi.fn(), warn: vi.fn() };
       Object.assign(service, {
         config: { domain: 'local.test' },
         logger,
@@ -634,7 +786,7 @@ describe('federation message context isolation', () => {
       await expect(
         service.apply(tx as never, 'peer.test', [unknown], {} as never),
       ).resolves.toEqual([]);
-      expect(logger.error).toHaveBeenCalledWith(
+      expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('unknown federated message content type'),
       );
     },

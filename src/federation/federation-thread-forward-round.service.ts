@@ -60,7 +60,7 @@ export class FederationThreadForwardRoundService {
     requestedTake?: number,
   ): Promise<FederationThreadForwardMessageRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
-    const state = await this.states.require(threadId);
+    const state = await this.states.require(threadId, namespaceId);
     const targetSeq = state.messageTargetSeq;
     const processedThrough = state.messageProcessedThroughSeq;
     this.assertCoordinate(processedThrough, 'processed message seq');
@@ -97,7 +97,7 @@ export class FederationThreadForwardRoundService {
     requestedTake?: number,
   ): Promise<FederationThreadForwardTombstoneRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
-    const state = await this.states.require(threadId);
+    const state = await this.states.require(threadId, namespaceId);
     const recovering = state.deletionRecoveryThroughSeq !== null;
     if (recovering !== (state.deletionRecoveryMaxMessageSeq !== null))
       throw new Error('incomplete tombstone recovery state');

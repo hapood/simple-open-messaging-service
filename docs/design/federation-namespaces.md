@@ -27,8 +27,8 @@ The database enforces:
 
 Administrative blocking, quota accounting, routing, and lifecycle audit remain domain-scoped.
 Identity-derived data and authorization are namespace-scoped. A thread owns one immutable authority
-namespace; its cursors, retries, and synchronization state are owned transitively by that thread and
-do not repeat the namespace ID.
+namespace. Incoming synchronization states and history gaps additionally carry their source
+namespace: one locally authoritative group receives independent streams from multiple peers.
 
 ## Federation transaction context
 
@@ -43,9 +43,8 @@ interface FederationContext {
 }
 ```
 
-Nested methods never resolve the current namespace again. Work for an existing thread instead uses
-the immutable authority namespace already bound to that thread. Federation synchronization and
-history-gap recovery do not require that namespace to remain active.
+Nested methods never resolve the current namespace again. A synchronization round uses the source
+namespace captured by its wake or durable state, which need not equal the thread authority namespace.
 
 An in-flight operation may finish after its namespace is retired. It keeps its captured namespace
 and may commit there. Retirement does not cancel or retarget federation work. Active-namespace
@@ -86,10 +85,11 @@ Important namespace-scoped data includes:
 - peer state, group metadata, message, and tombstone cursors;
 - pending media, downloads, key cache entries, calls, receipts, and scheduler recovery state.
 
-`MessageThread.authorityNamespaceId` is the sole owner of a thread's publisher coordinate space and
-never changes. `FederationThreadSyncState` is keyed by `threadId`, and
-`FederationThreadHistoryGap` belongs to its thread by `threadId`; neither repeats a namespace ID.
-This removes an otherwise unenforceable possibility that thread and synchronization rows disagree.
+`MessageThread.authorityNamespaceId` identifies the immutable thread authority.
+`FederationThreadSyncState` is keyed by `(threadId, namespaceId)`, and
+`FederationThreadHistoryGap` also carries its source namespace. A composite foreign key ensures
+that a state's active gap belongs to both the same thread and the same source. Local authorities
+can therefore track several remote publisher coordinate spaces without mixing their progress.
 
 The common integrity shape for peer-owned state is a composite foreign key from
 `(peerDomain, namespaceId)` to `(IdentityNamespace.domain, IdentityNamespace.id)`. Namespace

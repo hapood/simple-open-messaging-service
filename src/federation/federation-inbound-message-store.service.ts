@@ -34,16 +34,20 @@ import {
   type MapFederationOriginSequence,
 } from './federation-message-sequence-policy.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
+import {
+  storeFederationQuote,
+  type FederationQuoteTarget,
+} from './federation-quote-target.js';
 
-export interface S2SQuoteTarget {
-  targetSeq: number;
-}
+export type S2SQuoteTarget = FederationQuoteTarget;
 
 export interface FederatedForwardCard {
   bundleId: string;
 }
 
 export interface FederationInboundMessageStoreParams {
+  threadLock?: ThreadContentLock;
   threadId: number;
   creator: S2SAddress;
   fetchedFromDomain: string;
@@ -121,17 +125,17 @@ export class FederationInboundMessageStoreService {
       fetchedFromDomain,
       expectedFederationVersion,
     );
-    await DeletedMessageService.lockFederatedIdentity(
+    const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,
       threadId,
       fetchedFromDomain,
       namespaceId,
       incoming.originSeq,
+      params.threadLock,
     );
     const racedMessage = await tx.query.message.findFirst({
       where: and(
         eq(tables.message.threadId, threadId),
-        eq(tables.message.federationSourceDomain, fetchedFromDomain),
         eq(tables.message.sourceNamespaceId, namespaceId),
         eq(tables.message.originSeq, incoming.originSeq),
       ),
@@ -160,59 +164,18 @@ export class FederationInboundMessageStoreService {
     const tombstone = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(tables.federatedMessageTombstone.threadId, threadId),
-        eq(tables.federatedMessageTombstone.sourceDomain, fetchedFromDomain),
         eq(tables.federatedMessageTombstone.sourceNamespaceId, namespaceId),
         eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
       ),
-      columns: { type: true, sourceDomain: true },
+      columns: { type: true },
     });
-
-    let waitsForQuoteTarget = false;
-    const quoteTargetSeq = incoming.quoteTarget?.targetSeq;
-    if (!tombstone && incomingText && quoteTargetSeq !== undefined) {
-      const quotedMessage = await this.findQuoteTargetMessage(
-        tx,
-        threadId,
-        fetchedFromDomain,
-        namespaceId,
-        quoteTargetSeq,
-      );
-      if (!quotedMessage) {
-        const [quotedPending] = await tx
-          .select({ id: tables.pendingMedia.id })
-          .from(tables.pendingMedia)
-          .innerJoin(
-            tables.message,
-            eq(tables.message.id, tables.pendingMedia.messageId),
-          )
-          .where(
-            and(
-              eq(tables.pendingMedia.direction, 'INBOUND'),
-              eq(tables.message.threadId, threadId),
-              eq(tables.message.federationSourceDomain, fetchedFromDomain),
-              eq(tables.message.sourceNamespaceId, namespaceId),
-              eq(tables.message.originSeq, quoteTargetSeq),
-            ),
-          )
-          .limit(1);
-        if (!quotedPending) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'quoted message is missing from the ordered pull stream',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        waitsForQuoteTarget = true;
-      }
-    }
 
     if (
       !tombstone &&
       !hasUnavailableAssets &&
-      ((isFederatedMediaContentType(incoming.contentType as ContentType) &&
-        (incoming.contentType !== ContentType.LINK ||
-          extractDigests(incoming.content).length > 0)) ||
-        waitsForQuoteTarget)
+      isFederatedMediaContentType(incoming.contentType as ContentType) &&
+      (incoming.contentType !== ContentType.LINK ||
+        extractDigests(incoming.content).length > 0)
     ) {
       const batchId = randomUUID();
       const digests = extractDigestEntries(incoming.content);
@@ -233,14 +196,11 @@ export class FederationInboundMessageStoreService {
           threadId,
           creatorAccount: creator.account,
           creatorDomain: creator.domain,
-          creatorNamespaceId:
-            creator.domain === this.config.domain ? 0 : namespaceId,
           seq,
           originSeq: incoming.originSeq,
           profileRev: incoming.profileRev,
           clientMessageId: incoming.clientMessageId,
           originServerTime: originTime,
-          federationSourceDomain: fetchedFromDomain,
           sourceNamespaceId: namespaceId,
           localState: 'STUB',
           updatedAt: new Date(),
@@ -257,7 +217,7 @@ export class FederationInboundMessageStoreService {
         originDomain: fetchedFromDomain,
         namespaceId,
         expectedAuthorizationEpoch: thread.authorizationEpoch,
-        dependsOnOriginSeq: waitsForQuoteTarget ? quoteTargetSeq : null,
+        dependsOnOriginSeq: null,
         updatedAt: new Date(),
       });
       for (const { digest, size } of digests) {
@@ -297,17 +257,11 @@ export class FederationInboundMessageStoreService {
       ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
       : await this.allocateMessageSeq(tx, threadId);
     storedContent = contextualizeCasUrls(storedContent, threadId, seq);
-    if (incomingText && incoming.quoteTarget) {
-      const localQuoteSeq = await this.resolveLocalQuoteSeq(
-        tx,
-        threadId,
-        fetchedFromDomain,
-        namespaceId,
-        incoming.quoteTarget,
-      );
+    if (incomingText && incoming.quoteTarget !== undefined) {
       storedContent = stringifyTextMessageContent({
         text: incomingText.text,
-        quote: { seq: localQuoteSeq },
+        // Missing references are presentation state, not a reason to reject the message.
+        quote: storeFederationQuote(incoming.quoteTarget, namespaceId),
       });
     }
     const [message] = await tx
@@ -318,14 +272,11 @@ export class FederationInboundMessageStoreService {
         threadId,
         creatorAccount: creator.account,
         creatorDomain: creator.domain,
-        creatorNamespaceId:
-          creator.domain === this.config.domain ? 0 : namespaceId,
         seq,
         originSeq: incoming.originSeq,
         profileRev: incoming.profileRev,
         clientMessageId: incoming.clientMessageId,
         originServerTime: originTime,
-        federationSourceDomain: fetchedFromDomain,
         sourceNamespaceId: namespaceId,
         isDeleted: tombstone !== undefined,
         localState: sequencePolicy ? 'STUB' : 'READY',
@@ -335,10 +286,11 @@ export class FederationInboundMessageStoreService {
     let localDeletionSeq: number | null = null;
     if (tombstone && !sequencePolicy) {
       const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+        threadLock,
         threadId,
         messageSeq: seq,
         type: tombstone.type,
-        federationSourceDomain: tombstone.sourceDomain,
+        sourceNamespaceId: namespaceId,
         updatedAt: new Date(),
       });
       localDeletionSeq = deletion.created ? deletion.deletionSeq : null;
@@ -347,10 +299,6 @@ export class FederationInboundMessageStoreService {
         .where(
           and(
             eq(tables.federatedMessageTombstone.threadId, threadId),
-            eq(
-              tables.federatedMessageTombstone.sourceDomain,
-              fetchedFromDomain,
-            ),
             eq(tables.federatedMessageTombstone.sourceNamespaceId, namespaceId),
             eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
           ),
@@ -382,30 +330,6 @@ export class FederationInboundMessageStoreService {
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
-  }
-
-  async resolveLocalQuoteSeq(
-    tx: DatabaseTransaction,
-    threadId: number,
-    sourceDomain: string,
-    namespaceId: number,
-    target: S2SQuoteTarget,
-  ): Promise<number> {
-    const message = await this.findQuoteTargetMessage(
-      tx,
-      threadId,
-      sourceDomain,
-      namespaceId,
-      target.targetSeq,
-    );
-    if (!message) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'quoted message is missing from the ordered pull stream',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return message.seq;
   }
 
   private async allocateMessageSeq(
@@ -452,41 +376,5 @@ export class FederationInboundMessageStoreService {
         HttpStatus.BAD_REQUEST,
       );
     }
-  }
-
-  private async findQuoteTargetMessage(
-    tx: DatabaseTransaction,
-    threadId: number,
-    sourceDomain: string,
-    namespaceId: number,
-    sourceSeq: number,
-  ): Promise<{ id: bigint; seq: number } | undefined> {
-    const direct = await tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.federationSourceDomain, sourceDomain),
-        eq(tables.message.sourceNamespaceId, namespaceId),
-        eq(tables.message.originSeq, sourceSeq),
-      ),
-      columns: { id: true, seq: true },
-    });
-    if (direct) return direct;
-    const receipt = await tx.query.federationMessageReceipt.findFirst({
-      where: and(
-        eq(tables.federationMessageReceipt.peerDomain, sourceDomain),
-        eq(tables.federationMessageReceipt.namespaceId, namespaceId),
-        eq(tables.federationMessageReceipt.threadId, threadId),
-        eq(tables.federationMessageReceipt.peerSeq, sourceSeq),
-      ),
-      columns: { messageId: true },
-    });
-    if (!receipt) return undefined;
-    return tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.id, receipt.messageId),
-        eq(tables.message.threadId, threadId),
-      ),
-      columns: { id: true, seq: true },
-    });
   }
 }

@@ -1047,6 +1047,12 @@ export class MessageThreadComponent implements OnDestroy {
           mediaStatus: aggregate,
         });
       },
+      onQuoteDeleted: (replySeq: number, targetSeq: number) => {
+        this.scroller?.mutateItem(replySeq, (item) => ({
+          ...item,
+          data: { ...item.data, quote: { seq: targetSeq, unavailable: true } },
+        }));
+      },
       // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
       // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
       onProfile: (

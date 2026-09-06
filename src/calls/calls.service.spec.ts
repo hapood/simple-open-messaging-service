@@ -57,7 +57,10 @@ function mkMocks() {
         })),
         insert: vi.fn(() => ({
           values: vi.fn(() => ({
-            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+            onConflictDoNothing: vi.fn(() => ({
+              returning: vi.fn().mockResolvedValue([{ callSid: 'cs1' }]),
+            })),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
           })),
         })),
       },
@@ -799,7 +802,7 @@ function mkFrame(p: Partial<S2SCallFrame> = {}): S2SCallFrame {
   return {
     callSid: 'cs1',
     op,
-    callType: 'AUDIO',
+    ...(op === 'incoming' ? { callType: 'AUDIO' } : {}),
     ...p,
     ...(op === 'incoming'
       ? {
@@ -824,6 +827,8 @@ function inbound(
     peerStubId: number;
     threadId?: number;
     peerDomain?: string;
+    namespaceId?: number;
+    signatureExpiresAtSec?: number;
     frame: S2SCallFrame;
   },
 ): Promise<void> {
@@ -831,8 +836,10 @@ function inbound(
     localUserId: args.localUserId,
     peerStubId: args.peerStubId,
     peerDomain: args.peerDomain ?? 'bbb.local',
+    namespaceId: args.namespaceId ?? 3,
     threadId: args.threadId ?? 10,
-    signatureExpiresAtSec: Math.floor(Date.now() / 1000) + 300,
+    signatureExpiresAtSec:
+      args.signatureExpiresAtSec ?? Math.floor(Date.now() / 1000) + 300,
     frame: args.frame,
   });
 }
@@ -843,6 +850,7 @@ describe('CallsService federated initiate (outbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -877,6 +885,7 @@ describe('CallsService federated initiate (outbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -901,6 +910,7 @@ describe('CallsService federated initiate (outbound)', () => {
       m.database.db.query.user.findFirst.mockResolvedValue({
         account: 'bob',
         domain: 'bbb.local',
+        namespaceId: 3,
         name: 'Bob',
         avatar: '',
       });
@@ -956,6 +966,7 @@ describe('CallsService federated initiate (outbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -980,6 +991,9 @@ describe('CallsService federated initiate (outbound)', () => {
 });
 
 describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it('incoming registers callee-side state, rings the local user, and ticks quota once', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
@@ -1017,9 +1031,19 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('a duplicate incoming ring is an idempotent no-op (no second ring, no quota burn)', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    const admission = m.database.db.insert.mock.results[0].value;
+    expect(admission.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalOp: 'admitted',
+        expiresAt: new Date(Date.now() + 300_000),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    m.database.db.insert.mockClear();
     m.sse.onCallEvent.mockClear();
     m.quota.tick.mockClear();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    expect(m.database.db.insert).not.toHaveBeenCalled();
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
     expect(m.quota.tick).not.toHaveBeenCalled();
   });
@@ -1031,12 +1055,14 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     expect(
       svc.onInboundIncomingPreflight({
         peerDomain: 'bbb.local',
+        namespaceId: 3,
         frame: mkFrame(),
       }),
     ).toBe(true);
     expect(() =>
       svc.onInboundIncomingPreflight({
         peerDomain: 'bbb.local',
+        namespaceId: 3,
         frame: mkFrame({
           payload: { fromAccount: 'mallory', toAccount: 'bob' },
         }),
@@ -1143,6 +1169,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -1180,6 +1207,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -1241,6 +1269,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -1384,6 +1413,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.database.db.query.user.findFirst.mockResolvedValue({
       account: 'bob',
       domain: 'bbb.local',
+      namespaceId: 3,
       name: 'Bob',
       avatar: '',
     });
@@ -1414,6 +1444,103 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
     finishDelete();
     await cancelling;
+  });
+
+  it.each([60, 360])(
+    'caps inbound terminal protection with signature offset %i seconds',
+    async (offset) => {
+      const now = 1_700_000_000_123;
+      vi.setSystemTime(now);
+      const { svc, m } = mkService();
+      await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+      const signatureExpiresAtSec = Math.floor(now / 1000) + offset;
+      await inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        signatureExpiresAtSec,
+        frame: mkFrame({ op: 'cancelled' }),
+      });
+      const write = m.database.db.insert.mock.results.at(-1)!.value;
+      expect(write.values).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminalOp: 'cancelled',
+          expiresAt: new Date(
+            Math.min(signatureExpiresAtSec * 1000, now + 300_000),
+          ),
+        }),
+      );
+      m.database.db.query.callTombstone.findFirst.mockResolvedValue({
+        terminalOp: 'cancelled',
+        signalIds: [],
+      });
+      m.database.db.insert.mockClear();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        signatureExpiresAtSec: signatureExpiresAtSec + 10,
+        frame: mkFrame({ op: 'cancelled' }),
+      });
+      expect(m.database.db.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, { terminalOp: 'admitted', signalIds: [] }])(
+    'bounds early cancellation including a persisted admission (%j)',
+    async (prior) => {
+      const now = 1_700_000_000_123;
+      vi.setSystemTime(now);
+      const { svc, m } = mkService();
+      m.database.db.query.callTombstone.findFirst.mockResolvedValue(prior);
+      const expiresAt = new Date(1_700_000_020_000);
+      await inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        signatureExpiresAtSec: expiresAt.getTime() / 1000,
+        frame: mkFrame({ op: 'cancelled' }),
+      });
+      const write = m.database.db.insert.mock.results.at(-1)!.value;
+      expect(write.values).toHaveBeenCalledWith(
+        expect.objectContaining({ terminalOp: 'cancelled', expiresAt }),
+      );
+      expect(
+        write.values.mock.results[0].value.onConflictDoUpdate,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          set: { terminalOp: 'cancelled', expiresAt },
+        }),
+      );
+    },
+  );
+
+  it('freezes local terminal expiry before a delayed database write and sends that expiry', async () => {
+    const now = 1_700_000_000_123;
+    vi.setSystemTime(now);
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    let finishDelete!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    m.database.db.delete.mockReturnValue({ where: vi.fn(() => gate) });
+    const declining = svc.decline(2, 'cs1');
+    await vi.advanceTimersByTimeAsync(10_000);
+    finishDelete();
+    await declining;
+    const signatureExpiresAtSec = 1_700_000_300;
+    expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+      expect.objectContaining({
+        op: 'declined',
+        signatureExpiresAtSec,
+      }),
+      'bbb.local',
+    );
+    const write = m.database.db.insert.mock.results.at(-1)!.value;
+    expect(write.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expiresAt: new Date(signatureExpiresAtSec * 1000),
+      }),
+    );
   });
 
   it('maps late frames through cancelled and other terminal tombstones', async () => {
@@ -1464,8 +1591,8 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
   });
 
-  it('binds ended reasons to accepted and connected states', async () => {
-    const { svc } = mkService();
+  it('allows completed to end an accepted call before media connects', async () => {
+    const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
     await svc.accept(2, 'cs1');
 
@@ -1478,10 +1605,18 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
           payload: { endReason: 'completed' },
         }),
       }),
-    ).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    ).resolves.toBeUndefined();
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({ type: 'ended', callSid: 'cs1' }),
     );
+    expect(() => svc.signaling(2, 'cs1')).toThrow();
+  });
 
+  it('rejects a connection timeout after media connects', async () => {
+    const { svc } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await svc.accept(2, 'cs1');
     await svc.connected(2, 'cs1');
     await expect(
       inbound(svc, {

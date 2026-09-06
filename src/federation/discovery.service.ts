@@ -339,7 +339,10 @@ export class DiscoveryService {
           ),
         )
         .where(eq(tables.federatedPeer.domain, normalized))
-        .limit(1);
+        .limit(1)
+        // Lock a stable parent before replacing the key set. Concurrent DELETEs
+        // can miss each other's newly inserted rows and then fail with 23505.
+        .for('no key update', { of: tables.federatedPeer });
       if (
         !peer ||
         peer.rootPublicKey !== doc.rootKey.ed25519 ||

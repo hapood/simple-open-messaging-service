@@ -16,7 +16,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { GroupService } from '../group/group.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { UserService } from '../user/user.service.js';
+import { normalizeAccount } from '../common/account.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
@@ -25,6 +25,7 @@ import { AccountThreadStateService } from '../account-thread-state/account-threa
 import {
   CreateGroupDto,
   InviteGroupDto,
+  GroupInviteAddressDto,
   GroupIdDto,
   KickGroupDto,
   TransferGroupDto,
@@ -47,7 +48,6 @@ export class GroupController {
     private readonly groupService: GroupService,
     private readonly participantService: AccountThreadStateService,
     private readonly federationService: FederationService,
-    private readonly userService: UserService,
     private readonly durableTasks: DurableTaskQueueService,
   ) {}
 
@@ -101,53 +101,57 @@ export class GroupController {
       account: string;
       domain: string;
     },
-    userIds: number[],
+    users: GroupInviteAddressDto[],
   ): Promise<{
-    invited: number[];
+    invited: GroupInviteAddressDto[];
     tasks: Array<{
-      userId: number;
+      account: string;
+      domain: string;
       taskId: string;
       status: 'PENDING';
     }>;
-    skipped: { userId: number; reason: string }[];
+    skipped: (GroupInviteAddressDto & { reason: string })[];
   }> {
-    const deduped = Array.from(new Set(userIds));
-    const invited: number[] = [];
+    const deduped = [
+      ...new Map(
+        users.map((user) => {
+          const domain = user.domain.trim().toLowerCase();
+          const address = {
+            account: normalizeAccount(user.account),
+            domain:
+              domain === this.federationService.ourDomain ? 'local' : domain,
+          };
+          return [JSON.stringify(address), address];
+        }),
+      ).values(),
+    ];
+    const invited: GroupInviteAddressDto[] = [];
     const tasks: Array<{
-      userId: number;
+      account: string;
+      domain: string;
       taskId: string;
       status: 'PENDING';
     }> = [];
-    const skipped: { userId: number; reason: string }[] = [];
+    const skipped: (GroupInviteAddressDto & { reason: string })[] = [];
     const groupAccount = group.account;
     if (!groupAccount) {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
       return {
         invited,
         tasks,
-        skipped: deduped.map((userId) => ({
-          userId,
+        skipped: deduped.map((address) => ({
+          ...address,
           reason: 'inviter or group missing',
         })),
       };
     }
-    const targets = deduped.length
-      ? await this.userService.queryUsers({ where: { id: { in: deduped } } })
-      : [];
-    const byId = new Map(targets.map((u) => [u.id, u]));
-    for (const userId of deduped) {
-      const target = byId.get(userId);
-      if (!target) {
-        skipped.push({ userId, reason: 'user not found' });
-        continue;
-      }
-      // The inviter's P2P thread with the target (shared for local; the inviter's mirror for federated).
-      const p2pThreadId = await this.participantService.findP2PThreadBetween(
+    for (const address of deduped) {
+      const friend = await this.participantService.findP2PFriendByAddress(
         inviter,
-        userId,
+        address,
       );
-      if (p2pThreadId === null) {
-        skipped.push({ userId, reason: 'not a friend or no conversation' });
+      if (!friend) {
+        skipped.push({ ...address, reason: 'not a friend or no conversation' });
         continue;
       }
       try {
@@ -158,17 +162,17 @@ export class GroupController {
           },
           taskType: DurableTaskType.INVITE_GROUP_MEMBER,
           actorUserId: inviter,
-          payload: { threadId: group.threadId, targetUserId: userId },
+          payload: { threadId: group.threadId, targetUserId: friend.userId },
         });
-        invited.push(userId);
+        invited.push(address);
         tasks.push({
-          userId,
+          ...address,
           taskId: taskId.toString(),
           status: 'PENDING',
         });
       } catch (e) {
         skipped.push({
-          userId,
+          ...address,
           reason: `invite failed: ${(e as Error)?.message ?? String(e)}`,
         });
       }
@@ -206,7 +210,7 @@ export class GroupController {
         account: group?.account ?? '',
         domain: group?.domain ?? '',
       },
-      dto.userIds,
+      dto.users,
     );
   }
 

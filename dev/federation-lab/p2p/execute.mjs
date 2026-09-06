@@ -20,7 +20,14 @@ async function waitFor(description, timeoutMs, inspect) {
       if (value !== undefined && value !== false && value !== null)
         return value;
     } catch (error) {
-      if (error instanceof LabApiError && error.details?.terminal) throw error;
+      if (
+        error instanceof LabApiError &&
+        (error.details?.terminal ||
+          ['NOT_FOUND', 'BLOCKED', 'INVALID_ADDRESS'].includes(
+            error.details?.reason,
+          ))
+      )
+        throw error;
       lastError = error;
     }
     await sleep(200);

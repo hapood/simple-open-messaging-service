@@ -197,8 +197,12 @@ partially fetched page cannot move its committed endpoint.
 ## 4. State Feed application and initialization
 
 State Feed transport remains paginated. A consumer fixes one `through` target
-for the complete synchronization round, both for an ordinary delta drain and a
-cursor-unavailable full rebuild. Application is item-by-item in strictly
+for the complete synchronization round, both for an ordinary delta drain and
+the initial drain from zero. The missing-cursor response bootstraps an
+uninitialized namespace at zero and is logged at INFO. Compaction never
+invalidates committed progress within that namespace. Rejection of an already
+initialized cursor fails the drain without rewriting progress or rebuilding;
+identity replacement uses a new namespace instead. Application is item-by-item in strictly
 increasing feedId order. Each item and its inclusive processing cursor are
 committed in one database transaction. After all returned items are committed,
 a cursor-only transaction may advance across compacted or trailing holes to the
@@ -227,7 +231,8 @@ RELATIONSHIP_INTENT application invokes the canonical relationship transaction
 and advances the item cursor only when that transaction succeeds.
 
 THREAD_CONTENT_HEAD application resolves the local thread, verifies that its
-relationship is active, and locks MessageThread. The same transaction loads
+relationship is active, and acquires the business scope and parent row before
+locking MessageThread. It revalidates the target under those locks. The same transaction loads
 FederationThreadSyncState and branches on its stored epoch:
 
 - a missing row leaves the newest advertised message to the forward query and,
@@ -244,9 +249,14 @@ FederationThreadSyncState and branches on its stored epoch:
 
 The transaction then advances the State Feed cursor through the current item.
 
-The synchronization-state key remains `(threadId, peerDomain)`. A missing row is
+The synchronization-state key is `(threadId, namespaceId)`, where the namespace
+identifies the authenticated source, not necessarily the thread authority. A missing row is
 created idempotently. Each item commit marks durable dirty work and its
 after-commit handler is the scheduler-notification boundary.
+
+A locally authoritative group consumes mirror submissions with reverse reconstruction disabled.
+Its new per-source message and deletion cursors start at zero, including when rebuilding formerly
+mixed cursors. It must not skip historical withdrawal facts for messages it may already retain.
 
 If the relationship is no longer active when the thread row is locked, the item
 is stale. The transaction writes no thread synchronization state or gap
@@ -390,10 +400,14 @@ Relationship commands retain the established order:
 3. MessageThread row;
 4. synchronization state, gap, Message, and projection rows.
 
-Content-round commits do not acquire a relationship business scope after
-locking MessageThread. They lock MessageThread first, compare the captured epoch,
-and write only thread-local synchronization facts. This avoids reversing the
-relationship-command lock order. A relationship transaction that commits first
+Content-round commits acquire the existing business scope and parent rows before
+MessageThread: a group address scope and Group row for group threads, or sorted
+endpoint account scopes and the existing RelationshipPair for P2P threads.
+They then lock MessageThread, compare the captured epoch, and write thread-local
+synchronization facts. Parent locks also cover implicit foreign-key checks during
+repeated thread updates; an unchanged epoch UPDATE is still a database write.
+No network fetch or media download takes place while these locks are held.
+A relationship transaction that commits first
 causes an epoch mismatch; a round transaction that commits first was authorized
 for its complete database commit and the following relationship transaction
 then increments the epoch.

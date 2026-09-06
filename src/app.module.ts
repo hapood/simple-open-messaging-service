@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module, type OnModuleDestroy } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from './logger/logger.module.js';
@@ -39,6 +39,8 @@ import { ForwardBundleModule } from './forward/forward-bundle.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { RateLimitModule } from './rate-limit/rate-limit.module.js';
 import { DurableTaskModule } from './durable-task/durable-task.module.js';
+import { DurableTaskSchedulerService } from './durable-task/durable-task-scheduler.service.js';
+import { DurableAsyncTaskSchedulerService } from './durable-task/durable-async-task-scheduler.service.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -93,4 +95,21 @@ import { DurableTaskModule } from './durable-task/durable-task.module.js';
   ],
   providers: [],
 })
-export class AppModule {}
+export class AppModule implements OnModuleDestroy {
+  private readonly logger = new Logger(AppModule.name);
+
+  constructor(
+    private readonly tasks: DurableTaskSchedulerService,
+    private readonly asyncTasks: DurableAsyncTaskSchedulerService,
+  ) {}
+
+  async onModuleDestroy(): Promise<void> {
+    // Root teardown precedes imported modules: handlers and their dependencies
+    // must stay registered until both schedulers have finished in-flight work.
+    this.logger.log(
+      'shutdown: stopping durable task dispatch and waiting for in-flight work',
+    );
+    await Promise.all([this.tasks.stop(), this.asyncTasks.stop()]);
+    this.logger.log('shutdown: durable task execution drained');
+  }
+}

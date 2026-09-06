@@ -12,6 +12,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { GroupRole } from '../database/enums.js';
 import { IsValidAvatarPath } from '../upload/avatar-path.js';
@@ -51,19 +52,33 @@ export class CreateGroupDto {
   description?: string;
 }
 
-export class InviteGroupDto {
-  /** Friends to invite. Each target must already have an existing P2P friendship. */
+export class GroupInviteAddressDto {
+  @ApiProperty({ example: 'alice' })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[^!\s@][^\s@]*$/)
+  account!: string;
+
   @ApiProperty({
-    type: [Number],
-    example: [3, 7],
-    description:
-      'Friend user ids to invite (each must be a friend with an existing P2P thread)',
+    example: 'example.com',
+    description: "User home domain; 'local' denotes this server.",
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
+}
+
+export class InviteGroupDto {
+  @ApiProperty({
+    type: [GroupInviteAddressDto],
+    description: 'Existing friends to invite by public address.',
   })
   @IsArray()
   @ArrayMinSize(1)
-  @IsInt({ each: true })
-  @Type(() => Number)
-  userIds!: number[];
+  @ValidateNested({ each: true })
+  @Type(() => GroupInviteAddressDto)
+  users!: GroupInviteAddressDto[];
 
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)

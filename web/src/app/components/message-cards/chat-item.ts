@@ -69,6 +69,7 @@ interface ChatMessageBase {
   };
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: number;
+  threadId?: number;
   /** Whether creator matches the current user's address. */
   isSelf: boolean;
   /** Sender labels are useful in group chats but redundant beside avatars in a direct conversation. */
@@ -91,6 +92,9 @@ interface ChatMessageBase {
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
   quote?: {
+    /** A local tombstone makes the preview unavailable and disables navigation. */
+    unavailable?: boolean;
+    status?: 'PENDING' | 'NOT_FOUND';
     /** Jump target in the current message source; absent for a display-only snapshot. */
     seq?: number;
     author?: string;

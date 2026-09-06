@@ -9,15 +9,19 @@ import {
   federatedMessageTombstone,
   federatedPeer,
   federationDeletedCursor,
+  federationMessageReceipt,
   fileSyncProgress,
   identityNamespace,
   message,
   messageThread,
   pendingMedia,
   user,
+  group,
+  relationshipPair,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { MessageService } from '../src/message/message.service.js';
+import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
 
 describe('federated message deletion transaction ordering', () => {
   let mod: TestingModule;
@@ -113,7 +117,6 @@ describe('federated message deletion transaction ordering', () => {
     return deletions.applyFederated({
       threadId,
       messageSeq: 7,
-      authorityDomain: peerDomain,
       sourceDomain: peerDomain,
       sourceNamespaceId: namespaceId,
       remoteDeletionSeq,
@@ -143,11 +146,10 @@ describe('federated message deletion transaction ordering', () => {
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(federatedMessageTombstone.threadId, threadId),
-          eq(federatedMessageTombstone.sourceDomain, peerDomain),
           eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
           eq(federatedMessageTombstone.messageSeq, 7),
         ),
-        columns: { type: true, sourceDomain: true, sourceNamespaceId: true },
+        columns: { type: true, sourceNamespaceId: true },
       });
       const [{ curSeq: seq }] = await tx
         .update(messageThread)
@@ -160,9 +162,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           creatorAccount: 'bob',
           creatorDomain: peerDomain,
-          creatorNamespaceId: namespaceId,
           originSeq: 7,
-          federationSourceDomain: peerDomain,
           sourceNamespaceId: namespaceId,
           seq,
           contentType: 'PURE_TEXT',
@@ -176,7 +176,6 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           messageSeq: seq,
           type: tombstone.type,
-          federationSourceDomain: tombstone.sourceDomain,
           sourceNamespaceId: tombstone.sourceNamespaceId,
           updatedAt: new Date(),
         });
@@ -185,7 +184,6 @@ describe('federated message deletion transaction ordering', () => {
           .where(
             and(
               eq(federatedMessageTombstone.threadId, threadId),
-              eq(federatedMessageTombstone.sourceDomain, peerDomain),
               eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
               eq(federatedMessageTombstone.messageSeq, 7),
             ),
@@ -201,7 +199,6 @@ describe('federated message deletion transaction ordering', () => {
         eq(message.threadId, threadId),
         eq(message.creatorAccount, 'bob'),
         eq(message.creatorDomain, peerDomain),
-        eq(message.creatorNamespaceId, namespaceId),
         eq(message.sourceNamespaceId, namespaceId),
         eq(message.originSeq, 7),
       ),
@@ -285,6 +282,252 @@ describe('federated message deletion transaction ordering', () => {
     expect(secondAllocator?.deletionSeqAllocatedThrough).toBe(1);
   });
 
+  it('stores local deletion facts in namespace zero', async () => {
+    await database.db.transaction((tx) =>
+      DeletedMessageService.ensureFactInTx(tx, {
+        threadId,
+        messageSeq: 7,
+        type: MessageDeleteType.USER_RETRACTION,
+      }),
+    );
+
+    const fact = await database.db.query.deletedMessage.findFirst({
+      where: eq(deletedMessage.threadId, threadId),
+      columns: { sourceNamespaceId: true },
+    });
+    expect(fact?.sourceNamespaceId).toBe(0);
+  });
+
+  it('allows a newly sent local message without an origin sequence', async () => {
+    await expect(
+      database.db.insert(message).values({
+        threadId,
+        seq: 1,
+        creatorAccount: 'alice',
+        creatorDomain: 'local',
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'local provisional coordinate' }),
+        updatedAt: new Date(),
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it.each(['GROUP', 'P2P'] as const)(
+    '%s withdrawal waits for the business scope before locking content',
+    async (kind) => {
+      const [author] = await database.db
+        .insert(user)
+        .values({
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          name: 'Alice',
+          updatedAt: new Date(),
+        })
+        .returning();
+      let scope = { account: author.account, domain: author.domain };
+      if (kind === 'GROUP') {
+        const [parent] = await database.db
+          .insert(group)
+          .values({
+            account: '!lock-parent',
+            domain: peerDomain,
+            namespaceId,
+            name: 'Group',
+            updatedAt: new Date(),
+          })
+          .returning();
+        await database.db
+          .update(messageThread)
+          .set({ type: 'GROUP', groupId: parent.id })
+          .where(eq(messageThread.id, threadId));
+        scope = { account: parent.account, domain: parent.domain };
+      } else {
+        await database.db
+          .insert(relationshipPair)
+          .values({
+            kind: 'P2P',
+            threadId,
+            active: true,
+            endpointAType: 'USER',
+            endpointAAccount: author.account,
+            endpointADomain: 'local',
+            endpointANamespaceId: namespaceId,
+            endpointBType: 'USER',
+            endpointBAccount: 'bob',
+            endpointBDomain: peerDomain,
+            endpointBNamespaceId: namespaceId,
+          });
+      }
+      await database.db
+        .insert(message)
+        .values({
+          threadId,
+          seq: 1,
+          creatorAccount: author.account,
+          creatorDomain: 'local',
+          contentType: 'PURE_TEXT',
+          content: '{"text":"business ordering"}',
+          updatedAt: new Date(),
+        });
+      const blocker = await database.pool.connect();
+      let result: Promise<unknown> | undefined;
+      try {
+        await blocker.query('BEGIN');
+        const {
+          rows: [session],
+        } = await blocker.query('SELECT pg_backend_pid() AS pid');
+        await blocker.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [businessAccountScopeKey(scope)],
+        );
+        result = deletions.withdraw(author.id, threadId, 1).then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        const deadline = Date.now() + 5000;
+        for (;;) {
+          const { rows } = await database.pool.query(
+            'SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))',
+            [session.pid],
+          );
+          if (rows.length) break;
+          if (Date.now() >= deadline)
+            throw new Error('withdrawal bypassed the business scope');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        // The blocked withdrawal must not have acquired the thread or message yet.
+        await blocker.query(
+          'SELECT id FROM "MessageThread" WHERE id=$1 FOR UPDATE NOWAIT',
+          [threadId],
+        );
+        await blocker.query(
+          'SELECT id FROM "Message" WHERE "threadId"=$1 FOR UPDATE NOWAIT',
+          [threadId],
+        );
+        await blocker.query('COMMIT');
+        expect(await result).toMatchObject({
+          value: { deletionSeq: 1, messageSeq: 1 },
+        });
+      } finally {
+        await blocker.query('ROLLBACK');
+        blocker.release();
+        await result;
+      }
+    },
+  );
+
+  it.each(['withdrawal', 'moderation'] as const)(
+    'orders %s behind a receipt transaction without locking its message first',
+    async (mode) => {
+      const [author] = await database.db
+        .insert(user)
+        .values({
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          name: 'Alice',
+          updatedAt: new Date(),
+        })
+        .returning();
+      const [sent] = await database.db
+        .insert(message)
+        .values({
+          threadId,
+          seq: 1,
+          creatorAccount: author.account,
+          creatorDomain: 'local',
+          contentType: 'PURE_TEXT',
+          content: '{"text":"withdraw concurrently"}',
+          updatedAt: new Date(),
+        })
+        .returning();
+      const receipt = await database.pool.connect();
+      let withdrawing: Promise<unknown> | undefined;
+      try {
+        await receipt.query('BEGIN');
+        await receipt.query("SET LOCAL lock_timeout = '5s'");
+        const {
+          rows: [session],
+        } = await receipt.query('SELECT pg_backend_pid() AS pid');
+        await receipt.query(
+          'SELECT id FROM "MessageThread" WHERE id = $1 FOR UPDATE',
+          [threadId],
+        );
+        // Observe the actual lock wait before inserting the receipt. This forces the
+        // inversion on the old implementation without relying on scheduler timing.
+        const deleting =
+          mode === 'withdrawal'
+            ? deletions.withdraw(author.id, threadId, 1)
+            : database.db.transaction(async (tx) => ({
+                deletionSeq: await deletions.deleteByReportInTx(
+                  tx,
+                  threadId,
+                  1,
+                ),
+                messageSeq: 1,
+              }));
+        withdrawing = deleting.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        const deadline = Date.now() + 5000;
+        for (;;) {
+          const { rows } = await database.pool.query(
+            'SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))',
+            [session.pid],
+          );
+          if (rows.length) break;
+          if (Date.now() >= deadline)
+            throw new Error('withdrawal did not wait for the thread lock');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await receipt.query(
+          'INSERT INTO "FederationMessageReceipt" ("namespaceId", "threadId", "peerSeq", "messageId") VALUES ($1, $2, $3, $4)',
+          [namespaceId, threadId, 7, sent.id.toString()],
+        );
+        await receipt.query('COMMIT');
+        expect(await withdrawing).toMatchObject({
+          value: { deletionSeq: 1, messageSeq: 1 },
+        });
+        expect(
+          await database.db.query.message.findFirst({
+            where: eq(message.id, sent.id),
+          }),
+        ).toMatchObject({ isDeleted: true });
+        expect(
+          await database.db
+            .select()
+            .from(federationMessageReceipt)
+            .where(eq(federationMessageReceipt.messageId, sent.id)),
+        ).toHaveLength(1);
+        if (mode === 'withdrawal')
+          expect(
+            await deletions.withdraw(author.id, threadId, 1),
+          ).toMatchObject({ deletionSeq: 1, systemMessage: null });
+      } finally {
+        await receipt.query('ROLLBACK');
+        receipt.release();
+        await withdrawing;
+      }
+    },
+  );
+
+  it('rejects a remote message without an origin sequence', async () => {
+    await expect(
+      database.db.insert(message).values({
+        threadId,
+        seq: 1,
+        creatorAccount: 'bob',
+        creatorDomain: peerDomain,
+        sourceNamespaceId: namespaceId,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'missing coordinate' }),
+        updatedAt: new Date(),
+      }),
+    ).rejects.toThrow();
+  });
+
   it('keeps a later-arriving message deleted when the tombstone committed first', async () => {
     expect(await apply(10)).toBeNull();
     expect(await insertIncoming()).toMatchObject({ isDeleted: true });
@@ -344,11 +587,9 @@ describe('federated message deletion transaction ordering', () => {
         seq: 1,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
-        creatorNamespaceId: namespaceId,
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,
-        federationSourceDomain: peerDomain,
         sourceNamespaceId: namespaceId,
         localState: 'STUB',
         updatedAt: new Date(),

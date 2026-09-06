@@ -347,35 +347,23 @@ export class S2sController {
       );
     }
     const peerDomain = this.signerDomain(req);
-    const page = await this.messageFeed.query(
+    const reference = await this.messageFeed.resolveAuthorProfileReference(
       peerDomain,
       req.peer!.namespaceId,
       selector,
-      messageSeq - 1,
-      1,
       messageSeq,
-      true,
     );
-    const item = page.messages.find(
-      (candidate) => candidate.seq === messageSeq,
-    );
-    if (!item) {
+    if (!reference) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'message is not available to this peer',
       );
     }
-    const author =
-      'author' in item
-        ? item.author
-        : item.authorRef === 'THREAD_ACCOUNT'
-          ? { account: item.thread.account, domain: this.federation.ourDomain }
-          : { account: item.thread.peerAccount, domain: peerDomain };
     const profile = await this.federation.getStoredUserProfile(
-      author.account,
-      author.domain,
-      author.domain === this.federation.ourDomain ? 0 : req.peer!.namespaceId,
-      item.profileRev,
+      reference.account,
+      reference.domain,
+      reference.namespaceId,
+      reference.profileRev,
     );
     if (!profile) {
       throw new BusinessException(

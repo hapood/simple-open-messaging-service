@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { and, eq, gt, lt } from 'drizzle-orm';
+import { and, eq, gt, lt, lte } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { callTombstone, user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -32,7 +32,9 @@ import {
   type CallMediaType,
   type CallOutcome,
 } from './call-content.js';
+import { SIGNATURE_LIFETIME_SEC } from '../federation/signature.service.js';
 import type { CallSignalType } from './federated-call-protocol.js';
+import { CALL_ADMISSION_RETENTION_MS } from './call-timing.js';
 import {
   decideCallTransition,
   decideVideoUpgrade,
@@ -53,7 +55,7 @@ const CONNECT_TIMEOUT_MS = 45_000;
  *  a symmetric-timer design would create. */
 const FED_SAFETY_NET_MS = 60_000;
 const FED_CONNECT_SAFETY_NET_MS = 60_000;
-const CALL_TOMBSTONE_MAX_MS = 300_000;
+const CALL_TERMINAL_RETENTION_MS = 300_000;
 type TerminalCallOperation = 'declined' | 'cancelled' | 'missed' | 'ended';
 type RelayedLifecycleOperation = Exclude<
   S2SCallOperation,
@@ -80,7 +82,12 @@ interface LiveCall {
   initialCallType: CallMediaType;
   state: 'ringing' | 'accepted' | 'connected';
   /** Set synchronously before a terminal DB write so racing inbound frames cannot revive the call. */
-  terminal?: { op: TerminalCallOperation; endReason: string | null };
+  terminal?: {
+    op: TerminalCallOperation;
+    endReason: string | null;
+    signatureExpiresAtSec: number;
+    protectionExpiresAt: Date;
+  };
   /** Connect epoch-ms (set when the media leg connects — NOT on accept). Null until connected. */
   startedAt: number | null;
   /** True once the callee side has acked that it is alerting the user. Set by the LOCAL {@link ringing}
@@ -282,17 +289,25 @@ export class CallsService implements OnModuleDestroy {
       // caller learns `unreachable` immediately. No local ring() — the foreign callee is rung by the
       // peer's inbound handler.
       try {
+        await this.reserveAdmission(call);
+        if (call.terminal || this.activeCalls.get(call.callSid) !== call)
+          return { callSid: call.callSid, threadId: call.threadId };
         await this.federation.sendCallFrame(
           {
             fromLocalUserId: callerId,
             to: { account: call.peerAccount!, domain: call.peerDomain! },
             callSid: call.callSid,
             op: 'incoming',
-            callType: call.callType,
+            callType: call.initialCallType,
           },
           call.peerDomain!,
         );
       } catch {
+        if (!call.terminal) {
+          this.markTerminal(call, 'cancelled', null);
+          await this.saveTombstone(call, 'cancelled', null);
+          this.sendFrame(call, 'cancelled', {});
+        }
         this.release(call);
         await this.persistTerminal(call, 'unreachable');
         throw new BusinessException(
@@ -520,14 +535,9 @@ export class CallsService implements OnModuleDestroy {
         `cannot decline while ${call.state}`,
       );
     }
-    call.terminal = { op: 'declined', endReason: null };
+    this.markTerminal(call, 'declined', null);
     this.notifyBoth(call, 'declined');
-    await this.saveTombstone(
-      call,
-      'declined',
-      null,
-      Math.floor(Date.now() / 1000) + 300,
-    );
+    await this.saveTombstone(call, 'declined', null);
     this.release(call);
     await this.persistTerminal(call, 'declined');
   }
@@ -553,14 +563,9 @@ export class CallsService implements OnModuleDestroy {
         `cannot cancel while ${call.state}; use end after accepted`,
       );
     }
-    call.terminal = { op: 'cancelled', endReason: null };
+    this.markTerminal(call, 'cancelled', null);
     this.notifyBoth(call, 'cancelled');
-    await this.saveTombstone(
-      call,
-      'cancelled',
-      null,
-      Math.floor(Date.now() / 1000) + 300,
-    );
+    await this.saveTombstone(call, 'cancelled', null);
     this.release(call);
     await this.persistTerminal(call, 'cancelled');
   }
@@ -586,7 +591,10 @@ export class CallsService implements OnModuleDestroy {
       );
     }
     if (call.terminal) return;
-    if (decideCallTransition(call.state, 'ended') === 'invalid') {
+    if (
+      decideCallTransition(call.state, 'ended') === 'invalid' ||
+      (call.state === 'ringing' && endReason !== 'failed')
+    ) {
       throw new BusinessException(
         BusinessCode.CALL_INVALID_TRANSITION,
         `cannot end while ${call.state}`,
@@ -599,16 +607,13 @@ export class CallsService implements OnModuleDestroy {
           : 'completed'
         : endReason === 'timeout'
           ? 'timeout'
-          : 'failed';
+          : endReason === 'completed'
+            ? 'completed'
+            : 'failed';
     const outcome: CallOutcome = CallsService.endOutcome(normalizedEndReason);
-    call.terminal = { op: 'ended', endReason: normalizedEndReason };
+    this.markTerminal(call, 'ended', normalizedEndReason);
     this.notifyBoth(call, 'ended', { endReason: normalizedEndReason });
-    await this.saveTombstone(
-      call,
-      'ended',
-      normalizedEndReason,
-      Math.floor(Date.now() / 1000) + 300,
-    );
+    await this.saveTombstone(call, 'ended', normalizedEndReason);
     this.release(call);
     await this.persistTerminal(call, outcome);
   }
@@ -673,7 +678,6 @@ export class CallsService implements OnModuleDestroy {
             to: this.peerAddress(call),
             callSid: call.callSid,
             op: 'signal',
-            callType: call.callType,
             signalType: dto.kind,
             data: dto.payload,
             signalId: dto.id,
@@ -710,7 +714,12 @@ export class CallsService implements OnModuleDestroy {
     if (frame.op !== 'incoming') {
       const active = this.activeCalls.get(frame.callSid);
       if (!active || active.peerDomain !== peerDomain) {
-        await this.resolveInactiveFrame(peerDomain, namespaceId, frame);
+        await this.resolveInactiveFrame(
+          peerDomain,
+          namespaceId,
+          frame,
+          payload.signatureExpiresAtSec,
+        );
         return;
       }
       if (active.terminal) {
@@ -796,10 +805,6 @@ export class CallsService implements OnModuleDestroy {
   ): void {
     const sameParticipants =
       peerDomain === call.peerDomain && namespaceId === call.peerNamespaceId;
-    const sameType =
-      frame.op === 'video-upgraded'
-        ? frame.callType === 'VIDEO'
-        : frame.callType === call.callType;
     const calleeToCallerOnly = [
       'ringing',
       'accepted',
@@ -820,7 +825,7 @@ export class CallsService implements OnModuleDestroy {
           ? call.localRole === 'callee'
           : call.localRole === 'caller'));
 
-    if (!sameParticipants || !sameType || !legalDirection) {
+    if (!sameParticipants || !legalDirection) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'call frame does not match the active call binding or direction',
@@ -895,6 +900,12 @@ export class CallsService implements OnModuleDestroy {
     };
     this.activeCalls.set(calleeCall.callSid, calleeCall);
     this.activeByUser.set(localUserId, calleeCall.callSid);
+    try {
+      await this.reserveAdmission(calleeCall);
+    } catch (error) {
+      this.release(calleeCall);
+      throw error;
+    }
     this.armRingTimer(calleeCall);
     this.syncCallState(calleeCall);
     // Best-effort quota tick: handleCallFrame already peek-gated the hard limit BEFORE the emitAsync.
@@ -1077,15 +1088,16 @@ export class CallsService implements OnModuleDestroy {
         );
       }
     }
-    call.terminal = {
-      op: frame.op,
-      endReason: frame.op === 'ended' ? frame.payload.endReason : null,
-    };
-    await this.saveTombstone(
+    this.markTerminal(
       call,
       frame.op,
       frame.op === 'ended' ? frame.payload.endReason : null,
       signatureExpiresAtSec,
+    );
+    await this.saveTombstone(
+      call,
+      frame.op,
+      frame.op === 'ended' ? frame.payload.endReason : null,
     );
     this.emit(this.localUserId(call), frame.op, { callSid: call.callSid });
     this.release(call);
@@ -1102,15 +1114,49 @@ export class CallsService implements OnModuleDestroy {
     peerDomain: string,
     namespaceId: number,
     frame: Exclude<S2SCallFrame, { op: 'incoming' }>,
+    signatureExpiresAtSec: number,
   ): Promise<void> {
+    const acceptedAt = Date.now();
     const tombstone = await this.database.db.query.callTombstone.findFirst({
       where: and(
-        eq(callTombstone.peerDomain, peerDomain),
         eq(callTombstone.namespaceId, namespaceId),
         eq(callTombstone.callSid, frame.callSid),
         gt(callTombstone.expiresAt, new Date()),
       ),
     });
+    if (
+      (!tombstone || tombstone.terminalOp === 'admitted') &&
+      frame.op === 'cancelled'
+    ) {
+      const now = new Date();
+      const expiresAt = this.terminalProtectionExpiry(
+        signatureExpiresAtSec,
+        acceptedAt,
+      );
+      await this.database.db
+        .delete(callTombstone)
+        .where(lte(callTombstone.expiresAt, now));
+      await this.database.db
+        .insert(callTombstone)
+        .values({
+          namespaceId,
+          callSid: frame.callSid,
+          terminalOp: 'cancelled',
+          endReason: null,
+          // An early cancellation has no admitted media type. This internal sentinel is never
+          // emitted as a wire/UI media type and cannot authorize an active call.
+          initialCallType: 'UNKNOWN',
+          finalCallType: 'UNKNOWN',
+          signalIds: [],
+          expiresAt,
+        })
+        .onConflictDoUpdate({
+          target: [callTombstone.namespaceId, callTombstone.callSid],
+          set: { terminalOp: 'cancelled', expiresAt },
+          setWhere: eq(callTombstone.terminalOp, 'admitted'),
+        });
+      return;
+    }
     if (!tombstone) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_ALLOWED,
@@ -1159,28 +1205,96 @@ export class CallsService implements OnModuleDestroy {
     );
   }
 
+  /** Commit the bounded creation guard before making a federated call observable. */
+  private async reserveAdmission(call: LiveCall): Promise<void> {
+    if (call.peerNamespaceId === null || call.peerNamespaceId === undefined)
+      throw new Error('federated call has no captured namespace');
+    const now = Date.now();
+    await this.database.db
+      .delete(callTombstone)
+      .where(lte(callTombstone.expiresAt, new Date(now)));
+    const inserted = await this.database.db
+      .insert(callTombstone)
+      .values({
+        namespaceId: call.peerNamespaceId,
+        callSid: call.callSid,
+        terminalOp: 'admitted',
+        endReason: null,
+        initialCallType: call.initialCallType,
+        finalCallType: call.callType,
+        signalIds: [],
+        expiresAt: new Date(now + CALL_ADMISSION_RETENTION_MS),
+      })
+      .onConflictDoNothing()
+      .returning({ callSid: callTombstone.callSid });
+    if (inserted.length === 0) {
+      const prior = await this.database.db.query.callTombstone.findFirst({
+        where: and(
+          eq(callTombstone.namespaceId, call.peerNamespaceId),
+          eq(callTombstone.callSid, call.callSid),
+        ),
+      });
+      throw new BusinessException(
+        prior?.terminalOp === 'cancelled'
+          ? BusinessCode.CALL_CANCELLED
+          : BusinessCode.CALL_TERMINATED,
+        'call creation was already consumed',
+        HttpStatus.OK,
+      );
+    }
+  }
+
+  private terminalProtectionExpiry(
+    signatureExpiresAtSec: number,
+    acceptedAt: number,
+  ): Date {
+    return new Date(
+      Math.min(
+        signatureExpiresAtSec * 1000,
+        acceptedAt + CALL_TERMINAL_RETENTION_MS,
+      ),
+    );
+  }
+
+  /** Freeze the first terminal decision before persistence or outbound delivery can yield. */
+  private markTerminal(
+    call: LiveCall,
+    op: TerminalCallOperation,
+    endReason: string | null,
+    signatureExpiresAtSec?: number,
+  ): void {
+    if (call.terminal) return;
+    const acceptedAt = Date.now();
+    const expiresAtSec =
+      signatureExpiresAtSec ??
+      Math.floor(acceptedAt / 1000) + SIGNATURE_LIFETIME_SEC;
+    call.terminal = {
+      op,
+      endReason,
+      signatureExpiresAtSec: expiresAtSec,
+      protectionExpiresAt: this.terminalProtectionExpiry(
+        expiresAtSec,
+        acceptedAt,
+      ),
+    };
+  }
+
   private async saveTombstone(
     call: LiveCall,
     terminalOp: TerminalCallOperation,
     endReason: string | null,
-    signatureExpiresAtSec: number,
   ): Promise<void> {
     if (!call.peerDomain) return;
     if (call.peerNamespaceId === null)
       throw new Error('federated call has no captured namespace');
-    const expiresAt = new Date(
-      Math.min(
-        signatureExpiresAtSec * 1000,
-        Date.now() + CALL_TOMBSTONE_MAX_MS,
-      ),
-    );
+    if (!call.terminal) throw new Error('call has no terminal decision');
+    const expiresAt = call.terminal.protectionExpiresAt;
     await this.database.db
       .delete(callTombstone)
       .where(lt(callTombstone.expiresAt, new Date()));
     await this.database.db
       .insert(callTombstone)
       .values({
-        peerDomain: call.peerDomain,
         namespaceId: call.peerNamespaceId,
         callSid: call.callSid,
         terminalOp,
@@ -1190,7 +1304,17 @@ export class CallsService implements OnModuleDestroy {
         signalIds: [...call.seenSignalIds],
         expiresAt,
       })
-      .onConflictDoNothing();
+      .onConflictDoUpdate({
+        target: [callTombstone.namespaceId, callTombstone.callSid],
+        set: {
+          terminalOp,
+          endReason,
+          finalCallType: call.callType,
+          signalIds: [...call.seenSignalIds],
+          expiresAt,
+        },
+        setWhere: eq(callTombstone.terminalOp, 'admitted'),
+      });
   }
 
   // ── terminal persist + bookkeeping ───────────────────────────────────────────
@@ -1394,7 +1518,10 @@ export class CallsService implements OnModuleDestroy {
       fromLocalUserId: this.localUserId(call),
       to: this.peerAddress(call),
       callSid: call.callSid,
-      callType: call.callType,
+      ...(call.terminal &&
+      ['declined', 'cancelled', 'missed', 'ended'].includes(op)
+        ? { signatureExpiresAtSec: call.terminal.signatureExpiresAtSec }
+        : {}),
     };
     let params: Parameters<FederationService['sendCallFrame']>[0];
     if (op === 'connected') {
@@ -1497,7 +1624,7 @@ export class CallsService implements OnModuleDestroy {
    * callee ring → missed; caller safety ring → cancelled; either connect timeout → ended(timeout). */
   private async timeoutMissed(callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    if (!call || call.state === 'connected') return; // gone, or connected (timer was cleared — defensive)
+    if (!call || call.terminal || call.state === 'connected') return; // gone, or connected (timer was cleared — defensive)
     const outcome: CallOutcome = call.state === 'ringing' ? 'missed' : 'failed';
     const timeout = timeoutLifecycle(call.state);
     const eventExtra =
@@ -1508,26 +1635,18 @@ export class CallsService implements OnModuleDestroy {
           ? 'cancelled'
           : timeout.operation;
       const endReason = timeout.endReason;
-      call.terminal = { op: terminalOp, endReason };
+      this.markTerminal(call, terminalOp, endReason);
       this.emit(this.localUserId(call), timeout.operation, {
         callSid,
         ...eventExtra,
       });
-      await this.saveTombstone(
-        call,
-        terminalOp,
-        endReason,
-        Math.floor(Date.now() / 1000) + 300,
-      );
+      await this.saveTombstone(call, terminalOp, endReason);
       this.release(call);
       this.sendFrame(call, terminalOp, endReason ? { endReason } : {});
       if (call.localRole === 'caller')
         await this.persistTerminal(call, outcome);
     } else {
-      call.terminal = {
-        op: timeout.operation,
-        endReason: timeout.endReason,
-      };
+      this.markTerminal(call, timeout.operation, timeout.endReason);
       this.notifyBoth(call, timeout.operation, eventExtra);
       this.release(call);
       await this.persistTerminal(call, outcome);

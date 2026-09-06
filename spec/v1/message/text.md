@@ -21,7 +21,8 @@ v1 does not define a universal maximum length. Publishers and consumers may impo
 Ordinary text omits the outer message `quoteTarget`. A quoted reply MUST satisfy all of the following:
 
 - The outer message contains `quoteTarget`.
-- `quoteTarget` identifies a target message from the current authoritative publisher in the same thread.
+- `quoteTarget` identifies a target in the same thread using exactly
+  one of `seq` (sender coordinate) or `originSeq` (receiver coordinate).
 - The outer message `assets` is empty.
 
 A quote carries no author, body, or content-type preview. Its sole content
@@ -99,7 +100,7 @@ The author server validates that a mention applies to the thread before first pe
   "originCreatedAt": null,
   "createdAt": 1770000005000,
   "quoteTarget": {
-    "targetSeq": 42
+    "seq": 42
   },
   "contentType": "PURE_TEXT",
   "content": "{\"text\":\"Acknowledged\"}",
@@ -113,6 +114,7 @@ A consumer MUST reject at least the following cases:
 
 - `text` is empty, is not a string, or contains an unpaired surrogate.
 - Content contains an unknown field, including an embedded `quote`.
-- `quoteTarget.targetSeq` is not a `PositiveSafeInteger`.
+- `quoteTarget` is null, has neither or both coordinate fields, an unknown
+  field, or a coordinate that is not a `PositiveSafeInteger`.
 - `quoteTarget` identifies another thread.
 - The outer `assets` of a `PURE_TEXT` message is non-empty.

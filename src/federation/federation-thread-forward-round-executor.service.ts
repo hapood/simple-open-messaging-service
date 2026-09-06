@@ -12,6 +12,7 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
+import { filterMirrorMessagePage } from './federation-mirror-message-filter.js';
 import { FederationService, S2sResponseError } from './federation.service.js';
 import {
   FederationThreadResourceClient,
@@ -81,17 +82,18 @@ export class FederationThreadForwardRoundExecutorService {
         complete: async ({ authorizationEpoch }) => {
           let publish: (() => Promise<void>) | undefined;
           await this.database.db.transaction(async (tx) => {
-            await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
-              tx,
-              threadId,
-              authorizationEpoch,
-            );
+            const threadLock =
+              await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
+                tx,
+                threadId,
+                authorizationEpoch,
+              );
             if (messageBatch) {
               const publication =
-                await this.federation.applyForwardMessagePageInTransaction(
-                  tx,
-                  messageBatch,
-                );
+                await this.federation.applyForwardMessagePageInTransaction(tx, {
+                  ...messageBatch,
+                  threadLock,
+                });
               publish = publication.publish;
             }
             if (messageAdvance)
@@ -100,6 +102,7 @@ export class FederationThreadForwardRoundExecutorService {
                 threadId,
                 messageAdvance.processed,
                 messageAdvance.target,
+                namespaceId,
               );
           });
           await publish?.();
@@ -138,16 +141,17 @@ export class FederationThreadForwardRoundExecutorService {
         complete: async ({ authorizationEpoch }) => {
           let publish: (() => Promise<void>) | undefined;
           await this.database.db.transaction(async (tx) => {
-            await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
-              tx,
-              threadId,
-              authorizationEpoch,
-            );
+            const threadLock =
+              await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
+                tx,
+                threadId,
+                authorizationEpoch,
+              );
             if (tombstoneBatch) {
               const publication =
                 await this.federation.applyForwardTombstonePageInTransaction(
                   tx,
-                  tombstoneBatch,
+                  { ...tombstoneBatch, threadLock },
                 );
               publish = publication.publish;
             }
@@ -157,6 +161,7 @@ export class FederationThreadForwardRoundExecutorService {
                 threadId,
                 deletionAdvance.processed,
                 deletionAdvance.target,
+                namespaceId,
               );
           });
           await publish?.();
@@ -177,7 +182,10 @@ export class FederationThreadForwardRoundExecutorService {
     query.set('after', params.after.toString());
     query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set('includeSelf', 'true');
+    query.set(
+      'includeSelf',
+      String(!(source.kind === 'GROUP' && source.localGroupAuthority)),
+    );
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(
@@ -192,6 +200,10 @@ export class FederationThreadForwardRoundExecutorService {
       return { scannedThrough: resumeAfter };
     }
     this.assertMessagePage(source, response.data, params);
+    response = {
+      ...response,
+      data: filterMirrorMessagePage(source, response.data),
+    };
     const closures = await this.prefetchForwardClosures(source, response);
     return {
       scannedThrough: response.data.scannedThrough,
@@ -378,7 +390,8 @@ export class FederationThreadForwardRoundExecutorService {
           throw new Error('invalid forward card');
         bundleId = requireBundleId(content['bundleId']);
       } catch {
-        this.malformed('peer returned an invalid FORWARD card');
+        // Page application logs and isolates malformed cards in their own savepoints.
+        continue;
       }
       let closure = byBundleId.get(bundleId);
       if (!closure) {

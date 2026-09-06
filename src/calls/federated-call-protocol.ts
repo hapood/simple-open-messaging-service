@@ -52,7 +52,6 @@ export type CallSignalPayload =
 
 interface S2SCallFrameBase {
   callSid: string;
-  callType: 'AUDIO' | 'VIDEO';
 }
 
 type PayloadlessCallOperation =
@@ -71,6 +70,7 @@ type PayloadlessCallFrame = {
 export type S2SCallFrame =
   | (S2SCallFrameBase & {
       op: 'incoming';
+      callType: 'AUDIO' | 'VIDEO';
       payload: { fromAccount: string; toAccount: string };
     })
   | PayloadlessCallFrame
@@ -84,7 +84,6 @@ export type S2SCallFrame =
     })
   | (S2SCallFrameBase & {
       op: 'video-upgraded';
-      callType: 'VIDEO';
     })
   | (S2SCallFrameBase & {
       op: 'ended';
@@ -104,26 +103,18 @@ type WithWirePayload<Payload> = Payload extends {
 type WithWireNames<Frame> = Frame extends {
   callSid: infer CallId;
   op: infer Operation;
-  callType: infer MediaType;
 }
-  ? Frame extends { payload: infer Payload }
-    ? Omit<Frame, 'callSid' | 'op' | 'callType' | 'payload'> & {
-        callId: CallId;
-        operation: Operation;
-        mediaType: MediaType;
-        payload: WithWirePayload<Payload>;
-      }
-    : Omit<Frame, 'callSid' | 'op' | 'callType'> & {
-        callId: CallId;
-        operation: Operation;
-        mediaType: MediaType;
-      }
+  ? Omit<Frame, 'callSid' | 'op' | 'callType' | 'payload'> & {
+      callId: CallId;
+      operation: Operation;
+    } & (Frame extends { callType: infer MediaType } ? { mediaType: MediaType } : unknown)
+      & (Frame extends { payload: infer Payload } ? { payload: WithWirePayload<Payload> } : unknown)
   : never;
 
 /** Closed Federation v1 wire representation of an internal call frame. */
 export type S2SCallWireFrame = WithWireNames<S2SCallFrame>;
 
-const COMMON_KEYS = ['callSid', 'op', 'callType'] as const;
+const COMMON_KEYS = ['callSid', 'op'] as const;
 
 function malformed(message: string): never {
   throw new BusinessException(
@@ -167,20 +158,20 @@ export function assertS2SCallFrame(
   )
     ? ['payload']
     : [];
-  if (!hasExactlyKeys(value, [...COMMON_KEYS, ...conditionalKeys])) {
+  if (!hasExactlyKeys(value, [...COMMON_KEYS, ...conditionalKeys, ...(op === 'incoming' ? ['callType'] : [])])) {
     malformed('call frame contains fields not allowed for its operation');
   }
 
   if (
     typeof value.callSid !== 'string' ||
-    !CALL_SID_RE.test(value.callSid) ||
-    (value.callType !== 'AUDIO' && value.callType !== 'VIDEO')
+    !CALL_SID_RE.test(value.callSid)
   ) {
     malformed('malformed call frame scalar');
   }
 
   if (op === 'incoming') {
     if (
+      (value.callType !== 'AUDIO' && value.callType !== 'VIDEO') ||
       !isRecord(value.payload) ||
       !hasExactlyKeys(value.payload, ['fromAccount', 'toAccount']) ||
       typeof value.payload.fromAccount !== 'string' ||
@@ -230,9 +221,6 @@ export function assertS2SCallFrame(
     }
   }
 
-  if (op === 'video-upgraded' && value.callType !== 'VIDEO') {
-    malformed('video-upgraded requires mediaType VIDEO');
-  }
 }
 
 /** Parse the complete, closed POST /s2s/v1/call wire shape. */
@@ -266,7 +254,7 @@ export function parseS2SCallWireFrame(value: unknown): S2SCallFrame {
     ...('payload' in value ? { payload: internalPayload } : {}),
     callSid: callId,
     op: operation,
-    callType: mediaType,
+    ...('mediaType' in value ? { callType: mediaType } : {}),
   };
   assertS2SCallFrame(internalFrame);
   return internalFrame;
@@ -274,28 +262,17 @@ export function parseS2SCallWireFrame(value: unknown): S2SCallFrame {
 
 /** Serialize an internal call frame to its Federation v1 wire representation. */
 export function toS2SCallWireFrame(frame: S2SCallFrame): S2SCallWireFrame {
-  const { callSid, op: operation, callType, ...conditional } = frame;
-  const wireConditional =
-    frame.op === 'incoming'
-      ? {
-          payload: {
-            callerAccount: frame.payload.fromAccount,
-            calleeAccount: frame.payload.toAccount,
-          },
-        }
-      : frame.op === 'signal'
-        ? {
-            payload: {
-              signalId: frame.payload.signalId,
-              signalType: frame.payload.signalType,
-              data: frame.payload.data,
-            },
-          }
-        : conditional;
-  return {
-    callId: callSid,
-    operation,
-    mediaType: callType,
-    ...wireConditional,
-  } as S2SCallWireFrame;
+  const { callSid, op: operation, ...conditional } = frame;
+  if (frame.op === 'incoming') {
+    return {
+      callId: callSid,
+      operation: 'incoming',
+      mediaType: frame.callType,
+      payload: {
+        callerAccount: frame.payload.fromAccount,
+        calleeAccount: frame.payload.toAccount,
+      },
+    };
+  }
+  return { callId: callSid, operation, ...conditional } as S2SCallWireFrame;
 }

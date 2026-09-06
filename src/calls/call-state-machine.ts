@@ -51,9 +51,7 @@ export function decideCallTransition(
         ? 'apply'
         : 'invalid';
     case 'ended':
-      return state === 'accepted' || state === 'connected'
-        ? 'apply'
-        : 'invalid';
+      return 'apply';
   }
 }
 
@@ -91,10 +89,11 @@ export function isEndReasonAllowed(
   state: CallLifecycleState,
   reason: 'completed' | 'timeout' | 'failed',
 ): boolean {
+  if (reason === 'failed') return true;
   if (state === 'ringing') return false;
   return state === 'accepted'
-    ? reason === 'timeout' || reason === 'failed'
-    : reason === 'completed' || reason === 'failed';
+    ? reason === 'timeout' || reason === 'completed'
+    : reason === 'completed';
 }
 
 export function timeoutLifecycle(

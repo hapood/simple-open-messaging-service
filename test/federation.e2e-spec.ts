@@ -855,10 +855,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           ]);
           expect(source?.originSeq).toBe(remoteCopy?.originSeq);
           expect(source?.originServerTime).toBeNull();
+          const namespaceId = await requireActiveNamespaceId(appA, DOM_B);
           const receipt =
             await appA.database.query.federationMessageReceipt.findFirst({
               where: and(
-                eq(federationMessageReceipt.peerDomain, DOM_B),
+                eq(federationMessageReceipt.namespaceId, namespaceId),
                 eq(federationMessageReceipt.threadId, source!.threadId),
                 eq(federationMessageReceipt.peerSeq, remoteCopy!.seq),
                 eq(federationMessageReceipt.messageId, source!.id),
@@ -1841,7 +1842,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const invite = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: groupThreadA, userIds: [bobStubIdOnA] });
+      .send({
+        groupId: groupThreadA,
+        users: [{ account: 'bob', domain: DOM_B }],
+      });
     expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, invite.body);
 
@@ -2388,13 +2392,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const groupInviteDave = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
+      .send({
+        groupId: firstGroupThreadA,
+        users: [{ account: 'dave', domain: DOM_B }],
+      });
     expect(groupInviteDave.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, groupInviteDave.body);
     expect(
       groupInviteDave.body.data.invited,
       JSON.stringify(groupInviteDave.body),
-    ).toContain(daveStubIdOnA);
+    ).toContainEqual({ account: 'dave', domain: DOM_B });
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -2812,12 +2819,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const reinvite = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
+      .send({
+        groupId: firstGroupThreadA,
+        users: [{ account: 'dave', domain: DOM_B }],
+      });
     expect(reinvite.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinvite.body);
-    expect(reinvite.body.data.invited, JSON.stringify(reinvite.body)).toContain(
-      daveStubIdOnA,
-    );
+    expect(
+      reinvite.body.data.invited,
+      JSON.stringify(reinvite.body),
+    ).toContainEqual({ account: 'dave', domain: DOM_B });
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -3009,7 +3020,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const reinviteBob = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: firstGroupThreadA, userIds: [bobStubIdOnA] });
+      .send({
+        groupId: firstGroupThreadA,
+        users: [{ account: 'bob', domain: DOM_B }],
+      });
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinviteBob.body);
     await vi.waitFor(
@@ -3200,7 +3214,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const invited = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: originThreadId, userIds: [daveStubIdOnA] });
+      .send({
+        groupId: originThreadId,
+        users: [{ account: 'dave', domain: DOM_B }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, invited.body);
     const originThread = await findGroupThreadById(appA, originThreadId);

@@ -261,8 +261,11 @@ to these identifiers rather than only printing an assertion expression.
   owner and the previous owner is no longer owner. Role projections and system
   presentation messages must not contradict that result.
 - **GRP-007:** A dissolved group cannot accept further membership, role,
-  profile, or message mutations, and all replicas eventually expose the
-  dissolved state.
+  profile, or message mutations. The origin retains its permanent dissolved
+  state and pre-dissolution members lose active relationships on their home
+  nodes. Mirrors retain historical Group Meta without a terminal empty-roster
+  update. Lazy profile snapshots are required only where current authorization
+  permits resolution; already cached snapshots must still match their authority.
 - **GRP-008:** Current peer audiences equal the set of domains containing
   entitled active members, subject to the protocol's retained visibility
   rules; removed domains receive no new heads.

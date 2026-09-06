@@ -10,6 +10,10 @@ import { FederationTransportConfigService } from './federation-transport-config.
 import { SignatureService } from './signature.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
+export interface FederationPostOptions {
+  signatureExpiresAtSec?: number;
+}
+
 export interface FederationPeerHttpLifecycle {
   isFatalPeerCode(code: unknown): code is number;
   markContactSuccess(domain: string): Promise<void>;
@@ -27,20 +31,34 @@ export class FederationPeerHttp {
     private readonly lifecycle: FederationPeerLifecycle,
   ) {}
 
-  async post(path: string, body: string, peerDomain: string): Promise<void> {
+  async post(
+    path: string,
+    body: string,
+    peerDomain: string,
+    options: FederationPostOptions = {},
+  ): Promise<void> {
     const base = await this.discovery.resolveBase(peerDomain);
-    await this.postUrl(new URL(`${base}${path}`), body, peerDomain);
+    await this.postUrl(new URL(`${base}${path}`), body, peerDomain, options);
   }
 
-  async postUrl(url: URL, body: string, peerDomain: string): Promise<void> {
+  async postUrl(
+    url: URL,
+    body: string,
+    peerDomain: string,
+    options: FederationPostOptions = {},
+  ): Promise<void> {
     const release = await this.discovery.acquireRequestSlot(peerDomain);
     try {
       const operationStartedAt = new Date();
-      const headers = await this.signature.signOutbound({
-        method: 'POST',
-        url,
-        body,
-      });
+      const headers = await this.signature.signOutbound(
+        {
+          method: 'POST',
+          url,
+          body,
+        },
+        operationStartedAt,
+        options.signatureExpiresAtSec,
+      );
       let response: Response;
       try {
         response = await this.discovery.request(url, {

@@ -25,7 +25,7 @@ export function buildUserPlan(prefix, usersPerNode, random) {
 }
 
 export function buildGroupCreationPlan(prefix, users, groupsPerNode, random) {
-  return federationLabNodes.flatMap((node) => {
+  const plans = federationLabNodes.flatMap((node) => {
     const localUsers = users.filter(({ nodeName }) => node.name === nodeName);
     if (localUsers.length === 0)
       throw new Error(`cannot create groups on ${node.name} without users`);
@@ -43,6 +43,25 @@ export function buildGroupCreationPlan(prefix, users, groupsPerNode, random) {
       };
     });
   });
+  // Reserve one existing group slot for each of two distinct seeded owners.
+  // At one group per node, the second owner must have an unreserved node slot.
+  const available = [...users];
+  for (let index = 0; index < 2; index += 1) {
+    const eligible = available.filter((user) =>
+      plans.some((group) => group.nodeName === user.nodeName && !group.active),
+    );
+    const owner = random.pick(eligible);
+    const group = random.pick(
+      plans.filter(
+        (candidate) =>
+          candidate.nodeName === owner.nodeName && !candidate.active,
+      ),
+    );
+    group.owner = owner.address;
+    group.active = true;
+    available.splice(available.indexOf(owner), 1);
+  }
+  return plans;
 }
 
 export class SeededRandom {

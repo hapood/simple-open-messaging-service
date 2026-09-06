@@ -20,6 +20,8 @@ import { LinkCardService } from '../../../services/link-card.service';
 import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
+import { Subject } from 'rxjs';
+import { QuoteResolutionService } from '../../../services/quote-resolution.service';
 
 @Component({
   selector: 'app-user-avatar',
@@ -53,6 +55,33 @@ function message(quote: ChatMsgData['quote']): ChatMsgData {
 }
 
 describe('TextRowComponent — forwarded quote navigation', () => {
+  it('refreshes a pending quote on mount and displays the resolved result', async () => {
+    const results = new Subject<{
+      seq: number;
+      author: string;
+      body: string;
+    }>();
+    const resolve = vi.fn(() => results);
+    TestBed.overrideProvider(QuoteResolutionService, { useValue: { resolve } });
+    const ref = mount({
+      ...message({ seq: 0, status: 'PENDING' }),
+      threadId: 7,
+    });
+    await TestBed.tick();
+    expect(resolve).toHaveBeenCalledWith({ threadId: 7, messageSeq: 2 });
+    expect(
+      (ref.location.nativeElement as HTMLElement).querySelector(
+        'button.msg-quote',
+      ),
+    ).toBeNull();
+    results.next({ seq: 5, author: 'Alice', body: 'loaded quote' });
+    ref.changeDetectorRef.detectChanges();
+    expect((ref.location.nativeElement as HTMLElement).textContent).toContain(
+      'loaded quote',
+    );
+    ref.destroy();
+    expect(results.observed).toBe(false);
+  });
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
@@ -111,6 +140,33 @@ describe('TextRowComponent — forwarded quote navigation', () => {
 
     expect(targets).toEqual([1]);
     subscription.unsubscribe();
+    ref.destroy();
+  });
+
+  it('renders a tombstoned quote without preview metadata or a clickable target', () => {
+    const ref = mount(
+      message({
+        seq: 1,
+        unavailable: true,
+        author: 'Alice',
+        body: 'secret',
+        image: '/old.jpg',
+        imageShape: 'thumbnail',
+        contentType: 'GALLERY',
+      }),
+    );
+    const host = ref.location.nativeElement as HTMLElement;
+    const targets: number[] = [];
+    ref.instance.quoteJump.subscribe((seq) => targets.push(seq));
+    const quote = host.querySelector<HTMLElement>('.msg-quote')!;
+    expect(quote.textContent?.trim()).toBe('Message not found');
+    expect(quote.querySelector('img, strong, app-user-avatar')).toBeNull();
+    expect(host.querySelector('button.msg-quote')).toBeNull();
+    quote.click();
+    expect(targets).toEqual([]);
+    expect(host.querySelector('.msg-bubble-text')?.textContent).toContain(
+      'reply',
+    );
     ref.destroy();
   });
 

@@ -5,6 +5,9 @@ import {
   input,
   output,
   ChangeDetectionStrategy,
+  effect,
+  signal,
+  Injector,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
@@ -17,6 +20,7 @@ import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { LinkCardService } from '../../../services/link-card.service';
 import { openExternalUrl } from '../../../services/runtime';
+import { QuoteResolutionService } from '../../../services/quote-resolution.service';
 
 /**
  * Plain-text message row (WhatsApp style: avatar + name + bubble + tail + bottom-right timestamp).
@@ -37,6 +41,39 @@ import { openExternalUrl } from '../../../services/runtime';
   styleUrl: './text-row.component.scss',
 })
 export class TextRowComponent {
+  private readonly injector = inject(Injector);
+  private readonly resolvedQuote = signal<{
+    key: string;
+    quote: NonNullable<ChatMsgData['quote']>;
+  } | null>(null);
+
+  constructor() {
+    effect((onCleanup) => {
+      const data = this.data();
+      if (
+        !data.threadId ||
+        data.quote?.status !== 'PENDING' ||
+        data.quote.unavailable
+      )
+        return;
+      const key = `${data.threadId}:${data.msgId}`;
+      const sub = this.injector
+        .get(QuoteResolutionService)
+        .resolve({ threadId: data.threadId, messageSeq: data.msgId })
+        .subscribe({
+          next: (quote) =>
+            this.resolvedQuote.set({
+              key,
+              quote: {
+                ...quote,
+                contentType: quote.contentType as ChatMsgData['contentType'],
+              },
+            }),
+          error: () => {}, // Keep pending state; another mount or reconnect may retry.
+        });
+      onCleanup(() => sub.unsubscribe());
+    });
+  }
   private readonly downloads = inject(ImageDownloadService);
   private readonly mediaThreshold = inject(MediaSizeThresholdService);
   private readonly linkCards = inject(LinkCardService);
@@ -120,8 +157,23 @@ export class TextRowComponent {
     );
   }
 
+  readonly displayQuote = computed(() => {
+    const data = this.data();
+    const resolved = this.resolvedQuote();
+    const quote = data.quote?.unavailable
+      ? data.quote
+      : resolved?.key === `${data.threadId}:${data.msgId}`
+        ? resolved.quote
+        : data.quote;
+    return quote?.unavailable
+      ? { seq: quote.seq, unavailable: true }
+      : quote?.status
+        ? { seq: quote.seq, status: quote.status }
+        : quote;
+  });
+
   readonly quotePreview = computed(() => {
-    const quote = this.data().quote;
+    const quote = this.displayQuote();
     return {
       author: quote?.author ?? '',
       body: quote?.body ?? '',

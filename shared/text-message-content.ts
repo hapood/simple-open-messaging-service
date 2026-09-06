@@ -2,7 +2,13 @@
 export interface TextMessageContent {
   text: string;
   quote?: {
+    /** Durable namespace-scoped sequence; read projection emits local seq (zero if unresolved). */
     seq: number;
+    /** Durable coordinate namespace: zero is local seq, positive is that source's originSeq. */
+    namespaceId?: number;
+    /** Legacy durable / unresolved read coordinate; new durable writes use seq + namespaceId. */
+    sourceSeq?: number;
+    status?: 'PENDING' | 'NOT_FOUND';
     author?: string;
     body?: string;
     contentType?: string;
@@ -56,6 +62,24 @@ export function parseTextMessageContent(
       return null;
 
     const quote = record['quote'] as Record<string, unknown>;
+    if (
+      quote['namespaceId'] !== undefined &&
+      (!Number.isSafeInteger(quote['namespaceId']) ||
+        Number(quote['namespaceId']) < 0)
+    )
+      return null;
+    if (
+      quote['sourceSeq'] !== undefined &&
+      (!Number.isSafeInteger(quote['sourceSeq']) ||
+        Number(quote['sourceSeq']) < 1)
+    )
+      return null;
+    if (
+      quote['status'] !== undefined &&
+      quote['status'] !== 'PENDING' &&
+      quote['status'] !== 'NOT_FOUND'
+    )
+      return null;
     if (!Number.isInteger(quote['seq']) || Number(quote['seq']) < 0)
       return null;
     for (const field of [
@@ -84,6 +108,15 @@ export function parseTextMessageContent(
       return null;
     result.quote = {
       seq: Number(quote['seq']),
+      ...(quote['namespaceId'] === undefined
+        ? {}
+        : { namespaceId: Number(quote['namespaceId']) }),
+      ...(quote['sourceSeq'] === undefined
+        ? {}
+        : { sourceSeq: Number(quote['sourceSeq']) }),
+      ...(quote['status'] === 'PENDING' || quote['status'] === 'NOT_FOUND'
+        ? { status: quote['status'] }
+        : {}),
       ...(typeof quote['author'] === 'string'
         ? { author: quote['author'] }
         : {}),
@@ -110,6 +143,18 @@ export function parseTextMessageContent(
   } catch {
     return null;
   }
+}
+
+/** Older unresolved rows used sourceSeq and inherited the containing message's namespace. */
+export function storedQuoteCoordinate(
+  quote: NonNullable<TextMessageContent['quote']>,
+  sourceNamespaceId: number,
+): { seq: number; namespaceId: number } {
+  if (quote.namespaceId !== undefined)
+    return { seq: quote.seq, namespaceId: quote.namespaceId };
+  return quote.sourceSeq === undefined
+    ? { seq: quote.seq, namespaceId: 0 }
+    : { seq: quote.sourceSeq, namespaceId: sourceNamespaceId };
 }
 
 /** Parse a PURE_TEXT value that has already crossed an input-validation boundary. */

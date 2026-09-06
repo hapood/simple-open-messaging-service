@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
@@ -123,11 +124,17 @@ export class FederationStatePullService {
               domain: resolution.domain,
               rev: resolution.rev,
             })
-            .catch((error: unknown) =>
+            .catch((error: unknown) => {
+              // Post-commit preloading may outlive the intent authorizing it.
+              if (
+                error instanceof BusinessException &&
+                error.bizCode === BusinessCode.NOT_FOUND
+              )
+                return;
               this.logger.warn(
                 `profile resolution failed for ${resolution.account}@${resolution.domain} rev ${resolution.rev}: ${(error as Error).message}`,
-              ),
-            );
+              );
+            });
         }
       },
     });

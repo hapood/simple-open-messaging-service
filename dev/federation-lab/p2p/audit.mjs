@@ -16,6 +16,7 @@ export function normalizeNodePairRows(node, rows, users) {
   const active = new Set();
   const duplicates = [];
   const invalid = [];
+  const threadIds = {};
 
   for (const row of rows) {
     if (row.endpointatype !== 'USER' || row.endpointbtype !== 'USER') {
@@ -46,6 +47,7 @@ export function normalizeNodePairRows(node, rows, users) {
       continue;
     }
     all.add(key);
+    if (Number.isInteger(row.threadid)) threadIds[key] = row.threadid;
     if (row.active) {
       if (active.has(key)) duplicates.push({ pair: key, id: row.id });
       active.add(key);
@@ -57,6 +59,7 @@ export function normalizeNodePairRows(node, rows, users) {
     active: [...active].sort(),
     duplicates,
     invalid,
+    threadIds,
   };
 }
 
@@ -71,6 +74,7 @@ async function readNodeRows(client) {
       "endpointBAccount" AS endpointbaccount,
       "endpointBDomain" AS endpointbdomain,
       "active" AS active
+      , "threadId" AS threadid
     FROM "RelationshipPair"
     WHERE "kind" = 'P2P'
     ORDER BY "id"

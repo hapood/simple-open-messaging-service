@@ -20,6 +20,8 @@ import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler
     DurableTaskSchedulerService,
   ],
   exports: [
+    DurableTaskSchedulerService,
+    DurableAsyncTaskSchedulerService,
     DurableTaskQueueService,
     DurableTaskStoreService,
     DurableTaskDispatcherService,

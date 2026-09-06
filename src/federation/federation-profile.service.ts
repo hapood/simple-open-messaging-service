@@ -345,7 +345,7 @@ export class FederationProfileService {
                 eq(tables.profileVersion.profileRev, rev),
               ),
             )
-            .innerJoin(
+            .leftJoin(
               tables.groupMetaProfileFeed,
               and(
                 eq(tables.groupMetaProfileFeed.groupId, tables.group.id),
@@ -357,6 +357,33 @@ export class FederationProfileService {
                 eq(tables.group.account, account),
                 eq(tables.group.domain, 'local'),
                 eq(tables.group.namespaceId, 0),
+                sql`(
+                  ${tables.groupMetaProfileFeed.groupId} IS NOT NULL
+                  OR EXISTS (
+                    SELECT 1
+                    FROM "RelationshipIntent" intent
+                    JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+                    WHERE intent."profileRev" = ${rev}
+                      AND (intent.status = 'ACCEPTED'
+                        OR (intent.status = 'REQUESTED'
+                          AND intent."expiresAt" > CURRENT_TIMESTAMP))
+                      AND pair."endpointANamespaceId" = ${namespaceId}
+                      AND pair."endpointBNamespaceId" = ${namespaceId}
+                      AND (
+                        (intent."authorSide" = 'A'
+                          AND pair."endpointAType" = 'GROUP'
+                          AND pair."endpointAAccount" = ${tables.group.account}
+                          AND pair."endpointADomain" = 'local'
+                          AND pair."endpointBDomain" = ${peerDomain})
+                        OR
+                        (intent."authorSide" = 'B'
+                          AND pair."endpointBType" = 'GROUP'
+                          AND pair."endpointBAccount" = ${tables.group.account}
+                          AND pair."endpointBDomain" = 'local'
+                          AND pair."endpointADomain" = ${peerDomain})
+                      )
+                  )
+                )`,
               ),
             )
             .limit(1);

@@ -101,7 +101,6 @@ describe('FederationMediaLocalizationService', () => {
         threadId: 11,
         creatorAccount: 'alice',
         creatorDomain: 'peer.example',
-        creatorNamespaceId: 4,
         originSeq: 9,
       } as never),
     ).resolves.toEqual({
@@ -146,7 +145,6 @@ describe('FederationMediaLocalizationService', () => {
         threadId: 11,
         creatorAccount: 'alice',
         creatorDomain: 'peer.example',
-        creatorNamespaceId: 4,
         originSeq: 9,
       } as never),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });

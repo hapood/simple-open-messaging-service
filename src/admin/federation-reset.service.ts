@@ -89,8 +89,7 @@ export class FederationResetService {
           (SELECT count(*)::int FROM remote_group_meta_facts) AS "groupMetaMemberFactCount",
           (SELECT count(*)::int FROM affected_threads) AS "affectedThreadCount",
           (SELECT count(*)::int FROM "Message"
-            WHERE "creatorNamespaceId" = ${namespaceId}
-               OR "sourceNamespaceId" = ${namespaceId}) AS "authoredMessageCount",
+            WHERE "sourceNamespaceId" = ${namespaceId}) AS "authoredMessageCount",
           (SELECT count(*)::int FROM "RelationshipPair"
             WHERE "endpointANamespaceId" = ${namespaceId}
                OR "endpointBNamespaceId" = ${namespaceId}) AS "relationshipCount"

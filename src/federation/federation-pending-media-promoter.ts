@@ -13,10 +13,13 @@ import {
 } from '../../shared/text-message-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { extractDigests } from '../upload/file-content.js';
+import type { S2SAddress } from './federation-address.js';
 
 export interface PendingMediaMaterializationEffect {
   threadId: number;
   seq: number;
+  author: S2SAddress;
+  sourceDomain: string;
   dependentBatchIds: string[];
 }
 
@@ -53,14 +56,12 @@ export class FederationPendingMediaPromoter {
         columns: {
           threadId: true,
           originSeq: true,
-          federationSourceDomain: true,
           sourceNamespaceId: true,
         },
       });
       if (
         !stagedIdentity ||
         stagedIdentity.originSeq === null ||
-        stagedIdentity.federationSourceDomain !== batch.originDomain ||
         stagedIdentity.sourceNamespaceId !== batch.namespaceId
       ) {
         throw new Error(
@@ -95,18 +96,22 @@ export class FederationPendingMediaPromoter {
       if (
         stagedMessage.localState !== 'STUB' ||
         stagedMessage.originSeq === null ||
-        stagedMessage.federationSourceDomain !== batch.originDomain
+        stagedMessage.sourceNamespaceId !== batch.namespaceId
       ) {
         throw new Error(
           `inbound PendingMedia ${batchId} has an invalid Message STUB`,
         );
       }
+      if (
+        stagedMessage.creatorAccount === null ||
+        stagedMessage.creatorDomain === null
+      )
+        throw new Error('inbound media message has no author');
 
       const [thread] = await tx
         .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
         .from(tables.messageThread)
         .where(eq(tables.messageThread.id, stagedMessage.threadId))
-        .for('update')
         .limit(1);
       if (!thread) throw new Error('inbound Message STUB thread is missing');
       if (thread.authorizationEpoch !== batch.expectedAuthorizationEpoch) {
@@ -116,7 +121,10 @@ export class FederationPendingMediaPromoter {
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(tables.federatedMessageTombstone.threadId, stagedMessage.threadId),
-          eq(tables.federatedMessageTombstone.sourceDomain, batch.originDomain),
+          eq(
+            tables.federatedMessageTombstone.sourceNamespaceId,
+            batch.namespaceId,
+          ),
           eq(
             tables.federatedMessageTombstone.messageSeq,
             stagedMessage.originSeq,
@@ -130,24 +138,23 @@ export class FederationPendingMediaPromoter {
         : await this.resolveQuoteSeq(
             tx,
             stagedMessage.threadId,
-            batch.originDomain,
+            batch.namespaceId,
             batch.dependsOnOriginSeq,
           );
-      if (batch.dependsOnOriginSeq !== null && localQuoteSeq === null) {
-        return null;
-      }
-
       let storedContent = contextualizeCasUrls(
         stagedMessage.content,
         stagedMessage.threadId,
         stagedMessage.seq,
       );
-      if (localQuoteSeq !== undefined && localQuoteSeq !== null) {
+      if (batch.dependsOnOriginSeq !== null && !tombstone) {
         const text = parseTextMessageContent(stagedMessage.content);
         if (!text) throw new Error('pending quote has invalid text content');
         storedContent = stringifyTextMessageContent({
           text: text.text,
-          quote: { seq: localQuoteSeq },
+          quote:
+            localQuoteSeq == null
+              ? { seq: 0, sourceSeq: batch.dependsOnOriginSeq }
+              : { seq: localQuoteSeq },
         });
       }
 
@@ -188,7 +195,12 @@ export class FederationPendingMediaPromoter {
       return {
         threadId: stagedMessage.threadId,
         seq: stagedMessage.seq,
-        originDomain: batch.originDomain,
+        author: {
+          account: stagedMessage.creatorAccount,
+          domain: stagedMessage.creatorDomain,
+        },
+        sourceDomain: batch.originDomain,
+        sourceNamespaceId: batch.namespaceId,
         originSeq: stagedMessage.originSeq,
       };
     });
@@ -206,13 +218,15 @@ export class FederationPendingMediaPromoter {
           eq(tables.pendingMedia.direction, 'INBOUND'),
           inArray(tables.pendingMedia.status, ['pending', 'downloading']),
           eq(tables.message.threadId, effect.threadId),
-          eq(tables.pendingMedia.originDomain, effect.originDomain),
+          eq(tables.pendingMedia.namespaceId, effect.sourceNamespaceId),
           eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
         ),
       );
     return {
       threadId: effect.threadId,
       seq: effect.seq,
+      author: effect.author,
+      sourceDomain: effect.sourceDomain,
       dependentBatchIds: dependents.map(({ batchId: id }) => id),
     };
   }
@@ -220,7 +234,7 @@ export class FederationPendingMediaPromoter {
   private async resolveQuoteSeq(
     tx: DatabaseTransaction,
     threadId: number,
-    sourceDomain: string,
+    namespaceId: number,
     sourceSeq: number | null,
   ): Promise<number | null | undefined> {
     if (sourceSeq === null) return undefined;
@@ -240,7 +254,7 @@ export class FederationPendingMediaPromoter {
       .where(
         and(
           eq(tables.message.threadId, threadId),
-          eq(tables.message.federationSourceDomain, sourceDomain),
+          eq(tables.message.sourceNamespaceId, namespaceId),
           eq(tables.message.originSeq, sourceSeq),
         ),
       )
@@ -249,7 +263,7 @@ export class FederationPendingMediaPromoter {
 
     const receipt = await tx.query.federationMessageReceipt.findFirst({
       where: and(
-        eq(tables.federationMessageReceipt.peerDomain, sourceDomain),
+        eq(tables.federationMessageReceipt.namespaceId, namespaceId),
         eq(tables.federationMessageReceipt.threadId, threadId),
         eq(tables.federationMessageReceipt.peerSeq, sourceSeq),
       ),

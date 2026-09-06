@@ -1,6 +1,11 @@
 {
   "vectors": [
     {
+      "name": "quote coordinates select sender or receiver timeline",
+      "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
+      "values": [{ "seq": 8 }, { "originSeq": 42 }, { "seq": 9007199254740990 }]
+    },
+    {
       "name": "well-known supports v1 and a future major",
       "schema": "urn:somfp:v1:discovery",
       "value": {
@@ -29,9 +34,15 @@
       "name": "health result",
       "schema": "urn:somfp:v1:identity#/$defs/healthResult",
       "values": [
-        { "status": "available" },
-        { "status": "degraded" },
-        { "status": "unavailable" }
+        {
+          "status": "available"
+        },
+        {
+          "status": "degraded"
+        },
+        {
+          "status": "unavailable"
+        }
       ]
     },
     {
@@ -173,19 +184,27 @@
             "account": "alice",
             "domain": "a.example",
             "operation": "UPSERT",
-            "body": { "role": "OWNER", "profileRev": 2 }
+            "body": {
+              "role": "OWNER",
+              "profileRev": 2
+            }
           },
           {
             "feedId": "8",
             "account": "bob",
             "domain": "b.example",
             "operation": "UPSERT",
-            "body": { "role": "MEMBER", "profileRev": 1 }
+            "body": {
+              "role": "MEMBER",
+              "profileRev": 1
+            }
           },
           {
             "feedId": "9",
             "operation": "GROUP_PROFILE",
-            "body": { "profileRev": 4 }
+            "body": {
+              "profileRev": 4
+            }
           }
         ],
         "scannedThrough": "9",
@@ -243,8 +262,13 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "!team" },
-            "author": { "account": "alice", "domain": "a.example" },
+            "thread": {
+              "account": "!team"
+            },
+            "author": {
+              "account": "alice",
+              "domain": "a.example"
+            },
             "seq": 2,
             "profileRev": 3,
             "originSeq": null,
@@ -265,7 +289,10 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "alice", "peerAccount": "bob" },
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 3,
             "profileRev": 3,
@@ -394,22 +421,22 @@
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "incoming",
           "mediaType": "AUDIO",
-          "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+          "payload": {
+            "callerAccount": "alice",
+            "calleeAccount": "bob"
+          }
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "ringing",
-          "mediaType": "AUDIO"
+          "operation": "ringing"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "accepted",
-          "mediaType": "AUDIO"
+          "operation": "accepted"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "signal",
-          "mediaType": "AUDIO",
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000001",
             "signalType": "offer",
@@ -419,7 +446,6 @@
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "signal",
-          "mediaType": "AUDIO",
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000002",
             "signalType": "answer",
@@ -429,7 +455,6 @@
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "signal",
-          "mediaType": "AUDIO",
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000003",
             "signalType": "ice",
@@ -439,7 +464,6 @@
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "signal",
-          "mediaType": "VIDEO",
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000004",
             "signalType": "video-state",
@@ -449,34 +473,55 @@
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "connected",
-          "mediaType": "AUDIO",
-          "payload": { "startedAt": 1700000000100 }
+          "payload": {
+            "startedAt": 1700000000100
+          }
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "video-upgraded",
-          "mediaType": "VIDEO"
+          "operation": "video-upgraded"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "declined",
-          "mediaType": "AUDIO"
+          "operation": "declined"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "cancelled",
-          "mediaType": "AUDIO"
+          "operation": "cancelled"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "missed",
-          "mediaType": "AUDIO"
+          "operation": "missed"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
           "operation": "ended",
+          "payload": {
+            "endReason": "completed"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "payload": {
+            "endReason": "failed"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "payload": {
+            "endReason": "timeout"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "incoming",
           "mediaType": "VIDEO",
-          "payload": { "endReason": "completed" }
+          "payload": {
+            "callerAccount": "alice",
+            "calleeAccount": "bob"
+          }
         }
       ]
     },
@@ -506,8 +551,14 @@
       "name": "authorized profile parameters",
       "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
       "values": [
-        { "account": "alice", "rev": "3" },
-        { "account": "!group", "rev": "4" }
+        {
+          "account": "alice",
+          "rev": "3"
+        },
+        {
+          "account": "!group",
+          "rev": "4"
+        }
       ]
     },
     {
@@ -673,7 +724,10 @@
     {
       "name": "error envelope",
       "schema": "urn:somfp:v1:error",
-      "value": { "code": 50007, "message": "malformed" }
+      "value": {
+        "code": 50007,
+        "message": "malformed"
+      }
     },
     {
       "name": "quota error envelope",
@@ -681,7 +735,9 @@
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
-        "data": { "retryAfter": 60 }
+        "data": {
+          "retryAfter": 60
+        }
       }
     },
     {
@@ -690,7 +746,10 @@
       "value": {
         "code": 50019,
         "message": "requested message history is no longer retained",
-        "data": { "resumeAfter": 120, "resumeBefore": 501 }
+        "data": {
+          "resumeAfter": 120,
+          "resumeBefore": 501
+        }
       }
     },
     {
@@ -699,7 +758,10 @@
       "value": {
         "code": 50019,
         "message": "requested tombstone cursor is unavailable",
-        "data": { "resumeAfter": 4, "resumeBefore": 10 }
+        "data": {
+          "resumeAfter": 4,
+          "resumeBefore": 10
+        }
       }
     },
     {
@@ -720,7 +782,9 @@
       "value": {
         "code": 50024,
         "message": "message query rate limited",
-        "data": { "retryAfter": 3 }
+        "data": {
+          "retryAfter": 3
+        }
       }
     },
     {
@@ -729,7 +793,9 @@
       "value": {
         "code": 50025,
         "message": "message query temporarily unavailable",
-        "data": { "retryAfter": 10 }
+        "data": {
+          "retryAfter": 10
+        }
       }
     }
   ]

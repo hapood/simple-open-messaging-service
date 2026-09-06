@@ -16,7 +16,6 @@ function sourceRow(childDepth: number) {
     threadId: 4,
     creatorAccount: 'alice',
     creatorDomain: 'local',
-    creatorNamespaceId: 0,
     profileRev: 1,
     contentType: ContentType.FORWARD,
     content: JSON.stringify({ version: 1, bundleId: 'child' }),

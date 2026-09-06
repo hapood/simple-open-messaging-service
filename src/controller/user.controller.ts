@@ -374,6 +374,7 @@ export class UserController {
     // No domain, or our own domain, is a local account lookup.
     const user = await this.userService.findUniqueUser({
       account_domain: { account: account, domain: 'local' },
+      namespaceId: 0,
       availability: 'AVAILABLE',
     });
     if (user !== null) {
@@ -418,6 +419,7 @@ export class UserController {
     if (domain === this.federationService.ourDomain) {
       const localUser = await this.userService.findUniqueUser({
         account_domain: { account, domain: 'local' },
+        namespaceId: 0,
         availability: 'AVAILABLE',
       });
       if (!localUser) {

@@ -279,34 +279,55 @@ export class RelationshipService {
     remoteAccount: string,
     remoteDomain: string,
   ): Promise<FriendRelationshipState> {
-    const account = normalizeAccount(remoteAccount);
-    const relationship = await this.database.db.transaction(async (tx) => {
-      const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
-      return this.relationshipIntents.readP2PRelationshipByAddressInTx(
-        tx,
+    return (
+      await this.federatedRelationshipContext(
         localUserId,
-        {
-          account,
-          domain: remoteDomain,
-          namespaceId: context.namespaceId,
-        },
-      );
-    });
-    if (relationship?.pair.active) return 'FRIEND';
+        remoteAccount,
+        remoteDomain,
+      )
+    ).status;
+  }
+
+  async federatedRelationshipContext(
+    localUserId: number,
+    remoteAccount: string,
+    remoteDomain: string,
+  ): Promise<{ namespaceId: number; status: FriendRelationshipState }> {
+    const account = normalizeAccount(remoteAccount);
+    const { relationship, namespaceId } = await this.database.db.transaction(
+      async (tx) => {
+        const context = await this.namespaces.captureActiveInTx(
+          tx,
+          remoteDomain,
+        );
+        const relationship =
+          await this.relationshipIntents.readP2PRelationshipByAddressInTx(
+            tx,
+            localUserId,
+            {
+              account,
+              domain: remoteDomain,
+              namespaceId: context.namespaceId,
+            },
+          );
+        return { relationship, namespaceId: context.namespaceId };
+      },
+    );
+    if (relationship?.pair.active) return { namespaceId, status: 'FRIEND' };
     const now = new Date();
     if (
       relationship?.remoteIntent?.status === 'REQUESTED' &&
       relationship.remoteIntent.expiresAt !== null &&
       relationship.remoteIntent.expiresAt > now
     )
-      return 'INCOMING_PENDING';
+      return { namespaceId, status: 'INCOMING_PENDING' };
     if (
       relationship?.localIntent?.status === 'REQUESTED' &&
       relationship.localIntent.expiresAt !== null &&
       relationship.localIntent.expiresAt > now
     )
-      return 'OUTGOING_PENDING';
-    return 'NONE';
+      return { namespaceId, status: 'OUTGOING_PENDING' };
+    return { namespaceId, status: 'NONE' };
   }
 
   async resolveP2PRequestCommandScope(

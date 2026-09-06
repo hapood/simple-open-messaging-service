@@ -18,6 +18,7 @@ import { loadFederationConfig } from './federation.config.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import type { GroupMetaHeadFanoutPayload } from './group-projection-task.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 
 const AUDIENCE_PAGE_SIZE = 10;
 
@@ -62,6 +63,18 @@ export class GroupProjectionTaskExecutionService {
     payload: GroupMetaHeadFanoutPayload,
   ): Promise<ProjectionPageEffect> {
     return this.database.db.transaction(async (tx) => {
+      const [identity] = await tx
+        .select({ account: group.account, domain: group.domain })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .where(eq(messageThread.id, payload.threadId))
+        .limit(1);
+      if (!identity)
+        throw new Error('Group Meta head fan-out source is missing');
+      // Membership mutations hold this scope before touching audiences and client
+      // allocators. Acquire it before even the task row: those mutations can also
+      // enqueue a successor task. Re-read the canonical head after the lock.
+      await lockBusinessAccountsInTx(tx, [identity]);
       const locked = await tx.execute<{
         status: string;
         taskType: string;

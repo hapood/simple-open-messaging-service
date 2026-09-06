@@ -10,22 +10,36 @@ import {
   p2pActionOptions,
 } from './state-machine.mjs';
 import { federationLabNodes } from '../topology.mjs';
-import { randomUUID } from 'node:crypto';
-import sharp from 'sharp';
-import { waitForFederationConvergence } from './final-audit.mjs';
-import { LabApiError } from './api-actors.mjs';
+import { messageOperationTypes } from './message-operations.mjs';
+import { admitOperation, journalError } from './operations.mjs';
+import { recordMembershipCoverage } from './coverage.mjs';
 import {
-  mapConcurrent,
-  resolveWithRetry,
-  waitForIncoming,
-  waitForTaskQueueIdle,
-} from './execute.mjs';
+  finishWorkloadBatch,
+  assertVerificationMode,
+  verifyMidpointProfiles,
+} from './verification-mode.mjs';
+export { admitOperation } from './operations.mjs';
+import {
+  groupCandidateWeight,
+  weightedOrder,
+  workloadPolicy,
+} from './workload-policy.mjs';
+import {
+  executeReferenceWithdrawalScenario,
+  planMidpointDissolution,
+} from './fixed-scenarios.mjs';
+import { resolveWorkloadProfiles } from './profile-resolution.mjs';
+import { randomUUID } from 'node:crypto';
+import { readFederationAuditSnapshot } from './final-audit.mjs';
+import { LabApiError } from './api-actors.mjs';
+import { mapConcurrent, waitForTaskQueueIdle } from './execute.mjs';
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function shuffle(values, random) {
+  values = [...values];
   for (let index = values.length - 1; index > 0; index -= 1) {
     const other = random.integer(index + 1);
     [values[index], values[other]] = [values[other], values[index]];
@@ -41,6 +55,21 @@ export function scheduledAdmissionAt(startedAt, index, operationsPerSecond) {
   if (!Number.isInteger(operationsPerSecond) || operationsPerSecond <= 0)
     throw new Error('operationsPerSecond must be a positive integer');
   return startedAt + Math.floor((index * 1_000) / operationsPerSecond);
+}
+
+export function createAdmissionPacer(
+  operationsPerSecond,
+  now = Date.now,
+  wait = sleep,
+) {
+  scheduledAdmissionAt(0, 0, operationsPerSecond);
+  let nextAt = 0;
+  return async () => {
+    const current = now();
+    const scheduledAt = Math.max(current, nextAt);
+    nextAt = scheduledAt + 1000 / operationsPerSecond;
+    if (scheduledAt > current) await wait(scheduledAt - current);
+  };
 }
 
 function userRef(address) {
@@ -63,7 +92,9 @@ export function chooseStateWindow(log, random, groupSnapshot) {
     0,
     Math.min(3, log.users.length),
   );
-  const shuffledGroups = shuffle(log.groups ?? [], random);
+  const shuffledGroups = weightedOrder(random, log.groups ?? [], (group) =>
+    group.active ? workloadPolicy.activeGroupWeight : 1,
+  );
   const statefulGroups = groupSnapshot
     ? shuffledGroups.filter((group) =>
         users.some((address) => {
@@ -126,7 +157,9 @@ function chooseProfileUpdate({
     };
   }
   const available = log.groups.filter(
-    ({ address }) => !usedGroups.has(address),
+    ({ address, nodeName }) =>
+      !usedGroups.has(address) &&
+      !groupSnapshot[nodeName]?.groups.get(address)?.dissolved,
   );
   if (available.length === 0) return undefined;
   const planned = random.pick(available);
@@ -160,6 +193,7 @@ export function chooseRandomRound({
   random,
   count,
   groupSnapshot,
+  p2pMessages,
   round = 1,
   operationOffset = log.operations.length,
 }) {
@@ -177,26 +211,23 @@ export function chooseRandomRound({
     ),
     random,
   );
-  const groupCandidates = shuffle(
+  const groupCandidates = weightedOrder(
+    random,
     selectedUsers.flatMap((user) =>
       selectedGroups.map((group) => {
         const facts = observeUserGroup(groupSnapshot, user, group);
-        const managerHasWork =
-          (facts.memberRole === 'OWNER' || facts.memberRole === 'ADMIN') &&
-          (facts.pendingApplications.length > 0 ||
-            facts.pendingInvitations.length > 0);
-        const priority = managerHasWork
-          ? 4
-          : facts.memberRole
-            ? 3
-            : facts.groupIntent || facts.userIntent
-              ? 2
-              : 1;
-        return { user, group, facts, priority };
+        facts.previouslyLeft = log.operations.some(
+          (operation) =>
+            operation.group === group.address &&
+            operation.actor === user.address &&
+            operation.type === 'LEAVE_GROUP' &&
+            operation.status === 'SUCCEEDED',
+        );
+        return { user, group, facts };
       }),
     ),
-    random,
-  ).sort((left, right) => right.priority - left.priority);
+    ({ facts }) => groupCandidateWeight(facts),
+  );
   const decisions = [];
   const usedGroups = new Set();
   const usedP2pPairs = new Set();
@@ -295,6 +326,7 @@ export function chooseRandomRound({
       observedFacts,
     };
     const selected = chooseP2pAction(observedFacts, random);
+    if (!selected) continue;
     const decision = {
       ...common,
       type: selected.type,
@@ -302,6 +334,28 @@ export function chooseRandomRound({
       peer: selectedSubject,
       decisionOptions: p2pActionOptions(observedFacts).map(({ type }) => type),
     };
+    if (selected.type === 'SEND_P2P_MESSAGE') {
+      decision.p2pPair = decision.pair;
+      decision.threadId = observedFacts.threadId;
+      const nodeName = userRef(selectedAuthor).nodeName;
+      const authored =
+        p2pMessages?.[nodeName]
+          ?.get(decision.pair)
+          ?.messages.filter(
+            (message) =>
+              message.creatorAccount === userRef(selectedAuthor).account &&
+              (message.creatorDomain === 'local' ||
+                message.creatorDomain === userRef(selectedAuthor).domain) &&
+              message.clientMessageId &&
+              !message.isDeleted &&
+              message.localState === 'READY',
+          ) ?? [];
+      if (authored.length && random.chance(5)) {
+        decision.type = 'WITHDRAW_P2P_MESSAGE';
+        decision.target = random.pick(authored);
+      } else if (random.chance(5))
+        decision.type = random.pick(['SEND_FILE', 'SEND_GALLERY']);
+    }
     if (
       observedFacts.state === 'OUTGOING_PENDING' ||
       observedFacts.state === 'INCOMING_PENDING'
@@ -309,386 +363,12 @@ export function chooseRandomRound({
       const outgoing = observedFacts.state === 'OUTGOING_PENDING';
       decision.requestAuthor = outgoing ? selectedAuthor : selectedSubject;
       decision.requestSubject = outgoing ? selectedSubject : selectedAuthor;
-      decision.actor = decision.requestSubject;
+      // Incoming actions are performed by this observer, never by the other endpoint.
+      decision.actor = selectedAuthor;
     }
     decisions.push(decision);
   }
   return decisions;
-}
-
-function relationshipAddress(actor, peer) {
-  return {
-    account: peer.account,
-    domain: actor.node.name === peer.node.name ? 'local' : peer.domain,
-  };
-}
-
-function journalBody(body) {
-  return body.avatar ? { ...body, avatar: '[present]' } : body;
-}
-
-function journalError(error) {
-  const redact = (value) => {
-    if (Array.isArray(value)) return value.map(redact);
-    if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        /(password|token|cookie|otp)$/i.test(key) ? '[redacted]' : redact(item),
-      ]),
-    );
-  };
-  return {
-    message: error instanceof Error ? error.message : String(error),
-    ...(error instanceof LabApiError ? { details: redact(error.details) } : {}),
-  };
-}
-
-async function sendRequest(actor, peer, timeoutMs) {
-  let resolved;
-  const body = relationshipAddress(actor, peer);
-  if (actor.node.name !== peer.node.name) {
-    resolved = await resolveWithRetry(actor, peer, timeoutMs);
-    body.displayName = resolved.user.name;
-    if (resolved.user.avatar) body.avatar = resolved.user.avatar;
-  }
-  const accepted = await actor.post(
-    '/relationship/request',
-    body,
-    `request relationship with ${peer.address}`,
-  );
-  return {
-    accepted,
-    actor,
-    request: {
-      method: 'POST',
-      endpoint: '/relationship/request',
-      body: journalBody(body),
-    },
-    ...(resolved
-      ? {
-          preflight: {
-            endpoint: '/user/resolve-federated-stream',
-            target: peer.address,
-            observedRelationship: resolved.relationship ?? null,
-          },
-        }
-      : {}),
-  };
-}
-
-async function admitProfileOperation(operation, actors) {
-  const actor = actors.user(operation.actor);
-  if (operation.type === 'UPDATE_USER_PROFILE') {
-    const body = {
-      name: `user-${operation.id}`,
-      bio: `Federation profile update ${operation.id}`,
-      avatar: operation.avatarAction,
-    };
-    await actor.updateProfile(body);
-    return {
-      actor,
-      request: {
-        method: 'POST',
-        endpoint: '/user/update-profile',
-        body,
-      },
-    };
-  }
-  if (operation.type === 'UPDATE_GROUP_PROFILE') {
-    const avatar =
-      operation.avatarAction === 'SET'
-        ? await actor.uploadAvatar()
-        : operation.avatarAction === 'REMOVE'
-          ? ''
-          : undefined;
-    const body = {
-      groupId: operation.groupThreadId,
-      name: `group-${operation.id}`,
-      description: `Federation group update ${operation.id}`,
-      ...(avatar !== undefined ? { avatar } : {}),
-    };
-    await actor.updateGroup(body);
-    return {
-      actor,
-      request: {
-        method: 'POST',
-        endpoint: '/group/update',
-        body: journalBody(body),
-      },
-    };
-  }
-  throw new Error(`unsupported profile operation ${operation.type}`);
-}
-
-function groupAddress(actor, address) {
-  const separator = address.lastIndexOf('@');
-  const domain = address.slice(separator + 1);
-  return {
-    account: address.slice(0, separator),
-    domain: domain === actor.domain ? 'local' : domain,
-  };
-}
-
-async function admitGroupOperation(operation, actors, timeoutMs) {
-  const actor = actors.user(operation.actor);
-  const address = groupAddress(actor, operation.group);
-  const threadId = operation.groupThreadId;
-  let endpoint;
-  let body;
-  let accepted;
-  let preflight;
-  if (operation.type === 'REQUEST_GROUP_JOIN') {
-    endpoint = '/relationship/request';
-    let displayName = operation.observedFacts.group.name;
-    if (address.domain !== 'local') {
-      const resolved = await resolveWithRetry(
-        actor,
-        operation.observedFacts.group,
-        timeoutMs,
-      );
-      displayName = resolved.user.name;
-      preflight = {
-        endpoint: '/user/resolve-federated-stream',
-        target: operation.group,
-        observedRelationship: resolved.relationship ?? null,
-      };
-    }
-    body = {
-      ...address,
-      note: operation.id,
-      displayName,
-    };
-    accepted = await actor.post(
-      endpoint,
-      body,
-      `request to join ${operation.group}`,
-    );
-  } else if (operation.type === 'ACCEPT_GROUP_INVITATION') {
-    endpoint = '/relationship/accept';
-    body = address;
-    accepted = await actor.post(
-      endpoint,
-      body,
-      `accept invitation to ${operation.group}`,
-    );
-  } else if (operation.type === 'REVOKE_GROUP_APPLICATION') {
-    endpoint = '/relationship/revoke';
-    body = address;
-    accepted = await actor.post(
-      endpoint,
-      body,
-      `revoke group intent for ${operation.group}`,
-    );
-  } else if (operation.type === 'LEAVE_GROUP') {
-    endpoint = '/group/leave';
-    body = { groupId: threadId };
-    accepted = await actor.post(endpoint, body, `leave ${operation.group}`);
-  } else if (operation.type === 'INVITE_GROUP_MEMBER') {
-    endpoint = '/group/invite';
-    body = { groupId: threadId, userIds: [operation.target.id] };
-    const result = await actor.post(
-      endpoint,
-      body,
-      `invite ${operation.target.address}`,
-    );
-    if (result.tasks?.length !== 1 || result.skipped?.length !== 0) {
-      throw new Error(
-        `${operation.id}: group invite was not admitted: ${JSON.stringify(result)}`,
-      );
-    }
-    accepted = result.tasks[0];
-  } else if (
-    operation.type === 'ACCEPT_GROUP_APPLICATION' ||
-    operation.type === 'REJECT_GROUP_APPLICATION' ||
-    operation.type === 'REVOKE_GROUP_INVITATION'
-  ) {
-    endpoint = {
-      ACCEPT_GROUP_APPLICATION: '/group/join-request/accept',
-      REJECT_GROUP_APPLICATION: '/group/join-request/reject',
-      REVOKE_GROUP_INVITATION: '/group/invitation/revoke',
-    }[operation.type];
-    body = { groupId: threadId, requestId: operation.target.requestId };
-    accepted = await actor.post(
-      endpoint,
-      body,
-      `${operation.type} in ${operation.group}`,
-    );
-  } else if (
-    operation.type === 'KICK_GROUP_MEMBER' ||
-    operation.type === 'TRANSFER_GROUP_OWNERSHIP' ||
-    operation.type === 'SET_GROUP_ADMIN' ||
-    operation.type === 'REMOVE_GROUP_ADMIN'
-  ) {
-    endpoint = {
-      KICK_GROUP_MEMBER: '/group/kick',
-      TRANSFER_GROUP_OWNERSHIP: '/group/transfer',
-      SET_GROUP_ADMIN: '/group/set-role',
-      REMOVE_GROUP_ADMIN: '/group/set-role',
-    }[operation.type];
-    body = {
-      groupId: threadId,
-      account: operation.target.account,
-      domain: operation.target.domain,
-      ...(operation.type === 'SET_GROUP_ADMIN'
-        ? { role: 'ADMIN' }
-        : operation.type === 'REMOVE_GROUP_ADMIN'
-          ? { role: 'MEMBER' }
-          : {}),
-    };
-    accepted = await actor.post(
-      endpoint,
-      body,
-      `${operation.type} in ${operation.group}`,
-    );
-  } else if (operation.type === 'SEND_GROUP_MESSAGE') {
-    endpoint = '/send-message';
-    const clientMessageId = randomUUID();
-    body = {
-      threadId,
-      clientMessageId,
-      text: `federation-lab ${operation.id}`,
-    };
-    const message = await actor.sendText(threadId, body.text, clientMessageId);
-    return { actor, request: { method: 'POST', endpoint, body }, message };
-  } else if (
-    operation.type === 'SEND_FILE' ||
-    operation.type === 'SEND_GALLERY'
-  ) {
-    endpoint = '/send-media + /upload';
-    const clientMessageId = randomUUID();
-    const count = operation.type === 'SEND_FILE' ? 1 : 2;
-    const parts = await Promise.all(
-      Array.from({ length: count }, async (_, index) => {
-        const serial = Number(operation.id.replace(/\D/g, '')) + index;
-        return {
-          partId: randomUUID(),
-          filename: `${operation.id}-${index + 1}.png`,
-          mimeType: 'image/png',
-          bytes: await sharp({
-            create: {
-              width: 1,
-              height: 1,
-              channels: 4,
-              background: {
-                r: serial % 256,
-                g: (serial * 37) % 256,
-                b: (serial * 83) % 256,
-                alpha: 1,
-              },
-            },
-          })
-            .png()
-            .toBuffer(),
-        };
-      }),
-    );
-    const message = await actor.sendMedia({ threadId, clientMessageId, parts });
-    body = { threadId, clientMessageId, fileCnt: count };
-    return { actor, request: { method: 'POST', endpoint, body }, message };
-  } else if (operation.type === 'WITHDRAW_GROUP_MESSAGE') {
-    endpoint = '/withdraw-message';
-    body = { threadId, seq: operation.target.seq };
-    const message = await actor.withdrawMessage(threadId, operation.target.seq);
-    return {
-      actor,
-      request: { method: 'POST', endpoint, body },
-      message,
-      withdrawnClientMessageId: operation.target.clientMessageId,
-    };
-  } else {
-    throw new Error(`unsupported group operation ${operation.type}`);
-  }
-  return {
-    accepted,
-    actor,
-    request: { method: 'POST', endpoint, body: journalBody(body) },
-    ...(preflight ? { preflight } : {}),
-  };
-}
-
-export async function admitOperation(operation, actors, timeoutMs) {
-  let admission;
-  if (
-    operation.type === 'UPDATE_USER_PROFILE' ||
-    operation.type === 'UPDATE_GROUP_PROFILE'
-  ) {
-    admission = await admitProfileOperation(operation, actors);
-  } else if (operation.group) {
-    admission = await admitGroupOperation(operation, actors, timeoutMs);
-  } else if (operation.type === 'SEND_REQUEST') {
-    admission = await sendRequest(
-      actors.user(operation.actor),
-      actors.user(operation.peer),
-      timeoutMs,
-    );
-  } else if (operation.type === 'REVERSE_REQUEST') {
-    admission = await sendRequest(
-      actors.user(operation.requestSubject),
-      actors.user(operation.requestAuthor),
-      timeoutMs,
-    );
-  } else if (
-    operation.type === 'ACCEPT_REQUEST' ||
-    operation.type === 'REJECT_REQUEST'
-  ) {
-    const actor = actors.user(operation.requestSubject);
-    const initiator = actors.user(operation.requestAuthor);
-    await waitForIncoming(actor, initiator, timeoutMs);
-    const endpoint =
-      operation.type === 'ACCEPT_REQUEST'
-        ? '/relationship/accept'
-        : '/relationship/revoke';
-    const body = relationshipAddress(actor, initiator);
-    const accepted = await actor.post(
-      endpoint,
-      body,
-      `${operation.type === 'ACCEPT_REQUEST' ? 'accept' : 'reject'} relationship request from ${initiator.address}`,
-    );
-    admission = {
-      accepted,
-      actor,
-      request: { method: 'POST', endpoint, body: journalBody(body) },
-    };
-  } else if (operation.type === 'REVOKE_RELATIONSHIP') {
-    const actor = actors.user(operation.actor);
-    const peer = actors.user(operation.peer);
-    const body = relationshipAddress(actor, peer);
-    const accepted = await actor.post(
-      '/relationship/revoke',
-      body,
-      `revoke relationship with ${peer.address}`,
-    );
-    admission = {
-      accepted,
-      actor,
-      request: {
-        method: 'POST',
-        endpoint: '/relationship/revoke',
-        body: journalBody(body),
-      },
-    };
-  } else {
-    throw new Error(`unsupported random operation ${operation.type}`);
-  }
-  const taskId = admission.accepted?.taskId;
-  if (taskId !== undefined && typeof taskId !== 'string')
-    throw new Error(
-      `${operation.id}: admission returned an invalid durable task id`,
-    );
-  return {
-    ...operation,
-    actor: admission.actor.address,
-    request: admission.request,
-    ...(admission.preflight ? { preflight: admission.preflight } : {}),
-    ...(admission.message ? { result: admission.message } : {}),
-    ...(admission.withdrawnClientMessageId
-      ? { withdrawnClientMessageId: admission.withdrawnClientMessageId }
-      : {}),
-    ...(taskId ? { taskId, taskNode: admission.actor.node.name } : {}),
-    status: taskId ? 'ADMITTED' : 'SUCCEEDED',
-    admittedAt: new Date().toISOString(),
-  };
 }
 
 function actionCounts(operations) {
@@ -703,7 +383,20 @@ function actionCounts(operations) {
     .join(' ');
 }
 
-async function finalizeTasks(operations, actors) {
+// Request cancellation can win either before admission or during task execution.
+// INVITE_EXPIRED also denotes an intent that is no longer REQUESTED.
+function isUnavailableIncomingRequest(operation, code) {
+  return Boolean(
+    !operation.scenario &&
+      !operation.group &&
+      operation.pair &&
+      operation.type === 'ACCEPT_REQUEST' &&
+      operation.observedFacts?.state === 'INCOMING_PENDING' &&
+      code === 20011,
+  );
+}
+
+export async function finalizeTasks(operations, actors) {
   const byNode = new Map();
   for (const operation of operations) {
     const nodeOperations = byNode.get(operation.taskNode) ?? [];
@@ -721,9 +414,29 @@ async function finalizeTasks(operations, actors) {
         throw new Error(
           `${operation.id}: task ${operation.taskId} disappeared`,
         );
+      // Cancelling an observed pending request must not become an unfriend command
+      // when an acceptance wins the race. Keep the server's rejection as evidence.
+      const handledPendingRequest =
+        !operation.scenario &&
+        !operation.group &&
+        operation.pair &&
+        operation.type === 'REVOKE_RELATIONSHIP' &&
+        operation.observedFacts?.state === 'OUTGOING_PENDING' &&
+        task.status === 'REJECTED' &&
+        task.resultCode === 20013;
+      const unavailableIncomingRequest =
+        task.status === 'REJECTED' &&
+        isUnavailableIncomingRequest(operation, task.resultCode);
       finalized.push({
         ...operation,
-        status: task.status,
+        status:
+          handledPendingRequest ||
+          unavailableIncomingRequest ||
+          (operation.group &&
+            task.status === 'REJECTED' &&
+            task.resultCode === 40007)
+            ? 'OBSERVED_UNAVAILABLE'
+            : task.status,
         resultCode: task.resultCode ?? null,
         lastError: task.lastError ?? null,
         finishedAt: task.completedAt ?? new Date().toISOString(),
@@ -733,7 +446,7 @@ async function finalizeTasks(operations, actors) {
   return finalized.sort((left, right) => left.id.localeCompare(right.id));
 }
 
-async function executeBatch({
+export async function executeBatch({
   label,
   decisions,
   log,
@@ -745,27 +458,48 @@ async function executeBatch({
   onLog,
   totalLabel,
   operationsPerSecond,
+  pace = createAdmissionPacer(operationsPerSecond),
+  settle = true,
+  admit = admitOperation,
+  confirmUnavailable = async () => false,
 }) {
   const admissionStarted = Date.now();
   let completed = 0;
+  for (const decision of decisions) {
+    if (messageOperationTypes.has(decision.type))
+      decision.clientMessageId ??= randomUUID();
+    log.operations.push({ ...decision, status: 'PLANNED' });
+  }
+  await onLog(log);
   const admissionResults = await mapConcurrent(
     decisions,
     concurrency,
-    async (decision, index) => {
-      const scheduledAt = scheduledAdmissionAt(
-        admissionStarted,
-        index,
-        operationsPerSecond,
-      );
-      if (scheduledAt > Date.now()) await sleep(scheduledAt - Date.now());
+    async (decision) => {
+      await pace();
       let result;
       try {
-        result = await admitOperation(decision, actors, timeoutMs);
+        result = await admit(decision, actors, timeoutMs);
       } catch (error) {
+        const unavailableGroup =
+          decision.group &&
+          error instanceof LabApiError &&
+          (error.details?.code === 40007 ||
+            (decision.type === 'REQUEST_GROUP_JOIN' &&
+              error.details?.reason === 'NOT_FOUND'));
+        const unavailableP2p =
+          !decision.group &&
+          error instanceof LabApiError &&
+          (isUnavailableIncomingRequest(decision, error.details?.code) ||
+            (error.details?.code === 20002 &&
+              (await confirmUnavailable(decision))));
         result = {
           ...decision,
-          status: 'ADMISSION_FAILED',
+          status:
+            unavailableGroup || unavailableP2p
+              ? 'OBSERVED_UNAVAILABLE'
+              : 'ADMISSION_FAILED',
           error: journalError(error),
+          ...(error.attempts ? { attempts: error.attempts } : {}),
           finishedAt: new Date().toISOString(),
         };
       }
@@ -780,13 +514,32 @@ async function executeBatch({
       return result;
     },
   );
-  log.operations.push(...admissionResults);
-  await onLog(log);
-  const admitted = admissionResults.filter(
-    ({ status }) => status === 'ADMITTED',
+  const admissions = new Map(
+    admissionResults.map((operation) => [operation.id, operation]),
   );
+  log.operations = log.operations.map(
+    (operation) => admissions.get(operation.id) ?? operation,
+  );
+  await onLog(log);
+  if (!settle) return;
+  await settleWorkloadOperations({
+    operations: admissionResults,
+    log,
+    actors,
+    label,
+    timeoutMs,
+    onProgress,
+    onLog,
+  });
+}
+
+export async function settleWorkloadOperations(
+  { operations, log, actors, label, timeoutMs, onProgress, onLog },
+  { waitForIdle = waitForTaskQueueIdle, finalize = finalizeTasks } = {},
+) {
+  const admitted = operations.filter(({ status }) => status === 'ADMITTED');
   if (admitted.length > 0) {
-    await waitForTaskQueueIdle({
+    await waitForIdle({
       actors,
       nodeNames: [...actors.nodes.keys()],
       description: `${label} queue`,
@@ -794,8 +547,7 @@ async function executeBatch({
       onProgress,
     });
   }
-  const finalized =
-    admitted.length > 0 ? await finalizeTasks(admitted, actors) : [];
+  const finalized = admitted.length > 0 ? await finalize(admitted, actors) : [];
   const replacements = new Map(
     finalized.map((operation) => [operation.id, operation]),
   );
@@ -803,12 +555,10 @@ async function executeBatch({
     (operation) => replacements.get(operation.id) ?? operation,
   );
 
-  onProgress(
-    `[p2p][${label}][settle] all durable tasks finished; starting incremental convergence`,
-  );
+  onProgress(`[p2p][${label}][settle] all durable tasks finished`);
   await onLog(log);
 
-  const admissionFailures = admissionResults.filter(
+  const admissionFailures = operations.filter(
     ({ status }) => status === 'ADMISSION_FAILED',
   );
   if (admissionFailures.length > 0) {
@@ -818,7 +568,11 @@ async function executeBatch({
         .join(', ')}`,
     );
   }
-  const unsuccessful = finalized.filter(({ status }) => status !== 'SUCCEEDED');
+  const unsuccessful = operations
+    .map((operation) => replacements.get(operation.id) ?? operation)
+    .filter(
+      ({ status }) => !['SUCCEEDED', 'OBSERVED_UNAVAILABLE'].includes(status),
+    );
   if (unsuccessful.length > 0) {
     throw new Error(
       `${unsuccessful.length} operations did not succeed: ${unsuccessful
@@ -840,45 +594,28 @@ export async function executeRandomP2pWorkload({
   operationsPerSecond = 10,
   onProgress = console.log,
   onLog = async () => {},
+  verifyMode = 'round',
 }) {
+  assertVerificationMode(verifyMode);
+  onProgress(
+    `[p2p] verification mode=${verifyMode}; ${verifyMode === 'final' ? 'round oracle disabled; final audit remains mandatory' : 'verify convergence after every batch'}`,
+  );
   const random = new SeededRandom(log.seed);
-  const rounds = Math.ceil(operationCount / roundSize);
-  for (let round = 1; log.operations.length < operationCount; round += 1) {
-    const count = Math.min(roundSize, operationCount - log.operations.length);
-    const observed = await readP2pConsistencySnapshot(connections, log.users);
-    const groupSnapshot = await readGroupWorkloadSnapshot(
-      connections,
-      observed,
-    );
-    const decisions = chooseRandomRound({
-      log,
-      snapshot: observed,
-      random,
-      count,
-      round,
-      groupSnapshot,
+  const eventRandom = new SeededRandom(log.seed ^ 0x3c6ef372);
+  let round = 0;
+  let randomOperations = 0;
+  let emptyRounds = 0;
+  let snapshot;
+  const pace = createAdmissionPacer(operationsPerSecond);
+  const execute = async (decisions, label, { randomBatch = false } = {}) => {
+    const batch = Array.isArray(decisions) ? decisions : [decisions];
+    batch.forEach((operation, index) => {
+      operation.id = operationId(log.operations.length + index);
+      operation.round = round;
     });
-    if (decisions.length === 0)
-      throw new Error('state machine found no executable operation');
-    const states = decisions.reduce((result, operation) => {
-      const state = operation.type.startsWith('UPDATE_')
-        ? 'PROFILE'
-        : operation.group
-          ? 'GROUP'
-          : operation.observedFacts.state;
-      result[state] = (result[state] ?? 0) + 1;
-      return result;
-    }, {});
-    const label = `round ${String(round).padStart(2, '0')}`;
-    onProgress(
-      `[p2p][${label}/${rounds}] selected=${decisions.length} none=${states.NONE ?? 0} ` +
-        `pending=${(states.OUTGOING_PENDING ?? 0) + (states.INCOMING_PENDING ?? 0)} ` +
-        `friend=${states.FRIEND ?? 0} group=${states.GROUP ?? 0} profile=${states.PROFILE ?? 0}`,
-    );
-    onProgress(`[p2p][${label}] choices ${actionCounts(decisions)}`);
     await executeBatch({
       label,
-      decisions,
+      decisions: batch,
       log,
       actors,
       concurrency,
@@ -886,26 +623,172 @@ export async function executeRandomP2pWorkload({
       progressEvery,
       onProgress,
       onLog,
-      totalLabel: ` total=${Math.min(round * roundSize, operationCount)}/${operationCount}`,
+      totalLabel: '',
       operationsPerSecond,
+      pace,
+      settle: verifyMode === 'round' || !randomBatch,
+      confirmUnavailable: async (decision) => {
+        if (!randomBatch || !decision.pair) return false;
+        const current = await readP2pConsistencySnapshot(
+          connections,
+          log.users,
+        );
+        const actor = decision.actor;
+        const peer =
+          decision.selectedAuthor === actor
+            ? decision.selectedSubject
+            : decision.selectedAuthor;
+        return observeDirectedPair(current, actor, peer).state === 'NONE';
+      },
     });
-    await waitForFederationConvergence({
+    snapshot = await finishWorkloadBatch({
+      verifyMode,
       connections,
       log,
+      batch,
       timeoutMs,
-      intervalMs: 500,
-      stableSamples: 1,
-      enforceCoverage: false,
-      validateProfiles: false,
-      onProgress: (message) =>
-        onProgress(
-          message.replace('[federation][oracle]', `[p2p][${label}][oracle]`),
-        ),
+      onProgress,
     });
-    onProgress(
-      `[p2p][${label}] committed ${actionCounts(
-        log.operations.slice(-decisions.length),
-      )}`,
+    recordMembershipCoverage(log, snapshot.groups, snapshot.p2p);
+    return snapshot;
+  };
+  const fixedScenario = async () => {
+    const ran = await executeReferenceWithdrawalScenario({
+      log,
+      snapshot,
+      actors,
+      execute: (operation) => execute(operation, 'reference-withdrawal'),
+      ...(verifyMode === 'final'
+        ? {
+            refreshSnapshot: () =>
+              readFederationAuditSnapshot(connections, log, {
+                readMediaBytes: false,
+              }),
+            timeoutMs,
+          }
+        : {}),
+    });
+    if (ran) await onLog(log);
+  };
+  while (randomOperations < operationCount) {
+    if (verifyMode === 'final') {
+      // Observe completed commands without waiting or asserting their outcomes.
+      // Lifecycle policy (for example rejoining after leaving) needs these facts.
+      const pending = log.operations.filter(
+        ({ status }) => status === 'ADMITTED',
+      );
+      if (pending.length) {
+        const observedTasks = await finalizeTasks(pending, actors);
+        const completed = new Map(
+          observedTasks
+            .filter(({ status }) =>
+              [
+                'SUCCEEDED',
+                'REJECTED',
+                'FAILED',
+                'OBSERVED_UNAVAILABLE',
+              ].includes(status),
+            )
+            .map((operation) => [operation.id, operation]),
+        );
+        log.operations = log.operations.map(
+          (operation) => completed.get(operation.id) ?? operation,
+        );
+      }
+    }
+    const observed = await readP2pConsistencySnapshot(connections, log.users);
+    const groups = await readGroupWorkloadSnapshot(connections, observed);
+    if (round === 0) recordMembershipCoverage(log, groups, observed);
+    if (
+      randomOperations >= Math.ceil(operationCount / 2) &&
+      log.groups.some((group) => group.active)
+    ) {
+      const dissolution = planMidpointDissolution(log, groups, eventRandom);
+      if (dissolution) {
+        // Only converged round snapshots can support strict midpoint checks.
+        if (snapshot)
+          await verifyMidpointProfiles(verifyMode, () =>
+            resolveWorkloadProfiles({
+              actors,
+              groups: snapshot.groups,
+              profiles: snapshot.profiles,
+              log,
+              timeoutMs,
+              onProgress,
+            }),
+          );
+        await execute(dissolution, 'midpoint-dissolution');
+        continue;
+      }
+    }
+    const count = Math.min(
+      roundSize,
+      operationCount - randomOperations,
+      randomOperations < Math.ceil(operationCount / 2)
+        ? Math.ceil(operationCount / 2) - randomOperations
+        : operationCount,
     );
+    const decisions = chooseRandomRound({
+      log,
+      snapshot: observed,
+      groupSnapshot: groups,
+      p2pMessages: snapshot?.p2pMessages,
+      random,
+      count,
+      round: round + 1,
+    });
+    if (!decisions.length) {
+      if (++emptyRounds > 100)
+        throw new Error('state selection made no progress for 100 windows');
+      continue;
+    }
+    emptyRounds = 0;
+    round += 1;
+    for (const decision of decisions) {
+      if (
+        [
+          'SEND_GROUP_MESSAGE',
+          'SEND_P2P_MESSAGE',
+          'SEND_QUOTE',
+          'FORWARD_DIRECT',
+          'FORWARD_HISTORY',
+        ].includes(decision.type) &&
+        random.chance(5)
+      )
+        decision.retryMode = random.pick(['AFTER_SUCCESS', 'CONCURRENT']);
+    }
+    onProgress(`[p2p][round ${round}] choices ${actionCounts(decisions)}`);
+    await execute(decisions, `round ${round}`, { randomBatch: true });
+    randomOperations += decisions.length;
+    log.randomOperations = randomOperations;
+    onProgress(
+      `[p2p][round ${round}][submitted] random=${randomOperations}/${operationCount}`,
+    );
+    await fixedScenario();
+    await onLog(log);
+  }
+  if (log.groups.some((group) => group.active)) {
+    await fixedScenario();
+    if (log.referenceScenario?.status !== 'SUCCEEDED')
+      throw new Error(
+        'coverage incomplete: reference withdrawal requires two active members on different nodes',
+      );
+    const dissolution = planMidpointDissolution(
+      log,
+      snapshot.groups,
+      eventRandom,
+    );
+    if (dissolution) await execute(dissolution, 'midpoint-dissolution');
+  }
+  if (verifyMode === 'final') {
+    await settleWorkloadOperations({
+      operations: log.operations,
+      log,
+      actors,
+      label: 'final workload',
+      timeoutMs,
+      onProgress,
+      onLog,
+    });
   }
 }

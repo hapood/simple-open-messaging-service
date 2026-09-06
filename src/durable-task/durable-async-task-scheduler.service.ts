@@ -22,6 +22,7 @@ export class DurableAsyncTaskSchedulerService implements OnApplicationShutdown {
   private readonly activeExecutions = new Set<Promise<void>>();
   private activeCount = 0;
   private stopping = false;
+  private stopTask: Promise<void> | null = null;
 
   constructor(
     private readonly dispatcher: DurableAsyncTaskDispatcherService,
@@ -41,10 +42,19 @@ export class DurableAsyncTaskSchedulerService implements OnApplicationShutdown {
     this.fillAvailableSlots();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  onApplicationShutdown(): Promise<void> {
+    return this.stop();
+  }
+
+  /** Unstarted work remains durably ASYNC_PROCESSING for startup recovery. */
+  stop(): Promise<void> {
+    if (this.stopTask) return this.stopTask;
     this.stopping = true;
     this.pendingTasks.length = 0;
-    await Promise.allSettled([...this.activeExecutions]);
+    this.stopTask = Promise.allSettled([...this.activeExecutions]).then(
+      () => undefined,
+    );
+    return this.stopTask;
   }
 
   private fillAvailableSlots(): void {

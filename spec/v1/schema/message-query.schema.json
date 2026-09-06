@@ -3,6 +3,19 @@
   "$id": "urn:somfp:v1:message-query",
   "title": "GET /s2s/v1/messages response data",
   "$defs": {
+    "quoteTarget": {
+      "type": "object",
+      "oneOf": [{ "required": ["seq"] }, { "required": ["originSeq"] }],
+      "properties": {
+        "seq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "originSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        }
+      },
+      "additionalProperties": false
+    },
     "asset": {
       "type": "object",
       "required": ["digest", "bytes"],
@@ -67,16 +80,7 @@
         "clientMessageId": {
           "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
         },
-        "quoteTarget": {
-          "type": "object",
-          "required": ["targetSeq"],
-          "properties": {
-            "targetSeq": {
-              "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
-            }
-          },
-          "additionalProperties": false
-        },
+        "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
         "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
       },
       "oneOf": [
@@ -117,6 +121,10 @@
         }
       ],
       "allOf": [
+        {
+          "if": { "required": ["quoteTarget"] },
+          "then": { "properties": { "contentType": { "const": "PURE_TEXT" } } }
+        },
         {
           "if": {
             "properties": { "contentType": { "const": "CALL" } },

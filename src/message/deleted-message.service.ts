@@ -23,6 +23,11 @@ import {
   type PublicMessage,
 } from './message.service.js';
 import { SystemMessageType } from './system-message.js';
+import {
+  acquireThreadContentLockInTx,
+  requireThreadContentLockInTx,
+  type ThreadContentLock,
+} from '../relationship/thread-content-lock.js';
 
 @Injectable()
 export class DeletedMessageService {
@@ -30,6 +35,11 @@ export class DeletedMessageService {
     private readonly database: DatabaseService,
     private readonly messages: MessageService,
   ) {}
+
+  /** Thread locks precede message rows and federated identity locks on every content path. */
+  static async lockThreadInTx(tx: DatabaseTransaction, threadId: number) {
+    return acquireThreadContentLockInTx(tx, threadId);
+  }
 
   /** Allocate one thread-local deletion coordinate and persist the immutable fact. The thread row is
    * the serialization point for both allocation and target idempotency, so retries consume no sequence. */
@@ -39,18 +49,12 @@ export class DeletedMessageService {
       threadId: number;
       messageSeq: number;
       type: MessageDeleteType;
-      federationSourceDomain?: string | null;
-      sourceNamespaceId?: number | null;
+      sourceNamespaceId?: number;
       updatedAt?: Date;
+      threadLock?: ThreadContentLock;
     },
   ): Promise<{ deletionSeq: number; created: boolean }> {
-    const [thread] = await tx
-      .select({ id: messageThread.id })
-      .from(messageThread)
-      .where(eq(messageThread.id, params.threadId))
-      .for('update')
-      .limit(1);
-    if (!thread) throw new Error(`thread ${params.threadId} does not exist`);
+    await requireThreadContentLockInTx(tx, params.threadId, params.threadLock);
     const existing = await tx.query.deletedMessage.findFirst({
       where: and(
         eq(deletedMessage.threadId, params.threadId),
@@ -74,8 +78,7 @@ export class DeletedMessageService {
       deletionSeq: allocated.deletionSeq,
       messageSeq: params.messageSeq,
       type: params.type,
-      federationSourceDomain: params.federationSourceDomain ?? null,
-      sourceNamespaceId: params.sourceNamespaceId ?? null,
+      sourceNamespaceId: params.sourceNamespaceId ?? 0,
       updatedAt: params.updatedAt ?? new Date(),
     });
     return { deletionSeq: allocated.deletionSeq, created: true };
@@ -193,18 +196,30 @@ export class DeletedMessageService {
     onFirstWithdraw?: (tx: DatabaseTransaction) => Promise<void>,
   ) {
     return this.database.db.transaction(async (tx) => {
+      const threadLock = await DeletedMessageService.lockThreadInTx(
+        tx,
+        threadId,
+      );
+      if (!threadLock)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'message not found',
+        );
       const locked = await tx.execute(sql`
         SELECT message.id, message."creatorAccount", message."creatorDomain",
                message."contentType", message."isDeleted"
         FROM "Message" message
         JOIN "User" author
-          ON author.account = message."creatorAccount"
+         ON author.account = message."creatorAccount"
          AND author.domain = message."creatorDomain"
-         AND author."namespaceId" = message."creatorNamespaceId"
+         AND author."namespaceId" = CASE
+           WHEN message."creatorDomain" = 'local' THEN 0
+           ELSE message."sourceNamespaceId"
+         END
         WHERE message."threadId" = ${threadId}
           AND message.seq = ${seq}
           AND author.id = ${userId}
-        FOR UPDATE
+        FOR UPDATE OF message
       `);
       const target = locked.rows[0] as
         | {
@@ -232,6 +247,7 @@ export class DeletedMessageService {
         .set({ isDeleted: true, updatedAt: now })
         .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
       const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+        threadLock,
         threadId,
         messageSeq: seq,
         type: MessageDeleteType.USER_RETRACTION,
@@ -248,7 +264,7 @@ export class DeletedMessageService {
               threadId,
               SystemMessageType.MESSAGE_WITHDRAWN,
               userId,
-              { actorUserId: userId },
+              { actorUserId: userId, threadLock },
             )
           ).message
         : null;
@@ -278,6 +294,9 @@ export class DeletedMessageService {
     threadId: number,
     seq: number,
   ): Promise<number> {
+    const threadLock = await DeletedMessageService.lockThreadInTx(tx, threadId);
+    if (!threadLock)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'message not found');
     const locked = await tx.execute(sql`
       SELECT id, "isDeleted"
       FROM "Message"
@@ -297,6 +316,7 @@ export class DeletedMessageService {
       .set({ isDeleted: true, updatedAt: now })
       .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
     const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+      threadLock,
       threadId,
       messageSeq: seq,
       type: MessageDeleteType.MODERATION_REMOVAL,
@@ -313,17 +333,20 @@ export class DeletedMessageService {
 
   /** Both deletion arrival and federated message insertion take this exact lock. There need not be a
    * Message row yet, which is why a stable-identity advisory lock is used instead of FOR UPDATE. */
-  static lockFederatedIdentity(
+  static async lockFederatedIdentity(
     tx: DatabaseTransaction,
     threadId: number,
     sourceDomain: string,
     namespaceId: number,
     messageSeq: number,
+    held?: ThreadContentLock,
   ) {
+    const threadLock = await requireThreadContentLockInTx(tx, threadId, held);
     const identity = `${threadId}:${sourceDomain}:${namespaceId}:${messageSeq}`;
-    return tx.execute(
+    await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`,
     );
+    return threadLock;
   }
 
   /** Consume a remote stream item that is intentionally a no-op locally (currently: a group origin
@@ -351,7 +374,6 @@ export class DeletedMessageService {
         .insert(federationDeletedCursor)
         .values({
           threadId: params.threadId,
-          peerDomain: params.cursor.peerDomain,
           namespaceId: params.cursor.namespaceId,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,
@@ -376,14 +398,12 @@ export class DeletedMessageService {
   async applyFederated(params: {
     threadId: number;
     messageSeq: number;
-    authorityDomain: string;
     sourceDomain: string;
     sourceNamespaceId: number;
     remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
     allowPending?: boolean;
-    federationSourceDomain?: string | null;
     cursor: {
       peerDomain: string;
       namespaceId: number;
@@ -402,7 +422,6 @@ export class DeletedMessageService {
     params: {
       threadId: number;
       messageSeq: number;
-      authorityDomain: string;
       sourceDomain: string;
       sourceNamespaceId: number;
       remoteDeletionSeq: number;
@@ -410,8 +429,8 @@ export class DeletedMessageService {
       authorityDeletedAt?: Date;
       /** Group origins reject unmatched member submissions instead of treating them as facts. */
       allowPending?: boolean;
-      /** Null means this server accepted the deletion as its own authoritative group fact. */
-      federationSourceDomain?: string | null;
+      /** An authenticated member retraction becomes a locally published authority fact. */
+      publishAsAuthority?: boolean;
       cursor?: {
         peerDomain: string;
         namespaceId: number;
@@ -419,6 +438,7 @@ export class DeletedMessageService {
         streamKind: string;
       };
       expectedFederationVersion: number;
+      threadLock?: ThreadContentLock;
     },
   ) {
     await this.assertFederatedResponseWritable(
@@ -428,17 +448,17 @@ export class DeletedMessageService {
       params.sourceNamespaceId,
       params.expectedFederationVersion,
     );
-    await DeletedMessageService.lockFederatedIdentity(
+    const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
       params.sourceDomain,
       params.sourceNamespaceId,
       params.messageSeq,
+      params.threadLock,
     );
     const target = await tx.query.message.findFirst({
       where: and(
         eq(message.threadId, params.threadId),
-        eq(message.federationSourceDomain, params.sourceDomain),
         eq(message.sourceNamespaceId, params.sourceNamespaceId),
         eq(message.originSeq, params.messageSeq),
       ),
@@ -446,7 +466,7 @@ export class DeletedMessageService {
         seq: true,
         creatorAccount: true,
         creatorDomain: true,
-        creatorNamespaceId: true,
+        sourceNamespaceId: true,
         contentType: true,
         isDeleted: true,
         localState: true,
@@ -455,7 +475,6 @@ export class DeletedMessageService {
     const pending = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
-        eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
         eq(
           federatedMessageTombstone.sourceNamespaceId,
           params.sourceNamespaceId,
@@ -463,15 +482,13 @@ export class DeletedMessageService {
         eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
       columns: {
-        authorityDomain: true,
         type: true,
         authorityDeletedAt: true,
       },
     });
     if (
       pending &&
-      (pending.authorityDomain !== params.authorityDomain ||
-        pending.type !== params.type ||
+      (pending.type !== params.type ||
         (params.authorityDeletedAt !== undefined &&
           pending.authorityDeletedAt.getTime() !==
             params.authorityDeletedAt.getTime()))
@@ -495,8 +512,6 @@ export class DeletedMessageService {
           .values({
             threadId: params.threadId,
             messageSeq: params.messageSeq,
-            authorityDomain: params.authorityDomain,
-            sourceDomain: params.sourceDomain,
             sourceNamespaceId: params.sourceNamespaceId,
             remoteDeletionSeq: params.remoteDeletionSeq,
             type: params.type,
@@ -521,20 +536,18 @@ export class DeletedMessageService {
         .where(
           and(
             eq(message.threadId, params.threadId),
-            eq(message.federationSourceDomain, params.sourceDomain),
             eq(message.sourceNamespaceId, params.sourceNamespaceId),
             eq(message.originSeq, params.messageSeq),
           ),
         );
       const localDeletion = await DeletedMessageService.ensureFactInTx(tx, {
+        threadLock,
         threadId: params.threadId,
         messageSeq: target.seq,
         type: params.type,
-        federationSourceDomain:
-          params.federationSourceDomain === undefined
-            ? params.sourceDomain
-            : params.federationSourceDomain,
-        sourceNamespaceId: params.sourceNamespaceId,
+        sourceNamespaceId: params.publishAsAuthority
+          ? 0
+          : params.sourceNamespaceId,
         updatedAt: now,
       });
       localDeletionSeq = localDeletion.created
@@ -550,17 +563,24 @@ export class DeletedMessageService {
               : SystemMessageType.MESSAGES_MODERATED,
             undefined,
             params.type === MessageDeleteType.MODERATION_REMOVAL
-              ? { count: 1 }
+              ? { count: 1, threadLock }
               : {
+                  threadLock,
                   subjectAddress: {
                     account: target.creatorAccount,
                     domain: target.creatorDomain,
-                    namespaceId: target.creatorNamespaceId,
+                    namespaceId:
+                      target.creatorDomain === 'local'
+                        ? 0
+                        : target.sourceNamespaceId,
                   },
                   actorAddress: {
                     account: target.creatorAccount,
                     domain: target.creatorDomain,
-                    namespaceId: target.creatorNamespaceId,
+                    namespaceId:
+                      target.creatorDomain === 'local'
+                        ? 0
+                        : target.sourceNamespaceId,
                   },
                 },
           )
@@ -576,7 +596,6 @@ export class DeletedMessageService {
         .where(
           and(
             eq(federatedMessageTombstone.threadId, params.threadId),
-            eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
             eq(
               federatedMessageTombstone.sourceNamespaceId,
               params.sourceNamespaceId,
@@ -596,7 +615,6 @@ export class DeletedMessageService {
           eq(pendingMedia.direction, 'INBOUND'),
           eq(message.threadId, params.threadId),
           eq(message.sourceNamespaceId, params.sourceNamespaceId),
-          eq(pendingMedia.originDomain, params.sourceDomain),
           eq(message.originSeq, params.messageSeq),
         ),
       )
@@ -615,7 +633,6 @@ export class DeletedMessageService {
         .insert(federationDeletedCursor)
         .values({
           threadId: params.threadId,
-          peerDomain: params.cursor.peerDomain,
           namespaceId: params.cursor.namespaceId,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,

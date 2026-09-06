@@ -3,7 +3,11 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service.js';
 import { and, count, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, sessionToken, user as userTable } from '../database/schema.js';
+import {
+  account,
+  sessionToken,
+  user as userTable,
+} from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -31,6 +35,7 @@ export class AuthService {
   async validateUser(account: string, password: string) {
     const user = await this.userService.findUniqueUserForAuth({
       account_domain: { account: normalizeAccount(account), domain: 'local' },
+      namespaceId: 0,
     });
     if (user === null || user.disabledAt !== null) {
       return undefined;

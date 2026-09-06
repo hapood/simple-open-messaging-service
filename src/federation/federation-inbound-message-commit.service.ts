@@ -21,8 +21,13 @@ import type { FederationMessageQueryPage } from './federation-message-feed.servi
 import type { FederationMessageTombstoneQueryPage } from './federation-message-tombstone-feed.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import type { FederationThreadResourceResponse } from './federation-thread-resource-client.service.js';
+import {
+  requireThreadContentLockInTx,
+  type ThreadContentLock,
+} from '../relationship/thread-content-lock.js';
 
 export interface ReverseMessagePageCommit {
+  threadLock?: ThreadContentLock;
   response: FederationThreadResourceResponse<FederationMessageQueryPage>;
   before: number;
   through?: number;
@@ -31,6 +36,7 @@ export interface ReverseMessagePageCommit {
 }
 
 export interface ForwardMessagePageCommit {
+  threadLock?: ThreadContentLock;
   response: FederationThreadResourceResponse<FederationMessageQueryPage>;
   after: number;
   frozenTargetSeq: number;
@@ -38,19 +44,21 @@ export interface ForwardMessagePageCommit {
 }
 
 export interface ForwardTombstonePageCommit {
+  threadLock?: ThreadContentLock;
   response: FederationThreadResourceResponse<FederationMessageTombstoneQueryPage>;
   frozenTargetSeq: number;
 }
 
 interface SatisfiedQuoteDependency {
   threadId: number;
-  sourceDomain: string;
+  sourceNamespaceId: number;
   originSeq: number;
 }
 
 export interface ForwardTombstonePageEffect {
   quoteDependencies: SatisfiedQuoteDependency[];
   recipientUserIds: number[];
+  relayDeletion?: boolean;
 }
 
 /** Commits fetched message and tombstone pages inside caller-owned cursor transactions. */
@@ -70,12 +78,18 @@ export class FederationInboundMessageCommitService {
     params: ReverseMessagePageCommit,
   ): Promise<FederationMessagePageEffect[]> {
     await this.threadAccess.assertResourceResponseWritable(tx, params.response);
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      params.response.threadId,
+      params.threadLock,
+    );
     return this.pages.apply(
       tx,
       params.response.peerDomain,
       params.response.data.messages,
       params.response.peerToken,
       {
+        threadLock,
         prefetchedForwardClosures: params.prefetchedForwardClosures,
         sequencePolicy: {
           kind: 'MAP_ORIGIN',
@@ -96,12 +110,18 @@ export class FederationInboundMessageCommitService {
     params: ForwardMessagePageCommit,
   ): Promise<FederationMessagePageEffect[]> {
     await this.threadAccess.assertResourceResponseWritable(tx, params.response);
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      params.response.threadId,
+      params.threadLock,
+    );
     return this.pages.apply(
       tx,
       params.response.peerDomain,
       params.response.data.messages,
       params.response.peerToken,
       {
+        threadLock,
         prefetchedForwardClosures: params.prefetchedForwardClosures,
         expectedThreadId: params.response.threadId,
       },
@@ -112,16 +132,21 @@ export class FederationInboundMessageCommitService {
     tx: DatabaseTransaction,
     params: {
       threadId: number;
-      peerDomain: string;
       namespaceId: number;
       beforeSeq: number;
       throughSeq: number;
+      threadLock?: ThreadContentLock;
     },
   ): Promise<void> {
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      params.threadId,
+      params.threadLock,
+    );
     const staged = await tx.query.message.findMany({
       where: and(
         eq(tables.message.threadId, params.threadId),
-        eq(tables.message.federationSourceDomain, params.peerDomain),
+        eq(tables.message.sourceNamespaceId, params.namespaceId),
         eq(tables.message.localState, 'STUB'),
         sql`${tables.message.originSeq} >= ${params.throughSeq}`,
         sql`${tables.message.originSeq} < ${params.beforeSeq}`,
@@ -138,18 +163,22 @@ export class FederationInboundMessageCommitService {
       const pending = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(tables.federatedMessageTombstone.threadId, params.threadId),
-          eq(tables.federatedMessageTombstone.sourceDomain, params.peerDomain),
+          eq(
+            tables.federatedMessageTombstone.sourceNamespaceId,
+            params.namespaceId,
+          ),
           eq(tables.federatedMessageTombstone.messageSeq, item.originSeq),
         ),
-        columns: { type: true, sourceDomain: true },
+        columns: { type: true },
       });
       let deletionSeq: number;
       if (pending) {
         const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+          threadLock,
           threadId: params.threadId,
           messageSeq: item.seq,
           type: pending.type,
-          federationSourceDomain: pending.sourceDomain,
+          sourceNamespaceId: params.namespaceId,
           updatedAt: new Date(),
         });
         deletionSeq = deletion.deletionSeq;
@@ -159,8 +188,8 @@ export class FederationInboundMessageCommitService {
             and(
               eq(tables.federatedMessageTombstone.threadId, params.threadId),
               eq(
-                tables.federatedMessageTombstone.sourceDomain,
-                params.peerDomain,
+                tables.federatedMessageTombstone.sourceNamespaceId,
+                params.namespaceId,
               ),
               eq(tables.federatedMessageTombstone.messageSeq, item.originSeq),
             ),
@@ -189,7 +218,7 @@ export class FederationInboundMessageCommitService {
       UPDATE "Message" staged
       SET "localState" = 'READY', "updatedAt" = CURRENT_TIMESTAMP
       WHERE staged."threadId" = ${params.threadId}
-        AND staged."federationSourceDomain" = ${params.peerDomain}
+        AND staged."sourceNamespaceId" = ${params.namespaceId}
         AND staged."localState" = 'STUB'
         AND staged."originSeq" >= ${params.throughSeq}
         AND staged."originSeq" < ${params.beforeSeq}
@@ -205,8 +234,14 @@ export class FederationInboundMessageCommitService {
     params: ForwardTombstonePageCommit,
   ): Promise<ForwardTombstonePageEffect> {
     await this.threadAccess.assertResourceResponseWritable(tx, params.response);
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      params.response.threadId,
+      params.threadLock,
+    );
     const satisfied: SatisfiedQuoteDependency[] = [];
     const recipientUserIds = new Set<number>();
+    let relayDeletion = false;
     for (const item of params.response.data.tombstones) {
       if (
         !Number.isSafeInteger(item.deletionSeq) ||
@@ -230,6 +265,7 @@ export class FederationInboundMessageCommitService {
         item.thread,
         params.response.peerDomain,
         params.response.peerToken.namespaceId,
+        item.messageSeq,
       );
       if (route.threadId !== params.response.threadId)
         throw new BusinessException(
@@ -240,34 +276,42 @@ export class FederationInboundMessageCommitService {
       for (const userId of route.recipients) recipientUserIds.add(userId);
       const authorityDomain =
         route.groupOriginDomain ?? params.response.peerDomain;
-      if (authorityDomain !== params.response.peerDomain)
+      if (
+        route.memberSubmission
+          ? item.type !== MessageDeleteType.USER_RETRACTION
+          : authorityDomain !== params.response.peerDomain
+      )
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'group tombstone is not from the group origin',
+          route.memberSubmission
+            ? 'group members may only submit author retractions'
+            : 'group tombstone is not from the group origin',
           HttpStatus.BAD_REQUEST,
         );
-      await this.deletedMessages.applyFederatedInTx(tx, {
+      const deletion = await this.deletedMessages.applyFederatedInTx(tx, {
+        threadLock,
         threadId: route.threadId,
         messageSeq: item.messageSeq,
-        authorityDomain,
         sourceDomain: params.response.peerDomain,
         sourceNamespaceId: params.response.peerToken.namespaceId,
         remoteDeletionSeq: item.deletionSeq,
         type: item.type,
         authorityDeletedAt: new Date(item.deletedAt),
-        allowPending: true,
-        federationSourceDomain: params.response.peerDomain,
+        allowPending: !route.memberSubmission,
+        publishAsAuthority: route.memberSubmission,
         expectedFederationVersion: route.federationVersion,
       });
+      if (route.memberSubmission && deletion) relayDeletion = true;
       satisfied.push({
         threadId: route.threadId,
-        sourceDomain: params.response.peerDomain,
+        sourceNamespaceId: params.response.peerToken.namespaceId,
         originSeq: item.messageSeq,
       });
     }
     return {
       quoteDependencies: satisfied,
       recipientUserIds: [...recipientUserIds],
+      relayDeletion,
     };
   }
 
@@ -286,7 +330,7 @@ export class FederationInboundMessageCommitService {
           and(
             eq(tables.pendingMedia.direction, 'INBOUND'),
             eq(tables.message.threadId, dependency.threadId),
-            eq(tables.pendingMedia.originDomain, dependency.sourceDomain),
+            eq(tables.pendingMedia.namespaceId, dependency.sourceNamespaceId),
             eq(tables.pendingMedia.dependsOnOriginSeq, dependency.originSeq),
           ),
         );

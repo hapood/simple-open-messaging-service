@@ -533,6 +533,7 @@
   "chat": {
     "linkCardAction": "Create link card",
     "messageNotFound": "Message not found",
+    "quoteNotFetched": "Quoted message not fetched yet",
     "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
     "messageListAria": "Conversation messages",

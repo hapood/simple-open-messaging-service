@@ -102,6 +102,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       threadId: number;
       seq: number;
     }>();
+    const deletedLive$ = new Subject<{ threadId: number; seqs: number[] }>();
+    const getDeletedMessageSeqs = vi.fn().mockResolvedValue([]);
+    const onQuoteDeleted = vi.fn();
     const reconnectSignal$ = new Subject<void>();
     let truncateSeq: number | undefined;
     liveSignal$.subscribe((signal) => {
@@ -207,6 +210,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       );
     const repo = {
       queryMessages,
+      deletedLive$,
+      getDeletedMessageSeqs,
       queryNativeMessageHistory,
       queryBrowserMessageHistory,
       liveSignal$,
@@ -289,6 +294,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       userService,
       outbox,
       {
+        onQuoteDeleted,
         onProfile: profiles,
         onNewerAvailable: newerAvailable,
       },
@@ -296,6 +302,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
     return {
       src,
+      deletedLive$,
+      getDeletedMessageSeqs,
+      onQuoteDeleted,
       repo,
       liveSignal$,
       reconnectSignal$,
@@ -955,6 +964,75 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     liveSignal$.next({ threadId: 42, seq: 100 });
     const items = await src.init(-1, 50, 0);
     expect(items[0].data.status).toBeUndefined();
+  });
+
+  function quotedReply() {
+    return {
+      ...row(101, 2),
+      content: JSON.stringify({
+        text: 'reply',
+        quote: {
+          seq: 44,
+          author: 'Alice',
+          body: 'old preview',
+          image: '/old.jpg',
+          contentType: 'IMAGE',
+        },
+      }),
+    };
+  }
+
+  it('suppresses cached previews when the local target is a tombstone', async () => {
+    const { src, getDeletedMessageSeqs } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quotedReply()],
+    });
+    getDeletedMessageSeqs.mockResolvedValue([44]);
+    const items = await src.init(-1, 50, 0);
+    expect(getDeletedMessageSeqs).toHaveBeenCalledWith(42, [44]);
+    expect(items[0].data.quote).toEqual({ seq: 44, unavailable: true });
+    expect(items[0].data.text).toBe('reply');
+    src.destroy();
+  });
+
+  it('invalidates mounted replies only for their thread and unsubscribes on destroy', async () => {
+    const { src, deletedLive$, onQuoteDeleted } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quotedReply()],
+    });
+    await src.init(-1, 50, 0);
+    deletedLive$.next({ threadId: 99, seqs: [44] });
+    expect(onQuoteDeleted).not.toHaveBeenCalled();
+    deletedLive$.next({ threadId: 42, seqs: [44] });
+    expect(onQuoteDeleted).toHaveBeenCalledWith(101, 44);
+    // A later stale HTTP/cache body cannot restore the preview.
+    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({
+      seq: 44,
+      unavailable: true,
+    });
+    src.destroy();
+    onQuoteDeleted.mockClear();
+    deletedLive$.next({ threadId: 42, seqs: [44] });
+    expect(onQuoteDeleted).not.toHaveBeenCalled();
+  });
+
+  it('keeps a deletion received during a local lookup authoritative', async () => {
+    const { src, getDeletedMessageSeqs, deletedLive$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quotedReply()],
+    });
+    getDeletedMessageSeqs.mockImplementation(async () => {
+      deletedLive$.next({ threadId: 42, seqs: [44] });
+      return [];
+    });
+    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({
+      seq: 44,
+      unavailable: true,
+    });
+    src.destroy();
   });
 
   it('rawToItems preserves the server-authored structured reply and jump target', async () => {

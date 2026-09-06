@@ -135,8 +135,19 @@ export class SignatureService {
   async signOutbound(
     req: SignedRequest,
     now = new Date(),
+    expiresAtSec?: number,
   ): Promise<OutboundSignatureHeaders> {
     const created = Math.floor(now.getTime() / 1000);
+    const expires = expiresAtSec ?? created + SIGNATURE_LIFETIME_SEC;
+    if (
+      !Number.isSafeInteger(expires) ||
+      expires < created ||
+      expires > created + SIGNATURE_LIFETIME_SEC
+    ) {
+      throw new Error(
+        'outbound signature expiry is outside the valid signing window',
+      );
+    }
     const date = new Date(created * 1000).toUTCString();
     const digest = contentDigest(req.body);
     const keyId = this.keypair.getKeyId();
@@ -148,7 +159,7 @@ export class SignatureService {
         params: [...SIGNATURE_PARAMS],
         paramValues: {
           created: new Date(created * 1000),
-          expires: new Date((created + SIGNATURE_LIFETIME_SEC) * 1000),
+          expires: new Date(expires * 1000),
           keyid: keyId,
           alg: 'ed25519',
         },

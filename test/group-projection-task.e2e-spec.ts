@@ -1,6 +1,6 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -22,6 +22,7 @@ import { FEDERATION_STATE_FEED_PUSH } from '../src/federation/federation-state-f
 import { GroupProjectionTaskExecutionService } from '../src/federation/group-projection-task-execution.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
+import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
 
 describe('Group Meta head fan-out task execution', () => {
   const suffix = Date.now().toString(36);
@@ -162,7 +163,92 @@ describe('Group Meta head fan-out task execution', () => {
     expect(events.emit).toHaveBeenCalledWith(FEDERATION_STATE_FEED_PUSH, {
       peerDomain,
     });
+    await database.db
+      .update(durableTask)
+      .set({ status: 'SUCCEEDED', completedAt: new Date() })
+      .where(eq(durableTask.id, task.id));
   });
+
+  it('serializes fan-out with a departure before locking audiences or client allocators', async () => {
+    const task = await insertProcessingTask();
+    // Exercise the real client allocator; the notification transport is not involved.
+    clientStateFeed.writeInTx.mockImplementation(async (tx, write) => {
+      const [owner] = await tx
+        .update(account)
+        .set({
+          stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
+        })
+        .where(eq(account.id, write.userId))
+        .returning();
+      return owner.stateFeedAllocatedThrough;
+    });
+    let fanout: Promise<unknown> | undefined;
+    try {
+      await database.db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+        // The departure has already written its manager-facing request projection.
+        await lockBusinessAccountsInTx(tx, [
+          { account: groupAccount, domain: 'local' },
+        ]);
+        await tx
+          .update(account)
+          .set({
+            stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
+          })
+          .where(eq(account.id, localUserId));
+        const pid = await tx.execute<{ pid: number }>(
+          sql`SELECT pg_backend_pid() AS pid`,
+        );
+        fanout = execution.execute(task, { threadId }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        // Observe an actual database wait, not an arbitrary scheduling delay. Before
+        // the fix fan-out holds the audience and waits for Account; after it waits
+        // for the group scope without holding any audience rows.
+        await vi.waitFor(
+          async () => {
+            const waiting = await database.pool.query(
+              'SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))',
+              [pid.rows[0].pid],
+            );
+            expect(waiting.rows.length).toBeGreaterThan(0);
+          },
+          { timeout: 3000, interval: 20 },
+        );
+        await tx
+          .delete(threadAudience)
+          .where(
+            and(
+              eq(threadAudience.threadId, threadId),
+              eq(threadAudience.targetDomain, peerDomain),
+            ),
+          );
+        await tx
+          .update(groupMetaFeed)
+          .set({ feedEndId: 13n })
+          .where(eq(groupMetaFeed.groupId, groupId));
+      });
+      expect(await fanout).toBeNull();
+      expect(
+        await database.db.query.threadAudience.findFirst({
+          where: and(
+            eq(threadAudience.threadId, threadId),
+            eq(threadAudience.targetDomain, peerDomain),
+          ),
+        }),
+      ).toBeUndefined();
+      expect(clientStateFeed.writeInTx).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          body: { groupMetaFeedEndId: '13' },
+        }),
+      );
+    } finally {
+      await fanout;
+      clientStateFeed.writeInTx.mockReset().mockResolvedValue(17);
+    }
+  }, 15_000);
 
   async function insertProcessingTask(): Promise<DurableTask> {
     const now = new Date();

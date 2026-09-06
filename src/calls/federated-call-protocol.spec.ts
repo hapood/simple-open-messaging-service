@@ -6,15 +6,18 @@ import {
   toS2SCallWireFrame,
 } from './federated-call-protocol.js';
 
+const createUntil = 1_700_000_300_000;
 const signalId = 'c0a80101-0000-4000-8000-000000000001';
 const validFrame = (patch: Partial<S2SCallFrame> = {}): unknown => {
   const op = patch.op ?? 'incoming';
   return {
     callSid: '550e8400-e29b-41d4-a716-446655440000',
     op,
-    callType: 'AUDIO',
     ...(op === 'incoming'
-      ? { payload: { fromAccount: 'alice', toAccount: 'bob' } }
+      ? {
+          callType: 'AUDIO',
+          payload: { fromAccount: 'alice', toAccount: 'bob' },
+        }
       : {}),
     ...patch,
   };
@@ -57,7 +60,6 @@ describe('Federation v1 call frame validation', () => {
     expect(wire).toEqual({
       callId: '550e8400-e29b-41d4-a716-446655440000',
       operation: 'signal',
-      mediaType: 'AUDIO',
       payload: { signalId, signalType: 'offer', data: 'v=0' },
     });
     expect(parseS2SCallWireFrame(wire)).toEqual(internal);
@@ -94,9 +96,7 @@ describe('Federation v1 call frame validation', () => {
       ),
     ).not.toThrow();
     expect(() =>
-      assertS2SCallFrame(
-        validFrame({ op: 'video-upgraded', callType: 'VIDEO' }),
-      ),
+      assertS2SCallFrame(validFrame({ op: 'video-upgraded' })),
     ).not.toThrow();
   });
 
@@ -124,6 +124,47 @@ describe('Federation v1 call frame validation', () => {
       ),
     ).toThrow();
   });
+
+  it.each([
+    'accepted',
+    'ringing',
+    'declined',
+    'cancelled',
+    'missed',
+    'video-upgraded',
+  ] as const)(
+    'round-trips payloadless %s and rejects misplaced fields',
+    (op) => {
+      const internal = validFrame({ op }) as S2SCallFrame;
+      const wire = toS2SCallWireFrame(internal);
+      expect(wire).toEqual({ callId: internal.callSid, operation: op });
+      expect(parseS2SCallWireFrame(wire)).toEqual(internal);
+      for (const fields of [
+        { mediaType: 'AUDIO' },
+        { mediaType: 'VIDEO' },
+        { createUntil },
+        { payload: {} },
+      ]) {
+        expect(() => parseS2SCallWireFrame({ ...wire, ...fields })).toThrow();
+      }
+    },
+  );
+
+  it.each([createUntil, undefined, -1, 1.5, '1700000300000'])(
+    'rejects undeclared createUntil on incoming (%s)',
+    (value) => {
+      const internal = validFrame() as S2SCallFrame;
+      expect(() =>
+        assertS2SCallFrame({ ...internal, createUntil: value }),
+      ).toThrow();
+      expect(() =>
+        parseS2SCallWireFrame({
+          ...toS2SCallWireFrame(internal),
+          createUntil: value,
+        }),
+      ).toThrow();
+    },
+  );
 
   it('accepts account names only and rejects embedded domain fields', () => {
     expect(() => assertS2SCallFrame(validFrame())).not.toThrow();

@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../relationship/thread-content-lock.js', () => ({
+  lockThreadContentInTx: vi.fn().mockResolvedValue(true),
+  requireThreadContentLockInTx: vi.fn(
+    async (tx, threadId, held) => held ?? { tx, threadId },
+  ),
+}));
 import {
   federationThreadHistoryGap,
   federationThreadSyncState,
@@ -9,7 +15,7 @@ import { FederationThreadSyncStateService } from './federation-thread-sync-state
 function lockedThreadSelect(authorizationEpoch: number, curSeq = 0) {
   const limit = vi.fn().mockResolvedValue([{ authorizationEpoch, curSeq }]);
   const forUpdate = vi.fn().mockReturnValue({ limit });
-  const where = vi.fn().mockReturnValue({ for: forUpdate });
+  const where = vi.fn().mockReturnValue({ for: forUpdate, limit });
   const from = vi.fn().mockReturnValue({ where });
   return vi.fn().mockReturnValue({ from });
 }
@@ -128,6 +134,7 @@ describe('FederationThreadSyncStateService processed positions', () => {
       31,
       8,
       12,
+      3,
     );
     expect(message.update).toHaveBeenCalledWith(federationThreadSyncState);
 
@@ -137,6 +144,7 @@ describe('FederationThreadSyncStateService processed positions', () => {
       31,
       5,
       7,
+      3,
     );
     expect(deletion.update).toHaveBeenCalledWith(federationThreadSyncState);
     expect(deletion.set).toHaveBeenCalledWith(
@@ -155,6 +163,7 @@ describe('FederationThreadSyncStateService processed positions', () => {
         31,
         13,
         12,
+        3,
       ),
     ).rejects.toThrow('must not exceed its frozen target');
     expect(update).not.toHaveBeenCalled();
@@ -175,6 +184,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
           mock.tx as never,
           {
             threadId: 31,
+            namespaceId: 3,
             messageTargetSeq: latest,
             deletionTargetSeq: 0,
             reverseEnabled: true,
@@ -204,6 +214,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         mock.tx as never,
         {
           threadId: 31,
+          namespaceId: 3,
           messageTargetSeq: 2,
           deletionTargetSeq: 0,
           reverseEnabled: true,
@@ -215,7 +226,12 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       reverseRequired: true,
     });
     expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 31, startSeq: 1, endSeq: 1 }),
+      expect.objectContaining({
+        threadId: 31,
+        namespaceId: 3,
+        startSeq: 1,
+        endSeq: 1,
+      }),
     );
     expect(mock.stateValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -234,6 +250,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       mock.tx as never,
       {
         threadId: 31,
+        namespaceId: 3,
         messageTargetSeq: 3,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -256,6 +273,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       mock.tx as never,
       {
         threadId: 31,
+        namespaceId: 3,
         messageTargetSeq: 20,
         deletionTargetSeq: 6,
         reverseEnabled: true,
@@ -291,6 +309,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         mock.tx as never,
         {
           threadId: 31,
+          namespaceId: 3,
           messageTargetSeq: 200,
           deletionTargetSeq: 20,
           reverseEnabled: true,
@@ -337,6 +356,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
+        namespaceId: 3,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -367,6 +387,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
+        namespaceId: 3,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -394,6 +415,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
+        namespaceId: 3,
         messageTargetSeq: 151,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -428,7 +450,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       },
     } as never);
 
-    await expect(service.resolveReverseWindow(31)).resolves.toEqual({
+    await expect(service.resolveReverseWindow(31, 3)).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: 12n,
       beforeSeq: 100,
@@ -451,7 +473,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       },
     } as never);
 
-    await expect(service.resolveReverseWindow(31)).resolves.toEqual({
+    await expect(service.resolveReverseWindow(31, 3)).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: null,
       beforeSeq: 0,
@@ -479,6 +501,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       { execute, update } as never,
       {
         threadId: 31,
+        namespaceId: 3,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -515,6 +538,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       { execute, select, update, delete: remove } as never,
       {
         threadId: 31,
+        namespaceId: 3,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -542,6 +566,7 @@ it('locks MessageThread when reconciling a head', async () => {
     mock.tx as never,
     {
       threadId: 31,
+      namespaceId: 3,
       messageTargetSeq: 0,
       deletionTargetSeq: 0,
       reverseEnabled: true,

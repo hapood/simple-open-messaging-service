@@ -17,6 +17,7 @@ import {
 } from '../database/schema.js';
 import {
   FederationMessageContextError,
+  FederationThreadSourceInactiveError,
   S2sResponseError,
 } from './federation-errors.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
@@ -83,6 +84,23 @@ export class FederationThreadRoundSchedulerService
     ReturnType<typeof setTimeout>
   >();
   private shuttingDown = false;
+  private readonly completionListeners = new Set<(threadId: number) => void>();
+
+  observeCompletions(listener: (threadId: number) => void): () => void {
+    this.completionListeners.add(listener);
+    return () => this.completionListeners.delete(listener);
+  }
+
+  async requestSourceRefresh(
+    threadId: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<void> {
+    if (!(await this.isNamespaceActive(peerDomain, namespaceId))) return;
+    await this.sources.resolve(threadId, peerDomain, namespaceId);
+    for (const direction of ['message', 'tombstone', 'reverse'] as const)
+      await this.wakeCaptured(threadId, peerDomain, namespaceId, direction);
+  }
 
   constructor(
     private readonly database: DatabaseService,
@@ -98,7 +116,7 @@ export class FederationThreadRoundSchedulerService
       .select({
         threadId: federationThreadSyncState.threadId,
         peerDomain: identityNamespace.domain,
-        namespaceId: messageThread.authorityNamespaceId,
+        namespaceId: federationThreadSyncState.namespaceId,
         messageTargetSeq: federationThreadSyncState.messageTargetSeq,
         deletionTargetSeq: federationThreadSyncState.deletionTargetSeq,
         messageProcessedThroughSeq:
@@ -115,7 +133,7 @@ export class FederationThreadRoundSchedulerService
       )
       .innerJoin(
         identityNamespace,
-        eq(identityNamespace.id, messageThread.authorityNamespaceId),
+        eq(identityNamespace.id, federationThreadSyncState.namespaceId),
       )
       .innerJoin(
         federatedPeer,
@@ -123,7 +141,7 @@ export class FederationThreadRoundSchedulerService
           eq(federatedPeer.domain, identityNamespace.domain),
           eq(
             federatedPeer.activeNamespaceId,
-            messageThread.authorityNamespaceId,
+            federationThreadSyncState.namespaceId,
           ),
         ),
       );
@@ -386,9 +404,19 @@ export class FederationThreadRoundSchedulerService
           requeue = shouldContinue;
         })
         .catch(async (error: unknown) => {
-          this.logger.warn(
-            `${direction} round failed for thread ${selected.threadId}: ${(error as Error).message}`,
-          );
+          if (error instanceof FederationThreadSourceInactiveError) {
+            this.clearRetry(
+              selected.threadId,
+              selected.peerDomain,
+              selected.namespaceId,
+              direction,
+            );
+            queue.dirtyThreads.delete(workKey);
+            this.logger.debug(
+              `discarded inactive ${direction} round for thread ${selected.threadId} from ${selected.peerDomain}`,
+            );
+            return;
+          }
           requeue = await this.handleRoundFailure(
             selected.threadId,
             selected.peerDomain,
@@ -398,6 +426,8 @@ export class FederationThreadRoundSchedulerService
           );
         })
         .finally(() => {
+          for (const listener of this.completionListeners)
+            listener(selected.threadId);
           queue.active -= 1;
           queue.activeThreads.delete(workKey);
           this.activeTasks.delete(task);
@@ -450,7 +480,7 @@ export class FederationThreadRoundSchedulerService
     }
     this.clearRetry(threadId, peerDomain, namespaceId, direction);
     const dirty = queue.dirtyThreads.delete(workKey);
-    const state = await this.states.require(threadId);
+    const state = await this.states.require(threadId, namespaceId);
     const shouldContinue =
       direction === 'message'
         ? state.messageProcessedThroughSeq < state.messageTargetSeq
@@ -543,6 +573,9 @@ export class FederationThreadRoundSchedulerService
       cause instanceof S2sResponseError &&
       cause.code === BusinessCode.FORBIDDEN
     ) {
+      this.logger.debug(
+        `${direction} round forbidden for thread ${threadId} from ${peerDomain}`,
+      );
       if (wrapped) {
         try {
           const outcome = await this.federation.handleThreadQueryForbidden(
@@ -556,7 +589,7 @@ export class FederationThreadRoundSchedulerService
             return true;
           }
           this.blockThread(threadId, peerDomain, namespaceId);
-          this.logger.warn(
+          this.logger.debug(
             `stopped forbidden federation thread ${threadId} from ${peerDomain}: ${outcome}`,
           );
         } catch (handlerError) {
@@ -572,6 +605,9 @@ export class FederationThreadRoundSchedulerService
       this.wakeStateFeed(peerDomain, 0n);
       return false;
     }
+    this.logger.warn(
+      `${direction} round failed for thread ${threadId}: ${(error as Error).message}`,
+    );
     const decision = this.retryDecision(cause);
     if (decision.retry) {
       if (!(await this.isNamespaceActive(peerDomain, namespaceId))) {

@@ -10,14 +10,7 @@ import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error
 
 export interface PeerStateFeedPullCallbacks {
   fetch(after?: bigint, through?: bigint): Promise<PeerStateFeedPage>;
-  apply(
-    tx: DatabaseTransaction,
-    page: PeerStateFeedPage,
-  ): Promise<void>;
-  /** Start a replacement rebuild after the publisher rejects our cursor. The
-   * callback and corrected cursor are committed together, before the first
-   * replacement page is requested. */
-  beginRebuild?(tx: DatabaseTransaction): Promise<void>;
+  apply(tx: DatabaseTransaction, page: PeerStateFeedPage): Promise<void>;
   afterCommit?(page: PeerStateFeedPage): Promise<void> | void;
   afterDrain?(through: bigint): Promise<void> | void;
 }
@@ -80,7 +73,7 @@ export class PeerStateFeedPullService {
         drainTarget,
       );
       if (!applied) return;
-      if ('cursorReset' in applied) continue;
+      if ('cursorInitialized' in applied) continue;
       drainTarget ??= applied.sourceEndId;
       if (applied.hasMore) continue;
       if (applied.scannedThrough !== drainTarget)
@@ -126,13 +119,16 @@ export class PeerStateFeedPullService {
       );
     } catch (error) {
       if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
-      if (
-        error.resumeAfter < 0n ||
-        (cursor.initialized && error.resumeAfter === cursor.committedThrough)
-      )
-        throw new Error('peer returned an invalid state-feed resume cursor');
+      // Compaction preserves cursor validity within a namespace. A publisher
+      // rejecting committed progress is an invariant violation, not a rebuild.
+      if (cursor.initialized)
+        throw new Error(
+          `initialized state-feed cursor rejected by peer ${peerDomain} (namespace ${namespaceId}, committedThrough=${cursor.committedThrough}, resumeAfter=${error.resumeAfter}, resumeBefore=${error.resumeBefore}); progress retained`,
+          { cause: error },
+        );
+      if (error.resumeAfter !== 0n || error.resumeBefore <= 0n)
+        throw new Error('peer returned an invalid state-feed bootstrap cursor');
       await this.database.db.transaction(async (tx) => {
-        await callbacks.beginRebuild?.(tx);
         await tx
           .update(peerStateFeedPullCursor)
           .set({
@@ -142,10 +138,10 @@ export class PeerStateFeedPullService {
           })
           .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId));
       });
-      this.logger.warn(
-        `state-feed cursor for peer ${peerDomain} is unavailable; rebuilding from ${error.resumeAfter.toString()}`,
+      this.logger.log(
+        `initialized state-feed cursor for peer ${peerDomain} (namespace ${namespaceId}) at 0`,
       );
-      return { cursorReset: true };
+      return { cursorInitialized: true };
     }
     if (!cursor.initialized)
       throw new Error('peer returned a state page without bootstrap cursor');

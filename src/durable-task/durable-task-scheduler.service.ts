@@ -34,6 +34,8 @@ export class DurableTaskSchedulerService
   private pumpTask: Promise<void> | null = null;
   private pumpRequested = false;
   private stopping = false;
+  private stopTask: Promise<void> | null = null;
+  private startupRecovery: DurableTask[] | null = null;
 
   constructor(
     private readonly store: DurableTaskStoreService,
@@ -45,11 +47,20 @@ export class DurableTaskSchedulerService
     void this.wake();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  onApplicationShutdown(): Promise<void> {
+    return this.stop();
+  }
+
+  /** Stop new claims, but finish a claim already in flight and its terminal write. */
+  stop(): Promise<void> {
+    if (this.stopTask) return this.stopTask;
     this.stopping = true;
     this.pumpRequested = false;
-    if (this.pumpTask) await this.pumpTask;
-    await Promise.allSettled([...this.activeExecutions]);
+    this.stopTask = (async () => {
+      if (this.pumpTask) await this.pumpTask;
+      await Promise.allSettled([...this.activeExecutions]);
+    })();
+    return this.stopTask;
   }
 
   @Interval(POLL_INTERVAL_MS)
@@ -74,6 +85,18 @@ export class DurableTaskSchedulerService
 
   private async pump(): Promise<void> {
     try {
+      // Capture interrupted tasks before this process starts any execution. Never
+      // rescan PROCESSING during normal scheduling: an in-flight query can return
+      // a stale snapshot after a local execution has already finalized.
+      if (this.startupRecovery === null) {
+        this.startupRecovery = await this.store.findCheckpointedProcessing([
+          ...new Set([
+            DurableTaskType.DISBAND_GROUP,
+            DurableTaskType.FAN_OUT_GROUP_META_HEAD,
+            ...this.asyncScheduler.supportedTaskTypes,
+          ]),
+        ]);
+      }
       do {
         this.pumpRequested = false;
         await this.fillAvailableSlots();
@@ -94,17 +117,8 @@ export class DurableTaskSchedulerService
         return;
       }
 
-      const resumable = await this.store.findCheckpointedProcessing(
-        [
-          DurableTaskType.DISBAND_GROUP,
-          DurableTaskType.FAN_OUT_GROUP_META_HEAD,
-          ...this.asyncScheduler.supportedTaskTypes,
-        ].filter(
-          (taskType, index, taskTypes) => taskTypes.indexOf(taskType) === index,
-        ),
-        available,
-      );
-      for (const task of resumable) {
+      const recovery = this.startupRecovery ?? [];
+      for (const task of [...recovery]) {
         const scopeLane = taskScopeLane(task);
         if (
           this.activeTaskIds.has(task.id) ||
@@ -112,6 +126,7 @@ export class DurableTaskSchedulerService
         ) {
           continue;
         }
+        recovery.splice(recovery.indexOf(task), 1);
         this.start(task);
         available -= 1;
         if (available <= 0) return;

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FederationLabActors, LabUserActor } from './api-actors.mjs';
+import {
+  FederationLabActors,
+  LabAdminActor,
+  LabUserActor,
+} from './api-actors.mjs';
 
 function response(data, headers = {}) {
   return new Response(
@@ -76,6 +80,107 @@ test('keeps three administrators and API-provisioned OTP users in memory', async
     );
     assert.equal(calls[6][1].headers.get('Authorization'), 'Bearer user-token');
     assert.equal(responses.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('renews an expired administrator session once and replays the request', async () => {
+  const calls = [];
+  const responses = [
+    response(
+      { authenticated: true },
+      { 'Set-Cookie': 'admin_session=initial; Path=/; HttpOnly' },
+    ),
+    new Response(
+      JSON.stringify({ code: 401, message: 'Unauthorized', data: null }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    ),
+    response(
+      { authenticated: true },
+      { 'Set-Cookie': 'admin_session=renewed; Path=/; HttpOnly' },
+    ),
+    response({ total: 0, list: [] }),
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    calls.push(args);
+    const next = responses.shift();
+    if (!next) throw new Error('unexpected fetch call');
+    return next;
+  };
+  try {
+    const admin = await LabAdminActor.login({
+      node: {
+        domain: 'alpha.test',
+        backendBaseUrl: 'http://127.0.0.1:3201',
+      },
+      password: 'bootstrap-password',
+    });
+
+    assert.deepEqual(await admin.durableTasks({ status: 'PENDING' }), {
+      total: 0,
+      list: [],
+    });
+    assert.deepEqual(
+      calls.map(([url]) => url),
+      [
+        'http://127.0.0.1:3201/api/v1/admin/login',
+        'http://127.0.0.1:3201/api/v1/admin/durable-tasks',
+        'http://127.0.0.1:3201/api/v1/admin/login',
+        'http://127.0.0.1:3201/api/v1/admin/durable-tasks',
+      ],
+    );
+    assert.equal(calls[1][1].headers.get('Cookie'), 'admin_session=initial');
+    assert.equal(calls[3][1].headers.get('Cookie'), 'admin_session=renewed');
+    assert.equal(responses.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('coalesces concurrent administrator session renewal', async () => {
+  const calls = [];
+  let loginCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    calls.push(args);
+    const [url, options] = args;
+    if (url.endsWith('/admin/login')) {
+      loginCount += 1;
+      if (loginCount === 2)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      return response(
+        { authenticated: true },
+        {
+          'Set-Cookie': `admin_session=${loginCount === 1 ? 'initial' : 'renewed'}; Path=/; HttpOnly`,
+        },
+      );
+    }
+    if (options.headers.get('Cookie') === 'admin_session=initial') {
+      return new Response(
+        JSON.stringify({ code: 401, message: 'Unauthorized', data: null }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    return response({ total: 0, list: [] });
+  };
+  try {
+    const admin = await LabAdminActor.login({
+      node: {
+        domain: 'alpha.test',
+        backendBaseUrl: 'http://127.0.0.1:3201',
+      },
+      password: 'bootstrap-password',
+    });
+
+    await admin.durableTaskActivity();
+
+    assert.equal(loginCount, 2);
+    assert.equal(
+      calls.filter(([url]) => url.endsWith('/admin/durable-tasks')).length,
+      6,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

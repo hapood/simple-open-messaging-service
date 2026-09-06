@@ -26,6 +26,8 @@ import { AccountThreadStateModule } from '../account-thread-state/account-thread
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
+import { QuoteResolutionController } from './quote-resolution.controller.js';
+import { QuoteResolutionCoordinatorService } from './quote-resolution-coordinator.service.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
@@ -126,6 +128,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     S2sController,
     S2sRecognitionController,
     ProfileResolutionController,
+    QuoteResolutionController,
   ],
   providers: [
     KeypairService,
@@ -137,6 +140,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationHealthSchedulerService,
     FederationPeerHttp,
     ProfileResolutionCoordinatorService,
+    QuoteResolutionCoordinatorService,
     FederationMediaRangeClient,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,

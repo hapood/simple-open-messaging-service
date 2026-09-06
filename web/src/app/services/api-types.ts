@@ -4170,15 +4170,18 @@ export interface components {
              */
             description?: string;
         };
-        InviteGroupDto: {
+        GroupInviteAddressDto: {
+            /** @example alice */
+            account: string;
             /**
-             * @description Friend user ids to invite (each must be a friend with an existing P2P thread)
-             * @example [
-             *       3,
-             *       7
-             *     ]
+             * @description User home domain; 'local' denotes this server.
+             * @example example.com
              */
-            userIds: number[];
+            domain: string;
+        };
+        InviteGroupDto: {
+            /** @description Existing friends to invite by public address. */
+            users: components["schemas"]["GroupInviteAddressDto"][];
             /**
              * @description Group id
              * @example 12

@@ -18,20 +18,6 @@ function nodeForAddress(address) {
   return node;
 }
 
-function intentMap(snapshot) {
-  return new Map(
-    Object.entries(snapshot)
-      .flatMap(([nodeName, { intents }]) => {
-        const node = federationLabNodes.find(({ name }) => name === nodeName);
-        if (!node) throw new Error(`unknown federation lab node ${nodeName}`);
-        return intents.directions.filter(({ author }) =>
-          author.endsWith(`@${node.domain}`),
-        );
-      })
-      .map((intent) => [directionKey(intent.author, intent.subject), intent]),
-  );
-}
-
 function effectiveRequest(intent, observedAt) {
   if (intent?.status !== 'REQUESTED') return false;
   if (!intent.expiresAt) return false;
@@ -47,7 +33,13 @@ export function observeDirectedPair(snapshot, selectedAuthor, selectedSubject) {
   const nodeSnapshot = snapshot[observer.name];
   if (!nodeSnapshot)
     throw new Error(`snapshot is missing node ${observer.name}`);
-  const intents = intentMap(snapshot);
+  // Decisions must reflect the actor's local view, not a merge of remote authorities.
+  const intents = new Map(
+    nodeSnapshot.intents.directions.map((intent) => [
+      directionKey(intent.author, intent.subject),
+      intent,
+    ]),
+  );
   const observedAt = new Date().toISOString();
   const outgoing = intents.get(directionKey(selectedAuthor, selectedSubject));
   const incoming = intents.get(directionKey(selectedSubject, selectedAuthor));
@@ -63,6 +55,7 @@ export function observeDirectedPair(snapshot, selectedAuthor, selectedSubject) {
     observedOn: observer.name,
     pairExists,
     pairActive,
+    threadId: nodeSnapshot.pairs.threadIds?.[pair] ?? null,
     outgoingIntent: outgoing?.status ?? null,
     incomingIntent: incoming?.status ?? null,
   };

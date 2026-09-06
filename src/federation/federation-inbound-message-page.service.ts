@@ -32,25 +32,33 @@ import {
   type FederatedForwardCard,
 } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
+import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { isFederationQuoteTarget } from './federation-quote-target.js';
 
-export interface FederationMessagePageEffect {
-  kind: 'message' | 'pending';
+interface FederationMessagePageEffectContext {
   historical: boolean;
   threadId: number;
   originSeq: number;
   recipients: number[];
   toAccount: string;
   author: S2SAddress;
-  batchId?: string;
-  message?: Message;
-  deletionSeq?: number;
-  forwardClosure?: ForwardWireBundle;
-  remoteForwardBundleId?: string;
-  localForwardBundleId?: string;
 }
+
+export type FederationMessagePageEffect = FederationMessagePageEffectContext &
+  (
+    | { kind: 'pending'; batchId: string }
+    | {
+        kind: 'message';
+        message: Message;
+        deletionSeq?: number;
+        forwardClosure?: ForwardWireBundle;
+        remoteForwardBundleId?: string;
+        localForwardBundleId?: string;
+      }
+  );
 
 export interface FederationMessagePageApplyOptions {
   prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
@@ -58,6 +66,7 @@ export interface FederationMessagePageApplyOptions {
   sequencePolicy?: MapFederationOriginSequence;
   expectedThreadId?: number;
   historical?: boolean;
+  threadLock?: ThreadContentLock;
 }
 
 /** Applies one validated, bounded peer message page inside the caller-owned cursor transaction. */
@@ -208,8 +217,7 @@ export class FederationInboundMessagePageService {
         if (
           item.quoteTarget !== undefined &&
           (item.contentType !== ContentType.PURE_TEXT ||
-            !Number.isSafeInteger(item.quoteTarget.targetSeq) ||
-            item.quoteTarget.targetSeq < 1)
+            !isFederationQuoteTarget(item.quoteTarget))
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -218,12 +226,21 @@ export class FederationInboundMessagePageService {
           );
         }
         this.assertMissedAssetDescriptors(item);
-        let storedContent = fromFederatedMessageContent(
-          item.contentType as ContentType,
-          item.content,
-          this.config.domain,
-          new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
-        );
+        let storedContent: string;
+        try {
+          storedContent = fromFederatedMessageContent(
+            item.contentType as ContentType,
+            item.content,
+            this.config.domain,
+            new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
+          );
+        } catch {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated message content',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
 
         if (author.domain === this.config.domain) {
           if (item.originSeq === null || item.originCreatedAt === null) {
@@ -240,12 +257,12 @@ export class FederationInboundMessagePageService {
             where: and(
               eq(tables.message.threadId, route.threadId),
               eq(tables.message.seq, item.originSeq),
+              eq(tables.message.creatorAccount, route.creatorAccount),
+              eq(tables.message.creatorDomain, 'local'),
             ),
             columns: {
               id: true,
               createdAt: true,
-              originSeq: true,
-              federationSourceDomain: true,
             },
           });
           if (localSourceMessage) {
@@ -263,19 +280,9 @@ export class FederationInboundMessagePageService {
                   },
                 )}`,
               );
+              continue;
             }
             if (sequencePolicy) {
-              if (
-                localSourceMessage.federationSourceDomain !== null &&
-                (localSourceMessage.originSeq !== item.seq ||
-                  localSourceMessage.federationSourceDomain !== domain)
-              ) {
-                throw new BusinessException(
-                  BusinessCode.FEDERATION_MALFORMED,
-                  'self-authored message has a conflicting publisher coordinate',
-                  HttpStatus.BAD_REQUEST,
-                );
-              }
               await DeletedMessageService.lockFederatedIdentity(
                 tx,
                 route.threadId,
@@ -283,19 +290,10 @@ export class FederationInboundMessagePageService {
                 token.namespaceId,
                 item.seq,
               );
-              await tx
-                .update(tables.message)
-                .set({
-                  originSeq: item.seq,
-                  federationSourceDomain: domain,
-                  updatedAt: new Date(),
-                })
-                .where(eq(tables.message.id, localSourceMessage.id));
             }
             const existingReceipt =
               await tx.query.federationMessageReceipt.findFirst({
                 where: and(
-                  eq(tables.federationMessageReceipt.peerDomain, domain),
                   eq(
                     tables.federationMessageReceipt.namespaceId,
                     token.namespaceId,
@@ -317,12 +315,61 @@ export class FederationInboundMessagePageService {
             }
             if (!existingReceipt) {
               await tx.insert(tables.federationMessageReceipt).values({
-                peerDomain: domain,
                 namespaceId: token.namespaceId,
                 threadId: route.threadId,
                 peerSeq: item.seq,
                 messageId: localSourceMessage.id,
               });
+            }
+            // Only the group's authoritative server can confirm a local submission.
+            // Other receipts retain peer-coordinate aliases for reference resolution;
+            // they cannot overwrite the original message's authority coordinate.
+            const [authoritativeGroup] = !('peerAccount' in item.thread)
+              ? await tx
+                  .select({ id: tables.group.id })
+                  .from(tables.messageThread)
+                  .innerJoin(
+                    tables.group,
+                    eq(tables.group.id, tables.messageThread.groupId),
+                  )
+                  .where(
+                    and(
+                      eq(tables.messageThread.id, route.threadId),
+                      eq(tables.group.domain, domain),
+                      eq(tables.group.namespaceId, token.namespaceId),
+                    ),
+                  )
+                  .limit(1)
+              : [];
+            if (authoritativeGroup) {
+              const confirmed = await tx
+                .update(tables.message)
+                .set({
+                  originSeq: item.seq,
+                  originServerTime: sourceTime,
+                  sourceNamespaceId: token.namespaceId,
+                })
+                .where(
+                  and(
+                    eq(tables.message.id, localSourceMessage.id),
+                    or(
+                      eq(tables.message.sourceNamespaceId, 0),
+                      and(
+                        eq(tables.message.sourceNamespaceId, token.namespaceId),
+                        eq(tables.message.originSeq, item.seq),
+                        eq(tables.message.originServerTime, sourceTime),
+                      ),
+                    ),
+                  ),
+                )
+                .returning({ id: tables.message.id });
+              if (confirmed.length !== 1) {
+                throw new BusinessException(
+                  BusinessCode.FEDERATION_MALFORMED,
+                  'conflicting authoritative group confirmation',
+                  HttpStatus.BAD_REQUEST,
+                );
+              }
             }
             continue;
           }
@@ -375,8 +422,7 @@ export class FederationInboundMessagePageService {
         const existingMessage = await tx.query.message.findFirst({
           where: and(
             eq(tables.message.threadId, route.threadId),
-            eq(tables.message.creatorAccount, route.creatorAccount),
-            eq(tables.message.creatorDomain, route.creatorDomain),
+            eq(tables.message.sourceNamespaceId, token.namespaceId),
             eq(tables.message.originSeq, item.seq),
           ),
           columns: {
@@ -432,6 +478,7 @@ export class FederationInboundMessagePageService {
         }
 
         const stored = await this.inboundMessageStore.store(tx, {
+          threadLock: options.threadLock,
           threadId: route.threadId,
           creator: {
             account: route.creatorAccount,
@@ -528,6 +575,15 @@ export class FederationInboundMessagePageService {
         });
       } catch (error) {
         await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT ${savepoint}`));
+        if (
+          error instanceof BusinessException &&
+          error.bizCode === BusinessCode.FEDERATION_MALFORMED
+        ) {
+          this.logger.warn(
+            `ignored invalid federated message (FEDERATION_MALFORMED): ${federatedMessageLogContext(domain, item, error)}`,
+          );
+          continue;
+        }
         if (sequencePolicy) throw error;
         if (error instanceof FederationMessageContextError) {
           if (!isolateMissingContext) throw error;
@@ -540,13 +596,8 @@ export class FederationInboundMessagePageService {
           );
           continue;
         }
-        this.logger.error(
-          `ignored invalid federated message: ${federatedMessageLogContext(
-            domain,
-            item,
-            error,
-          )}`,
-        );
+        // Storage and infrastructure failures must not become permanent holes in the cursor.
+        throw error;
       } finally {
         await tx.execute(sql.raw(`RELEASE SAVEPOINT ${savepoint}`));
       }
@@ -570,7 +621,16 @@ export class FederationInboundMessagePageService {
   private assertMissedAssetDescriptors(
     item: FederationMessageFeedMessage,
   ): void {
-    this.validator.assertAssetDescriptors(item);
+    try {
+      this.validator.assertAssetDescriptors(item);
+    } catch (error) {
+      if (error instanceof BusinessException) throw error;
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'invalid federated message content or asset descriptors',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
   }
 
   private federatedMessageAuthor(
@@ -607,6 +667,7 @@ function federatedMessageLogContext(
       : safeLogText(error, 320);
   return JSON.stringify({
     peerDomain: safeLogText(peerDomain, 253),
+    seq: safeLogText(record?.['seq'], 32),
     contentType: safeLogText(record?.['contentType'], 80),
     ...(content === undefined
       ? {}

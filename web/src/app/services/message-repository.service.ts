@@ -768,6 +768,10 @@ export class MessageRepository {
     }
   }
 
+  getDeletedMessageSeqs(threadId: number, seqs: number[]): Promise<number[]> {
+    return this.webdb.getDeletedMessageSeqs(threadId, seqs);
+  }
+
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is
    *  unavailable or the message was never cached). */
   private async getOne(

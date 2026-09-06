@@ -1385,6 +1385,45 @@ fn update_message_head(
     Ok(())
 }
 
+pub(crate) fn load_deleted_message_seqs(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+    seqs: Vec<i64>,
+) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq FROM messages WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3
+             AND json_extract(payload_json, '$.isDeleted') = 1",
+        )
+        .map_err(|e| format!("prepare tombstone read: {e}"))?;
+    let mut deleted = Vec::new();
+    for seq in seqs.into_iter().collect::<BTreeSet<_>>() {
+        if let Some(seq) = stmt
+            .query_row(params![user_id, thread_id, seq], |row| row.get(0))
+            .optional()
+            .map_err(|e| format!("read tombstone: {e}"))?
+        {
+            deleted.push(seq);
+        }
+    }
+    Ok(deleted)
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_get_deleted_message_seqs(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    seqs: Vec<i64>,
+) -> Result<Vec<i64>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_deleted_message_seqs(&open(&app)?, user_id, thread_id, seqs)
+    })
+    .await
+    .map_err(|e| format!("join tombstone read: {e}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_get_message(
     app: tauri::AppHandle,

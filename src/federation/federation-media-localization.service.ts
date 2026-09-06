@@ -110,18 +110,17 @@ export class FederationMediaLocalizationService {
       return this.readInboundMediaJobStatus(msg.id);
     }
 
-    const { toAccount, peerDomain } = await this.resolveMediaContext(
-      msg.threadId,
-      msg.creatorAccount,
-      msg.creatorDomain,
-      msg.creatorNamespaceId,
-    );
+    const { toAccount, peerDomain: threadPeerDomain } =
+      await this.resolveMediaContext(
+        msg.threadId,
+        msg.creatorAccount,
+        msg.creatorDomain,
+        msg.creatorDomain === 'local' ? 0 : msg.sourceNamespaceId,
+      );
+    const sourcePeerDomain = await this.readSourceDomain(msg.sourceNamespaceId);
+    const peerDomain = sourcePeerDomain ?? threadPeerDomain;
     if (msg.localState === 'FAILED') {
-      if (
-        msg.originSeq === null ||
-        msg.federationSourceDomain === null ||
-        peerDomain !== msg.federationSourceDomain
-      ) {
+      if (msg.originSeq === null || sourcePeerDomain === null) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'failed placeholder has no retryable federation source',
@@ -189,7 +188,7 @@ export class FederationMediaLocalizationService {
       msg.threadId,
       msg.creatorAccount,
       msg.creatorDomain,
-      msg.creatorNamespaceId,
+      msg.creatorDomain === 'local' ? 0 : msg.sourceNamespaceId,
     );
     return {
       fromAccount: msg.creatorAccount,
@@ -309,7 +308,7 @@ export class FederationMediaLocalizationService {
   ): Promise<string | null> {
     const digests = extractDigestEntries(msg.content);
     if (digests.length === 0) return null;
-    if (msg.sourceNamespaceId === null) {
+    if (msg.sourceNamespaceId === 0) {
       throw new Error('failed inbound message has no source namespace');
     }
     const namespaceId = msg.sourceNamespaceId;
@@ -427,7 +426,7 @@ export class FederationMediaLocalizationService {
     threadId: number,
     creatorAccount: string,
     creatorDomain: string,
-    creatorNamespaceId: number,
+    authorNamespaceId: number,
   ): Promise<{ toAccount: string; peerDomain: string }> {
     const [thread] = await this.database.db
       .select({
@@ -467,7 +466,7 @@ export class FederationMediaLocalizationService {
               eq(tables.relationshipPair.endpointADomain, creatorDomain),
               eq(
                 tables.relationshipPair.endpointANamespaceId,
-                creatorNamespaceId,
+                authorNamespaceId,
               ),
             ),
             and(
@@ -476,7 +475,7 @@ export class FederationMediaLocalizationService {
               eq(tables.relationshipPair.endpointBDomain, creatorDomain),
               eq(
                 tables.relationshipPair.endpointBNamespaceId,
-                creatorNamespaceId,
+                authorNamespaceId,
               ),
             ),
           ),
@@ -493,10 +492,21 @@ export class FederationMediaLocalizationService {
       toAccount:
         pair.endpointAAccount === creatorAccount &&
         pair.endpointADomain === creatorDomain &&
-        pair.endpointANamespaceId === creatorNamespaceId
+        pair.endpointANamespaceId === authorNamespaceId
           ? pair.endpointBAccount
           : pair.endpointAAccount,
       peerDomain: creatorDomain,
     };
+  }
+
+  private async readSourceDomain(namespaceId: number): Promise<string | null> {
+    if (namespaceId === 0) return null;
+    const source = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.id, namespaceId),
+      columns: { domain: true },
+    });
+    if (!source)
+      throw new Error(`message source namespace ${namespaceId} is missing`);
+    return source.domain;
   }
 }

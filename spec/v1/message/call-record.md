@@ -37,6 +37,12 @@ type CallRecordContent =
 
 Both branches are closed schemas. `startedAt` is conditionally required: it is required after a valid `connected.startedAt` has been accepted and forbidden otherwise. The consumer derives duration; it is not repeated on the wire.
 
+`mediaType` is the caller server's confirmed business type at its first terminal
+decision, as defined in [Calls, Section 9](../calls.md). It is VIDEO for an
+initially VIDEO call or an AUDIO call whose upgrade the caller confirmed before
+termination; otherwise it is AUDIO. A late upgrade confirmation does not revise
+the terminal record.
+
 ## 2. Outcome and field matrix
 
 | `outcome`     | Not connected | Connected | Meaning                                                                  |

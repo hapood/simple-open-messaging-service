@@ -76,7 +76,7 @@ async function readNodeGroupRows(client) {
                msg."creatorAccount", msg."creatorDomain", msg."isDeleted", msg."localState"
         FROM "Message" msg
         INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
-        WHERE thread."type" = 'GROUP' AND msg."clientMessageId" IS NOT NULL
+        WHERE thread."type" = 'GROUP'
         ORDER BY msg."threadId", msg."seq"
       `);
   return {
@@ -230,7 +230,16 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
   const roster = group?.roster ?? [];
   const me = roster.find(({ address }) => address === user.address);
   const relationship = group?.relationships.get(user.address);
-  const memberRole = me?.role ?? null;
+  // A mirror can retain its last Group Meta UPSERT after the member's audience
+  // is revoked, because that peer can no longer pull the subsequent DEPART.
+  // Runtime authorization is the materialized pair fact, so never offer member
+  // operations from the historical roster row alone. The OWNER fallback keeps
+  // the observation usable for a locally-created group before its pair is read.
+  const membershipActive =
+    Boolean(me) &&
+    (relationship?.active === true ||
+      (relationship === undefined && me?.role === 'OWNER'));
+  const memberRole = membershipActive ? (me?.role ?? null) : null;
   const requests = (group?.requests ?? []).filter(
     ({ managerAddress }) => managerAddress === user.address,
   );
@@ -260,18 +269,22 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
     user,
     group: {
       ...plannedGroup,
+      dissolved: group?.dissolved ?? false,
       threadId: group?.threadId ?? null,
       localGroupId: group?.groupId ?? null,
     },
     memberRole,
-    membershipActive: Boolean(me),
+    membershipActive,
     groupIntent: relationship?.groupIntent ?? null,
     userIntent: relationship?.userIntent ?? null,
     inviteCandidates,
     pendingApplications,
     pendingInvitations,
     kickCandidates: lowerMembers,
-    promoteCandidates: roster.filter(({ role }) => role === 'MEMBER'),
+    // Administrator roles can only be granted to members on the group host.
+    promoteCandidates: roster.filter(
+      ({ role, domain }) => role === 'MEMBER' && domain === 'local',
+    ),
     demoteCandidates: roster.filter(({ role }) => role === 'ADMIN'),
     transferCandidates: roster.filter(
       ({ role, domain }) => role !== 'OWNER' && domain === 'local',
@@ -280,10 +293,18 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
       .filter(
         (message) =>
           message.creatorAddress === user.address &&
+          message.clientMessageId !== null &&
           message.localState === 'READY' &&
           !message.isDeleted,
       )
       .map(({ seq, clientMessageId }) => ({ seq, clientMessageId })),
+    sourceMessages: (group?.messages ?? []).filter(
+      (message) =>
+        message.contentType === 'PURE_TEXT' &&
+        message.localState === 'READY' &&
+        !message.isDeleted &&
+        Number.isInteger(message.seq),
+    ),
     observedOn: node.node.name,
     observedAt: new Date().toISOString(),
   };

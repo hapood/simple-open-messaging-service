@@ -18,6 +18,7 @@ describe('call state-machine policy', () => {
     ['ringing', 'connected', 'invalid'],
     ['ringing', 'declined', 'apply'],
     ['accepted', 'declined', 'invalid'],
+    ['ringing', 'ended', 'apply'],
     ['accepted', 'ended', 'apply'],
     ['connected', 'ended', 'apply'],
   ] as const)('%s + %s → %s', (state, operation, expected) => {
@@ -45,11 +46,21 @@ describe('call state-machine policy', () => {
     expect(isSignalAllowed(state, role, kind)).toBe(expected);
   });
 
-  it('shares end-reason and timeout mapping across transports', () => {
-    expect(isEndReasonAllowed('accepted', 'timeout')).toBe(true);
-    expect(isEndReasonAllowed('accepted', 'completed')).toBe(false);
-    expect(isEndReasonAllowed('connected', 'completed')).toBe(true);
-    expect(isEndReasonAllowed('connected', 'timeout')).toBe(false);
+  it.each([
+    ['ringing', 'completed', false],
+    ['ringing', 'timeout', false],
+    ['ringing', 'failed', true],
+    ['accepted', 'completed', true],
+    ['accepted', 'timeout', true],
+    ['accepted', 'failed', true],
+    ['connected', 'completed', true],
+    ['connected', 'timeout', false],
+    ['connected', 'failed', true],
+  ] as const)('end reason %s/%s allowed=%s', (state, reason, expected) => {
+    expect(isEndReasonAllowed(state, reason)).toBe(expected);
+  });
+
+  it('shares timeout mapping across transports', () => {
     expect(timeoutLifecycle('ringing')).toEqual({
       operation: 'missed',
       endReason: null,

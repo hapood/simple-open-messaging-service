@@ -5,11 +5,14 @@
   "$defs": {
     "base": {
       "type": "object",
-      "required": ["callId", "operation", "mediaType"],
+      "required": ["callId", "operation"],
       "properties": {
-        "callId": { "$ref": "urn:somfp:v1:common#/$defs/callId" },
-        "operation": { "type": "string" },
-        "mediaType": { "enum": ["AUDIO", "VIDEO"] }
+        "callId": {
+          "$ref": "urn:somfp:v1:common#/$defs/callId"
+        },
+        "operation": {
+          "type": "string"
+        }
       }
     },
     "signalType": {
@@ -22,8 +25,14 @@
         "signalId": {
           "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
         },
-        "signalType": { "$ref": "#/$defs/signalType" },
-        "data": { "type": "string", "minLength": 1, "maxLength": 32768 }
+        "signalType": {
+          "$ref": "#/$defs/signalType"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        }
       },
       "additionalProperties": false
     },
@@ -34,11 +43,15 @@
   "oneOf": [
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
         {
-          "required": ["payload"],
+          "$ref": "#/$defs/base"
+        },
+        {
+          "required": ["payload", "mediaType"],
           "properties": {
-            "operation": { "const": "incoming" },
+            "operation": {
+              "const": "incoming"
+            },
             "payload": {
               "type": "object",
               "required": ["callerAccount", "calleeAccount"],
@@ -51,6 +64,9 @@
                 }
               },
               "additionalProperties": false
+            },
+            "mediaType": {
+              "enum": ["AUDIO", "VIDEO"]
             }
           }
         }
@@ -59,7 +75,9 @@
     },
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
+        {
+          "$ref": "#/$defs/base"
+        },
         {
           "properties": {
             "operation": {
@@ -72,12 +90,18 @@
     },
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
+        {
+          "$ref": "#/$defs/base"
+        },
         {
           "required": ["payload"],
           "properties": {
-            "operation": { "const": "signal" },
-            "payload": { "$ref": "#/$defs/signalPayload" }
+            "operation": {
+              "const": "signal"
+            },
+            "payload": {
+              "$ref": "#/$defs/signalPayload"
+            }
           }
         }
       ],
@@ -85,11 +109,15 @@
     },
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
+        {
+          "$ref": "#/$defs/base"
+        },
         {
           "required": ["payload"],
           "properties": {
-            "operation": { "const": "connected" },
+            "operation": {
+              "const": "connected"
+            },
             "payload": {
               "type": "object",
               "required": ["startedAt"],
@@ -107,11 +135,14 @@
     },
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
+        {
+          "$ref": "#/$defs/base"
+        },
         {
           "properties": {
-            "operation": { "const": "video-upgraded" },
-            "mediaType": { "const": "VIDEO" }
+            "operation": {
+              "const": "video-upgraded"
+            }
           }
         }
       ],
@@ -119,16 +150,22 @@
     },
     {
       "allOf": [
-        { "$ref": "#/$defs/base" },
+        {
+          "$ref": "#/$defs/base"
+        },
         {
           "required": ["payload"],
           "properties": {
-            "operation": { "const": "ended" },
+            "operation": {
+              "const": "ended"
+            },
             "payload": {
               "type": "object",
               "required": ["endReason"],
               "properties": {
-                "endReason": { "$ref": "#/$defs/endReason" }
+                "endReason": {
+                  "$ref": "#/$defs/endReason"
+                }
               },
               "additionalProperties": false
             }

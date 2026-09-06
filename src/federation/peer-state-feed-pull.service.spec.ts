@@ -12,11 +12,11 @@ function page(scannedThrough: string, hasMore = false): PeerStateFeedPage {
   };
 }
 
-function harness(committedThrough = 0n) {
+function harness(committedThrough = 0n, initialized = true) {
   const order: string[] = [];
   const cursor = {
     peerDomain: 'peer.test',
-    initialized: true,
+    initialized,
     committedThrough,
     updatedAt: new Date(),
   };
@@ -52,6 +52,7 @@ function harness(committedThrough = 0n) {
   return {
     service: new PeerStateFeedPullService(database as never),
     database,
+    cursor,
     order,
     whereUpdate,
   };
@@ -270,27 +271,63 @@ describe('PeerStateFeedPullService atomic item application', () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('starts a replacement rebuild before committing a corrected cursor', async () => {
-    const { service, order } = harness(2n);
-    const warn = vi.fn();
-    (service as unknown as { logger: { warn: typeof warn } }).logger.warn =
-      warn;
+  it('initializes from zero without warning and continues the drain', async () => {
+    const { service, order, cursor } = harness(0n, false);
+    const logger = { warn: vi.fn(), log: vi.fn() };
+    Object.assign(service, { logger });
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))
-      .mockRejectedValueOnce(new Error('replacement fetch failed'));
-    await expect(
-      service.run('peer.test', 12, {
-        fetch,
-        beginRebuild: async () => void order.push('rebuild'),
-        apply: async () => void order.push('state'),
-      }),
-    ).rejects.toThrow('replacement fetch failed');
-    expect(order).toEqual(['rebuild', 'cursor']);
-    expect(warn).toHaveBeenCalledWith(
-      'state-feed cursor for peer peer.test is unavailable; rebuilding from 0',
+      .mockResolvedValueOnce(page('3'));
+    await service.run('peer.test', 12, {
+      fetch,
+      apply: async () => void order.push('state'),
+    });
+    expect(cursor).toMatchObject({ initialized: true, committedThrough: 3n });
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.log).toHaveBeenCalledWith(
+      'initialized state-feed cursor for peer peer.test (namespace 12) at 0',
     );
-    expect(fetch).toHaveBeenNthCalledWith(1, 2n, undefined);
+    expect(fetch).toHaveBeenNthCalledWith(1, undefined, undefined);
+    expect(fetch).toHaveBeenNthCalledWith(2, 0n, undefined);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([0n, 2n, 4n])(
+    'rejects reset to %s for an initialized cursor without changing progress',
+    async (resumeAfter) => {
+      const { service, cursor, database } = harness(2n);
+      const fetch = vi
+        .fn()
+        .mockRejectedValue(
+          new RemoteFeedCursorUnavailableError(resumeAfter, 5n),
+        );
+      const apply = vi.fn();
+      await expect(
+        service.run('peer.test', 12, { fetch, apply }),
+      ).rejects.toThrow(
+        'initialized state-feed cursor rejected by peer peer.test (namespace 12, committedThrough=2',
+      );
+      expect(cursor).toMatchObject({ initialized: true, committedThrough: 2n });
+      expect(database.db.transaction).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [-1n, 4n],
+    [1n, 4n],
+    [0n, 0n],
+  ])('rejects invalid bootstrap bounds %s / %s', async (after, before) => {
+    const { service, cursor, database } = harness(0n, false);
+    const fetch = vi
+      .fn()
+      .mockRejectedValue(new RemoteFeedCursorUnavailableError(after, before));
+    await expect(
+      service.run('peer.test', 12, { fetch, apply: vi.fn() }),
+    ).rejects.toThrow('invalid state-feed bootstrap cursor');
+    expect(cursor.initialized).toBe(false);
+    expect(database.db.transaction).not.toHaveBeenCalled();
   });
 });

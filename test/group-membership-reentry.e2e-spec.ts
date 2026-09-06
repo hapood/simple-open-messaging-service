@@ -69,16 +69,17 @@ describe('group membership re-entry and ownership transfer', () => {
   async function inviteAndJoin(
     groupId: number,
     manager: { token: string },
-    member: { id: number; token: string },
+    member: { id: number; token: string; account: string },
   ): Promise<void> {
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${manager.token}`)
-      .send({ groupId, userIds: [member.id] });
+      .send({ groupId, users: [{ account: member.account, domain: 'local' }] });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    expect(invited.body.data.invited, JSON.stringify(invited.body)).toContain(
-      member.id,
-    );
+    expect(
+      invited.body.data.invited,
+      JSON.stringify(invited.body),
+    ).toContainEqual({ account: member.account, domain: 'local' });
     await waitForAcceptedDurableTasks(database.db, invited.body);
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')

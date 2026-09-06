@@ -30,7 +30,7 @@ Federation v1 JSON endpoints define only these non-success HTTP statuses:
 | `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code                                               |
 | `503` | The target peer is temporarily unable to provide federation service                               | A prepared peer enters or remains `degraded`; pre-commit establishment state is unchanged |
 
-Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. The application result itself MUST NOT change recognition-direction or business-authorization facts. Independently, the successfully authenticated request or a definitive authenticated response is reachability evidence and may move a prepared peer from `degraded` to `available` as defined by recognition.md. Network failure, timeout, and Health `200 unavailable` have the same availability-degradation effect as HTTP `503`.
+Normal success and all application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. An application result MUST NOT change recognition-direction facts. An ordinary application failure MUST NOT change business-authorization facts. Authenticated thread-query `FORBIDDEN` is an authorization-convergence result with the narrowly scoped exception defined below; it remains an HTTP `200` application result, not a transport or fatal peer-identity error. Independently, the successfully authenticated request or a definitive authenticated response is reachability evidence and may move a prepared peer from `degraded` to `available` as defined by recognition.md. Network failure, timeout, and Health `200 unavailable` have the same availability-degradation effect as HTTP `503`.
 
 Raw media response statuses `206` and `416`, with their associated headers, belong to HTTP Range semantics and are explicit exceptions to the JSON status set above.
 
@@ -57,9 +57,32 @@ A peer-lifecycle action MUST be determined jointly by response provenance, HTTP 
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Hard stop                      | A hostname-verified target peer or authority returns HTTP `409` with a fatal code explicitly listed in this registry | Record the exact code and evidence, enter `halted`, and stop automatic communication                                                                                 |
 | Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Health `unavailable`                                                       | A prepared peer enters or remains `degraded`; retain pins, receive readiness, direction facts, and retry work                                                        |
-| Current-request failure        | HTTP `400`, `401`, or a non-zero application code in HTTP `200`                                                      | Correct or handle the current operation according to code; do not alter direction or business facts. Separately authenticated communication may refresh reachability |
+| Current-request failure        | HTTP `400`, `401`, or a non-zero application code in HTTP `200`                                                      | Correct or handle the current operation according to code; preserve recognition facts. Business facts remain unchanged except for the thread-query authorization convergence below. Separately authenticated communication may refresh reachability |
 
 HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined with `FEDERATION_PEER_BLOCKED`, `FEDERATION_IDENTITY_MISMATCH`, or `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` is a hard stop for the peer relationship. A status/code conflict, unknown code, or response not provably originating from the target peer MUST NOT trigger `halted`.
+
+### Thread-query authorization convergence
+
+An authenticated HTTP `200 FORBIDDEN` from `GET /s2s/v1/messages`, or from
+`GET /s2s/v1/message-tombstones` because the current relationship is invalid,
+is an authorization-convergence result. The consumer MUST apply the
+current-state revalidation and locally authored relationship rules in
+[Message Query, Section 4](./message-feed.md#4-authorization-and-state-reconciliation),
+also required by [Message Tombstone Query, Section 2](./message-tombstone-feed.md#2-tombstone-query).
+
+The denial is a trigger to revalidate durable state, not a peer-authored
+relationship fact. If the relationship changed since the denied request began,
+the consumer MUST NOT author a revocation from that stale denial. Otherwise,
+when the revalidated state still authorizes the denied request, the consumer
+MUST invalidate the covered query work and publish `REVOKED` only for its own
+still-active directions covered by the denied peer authority, as specified by
+Message Query. It MUST NOT manufacture or rewrite a peer-authored direction.
+
+This exception MUST NOT change recognition facts, discard identity pins, or
+mark the peer `degraded` or `halted`. A `FORBIDDEN` result from any other
+operation, including an exact-message profile or media read, MUST NOT trigger
+this relationship-convergence exception; inability to read one resource is
+not evidence that the thread relationship has ended.
 
 ## Stable code registry
 
@@ -67,7 +90,7 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | ----: | -------------------------------------------------- | ---: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 10000 | `VALIDATION_FAILED`                                |  200 | Correct the application request; MUST NOT retry unchanged.                                                                                                                                                                                                   |
 | 10001 | `NOT_FOUND`                                        |  200 | The current resource does not exist; retry only after application state changes.                                                                                                                                                                             |
-| 10004 | `FORBIDDEN`                                        |  200 | The current application identity may not access the resource; MUST NOT retry unchanged.                                                                                                                                                                      |
+| 10004 | `FORBIDDEN`                                        |  200 | The current application identity may not access the resource; MUST NOT retry unchanged. For thread queries, apply the authorization-convergence exception above; other resource denials do not revoke relationships. |
 | 10005 | `RATE_LIMITED`                                     |  503 | The peer is temporarily rate-limiting; retry using locally bounded, jittered backoff.                                                                                                                                                                        |
 | 10999 | `INTERNAL`                                         |  503 | Retain pins and cursors; retry with backoff.                                                                                                                                                                                                                 |
 | 50001 | `FEDERATION_RECOGNITION_REQUIRED`                  |  401 | The operation lacks a pinned and locally recognized peer, prepared receive path, or either required recognition-direction confirmation. Complete the missing direction. Lifecycle `degraded` alone MUST NOT produce this error.                              |

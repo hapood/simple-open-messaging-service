@@ -167,7 +167,13 @@ export class MessageReportService {
           and(
             eq(creator.account, message.creatorAccount),
             eq(creator.domain, message.creatorDomain),
-            eq(creator.namespaceId, message.creatorNamespaceId),
+            eq(
+              creator.namespaceId,
+              sql<number>`CASE
+                WHEN ${message.creatorDomain} = 'local' THEN 0
+                ELSE ${message.sourceNamespaceId}
+              END`,
+            ),
           ),
         )
         .where(where)

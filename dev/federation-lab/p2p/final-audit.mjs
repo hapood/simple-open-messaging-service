@@ -9,6 +9,16 @@ import {
   readP2pConsistencySnapshot,
 } from './audit.mjs';
 import { readGroupWorkloadSnapshot } from './group-facts.mjs';
+import { parseContent } from './message-operations.mjs';
+import { mediaContentEvidence } from './media-content.mjs';
+import { compareCurrentMemberMessages } from './message-set-audit.mjs';
+import { pairKey } from './scenario.mjs';
+import { mapConcurrent } from './execute.mjs';
+import {
+  authorIdentity,
+  quoteIdentity,
+  permitsAbsentWithdrawal,
+} from './message-evidence.mjs';
 
 const labRuntimeDir = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -22,7 +32,9 @@ function sorted(value) {
 
 function rosterSignature(group) {
   return sorted(
-    (group?.roster ?? []).map(({ address, role }) => `${address}:${role}`),
+    (group?.roster ?? []).map(
+      ({ address, role, profileRev }) => `${address}:${role}:${profileRev}`,
+    ),
   );
 }
 
@@ -47,45 +59,68 @@ function nodeForAddress(address) {
   return node;
 }
 
-export async function readNodeMessageAudit(client, node) {
+export async function readNodeMessageAudit(
+  client,
+  node,
+  kind = 'GROUP',
+  { readMediaBytes = true } = {},
+) {
+  const identityColumns =
+    kind === 'GROUP'
+      ? 'grp."account", grp."domain"'
+      : 'pair."endpointAAccount", pair."endpointADomain", pair."endpointBAccount", pair."endpointBDomain"';
+  const identityJoin =
+    kind === 'GROUP'
+      ? 'INNER JOIN "Group" grp ON grp."id" = thread."groupId"'
+      : 'INNER JOIN "RelationshipPair" pair ON pair."threadId" = thread."id" AND pair."kind" = \'P2P\'';
   const threads = await client.query(`
-      SELECT grp."account", grp."domain", thread."id" AS "threadId",
-             thread."curSeq", thread."clearedSeq"
-      FROM "Group" grp
-      INNER JOIN "MessageThread" thread ON thread."groupId" = grp."id"
+      SELECT ${identityColumns}, thread."id" AS "threadId",
+             thread."curSeq", thread."clearedSeq", thread."authorityNamespaceId"
+      FROM "MessageThread" thread
+      ${identityJoin}
     `);
   const messages = await client.query(`
-      SELECT grp."account", grp."domain", msg."id"::text AS "id",
-             msg."threadId", msg."seq", msg."originSeq",
+      SELECT ${identityColumns}, msg."id"::text AS "id",
+             msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
              msg."contentType", msg."content", msg."clientMessageId", msg."isDeleted",
-             msg."localState", msg."creatorAccount", msg."creatorDomain"
+             msg."localState", msg."creatorAccount", msg."creatorDomain",
+             msg."sourceNamespaceId", namespace."domain" AS "sourceDomain",
+             quote_namespace."domain" AS "quoteSourceDomain",
+             bundle."messages" AS "forwardMessages"
       FROM "Message" msg
       INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
-      INNER JOIN "Group" grp ON grp."id" = thread."groupId"
+      ${identityJoin}
+      LEFT JOIN "IdentityNamespace" namespace ON namespace."id" = msg."sourceNamespaceId"
+      LEFT JOIN "IdentityNamespace" quote_namespace ON quote_namespace."id" =
+        CASE WHEN msg."contentType" = 'PURE_TEXT'
+          THEN (msg."content"::jsonb #>> '{quote,namespaceId}')::integer END
+      LEFT JOIN "ForwardMessage" carrier ON carrier."messageId" = msg."id"
+      LEFT JOIN "ForwardBundle" bundle ON bundle."id" = carrier."bundleId"
       ORDER BY msg."threadId", msg."seq"
     `);
   const deletions = await client.query(`
-      SELECT grp."account", grp."domain", deleted."threadId", deleted."messageSeq"
+      SELECT ${identityColumns}, deleted."threadId", deleted."messageSeq"
       FROM "DeletedMessage" deleted
       INNER JOIN "MessageThread" thread ON thread."id" = deleted."threadId"
-      INNER JOIN "Group" grp ON grp."id" = thread."groupId"
+      ${identityJoin}
     `);
   const assets = await client.query(`
-      SELECT grp."account", grp."domain", msg."threadId", msg."id"::text AS "messageId",
+      SELECT ${identityColumns}, msg."threadId", msg."id"::text AS "messageId",
              msg."clientMessageId",
-             asset."digest", media."isDeleted" AS "assetDeleted",
-             progress."status" AS "syncStatus"
+             asset."digest", media."isDeleted" AS "assetDeleted", media."bytes"::text AS "assetBytes"
       FROM "MessageAsset" asset
       INNER JOIN "Message" msg ON msg."id" = asset."messageId"
       INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
-      INNER JOIN "Group" grp ON grp."id" = thread."groupId"
+      ${identityJoin}
       LEFT JOIN "MediaAsset" media ON media."digest" = asset."digest"
-      LEFT JOIN "FileSyncProgress" progress
-        ON progress."batchId"::text = msg."clientMessageId"
-       AND progress."digest" = asset."digest"
     `);
   const groupAddress = (row) =>
-    `${row.account}@${row.domain === 'local' ? node.domain : row.domain}`;
+    kind === 'GROUP'
+      ? `${row.account}@${row.domain === 'local' ? node.domain : row.domain}`
+      : pairKey(
+          `${row.endpointAAccount}@${row.endpointADomain === 'local' ? node.domain : row.endpointADomain}`,
+          `${row.endpointBAccount}@${row.endpointBDomain === 'local' ? node.domain : row.endpointBDomain}`,
+        );
   const result = new Map();
   for (const row of threads.rows) {
     result.set(groupAddress(row), {
@@ -95,25 +130,83 @@ export async function readNodeMessageAudit(client, node) {
       messages: [],
       deletedSeqs: new Set(),
       assets: [],
+      syncState: null,
+      syncStates: [],
+      authorityNamespaceId: row.authorityNamespaceId,
+      historyGaps: [],
+      pendingTombstones: [],
     });
   }
   for (const row of messages.rows)
     result.get(groupAddress(row))?.messages.push(row);
   for (const row of deletions.rows)
     result.get(groupAddress(row))?.deletedSeqs.add(row.messageSeq);
-  for (const row of assets.rows)
-    result.get(groupAddress(row))?.assets.push(row);
+  const byThread = new Map(
+    [...result.values()].map((thread) => [thread.threadId, thread]),
+  );
+  for (const [table, property, single] of [
+    ['FederationThreadSyncState', 'syncState', true],
+    ['FederationThreadHistoryGap', 'historyGaps', false],
+    ['FederatedMessageTombstone', 'pendingTombstones', false],
+  ]) {
+    const rows = await client.query(`SELECT evidence.* FROM "${table}" evidence
+      INNER JOIN "MessageThread" thread ON thread."id" = evidence."threadId"
+      ${identityJoin}`);
+    for (const row of rows.rows) {
+      const thread = byThread.get(row.threadId);
+      if (thread) {
+        if (single) {
+          thread.syncStates.push(row);
+          // Only the authority's coordinate space governs a mirror's history.
+          // A local authority can retain multiple independent peer states.
+          if (row.namespaceId === thread.authorityNamespaceId)
+            thread[property] = row;
+        } else thread[property].push(row);
+      }
+    }
+  }
+  const verified = new Map();
+  for (const row of assets.rows) {
+    if (!readMediaBytes) {
+      result.get(groupAddress(row))?.assets.push(row);
+      continue;
+    }
+    if (!verified.has(row.digest))
+      verified.set(
+        row.digest,
+        await readAssetBytes(
+          join(
+            labRuntimeDir,
+            node.name,
+            'data',
+            'cas',
+            row.digest.slice(0, 2),
+            row.digest.slice(2, 4),
+            row.digest,
+          ),
+        ),
+      );
+    result
+      .get(groupAddress(row))
+      ?.assets.push({ ...row, ...verified.get(row.digest) });
+  }
   return result;
 }
 
-async function readMessageAudit(connections) {
-  const entries = await Promise.all(
-    [...connections.values()].map(async ({ node, client }) => [
-      node.name,
-      await readNodeMessageAudit(client, node),
-    ]),
-  );
-  return Object.fromEntries(entries);
+export async function readAssetBytes(path) {
+  try {
+    const bytes = await readFile(path);
+    return {
+      diskDigest: createHash('sha256').update(bytes).digest('hex'),
+      diskBytes: bytes.length,
+    };
+  } catch (error) {
+    return {
+      diskDigest: null,
+      diskBytes: null,
+      diskError: error.code ?? 'READ_FAILED',
+    };
+  }
 }
 
 async function avatarDigest(node, avatar) {
@@ -130,7 +223,7 @@ async function avatarDigest(node, avatar) {
   }
 }
 
-async function readNodeProfileAudit(client, node) {
+export async function readNodeProfileAudit(client, node) {
   const versions = await client.query(`
       SELECT version."profileRev", version."displayName", version."avatar", version."bio",
              usr."account" AS "userAccount", usr."domain" AS "userDomain",
@@ -150,8 +243,16 @@ async function readNodeProfileAudit(client, node) {
     `);
   const normalized = (account, domain) =>
     `${account}@${domain === 'local' ? node.domain : domain}`;
-  const entries = await Promise.all(
-    versions.rows.map(async (row) => {
+  // A foreign group may retain a source-scoped shell for a native account.
+  // Local display uses the native exact version, never that foreign self copy.
+  const authoritativeLocalRows = versions.rows.filter(
+    (row) =>
+      (row.userAccount ? row.userDomain : row.groupDomain) !== node.domain,
+  );
+  const entries = await mapConcurrent(
+    authoritativeLocalRows,
+    4,
+    async (row) => {
       const account = row.userAccount ?? row.groupAccount;
       const domain = row.userAccount ? row.userDomain : row.groupDomain;
       const address = normalized(account, domain);
@@ -165,7 +266,7 @@ async function readNodeProfileAudit(client, node) {
           avatarDigest: await avatarDigest(node, row.avatar),
         },
       ];
-    }),
+    },
   );
   const now = Date.now();
   return {
@@ -193,16 +294,6 @@ async function readNodeProfileAudit(client, node) {
   };
 }
 
-async function readProfileAudit(connections) {
-  const entries = await Promise.all(
-    [...connections.values()].map(async ({ node, client }) => [
-      node.name,
-      await readNodeProfileAudit(client, node),
-    ]),
-  );
-  return Object.fromEntries(entries);
-}
-
 function profileSignature(profile) {
   return profile
     ? {
@@ -221,12 +312,12 @@ function expectedMessages(log) {
     if (operation.status !== 'SUCCEEDED') continue;
     const clientMessageId = operation.request?.body?.clientMessageId;
     if (clientMessageId && operation.group) {
-      const originSeq = operation.result?.originSeq;
-      if (!Number.isInteger(originSeq)) {
+      const authorSeq = operation.result?.seq;
+      if (!Number.isSafeInteger(authorSeq) || authorSeq < 1) {
         invalid.push({
           operationId: operation.id,
           clientMessageId,
-          originSeq: originSeq ?? null,
+          authorSeq: authorSeq ?? null,
         });
         continue;
       }
@@ -235,8 +326,10 @@ function expectedMessages(log) {
         type: operation.type,
         operationId: operation.id,
         actor: operation.actor,
-        originSeq,
+        authorSeq,
         clientMessageId,
+        expected: operation.expected,
+        scenario: operation.scenario,
       });
     }
     if (operation.withdrawnClientMessageId)
@@ -245,7 +338,7 @@ function expectedMessages(log) {
   const keyed = (entries) =>
     new Map(
       entries.map((sent) => [
-        messageIdentity(sent.group, sent.actor, sent.originSeq),
+        messageIdentity(sent.group, sent.actor, sent.authorSeq),
         sent,
       ]),
     );
@@ -277,22 +370,6 @@ function countBy(values, keyOf) {
   );
 }
 
-function compareSequenceCoverage(thread) {
-  const visible = new Set(
-    thread.messages
-      .filter(
-        ({ localState, isDeleted }) => localState === 'READY' && !isDeleted,
-      )
-      .map(({ seq }) => seq),
-  );
-  const unexplained = [];
-  for (let seq = (thread.clearedSeq ?? 0) + 1; seq <= thread.curSeq; seq += 1) {
-    if (!visible.has(seq) && !thread.deletedSeqs.has(seq))
-      unexplained.push(seq);
-  }
-  return unexplained;
-}
-
 function compareMedia(node, thread, message, expected) {
   if (expected.type !== 'SEND_FILE' && expected.type !== 'SEND_GALLERY')
     return [];
@@ -300,17 +377,12 @@ function compareMedia(node, thread, message, expected) {
     ({ messageId }) => messageId === message.id,
   );
   const expectedCount = expected.type === 'SEND_FILE' ? 1 : 2;
-  const creatorDomain =
-    message.creatorDomain === 'local' ? node.domain : message.creatorDomain;
-  const isLocalSource = creatorDomain === node.domain;
   const errors = [];
   if (assets.length !== expectedCount)
     errors.push(`asset count ${assets.length}, expected ${expectedCount}`);
   for (const asset of assets) {
     if (asset.assetDeleted !== false)
       errors.push(`${asset.digest}: MediaAsset missing/deleted`);
-    if (!isLocalSource && asset.syncStatus !== 'SUCCEEDED')
-      errors.push(`${asset.digest}: sync=${asset.syncStatus ?? 'missing'}`);
     const path = join(
       labRuntimeDir,
       node.name,
@@ -321,16 +393,47 @@ function compareMedia(node, thread, message, expected) {
       asset.digest,
     );
     if (!existsSync(path)) errors.push(`${asset.digest}: CAS file missing`);
+    if (asset.diskDigest !== asset.digest)
+      errors.push(`${asset.digest}: CAS digest mismatch or unreadable file`);
+    if (
+      asset.diskBytes !== null &&
+      asset.assetBytes != null &&
+      BigInt(asset.assetBytes) !== BigInt(asset.diskBytes)
+    )
+      errors.push(`${asset.digest}: MediaAsset byte count mismatch`);
+    const authored = expected.expected?.assets?.find(
+      ({ digest }) => digest === asset.digest,
+    );
+    if (expected.expected?.assets && !authored)
+      errors.push(`${asset.digest}: not in submitted asset manifest`);
+    if (authored && authored.bytes !== asset.diskBytes)
+      errors.push(`${asset.digest}: submitted byte count mismatch`);
   }
   return errors;
 }
 
-function messageSignature(node, message) {
+function messageSignature(node, message, thread, resolveQuote) {
   const creatorDomain =
     message.creatorDomain === 'local' ? node.domain : message.creatorDomain;
+  const { content } = mediaContentEvidence(message);
+  if (thread && content?.quote) {
+    const target = thread.messages.find(({ seq }) => seq === content.quote.seq);
+    content.quote = resolveQuote
+      ? resolveQuote(node, message, thread)
+      : target
+        ? {
+            actor: `${target.creatorAccount}@${target.creatorDomain === 'local' ? node.domain : target.creatorDomain}`,
+            originSeq: target.originSeq,
+          }
+        : { missing: true };
+  }
+  if (message.contentType === 'FORWARD' && content) {
+    delete content.bundleId;
+    content.messages = message.forwardMessages;
+  }
   return {
     contentType: message.contentType,
-    content: message.content,
+    content: content ?? message.content,
     creator: `${message.creatorAccount}@${creatorDomain}`,
   };
 }
@@ -339,11 +442,12 @@ function messageIdentity(group, creator, originSeq) {
   return JSON.stringify([group, creator, originSeq]);
 }
 
-function storedMessageIdentity(node, group, message) {
+function storedMessageIdentity(node, group, message, messages) {
+  const identity = authorIdentity(node, message, messages, group);
   return messageIdentity(
     group,
     messageSignature(node, message).creator,
-    message.originSeq,
+    identity.seq,
   );
 }
 
@@ -353,10 +457,62 @@ export function compareFederationSnapshot({
   groups,
   messages,
   profiles,
+  p2pMessages,
   enforceCoverage = true,
   validateProfiles = true,
 }) {
   const failures = [];
+  const contexts = new WeakMap();
+  for (const collection of [messages, p2pMessages]) {
+    for (const nodeThreads of Object.values(collection ?? {}))
+      for (const [key, thread] of nodeThreads)
+        contexts.set(thread, { collection, key });
+  }
+  const resolveQuote = (node, message, thread) => {
+    const context = contexts.get(thread);
+    return quoteIdentity(
+      node,
+      message,
+      thread,
+      context?.collection,
+      context?.key,
+    );
+  };
+  const checkedMedia = new WeakSet();
+  const signature = (node, message, thread) => {
+    if (!checkedMedia.has(message)) {
+      checkedMedia.add(message);
+      for (const error of mediaContentEvidence(message).errors)
+        failures.push({
+          kind: 'MESSAGE_MEDIA_URL',
+          node: node.name,
+          thread: contexts.get(thread)?.key,
+          threadId: message.threadId,
+          seq: message.seq,
+          error,
+        });
+    }
+    return messageSignature(node, message, thread, resolveQuote);
+  };
+  if (
+    enforceCoverage &&
+    log.groups.filter(({ active }) => active).length === 2
+  ) {
+    if (log.referenceScenario?.status !== 'SUCCEEDED')
+      failures.push({
+        kind: 'WORKLOAD_COVERAGE',
+        coverage: 'REFERENCE_WITHDRAWAL',
+      });
+    const dissolved = log.operations.filter(
+      ({ type, status }) => type === 'DISSOLVE_GROUP' && status === 'SUCCEEDED',
+    );
+    if (dissolved.length !== 1)
+      failures.push({
+        kind: 'WORKLOAD_COVERAGE',
+        coverage: 'ONE_ACTIVE_GROUP_DISSOLVED',
+        actual: dissolved.length,
+      });
+  }
   const successfulTypes = countBy(
     log.operations.filter(({ status }) => status === 'SUCCEEDED'),
     ({ type }) => type,
@@ -413,6 +569,79 @@ export function compareFederationSnapshot({
   }
 
   const expected = expectedMessages(log);
+  const messageSets = [];
+  if (p2pMessages) {
+    const pairs = new Set(
+      Object.values(p2p).flatMap(({ pairs }) => pairs.active),
+    );
+    for (const pair of pairs) {
+      const members = pair.split('|');
+      const nodeNames = new Set(
+        members.map((address) => nodeForAddress(address).name),
+      );
+      const compared = compareCurrentMemberMessages({
+        groupAddress: pair,
+        members,
+        messages: p2pMessages,
+        nodeNames,
+        signature,
+      });
+      failures.push(
+        ...compared.failures.map((failure) => ({
+          ...failure,
+          threadType: 'P2P',
+        })),
+      );
+      messageSets.push({ pair, ...compared });
+      for (const operation of log.operations.filter(
+        (entry) =>
+          entry.status === 'SUCCEEDED' &&
+          entry.p2pPair === pair &&
+          entry.result?.originSeq,
+      )) {
+        if (!operation.request?.body?.clientMessageId) continue;
+        const withdrawn = log.operations.some(
+          (entry) =>
+            entry.status === 'SUCCEEDED' &&
+            entry.withdrawnClientMessageId ===
+              operation.request.body.clientMessageId,
+        );
+        for (const nodeName of nodeNames) {
+          const node = federationLabNodes.find(({ name }) => name === nodeName);
+          const thread = p2pMessages[nodeName].get(pair);
+          const message = thread?.messages.find(
+            (row) =>
+              row.originSeq === operation.result.originSeq &&
+              messageSignature(node, row).creator === operation.actor,
+          );
+          if (!message || Boolean(message.isDeleted) !== withdrawn)
+            failures.push({
+              kind: 'P2P_MESSAGE_EFFECT',
+              pair,
+              node: nodeName,
+              operationId: operation.id,
+            });
+          if (message && !withdrawn) {
+            if (
+              operation.expected?.text !== undefined &&
+              parseContent(message.content)?.text !== operation.expected.text
+            )
+              failures.push({
+                kind: 'P2P_MESSAGE_SUBMITTED_CONTENT',
+                pair,
+                node: nodeName,
+                operationId: operation.id,
+              });
+            for (const error of compareMedia(node, thread, message, {
+              type: operation.type,
+              expected: operation.expected,
+            }))
+              failures.push({ kind: 'MEDIA', pair, node: nodeName, error });
+          }
+        }
+      }
+    }
+  }
   for (const invalid of expected.invalid)
     failures.push({ kind: 'MESSAGE_JOURNAL_COORDINATE', ...invalid });
   for (const planned of log.groups) {
@@ -426,7 +655,16 @@ export function compareFederationSnapshot({
       continue;
     }
     const owners = canonical.roster.filter(({ role }) => role === 'OWNER');
-    if (canonical.dissolved || owners.length !== 1)
+    const dissolution = log.operations.find(
+      (operation) =>
+        operation.type === 'DISSOLVE_GROUP' &&
+        operation.group === planned.address &&
+        operation.status === 'SUCCEEDED',
+    );
+    if (
+      Boolean(canonical.dissolved) !== Boolean(dissolution) ||
+      (!dissolution && owners.length !== 1)
+    )
       failures.push({
         kind: 'ROSTER_INVARIANT',
         group: planned.address,
@@ -440,7 +678,11 @@ export function compareFederationSnapshot({
       );
       const rosterActive = Boolean(rosterMember);
       const relationshipActive = relationSignature(canonical, member).active;
-      if (rosterMember?.role !== 'OWNER' && rosterActive !== relationshipActive)
+      if (
+        !dissolution &&
+        rosterMember?.role !== 'OWNER' &&
+        rosterActive !== relationshipActive
+      )
         failures.push({
           kind: 'ROSTER_RELATIONSHIP',
           group: planned.address,
@@ -452,10 +694,49 @@ export function compareFederationSnapshot({
     const finalMemberNodes = new Set([
       originNode.name,
       ...canonical.roster.map(({ address }) => nodeForAddress(address).name),
+      ...(dissolution?.audienceNodes ?? []),
     ]);
     for (const nodeName of finalMemberNodes) {
       const node = federationLabNodes.find(({ name }) => name === nodeName);
       const projection = groups[node.name].groups.get(planned.address);
+      // Dissolution revokes relationships but retains historical Group Meta;
+      // former audiences receive no terminal empty-roster projection.
+      if (
+        (!dissolution || nodeName === originNode.name) &&
+        Boolean(projection?.dissolved) !== Boolean(dissolution)
+      )
+        failures.push({
+          kind: 'GROUP_DISSOLUTION',
+          group: planned.address,
+          node: nodeName,
+          expected: Boolean(dissolution),
+          actual: projection?.dissolved ?? null,
+        });
+      if (dissolution) {
+        for (const address of dissolution.membersBeforeDissolution ?? []) {
+          if (
+            nodeName !== originNode.name &&
+            nodeForAddress(address).name !== nodeName
+          )
+            continue;
+          if (projection?.relationships.get(address)?.active !== false)
+            failures.push({
+              kind: 'DISSOLVED_MEMBERSHIP',
+              group: planned.address,
+              node: nodeName,
+              member: address,
+            });
+        }
+        continue;
+      }
+      if (projection?.defaultProfileRev !== canonical.defaultProfileRev)
+        failures.push({
+          kind: 'GROUP_PROFILE_REFERENCE',
+          group: planned.address,
+          node: nodeName,
+          expected: canonical.defaultProfileRev,
+          actual: projection?.defaultProfileRev,
+        });
       if (
         JSON.stringify(rosterSignature(projection)) !==
         JSON.stringify(canonicalRoster)
@@ -469,6 +750,7 @@ export function compareFederationSnapshot({
         });
     }
     for (const member of log.users) {
+      if (dissolution) break;
       const memberNode = nodeForAddress(member);
       if (memberNode.name === originNode.name) continue;
       const originRelation = relationSignature(canonical, member);
@@ -486,8 +768,36 @@ export function compareFederationSnapshot({
         });
     }
 
+    // Revoked historical members may retain an old roster or incomplete message history.
+    // Dissolved groups have no current members; their terminal membership checks ran above.
+    const currentMembers = new Set(
+      dissolution
+        ? []
+        : canonical.roster
+            .filter(
+              ({ address, role }) =>
+                canonical.relationships.get(address)?.active === true ||
+                (role === 'OWNER' && !canonical.relationships.has(address)),
+            )
+            .map(({ address }) => address),
+    );
+    if (currentMembers.size === 0) continue;
+    const comparedNodes = new Set([
+      originNode.name,
+      ...[...currentMembers].map((address) => nodeForAddress(address).name),
+    ]);
+    const messageSet = compareCurrentMemberMessages({
+      groupAddress: planned.address,
+      members: currentMembers,
+      messages,
+      nodeNames: comparedNodes,
+      signature,
+    });
+    failures.push(...messageSet.failures);
+    messageSets.push({ group: planned.address, ...messageSet });
     const expectedForGroup = [...expected.live].filter(
-      ([, value]) => value.group === planned.address,
+      ([, value]) =>
+        value.group === planned.address && currentMembers.has(value.actor),
     );
     const expectedKeys = new Set(expectedForGroup.map(([key]) => key));
     const expectedUserCounts = countBy(
@@ -499,11 +809,11 @@ export function compareFederationSnapshot({
       (canonicalThread?.messages ?? [])
         .filter(({ originSeq }) => Number.isInteger(originSeq))
         .map((message) => [
-          storedMessageIdentity(originNode, planned.address, message),
+          storedMessageIdentity(originNode, planned.address, message, messages),
           message,
         ]),
     );
-    for (const nodeName of finalMemberNodes) {
+    for (const nodeName of comparedNodes) {
       const node = federationLabNodes.find(({ name }) => name === nodeName);
       const thread = messages[nodeName].get(planned.address);
       if (!thread) {
@@ -514,17 +824,10 @@ export function compareFederationSnapshot({
         });
         continue;
       }
-      const unexplained = compareSequenceCoverage(thread);
-      if (unexplained.length > 0)
-        failures.push({
-          kind: 'MESSAGE_SEQ_GAP',
-          group: planned.address,
-          node: nodeName,
-          unexplained,
-        });
       for (const message of thread.messages) {
         if (
           message.contentType !== 'SYSTEM' &&
+          currentMembers.has(messageSignature(node, message).creator) &&
           (!Number.isInteger(message.seq) ||
             !Number.isInteger(message.originSeq))
         )
@@ -540,7 +843,7 @@ export function compareFederationSnapshot({
       const actualWorkloadMessages = thread.messages.filter(
         (message) =>
           expectedKeys.has(
-            storedMessageIdentity(node, planned.address, message),
+            storedMessageIdentity(node, planned.address, message, messages),
           ) &&
           message.localState === 'READY' &&
           !message.isDeleted,
@@ -549,20 +852,21 @@ export function compareFederationSnapshot({
         thread.messages
           .filter(({ originSeq }) => Number.isInteger(originSeq))
           .map((message) => [
-            storedMessageIdentity(node, planned.address, message),
+            storedMessageIdentity(node, planned.address, message, messages),
             message,
           ]),
       );
       const unexpectedMessages = thread.messages.filter(
         (message) =>
           message.contentType !== 'SYSTEM' &&
+          currentMembers.has(messageSignature(node, message).creator) &&
           message.localState === 'READY' &&
           !message.isDeleted &&
           !expectedKeys.has(
-            storedMessageIdentity(node, planned.address, message),
+            storedMessageIdentity(node, planned.address, message, messages),
           ) &&
           !expected.withdrawn.has(
-            storedMessageIdentity(node, planned.address, message),
+            storedMessageIdentity(node, planned.address, message, messages),
           ),
       );
       for (const message of unexpectedMessages)
@@ -605,15 +909,17 @@ export function compareFederationSnapshot({
             node: nodeName,
             operationId: sent.operationId,
             clientMessageId: sent.clientMessageId,
-            originSeq: sent.originSeq,
+            authorSeq: sent.authorSeq,
           });
           continue;
         }
         const canonicalMessage = canonicalMessagesByKey.get(messageKey);
         if (
           canonicalMessage &&
-          JSON.stringify(messageSignature(node, message)) !==
-            JSON.stringify(messageSignature(originNode, canonicalMessage))
+          JSON.stringify(signature(node, message, thread)) !==
+            JSON.stringify(
+              signature(originNode, canonicalMessage, canonicalThread),
+            )
         )
           failures.push({
             kind: 'MESSAGE_CONTENT',
@@ -622,6 +928,67 @@ export function compareFederationSnapshot({
             clientMessageId: sent.clientMessageId,
             expected: messageSignature(originNode, canonicalMessage),
             actual: messageSignature(node, message),
+          });
+        const content = parseContent(message.content);
+        if (
+          sent.expected?.text !== undefined &&
+          content?.text !== sent.expected.text
+        )
+          failures.push({
+            kind: 'MESSAGE_SUBMITTED_CONTENT',
+            node: nodeName,
+            group: planned.address,
+            operationId: sent.operationId,
+          });
+        if (sent.expected?.quote) {
+          const target = resolveQuote(node, message, thread);
+          const observer = nodeForAddress(sent.actor);
+          const observedTarget = messages[observer.name]
+            ?.get(planned.address)
+            ?.messages.find((row) => row.seq === sent.expected.quote.seq);
+          const expectedTarget =
+            sent.expected.quote.seq !== undefined
+              ? observedTarget &&
+                authorIdentity(
+                  observer,
+                  observedTarget,
+                  messages,
+                  planned.address,
+                )
+              : {
+                  actor: sent.expected.quote.actor,
+                  seq: sent.expected.quote.originSeq,
+                };
+          if (
+            !target ||
+            !expectedTarget ||
+            expectedTarget.actor !== sent.expected.quote.actor ||
+            messageIdentity(planned.address, target.actor, target.seq) !==
+              messageIdentity(
+                planned.address,
+                expectedTarget.actor,
+                expectedTarget.seq,
+              )
+          )
+            failures.push({
+              kind: 'MESSAGE_QUOTE_TARGET',
+              node: nodeName,
+              group: planned.address,
+              operationId: sent.operationId,
+            });
+        }
+        if (
+          sent.type === 'FORWARD_HISTORY' &&
+          sent.expected?.sourceText !== undefined &&
+          (message.forwardMessages?.length !== 1 ||
+            parseContent(message.forwardMessages[0].content)?.text !==
+              sent.expected.sourceText)
+        )
+          failures.push({
+            kind: 'FORWARD_SNAPSHOT',
+            node: nodeName,
+            group: planned.address,
+            operationId: sent.operationId,
           });
         for (const error of compareMedia(node, thread, message, sent))
           failures.push({
@@ -633,19 +1000,29 @@ export function compareFederationSnapshot({
           });
       }
       for (const [messageKey, sent] of expected.withdrawn) {
-        if (sent.group !== planned.address) continue;
+        if (sent.group !== planned.address || !currentMembers.has(sent.actor))
+          continue;
         const message = messagesByKey.get(messageKey);
         if (
-          message &&
-          (!message.isDeleted || !thread.deletedSeqs.has(message.seq))
+          (!message &&
+            !permitsAbsentWithdrawal({
+              nodeName,
+              thread,
+              messages,
+              key: planned.address,
+              actor: sent.actor,
+              authorSeq: sent.authorSeq,
+            })) ||
+          (message &&
+            (!message.isDeleted || !thread.deletedSeqs.has(message.seq)))
         )
           failures.push({
             kind: 'WITHDRAWAL',
             group: planned.address,
             node: nodeName,
             clientMessageId: sent.clientMessageId,
-            isDeleted: message.isDeleted,
-            tombstone: thread.deletedSeqs.has(message.seq),
+            isDeleted: message?.isDeleted,
+            tombstone: message ? thread.deletedSeqs.has(message.seq) : false,
           });
       }
     }
@@ -653,16 +1030,52 @@ export function compareFederationSnapshot({
   if (validateProfiles)
     for (const node of federationLabNodes) {
       const references = [...profiles[node.name].intentRefs];
+      for (const pair of p2p[node.name].pairs.active) {
+        for (const message of p2pMessages?.[node.name]?.get(pair)?.messages ??
+          []) {
+          if (
+            message.localState === 'READY' &&
+            !message.isDeleted &&
+            message.profileRev > 0
+          )
+            references.push({
+              address: messageSignature(node, message).creator,
+              profileRev: message.profileRev,
+              source: `P2P_MESSAGE:${pair}:${message.seq}`,
+            });
+        }
+      }
       for (const group of groups[node.name].groups.values()) {
+        const originNode = nodeForAddress(group.address);
+        const canonical = groups[originNode.name].groups.get(group.address);
+        const canResolve =
+          node.name === originNode.name ||
+          (canonical &&
+            !canonical.dissolved &&
+            canonical.roster.some(
+              ({ address }) => nodeForAddress(address).name === node.name,
+            ));
+        // Lazy display reads require current authorization. Historical mirrors
+        // can retain unresolved references after departure or dissolution;
+        // any snapshots already cached must still match their authority.
+        const addGroupReference = (reference) => {
+          if (
+            canResolve ||
+            profiles[node.name].versions.has(
+              `${reference.address}#${reference.profileRev}`,
+            )
+          )
+            references.push(reference);
+        };
         if (group.defaultProfileRev > 0)
-          references.push({
+          addGroupReference({
             address: group.address,
             profileRev: group.defaultProfileRev,
             source: 'GROUP_META_PROFILE',
           });
         for (const member of group.roster) {
           if (member.profileRev > 0)
-            references.push({
+            addGroupReference({
               address: member.address,
               profileRev: member.profileRev,
               source: 'GROUP_META_MEMBER',
@@ -674,7 +1087,7 @@ export function compareFederationSnapshot({
             !message.isDeleted &&
             message.profileRev > 0
           )
-            references.push({
+            addGroupReference({
               address: message.creatorAddress,
               profileRev: message.profileRev,
               source: `MESSAGE:${message.seq}`,
@@ -706,6 +1119,18 @@ export function compareFederationSnapshot({
           continue;
         }
         if (
+          [actual, authoritative].some(
+            (profile) =>
+              profile.avatarDigest !== null &&
+              !/^[a-f0-9]{64}$/.test(profile.avatarDigest ?? ''),
+          )
+        )
+          failures.push({
+            kind: 'PROFILE_AVATAR_UNREADABLE',
+            node: node.name,
+            ...reference,
+          });
+        if (
           JSON.stringify(profileSignature(actual)) !==
           JSON.stringify(profileSignature(authoritative))
         )
@@ -730,15 +1155,76 @@ export function compareFederationSnapshot({
     ),
     operationTypes: successfulTypes,
     p2pFriends,
+    messageSets,
+    auditedMessages: messageSets.reduce(
+      (sum, entry) => sum + entry.sourceMessages,
+      0,
+    ),
   };
 }
 
-export async function readFederationAuditSnapshot(connections, log) {
-  const p2p = await readP2pConsistencySnapshot(connections, log.users);
-  const groups = await readGroupWorkloadSnapshot(connections, p2p);
-  const messages = await readMessageAudit(connections);
-  const profiles = await readProfileAudit(connections);
-  return { p2p, groups, messages, profiles };
+export async function readFederationAuditSnapshot(
+  connections,
+  log,
+  options = {},
+) {
+  const groupAddresses = new Set(log.groups.map(({ address }) => address));
+  const cohort = new Set([...log.users, ...groupAddresses]);
+  const workers = await Promise.allSettled(
+    [...connections.values()].map(async ({ node, client }) => {
+      // One worker owns one connection; all tables on this node share one MVCC snapshot.
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      try {
+        const single = new Map([[node.name, { node, client }]]);
+        const p2p = await readP2pConsistencySnapshot(single, log.users);
+        const groups = await readGroupWorkloadSnapshot(single, p2p);
+        const messages = await readNodeMessageAudit(
+          client,
+          node,
+          'GROUP',
+          options,
+        );
+        const p2pMessages = await readNodeMessageAudit(
+          client,
+          node,
+          'P2P',
+          options,
+        );
+        const profiles = await readNodeProfileAudit(client, node);
+        groups[node.name].groups = new Map(
+          [...groups[node.name].groups].filter(([address]) =>
+            groupAddresses.has(address),
+          ),
+        );
+        profiles.intentRefs = profiles.intentRefs.filter(
+          (reference) =>
+            cohort.has(reference.address) &&
+            cohort.has(reference.subjectAddress),
+        );
+        await client.query('COMMIT');
+        return {
+          node: node.name,
+          p2p: p2p[node.name],
+          groups: groups[node.name],
+          messages,
+          p2pMessages,
+          profiles,
+        };
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      }
+    }),
+  );
+  const failed = workers.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  const entries = workers.map((result) => result.value);
+  return Object.fromEntries(
+    ['p2p', 'groups', 'messages', 'p2pMessages', 'profiles'].map((key) => [
+      key,
+      Object.fromEntries(entries.map((entry) => [entry.node, entry[key]])),
+    ]),
+  );
 }
 
 export async function waitForFederationConvergence({

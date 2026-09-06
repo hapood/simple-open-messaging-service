@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, lte, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   message,
@@ -39,7 +39,10 @@ export class MessageVisibilityService {
           eq(message.threadId, threadId),
           eq(message.seq, seq),
           eq(message.isDeleted, false),
-          sql`${accountThreadState.messageVisibleThroughSeq} IS NULL OR ${message.seq} <= ${accountThreadState.messageVisibleThroughSeq}`,
+          or(
+            isNull(accountThreadState.messageVisibleThroughSeq),
+            lte(message.seq, accountThreadState.messageVisibleThroughSeq),
+          ),
         ),
       )
       .limit(1);

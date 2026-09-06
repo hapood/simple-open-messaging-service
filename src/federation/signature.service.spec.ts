@@ -35,6 +35,30 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(true);
   });
 
+  it('preserves a fixed expiry when signing a later terminal retry', async () => {
+    const { svc } = makeService();
+    const expiry = 1_700_000_300;
+    for (const created of [1_700_000_000, 1_700_000_020]) {
+      const headers = await svc.signOutbound(
+        req,
+        new Date(created * 1000),
+        expiry,
+      );
+      expect(headers['signature-input']).toContain(`;created=${created}`);
+      expect(headers['signature-input']).toContain(`;expires=${expiry}`);
+    }
+  });
+
+  it.each([1_699_999_999, 1_700_000_301, Number.NaN, 1_700_000_010.5])(
+    'rejects an invalid fixed signature expiry %s',
+    async (expiry) => {
+      const { svc } = makeService();
+      await expect(
+        svc.signOutbound(req, new Date(1_700_000_000_000), expiry),
+      ).rejects.toThrow('signing window');
+    },
+  );
+
   it('rejects a tampered body (content-digest mismatch)', async () => {
     const { svc, pub } = makeService();
     const headers = await svc.signOutbound(req);

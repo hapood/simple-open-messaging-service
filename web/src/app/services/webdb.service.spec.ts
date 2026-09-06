@@ -36,6 +36,42 @@ describe('WebdbService', () => {
       }
     });
 
+    it('distinguishes tombstones from missing bodies and scopes them to the thread', async () => {
+      await webdb.openForUser('1');
+      await webdb.applyDeletedMessages(
+        42,
+        [
+          {
+            threadId: 42,
+            messageSeq: 4,
+            deletionSeq: 1,
+            type: 'USER_RETRACTION',
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ],
+        1,
+      );
+      const db = await webdb.messageDb();
+      await db.put('messages', {
+        threadId: 42,
+        seq: 5,
+        isDeleted: false,
+        content: 'body',
+      } as Message);
+      await db.put('messages', {
+        threadId: 42,
+        seq: 6,
+        isDeleted: true,
+        content: 'deleted body',
+      } as Message);
+      expect(await webdb.getDeletedMessageSeqs(42, [4, 4, 5, 6, 7])).toEqual([
+        4, 6,
+      ]);
+      expect(await webdb.getDeletedMessageSeqs(99, [4, 6])).toEqual([]);
+      expect(await webdb.getDeletedMessageSeqs(42, [])).toEqual([]);
+    });
+
     it('opens separate per-user core and message DBs and signals ready', async () => {
       const db = await webdb.openForUser('1');
       expect(db, 'opened handle').toBeTruthy();

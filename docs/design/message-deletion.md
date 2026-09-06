@@ -10,6 +10,25 @@
 
 ## Local flow
 
+Deletion, send, and content-round entry points use the same parent-first lock
+order: group business scope and Group row for a group, or sorted endpoint account
+business scopes and RelationshipPair for P2P, then MessageThread. An unbound P2P
+shell has no relationship parent; locking does not itself grant authorization.
+They lock `MessageThread` before locking or updating a `Message`.
+Federated identity advisory locks are acquired after the thread lock
+as well. Withdrawal locks only the target message, not the joined author row.
+This order also covers implicit foreign-key locks: inserting a federation
+receipt can lock its referenced message while already holding the thread lock.
+Acquiring the thread lock only during deletion-sequence allocation is too late.
+
+Nested content operations pass a `ThreadContentLock` capability acquired by the
+transaction entry point. Reuse validates both transaction identity and thread ID
+without issuing additional lock queries. Independent entry points acquire their
+own capability. This is an in-process parameter, not stored data or a wire field.
+The capability must not escape its transaction or survive rollback of the
+savepoint under which it was acquired. Message pages acquire it before their
+per-item savepoints; no transaction-global lock cache is maintained.
+
 `DeletedMessage` is an append-only per-thread log. Each row contains
 `threadId`, thread-local `deletionSeq`, target `messageSeq`, deletion type,
 `createdAt`, and `updatedAt`. Its primary key is `(threadId, deletionSeq)`, and

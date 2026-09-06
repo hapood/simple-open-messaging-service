@@ -304,9 +304,15 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, userIds: number[] }` — enqueue one GROUP invitation per
-  valid existing friend. The response includes `tasks[]` entries with each
-  accepted target's `taskId`; invalid targets remain in `skipped`.
+- **Body**: `{ groupId, users: [{ account, domain }] }` — enqueue one GROUP invitation per
+  valid existing friend. The server resolves each address to the current authoritative
+  identity and verifies the active P2P relationship. Resolution never creates a User
+  or selects an identity copied from another peer's group. `local` and this server's
+  public domain both identify local users. Duplicate normalized addresses are coalesced.
+  The response contains `invited: [{ account, domain }]`,
+  `tasks: [{ account, domain, taskId, status: "PENDING" }]`, and
+  `skipped: [{ account, domain, reason }]`. Client-side profile lookup and candidate
+  listing are optional presentation steps, not prerequisites for admission.
 
 ### Group request projections
 

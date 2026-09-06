@@ -1,7 +1,11 @@
 // Unit tests for MessageService.attachMediaStatus — the bulk readiness decision that backs the
 // query-messages mediaStatus field + mounted-message media-status endpoint. Drizzle is mocked.
 import { describe, it, expect, vi } from 'vitest';
-import { derivePreview, MessageService } from './message.service.js';
+import {
+  derivePreview,
+  MessageService,
+  stripMessageId,
+} from './message.service.js';
 import type { Message } from './message.service.js';
 import type { ContentType } from '../database/enums.js';
 
@@ -45,7 +49,12 @@ function databaseMock(queries: {
             vi
               .fn()
               .mockResolvedValue([
-                { account: 'alice', domain: 'local', name: 'Alice' },
+                {
+                  account: 'alice',
+                  domain: 'local',
+                  namespaceId: 0,
+                  name: 'Alice',
+                },
               ]),
         },
       },
@@ -75,6 +84,36 @@ const DIG = 'a'.repeat(64); // 64 lowercase hex (sha256) — matches extractDige
 const D2 = 'b'.repeat(64);
 const url = (d: string): string =>
   `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
+
+describe('stripMessageId author projection namespace', () => {
+  it('uses namespace zero for a local author returned through a remote stream', () => {
+    const result = stripMessageId(
+      mk({
+        id: 1n,
+        seq: 1,
+        content: '{}',
+        creatorDomain: 'local',
+        sourceNamespaceId: 7,
+      }),
+    );
+
+    expect(result.creator?.namespaceId).toBe(0);
+  });
+
+  it('uses the source namespace for a remote author projection', () => {
+    const result = stripMessageId(
+      mk({
+        id: 1n,
+        seq: 1,
+        content: '{}',
+        creatorDomain: 'remote.test',
+        sourceNamespaceId: 7,
+      }),
+    );
+
+    expect(result.creator?.namespaceId).toBe(7);
+  });
+});
 
 function selectBuilder<T>(result: T, resolvesAtLimit = false) {
   const promise = Promise.resolve(result);
@@ -690,7 +729,12 @@ describe('MessageService.queryMessages quote previews', () => {
         user: vi
           .fn()
           .mockResolvedValue([
-            { account: 'bob', domain: 'local', name: 'Bob' },
+            {
+              account: 'bob',
+              domain: 'local',
+              namespaceId: 0,
+              name: 'Bob',
+            },
           ]),
       }) as never,
       {} as never,

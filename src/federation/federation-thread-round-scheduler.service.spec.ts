@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
+import { Logger } from '@nestjs/common';
+import { FederationThreadSourceInactiveError } from './federation-errors.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationThreadRoundRemoteError } from './federation-thread-round-error.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
@@ -90,6 +92,115 @@ function harness() {
 }
 
 describe('FederationThreadRoundSchedulerService', () => {
+  it.each(['message', 'tombstone', 'reverse'] as const)(
+    'logs handled %s authorization denials only at debug level',
+    async (direction) => {
+      const { scheduler, forward, reverse, federation } = harness();
+      const run =
+        direction === 'message'
+          ? forward.runMessages
+          : direction === 'tombstone'
+            ? forward.runTombstones
+            : reverse.run;
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const error = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => {});
+      const debug = vi
+        .spyOn(Logger.prototype, 'debug')
+        .mockImplementation(() => {});
+      run.mockRejectedValueOnce(
+        new FederationThreadRoundRemoteError(
+          new S2sResponseError('forbidden', 200, BusinessCode.FORBIDDEN),
+          7,
+        ),
+      );
+      try {
+        await scheduler.wake(1, 'a.test', direction);
+        await vi.waitFor(() =>
+          expect(federation.pullStateFromPeer).toHaveBeenCalled(),
+        );
+        expect(warn).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(debug).toHaveBeenCalledWith(
+          expect.stringContaining('P2P_REVOKED'),
+        );
+      } finally {
+        await scheduler.onModuleDestroy();
+        warn.mockRestore();
+        error.mockRestore();
+        debug.mockRestore();
+      }
+    },
+  );
+
+  it('still reports failures while handling an authorization denial', async () => {
+    const { scheduler, forward, federation } = harness();
+    const error = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => {});
+    federation.handleThreadQueryForbidden.mockRejectedValueOnce(
+      new Error('database unavailable'),
+    );
+    forward.runMessages.mockRejectedValueOnce(
+      new FederationThreadRoundRemoteError(
+        new S2sResponseError('forbidden', 200, BusinessCode.FORBIDDEN),
+        7,
+      ),
+    );
+    try {
+      await scheduler.wake(1, 'a.test', 'message');
+      await vi.waitFor(() =>
+        expect(error).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'failed to converge forbidden federation thread',
+          ),
+        ),
+      );
+    } finally {
+      await scheduler.onModuleDestroy();
+      error.mockRestore();
+    }
+  });
+
+  it.each(['message', 'tombstone', 'reverse'] as const)(
+    'quietly ends inactive %s work and allows a later wake',
+    async (direction) => {
+      const { scheduler, forward, reverse, federation } = harness();
+      const run =
+        direction === 'message'
+          ? forward.runMessages
+          : direction === 'tombstone'
+            ? forward.runTombstones
+            : reverse.run;
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const error = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => {});
+      run.mockRejectedValueOnce(
+        new FederationThreadSourceInactiveError('membership ended'),
+      );
+      try {
+        await scheduler.wake(1, 'a.test', direction);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(warn).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(federation.handleThreadQueryForbidden).not.toHaveBeenCalled();
+        await scheduler.wake(1, 'a.test', direction);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(run).toHaveBeenCalledTimes(2);
+      } finally {
+        await scheduler.onModuleDestroy();
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
   it('discards a stale wake after thread ownership changes', async () => {
     const { scheduler, forward, databaseState } = harness();
     databaseState.ownerDomain = 'b.test';
@@ -548,6 +659,32 @@ describe('FederationThreadRoundSchedulerService', () => {
       expect(forward.runMessages).toHaveBeenCalledOnce();
       expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 7, 50);
       expect(reverse.run).toHaveBeenCalledOnce();
+    });
+    await scheduler.onModuleDestroy();
+  });
+
+  it('restores both publishers of the same local thread without merging their work', async () => {
+    const { scheduler, databaseState, forward, states } = harness();
+    databaseState.startupRows = ['a.test', 'b.test'].map(
+      (peerDomain, index) => ({
+        threadId: 1,
+        peerDomain,
+        namespaceId: 7 + index,
+        messageTargetSeq: 10,
+        messageProcessedThroughSeq: 0,
+        deletionTargetSeq: 2,
+        deletionProcessedThroughSeq: 0,
+        historyBoundaryReached: true,
+      }),
+    );
+    await scheduler.onApplicationBootstrap();
+    await vi.waitFor(() => {
+      expect(forward.runMessages).toHaveBeenCalledWith(1, 'a.test', 7, 50);
+      expect(forward.runMessages).toHaveBeenCalledWith(1, 'b.test', 8, 50);
+      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 7, 50);
+      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'b.test', 8, 50);
+      expect(states.require).toHaveBeenCalledWith(1, 7);
+      expect(states.require).toHaveBeenCalledWith(1, 8);
     });
     await scheduler.onModuleDestroy();
   });

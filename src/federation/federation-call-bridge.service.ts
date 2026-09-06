@@ -52,24 +52,28 @@ export class FederationCallBridgeService {
     signatureExpiresAtSec: number,
   ): Promise<void> {
     const frame = parseS2SCallWireFrame(body);
-    if (frame.op !== 'incoming') {
-      await this.eventEmitter.emitAsync('call.frame.inbound', {
-        peerDomain,
-        namespaceId,
-        signatureExpiresAtSec,
-        frame,
-      });
-      return;
-    }
     await this.inboundLocks.runExclusive(
       JSON.stringify([peerDomain, namespaceId, frame.callSid]),
-      () =>
-        this.handleIncoming(
-          frame,
-          peerDomain,
-          namespaceId,
-          signatureExpiresAtSec,
-        ),
+      async () => {
+        if (frame.op === 'incoming') {
+          await this.handleIncoming(
+            frame,
+            peerDomain,
+            namespaceId,
+            signatureExpiresAtSec,
+          );
+        } else {
+          await this.eventEmitter.emitAsync('call.frame.inbound', {
+            peerDomain,
+            namespaceId,
+            signatureExpiresAtSec,
+            frame,
+          });
+          if (['declined', 'cancelled', 'missed', 'ended'].includes(frame.op)) {
+            this.delivery.stop(peerDomain, frame.callSid);
+          }
+        }
+      },
     );
   }
 
@@ -77,12 +81,13 @@ export class FederationCallBridgeService {
     params: OutboundCallFrameParams,
     peerDomain: string,
   ): Promise<void> {
-    const base = { callSid: params.callSid, callType: params.callType };
+    const base = { callSid: params.callSid };
     let frame: S2SCallFrame;
     if (params.op === 'incoming') {
       frame = {
         ...base,
         op: 'incoming',
+        callType: params.callType,
         payload: {
           fromAccount: await this.users.requireLocalAccount(
             params.fromLocalUserId,
@@ -110,15 +115,18 @@ export class FederationCallBridgeService {
         payload: { endReason: params.endReason },
       };
     } else if (params.op === 'video-upgraded') {
-      frame = { ...base, op: 'video-upgraded', callType: 'VIDEO' };
+      frame = { ...base, op: 'video-upgraded' };
     } else {
       frame = { ...base, op: params.op };
     }
-    await this.peerHttp.post(
-      '/s2s/v1/call',
-      JSON.stringify(toS2SCallWireFrame(frame)),
-      peerDomain,
-    );
+    const body = JSON.stringify(toS2SCallWireFrame(frame));
+    if (params.signatureExpiresAtSec !== undefined) {
+      await this.peerHttp.post('/s2s/v1/call', body, peerDomain, {
+        signatureExpiresAtSec: params.signatureExpiresAtSec,
+      });
+    } else {
+      await this.peerHttp.post('/s2s/v1/call', body, peerDomain);
+    }
   }
 
   private async handleIncoming(
@@ -135,7 +143,6 @@ export class FederationCallBridgeService {
 
     const terminal = await this.database.db.query.callTombstone.findFirst({
       where: and(
-        eq(tables.callTombstone.peerDomain, peerDomain),
         eq(tables.callTombstone.namespaceId, namespaceId),
         eq(tables.callTombstone.callSid, frame.callSid),
         gt(tables.callTombstone.expiresAt, new Date()),

@@ -30,7 +30,73 @@ function groupMessage(authorDomain = 'local'): FederationMessageFeedMessage {
   };
 }
 
+function groupReceipt(): FederationMessageFeedMessage {
+  return {
+    ...groupMessage('local.test'),
+    originSeq: 3,
+    originCreatedAt: 1_700_000_000_000,
+  };
+}
+
 describe('FederationInboundMessageRouteService', () => {
+  it('binds member retractions to a retained source-authored message and active member route', async () => {
+    const routes = service();
+    const memberRoute = vi.spyOn(routes, 'resolveMessage').mockResolvedValue({
+      threadId: 11,
+      federationVersion: 4,
+      toAccount: '!group',
+      creatorAccount: 'alice',
+      creatorDomain: 'peer.test',
+      recipients: [],
+    });
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ account: 'alice' }] });
+    await expect(
+      routes.resolveTombstone(
+        { execute } as never,
+        { account: '!group' },
+        'peer.test',
+        9,
+        7,
+      ),
+    ).resolves.toMatchObject({
+      threadId: 11,
+      memberSubmission: true,
+      groupOriginDomain: 'local.test',
+    });
+    expect(memberRoute).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        thread: { account: '!group' },
+        author: { account: 'alice', domain: 'peer.test' },
+      },
+      'peer.test',
+      9,
+    );
+    const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
+    expect(query.sql).toContain('m."creatorDomain" =');
+    expect(query.sql).toContain('m."sourceNamespaceId" =');
+    expect(query.sql).toContain('m."originSeq" =');
+    expect(query.params).toEqual(['!group', 9, 7, 'peer.test']);
+  });
+
+  it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
+    const routes = service();
+    const resolveMessage = vi.spyOn(routes, 'resolveMessage');
+    await expect(
+      routes.resolveTombstone(
+        { execute: vi.fn().mockResolvedValue({ rows: [] }) } as never,
+        { account: '!group' },
+        'peer.test',
+        9,
+        7,
+      ),
+    ).rejects.toThrow('tombstone has no retained local group thread');
+    expect(resolveMessage).not.toHaveBeenCalled();
+  });
+
   it('routes a source-authored member message to an active local authoritative group', async () => {
     const execute = vi
       .fn()
@@ -62,6 +128,24 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.params).toContain(9);
   });
 
+  it('rejects a mirror returning a group-authority author instead of a local submission', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ threadId: 11, federationVersion: 4, toAccount: '!group' }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+    const tx = { execute } as unknown as DatabaseTransaction;
+
+    await expect(
+      service().resolveMessage(tx, groupReceipt(), 'peer.test', 9),
+    ).rejects.toThrow(
+      'group mirror may only submit its locally managed authors',
+    );
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it('does not authorize the local-origin branch for a forwarded third-party author', async () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });
     const tx = { execute } as unknown as DatabaseTransaction;
@@ -73,7 +157,9 @@ describe('FederationInboundMessageRouteService', () => {
         'peer.test',
         9,
       ),
-    ).rejects.toThrow('missed message has no retained local thread');
+    ).rejects.toThrow(
+      'group mirror may only submit its locally managed authors',
+    );
 
     expect(execute).toHaveBeenCalledOnce();
   });

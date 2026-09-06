@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, isNull, lte, ne } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, ne } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MessageDeleteType } from '../database/enums.js';
@@ -123,7 +123,7 @@ export class FederationMessageTombstoneFeedService {
         .where(
           and(
             eq(deletedMessage.threadId, threadId),
-            isNull(deletedMessage.federationSourceDomain),
+            eq(deletedMessage.sourceNamespaceId, 0),
             groupQueryDirection === 'MIRROR_TO_ORIGIN'
               ? eq(message.creatorDomain, 'local')
               : undefined,

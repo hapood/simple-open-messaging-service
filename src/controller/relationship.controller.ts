@@ -92,10 +92,19 @@ export class RelationshipController {
       });
       return { taskId: taskId.toString(), status: 'PENDING' };
     }
+    const remoteContext =
+      domain === 'local'
+        ? undefined
+        : await this.relationships.federatedRelationshipContext(
+            me,
+            account,
+            domain,
+          );
     const [actor, target] = await Promise.all([
       this.userService.findUniqueUser({ id: me }),
       this.userService.findUniqueUser({
         account_domain: { account, domain },
+        namespaceId: remoteContext?.namespaceId ?? 0,
       }),
     ]);
     if (!actor) throw new Error('authenticated user profile is missing');
@@ -136,12 +145,8 @@ export class RelationshipController {
         );
       }
     }
-    if (domain !== 'local') {
-      const relationship = await this.relationships.federatedRelationshipStatus(
-        me,
-        account,
-        domain,
-      );
+    if (remoteContext) {
+      const relationship = remoteContext.status;
       if (
         relationship === 'INCOMING_PENDING' ||
         relationship === 'OUTGOING_PENDING'
@@ -246,6 +251,7 @@ export class RelationshipController {
       this.userService.findUniqueUser({ id: me }),
       this.userService.findUniqueUser({
         account_domain: { account, domain: 'local' },
+        namespaceId: 0,
       }),
     ]);
     if (!actor || actor.availability !== 'AVAILABLE') {

@@ -1,6 +1,11 @@
 {
   "vectors": [
     {
+      "name": "quote coordinates reject null ambiguous legacy and unscoped shapes",
+      "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
+      "values": [null, {}, { "seq": 8, "originSeq": 8 }, { "targetSeq": 8 }, { "seq": 8, "namespaceId": 3 }, { "seq": 0 }, { "originSeq": -1 }, { "seq": 1.5 }, { "seq": 9007199254740991 }]
+    },
+    {
       "name": "well-known scalar version is obsolete",
       "schema": "urn:somfp:v1:discovery",
       "value": {
@@ -268,14 +273,21 @@
     {
       "name": "unknown message content type",
       "schema": "urn:somfp:v1:message-content",
-      "value": { "contentType": "STICKER", "content": {} }
+      "value": {
+        "contentType": "STICKER",
+        "content": {}
+      }
     },
     {
       "name": "media content rejects publisher display URL",
       "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "IMAGE",
-        "content": { "url": "/asset/0", "width": 1, "height": 1 }
+        "content": {
+          "url": "/asset/0",
+          "width": 1,
+          "height": 1
+        }
       }
     },
     {
@@ -377,8 +389,14 @@
           "type": "CALL",
           "mediaType": "AUDIO",
           "outcome": "completed",
-          "caller": { "account": "alice", "domain": "a.example" },
-          "callee": { "account": "bob", "domain": "b.example" }
+          "caller": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "callee": {
+            "account": "bob",
+            "domain": "b.example"
+          }
         }
       }
     },
@@ -391,8 +409,14 @@
           "type": "CALL",
           "mediaType": "AUDIO",
           "outcome": "cancelled",
-          "caller": { "account": "alice", "domain": "a.example" },
-          "callee": { "account": "bob", "domain": "b.example" },
+          "caller": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "callee": {
+            "account": "bob",
+            "domain": "b.example"
+          },
           "startedAt": 1,
           "endedAt": 2,
           "durationMs": 1
@@ -417,7 +441,10 @@
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "incoming",
         "callType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
       }
     },
     {
@@ -427,7 +454,10 @@
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "fromAccount": "alice", "toAccount": "bob" }
+        "payload": {
+          "fromAccount": "alice",
+          "toAccount": "bob"
+        }
       }
     },
     {
@@ -437,7 +467,10 @@
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
       }
     },
     {
@@ -447,7 +480,10 @@
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
       }
     },
     {
@@ -455,12 +491,11 @@
       "schema": "urn:somfp:v1:call",
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
-        "operation": "connected",
-        "mediaType": "AUDIO"
+        "operation": "connected"
       }
     },
     {
-      "name": "video upgrade must carry VIDEO type",
+      "name": "video upgrade rejects redundant media type",
       "schema": "urn:somfp:v1:call",
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
@@ -475,7 +510,10 @@
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" },
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        },
         "extra": true
       }
     },
@@ -486,7 +524,9 @@
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "endReason": "completed" }
+        "payload": {
+          "endReason": "completed"
+        }
       }
     },
     {
@@ -495,7 +535,6 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "signal",
-        "mediaType": "AUDIO",
         "payload": {
           "id": "c0a80101-0000-4000-8000-000000000001",
           "signalType": "offer",
@@ -509,7 +548,6 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "signal",
-        "mediaType": "AUDIO",
         "payload": {
           "signalId": "c0a80101-0000-4000-8000-000000000001",
           "kind": "offer",
@@ -523,7 +561,6 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "signal",
-        "mediaType": "AUDIO",
         "payload": {
           "signalId": "c0a80101-0000-4000-8000-000000000001",
           "signalType": "offer",
@@ -538,8 +575,10 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "ended",
-        "mediaType": "AUDIO",
-        "payload": { "signalType": "ice", "data": "{}" }
+        "payload": {
+          "signalType": "ice",
+          "data": "{}"
+        }
       }
     },
     {
@@ -547,8 +586,7 @@
       "schema": "urn:somfp:v1:call",
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
-        "operation": "ended",
-        "mediaType": "AUDIO"
+        "operation": "ended"
       }
     },
     {
@@ -558,7 +596,10 @@
         "callId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
       }
     },
     {
@@ -568,7 +609,10 @@
         "callId": "550e8400-e29b-01d4-a716-446655440000",
         "operation": "incoming",
         "mediaType": "AUDIO",
-        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
       }
     },
     {
@@ -581,20 +625,48 @@
     {
       "name": "authorized profile rejects omitted revision",
       "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
-      "value": { "account": "alice" }
+      "value": {
+        "account": "alice"
+      }
     },
     {
       "name": "message author profile rejects invalid parameter shapes",
       "schema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
       "values": [
-        { "account": "alice", "after": "0" },
-        { "account": "!group", "after": "0" },
-        { "account": "!group", "after": "0", "before": "2" },
-        { "account": "!group", "take": "10" },
-        { "account": "!group", "through": "10" },
-        { "account": "!group", "after": "01" },
-        { "account": "!group", "after": "0", "unknown": "1" },
-        { "account": "!group", "seq": "1" }
+        {
+          "account": "alice",
+          "after": "0"
+        },
+        {
+          "account": "!group",
+          "after": "0"
+        },
+        {
+          "account": "!group",
+          "after": "0",
+          "before": "2"
+        },
+        {
+          "account": "!group",
+          "take": "10"
+        },
+        {
+          "account": "!group",
+          "through": "10"
+        },
+        {
+          "account": "!group",
+          "after": "01"
+        },
+        {
+          "account": "!group",
+          "after": "0",
+          "unknown": "1"
+        },
+        {
+          "account": "!group",
+          "seq": "1"
+        }
       ]
     },
     {
@@ -802,7 +874,9 @@
         "tombstones": [
           {
             "deletionSeq": "4",
-            "thread": { "account": "!group" },
+            "thread": {
+              "account": "!group"
+            },
             "messageSeq": 7,
             "type": "USER_RETRACTION",
             "deletedAt": 1700000000000
@@ -819,14 +893,18 @@
         "tombstones": [
           {
             "deletionSeq": 5,
-            "thread": { "account": "!group" },
+            "thread": {
+              "account": "!group"
+            },
             "messageSeq": 8,
             "type": "USER_RETRACTION",
             "deletedAt": 1700000000001
           },
           {
             "deletionSeq": 4,
-            "thread": { "account": "!group" },
+            "thread": {
+              "account": "!group"
+            },
             "messageSeq": 7,
             "type": "USER_RETRACTION",
             "deletedAt": 1700000000000
@@ -859,7 +937,10 @@
     {
       "name": "success is not an error envelope",
       "schema": "urn:somfp:v1:error",
-      "value": { "code": 0, "message": "ok" }
+      "value": {
+        "code": 0,
+        "message": "ok"
+      }
     },
     {
       "name": "group-meta departure rejects every body",
@@ -884,7 +965,10 @@
     {
       "name": "quota error omits its structured data",
       "schema": "urn:somfp:v1:error",
-      "value": { "code": 50011, "message": "peer quota exceeded" }
+      "value": {
+        "code": 50011,
+        "message": "peer quota exceeded"
+      }
     },
     {
       "name": "quota error exposes implementation policy",
@@ -892,7 +976,11 @@
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
-        "data": { "category": "files", "limit": 1000, "retryAfter": 60 }
+        "data": {
+          "category": "files",
+          "limit": 1000,
+          "retryAfter": 60
+        }
       }
     },
     {
@@ -901,7 +989,9 @@
       "value": {
         "code": 50007,
         "message": "malformed",
-        "data": { "reason": "extra" }
+        "data": {
+          "reason": "extra"
+        }
       }
     },
     {
@@ -910,7 +1000,9 @@
       "value": {
         "code": 50019,
         "message": "requested cursor is below retained floor",
-        "data": { "availableCursor": "100" }
+        "data": {
+          "availableCursor": "100"
+        }
       }
     },
     {
@@ -928,7 +1020,10 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "alice", "peerAccount": "bob" },
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 3,
             "profileRev": 3,
@@ -951,7 +1046,10 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "alice", "peerAccount": "bob" },
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
             "profileRev": 3,
@@ -974,9 +1072,15 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "alice", "peerAccount": "bob" },
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
             "authorRef": "THREAD_ACCOUNT",
-            "author": { "account": "alice", "domain": "a.example" },
+            "author": {
+              "account": "alice",
+              "domain": "a.example"
+            },
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1016,7 +1120,10 @@
     {
       "name": "authorized profile parameters reject no-profile sentinel",
       "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
-      "value": { "account": "alice", "rev": "0" }
+      "value": {
+        "account": "alice",
+        "rev": "0"
+      }
     },
     {
       "name": "group member profile parameters reject no-profile sentinel",
@@ -1103,7 +1210,9 @@
       "value": {
         "messages": [
           {
-            "thread": { "account": "!team" },
+            "thread": {
+              "account": "!team"
+            },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
             "profileRev": 3,
@@ -1117,6 +1226,211 @@
         ],
         "scannedThrough": 1,
         "hasMore": false
+      }
+    },
+    {
+      "name": "ordinary call frame rejects media type",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "accepted",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "incoming requires initial mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "incoming",
+        "payload": {
+          "callerAccount": "alice",
+          "calleeAccount": "bob"
+        }
+      }
+    },
+    {
+      "name": "ringing rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ringing",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "ringing rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ringing",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "accepted rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "accepted",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "accepted rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "accepted",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "signal rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000001",
+          "signalType": "offer",
+          "data": "v=0"
+        },
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "signal rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000001",
+          "signalType": "offer",
+          "data": "v=0"
+        },
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "connected rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "connected",
+        "payload": {
+          "startedAt": 1700000000100
+        },
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "connected rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "connected",
+        "payload": {
+          "startedAt": 1700000000100
+        },
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "video-upgraded rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "video-upgraded",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "video-upgraded rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "video-upgraded",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "declined rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "declined",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "declined rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "declined",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "cancelled rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "cancelled",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "cancelled rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "cancelled",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "missed rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "missed",
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "missed rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "missed",
+        "mediaType": "VIDEO"
+      }
+    },
+    {
+      "name": "ended rejects redundant AUDIO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ended",
+        "payload": {
+          "endReason": "completed"
+        },
+        "mediaType": "AUDIO"
+      }
+    },
+    {
+      "name": "ended rejects redundant VIDEO mediaType",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ended",
+        "payload": {
+          "endReason": "completed"
+        },
+        "mediaType": "VIDEO"
       }
     }
   ]

@@ -17,6 +17,7 @@ import {
 } from '../group/group-capacity.js';
 import { readCurrentGroupRosterInTx } from '../group-meta/current-group-roster.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
+import { acquireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
 import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import {
@@ -756,6 +757,12 @@ export class FederationStateFeedConsumerService {
               requestedAt,
               expiresAt,
             });
+          // The group mutation has acquired its business scope. Reserve the peer
+          // allocator before request projections or system messages touch Account;
+          // activation/confirmation can publish peer state later in this transaction.
+          await this.stateFeed.lockTargetsInTx(tx, [
+            { peerDomain, namespaceId },
+          ]);
           if (
             !inviteDirection &&
             storageStatus !== 'REVOKED' &&
@@ -1136,27 +1143,27 @@ export class FederationStateFeedConsumerService {
             threadAddress,
           );
           if (target === null) continue;
-          const lockedThread = await tx
-            .select({ id: tables.messageThread.id })
-            .from(tables.messageThread)
-            .where(eq(tables.messageThread.id, target.threadId))
-            .for('update')
-            .limit(1);
-          if (!lockedThread[0]) continue;
+          const threadLock = await acquireThreadContentLockInTx(
+            tx,
+            target.threadId,
+          );
+          if (!threadLock) continue;
           target = await this.resolveStateFeedTargetInTransaction(
             tx,
             peerDomain,
             namespaceId,
             threadAddress,
           );
-          if (target === null || target.threadId !== lockedThread[0].id)
+          if (target === null || target.threadId !== threadLock.threadId)
             continue;
           const merged =
             await FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
               threadId: target.threadId,
+              namespaceId,
               messageTargetSeq: Number(body.messageEndSeq),
               deletionTargetSeq: Number(body.tombstoneEndSeq),
               reverseEnabled: target.reverseEnabled,
+              threadLock,
             });
           threadRoundWakes.push({
             threadId: target.threadId,

@@ -71,7 +71,10 @@ describe('group disband task fan-out', () => {
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, userIds: [member.id] });
+      .send({
+        groupId: threadId,
+        users: [{ account: member.account, domain: 'local' }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(database.db, invited.body);
     const joined = await request(app.getHttpServer())

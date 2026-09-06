@@ -74,6 +74,15 @@ export class ProfileResolutionCoordinatorService {
       this.touch(key, durable);
       return { status: 'READY', profile: durable };
     }
+    if (
+      normalized.domain === this.config.domain &&
+      normalized.namespaceId === 0
+    ) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'local profile revision is unavailable',
+      );
+    }
     const existing = this.inFlight.get(key);
     if (existing) {
       existing.users.add(userId);
@@ -135,12 +144,22 @@ export class ProfileResolutionCoordinatorService {
           profileRev: tables.message.profileRev,
           account: tables.message.creatorAccount,
           domain: tables.message.creatorDomain,
-          namespaceId: tables.message.creatorNamespaceId,
-          sourceDomain: tables.message.federationSourceDomain,
+          namespaceId: sql<number>`CASE
+            WHEN ${tables.message.creatorDomain} IN ('local', ${this.config.domain}) THEN 0
+            ELSE ${tables.message.sourceNamespaceId}
+          END`,
+          sourceDomain: sql<string | null>`CASE
+            WHEN ${tables.message.sourceNamespaceId} = 0 THEN NULL
+            ELSE ${tables.identityNamespace.domain}
+          END`,
           sourceNamespaceId: tables.message.sourceNamespaceId,
           originSeq: tables.message.originSeq,
         })
         .from(tables.message)
+        .innerJoin(
+          tables.identityNamespace,
+          eq(tables.identityNamespace.id, tables.message.sourceNamespaceId),
+        )
         .where(
           and(
             eq(tables.message.threadId, selector.threadId),
@@ -176,6 +195,10 @@ export class ProfileResolutionCoordinatorService {
       };
     }
     if ('threadId' in selector) {
+      const memberDomain =
+        selector.memberDomain.toLowerCase() === 'local'
+          ? this.config.domain
+          : selector.memberDomain.toLowerCase();
       const rows = await this.database.db.execute<{
         groupAccount: string;
         publisherDomain: string;
@@ -200,7 +223,11 @@ export class ProfileResolutionCoordinatorService {
             ON member_identity.id = member_fact."memberUserId"
           WHERE member_fact."groupId" = group_state.id
             AND member_identity.account = ${normalizeAccount(selector.memberAccount)}
-            AND member_identity.domain = ${selector.memberDomain.toLowerCase()}
+            AND member_identity.domain = CASE
+              WHEN group_state.domain = 'local' AND ${memberDomain} = ${this.config.domain}
+                THEN 'local'
+              ELSE ${memberDomain}
+            END
           ORDER BY member_fact."feedId" DESC
           LIMIT 1
         ) latest ON true
@@ -234,9 +261,10 @@ export class ProfileResolutionCoordinatorService {
         threadId: selector.threadId,
         groupAccount: allocated.groupAccount,
         account: normalizeAccount(selector.memberAccount),
-        domain: selector.memberDomain.toLowerCase(),
+        domain: memberDomain,
         rev: allocated.profileRev,
-        namespaceId: allocated.memberNamespaceId,
+        namespaceId:
+          memberDomain === this.config.domain ? 0 : allocated.memberNamespaceId,
         publisherDomain:
           allocated.publisherDomain === 'local'
             ? this.config.domain
@@ -356,7 +384,7 @@ export class ProfileResolutionCoordinatorService {
     }
     let profile: S2SProfile;
     if (selector.kind === 'message') {
-      if (!selector.publisherDomain || selector.publisherNamespaceId === null) {
+      if (!selector.publisherDomain || selector.publisherNamespaceId === 0) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'message publisher is unavailable',

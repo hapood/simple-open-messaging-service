@@ -48,6 +48,7 @@ describe('FederationThreadForwardRoundService', () => {
     });
     expect(tombstoneDriver.process).not.toHaveBeenCalled();
     expect(states.require).toHaveBeenCalledOnce();
+    expect(states.require).toHaveBeenCalledWith(31, 7);
   });
 
   it('omits the message cutoff during ordinary tombstone consumption', async () => {

@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../relationship/thread-content-lock.js', () => ({
+  lockThreadContentInTx: vi.fn().mockResolvedValue(true),
+  requireThreadContentLockInTx: vi.fn(
+    async (tx, threadId, held) => held ?? { tx, threadId },
+  ),
+}));
 import { ContentType } from '../database/enums.js';
 import { MessageService } from './message.service.js';
 import { SystemMessageType } from './system-message.js';
@@ -6,7 +12,10 @@ import { ClientThreadContentHeadWriter } from './client-message-feed.service.js'
 
 describe('MessageService local system messages', () => {
   it('persists a local SYSTEM row', async () => {
-    vi.spyOn(ClientThreadContentHeadWriter, 'publishMessage').mockResolvedValue();
+    vi.spyOn(
+      ClientThreadContentHeadWriter,
+      'publishMessage',
+    ).mockResolvedValue();
     const stored = {
       id: 10n,
       threadId: 7,

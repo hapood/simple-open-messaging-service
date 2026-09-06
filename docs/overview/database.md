@@ -248,7 +248,7 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 | `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL \| FORWARD \| GALLERY \| SYSTEM`               |
 | `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                  |
 | `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                          |
-| `originSeq`                             | Int?                 | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor                   |
+| `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `sourceNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
 | `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                            |
 | `threadId`                              |                      | conversation FK                                                                                                        |
 | `creatorAccount` / `creatorDomain`      | Address snapshot     | author identity; null only for server-authored SYSTEM items                                                            |
@@ -273,8 +273,9 @@ columns are implementation details and never replace the wire coordinates:
 
 | Wire identity or coordinate                      | SOMS local representation                                                                                                                 |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `(thread, author, originSeq)`                    | `Message(threadId, creatorAccount, creatorDomain, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate |
-| `(source domain, thread, quoteTarget.targetSeq)` | Resolved through the source publisher's message/receipt coordinate mapping, then projected to receiver-local `Message.seq`                |
+| Direct incoming `(publisher, thread, seq)`       | Captured publisher namespace plus `Message(threadId, sourceNamespaceId, originSeq)`; local `Message.seq` is a separate display/order coordinate |
+| `quoteTarget.seq`                               | Durable `quote: { seq, namespaceId: capturedPublisherNamespace }`; resolve by thread, source namespace, and origin sequence at read time |
+| `quoteTarget.originSeq`                         | Durable `quote: { seq: originSeq, namespaceId: 0 }`; already addresses the receiver's local thread sequence |
 | Direct-media `digest` bound to an outer message  | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                     |
 | Remote media not yet localized                   | `PendingMedia(threadId, creatorAccount, creatorDomain, originSeq, digest)` until digest and authorization checks succeed                  |
 | Outer FORWARD card root `bundleId`               | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                               |

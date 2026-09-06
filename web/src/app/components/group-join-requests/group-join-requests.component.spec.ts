@@ -55,7 +55,7 @@ describe('GroupJoinRequestsComponent', () => {
       rejectJoinRequest: vi.fn(() => of({ code: 0 })),
       revokeInvitation: vi.fn(() => of({ code: 0 })),
       inviteUsers: vi.fn(() =>
-        of({ code: 0, data: { invited: [], skipped: [] } }),
+        of({ code: 0, data: { invited: [], tasks: [], skipped: [] } }),
       ),
     };
     TestBed.configureTestingModule({
@@ -99,6 +99,63 @@ describe('GroupJoinRequestsComponent', () => {
       take: 20,
     });
     expect(component.applications()).toEqual([row(2)]);
+  });
+
+  it('invites a transient resolved profile by address, not its zero id', async () => {
+    const { component, groups } = create(vi.fn(() => of(response())));
+    const candidate = {
+      userId: 0,
+      account: 'friend',
+      domain: 'peer.test',
+      name: 'Friend',
+      avatar: '',
+      bio: '',
+      state: 'AVAILABLE' as const,
+    };
+    component.candidates.set([candidate]);
+    groups.inviteUsers.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          invited: [{ account: 'friend', domain: 'peer.test' }],
+          tasks: [
+            {
+              account: 'friend',
+              domain: 'peer.test',
+              taskId: '1',
+              status: 'PENDING',
+            },
+          ],
+          skipped: [],
+        },
+      }) as never,
+    );
+    await component.invite(candidate);
+    expect(groups.inviteUsers).toHaveBeenCalledWith({
+      groupId: 7,
+      users: [{ account: 'friend', domain: 'peer.test' }],
+    });
+    expect(component.candidates()[0].state).toBe('INVITED');
+  });
+
+  it('re-enables a transient candidate by address after revoking its invitation', async () => {
+    const { component } = create(vi.fn(() => of(response())));
+    component.candidates.set([
+      {
+        userId: 0,
+        account: 'friend',
+        domain: 'peer.test',
+        name: 'Friend',
+        avatar: '',
+        bio: '',
+        state: 'INVITED',
+      },
+    ]);
+    component.invitations.set([
+      { ...row(12), account: 'friend', domain: 'peer.test' },
+    ]);
+    await component.revokeInvitation('12');
+    expect(component.candidates()[0].state).toBe('AVAILABLE');
   });
 
   it('retains a rejected application as a terminal record', async () => {

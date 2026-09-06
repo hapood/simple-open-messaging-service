@@ -31,13 +31,26 @@ caddy run --config "$CADDYFILE" --adapter caddyfile &
 CADDY_PID=$!
 
 # --- 4. Graceful shutdown on SIGTERM/SIGINT (docker compose stop / down) ---
-# Forward the signal to both children, give a bounded drain window, then SIGKILL stragglers, and exit 0
-# so the container stops cleanly — `restart: unless-stopped` honors a manual stop and does NOT restart.
-cleanup() {
+# Return as soon as both children exit. Reserve time below Docker's 60s deadline
+# for reporting and reaping any child that exceeded the graceful window.
+stop_children() {
+  local shutdown_deadline=$((SECONDS + ${SHUTDOWN_GRACE_SEC:-45}))
   kill -TERM "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-  sleep "${SHUTDOWN_GRACE_SEC:-10}"
+  while (( SECONDS < shutdown_deadline )); do
+    if ! kill -0 "$CADDY_PID" 2>/dev/null && ! kill -0 "$NODE_PID" 2>/dev/null; then
+      wait "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo '[supervisor] shutdown grace period expired; forcing remaining children to exit' >&2
   kill -KILL "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-  exit 0
+  wait "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
+  return 1
+}
+cleanup() {
+  trap '' TERM INT
+  if stop_children; then exit 0; else exit 1; fi
 }
 trap cleanup TERM INT
 
@@ -48,6 +61,5 @@ set +e
 wait -n
 EXIT_CODE=$?
 set -e
-kill -TERM "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-wait "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
+if ! stop_children; then EXIT_CODE=1; fi
 exit "$EXIT_CODE"

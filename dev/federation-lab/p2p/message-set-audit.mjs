@@ -1,0 +1,184 @@
+import { federationLabNodes } from '../topology.mjs';
+import {
+  authorIdentity,
+  permitsAbsentWithdrawal,
+} from './message-evidence.mjs';
+
+function author(node, message) {
+  return `${message.creatorAccount}@${message.creatorDomain === 'local' ? node.domain : message.creatorDomain}`;
+}
+
+function identity(node, message, messages, groupAddress) {
+  const value = authorIdentity(node, message, messages, groupAddress);
+  return JSON.stringify([value.actor, value.seq]);
+}
+
+// The source set is assembled from each CURRENT member's home database, not from the group origin.
+export function compareCurrentMemberMessages({
+  groupAddress,
+  members,
+  messages,
+  nodeNames,
+  signature,
+}) {
+  const failures = [];
+  const source = new Map();
+  const memberSet = new Set(members);
+  const fail = (kind, node, details = {}) =>
+    failures.push({ kind, group: groupAddress, node, ...details });
+  for (const member of members) {
+    const node = federationLabNodes.find(({ domain }) =>
+      member.endsWith(`@${domain}`),
+    );
+    const thread = messages[node.name].get(groupAddress);
+    if (!thread) {
+      fail('AUTHOR_THREAD_MISSING', node.name, { member });
+      continue;
+    }
+    for (const message of thread.messages) {
+      if (message.contentType === 'SYSTEM' || author(node, message) !== member)
+        continue;
+      const key = identity(node, message, messages, groupAddress);
+      if (source.has(key))
+        fail('AUTHOR_MESSAGE_DUPLICATE', node.name, {
+          member,
+          originSeq: message.originSeq,
+        });
+      const authority = groupAddress.startsWith('!')
+        ? federationLabNodes.find(({ domain }) =>
+            groupAddress.endsWith(`@${domain}`),
+          )
+        : node;
+      const authorityCopy =
+        authority?.name === node.name
+          ? message
+          : messages[authority?.name]
+              ?.get(groupAddress)
+              ?.messages.find(
+                (row) =>
+                  author(authority, row) === member &&
+                  row.originSeq === message.seq,
+              );
+      // Withdrawal can precede confirmation; a deleted submission is no longer returned by the feed.
+      const unconfirmedWithdrawal =
+        message.isDeleted &&
+        message.originSeq === message.seq &&
+        (message.sourceDomain == null || message.sourceDomain === 'local');
+      if (
+        !unconfirmedWithdrawal &&
+        (!authorityCopy ||
+          message.originSeq !== authorityCopy.seq ||
+          (authority?.name !== node.name &&
+            message.sourceDomain != null &&
+            message.sourceDomain !== authority.domain))
+      )
+        fail('AUTHOR_ORIGIN_SEQ', node.name, {
+          member,
+          seq: message.seq,
+          originSeq: message.originSeq,
+          expectedOriginSeq: authorityCopy?.seq ?? null,
+        });
+      source.set(key, { node, thread, message });
+    }
+  }
+  const counts = {};
+  for (const nodeName of nodeNames) {
+    const node = federationLabNodes.find(({ name }) => name === nodeName);
+    const thread = messages[nodeName].get(groupAddress);
+    if (!thread) {
+      fail('MESSAGE_THREAD_MISSING', nodeName);
+      continue;
+    }
+    const selected = thread.messages.filter(
+      (message) =>
+        message.contentType !== 'SYSTEM' &&
+        memberSet.has(author(node, message)),
+    );
+    counts[nodeName] = selected.length;
+    const seen = new Set();
+    const sequenceCounts = new Map();
+    for (const { seq } of thread.messages)
+      sequenceCounts.set(seq, (sequenceCounts.get(seq) ?? 0) + 1);
+    for (const message of selected) {
+      const key = identity(node, message, messages, groupAddress);
+      if (seen.has(key)) fail('MIRROR_MESSAGE_DUPLICATE', nodeName, { key });
+      seen.add(key);
+      if (
+        !Number.isSafeInteger(message.seq) ||
+        message.seq < 1 ||
+        message.seq > thread.curSeq ||
+        !Number.isSafeInteger(message.originSeq) ||
+        message.originSeq < 1 ||
+        sequenceCounts.get(message.seq) !== 1
+      )
+        fail('MESSAGE_COORDINATE', nodeName, {
+          key,
+          seq: message.seq,
+          originSeq: message.originSeq,
+        });
+      const original = source.get(key);
+      if (!original) {
+        fail('MESSAGE_NOT_AT_AUTHOR', nodeName, { key });
+        continue;
+      }
+      const publisher =
+        groupAddress.startsWith('!') &&
+        !groupAddress.endsWith(`@${node.domain}`)
+          ? groupAddress.slice(groupAddress.lastIndexOf('@') + 1)
+          : original.node.domain;
+      const ownUnconfirmedWithdrawal =
+        original.node.name === nodeName &&
+        message.isDeleted &&
+        message.originSeq === message.seq &&
+        message.sourceDomain === 'local';
+      if (
+        message.sourceDomain != null &&
+        !ownUnconfirmedWithdrawal &&
+        (message.sourceDomain === 'local'
+          ? node.domain
+          : message.sourceDomain) !== publisher
+      )
+        fail('MESSAGE_SOURCE', nodeName, {
+          key,
+          expected: publisher,
+          actual: message.sourceDomain,
+        });
+      if (Boolean(message.isDeleted) !== Boolean(original.message.isDeleted))
+        fail('AUTHOR_DELETION_MISMATCH', nodeName, { key });
+      if (message.isDeleted) {
+        if (!thread.deletedSeqs.has(message.seq))
+          fail('AUTHOR_TOMBSTONE_MISSING', nodeName, { key });
+      } else if (
+        message.localState !== 'READY' ||
+        original.message.localState !== 'READY' ||
+        JSON.stringify(signature(node, message, thread)) !==
+          JSON.stringify(
+            signature(original.node, original.message, original.thread),
+          )
+      )
+        fail('AUTHOR_MESSAGE_CONTENT', nodeName, { key });
+    }
+    for (const [key, original] of source)
+      if (
+        !seen.has(key) &&
+        !(
+          original.message.isDeleted &&
+          permitsAbsentWithdrawal({
+            nodeName,
+            thread,
+            messages,
+            key: groupAddress,
+            actor: author(original.node, original.message),
+            authorSeq: original.message.seq,
+          })
+        )
+      )
+        fail('AUTHOR_MESSAGE_MISSING', nodeName, { key });
+  }
+  return {
+    failures,
+    sourceMessages: source.size,
+    nodes: counts,
+    members: [...members],
+  };
+}

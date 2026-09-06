@@ -5,6 +5,7 @@ import { ContentType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
 import { federatedContentDigests } from './federated-message-content.js';
 import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
+import { isFederationQuoteTarget } from './federation-quote-target.js';
 
 /** Validates the closed wire shape and CAS descriptor manifest of an inbound message item. */
 @Injectable()
@@ -167,7 +168,17 @@ export class FederationInboundMessageValidatorService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    if (item.quoteTarget) assertFields(item.quoteTarget, ['targetSeq']);
+    if (
+      item.quoteTarget !== undefined &&
+      (item.contentType !== ContentType.PURE_TEXT ||
+        !isFederationQuoteTarget(item.quoteTarget))
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'invalid federated reply target',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     for (const asset of item.assets) assertFields(asset, ['digest', 'bytes']);
   }
 }

@@ -51,7 +51,26 @@ and a group query continues the coordinate space for the same group-address and
 verified-peer pair, regardless of which users on that peer currently belong to
 the group.
 
-`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose reconstructed author domain equals the verified signer domain. For P2P this is exactly `authorRef=THREAD_PEER_ACCOUNT`. For GROUP it filters the messages of every member identity hosted by the verified peer, not merely one selected member or the member that caused authorization; this is determined by `message.author.domain` after canonical Domain validation. This comparison MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, history-policy decision, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
+`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`.
+With `includeSelf=false`, P2P omits `authorRef=THREAD_PEER_ACCOUNT`. When a group authority queries a
+member home server's mirror, the mirror returns only messages authored by users managed in its own
+domain; copies of all other group members are excluded, not just authors hosted by the requester.
+For authoritative group distribution, `false` excludes authors hosted by the requesting member home
+server. Filtering uses canonical author domains and the authenticated group direction, not local user
+IDs or message coordinates. Group authorities MUST use `false` when pulling submissions, in both
+forward and reverse scans. Mirrors MUST use `true` when pulling from the authority so their own
+submissions can receive authoritative coordinate confirmation.
+
+A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the
+selected direction. Receivers MUST independently reject unexpected mirror authors even if the sender
+ignores the filter. Within an otherwise valid ordered page, malformed items are skipped with a bounded
+warning and do not prevent processing later items or advancing the validated scan boundary. No message
+or receipt is created for a skipped item. Invalid page boundaries, authentication failures, and local
+storage failures MUST NOT be treated as skippable message errors.
+
+The parameter affects only this page projection and does not delete a processing receipt,
+history-policy decision, or message. The fixed query-key order is `account`, optional `peerAccount`,
+`after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
 
 GROUP message query has exactly three valid directions:
 

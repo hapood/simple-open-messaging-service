@@ -330,9 +330,18 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     stopping = true;
     child = null;
     const exited = new Promise<void>((resolve) => {
-      c.once('exit', () => resolve());
-      // Guard: if SIGTERM doesn't land within 10s, escalate to SIGKILL.
-      setTimeout(() => c.kill('SIGKILL'), 10_000).unref();
+      c.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      // Allow bounded network requests and task finalization to drain before forcing exit.
+      const timer = setTimeout(() => {
+        console.warn(
+          `${cfg.domain}: graceful shutdown exceeded 60s; forcing SIGKILL`,
+        );
+        c.kill('SIGKILL');
+      }, 60_000);
+      timer.unref();
     });
     c.kill('SIGTERM');
     await exited;

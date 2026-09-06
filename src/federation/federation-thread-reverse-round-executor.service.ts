@@ -12,6 +12,7 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
+import { filterMirrorMessagePage } from './federation-mirror-message-filter.js';
 import { FederationService, S2sResponseError } from './federation.service.js';
 import {
   FederationThreadResourceClient,
@@ -99,7 +100,10 @@ export class FederationThreadReverseRoundExecutorService {
     if (params.through !== undefined)
       query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set('includeSelf', 'true');
+    query.set(
+      'includeSelf',
+      String(!(source.kind === 'GROUP' && source.localGroupAuthority)),
+    );
 
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
@@ -123,6 +127,10 @@ export class FederationThreadReverseRoundExecutorService {
     }
 
     this.assertMessagePage(source, response.data, params);
+    response = {
+      ...response,
+      data: filterMirrorMessagePage(source, response.data),
+    };
     const prefetchedForwardClosures = await this.prefetchForwardClosures(
       source,
       response,
@@ -215,7 +223,19 @@ export class FederationThreadReverseRoundExecutorService {
     const byBundleId = new Map<string, ForwardWireBundle>();
     for (const [index, item] of messageResponse.data.messages.entries()) {
       if (item.contentType !== ContentType.FORWARD) continue;
-      const bundleId = this.parseForwardBundleId(item);
+      let bundleId: string;
+      try {
+        bundleId = this.parseForwardBundleId(item);
+      } catch (error) {
+        if (
+          error instanceof BusinessException &&
+          error.bizCode === BusinessCode.FEDERATION_MALFORMED
+        ) {
+          // Page application logs and isolates malformed cards in their own savepoints.
+          continue;
+        }
+        throw error;
+      }
       let closure = byBundleId.get(bundleId);
       if (!closure) {
         const response = await this.threadResources.fetch<ForwardWireBundle>(
@@ -280,22 +300,24 @@ export class FederationThreadReverseRoundExecutorService {
     await this.database.db.transaction(async (tx) => {
       await FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId: source.threadId,
+        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
         beforeSeq: batch.before,
         scannedThrough: context.nextBeforeSeq,
         throughSeq: context.throughSeq,
         closesGap,
-        applyDependencies: async () => {
+        applyDependencies: async (threadLock) => {
           const applied =
             await this.federation.applyReverseMessagePageInTransaction(tx, {
               ...batch,
+              threadLock,
               messageSeqOffset: context.messageSeqOffset,
             });
           publish = applied.publish;
           await this.federation.finalizeReverseMessageWindowInTransaction(tx, {
+            threadLock,
             threadId: source.threadId,
-            peerDomain: source.peerDomain,
             namespaceId: source.namespaceId,
             beforeSeq: batch.before,
             throughSeq: context.nextBeforeSeq,
@@ -313,6 +335,7 @@ export class FederationThreadReverseRoundExecutorService {
     await this.database.db.transaction((tx) =>
       FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
         threadId: source.threadId,
+        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
       }),

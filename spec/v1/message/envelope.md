@@ -21,9 +21,9 @@ interface BlobDescriptor {
   bytes: SafeInteger;
 }
 
-interface QuoteTarget {
-  targetSeq: ThreadSequence;
-}
+type QuoteTarget =
+  | { seq: ThreadSequence }
+  | { originSeq: ThreadSequence };
 
 type JsonObjectString = string;
 
@@ -106,13 +106,20 @@ The message wire has no client-authoritative `date` field:
 - `seq` is scoped to the server and thread serving the current message copy. It
   is not a globally stable coordinate and is distinct from `originSeq` and any
   receiver-local sequence.
-- `seq`, non-null `originSeq`, and `quoteTarget.targetSeq` MUST NOT exceed
+- `seq`, non-null `originSeq`, and either quote coordinate MUST NOT exceed
   `SafeInteger - 1`; `SafeInteger` is reserved as the maximum exclusive reverse
   query cursor.
 - `createdAt` is the epoch-millisecond time at which the current publisher first persisted this copy. It is not client send time, device time, or a cross-server ordering time.
 - When the authoritative origin publishes a timeline message, `originSeq/originCreatedAt` MUST be `null/null`.
 - When a consumer pulls from its direct publisher and creates a non-authoritative copy, its origin pair MUST equal the incoming `seq/createdAt`.
 - `originSeq/originCreatedAt` MUST either both be null or both be non-null. They are single-hop origin coordinates and MUST NOT be copied unchanged across publishers.
+
+Origin coordinates are operational data, not diagnostic-only metadata: they
+associate a copy or receipt with its direct publisher's message and support
+reference-coordinate projection. They are neither global message identifiers
+nor substitutes for the current publisher's `seq` in message query cursors.
+The outer `originSeq` associates this message copy; `quoteTarget.originSeq`
+selects the quoted target in the current receiver's timeline (section 7).
 
 An application time inside content, such as CALL `startedAt/endedAt`, cannot replace the outer `createdAt`.
 
@@ -179,11 +186,30 @@ The corresponding content document defines type-specific conditional fields.
 
 ## 7. Reference coordinates
 
-Only a `PURE_TEXT` reply may carry `quoteTarget`. `quoteTarget.targetSeq` identifies the target `seq` assigned by the current authoritative publisher in the same thread.
+Only a `PURE_TEXT` reply may carry `quoteTarget`. A target MUST contain
+exactly one positive safe integer field:
 
-The consumer resolves the target using `(source domain, thread, targetSeq)`. A
-quote carries no remote preview, and the protocol does not prescribe a local
-coordinate projection or presentation when the target is unavailable.
+- `seq`: the target's sequence in the current sender's thread. The receiver
+  resolves it in that sender's coordinate space, not by its own local sequence.
+- `originSeq`: the target's sequence in the current receiver's thread. The
+  receiver resolves it by its own local sequence.
+
+A mirror submitting to its group authority MUST use `seq` for locally authored
+targets and `originSeq` for targets received from that authority, including other
+group members' messages. A P2P sender follows the same own-author/peer-author rule.
+An authoritative group server republishing to a mirror MUST use its own `seq`,
+regardless of the target's author. Coordinates are relative to each exchange;
+intermediate servers MUST NOT blindly forward an earlier exchange's coordinate.
+
+Target existence MUST NOT be a condition of accepting or persisting a reply.
+Consumers MUST retain the coordinate's source scope: different source servers
+can use the same sequence in one group. Local namespace identifiers MUST NOT
+appear on the wire. No author, body, or content-type preview is transmitted.
+
+`quoteTarget` MUST NOT be null. Omission means an ordinary message, not an
+unresolved reply. The coordinate MUST be retained even when the target is
+unavailable or withdrawn; existence is a read-time concern, not a wire state.
+Consumers MAY distinguish unpulled history from confirmed absence in presentation.
 
 ## 8. Processing receipts
 
@@ -194,9 +220,14 @@ When reading a receipt, the publisher:
 - Reconstructs the author from `authorRef` for P2P, or reads `author` for
   GROUP, then uses `(thread, author, originSeq)` to associate a message it
   previously published.
-- Uses the receipt's `seq/createdAt` only as the peer-copy coordinate and diagnostic time.
-- MUST NOT create a timeline message, modify the original message, produce another receipt, or distribute it further.
-- MUST NOT write the receipt's origin pair back to the original message.
+- Uses the receipt's `seq/createdAt` as the peer-copy coordinate and time. For
+  GROUP receipts from the authoritative group server, these fields MAY also
+  confirm the existing local message's group-authoritative coordinate and time
+  by updating its local origin projection. The receipt's `originSeq` identifies
+  the original local message; its `seq` identifies the authoritative group copy.
+- MUST NOT create a new timeline message, change the original message's content,
+  produce another receipt, or distribute the receipt further. Updating the
+  existing message's local coordinate projection is not a new publication.
 
 The absence of an observed receipt does not prove processing failure and cannot distinguish pending processing, transport delay, local policy delay, or discard.
 

@@ -1399,6 +1399,7 @@ export class FederationService {
   async applyReverseMessagePageInTransaction(
     tx: DatabaseTransaction,
     params: {
+      threadLock?: ThreadContentLock;
       response: FederationThreadResourceResponse<FederationMessageQueryPage>;
       before: number;
       through?: number;
@@ -1419,8 +1420,8 @@ export class FederationService {
   async finalizeReverseMessageWindowInTransaction(
     tx: DatabaseTransaction,
     params: {
+      threadLock?: ThreadContentLock;
       threadId: number;
-      peerDomain: string;
       namespaceId: number;
       beforeSeq: number;
       throughSeq: number;
@@ -1446,6 +1447,7 @@ export class FederationService {
   async applyForwardMessagePageInTransaction(
     tx: DatabaseTransaction,
     params: {
+      threadLock?: ThreadContentLock;
       response: FederationThreadResourceResponse<FederationMessageQueryPage>;
       after: number;
       frozenTargetSeq: number;
@@ -1474,6 +1476,7 @@ export class FederationService {
   async applyForwardTombstonePageInTransaction(
     tx: DatabaseTransaction,
     params: {
+      threadLock?: ThreadContentLock;
       response: FederationThreadResourceResponse<FederationMessageTombstoneQueryPage>;
       frozenTargetSeq: number;
     },
@@ -1483,6 +1486,10 @@ export class FederationService {
     return {
       publish: async () => {
         await this.notifyCurrentClientStateFeedHeads(effect.recipientUserIds);
+        if (effect.relayDeletion)
+          await this.outboundMessageSignals.signalDeletion(
+            params.response.threadId,
+          );
         await this.inboundMessageCommits.publishSatisfiedQuoteDependencies(
           effect.quoteDependencies,
         );
@@ -1508,7 +1515,7 @@ export class FederationService {
   ): Promise<void> {
     for (const effect of effects) {
       if (effect.kind === 'pending') {
-        void this.runFileSyncBatch(effect.batchId!, (digest, offset) =>
+        void this.runFileSyncBatch(effect.batchId, (digest, offset) =>
           this.fetchMediaChunks(
             domain,
             digest,
@@ -1526,7 +1533,7 @@ export class FederationService {
       if (
         this.config.forwardedResourcePolicy === 'rebuild' &&
         effect.localForwardBundleId &&
-        !effect.message!.isDeleted
+        !effect.message.isDeleted
       ) {
         await this.forwardBundles.rebuildUntrustedCards(
           effect.localForwardBundleId,
@@ -1537,33 +1544,33 @@ export class FederationService {
         void this.signalOutbound(
           effect.threadId,
           {
-            account: effect.message!.creatorAccount!,
-            domain: effect.message!.creatorDomain!,
+            account: effect.message.creatorAccount!,
+            domain: effect.message.creatorDomain!,
           },
-          effect.originSeq,
+          effect.message.seq,
           domain,
         ).catch(() => undefined);
-        if (effect.message!.isDeleted) {
+        if (effect.message.isDeleted) {
           void this.signalDeletionOutbound(
             effect.threadId,
-            effect.message!.seq,
+            effect.message.seq,
           ).catch(() => undefined);
         }
       }
       if (
         this.profileResolutions &&
-        !effect.message!.isDeleted &&
-        effect.message!.profileRev > 0
+        !effect.message.isDeleted &&
+        effect.message.profileRev > 0
       ) {
         for (const userId of effect.recipients) {
           void this.profileResolutions
             .start(userId, {
               threadId: effect.threadId,
-              messageSeq: effect.message!.seq,
+              messageSeq: effect.message.seq,
             })
             .catch((error: unknown) =>
               this.logger.warn(
-                `message profile resolution failed for ${effect.threadId}:${effect.message!.seq}: ${(error as Error).message}`,
+                `message profile resolution failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
               ),
             );
         }
@@ -1571,12 +1578,12 @@ export class FederationService {
       if (
         effect.forwardClosure &&
         effect.remoteForwardBundleId &&
-        !effect.message!.isDeleted
+        !effect.message.isDeleted
       ) {
         await this.mediaLocalization.localizeForwardAssets(
           effect.forwardClosure,
           domain,
-          await this.mediaLocalization.resolveForwardAssetAuth(effect.message!),
+          await this.mediaLocalization.resolveForwardAssetAuth(effect.message),
         );
       }
     }
@@ -1846,3 +1853,4 @@ export class FederationService {
     );
   }
 }
+import type { ThreadContentLock } from '../relationship/thread-content-lock.js';

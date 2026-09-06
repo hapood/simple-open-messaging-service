@@ -3,30 +3,6 @@
 services:
   postgres:
     image: postgres:18
-    command:
-      - postgres
-      - -c
-      - logging_collector=on
-      - -c
-      - log_destination=stderr
-      - -c
-      - log_directory=log
-      - -c
-      - log_filename=postgresql-%a.log
-      - -c
-      - log_rotation_age=1d
-      - -c
-      - log_rotation_size=0
-      - -c
-      - log_truncate_on_rotation=on
-      - -c
-      - log_line_prefix=%m [%p] xid=%x db=%d user=%u app=%a client=%r
-      - -c
-      - log_lock_waits=on
-      - -c
-      - log_min_error_statement=error
-      - -c
-      - log_error_verbosity=verbose
     environment:
       POSTGRES_DB: ${PGDATABASE:-soms}
       POSTGRES_USER: ${PGUSER:-timescale}
@@ -76,7 +52,7 @@ services:
       migrate:
         condition: service_completed_successfully
     init: true
-    stop_grace_period: 15s
+    stop_grace_period: 60s
     volumes:
       # Keep all SOMS-generated state and the two operator-provided Firebase files in
       # <deployment-directory>/data so the deployment can be backed up as one directory.

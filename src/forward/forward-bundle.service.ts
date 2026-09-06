@@ -316,7 +316,10 @@ export class ForwardBundleService {
                 : await this.exactProfileForMessage({
                     account: row.creatorAccount,
                     domain: row.creatorDomain,
-                    namespaceId: row.creatorNamespaceId,
+                    namespaceId:
+                      row.creatorDomain === 'local'
+                        ? 0
+                        : row.sourceNamespaceId,
                     profileRev: row.profileRev,
                   });
             return {
@@ -429,12 +432,12 @@ export class ForwardBundleService {
           : {}),
         ...(parseTextMessageContent(enrichedRows[index].content)?.quote &&
         selectedIndex.get(
-          `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
+          `${message.threadId}:${parseTextMessageContent(enrichedRows[index].content)!.quote!.seq}`,
         ) !== undefined
           ? {
               quoteTargetId:
                 selectedIndex.get(
-                  `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
+                  `${message.threadId}:${parseTextMessageContent(enrichedRows[index].content)!.quote!.seq}`,
                 )! + 1,
             }
           : {}),

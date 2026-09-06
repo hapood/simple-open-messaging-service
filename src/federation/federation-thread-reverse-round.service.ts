@@ -143,7 +143,10 @@ export class FederationThreadReverseRoundService {
     peerDomain: string,
     namespaceId: number,
   ): Promise<FederationReverseRoundContext | null> {
-    const window = await this.states.resolveReverseWindow(threadId);
+    const window = await this.states.resolveReverseWindow(
+      threadId,
+      namespaceId,
+    );
     if (window.gapId === null || window.throughSeq === null) return null;
     return {
       authorizationEpoch: window.authorizationEpoch,
@@ -162,7 +165,7 @@ export class FederationThreadReverseRoundService {
     continuation?: FederationReverseRoundContext,
   ): Promise<FederationReverseRoundContext | null> {
     if (continuation) {
-      const state = await this.states.require(threadId);
+      const state = await this.states.require(threadId, namespaceId);
       if (
         state.authorizationEpoch === continuation.authorizationEpoch &&
         state.activeGapId !== null &&

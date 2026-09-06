@@ -8,7 +8,6 @@ import {
   gte,
   inArray,
   isNotNull,
-  isNull,
   lt,
   lte,
   ne,
@@ -21,14 +20,21 @@ import { ContentType } from '../database/enums.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
-  group,
   mediaAsset,
   message,
   messageAsset,
   messageThread,
   peerStateFeed,
 } from '../database/schema.js';
-import { parseTextMessageContent } from '../../shared/text-message-content.js';
+import {
+  parseTextMessageContent,
+  storedQuoteCoordinate,
+} from '../../shared/text-message-content.js';
+import { findStoredQuoteTargets } from '../message/stored-quote-targets.js';
+import {
+  publishFederationQuote,
+  type FederationQuoteTarget,
+} from './federation-quote-target.js';
 import {
   buildFederatedCallContent,
   parseCallContent,
@@ -71,9 +77,7 @@ interface FederationMessageFeedMessageBase
   originCreatedAt: number | null;
   createdAt: number;
   clientMessageId?: string;
-  quoteTarget?: {
-    targetSeq: number;
-  };
+  quoteTarget?: FederationQuoteTarget;
   assets: FederationMessageFeedAsset[];
 }
 
@@ -148,6 +152,47 @@ export class FederationMessageFeedService {
     includeSelf = true,
     before?: number,
   ): Promise<FederationMessageQueryPage> {
+    const { page } = await this.readPage(
+      peerDomain,
+      namespaceId,
+      selector,
+      after,
+      requestedTake,
+      through,
+      includeSelf,
+      before,
+    );
+    return page;
+  }
+
+  async resolveAuthorProfileReference(
+    peerDomain: string,
+    namespaceId: number,
+    selector: FederationThreadQuery,
+    seq: number,
+  ) {
+    const { authorReferences } = await this.readPage(
+      peerDomain,
+      namespaceId,
+      selector,
+      seq - 1,
+      1,
+      seq,
+      true,
+    );
+    return authorReferences.find((reference) => reference.seq === seq) ?? null;
+  }
+
+  private async readPage(
+    peerDomain: string,
+    namespaceId: number,
+    selector: FederationThreadQuery,
+    after: number | undefined,
+    requestedTake?: number,
+    through?: number,
+    includeSelf = true,
+    before?: number,
+  ) {
     const take = this.pageSize(requestedTake);
     if ((after === undefined) === (before === undefined))
       this.invalidDirection();
@@ -207,12 +252,14 @@ export class FederationMessageFeedService {
               profileRev: message.profileRev,
               originSeq: message.originSeq,
               originServerTime: message.originServerTime,
+              sourceNamespaceId: message.sourceNamespaceId,
               contentType: message.contentType,
               content: message.content,
               createdAt: message.createdAt,
               clientMessageId: message.clientMessageId,
               threadType: messageThread.type,
               groupId: messageThread.groupId,
+              authorityNamespaceId: messageThread.authorityNamespaceId,
               authorAccount: sql<string>`${message.creatorAccount}`,
               authorDomain: sql<string>`${message.creatorDomain}`,
             })
@@ -234,15 +281,19 @@ export class FederationMessageFeedService {
                   ? or(
                       and(
                         eq(message.creatorDomain, 'local'),
-                        isNull(message.federationSourceDomain),
+                        eq(message.sourceNamespaceId, 0),
                       ),
                       and(
                         isNotNull(message.originSeq),
-                        eq(message.federationSourceDomain, peerDomain),
+                        eq(message.sourceNamespaceId, namespaceId),
                       ),
                     )
                   : undefined,
-                includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
+                includeSelf
+                  ? undefined
+                  : groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                    ? eq(message.creatorDomain, 'local')
+                    : ne(message.creatorDomain, peerDomain),
               ),
             )
             .orderBy(forward ? asc(message.seq) : desc(message.seq))
@@ -252,6 +303,7 @@ export class FederationMessageFeedService {
         tx,
         selected,
         peerDomain,
+        namespaceId,
         address,
       );
       const scannedThrough =
@@ -261,11 +313,23 @@ export class FederationMessageFeedService {
             ? queryEnd
             : queryStart;
       return {
-        messages,
-        scannedThrough,
-        hasMore: forward
-          ? scannedThrough < queryEnd
-          : scannedThrough > queryStart,
+        page: {
+          messages,
+          scannedThrough,
+          hasMore: forward
+            ? scannedThrough < queryEnd
+            : scannedThrough > queryStart,
+        },
+        // These coordinates are local-only and come from the same authorized
+        // snapshot as the published message, never from the requesting peer.
+        authorReferences: selected.map((row) => ({
+          seq: row.seq,
+          account: row.authorAccount,
+          domain:
+            row.authorDomain === 'local' ? this.localDomain : row.authorDomain,
+          namespaceId: row.authorDomain === 'local' ? 0 : row.sourceNamespaceId,
+          profileRev: row.profileRev,
+        })),
       };
     });
   }
@@ -295,36 +359,23 @@ export class FederationMessageFeedService {
       profileRev: number;
       originSeq: number | null;
       originServerTime: Date | null;
+      sourceNamespaceId: number;
       contentType: ContentType;
       content: string;
       createdAt: Date;
       clientMessageId: string | null;
       threadType: 'P2P' | 'GROUP';
       groupId: number | null;
+      authorityNamespaceId: number;
       authorAccount: string;
       authorDomain: string;
     }>,
     peerDomain: string,
+    peerNamespaceId: number,
     threadAddress: FederationThreadAddress,
   ): Promise<FederationMessageFeedMessage[]> {
     if (rows.length === 0) return [];
     const messageIds = rows.map((row) => row.messageId);
-    const groupIds = rows.flatMap((row) =>
-      row.groupId === null ? [] : [row.groupId],
-    );
-    const groupStates =
-      groupIds.length === 0
-        ? []
-        : await tx
-            .select({ id: group.id, domain: group.domain })
-            .from(group)
-            .where(inArray(group.id, groupIds));
-    const groupOriginById = new Map(
-      groupStates.map((groupState) => [
-        groupState.id,
-        this.wireDomain(groupState.domain),
-      ]),
-    );
     const assetRows = await tx
       .select({
         messageId: messageAsset.messageId,
@@ -344,39 +395,9 @@ export class FederationMessageFeedService {
       assets.set(asset.messageId, current);
     }
 
-    const quoteRefs = rows.flatMap((row) => {
-      if (row.contentType !== ContentType.PURE_TEXT) return [];
-      const seq = parseTextMessageContent(row.content)?.quote?.seq;
-      return seq === undefined ? [] : [{ threadId: row.threadId, seq }];
-    });
-    const quoted =
-      quoteRefs.length === 0
-        ? []
-        : await tx
-            .select({
-              threadId: message.threadId,
-              seq: message.seq,
-              originSeq: message.originSeq,
-              account: message.creatorAccount,
-              domain: message.creatorDomain,
-            })
-            .from(message)
-            .where(
-              and(
-                eq(message.localState, 'READY'),
-                sql`(${message.threadId}, ${message.seq}) IN (${sql.join(
-                  quoteRefs.map((ref) => sql`(${ref.threadId}, ${ref.seq})`),
-                  sql`, `,
-                )})`,
-              ),
-            );
-    const quoteTargets = new Map(
-      quoted.map((row) => [
-        JSON.stringify([row.threadId, row.seq]),
-        {
-          targetSeq: row.seq,
-        },
-      ]),
+    const quoteTargets = await findStoredQuoteTargets(
+      tx,
+      rows.map((row) => ({ ...row, id: row.messageId })),
     );
 
     const result: FederationMessageFeedMessage[] = [];
@@ -386,14 +407,25 @@ export class FederationMessageFeedService {
         account: row.authorAccount,
         domain: this.wireDomain(row.authorDomain),
       };
-      const quoteSeq =
+      const quote =
         row.contentType === ContentType.PURE_TEXT
-          ? parseTextMessageContent(row.content)?.quote?.seq
+          ? parseTextMessageContent(row.content)?.quote
           : undefined;
-      const quoteTarget =
-        quoteSeq === undefined
-          ? undefined
-          : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq]));
+      const target = quoteTargets.get(row.messageId);
+      const coordinate =
+        quote && storedQuoteCoordinate(quote, row.sourceNamespaceId);
+      const groupAuthority =
+        row.threadType === 'GROUP' && row.authorityNamespaceId === 0;
+      // A group authority republishes every author's target in its own timeline.
+      // A mirror (or P2P sender) uses originSeq only for a target owned by its receiver.
+      const quoteTarget = coordinate
+        ? publishFederationQuote(
+            coordinate,
+            target,
+            groupAuthority,
+            peerNamespaceId,
+          )
+        : undefined;
       let content: string;
       let contentDigests: Set<string>;
       let callClientMessageId: string | undefined;
@@ -440,9 +472,9 @@ export class FederationMessageFeedService {
           : candidateAssets.filter((asset) => contentDigests.has(asset.digest));
       const isProcessingReceipt =
         row.originSeq !== null &&
-        (row.threadType === 'P2P'
-          ? author.domain === peerDomain
-          : groupOriginById.get(row.groupId!) === peerDomain);
+        row.originServerTime !== null &&
+        row.sourceNamespaceId === peerNamespaceId &&
+        author.domain === peerDomain;
       const envelope = {
         seq: row.seq,
         profileRev: row.profileRev,
@@ -456,7 +488,7 @@ export class FederationMessageFeedService {
         ...(callClientMessageId
           ? { clientMessageId: callClientMessageId }
           : {}),
-        ...(quoteTarget ? { quoteTarget } : {}),
+        ...(quoteTarget !== undefined ? { quoteTarget } : {}),
         // MessageAsset also authorizes receiver-local presentation assets, notably LINK artwork.
         // Only descriptors referenced by the URL-free wire content belong in the federation payload.
         assets: projectedAssets,

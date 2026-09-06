@@ -263,6 +263,33 @@ export class AccountThreadStateService {
     return result.rows[0]?.threadId ?? null;
   }
 
+  /** Resolve an existing direct friend, never an identity copied from another group's authority. */
+  async findP2PFriendByAddress(
+    userId: number,
+    address: { account: string; domain: string },
+  ) {
+    const result = await this.database.db.execute<{
+      userId: number;
+      threadId: number;
+    }>(sql`
+      SELECT friend.id AS "userId", pair."threadId"
+      FROM "User" friend
+      JOIN "User" actor ON actor.id = ${userId}
+      JOIN "RelationshipPair" pair ON pair.kind = 'P2P' AND pair.active = true
+        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`actor`, sql`friend`)}
+      JOIN "MessageThread" thread ON thread.id = pair."threadId" AND thread.type = 'P2P'
+      WHERE friend.account = ${address.account} AND friend.domain = ${address.domain}
+        AND friend.availability = 'AVAILABLE'
+        AND friend."namespaceId" = CASE WHEN ${address.domain} = 'local' THEN 0 ELSE (
+          SELECT ns.id FROM "FederatedPeer" peer
+          JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
+          WHERE peer.domain = ${address.domain} AND ns.domain = peer.domain AND ns."retiredAt" IS NULL
+        ) END
+      LIMIT 1
+    `);
+    return result.rows[0] ?? null;
+  }
+
   async findLatestP2PThreadBetween(userX: number, userY: number) {
     const result = await this.database.db.execute<{ threadId: number }>(sql`
       SELECT pair."threadId"

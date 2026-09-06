@@ -57,8 +57,13 @@
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }}"
       [class.msg-sending]="isSending()"
     >
-      @if (data().quote; as quote) {
-        @if (quote.seq !== undefined) {
+      @if (displayQuote(); as quote) {
+        @if (
+          quote.seq !== undefined &&
+          quote.seq > 0 &&
+          !quote.unavailable &&
+          !quote.status
+        ) {
           <button
             type="button"
             class="msg-quote"
@@ -96,7 +101,11 @@
                 <span>{{ 'chat.fileGroup' | transloco }}</span>
               } @else {
                 <span>{{
-                  quotePreview().body || ('chat.messageNotFound' | transloco)
+                  quotePreview().body ||
+                    ((quote.status === 'PENDING'
+                      ? 'chat.quoteNotFetched'
+                      : 'chat.messageNotFound'
+                    ) | transloco)
                 }}</span>
               }
             </span>
@@ -137,7 +146,11 @@
                 <span>{{ 'chat.fileGroup' | transloco }}</span>
               } @else {
                 <span>{{
-                  quotePreview().body || ('chat.messageNotFound' | transloco)
+                  quotePreview().body ||
+                    ((quote.status === 'PENDING'
+                      ? 'chat.quoteNotFetched'
+                      : 'chat.messageNotFound'
+                    ) | transloco)
                 }}</span>
               }
             </span>

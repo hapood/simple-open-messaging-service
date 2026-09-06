@@ -3,7 +3,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageThreadType } from '../database/enums.js';
 import { group, messageThread } from '../database/schema.js';
-import { FederationMessageContextError } from './federation-errors.js';
+import {
+  FederationMessageContextError,
+  FederationThreadSourceInactiveError,
+} from './federation-errors.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 
 @Injectable()
@@ -68,12 +71,13 @@ export class FederationThreadSourceService {
         LIMIT 1
       `);
       if (active.rows.length === 0) {
-        throw new FederationMessageContextError(
+        throw new FederationThreadSourceInactiveError(
           `group thread ${threadId} has no active federation source`,
         );
       }
       return {
         kind: 'GROUP',
+        localGroupAuthority: groupThread.domain === 'local',
         threadId,
         peerDomain,
         namespaceId,

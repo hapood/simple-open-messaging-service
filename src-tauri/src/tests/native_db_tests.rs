@@ -488,3 +488,25 @@ fn native_cleanup_removes_expired_request_projections_after_retention() {
         0
     );
 }
+
+#[test]
+fn quote_tombstones_are_scoped_to_user_and_thread() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        r#"CREATE TABLE messages (
+        user_id INTEGER, thread_id INTEGER, seq INTEGER, payload_json TEXT,
+        PRIMARY KEY(user_id, thread_id, seq)
+    );
+    INSERT INTO messages VALUES (1, 42, 4, '{"isDeleted":true}');
+    INSERT INTO messages VALUES (1, 42, 5, '{"isDeleted":false,"content":"body"}');
+    INSERT INTO messages VALUES (1, 42, 6, '{"isDeleted":true,"content":"old"}');
+    INSERT INTO messages VALUES (2, 42, 7, '{"isDeleted":true}');
+    INSERT INTO messages VALUES (1, 99, 8, '{"isDeleted":true}');"#,
+    )
+    .unwrap();
+    assert_eq!(
+        super::messages::load_deleted_message_seqs(&conn, 1, 42, vec![4, 4, 5, 6, 7, 8, 9])
+            .unwrap(),
+        vec![4, 6]
+    );
+}

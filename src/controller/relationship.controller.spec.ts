@@ -289,9 +289,9 @@ describe('RelationshipController.revokeRelationship', () => {
         .mockResolvedValueOnce(null),
     };
     const inviteService = {
-      federatedRelationshipStatus: vi
+      federatedRelationshipContext: vi
         .fn()
-        .mockResolvedValue('OUTGOING_PENDING'),
+        .mockResolvedValue({ namespaceId: 2, status: 'OUTGOING_PENDING' }),
     };
     const durableTasks = {
       enqueueTask: vi.fn().mockResolvedValue({ taskId: 93n }),
@@ -311,11 +311,15 @@ describe('RelationshipController.revokeRelationship', () => {
         domain: 'peer.test',
       }),
     ).resolves.toEqual({ taskId: '93', status: 'PENDING' });
-    expect(inviteService.federatedRelationshipStatus).toHaveBeenCalledWith(
+    expect(inviteService.federatedRelationshipContext).toHaveBeenCalledWith(
       7,
       'bob',
       'peer.test',
     );
+    expect(userService.findUniqueUser).toHaveBeenCalledWith({
+      account_domain: { account: 'bob', domain: 'peer.test' },
+      namespaceId: 2,
+    });
     expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
       scope: {
         type: 'USER_PAIR',

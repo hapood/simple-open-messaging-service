@@ -2592,6 +2592,29 @@ export class WebdbService implements OnDestroy {
     );
   }
 
+  /** Read deletion facts independently of cached bodies; an absent row is not a tombstone. */
+  async getDeletedMessageSeqs(
+    threadId: number,
+    seqs: number[],
+  ): Promise<number[]> {
+    if (seqs.length === 0) return [];
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        return tauriInvoke<number[]>('native_db_get_deleted_message_seqs', {
+          userId: Number(this.currentUserId),
+          threadId,
+          seqs,
+        });
+      }
+      const tx = (await this.messageDb()).transaction('messages', 'readonly');
+      const rows = await Promise.all(
+        [...new Set(seqs)].map((seq) => tx.store.get([threadId, seq])),
+      );
+      await tx.done;
+      return rows.flatMap((row) => (row?.isDeleted ? [row.seq] : []));
+    });
+  }
+
   async getDeletedHwm(threadId: number): Promise<number> {
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {

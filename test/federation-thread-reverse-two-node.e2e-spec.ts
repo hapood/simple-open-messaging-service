@@ -9,17 +9,19 @@ import {
   vi,
 } from 'vitest';
 import request from 'supertest';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ContentType } from '../src/database/enums.js';
 import {
   clientStateFeed,
+  deletedMessage,
   federationThreadHistoryGap,
   federationThreadSyncState,
   group,
   groupMetaMemberFeed,
   message,
   messageThread,
+  peerStateFeed,
   relationshipIntent,
   systemSetting,
   threadAudience,
@@ -145,7 +147,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const invited = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: originThreadId, userIds: [bobStubIdA] });
+      .send({
+        groupId: originThreadId,
+        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+      });
     expect(invited.body.code, JSON.stringify(invited.body)).toBe(
       BusinessCode.OK,
     );
@@ -212,6 +217,284 @@ describe('federation reverse thread rounds (two nodes)', () => {
       mirrorGroupId: mirror.groupId!,
     };
   }
+
+  it('retains a quote when its source was withdrawn before a remote member joined', async () => {
+    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
+      'late-join-withdrawn-quote',
+      async (threadId) => {
+        const source = await request(appA.baseUrl)
+          .post('/api/v1/send-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({
+            threadId,
+            content: 'withdraw-before-join',
+            contentType: ContentType.PURE_TEXT,
+            clientMessageId: randomUUID(),
+          });
+        expect(source.body.code).toBe(BusinessCode.OK);
+        const reply = await request(appA.baseUrl)
+          .post('/api/v1/send-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({
+            threadId,
+            content: JSON.stringify({
+              text: 'late-join-quote',
+              quote: { seq: source.body.data.seq },
+            }),
+            contentType: ContentType.PURE_TEXT,
+            clientMessageId: randomUUID(),
+          });
+        expect(reply.body.code).toBe(BusinessCode.OK);
+        const withdrawn = await request(appA.baseUrl)
+          .post('/api/v1/withdraw-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({ threadId, seq: source.body.data.seq });
+        expect(withdrawn.body.code).toBe(BusinessCode.OK);
+      },
+    );
+    const mirror = await vi.waitFor(
+      async () => {
+        const rows = await appB.database.query.message.findMany({
+          where: eq(message.threadId, mirrorThreadId),
+        });
+        const reply = rows.find(
+          (m) => JSON.parse(m.content).text === 'late-join-quote',
+        );
+        expect(reply).toMatchObject({ localState: 'READY', isDeleted: false });
+        const state =
+          await appB.database.query.federationThreadSyncState.findFirst({
+            where: eq(federationThreadSyncState.threadId, mirrorThreadId),
+          });
+        expect(state).toMatchObject({
+          historyBoundaryReached: true,
+          activeGapId: null,
+        });
+        return reply!;
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+    const queried = await request(appB.baseUrl)
+      .post('/api/v1/query-messages')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: mirrorThreadId,
+        after: mirror.seq - 1,
+        through: mirror.seq,
+        take: 1,
+      });
+    expect(queried.body.code).toBe(BusinessCode.OK);
+    expect(JSON.parse(queried.body.data.messages[0].content)).toMatchObject({
+      text: 'late-join-quote',
+      quote: { status: 'NOT_FOUND' },
+    });
+    const resolved = await request(appB.baseUrl)
+      .post('/api/v1/message/quote-resolution')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ threadId: mirrorThreadId, messageSeq: mirror.seq });
+    expect(resolved.body.code).toBe(BusinessCode.OK);
+    expect(resolved.body.data).toMatchObject({
+      status: 'READY',
+      result: { status: 'NOT_FOUND' },
+    });
+  }, 60_000);
+
+  it('filters third-party mirror copies before a later local gallery submission', async () => {
+    const { originThreadId, mirrorThreadId, mirrorGroupId } =
+      await createJoinedFederatedGroup('mirror-owned-gallery');
+    const mirrorGroup = await appB.database.query.group.findFirst({
+      where: eq(group.id, mirrorGroupId),
+    });
+    // Model a retained third-node copy ahead of the next locally authored message.
+    // It is not a submission by this server and must never be returned by the filtered feed.
+    await appB.database.transaction(async (tx) => {
+      const [thread] = await tx
+        .update(messageThread)
+        .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+        .where(eq(messageThread.id, mirrorThreadId))
+        .returning({ seq: messageThread.curSeq });
+      await tx.insert(message).values({
+        threadId: mirrorThreadId,
+        seq: thread.seq,
+        originSeq: 999,
+        originServerTime: new Date(),
+        sourceNamespaceId: mirrorGroup!.namespaceId,
+        creatorAccount: 'third-member',
+        creatorDomain: 'third.test',
+        profileRev: 0,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({ text: 'third-party-copy' }),
+        localState: 'READY',
+        updatedAt: new Date(),
+      });
+    });
+    const clientMessageId = randomUUID();
+    const staged = await request(appB.baseUrl)
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: mirrorThreadId,
+        clientMessageId,
+        contentType: 'GALLERY',
+        fileCnt: 2,
+      });
+    expect(staged.body.code).toBe(BusinessCode.OK);
+    for (const position of [0, 1]) {
+      const uploaded = await request(appB.baseUrl)
+        .post('/api/v1/upload')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .set('x-client-message-id', clientMessageId)
+        .attach(
+          'file',
+          await makePng(151 + position),
+          `gallery-${position}.png`,
+        )
+        .field('partId', randomUUID())
+        .field('position', String(position))
+        .field('intent', 'FILE');
+      expect(uploaded.body.code).toBe(BusinessCode.OK);
+    }
+    await vi.waitFor(
+      async () => {
+        const source = await appB.database.query.message.findFirst({
+          where: eq(message.clientMessageId, clientMessageId),
+        });
+        expect(source).toMatchObject({ localState: 'READY' });
+        const received = await appA.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, originThreadId),
+            eq(message.creatorAccount, 'reversebob'),
+            eq(message.originSeq, source!.seq),
+          ),
+        });
+        expect(received).toMatchObject({
+          contentType: 'GALLERY',
+          localState: 'READY',
+          isDeleted: false,
+        });
+        expect(source!.originSeq).toBe(received!.seq);
+        expect(
+          await appA.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, originThreadId),
+              eq(message.creatorAccount, 'third-member'),
+            ),
+          }),
+        ).toBeUndefined();
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+  }, 60_000);
+
+  it('propagates a remote member withdrawal to the group origin', async () => {
+    const { originThreadId, mirrorThreadId, mirrorGroupId } =
+      await createJoinedFederatedGroup('remote-member-withdrawal');
+    const mirrorGroup = await appB.database.query.group.findFirst({
+      where: eq(group.id, mirrorGroupId),
+    });
+    // Model independently allocated local history without depending on the timing
+    // of join system messages. The next real send fills the new local tail.
+    await appB.database
+      .update(messageThread)
+      .set({ curSeq: sql`${messageThread.curSeq} + 100` })
+      .where(eq(messageThread.id, mirrorThreadId));
+    const sent = await request(appB.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: mirrorThreadId,
+        content: 'remote-member-withdrawal-source',
+        contentType: ContentType.PURE_TEXT,
+        clientMessageId: randomUUID(),
+      });
+    expect(sent.body.code).toBe(BusinessCode.OK);
+    const origin = await vi.waitFor(
+      async () => {
+        const row = await appA.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, originThreadId),
+            eq(message.creatorAccount, 'reversebob'),
+            eq(message.originSeq, sent.body.data.originSeq),
+          ),
+        });
+        expect(row).toMatchObject({ isDeleted: false });
+        return row!;
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+    expect(origin.seq).not.toBe(sent.body.data.seq);
+    await vi.waitFor(
+      async () => {
+        const source = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, mirrorThreadId),
+            eq(message.seq, sent.body.data.seq),
+          ),
+        });
+        const state =
+          await appB.database.query.federationThreadSyncState.findFirst({
+            where: eq(federationThreadSyncState.threadId, mirrorThreadId),
+          });
+        expect(source, JSON.stringify({ state, mirrorGroup })).toMatchObject({
+          seq: sent.body.data.seq,
+          originSeq: origin.seq,
+          originServerTime: origin.createdAt,
+          creatorDomain: 'local',
+        });
+        expect(source!.sourceNamespaceId).toBeGreaterThan(0);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    const retried = await request(appB.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: mirrorThreadId,
+        content: 'remote-member-withdrawal-source',
+        contentType: ContentType.PURE_TEXT,
+        clientMessageId: sent.body.data.clientMessageId,
+      });
+    expect(retried.body.code).toBe(BusinessCode.OK);
+    expect(retried.body.data).toMatchObject({
+      seq: sent.body.data.seq,
+      originSeq: origin.seq,
+    });
+    const withdrawn = await request(appB.baseUrl)
+      .post('/api/v1/withdraw-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ threadId: mirrorThreadId, seq: sent.body.data.seq });
+    expect(withdrawn.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appA.database.query.message.findFirst({
+            where: eq(message.id, origin.id),
+          }),
+        ).toMatchObject({
+          isDeleted: true,
+          originSeq: sent.body.data.originSeq,
+        });
+        expect(
+          await appA.database.query.deletedMessage.findFirst({
+            where: and(
+              eq(deletedMessage.threadId, originThreadId),
+              eq(deletedMessage.messageSeq, origin.seq),
+            ),
+          }),
+        ).toMatchObject({ sourceNamespaceId: 0, messageSeq: origin.seq });
+        const head = await appA.database.query.peerStateFeed.findFirst({
+          where: and(
+            eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+            eq(peerStateFeed.account, mirrorGroup!.account),
+            eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+          ),
+        });
+        expect(
+          (head?.body as { tombstoneEndSeq: number })?.tombstoneEndSeq,
+        ).toBeGreaterThan(0);
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+  }, 60_000);
 
   it('publishes the paired client tombstone head when the federated current message is withdrawn', async () => {
     const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
@@ -300,14 +583,21 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const invited = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: originThreadId, userIds: [bobStubIdA] });
+      .send({
+        groupId: originThreadId,
+        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, invited.body);
 
     const mirror = await vi.waitFor(
       async () => {
         const [row] = await appB.database
-          .select({ id: messageThread.id, groupId: messageThread.groupId })
+          .select({
+            id: messageThread.id,
+            groupId: messageThread.groupId,
+            authorityNamespaceId: messageThread.authorityNamespaceId,
+          })
           .from(messageThread)
           .innerJoin(group, eq(group.id, messageThread.groupId))
           .where(
@@ -420,7 +710,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           where: and(
             eq(message.threadId, mirror.id),
             eq(message.originSeq, state!.messageTargetSeq),
-            eq(message.federationSourceDomain, FED_DOMAIN_A),
+            eq(message.sourceNamespaceId, mirror.authorityNamespaceId),
           ),
         });
         expect(newest?.localState).toBe('READY');
@@ -544,7 +834,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const inviteCarol = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: originThreadId, userIds: [carolLocalIdA] });
+      .send({
+        groupId: originThreadId,
+        users: [{ account: 'reversecarol', domain: 'local' }],
+      });
     expect(inviteCarol.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, inviteCarol.body);
     const joinCarol = await request(appA.baseUrl)
@@ -592,7 +885,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
       const invited = await request(appA.baseUrl)
         .post('/api/v1/group/invite')
         .set('Authorization', `Bearer ${tokenA}`)
-        .send({ groupId: originThreadId, userIds: [bobStubIdA] });
+        .send({
+          groupId: originThreadId,
+          users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+        });
       expect(invited.body.code, JSON.stringify(invited.body)).toBe(
         BusinessCode.OK,
       );
@@ -1261,7 +1557,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const reinvited = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: originThreadId, userIds: [bobStubIdA] });
+      .send({
+        groupId: originThreadId,
+        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+      });
     expect(reinvited.body.code, JSON.stringify(reinvited.body)).toBe(
       BusinessCode.OK,
     );

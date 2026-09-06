@@ -37,6 +37,9 @@ function serviceWith(overrides?: {
     getActiveParticipantUserIds: vi.fn().mockResolvedValue([]),
   };
   const sse = { onMediaStatus: vi.fn() };
+  const outboundSignals = {
+    signalMessage: vi.fn().mockResolvedValue(undefined),
+  };
   const service = new FederationInboundMediaBatchService(
     database as never,
     fileSync as never,
@@ -44,6 +47,7 @@ function serviceWith(overrides?: {
     mediaRanges as never,
     participants as never,
     sse as never,
+    outboundSignals as never,
   );
   return {
     service,
@@ -53,6 +57,7 @@ function serviceWith(overrides?: {
     mediaRanges,
     participants,
     sse,
+    outboundSignals,
     set,
   };
 }
@@ -67,12 +72,14 @@ describe('FederationInboundMediaBatchService', () => {
   });
 
   it('promotes completed batches and recursively wakes quote dependents', async () => {
-    const { service, fileSync, promoter } = serviceWith();
+    const { service, fileSync, promoter, outboundSignals } = serviceWith();
     promoter.promote
       .mockResolvedValueOnce({
         threadId: 3,
         seq: 4,
         dependentBatchIds: ['quote-a', 'quote-b'],
+        author: { account: 'member', domain: 'peer.test' },
+        sourceDomain: 'peer.test',
       })
       .mockResolvedValue(null);
     fileSync.runBatch.mockImplementation(
@@ -88,6 +95,12 @@ describe('FederationInboundMediaBatchService', () => {
     expect(promoter.promote).toHaveBeenNthCalledWith(1, 'root');
     expect(promoter.promote).toHaveBeenNthCalledWith(2, 'quote-a');
     expect(promoter.promote).toHaveBeenNthCalledWith(3, 'quote-b');
+    expect(outboundSignals.signalMessage).toHaveBeenCalledWith(
+      3,
+      { account: 'member', domain: 'peer.test' },
+      4,
+      'peer.test',
+    );
   });
 
   it('replays the persisted authorization route when retrying a stalled batch', async () => {

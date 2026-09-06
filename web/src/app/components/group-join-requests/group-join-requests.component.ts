@@ -74,7 +74,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   readonly applicationsHasMore = signal(false);
   readonly candidatesHasMore = signal(false);
   readonly acting = signal<ReadonlySet<string>>(new Set());
-  readonly inviting = signal<ReadonlySet<number>>(new Set());
+  readonly inviting = signal<ReadonlySet<string>>(new Set());
   readonly searchText = signal('');
   readonly appliedSearch = signal('');
   readonly federatedAddress = signal<{
@@ -161,9 +161,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   async revokeInvitation(requestId: string): Promise<void> {
     const groupId = this.conversations.openThreadId();
     if (groupId === undefined || this.acting().has(requestId)) return;
-    const userId = this.invitations().find(
-      (row) => row.id === requestId,
-    )?.userId;
+    const invitation = this.invitations().find((row) => row.id === requestId);
     this.addActing(requestId);
     try {
       const res = await firstValueFrom(
@@ -175,10 +173,12 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           row.id === requestId ? { ...row, status: 'REVOKED' } : row,
         ),
       );
-      if (userId !== undefined)
+      if (invitation)
         this.candidates.update((rows) =>
           rows.map((row) =>
-            row.userId === userId ? { ...row, state: 'AVAILABLE' } : row,
+            this.candidateKey(row) === this.candidateKey(invitation)
+              ? { ...row, state: 'AVAILABLE' }
+              : row,
           ),
         );
     } catch {
@@ -188,27 +188,35 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
+  candidateKey(candidate: { account: string; domain: string }): string {
+    return `${candidate.account}@${candidate.domain}`;
+  }
+
   async invite(candidate: GroupInviteCandidate): Promise<void> {
     const groupId = this.conversations.openThreadId();
+    const key = this.candidateKey(candidate);
     if (
       groupId === undefined ||
       candidate.state !== 'AVAILABLE' ||
-      this.inviting().has(candidate.userId)
+      this.inviting().has(key)
     )
       return;
-    this.inviting.update((ids) => new Set(ids).add(candidate.userId));
+    this.inviting.update((ids) => new Set(ids).add(key));
     try {
       const res = await firstValueFrom(
-        this.groups.inviteUsers({ groupId, userIds: [candidate.userId] }),
+        this.groups.inviteUsers({
+          groupId,
+          users: [{ account: candidate.account, domain: candidate.domain }],
+        }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      if (!res.data?.invited.includes(candidate.userId)) {
+      if (!res.data?.tasks.length || res.data.skipped.length) {
         this.toast.warn(this.transloco.translate('group.inviteUnavailable'));
         return;
       }
       this.candidates.update((rows) =>
         rows.map((row) =>
-          row.userId === candidate.userId ? { ...row, state: 'INVITED' } : row,
+          this.candidateKey(row) === key ? { ...row, state: 'INVITED' } : row,
         ),
       );
       void this.loadRequests('INVITATION', false);
@@ -217,7 +225,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     } finally {
       this.inviting.update((ids) => {
         const next = new Set(ids);
-        next.delete(candidate.userId);
+        next.delete(key);
         return next;
       });
     }
@@ -275,7 +283,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   }
 
   candidateActionKey(candidate: GroupInviteCandidate): string {
-    if (this.inviting().has(candidate.userId)) return 'group.inviting';
+    if (this.inviting().has(this.candidateKey(candidate)))
+      return 'group.inviting';
     if (candidate.state === 'MEMBER') return 'group.alreadyMember';
     if (candidate.state === 'INVITED') return 'group.invitedStatus';
     return 'group.inviteAction';

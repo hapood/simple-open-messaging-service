@@ -423,9 +423,11 @@ Content-Type: application/json
       {
         "id": 1,
         "author": {
-          "displayName": "Alice",
           "account": "alice",
           "domain": "b.example"
+        },
+        "profile": {
+          "displayName": "Alice"
         },
         "contentType": "PURE_TEXT",
         "content": "{\"text\":\"hello\"}",

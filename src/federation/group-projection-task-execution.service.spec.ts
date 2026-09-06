@@ -72,9 +72,14 @@ describe('GroupProjectionTaskExecutionService', () => {
   it('yields at the page boundary when a newer pending task exists', async () => {
     const notifyFeedUpdates = vi.fn();
     const emit = vi.fn();
-    const limit = vi.fn().mockResolvedValue([{ id: 2n }]);
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce([{ account: '!group', domain: 'local' }])
+      .mockResolvedValueOnce([{ id: 2n }]);
     const where = vi.fn().mockReturnValue({ limit });
-    const from = vi.fn().mockReturnValue({ where });
+    const from = vi
+      .fn()
+      .mockReturnValue({ where, innerJoin: () => ({ where }) });
     const select = vi.fn().mockReturnValue({ from });
     const transactionContext = {
       execute: vi.fn().mockResolvedValue({
@@ -106,8 +111,8 @@ describe('GroupProjectionTaskExecutionService', () => {
     await service.execute(task, { threadId: 7 });
 
     expect(transaction).toHaveBeenCalledOnce();
-    expect(transactionContext.execute).toHaveBeenCalledOnce();
-    expect(select).toHaveBeenCalledOnce();
+    expect(transactionContext.execute).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenCalledTimes(2);
     expect(notifyFeedUpdates).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
   });

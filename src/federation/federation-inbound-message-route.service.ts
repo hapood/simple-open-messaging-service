@@ -27,6 +27,7 @@ export interface FederationInboundTombstoneRoute {
   federationVersion: number;
   recipients: number[];
   groupOriginDomain?: string;
+  memberSubmission?: boolean;
 }
 
 /** Resolves authenticated wire thread coordinates to retained local federation threads. */
@@ -82,7 +83,15 @@ export class FederationInboundMessageRouteService {
         FOR SHARE OF thread
       `);
       threadRows = result.rows;
-      if (threadRows.length === 0 && author.domain === sourceDomain) {
+      if (threadRows.length === 0 && author.domain !== sourceDomain) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'group mirror may only submit its locally managed authors',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const remoteMemberAccount = normalizeAccount(author.account);
+      if (threadRows.length === 0) {
         const memberResult = await tx.execute<{
           threadId: number;
           federationVersion: number;
@@ -106,7 +115,7 @@ export class FederationInboundMessageRouteService {
                 AND pair."endpointADomain" = 'local'
                 AND pair."endpointANamespaceId" = ${namespaceId}
                 AND pair."endpointBType" = 'USER'
-                AND pair."endpointBAccount" = ${normalizeAccount(author.account)}
+                AND pair."endpointBAccount" = ${remoteMemberAccount}
                 AND pair."endpointBDomain" = ${sourceDomain}
                 AND pair."endpointBNamespaceId" = ${namespaceId})
               OR
@@ -115,7 +124,7 @@ export class FederationInboundMessageRouteService {
                 AND pair."endpointBDomain" = 'local'
                 AND pair."endpointBNamespaceId" = ${namespaceId}
                 AND pair."endpointAType" = 'USER'
-                AND pair."endpointAAccount" = ${normalizeAccount(author.account)}
+                AND pair."endpointAAccount" = ${remoteMemberAccount}
                 AND pair."endpointADomain" = ${sourceDomain}
                 AND pair."endpointANamespaceId" = ${namespaceId})
             )
@@ -234,6 +243,7 @@ export class FederationInboundMessageRouteService {
     thread: FederationThreadAddress,
     sourceDomain: string,
     namespaceId: number,
+    messageSeq?: number,
   ): Promise<FederationInboundTombstoneRoute> {
     if ('peerAccount' in thread) {
       return this.resolveMessage(
@@ -262,6 +272,40 @@ export class FederationInboundMessageRouteService {
       FOR SHARE OF message_thread
     `);
     const route = rows.rows[0];
+    if (!route && messageSeq !== undefined) {
+      // A member may retract only a retained message authored on its own server.
+      // Reuse message routing to lock and validate that author's active membership.
+      const targets = await tx.execute<{ account: string }>(sql`
+        SELECT m."creatorAccount" AS account
+        FROM "Message" m
+        JOIN "MessageThread" t ON t.id = m."threadId"
+        JOIN "Group" g ON g.id = t."groupId"
+        WHERE g.account = ${normalizeAccount(thread.account)}
+          AND g.domain = 'local' AND g."namespaceId" = 0
+          AND m."sourceNamespaceId" = ${namespaceId}
+          AND m."originSeq" = ${messageSeq}
+          AND m."creatorDomain" = ${sourceDomain}
+          AND m."contentType" NOT IN ('SYSTEM', 'CALL')
+        LIMIT 1
+      `);
+      const target = targets.rows[0];
+      if (target) {
+        const memberRoute = await this.resolveMessage(
+          tx,
+          {
+            thread,
+            author: { account: target.account, domain: sourceDomain },
+          } as FederationMessageFeedMessage,
+          sourceDomain,
+          namespaceId,
+        );
+        return {
+          ...memberRoute,
+          groupOriginDomain: this.config.domain,
+          memberSubmission: true,
+        };
+      }
+    }
     if (!route) {
       throw new FederationMessageContextError(
         'tombstone has no retained local group thread',

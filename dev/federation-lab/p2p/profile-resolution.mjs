@@ -1,8 +1,5 @@
 import { federationLabNodes } from '../topology.mjs';
-
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
+import { openProfileEvents } from './profile-events.mjs';
 
 function homeNode(address) {
   const domain = address.slice(address.lastIndexOf('@') + 1);
@@ -18,30 +15,42 @@ function storedDomain(node, address) {
   return domain === node.domain ? 'local' : domain;
 }
 
-async function resolveUntilReady(actor, selector, expectedRev, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const result = await actor.resolveProfile(selector);
-    if (result?.status === 'READY') {
-      if (result.profile?.rev !== expectedRev) {
-        throw new Error(
-          `${actor.address}: profile selector ${JSON.stringify(selector)} returned rev ${result.profile?.rev}, expected ${expectedRev}`,
-        );
-      }
-      return result.profile;
-    }
-    if (result?.status !== 'PENDING' || typeof result.requestId !== 'string') {
+export async function resolveUntilReady(
+  actor,
+  selector,
+  expectedRev,
+  timeoutMs,
+  events,
+) {
+  let result = await actor.resolveProfile(selector);
+  if (result?.status === 'PENDING' && typeof result.requestId === 'string') {
+    let terminal;
+    try {
+      terminal = await events.wait(result.requestId, timeoutMs);
+    } catch (cause) {
       throw new Error(
-        `${actor.address}: invalid profile resolution result ${JSON.stringify(result)}`,
+        `${actor.address}: profile resolution ${JSON.stringify(selector)} requestId=${result.requestId}: ${cause.message}`,
+        { cause },
       );
     }
-    if (Date.now() >= deadline) {
+    if (terminal.event === 'PROFILE_FAILED') {
       throw new Error(
-        `${actor.address}: timed out resolving profile ${JSON.stringify(selector)}`,
+        `${actor.address}: profile resolution failed ${JSON.stringify(selector)} requestId=${result.requestId} reason=${terminal.reason}`,
       );
     }
-    await sleep(250);
+    result = { status: 'READY', profile: terminal.profile };
   }
+  if (result?.status === 'READY') {
+    if (result.profile?.rev !== expectedRev) {
+      throw new Error(
+        `${actor.address}: profile selector ${JSON.stringify(selector)} returned rev ${result.profile?.rev}, expected ${expectedRev}`,
+      );
+    }
+    return result.profile;
+  }
+  throw new Error(
+    `${actor.address}: invalid profile resolution result ${JSON.stringify(result)}`,
+  );
 }
 
 /** Exercise the same lazy exact-profile selectors used by clients before the read-only Oracle runs. */
@@ -49,6 +58,8 @@ export async function resolveWorkloadProfiles({
   actors,
   groups,
   profiles,
+  p2p,
+  p2pMessages,
   log,
   timeoutMs,
   onProgress = console.log,
@@ -78,7 +89,7 @@ export async function resolveWorkloadProfiles({
   for (const planned of log.groups) {
     const originNode = homeNode(planned.address);
     const canonical = groups[originNode.name].groups.get(planned.address);
-    if (!canonical) continue;
+    if (!canonical || canonical.dissolved) continue;
     const membersByNode = new Map();
     for (const member of canonical.roster) {
       const node = homeNode(member.address);
@@ -184,21 +195,50 @@ export async function resolveWorkloadProfiles({
     }
   }
 
+  for (const node of federationLabNodes) {
+    for (const pair of p2p?.[node.name]?.pairs.active ?? []) {
+      const viewer = pair
+        .split('|')
+        .find((address) => homeNode(address).name === node.name);
+      const thread = p2pMessages?.[node.name]?.get(pair);
+      if (!viewer || !thread) continue;
+      for (const message of thread.messages) {
+        if (message.localState === 'READY' && !message.isDeleted)
+          add(
+            node.name,
+            viewer,
+            { threadId: thread.threadId, messageSeq: message.seq },
+            message.profileRev,
+            'P2P_MESSAGE_AUTHOR',
+            pair,
+          );
+      }
+    }
+  }
   const checks = [];
   let completed = 0;
-  for (const request of requests.values()) {
-    const profile = await resolveUntilReady(
-      actors.user(request.actorAddress),
-      request.selector,
-      request.expectedRev,
-      timeoutMs,
-    );
-    checks.push({ ...request, profile });
-    completed += 1;
-    if (completed === requests.size || completed % 25 === 0)
-      onProgress(
-        `[profile] resolved ${completed}/${requests.size} referenced profiles`,
+  const streams = new Map();
+  try {
+    for (const request of requests.values()) {
+      const actor = actors.user(request.actorAddress);
+      if (!streams.has(actor.address))
+        streams.set(actor.address, await openProfileEvents(actor, timeoutMs));
+      const profile = await resolveUntilReady(
+        actor,
+        request.selector,
+        request.expectedRev,
+        timeoutMs,
+        streams.get(actor.address),
       );
+      checks.push({ ...request, profile });
+      completed += 1;
+      if (completed === requests.size || completed % 25 === 0)
+        onProgress(
+          `[profile] resolved ${completed}/${requests.size} referenced profiles`,
+        );
+    }
+    return checks;
+  } finally {
+    await Promise.all([...streams.values()].map((stream) => stream.close()));
   }
-  return checks;
 }

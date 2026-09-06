@@ -1,7 +1,82 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationStatePullService } from './federation-state-pull.service.js';
+import { Logger } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
 describe('FederationStatePullService drain window', () => {
+  it.each([true, false])(
+    'keeps post-commit profile failure isolated (unavailable=%s)',
+    async (unavailable) => {
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const failure = unavailable
+        ? new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'profile is not available',
+          )
+        : new Error('database unavailable');
+      const start = vi.fn().mockRejectedValue(failure);
+      const effect = {
+        clientFeedUpdates: [],
+        statePushDomains: [],
+        localSystemMessages: [],
+        threadRoundWakes: [],
+        profileResolutions: [
+          { userId: 3, account: 'alice', domain: 'peer.test', rev: 2 },
+        ],
+      };
+      const service = new FederationStatePullService(
+        {
+          db: {
+            query: {
+              peerStateFeedPullCursor: {
+                findFirst: vi.fn().mockResolvedValue({ committedThrough: 2n }),
+              },
+            },
+          },
+        } as never,
+        {} as never,
+        {} as never,
+        {
+          capturePeerResponseToken: vi
+            .fn()
+            .mockResolvedValue({ namespaceId: 7 }),
+        } as never,
+        {
+          run: async (
+            _domain: string,
+            _namespace: number,
+            callbacks: {
+              apply: (tx: unknown, page: unknown) => Promise<void>;
+              afterCommit: (page: unknown) => Promise<void>;
+            },
+          ) => {
+            const page = {};
+            await callbacks.apply({}, page);
+            await callbacks.afterCommit(page);
+          },
+        } as never,
+        { applyPageInTx: vi.fn().mockResolvedValue(effect) } as never,
+        { notifyFeedUpdates: vi.fn() } as never,
+        {} as never,
+        { start } as never,
+        { emit: vi.fn() } as never,
+      );
+      try {
+        await expect(service.pullStateFromPeer('peer.test')).resolves.toBe(2n);
+        expect(start).toHaveBeenCalledWith(3, {
+          account: 'alice',
+          domain: 'peer.test',
+          rev: 2,
+        });
+        expect(warn).toHaveBeenCalledTimes(unavailable ? 0 : 1);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
   it('passes the pull worker fixed drain bound to state-feed pages', async () => {
     const page = {
       items: [],

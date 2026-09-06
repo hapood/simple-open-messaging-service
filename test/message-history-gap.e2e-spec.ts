@@ -76,6 +76,7 @@ describe('client message history gaps', () => {
     ]);
     await database.db.insert(federationThreadHistoryGap).values({
       threadId,
+      namespaceId: 0,
       startSeq: 5,
       endSeq: 25,
       messageSeqOffset: 10,

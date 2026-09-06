@@ -127,7 +127,10 @@ describe('DurableAsyncTaskSchedulerService', () => {
     scheduler.enqueue(makeTask(1n));
 
     let stopped = false;
-    const shutdown = scheduler.onApplicationShutdown().then(() => {
+    const stop = scheduler.stop();
+    expect(scheduler.stop()).toBe(stop);
+    expect(scheduler.onApplicationShutdown()).toBe(stop);
+    const shutdown = stop.then(() => {
       stopped = true;
     });
     await Promise.resolve();

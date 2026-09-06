@@ -47,16 +47,20 @@ export class GroupService {
   }
 
   /** Batch invite acceptance. Each validated target receives a durable GROUP command. */
-  inviteUsers(params: { userIds: number[]; groupId: number }) {
+  inviteUsers(params: {
+    users: { account: string; domain: string }[];
+    groupId: number;
+  }) {
     return this.http.post<
       StandardResponse<{
-        invited: number[];
+        invited: { account: string; domain: string }[];
         tasks: Array<{
-          userId: number;
+          account: string;
+          domain: string;
           taskId: string;
           status: 'PENDING';
         }>;
-        skipped: { userId: number; reason: string }[];
+        skipped: { account: string; domain: string; reason: string }[];
       }>
     >(`${apiPrefix()}/group/invite`, params);
   }

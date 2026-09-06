@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import type {
@@ -23,7 +24,7 @@ function response(data: object) {
   };
 }
 
-function harness() {
+function harness(localGroupAuthority = false) {
   const publishMessage = vi.fn().mockResolvedValue(undefined);
   const publishTombstone = vi.fn().mockResolvedValue(undefined);
   const federation = {
@@ -109,7 +110,7 @@ function harness() {
     .mockResolvedValue(undefined);
   const epochLock = vi
     .spyOn(FederationThreadSyncStateService, 'lockAuthorizationEpochInTx')
-    .mockResolvedValue(undefined);
+    .mockResolvedValue({ threadId: 31 } as never);
   const executor = new FederationThreadForwardRoundExecutorService(
     database as never,
     rounds as never,
@@ -118,6 +119,7 @@ function harness() {
     {
       resolve: vi.fn().mockResolvedValue({
         kind: 'GROUP',
+        localGroupAuthority,
         threadId: 31,
         peerDomain: 'origin.test',
         selector: { account: '!group' },
@@ -139,6 +141,59 @@ function harness() {
 }
 
 describe('FederationThreadForwardRoundExecutorService', () => {
+  it('skips an unexpected mirror author before closure fetch and still commits the following message and cursor', async () => {
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    const h = harness(true);
+    const bad = {
+      thread: { account: '!group' },
+      seq: 11,
+      author: { account: 'third', domain: 'third.test' },
+      contentType: 'FORWARD',
+      content: 'invalid closure',
+    };
+    const good = {
+      thread: { account: '!group' },
+      seq: 12,
+      author: { account: 'member', domain: 'origin.test' },
+      contentType: 'GALLERY',
+    };
+    h.threadResources.fetch.mockResolvedValueOnce(
+      response({ messages: [bad, good], scannedThrough: 100, hasMore: false }),
+    );
+    await h.executor.runMessages(31, 'origin.test', 7, 50);
+    expect(h.threadResources.fetch).toHaveBeenCalledTimes(1);
+    expect(
+      h.federation.applyForwardMessagePageInTransaction,
+    ).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        threadLock: await h.epochLock.mock.results[0].value,
+        response: expect.objectContaining({
+          data: expect.objectContaining({ messages: [good] }),
+        }),
+      }),
+    );
+    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 100, 100, 7);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('FEDERATION_MALFORMED'),
+    );
+  });
+  it('filters mirror-owned submissions when the local group is authoritative', async () => {
+    const h = harness(true);
+    h.threadResources.fetch.mockResolvedValueOnce(
+      response({ messages: [], scannedThrough: 100, hasMore: false }),
+    );
+    await h.executor.runMessages(31, 'origin.test', 7, 50);
+    expect(h.threadResources.fetch).toHaveBeenCalledWith(
+      31,
+      '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=false',
+      'origin.test',
+      16 * 1024 * 1024,
+    );
+    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 100, 100, 7);
+  });
   it('commits a message page and its cursor independently', async () => {
     const h = harness();
     h.threadResources.fetch.mockResolvedValueOnce(
@@ -153,7 +208,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       16 * 1024 * 1024,
     );
-    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 60, 100);
+    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 60, 100, 7);
     expect(h.deletionAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
     expect(h.publishMessage).toHaveBeenCalledOnce();
@@ -174,7 +229,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       4 * 1024 * 1024,
     );
-    expect(h.deletionAdvance).toHaveBeenCalledWith({}, 31, 9, 9);
+    expect(h.deletionAdvance).toHaveBeenCalledWith({}, 31, 9, 9, 7);
     expect(h.messageAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
     expect(h.publishTombstone).toHaveBeenCalledOnce();
