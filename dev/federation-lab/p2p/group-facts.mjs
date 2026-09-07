@@ -25,25 +25,36 @@ async function readNodeGroupRows(client) {
   // node-postgres serializes a client's queries itself. Await them explicitly
   // instead of relying on the deprecated concurrent-query queueing behavior.
   const groups = await client.query(`
-        SELECT grp."id" AS "groupId", grp."account", grp."domain",
-               grp."name", grp."description", grp."avatar", grp."defaultProfileRev",
-               grp."dissolvedAt", thread."id" AS "threadId"
-        FROM "Group" grp
-        INNER JOIN "MessageThread" thread ON thread."groupId" = grp."id"
-        ORDER BY grp."id"
+        SELECT thread."id" AS "groupId", thread."groupAccount" AS "account",
+               thread."groupDomain" AS "domain", thread."authorityNamespaceId" AS "namespaceId",
+               COALESCE(profile."displayName", thread."groupAccount") AS "name",
+               COALESCE(profile."bio", '') AS "description",
+               COALESCE(profile."avatar", '') AS "avatar",
+               COALESCE(account."defaultProfileRev", meta."profileRev", 0) AS "defaultProfileRev",
+               COALESCE(account."dissolvedAt", thread."groupDissolvedAt") AS "dissolvedAt",
+               thread."id" AS "threadId"
+        FROM "MessageThread" thread
+        LEFT JOIN "GroupAccount" account ON account."id" = thread."groupAccountId"
+        LEFT JOIN "GroupMetaProfileFeed" meta ON meta."threadId" = thread."id"
+        LEFT JOIN "Profile" profile ON profile."account" = thread."groupAccount"
+          AND profile."domain" = thread."groupDomain"
+          AND profile."namespaceId" = thread."authorityNamespaceId"
+          AND profile."profileRev" = COALESCE(account."defaultProfileRev", meta."profileRev", 0)
+        WHERE thread."type" = 'GROUP'
+        ORDER BY thread."id"
       `);
   const roster = await client.query(`
-        SELECT latest."groupId", latest."account", latest."domain",
-               latest."role", latest."profileRev"
+        SELECT latest."threadId", latest."account", latest."domain",
+               latest."namespaceId", latest."role", latest."profileRev"
         FROM (
-          SELECT DISTINCT ON (fact."groupId", member."domain", member."account")
-            fact."groupId", member."account", member."domain", fact."operation",
+          SELECT DISTINCT ON (fact."threadId", fact."memberDomain", fact."memberAccount")
+            fact."threadId", fact."memberAccount" AS "account", fact."memberDomain" AS "domain",
+            fact."memberNamespaceId" AS "namespaceId", fact."operation",
             fact."body" ->> 'role' AS "role",
             (fact."body" ->> 'profileRev')::integer AS "profileRev",
             fact."feedId"
           FROM "GroupMetaMemberFeed" fact
-          INNER JOIN "User" member ON member."id" = fact."memberUserId"
-          ORDER BY fact."groupId", member."domain", member."account", fact."feedId" DESC
+          ORDER BY fact."threadId", fact."memberDomain", fact."memberAccount", fact."feedId" DESC
         ) latest
         WHERE latest."operation" = 'UPSERT'
       `);
@@ -61,19 +72,30 @@ async function readNodeGroupRows(client) {
         SELECT projection."threadId", projection."direction", projection."requestId"::text,
                projection."status", projection."expiresAt",
                manager."account" AS "managerAccount", manager."domain" AS "managerDomain",
-               member."account" AS "memberAccount", member."domain" AS "memberDomain"
+               projection."memberAccount", projection."memberDomain"
         FROM "GroupRequestProjection" projection
-        INNER JOIN "User" manager ON manager."id" = projection."managerUserId"
-        INNER JOIN "User" member ON member."id" = projection."memberUserId"
+        INNER JOIN "Account" manager ON manager."id" = projection."managerUserId"
         ORDER BY projection."threadId", projection."requestId"
       `);
   const users = await client.query(`
-        SELECT "id", "account", "domain" FROM "User" ORDER BY "id"
+        SELECT local_account."id", identity."account", identity."domain"
+        FROM (
+          SELECT "account", "domain" FROM "Account"
+          UNION
+          SELECT "endpointAAccount", "endpointADomain" FROM "RelationshipPair"
+          WHERE "endpointAType" = 'USER'
+          UNION
+          SELECT "endpointBAccount", "endpointBDomain" FROM "RelationshipPair"
+          WHERE "endpointBType" = 'USER'
+        ) identity
+        LEFT JOIN "Account" local_account ON identity."domain" = 'local'
+          AND local_account."account" = identity."account"
+        ORDER BY identity."domain", identity."account"
       `);
   const messages = await client.query(`
         SELECT msg."id"::text, msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
                msg."contentType", msg."content", msg."clientMessageId",
-               msg."creatorAccount", msg."creatorDomain", msg."isDeleted", msg."localState"
+               msg."creatorAccount", msg."creatorDomain", msg."creatorNamespaceId", msg."isDeleted", msg."localState"
         FROM "Message" msg
         INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
         WHERE thread."type" = 'GROUP'
@@ -101,6 +123,7 @@ function normalizeNode(node, rows, p2pNode) {
           domain: addressParts(address).domain,
           nodeName: node.name,
           groupId: group.groupId,
+          namespaceId: group.namespaceId,
           threadId: group.threadId,
           name: group.name,
           description: group.description,
@@ -115,20 +138,18 @@ function normalizeNode(node, rows, p2pNode) {
       ];
     }),
   );
-  const groupById = new Map(
-    [...groups.values()].map((group) => [group.groupId, group]),
-  );
   const groupByThread = new Map(
     [...groups.values()].map((group) => [group.threadId, group]),
   );
   for (const member of rows.roster) {
-    const group = groupById.get(member.groupId);
+    const group = groupByThread.get(member.threadId);
     if (!group) continue;
     const address = normalizeAddress(node, member.account, member.domain);
     group.roster.push({
       address,
       role: member.role,
       profileRev: member.profileRev,
+      namespaceId: member.namespaceId,
       ...apiAddress(node, address),
     });
   }

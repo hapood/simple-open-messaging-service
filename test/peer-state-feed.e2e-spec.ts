@@ -6,14 +6,13 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
   federatedPeer,
-  group,
   identityNamespace,
   messageThread,
   relationshipIntent,
   relationshipPair,
   peerStateFeed,
   peerStateFeedTarget,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
@@ -309,21 +308,12 @@ describe('per-peer state feed', () => {
 
   it('applies a later received group direction snapshot', async () => {
     const suffix = Date.now().toString(36);
-    const [groupState] = await database.db
-      .insert(group)
-      .values({
-        account: `!rev-${suffix}`,
-        name: 'revision group',
-        domain: DOMAINS[0],
-        namespaceId: namespaceId(DOMAINS[0]),
-        updatedAt: new Date(),
-      })
-      .returning({ id: group.id });
     const [thread] = await database.db
       .insert(messageThread)
       .values({
         type: MessageThreadType.GROUP,
-        groupId: groupState.id,
+        groupAccount: `!rev-${suffix}`,
+        groupDomain: DOMAINS[0],
         authorityNamespaceId: namespaceId(DOMAINS[0]),
         updatedAt: new Date(),
       })
@@ -332,7 +322,6 @@ describe('per-peer state feed', () => {
       .insert(user)
       .values({
         account: `rev-${suffix}`,
-        name: 'revision member',
         domain: 'local',
         updatedAt: new Date(),
       })
@@ -341,7 +330,7 @@ describe('per-peer state feed', () => {
     try {
       await database.db.transaction((tx) =>
         membership.applyRemoteGroupIntentInTx(tx, {
-          groupId: groupState.id,
+          groupId: thread.id,
           memberUserId: memberUser.id,
           threadId: thread.id,
           author: 'GROUP',
@@ -364,7 +353,7 @@ describe('per-peer state feed', () => {
 
       const replay = await database.db.transaction((tx) =>
         membership.applyRemoteGroupIntentInTx(tx, {
-          groupId: groupState.id,
+          groupId: thread.id,
           memberUserId: memberUser.id,
           threadId: thread.id,
           author: 'GROUP',
@@ -386,7 +375,9 @@ describe('per-peer state feed', () => {
       expect(after).not.toEqual(before);
       expect(after?.status).toBe('REVOKED');
     } finally {
-      await database.db.delete(group).where(eq(group.id, groupState.id));
+      await database.db
+        .delete(messageThread)
+        .where(eq(messageThread.id, thread.id));
       await database.db.delete(user).where(eq(user.id, memberUser.id));
     }
   });

@@ -1,3 +1,4 @@
+import type { AccountTarget } from '../user/account-address.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import {
@@ -8,10 +9,10 @@ import { SystemMessageType } from '../message/system-message.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 
 export interface FederationLocalSystemMessage {
-  actorUserId: number;
+  actorUserId: AccountTarget;
   threadId: number;
   type: SystemMessageType;
-  subjectUserId?: number;
+  subjectUserId?: AccountTarget;
   message?: PublicMessage;
   recipientUserIds?: number[];
 }

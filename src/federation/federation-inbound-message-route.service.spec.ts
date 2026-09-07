@@ -79,7 +79,7 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.sql).toContain('m."creatorDomain" =');
     expect(query.sql).toContain('m."sourceNamespaceId" =');
     expect(query.sql).toContain('m."originSeq" =');
-    expect(query.params).toEqual(['!group', 9, 7, 'peer.test']);
+    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 'peer.test']);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {

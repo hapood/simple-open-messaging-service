@@ -29,6 +29,134 @@ describe('applyFederatedPendingProfileSnapshot', () => {
   });
 });
 
+function localRecipientQuery(rows: unknown[]) {
+  return () => ({
+    from: () => ({ where: () => ({ orderBy: async () => rows }) }),
+  });
+}
+describe('relationship client profile references', () => {
+  function setup(peerRev?: number, available = true) {
+    const local = {
+      id: 1,
+      account: 'alice',
+      domain: 'local',
+      namespaceId: 0,
+      availability: 'AVAILABLE',
+      name: 'New default',
+      avatar: 'wrong',
+      bio: 'wrong',
+      defaultProfileRev: 99,
+    };
+    const remote = {
+      ...local,
+      id: 2,
+      account: 'bob',
+      domain: 'remote.test',
+      namespaceId: 4,
+      defaultProfileRev: 0,
+    };
+    const tx = {
+      select: localRecipientQuery([local]),
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue(local),
+        },
+        profileTable: {
+          findFirst: vi.fn().mockImplementation(async ({ where }) => {
+            const params = new PgDialect().sqlToQuery(where).params;
+            if (!available) return undefined;
+            return {
+              displayName: `Selected ${params[3]}`,
+              avatar: `avatar-${params[3]}`,
+              bio: 'selected',
+            };
+          }),
+        },
+      },
+    };
+    const intent = {
+      status: 'ACCEPTED',
+      requestedAt: null,
+      expiresAt: null,
+      note: '',
+      profileRev: 3,
+    };
+    const writeInTx = vi.fn().mockResolvedValue(1);
+    const service = new RelationshipService(
+      {} as never,
+      {} as never,
+      { writeInTx } as never,
+      {
+        readP2PRelationshipInTx: vi.fn().mockResolvedValue({
+          pair: { threadId: 9 },
+          firstIntent: intent,
+          secondIntent:
+            peerRev === undefined
+              ? undefined
+              : { ...intent, profileRev: peerRev },
+        }),
+      } as never,
+      {} as never,
+    );
+    return { service, tx, writeInTx };
+  }
+
+  it('uses the peer-authored intent revision in both directions, never either user default', async () => {
+    const { service, tx, writeInTx } = setup(7);
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
+      account: 'bob',
+      domain: 'remote.test',
+      namespaceId: 4,
+    });
+    expect(writeInTx).toHaveBeenCalledTimes(2);
+    for (const [, event] of writeInTx.mock.calls) {
+      expect(event.body.peer).toMatchObject({
+        account: 'bob',
+        profileRev: 7,
+        name: 'Selected 7',
+        avatar: 'avatar-7',
+      });
+    }
+    expect(
+      tx.query.profileTable.findFirst.mock.calls.map(
+        ([arg]) => new PgDialect().sqlToQuery(arg.where).params,
+      ),
+    ).toEqual([
+      ['bob', 'remote.test', 4, 7],
+      ['bob', 'remote.test', 4, 7],
+    ]);
+  });
+
+  it('retains the exact reference and an empty image when the version is not materialized', async () => {
+    const { service, tx, writeInTx } = setup(7, false);
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
+      account: 'bob',
+      domain: 'remote.test',
+      namespaceId: 4,
+    });
+    expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
+      profileRev: 7,
+      name: 'bob',
+      avatar: '',
+      bio: '',
+    });
+  });
+
+  it('does not invent a peer profile reference when only the local intent exists', async () => {
+    const { service, tx, writeInTx } = setup();
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
+      account: 'bob',
+      domain: 'remote.test',
+      namespaceId: 4,
+    });
+    expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
+      profileRev: 0,
+      name: 'bob',
+      avatar: '',
+    });
+  });
+});
+
 describe('RelationshipService.friendRelationshipStatuses', () => {
   process.env.SOMS_DOMAIN = 'local.test';
   const findMany = vi.fn();
@@ -100,9 +228,12 @@ describe('RelationshipService P2P shell storage', () => {
       onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
     });
     const tx = {
+      query: {
+        account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
+      },
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: 1 }]),
+          where: vi.fn().mockReturnValue({ orderBy: async () => [{ id: 1 }] }),
         }),
       }),
       insert: vi.fn((table: unknown) =>
@@ -160,9 +291,14 @@ describe('RelationshipService P2P shell storage', () => {
       returning: vi.fn().mockResolvedValue([{ id: 7 }]),
     });
     const tx = {
+      query: {
+        account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
+      },
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+          where: vi
+            .fn()
+            .mockReturnValue({ orderBy: async () => [{ id: 1 }, { id: 2 }] }),
         }),
       }),
       insert: vi.fn((table: unknown) =>
@@ -229,9 +365,12 @@ describe('RelationshipService P2P shell storage', () => {
       return { values: participantValues };
     });
     const tx = {
+      query: {
+        account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
+      },
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: 1 }]),
+          where: vi.fn().mockReturnValue({ orderBy: async () => [{ id: 1 }] }),
         }),
       }),
       insert,
@@ -259,6 +398,9 @@ describe('RelationshipService P2P shell storage', () => {
   it('cleans an unused shell without a separate endpoint projection table', async () => {
     const deletedTables: unknown[] = [];
     const tx = {
+      query: {
+        account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
+      },
       execute: vi
         .fn()
         .mockResolvedValueOnce({ rows: [{ threadId: 7 }] })
@@ -346,8 +488,9 @@ describe('RelationshipService local relationship client-state projection', () =>
       } as never,
     );
     const tx = {
+      select: localRecipientQuery([alice, bob]),
       query: {
-        user: {
+        account: {
           findFirst: vi
             .fn()
             .mockResolvedValueOnce(alice)
@@ -451,12 +594,18 @@ describe('RelationshipService local relationship client-state projection', () =>
       } as never,
     );
     const tx = {
+      select: localRecipientQuery([
+        {
+          id: 1,
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          availability: 'AVAILABLE',
+        },
+      ]),
       query: {
-        user: {
-          findFirst: vi
-            .fn()
-            .mockResolvedValueOnce(local)
-            .mockResolvedValueOnce(peer),
+        account: {
+          findFirst: vi.fn().mockResolvedValue(local),
         },
         relationshipIntent: {
           findMany: vi.fn().mockResolvedValue([
@@ -477,7 +626,11 @@ describe('RelationshipService local relationship client-state projection', () =>
       },
     };
 
-    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, 2);
+    await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
+      account: 'bob',
+      domain: 'peer.test',
+      namespaceId: 4,
+    });
 
     expect(writeInTx).toHaveBeenCalledOnce();
     expect(writeInTx.mock.calls[0][1].body).toMatchObject({

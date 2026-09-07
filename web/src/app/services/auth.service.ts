@@ -287,8 +287,8 @@ export class AuthService {
     void this.clearToken();
     // Drop the in-memory session (sessionProfile / sessionUserId / per-user DB) on the same terms as logout
     // — a 401 / FORCE_LOGOUT means this session is over, so the next account must not inherit its view state
-    // (open chat, mobile section, dialogs) nor its cached data. The NavStateMachineService session-end effect
-    // keys off sessionUserId → null here, same as on an explicit logout.
+    // (open chat, mobile section, dialogs) nor its cached data. Successful cleanup explicitly notifies
+    // in-memory consumers, including when the session ended before HELLO identified the user.
     void this.userService.clearSession().catch(() => {});
     this.sendOutbox.clear();
     this.routeService.redirect(RoutePage.AUTH_LOGIN);

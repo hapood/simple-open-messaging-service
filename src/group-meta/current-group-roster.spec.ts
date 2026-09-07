@@ -26,7 +26,7 @@ describe('readCurrentGroupRosterInTx', () => {
 
     await expect(
       readCurrentGroupRosterInTx({ execute } as never, 8),
-    ).resolves.toBe(rows);
+    ).resolves.toEqual(rows);
     expect(execute).toHaveBeenCalledOnce();
   });
 
@@ -65,7 +65,11 @@ describe('readCurrentGroupMemberInTx', () => {
     const execute = vi.fn().mockResolvedValue({ rows: [row] });
 
     await expect(
-      readCurrentGroupMemberInTx({ execute } as never, 8, 3),
+      readCurrentGroupMemberInTx({ execute } as never, 8, {
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+      }),
     ).resolves.toBe(row);
     expect(execute).toHaveBeenCalledOnce();
   });
@@ -74,7 +78,11 @@ describe('readCurrentGroupMemberInTx', () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });
 
     await expect(
-      readCurrentGroupMemberInTx({ execute } as never, 8, 3),
+      readCurrentGroupMemberInTx({ execute } as never, 8, {
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+      }),
     ).resolves.toBeUndefined();
   });
 });
@@ -111,7 +119,7 @@ describe('readCurrentLocalGroupManagersInTx', () => {
         groupId: 8,
         threadId: 9,
       }),
-    ).resolves.toBe(rows);
+    ).resolves.toEqual(rows);
     expect(execute).toHaveBeenCalledOnce();
   });
 
@@ -144,21 +152,23 @@ describe('readCurrentLocalAuthorizedGroupMemberIdsInTx', () => {
 describe('readCurrentGroupOwnersInTx', () => {
   it('returns one canonical owner per requested group', async () => {
     const rows = [
-      { groupId: 8, userId: 3 },
-      { groupId: 9, userId: 7 },
+      { groupId: 8, account: 'alice', domain: 'local', namespaceId: 0 },
+      { groupId: 9, account: 'bob', domain: 'peer.test', namespaceId: 1 },
     ];
     const execute = vi.fn().mockResolvedValue({ rows });
 
     await expect(
       readCurrentGroupOwnersInTx({ execute } as never, [8, 9, 8]),
-    ).resolves.toBe(rows);
+    ).resolves.toEqual(
+      rows.map(({ groupId, ...identity }) => ({ groupId, identity })),
+    );
     expect(execute).toHaveBeenCalledOnce();
   });
 
   it('rejects multiple current owners for one group', async () => {
     const execute = vi.fn().mockResolvedValue({
       rows: [
-        { groupId: 8, userId: 3 },
+        { groupId: 8, account: 'alice', domain: 'local', namespaceId: 0 },
         { groupId: 8, userId: 7 },
       ],
     });

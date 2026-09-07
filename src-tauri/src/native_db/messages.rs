@@ -7,6 +7,17 @@ use serde_json::Value;
 use super::{json_text, open, parse_json};
 use crate::{perform_api_request, ProxyState};
 
+pub(super) fn normalize_message_creator(message: &mut Value) {
+    if let Some(creator) = message.get_mut("creator").and_then(Value::as_object_mut) {
+        if creator.get("domain").and_then(Value::as_str) == Some("local")
+            || creator.get("namespaceId").and_then(Value::as_i64) == Some(0)
+        {
+            creator.insert("domain".into(), Value::String("local".into()));
+            creator.insert("namespaceId".into(), Value::from(0));
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_query_messages(
     app: tauri::AppHandle,
@@ -942,7 +953,8 @@ pub(crate) async fn commit_native_message_page(
         let ranges = reduce_message_ranges(thread_id, &current, scan, &gaps, &message_seqs)?;
 
         let mut committed_messages = Vec::with_capacity(messages.len());
-        for message in messages {
+        for mut message in messages {
+            normalize_message_creator(&mut message);
             let message_thread_id = message
                 .get("threadId")
                 .and_then(Value::as_i64)
@@ -1186,7 +1198,8 @@ pub(crate) async fn native_db_put_cached_messages(
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin cached message write: {error}"))?;
-        for message in messages {
+        for mut message in messages {
+            normalize_message_creator(&mut message);
             let thread_id = message
                 .get("threadId")
                 .and_then(Value::as_i64)

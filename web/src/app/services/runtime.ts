@@ -186,15 +186,16 @@ declare global {
     /** Android Predictive Back lifecycle. Optional until the web navigation layer implements gesture-driven
      *  previews; native commit falls back to {@link __SOMS_BACK__} while this hook is absent. Coordinates are
      *  physical WebView pixels, progress is 0..1, and swipeEdge follows Android's LEFT/RIGHT constants. */
-    __SOMS_PREDICTIVE_BACK__?: (event:
-      | {
-          kind: 'start' | 'progress';
-          progress: number;
-          touchX: number;
-          touchY: number;
-          swipeEdge: number;
-        }
-      | { kind: 'cancel' | 'commit' }
+    __SOMS_PREDICTIVE_BACK__?: (
+      event:
+        | {
+            kind: 'start' | 'progress';
+            progress: number;
+            touchX: number;
+            touchY: number;
+            swipeEdge: number;
+          }
+        | { kind: 'cancel' | 'commit' },
     ) => void;
     /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
      *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
@@ -248,7 +249,7 @@ declare global {
      *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
     SomsCall?: {
       initiate: (
-        calleeUserId: number,
+        threadId: number,
         callSid: string,
         callType: 'AUDIO' | 'VIDEO',
         peerAccount: string,
@@ -259,12 +260,7 @@ declare global {
       cancel: (callSid: string) => void;
       end: (callSid: string, reason?: string) => void;
       setSpeakerEnabled: (enabled: boolean) => void;
-      signal: (
-        callSid: string,
-        toUserId: number,
-        kind: string,
-        payload: string,
-      ) => void;
+      signal: (callSid: string, kind: string, payload: string) => void;
       setMuted: (muted: boolean) => void;
       /** One-way AUDIO→VIDEO upgrade on the existing RTCPeerConnection. Permission and SDP renegotiation
        *  are native-owned; failure leaves the audio leg connected. */

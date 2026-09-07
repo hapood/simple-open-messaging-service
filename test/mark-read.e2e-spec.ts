@@ -39,7 +39,9 @@ describe('POST /thread/mark-read authoritative state', () => {
   afterAll(async () => app.close());
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const viewer = await seedUser(app, 'reader', { name: 'Reader' });
     const peer = await seedUser(app, 'peer', { name: 'Peer' });
     viewerId = viewer.id;
@@ -60,12 +62,12 @@ describe('POST /thread/mark-read authoritative state', () => {
     await seedAcceptedRelationship(database.db, viewerId, peerId, threadId);
     const viewerParticipant =
       await database.db.query.accountThreadState.findFirst({
-      where: and(
-        eq(accountThreadState.threadId, threadId),
-        eq(accountThreadState.accountId, viewerId),
-      ),
-      columns: { id: true },
-    });
+        where: and(
+          eq(accountThreadState.threadId, threadId),
+          eq(accountThreadState.accountId, viewerId),
+        ),
+        columns: { id: true },
+      });
     if (!viewerParticipant)
       throw new Error('viewer thread participant is missing');
     viewerParticipantId = viewerParticipant.id;

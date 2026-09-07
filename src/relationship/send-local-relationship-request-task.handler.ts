@@ -9,7 +9,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
-import { account, user } from '../database/schema.js';
+import { account, account as user } from '../database/schema.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispatcher.service.js';
 import type {
@@ -67,8 +67,8 @@ export class SendLocalRelationshipRequestTaskHandler
       actorUserId,
       targetUserId,
       note,
-      async (tx, created) => {
-        if (created) await this.userQuota.tick(actorUserId, 'requests', tx);
+      async (tx) => {
+        await this.userQuota.tick(actorUserId, 'requests', tx);
         clientFeedUpdates.push(
           ...(await this.relationships.writeLocalP2PIntentInTx(
             tx,
@@ -104,7 +104,6 @@ export class SendLocalRelationshipRequestTaskHandler
         disabledAt: account.disabledAt,
       })
       .from(user)
-      .innerJoin(account, eq(account.id, user.id))
       .where(
         and(
           inArray(user.id, [actorUserId, targetUserId]),

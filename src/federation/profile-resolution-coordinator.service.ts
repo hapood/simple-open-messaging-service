@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -144,10 +145,7 @@ export class ProfileResolutionCoordinatorService {
           profileRev: tables.message.profileRev,
           account: tables.message.creatorAccount,
           domain: tables.message.creatorDomain,
-          namespaceId: sql<number>`CASE
-            WHEN ${tables.message.creatorDomain} IN ('local', ${this.config.domain}) THEN 0
-            ELSE ${tables.message.sourceNamespaceId}
-          END`,
+          namespaceId: tables.message.creatorNamespaceId,
           sourceDomain: sql<string | null>`CASE
             WHEN ${tables.message.sourceNamespaceId} = 0 THEN NULL
             ELSE ${tables.identityNamespace.domain}
@@ -212,22 +210,16 @@ export class ProfileResolutionCoordinatorService {
                latest."memberNamespaceId",
                (latest.body ->> 'profileRev')::integer AS "profileRev"
         FROM "MessageThread" thread
-        JOIN "Group" group_state ON group_state.id = thread."groupId"
-        JOIN "User" viewer_identity ON viewer_identity.id = ${userId}
+        JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+        JOIN "Account" viewer_identity ON viewer_identity.id = ${userId}
         JOIN LATERAL (
-          SELECT member_identity."namespaceId" AS "memberNamespaceId",
+          SELECT member_fact."memberNamespaceId",
                  member_fact.operation,
                  member_fact.body
           FROM "GroupMetaMemberFeed" member_fact
-          JOIN "User" member_identity
-            ON member_identity.id = member_fact."memberUserId"
-          WHERE member_fact."groupId" = group_state.id
-            AND member_identity.account = ${normalizeAccount(selector.memberAccount)}
-            AND member_identity.domain = CASE
-              WHEN group_state.domain = 'local' AND ${memberDomain} = ${this.config.domain}
-                THEN 'local'
-              ELSE ${memberDomain}
-            END
+          WHERE member_fact."threadId" = group_state.id
+            AND member_fact."memberAccount" = ${normalizeAccount(selector.memberAccount)}
+            AND member_fact."memberDomain" = ${memberDomain === this.config.domain ? 'local' : memberDomain}
           ORDER BY member_fact."feedId" DESC
           LIMIT 1
         ) latest ON true
@@ -263,8 +255,7 @@ export class ProfileResolutionCoordinatorService {
         account: normalizeAccount(selector.memberAccount),
         domain: memberDomain,
         rev: allocated.profileRev,
-        namespaceId:
-          memberDomain === this.config.domain ? 0 : allocated.memberNamespaceId,
+        namespaceId: allocated.memberNamespaceId,
         publisherDomain:
           allocated.publisherDomain === 'local'
             ? this.config.domain
@@ -276,7 +267,7 @@ export class ProfileResolutionCoordinatorService {
     const domain = selector.domain.toLowerCase();
     const allowed = await this.database.db.execute(sql`
       SELECT 1
-      FROM "User" self
+      FROM "Account" self
       WHERE self.id = ${userId}
         AND (
           (self.account = ${account} AND ${domain} = ${this.config.domain})
@@ -300,7 +291,7 @@ export class ProfileResolutionCoordinatorService {
             SELECT 1
             FROM "RelationshipIntent" intent
             JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-            JOIN "Group" local_group ON (
+            JOIN ${groupStateSql} local_group ON (
               (intent."authorSide" = 'A'
                 AND pair."endpointAAccount" = ${account}
                 AND pair."endpointADomain" = ${domain}
@@ -315,8 +306,10 @@ export class ProfileResolutionCoordinatorService {
             JOIN LATERAL (
               SELECT member_fact.operation, member_fact.body
               FROM "GroupMetaMemberFeed" member_fact
-              WHERE member_fact."groupId" = local_group.id
-                AND member_fact."memberUserId" = self.id
+              WHERE member_fact."threadId" = local_group.id
+                AND member_fact."memberAccount" = self.account
+                AND member_fact."memberDomain" = 'local'
+                AND member_fact."memberNamespaceId" = 0
               ORDER BY member_fact."feedId" DESC
               LIMIT 1
             ) manager ON true
@@ -330,13 +323,13 @@ export class ProfileResolutionCoordinatorService {
               AND manager.body ->> 'role' IN ('OWNER', 'ADMIN')
           )
           OR EXISTS (
-            SELECT 1 FROM "Group" group_profile
-            JOIN "MessageThread" thread ON thread."groupId" = group_profile.id
+            SELECT 1 FROM ${groupStateSql} group_profile
+            JOIN "MessageThread" thread ON thread.id = group_profile.id
             JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
             WHERE participant."accountId" = self.id
               AND group_profile.account = ${account}
               AND group_profile.domain = ${domain}
-              AND group_profile."defaultProfileRev" = ${selector.rev}
+              AND group_profile."profileRev" = ${selector.rev}
           )
         )
       LIMIT 1
@@ -376,7 +369,7 @@ export class ProfileResolutionCoordinatorService {
   private async resolve(
     selector: Awaited<ReturnType<typeof this.normalizeAndAuthorize>>,
   ) {
-    if (selector.kind === 'account' && selector.domain === this.config.domain) {
+    if (selector.namespaceId === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'profile revision is unavailable',

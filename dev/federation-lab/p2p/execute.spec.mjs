@@ -24,6 +24,7 @@ test('mapConcurrent preserves result order and bounds active workers', async () 
 test('waitForTaskQueueIdle prints active ids and requires two empty samples', async () => {
   const samples = [
     {
+      queryMs: { PENDING: 17, PROCESSING: 35, ASYNC_PROCESSING: 21 },
       pendingCount: 1,
       processing: [{ id: '12' }],
       asyncProcessing: [{ id: '13' }],
@@ -51,7 +52,57 @@ test('waitForTaskQueueIdle prints active ids and requires two empty samples', as
   assert.match(output[0], /processing=\[12\]/);
   assert.match(output[0], /async=\[13\]/);
   assert.match(output.at(-1), /pending=0/);
+  assert.match(
+    output[0],
+    /statusMs=\[ASYNC_PROCESSING:21,PENDING:17,PROCESSING:35\]/,
+  );
+  assert.match(
+    output[0],
+    /sample=1 idleSamples=0\/2 sampleMs=\d+ queryTotalMs=\d+ sleepTotalMs=0/,
+  );
+  assert.match(output.at(-1), /sample=3 idleSamples=2\/2/);
+  assert.ok(Number(output.at(-1).match(/sleepTotalMs=(\d+)/)[1]) >= 900);
   assert.equal(cursor, 3);
+});
+
+test('queue drain reports failed tasks immediately, including when no pending tasks remain', async () => {
+  for (const pendingCount of [0, 5]) {
+    let queries = 0;
+    const actors = {
+      node: () => ({
+        admin: {
+          durableTaskActivity: async () => {
+            queries++;
+            return {
+              pendingCount,
+              processing: [],
+              asyncProcessing: [],
+              failedCount: 1,
+              failed: [
+                {
+                  id: '39',
+                  taskType: 'LEAVE_GROUP',
+                  scopeKey: 'group-scope',
+                  lastError: 'deadlock detected',
+                },
+              ],
+            };
+          },
+        },
+      }),
+    };
+    await assert.rejects(
+      waitForTaskQueueIdle({
+        actors,
+        nodeNames: ['charlie'],
+        description: 'midpoint-dissolution queue',
+        timeoutMs: 3000,
+        onProgress: () => {},
+      }),
+      /charlie has 1 FAILED durable tasks; 39 LEAVE_GROUP scope=group-scope: deadlock detected/,
+    );
+    assert.equal(queries, 1);
+  }
 });
 
 test('wait helpers use actual incoming and resolved API observations', async () => {

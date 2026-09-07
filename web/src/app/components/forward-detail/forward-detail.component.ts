@@ -321,7 +321,9 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
             body: snapshotPreview(quoteTarget),
             seq: message.quoteTargetId,
           }
-        : undefined,
+        : message.quoteTargetId !== undefined
+          ? { seq: 0, status: 'NOT_FOUND' }
+          : undefined,
     };
   }
 

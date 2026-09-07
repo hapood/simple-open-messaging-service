@@ -17,7 +17,7 @@ import {
   messageAsset,
   message,
   messageThread,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
@@ -48,7 +48,6 @@ async function createThread(database: Database, userId: number) {
     .insert(user)
     .values({
       account: `peer-${randomUUID().slice(0, 8)}`,
-      name: 'Peer',
       hashPwd: 'x',
       updatedAt: now,
     })
@@ -80,7 +79,7 @@ async function authorizeDigest(
     .where(eq(messageThread.id, thread.id))
     .returning({ curSeq: messageThread.curSeq });
   const seq = advanced.curSeq;
-  const author = await database.query.user.findFirst({
+  const author = await database.query.account.findFirst({
     where: eq(user.id, userId),
     columns: { account: true, domain: true },
   });
@@ -146,7 +145,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
     // Seed two local users + sessions directly (registration is closed; the spec needs authenticated
     // users, not the login flow). userAId is the member for the per-object media-authz tests.
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account" RESTART IDENTITY CASCADE',
+    );
     // MediaAsset (CAS ref counts) — start clean so dedup assertions are predictable.
     await database.pool.query('TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
     const userA = await seedUserWithSession(app, 'fastify', {

@@ -67,3 +67,8 @@ google-services.json
 # demand by ensureCompiledEntry (test/federation-harness.ts); never tracked
 /.e2e-build
 dev/federation-lab/runtime/
+
+dev/federation-lab/local/
+
+# Local federation diagnostic sessions
+/dev/federation-lab/diagnostic-runs/

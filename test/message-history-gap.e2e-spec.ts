@@ -39,7 +39,9 @@ describe('client message history gaps', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const viewer = await seedUser(app, 'viewer');
     const peer = await seedUser(app, 'peer');
     viewerId = viewer.id;
@@ -90,6 +92,41 @@ describe('client message history gaps', () => {
       .set('Authorization', `Bearer ${sessionToken}`)
       .send({ threadId, ...body });
   }
+
+  it('clips the backward endpoint while validating the starting cursor', async () => {
+    const bootstrap = await queryMessages({});
+    expect(bootstrap.body.code).toBe(30006);
+    const { resumeAfter, resumeBefore } = bootstrap.body.data;
+    const invalid = await queryMessages({
+      before: resumeAfter + 1,
+      through: 0,
+      take: 50,
+    });
+    expect(invalid.body.code).toBe(30006);
+    const valid = await queryMessages({
+      before: resumeBefore,
+      through: 0,
+      take: 50,
+    });
+    expect(valid.body.code).toBe(0);
+    expect(
+      valid.body.data.messages.map((item: { seq: number }) => item.seq),
+    ).toEqual([36, 11]);
+    expect(valid.body.data.scannedThrough).toBe(resumeAfter + 1);
+  });
+
+  it('clips backward history to the cleared boundary instead of rejecting its endpoint', async () => {
+    await database.db
+      .update(messageThread)
+      .set({ clearedSeq: 10 })
+      .where(eq(messageThread.id, threadId));
+    const response = await queryMessages({ before: 51, through: 0, take: 50 });
+    expect(response.body.code).toBe(0);
+    expect(response.body.data.scannedThrough).toBe(11);
+    expect(
+      response.body.data.messages.map((item: { seq: number }) => item.seq),
+    ).toEqual([36, 11]);
+  });
 
   it('returns the full locally translated gap when only part intersects the scan', async () => {
     const response = await queryMessages({ after: 10, through: 20, take: 10 });

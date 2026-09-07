@@ -58,7 +58,7 @@
         },
         "childBundleId": { "$ref": "#/$defs/bundleId" },
         "quoteTargetId": {
-          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "allOf": [

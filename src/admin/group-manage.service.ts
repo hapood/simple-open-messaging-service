@@ -1,7 +1,8 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { group, messageThread } from '../database/schema.js';
+import { messageThread } from '../database/schema.js';
 import type { AdminGroupsListDto } from './admin.dto.js';
 
 /**
@@ -20,21 +21,19 @@ export class GroupManageService {
   async list(dto: AdminGroupsListDto) {
     const search = dto.search
       ? or(
-          ilike(group.account, `%${dto.search}%`),
-          ilike(group.name, `%${dto.search}%`),
+          ilike(groupStateFields.account, `%${dto.search}%`),
+          ilike(groupStateFields.name, `%${dto.search}%`),
         )
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const memberCount = sql<number>`(
       SELECT count(*)::int
       FROM (
-        SELECT DISTINCT ON (member_identity.domain, member_identity.account)
+        SELECT DISTINCT ON (member_fact."memberDomain", member_fact."memberAccount")
           member_fact.operation
         FROM "GroupMetaMemberFeed" member_fact
-        JOIN "User" member_identity
-          ON member_identity.id = member_fact."memberUserId"
-        WHERE member_fact."groupId" = ${group.id}
-        ORDER BY member_identity.domain, member_identity.account,
+        WHERE member_fact."threadId" = ${group.id}
+        ORDER BY member_fact."memberDomain", member_fact."memberAccount",
           member_fact."feedId" DESC
       ) latest
       WHERE latest.operation = 'UPSERT'
@@ -45,13 +44,13 @@ export class GroupManageService {
         createdAt: messageThread.createdAt,
         lastMessageAt: messageThread.lastMessageAt,
         lastMessagePreview: messageThread.lastMessagePreview,
-        groupAccount: group.account,
-        groupName: group.name,
-        groupDomain: group.domain,
+        groupAccount: groupStateFields.account,
+        groupName: groupStateFields.name,
+        groupDomain: groupStateFields.domain,
         memberCount,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(where);
     const [rows, totalRow] = await Promise.all([
       base
@@ -61,7 +60,7 @@ export class GroupManageService {
       this.database.db
         .select({ value: count() })
         .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .innerJoin(group, eq(group.id, messageThread.id))
         .where(where)
         .then(([row]) => row),
     ]);

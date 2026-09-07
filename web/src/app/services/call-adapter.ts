@@ -95,7 +95,7 @@ export type CallSnapshotListener = (snapshot: CallSnapshot) => void;
 export interface CallSignalPayload {
   id: string;
   callSid: string;
-  fromUserId: number;
+  fromUserId: number | null;
   kind: string;
   payload: string;
 }
@@ -116,7 +116,7 @@ export abstract class CallAdapter {
    *  `peerName` + `peerAvatar` are renderer-WebRTC presentation data. Android ignores them and resolves
    *  presentation from native SQLite by `peerAccount` + `peerDomain`. */
   abstract initiate(
-    calleeUserId: number,
+    threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
@@ -163,7 +163,7 @@ export abstract class CallAdapter {
 class AndroidCallAdapter extends CallAdapter {
   setSnapshotListener(): void {}
   initiate(
-    calleeUserId: number,
+    threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     _peerName: string,
@@ -172,7 +172,7 @@ class AndroidCallAdapter extends CallAdapter {
     peerDomain: string,
   ): void {
     window.SomsCall!.initiate(
-      calleeUserId,
+      threadId,
       callSid,
       callType,
       peerAccount,
@@ -311,7 +311,7 @@ export class CallAdapterService {
   }
 
   initiate(
-    calleeUserId: number,
+    threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
@@ -320,7 +320,7 @@ export class CallAdapterService {
     peerDomain: string,
   ): void {
     this.adapter.initiate(
-      calleeUserId,
+      threadId,
       callSid,
       callType,
       peerName,

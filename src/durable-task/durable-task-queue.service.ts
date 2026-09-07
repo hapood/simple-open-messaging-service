@@ -1,3 +1,7 @@
+import {
+  readAccountTarget,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
@@ -349,31 +353,31 @@ function resolveMutationCoalescingKey(input: {
     case DurableTaskType.KICK_GROUP_MEMBER:
       return mutationCoalescingKey(
         'GROUP',
-        readCoalescingMemberId(input.payload.targetUserId),
+        readAccountTarget(input.payload.targetUserId),
       );
     case DurableTaskType.ACCEPT_GROUP_JOIN_REQUEST:
     case DurableTaskType.REJECT_GROUP_JOIN_REQUEST:
     case DurableTaskType.REVOKE_GROUP_INVITATION:
       return mutationCoalescingKey(
         'GROUP',
-        readCoalescingMemberId(input.payload.memberUserId),
+        readAccountTarget(input.payload.memberUserId),
       );
     default:
       return null;
   }
 }
 
-function readCoalescingMemberId(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0)
-    throw new TypeError('replaceable group intent task requires a member ID');
-  return value as number;
-}
-
 function mutationCoalescingKey(
   authorSide: 'GROUP' | 'MEMBER',
-  memberUserId: number,
+  memberUserId: AccountTarget,
 ): string {
-  return JSON.stringify(['GROUP_MEMBER_INTENT', authorSide, memberUserId]);
+  return JSON.stringify([
+    'GROUP_MEMBER_INTENT',
+    authorSide,
+    typeof memberUserId === 'number'
+      ? memberUserId
+      : [memberUserId.namespaceId, memberUserId.domain, memberUserId.account],
+  ]);
 }
 
 function cloneJsonObject(

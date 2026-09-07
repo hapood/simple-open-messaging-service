@@ -55,7 +55,7 @@ describe('diagnostics reporting e2e', () => {
     // CASCADE on User clears FK-linked rows; both listed for a clean slate per test.
     await database.db.execute(
       sql.raw(
-        'TRUNCATE TABLE "DiagnosticsReport", "User" RESTART IDENTITY CASCADE',
+        'TRUNCATE TABLE "DiagnosticsReport", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
       ),
     );
   });

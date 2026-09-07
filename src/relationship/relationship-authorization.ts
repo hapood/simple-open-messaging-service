@@ -1,3 +1,7 @@
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { sql, type SQLWrapper } from 'drizzle-orm';
 import type {
   Database,
@@ -50,8 +54,8 @@ export const effectiveRelationshipIntentSql = (
 ) => sql`EXISTS (
   SELECT 1
   FROM "RelationshipPair" pair
-  JOIN "User" author_identity ON author_identity.id = ${authorUserId}
-  JOIN "User" subject_identity ON subject_identity.id = ${subjectUserId}
+  JOIN "Account" author_identity ON author_identity.id = ${authorUserId}
+  JOIN "Account" subject_identity ON subject_identity.id = ${subjectUserId}
   JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
   WHERE ${pairNamespaceMatchesUsersSql(sql`pair`, sql`author_identity`, sql`subject_identity`)}
     AND (
@@ -74,8 +78,8 @@ export const mutuallyAuthorizedSql = (
 ) => sql`EXISTS (
   SELECT 1
   FROM "RelationshipPair" pair
-  JOIN "User" first_identity ON first_identity.id = ${firstUserId}
-  JOIN "User" second_identity ON second_identity.id = ${secondUserId}
+  JOIN "Account" first_identity ON first_identity.id = ${firstUserId}
+  JOIN "Account" second_identity ON second_identity.id = ${secondUserId}
   WHERE pair.active = true
     AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
 )`;
@@ -93,14 +97,16 @@ export async function isPairMutuallyAuthorized(
 
 export async function isThreadMutuallyAuthorized(
   db: QueryExecutor,
-  userId: number,
+  userId: AccountTarget,
   threadId: number,
 ): Promise<boolean> {
+  const identity = await accountAddressInTx(db, userId);
   const result = await db.execute<{ authorized: boolean }>(sql`
     SELECT EXISTS (
       SELECT 1
       FROM "RelationshipPair" pair
-      JOIN "User" identity ON identity.id = ${userId}
+      JOIN (SELECT ${identity.account}::text AS account, ${identity.domain}::text AS domain,
+        ${identity.namespaceId}::integer AS "namespaceId") identity ON true
       WHERE pair."threadId" = ${threadId}
         AND pair.active = true
         AND (

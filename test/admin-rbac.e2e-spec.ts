@@ -11,7 +11,7 @@ import {
   account as accountTable,
   admin,
   adminActionLog,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
@@ -59,7 +59,9 @@ describe('Admin RBAC + revocation + audit', () => {
   beforeEach(async () => {
     // CASCADE clears Admin, AdminSession, AdminActionLog (all FK-reachable from User), so each
     // case starts from an empty admin set.
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -79,15 +81,9 @@ describe('Admin RBAC + revocation + audit', () => {
       .values({
         account,
         domain: 'local',
-        name: account,
         updatedAt: now,
       })
       .returning({ id: user.id });
-    await database.db.insert(accountTable).values({
-      id: createdUser.id,
-      hashPwd: 'x',
-      updatedAt: now,
-    });
     const [createdAdmin] = await database.db
       .insert(admin)
       .values({ userId: createdUser.id, role, enabled: true, updatedAt: now })
@@ -106,14 +102,9 @@ describe('Admin RBAC + revocation + audit', () => {
       .values({
         account,
         domain: 'local',
-        name: account,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
-    await database.db.insert(accountTable).values({
-      id: created.id,
-      hashPwd: 'x',
-    });
     return created;
   };
 

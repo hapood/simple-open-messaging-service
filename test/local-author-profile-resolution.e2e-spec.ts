@@ -33,58 +33,55 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       imports: [DatabaseModule],
     }).compile();
     database = mod.get(DatabaseService);
-    profiles = new FederationProfileService(
-      database,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    profiles = new FederationProfileService(database, {} as never, {} as never);
     const ns = await seedFederatedPeerNamespace(
       database.db,
       'local-profile-origin.test',
     );
-    const [viewer, shell] = await database.db
-      .insert(tables.user)
-      .values([
-        {
-          account,
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Current',
-          defaultProfileRev: 2,
-          updatedAt: new Date(),
-        },
-        {
-          account,
-          domain,
-          namespaceId: ns,
-          name: 'Foreign shell',
-          updatedAt: new Date(),
-        },
-      ])
-      .returning();
-    viewerId = viewer.id;
-    await database.db.insert(tables.profileVersion).values([
-      { userId: viewer.id, profileRev: 1, displayName: 'Local historical' },
-      { userId: viewer.id, profileRev: 2, displayName: 'Local current' },
-      { userId: shell.id, profileRev: 1, displayName: 'Wrong foreign copy' },
-    ]);
-    const [group] = await database.db
-      .insert(tables.group)
+    const [viewer] = await database.db
+      .insert(tables.account)
       .values({
-        account: '!local-profile-mirror',
-        domain: 'local-profile-origin.test',
-        namespaceId: ns,
-        name: 'Mirror',
+        account,
+        domain: 'local',
+        namespaceId: 0,
+        defaultProfileRev: 2,
         updatedAt: new Date(),
       })
       .returning();
+    viewerId = viewer.id;
+    await database.db.insert(tables.profileTable).values([
+      {
+        account,
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 1,
+        displayName: 'Local historical',
+      },
+      {
+        account,
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+        displayName: 'Local current',
+      },
+      {
+        account,
+        domain,
+        namespaceId: ns,
+        profileRev: 1,
+        displayName: 'Wrong foreign copy',
+      },
+    ]);
+    const group = {
+      account: '!local-profile-mirror',
+      domain: 'local-profile-origin.test',
+    };
     const [thread] = await database.db
       .insert(tables.messageThread)
       .values({
         type: 'GROUP',
-        groupId: group.id,
+        groupAccount: group.account,
+        groupDomain: group.domain,
         authorityNamespaceId: ns,
         curSeq: 3,
         updatedAt: new Date(),
@@ -105,8 +102,10 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       endpointBNamespaceId: ns,
     });
     await database.db.insert(tables.groupMetaMemberFeed).values({
-      groupId: group.id,
-      memberUserId: shell.id,
+      threadId,
+      memberAccount: account,
+      memberDomain: 'local',
+      memberNamespaceId: 0,
       operation: 'UPSERT',
       feedId: 1n,
       body: { role: 'MEMBER', profileRev: 1 },
@@ -118,7 +117,8 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         originSeq: seq,
         sourceNamespaceId: ns,
         creatorAccount: account,
-        creatorDomain: seq === 2 ? 'local' : domain,
+        creatorDomain: 'local',
+        creatorNamespaceId: 0,
         profileRev: seq === 3 ? 3 : 1,
         contentType: 'PURE_TEXT' as const,
         content: JSON.stringify({ text: 'local author' }),
@@ -169,8 +169,12 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
   });
 
   it('still rejects a viewer without thread authorization', async () => {
+    const [outsider] = await database.db
+      .insert(tables.account)
+      .values({ account: 'profile-outsider', updatedAt: new Date() })
+      .returning();
     await expect(
-      coordinator().start(-1, { threadId, messageSeq: 1 }),
+      coordinator().start(outsider.id, { threadId, messageSeq: 1 }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
   });
 });

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dataDirectory } from '../common/data-directory.js';
+import { configDirectory } from '../common/data-directory.js';
 import {
   HttpStatus,
   Inject,
@@ -31,7 +31,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { pushToken, user } from '../database/schema.js';
+import { pushToken, account as user } from '../database/schema.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
@@ -98,7 +98,7 @@ export class PushService {
   ) {
     this.fcmCredentialPath =
       testFirebaseServiceAccountPath ??
-      dataDirectory('firebase-service-account.json');
+      configDirectory('firebase-service-account.json');
     if (existsSync(this.fcmCredentialPath)) {
       process.env.GOOGLE_APPLICATION_CREDENTIALS = this.fcmCredentialPath;
       const app = getApps().length
@@ -462,7 +462,7 @@ export class PushService {
     calleeUserId: number,
     payload: {
       callSid: string;
-      callerUserId: number;
+      callerUserId: number | null;
       /** Web Push has no native SQLite cache; Android FCM deliberately omits these fields. */
       callerName: string;
       callerAvatar: string;
@@ -500,7 +500,8 @@ export class PushService {
         type: 'CALL_INCOMING',
         ts: String(Date.now()),
         callSid: payload.callSid,
-        callerUserId: String(payload.callerUserId),
+        callerUserId:
+          payload.callerUserId === null ? '' : String(payload.callerUserId),
         callerAccount: payload.callerAccount,
         callerDomain: payload.callerDomain,
         threadId: String(payload.threadId),

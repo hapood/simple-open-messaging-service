@@ -10,7 +10,6 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   clientStateFeed,
-  group,
   groupRequestProjection,
   messageThread,
   accountThreadState,
@@ -78,9 +77,9 @@ describe('group join request projection', () => {
     const database = app.get(DatabaseService);
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { groupId: true },
+      columns: { id: true, groupAccount: true },
     });
-    expect(thread?.groupId).toBeTypeOf('number');
+    expect(thread?.id).toBeTypeOf('number');
 
     await submitApplication(threadId, applicant.id, 'please');
 
@@ -168,7 +167,10 @@ describe('group join request projection', () => {
     await database.db.insert(groupRequestProjection).values({
       managerUserId: owner.id,
       threadId,
-      memberUserId: applicant.id,
+      memberAccount: applicant.account,
+      memberDomain: 'local',
+      memberNamespaceId: 0,
+      memberProfileRev: 1,
       direction: 'APPLICATION',
       feedId: history.body.data.data[0].feedId + 1,
       requestId: BigInt(history.body.data.data[0].id),
@@ -208,9 +210,9 @@ describe('group join request projection', () => {
       }),
     ).toHaveLength(1);
     await database.db.transaction((tx) =>
-      app.get(GroupMetaFeedService).reconcileMembersInTx(tx, thread!.groupId!, [
+      app.get(GroupMetaFeedService).reconcileMembersInTx(tx, thread!.id, [
         {
-          userId: owner.id,
+          namespaceId: 0,
           account: owner.account,
           domain: 'local',
           operation: 'DEPART',
@@ -291,7 +293,8 @@ describe('group join request projection', () => {
       .send({ groupId: threadId });
     expect(pending.body.data.data).toHaveLength(1);
     expect(pending.body.data.data[0]).toMatchObject({
-      userId: member.id,
+      account: member.account,
+      domain: 'local',
       status: 'REQUESTED',
     });
 
@@ -319,9 +322,9 @@ describe('group join request projection', () => {
     const database = app.get(DatabaseService);
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { groupId: true },
+      columns: { id: true, groupAccount: true },
     });
-    expect(thread?.groupId).toBeTypeOf('number');
+    expect(thread?.id).toBeTypeOf('number');
     await submitApplication(threadId, applicant.id, 'accept me');
     const pending = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests')
@@ -341,7 +344,9 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberUserId, applicant.id),
+          eq(groupRequestProjection.memberAccount, applicant.account),
+          eq(groupRequestProjection.memberDomain, 'local'),
+          eq(groupRequestProjection.memberNamespaceId, 0),
         ),
       },
     );
@@ -395,17 +400,14 @@ describe('group join request projection', () => {
     const database = app.get(DatabaseService);
     const groupThread = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { groupId: true },
+      columns: { id: true, groupAccount: true },
     });
-    expect(groupThread?.groupId).toBeTypeOf('number');
-    const groupIdentity = await database.db.query.group.findFirst({
-      where: eq(group.id, groupThread!.groupId!),
-      columns: { account: true },
-    });
+    expect(groupThread?.id).toBeTypeOf('number');
+    const groupIdentity = { account: groupThread!.groupAccount! };
     expect(groupIdentity).toBeDefined();
     await expect(
       database.db.transaction((tx) =>
-        readCurrentGroupMemberInTx(tx, groupThread!.groupId!, member.id),
+        readCurrentGroupMemberInTx(tx, groupThread!.id, member.id),
       ),
     ).resolves.toBeUndefined();
     const candidates = await request(app.getHttpServer())
@@ -413,7 +415,11 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, search: member.account });
     expect(candidates.body.data.data).toEqual([
-      expect.objectContaining({ userId: member.id, state: 'INVITED' }),
+      expect.objectContaining({
+        account: member.account,
+        domain: 'local',
+        state: 'INVITED',
+      }),
     ]);
 
     const accepted = await request(app.getHttpServer())
@@ -428,7 +434,11 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, search: member.account });
     expect(acceptedCandidates.body.data.data).toEqual([
-      expect.objectContaining({ userId: member.id, state: 'MEMBER' }),
+      expect.objectContaining({
+        account: member.account,
+        domain: 'local',
+        state: 'MEMBER',
+      }),
     ]);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
@@ -436,7 +446,9 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberUserId, member.id),
+          eq(groupRequestProjection.memberAccount, member.account),
+          eq(groupRequestProjection.memberDomain, 'local'),
+          eq(groupRequestProjection.memberNamespaceId, 0),
         ),
       },
     );
@@ -454,7 +466,7 @@ describe('group join request projection', () => {
     await waitForAcceptedDurableTask(database.db, left.body);
     await expect(
       database.db.transaction((tx) =>
-        readCurrentGroupMemberInTx(tx, groupThread!.groupId!, member.id),
+        readCurrentGroupMemberInTx(tx, groupThread!.id, member.id),
       ),
     ).resolves.toBeUndefined();
   });
@@ -472,7 +484,10 @@ describe('group join request projection', () => {
       app.get(ClientStateFeedService).writeGroupRequestInTx(tx, {
         managerUserId: owner.id,
         threadId,
-        memberUserId: member.id,
+        memberAccount: member.account,
+        memberDomain: 'local',
+        memberNamespaceId: 0,
+        memberProfileRev: 1,
         direction: 'APPLICATION',
         requestId: 999n,
         status: 'ACCEPTED',
@@ -487,7 +502,9 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberUserId, member.id),
+          eq(groupRequestProjection.memberAccount, member.account),
+          eq(groupRequestProjection.memberDomain, 'local'),
+          eq(groupRequestProjection.memberNamespaceId, 0),
         ),
       }),
     ).toEqual([]);
@@ -505,9 +522,9 @@ describe('group join request projection', () => {
     const database = app.get(DatabaseService);
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { groupId: true },
+      columns: { id: true, groupAccount: true },
     });
-    expect(thread?.groupId).toBeTypeOf('number');
+    expect(thread?.id).toBeTypeOf('number');
     await database.db.transaction(async (tx) => {
       const updates: Array<{ userId: number; feedId: number }> = [];
       const federation = app.get(FederationRelationshipMutationService);

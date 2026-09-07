@@ -1,3 +1,12 @@
+import {
+  groupState as group,
+  groupStateFields,
+} from '../src/group/group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../src/user/account-address.js';
+import type { NamespacedAddress } from '../src/common/client-identity.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -47,7 +56,6 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   forwardMessage,
-  group,
   groupMetaFeed,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
@@ -66,10 +74,9 @@ import {
   s2SKeyCache,
   accountThreadState,
   threadAudience,
-  profileVersion,
+  profileTable,
   identityNamespace,
   systemSetting,
-  user,
 } from '../src/database/schema.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -94,8 +101,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let proxy: S2sProxy;
   let tokenA: string; // alice @ appA
   let tokenB: string; // bob @ appB
-  let bobStubIdOnA: number; // appA's stub of bob (foreign)
-  let aliceStubIdOnB: number; // appB's stub of alice (foreign)
+  let bobAddressOnA: NamespacedAddress; // Bob's source-scoped address on appA
+  let aliceAddressOnB: NamespacedAddress; // Alice's source-scoped address on appB
   let aliceLocalIdA: number;
   let bobLocalIdB: number;
   let adminCookieA: string; // super-admin on appA — admin_session cookie pair for the block test + admin reads
@@ -106,28 +113,28 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let firstGroupAccount: string; // its `!account` — the on-wire group address
   let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
   let daveLocalIdB: number;
-  let daveStubIdOnA: number;
+  let daveAddressOnA: NamespacedAddress;
   let adminCookieB: string;
 
-  async function findActiveP2pParticipant(app: FedApp, userId: number) {
+  async function findActiveP2pParticipant(app: FedApp, target: AccountTarget) {
+    const identity = await accountAddressInTx(app.database, target);
     const result = await app.database.execute<{ threadId: number }>(sql`
       SELECT pair."threadId"
       FROM "RelationshipPair" pair
-      JOIN "User" identity ON identity.id = ${userId}
       JOIN "MessageThread" thread
         ON thread.id = pair."threadId" AND thread.type = 'P2P'
       WHERE pair.kind = 'P2P'
         AND pair.active = true
         AND (
-          (pair."endpointAAccount" = identity.account
-            AND pair."endpointADomain" = identity.domain
-            AND (identity."namespaceId" = 0
-              OR pair."endpointANamespaceId" = identity."namespaceId"))
+          (pair."endpointAAccount" = ${identity.account}
+            AND pair."endpointADomain" = ${identity.domain}
+            AND (${identity.namespaceId} = 0
+              OR pair."endpointANamespaceId" = ${identity.namespaceId}))
           OR
-          (pair."endpointBAccount" = identity.account
-            AND pair."endpointBDomain" = identity.domain
-            AND (identity."namespaceId" = 0
-              OR pair."endpointBNamespaceId" = identity."namespaceId"))
+          (pair."endpointBAccount" = ${identity.account}
+            AND pair."endpointBDomain" = ${identity.domain}
+            AND (${identity.namespaceId} = 0
+              OR pair."endpointBNamespaceId" = ${identity.namespaceId}))
         )
       LIMIT 1
     `);
@@ -136,8 +143,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   async function findActiveP2pBetween(
     app: FedApp,
-    firstUserId: number,
-    secondUserId: number,
+    firstUserId: AccountTarget,
+    secondUserId: AccountTarget,
   ) {
     const relationship = await findP2PRelationship(
       app.database,
@@ -174,16 +181,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const [row] = await app.database
       .select({
         id: messageThread.id,
-        groupId: messageThread.groupId,
+        groupId: messageThread.id,
         pullUntil: messageThread.pullUntil,
-        account: group.account,
-        name: group.name,
-        domain: group.domain,
-        namespaceId: group.namespaceId,
+        account: groupStateFields.account,
+        name: groupStateFields.name,
+        domain: groupStateFields.domain,
+        namespaceId: groupStateFields.namespaceId,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
-      .where(eq(group.account, account))
+      .innerJoin(group, eq(group.id, messageThread.id))
+      .where(eq(groupStateFields.account, account))
       .limit(1);
     return row
       ? {
@@ -206,7 +213,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   ) {
     return app.database.transaction(async (tx) => {
       const [thread] = await tx
-        .select({ groupId: messageThread.groupId })
+        .select({ groupId: messageThread.id })
         .from(messageThread)
         .where(eq(messageThread.id, threadId))
         .limit(1);
@@ -219,12 +226,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   async function findGroupThreadById(app: FedApp, threadId: number) {
     const [row] = await app.database
       .select({
-        groupId: messageThread.groupId,
-        account: group.account,
-        domain: group.domain,
+        groupId: messageThread.id,
+        account: groupStateFields.account,
+        domain: groupStateFields.domain,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, threadId))
       .limit(1);
     return row ? { groupId: row.groupId!, group: row } : undefined;
@@ -338,16 +345,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       user: { id: 0, domain: DOM_B },
     });
     expect(
-      await appA.database.query.user.findFirst({
-        where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+      await appA.database.query.account.findFirst({
+        where: and(eq(account.account, 'bob'), eq(account.domain, DOM_B)),
       }),
     ).toBeUndefined();
 
     const repeated = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
     expect(repeated.event).toBe('resolved');
     expect(
-      await appA.database.query.user.findFirst({
-        where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+      await appA.database.query.account.findFirst({
+        where: and(eq(account.account, 'bob'), eq(account.domain, DOM_B)),
       }),
     ).toBeUndefined();
 
@@ -439,22 +446,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const incomingProfile = await vi.waitFor(
       async () => {
-        const remoteIdentity = await appB.database.query.user.findFirst({
+        const profile = await appB.database.query.profileTable.findFirst({
           where: and(
-            eq(user.account, 'alice'),
-            eq(user.domain, DOM_A),
-            eq(user.namespaceId, namespaceAOnB),
+            eq(profileTable.account, 'alice'),
+            eq(profileTable.domain, DOM_A),
+            eq(profileTable.namespaceId, namespaceAOnB),
+            eq(profileTable.profileRev, incoming.profileRev),
           ),
         });
-        expect(remoteIdentity).toBeDefined();
-        const profile = remoteIdentity
-          ? await appB.database.query.profileVersion.findFirst({
-              where: and(
-                eq(profileVersion.userId, remoteIdentity.id),
-                eq(profileVersion.profileRev, incoming.profileRev),
-              ),
-            })
-          : undefined;
         expect(profile).toBeDefined();
         return profile!;
       },
@@ -506,41 +505,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(accepted.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appB.database, accepted.body);
 
-    const [aliceStubB, bobStubA] = await vi.waitFor(
-      async () => {
-        const stubs = await Promise.all([
-          appB.database.query.user.findFirst({
-            where: and(
-              eq(user.account, 'alice'),
-              eq(user.domain, DOM_A),
-              eq(user.namespaceId, namespaceAOnB),
-            ),
-          }),
-          appA.database.query.user.findFirst({
-            where: and(
-              eq(user.account, 'bob'),
-              eq(user.domain, DOM_B),
-              eq(user.namespaceId, namespaceBOnA),
-            ),
-          }),
-        ]);
-        expect(stubs[0]).toBeDefined();
-        expect(stubs[1]).toBeDefined();
-        return stubs as [
-          NonNullable<(typeof stubs)[0]>,
-          NonNullable<(typeof stubs)[1]>,
-        ];
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    aliceStubIdOnB = aliceStubB.id;
-    bobStubIdOnA = bobStubA.id;
+    aliceAddressOnB = {
+      account: 'alice',
+      domain: DOM_A,
+      namespaceId: namespaceAOnB,
+    };
+    bobAddressOnA = {
+      account: 'bob',
+      domain: DOM_B,
+      namespaceId: namespaceBOnA,
+    };
 
     await vi.waitFor(
       async () => {
         for (const [app, localId, peerId] of [
-          [appA, aliceLocalIdA, bobStubIdOnA],
-          [appB, bobLocalIdB, aliceStubIdOnB],
+          [appA, aliceLocalIdA, bobAddressOnA],
+          [appB, bobLocalIdB, aliceAddressOnB],
         ] as const) {
           const relationship = await findP2PRelationship(
             app.database,
@@ -566,17 +546,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('crossed friend requests create the P2P thread on both servers', async () => {
-    const threadB = await findActiveP2pParticipant(appB, aliceStubIdOnB);
+    const threadB = await findActiveP2pParticipant(appB, aliceAddressOnB);
     expect(threadB).toBeDefined();
-    const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
+    const threadA = await findActiveP2pParticipant(appA, bobAddressOnA);
     expect(threadA).toBeDefined();
 
     // ACCEPTED references Bob's exact profile revision; the profile snapshot is
     // stored separately from the stable foreign identity shell.
     await vi.waitFor(
       async () => {
-        const bobProfileA = await appA.database.query.profileVersion.findFirst({
-          where: eq(profileVersion.userId, bobStubIdOnA),
+        const bobProfileA = await appA.database.query.profileTable.findFirst({
+          where: and(
+            eq(profileTable.account, bobAddressOnA.account),
+            eq(profileTable.domain, bobAddressOnA.domain),
+            eq(profileTable.namespaceId, bobAddressOnA.namespaceId),
+          ),
         });
         expect(bobProfileA?.avatar).toMatch(
           /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/,
@@ -598,28 +582,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       requireActiveNamespaceId(appA, DOM_B),
       requireActiveNamespaceId(appB, DOM_A),
     ]);
-    const [[betaStubA], [alphaStubB]] = await Promise.all([
-      appA.database
-        .insert(user)
-        .values({
-          account: betaAccount,
-          name: 'Cross Beta',
-          domain: DOM_B,
-          namespaceId: namespaceBOnA,
-          updatedAt: new Date(),
-        })
-        .returning({ id: user.id }),
-      appB.database
-        .insert(user)
-        .values({
-          account: alphaAccount,
-          name: 'Cross Alpha',
-          domain: DOM_A,
-          namespaceId: namespaceAOnB,
-          updatedAt: new Date(),
-        })
-        .returning({ id: user.id }),
-    ]);
+    const betaAddressOnA = {
+      account: betaAccount,
+      domain: DOM_B,
+      namespaceId: namespaceBOnA,
+    };
+    const alphaAddressOnB = {
+      account: alphaAccount,
+      domain: DOM_A,
+      namespaceId: namespaceAOnB,
+    };
 
     proxy.blockStateFeed(true);
     try {
@@ -656,7 +628,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           const relationship = await findP2PRelationship(
             appA.database,
             alpha.id,
-            betaStubA.id,
+            betaAddressOnA,
           );
           const directions =
             await appA.database.query.relationshipIntent.findMany({
@@ -684,8 +656,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         for (const [app, localId, peerId] of [
-          [appA, alpha.id, betaStubA.id],
-          [appB, beta.id, alphaStubB.id],
+          [appA, alpha.id, betaAddressOnA],
+          [appB, beta.id, alphaAddressOnB],
         ] as const) {
           const relationship = await findP2PRelationship(
             app.database,
@@ -714,7 +686,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   /** Resolve alice's P2P thread on appA (the thread she sends into). A friend relationship == a
    *  shared active P2P thread, so look it up via the bob stub's active participant row. */
   async function alicesThreadIdOnA(): Promise<number> {
-    const p = await findActiveP2pParticipant(appA, bobStubIdOnA);
+    const p = await findActiveP2pParticipant(appA, bobAddressOnA);
     if (!p?.threadId) throw new Error('alice↔bob thread missing on appA');
     return p.threadId;
   }
@@ -722,19 +694,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   /** Keep media tests individually runnable under Vitest's `-t`. Friendship is formed by the two
    * directed requests converging; there is no separate federated accept task. */
   async function ensureAliceAndBobAreFriends(): Promise<void> {
-    const existingBob = await appA.database.query.user.findFirst({
-      where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
-    });
-    if (existingBob) bobStubIdOnA = existingBob.id;
-    if (bobStubIdOnA && (await findActiveP2pParticipant(appA, bobStubIdOnA))) {
-      const existingAlice = await appB.database.query.user.findFirst({
-        where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
-      });
-      if (existingAlice) aliceStubIdOnB = existingAlice.id;
+    if (bobAddressOnA && (await findActiveP2pParticipant(appA, bobAddressOnA)))
       return;
-    }
 
-    const friendship = await establishFederatedFriendship({
+    await establishFederatedFriendship({
       local: appA,
       remote: appB,
       localUserId: aliceLocalIdA,
@@ -747,8 +710,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       remoteDomain: DOM_B,
       note: 'media test setup',
     });
-    bobStubIdOnA = friendship.remoteStubIdOnLocal;
-    aliceStubIdOnB = friendship.localStubIdOnRemote;
+    bobAddressOnA = {
+      account: 'bob',
+      domain: DOM_B,
+      namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+    };
+    aliceAddressOnB = {
+      account: 'alice',
+      domain: DOM_A,
+      namespaceId: await requireActiveNamespaceId(appB, DOM_A),
+    };
   }
 
   async function sendFederatedImage(bytes: Buffer) {
@@ -956,7 +927,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(reply).toBeDefined();
         expect(JSON.parse(reply!.content)).toEqual({
           text: 'reply from bob',
-          quote: { seq: original.body.data.seq },
+          quote: { namespaceId: 0, seq: original.body.data.seq },
         });
       },
       { timeout: 5000 },
@@ -1553,8 +1524,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content
     // embeds the url (the shape extractDigestEntries scans for the digest + ext).
     const { url, digest } = await sendFederatedImage(
-      await makePng(Math.floor(Math.random() * 256)),
-      16,
+      await makePng(Math.floor(Math.random() * 256), 16),
     );
 
     // The message pulls, then localizeMedia fetches the digest via /media/:digest + stores it in appB's CAS
@@ -1679,7 +1649,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // NOT degrade appA. The proxy preserves the signed Host, so signatures still verify at appA.
     proxy.armGetFileTruncation();
 
-    const { url, size, digest } = await sendFederatedImage(imageBytes, 48);
+    const { url, size, digest } = await sendFederatedImage(imageBytes);
 
     await vi.waitFor(
       async () => {
@@ -1718,24 +1688,28 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('resolves the exact profile revision carried by a later message', async () => {
-    const before = await appA.database.query.user.findFirst({
-      where: eq(user.id, aliceLocalIdA),
+    const before = await appA.database.query.account.findFirst({
+      where: eq(account.id, aliceLocalIdA),
       columns: { defaultProfileRev: true },
     });
     expect(before).toBeDefined();
     await uploadAvatar(appA, tokenA, png2);
-    const source = await appA.database.query.user.findFirst({
-      where: eq(user.id, aliceLocalIdA),
+    const source = await appA.database.query.account.findFirst({
+      where: eq(account.id, aliceLocalIdA),
       columns: { defaultProfileRev: true },
     });
     expect(source!.defaultProfileRev).toBeGreaterThan(
       before!.defaultProfileRev,
     );
     expect(
-      await appB.database.query.profileVersion.findFirst({
+      await appB.database.query.profileTable.findFirst({
         where: and(
-          eq(profileVersion.userId, aliceStubIdOnB),
-          eq(profileVersion.profileRev, source!.defaultProfileRev),
+          and(
+            eq(profileTable.account, aliceAddressOnB.account),
+            eq(profileTable.domain, aliceAddressOnB.domain),
+            eq(profileTable.namespaceId, aliceAddressOnB.namespaceId),
+          ),
+          eq(profileTable.profileRev, source!.defaultProfileRev),
         ),
       }),
     ).toBeUndefined();
@@ -1754,10 +1728,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const materialized = await vi.waitFor(
       async () => {
-        const profile = await appB.database.query.profileVersion.findFirst({
+        const profile = await appB.database.query.profileTable.findFirst({
           where: and(
-            eq(profileVersion.userId, aliceStubIdOnB),
-            eq(profileVersion.profileRev, source!.defaultProfileRev),
+            and(
+              eq(profileTable.account, aliceAddressOnB.account),
+              eq(profileTable.domain, aliceAddressOnB.domain),
+              eq(profileTable.namespaceId, aliceAddressOnB.namespaceId),
+            ),
+            eq(profileTable.profileRev, source!.defaultProfileRev),
           ),
         });
         expect(profile).toBeDefined();
@@ -1777,13 +1755,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appB.baseUrl)
       .post('/api/v1/user/sync-peer-profile')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB });
+      .send({ userId: 999 });
     expect(res.status).toBe(404);
   });
 
   it('local profile edits only advance the default profile pointer', async () => {
-    const beforeUser = await appA.database.query.user.findFirst({
-      where: eq(user.id, aliceLocalIdA),
+    const beforeUser = await appA.database.query.account.findFirst({
+      where: eq(account.id, aliceLocalIdA),
       columns: { defaultProfileRev: true },
     });
     const beforeAccount = await appA.database.query.account.findFirst({
@@ -1800,8 +1778,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
-    const afterUser = await appA.database.query.user.findFirst({
-      where: eq(user.id, aliceLocalIdA),
+    const afterUser = await appA.database.query.account.findFirst({
+      where: eq(account.id, aliceLocalIdA),
       columns: { defaultProfileRev: true },
     });
     const afterAccount = await appA.database.query.account.findFirst({
@@ -1815,10 +1793,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       beforeAccount!.stateFeedAllocatedThrough,
     );
     expect(
-      await appA.database.query.profileVersion.findFirst({
+      await appA.database.query.profileTable.findFirst({
         where: and(
-          eq(profileVersion.userId, aliceLocalIdA),
-          eq(profileVersion.profileRev, afterUser!.defaultProfileRev),
+          and(
+            eq(profileTable.account, 'alice'),
+            eq(profileTable.domain, 'local'),
+            eq(profileTable.namespaceId, 0),
+          ),
+          eq(profileTable.profileRev, afterUser!.defaultProfileRev),
         ),
       }),
     ).toMatchObject({
@@ -1942,12 +1924,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       ),
     });
     expect(outboundJoin?.body).toMatchObject({ status: 'ACCEPTED' });
-    const establishedImmediately = await findCurrentGroupMemberByAddress(
-      appB,
-      mirrorB.id,
-      { account: 'bob', domain: DOM_B },
-    );
-    expect(establishedImmediately).toBeUndefined();
     await vi.waitFor(
       async () => {
         const cursor =
@@ -1963,7 +1939,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const originMembership = await findGroupRelationship(
       appA.database,
       trdA!.groupId,
-      bobStubIdOnA,
+      bobAddressOnA,
     );
     const originMembershipRows =
       await appA.database.query.relationshipIntent.findMany({
@@ -1990,7 +1966,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const bobOnMirror = await findCurrentGroupMemberByAddress(
           appB,
           mirrorB.id,
-          { account: 'bob', domain: DOM_B },
+          { account: 'bob', domain: 'local' },
         );
         expect(bobOnMirror).toBeDefined();
       },
@@ -2003,7 +1979,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       async () => {
         const [originMeta, publishedHead, mirrorProfile] = await Promise.all([
           appA.database.query.groupMetaFeed.findFirst({
-            where: eq(groupMetaFeed.groupId, trdA!.groupId),
+            where: eq(groupMetaFeed.threadId, trdA!.groupId),
           }),
           appA.database.query.peerStateFeed.findFirst({
             where: and(
@@ -2013,7 +1989,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           }),
           appB.database.query.groupMetaProfileFeed.findFirst({
-            where: eq(groupMetaProfileFeed.groupId, mirrorB.groupId),
+            where: eq(groupMetaProfileFeed.threadId, mirrorB.groupId),
           }),
         ]);
         expect(publishedHead?.body).toMatchObject({
@@ -2171,19 +2147,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const projected = await vi.waitFor(
       async () => {
-        const applicant = await appA.database.query.user.findFirst({
-          where: and(
-            eq(user.account, 'erin-join-projection'),
-            eq(user.domain, DOM_B),
-          ),
-          columns: { id: true },
-        });
-        expect(applicant).toBeDefined();
         const row = await appA.database.query.groupRequestProjection.findFirst({
           where: and(
             eq(groupRequestProjection.managerUserId, aliceLocalIdA),
             eq(groupRequestProjection.threadId, firstGroupThreadA),
-            eq(groupRequestProjection.memberUserId, applicant!.id),
+            eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
+            eq(groupRequestProjection.memberDomain, DOM_B),
+            eq(
+              groupRequestProjection.memberNamespaceId,
+              await requireActiveNamespaceId(appA, DOM_B),
+            ),
             eq(groupRequestProjection.direction, 'APPLICATION'),
           ),
         });
@@ -2235,19 +2208,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await waitForAcceptedDurableTask(appB.database, renewed.body);
     const renewedProjection = await vi.waitFor(
       async () => {
-        const applicant = await appA.database.query.user.findFirst({
-          where: and(
-            eq(user.account, 'erin-join-projection'),
-            eq(user.domain, DOM_B),
-          ),
-          columns: { id: true },
-        });
-        expect(applicant).toBeDefined();
         const row = await appA.database.query.groupRequestProjection.findFirst({
           where: and(
             eq(groupRequestProjection.managerUserId, aliceLocalIdA),
             eq(groupRequestProjection.threadId, firstGroupThreadA),
-            eq(groupRequestProjection.memberUserId, applicant!.id),
+            eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
+            eq(groupRequestProjection.memberDomain, DOM_B),
+            eq(
+              groupRequestProjection.memberNamespaceId,
+              await requireActiveNamespaceId(appA, DOM_B),
+            ),
             eq(groupRequestProjection.direction, 'APPLICATION'),
           ),
         });
@@ -2333,7 +2303,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // message must SSE-fan to EVERY local active member (storePulledMessage's recipient loop), and the
     // mirror is SHARED (MessageThread.groupId @unique → one mirror per group, not one per local user).
     // Friend gate for the group invite: ACCEPTED state creates dave's stub.
-    const daveFriendship = await establishFederatedFriendship({
+    await establishFederatedFriendship({
       local: appA,
       remote: appB,
       localUserId: aliceLocalIdA,
@@ -2346,7 +2316,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       remoteDomain: DOM_B,
       note: 'hi dave',
     });
-    daveStubIdOnA = daveFriendship.remoteStubIdOnLocal;
+    daveAddressOnA = {
+      account: 'dave',
+      domain: DOM_B,
+      namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+    };
     // The group-invite friend gate keys on an active P2P thread alice↔dave on appB — wait for it.
     await vi.waitFor(
       async () => {
@@ -2354,10 +2328,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           await findActiveP2pParticipant(appB, daveLocalIdB),
         ).not.toBeNull();
         expect(
-          await findActiveP2pParticipant(appA, daveStubIdOnA),
+          await findActiveP2pParticipant(appA, daveAddressOnA),
         ).not.toBeNull();
         expect(
-          await findActiveP2pBetween(appA, aliceLocalIdA, daveStubIdOnA),
+          await findActiveP2pBetween(appA, aliceLocalIdA, daveAddressOnA),
         ).toBeDefined();
       },
       { timeout: 5000, interval: 100 },
@@ -2367,26 +2341,25 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // member. The authoritative full snapshot must mark that absent member as departed while retaining
     // its source-scoped identity for already materialized data.
     const namespaceAOnB = await requireActiveNamespaceId(appB, DOM_A);
-    const [staleIdentity] = await appB.database
-      .insert(user)
-      .values({
-        account: 'stale-roster-member',
-        domain: 'stale.test',
-        namespaceId: namespaceAOnB,
-        name: 'Stale roster member',
-        updatedAt: new Date(),
-      })
-      .returning({ id: user.id });
+    await appB.database.insert(profileTable).values({
+      account: 'stale-roster-member',
+      domain: 'stale.test',
+      namespaceId: namespaceAOnB,
+      profileRev: 1,
+      displayName: 'Stale roster member',
+    });
     await appB.database.insert(groupMetaMemberFeed).values({
-      groupId: firstMirrorGroupBId,
+      threadId: firstMirrorGroupBId,
       feedId: 9_000_000_000n,
-      memberUserId: staleIdentity.id,
+      memberAccount: 'stale-roster-member',
+      memberDomain: 'stale.test',
+      memberNamespaceId: namespaceAOnB,
       operation: 'UPSERT',
-      body: { role: GroupRole.MEMBER, profileRev: 0 },
+      body: { role: GroupRole.MEMBER, profileRev: 1 },
     });
     await appB.database
       .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.groupId, firstMirrorGroupBId));
+      .where(eq(groupMetaFeed.threadId, firstMirrorGroupBId));
 
     // Invite dave to the SAME group bob is in; appB adds dave to the EXISTING mirror thread.
     const groupInviteDave = await request(appA.baseUrl)
@@ -2433,9 +2406,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(
           await findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
             account: 'dave',
-            domain: DOM_B,
+            domain: 'local',
           }),
-        ).not.toBeNull();
+        ).toMatchObject({ domain: 'local', namespaceId: 0 });
       },
       { timeout: 5000 },
     );
@@ -2459,9 +2432,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const daveOnMirror = await findCurrentGroupMemberByAddress(
           appB,
           firstMirrorBId,
-          { account: 'dave', domain: DOM_B },
+          { account: 'dave', domain: 'local' },
         );
-        expect(daveOnMirror).not.toBeNull();
+        expect(daveOnMirror).toMatchObject({ domain: 'local', namespaceId: 0 });
         const staleMember = await findCurrentGroupMemberByAddress(
           appB,
           firstMirrorBId,
@@ -2472,10 +2445,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           'full group-meta rebuild must remove a receiver-only member fact',
         ).toBeUndefined();
         expect(
-          await appB.database.query.user.findFirst({
-            where: eq(user.id, staleIdentity.id),
+          await appB.database.query.profileTable.findFirst({
+            where: and(
+              eq(profileTable.account, 'stale-roster-member'),
+              eq(profileTable.domain, 'stale.test'),
+              eq(profileTable.namespaceId, namespaceAOnB),
+              eq(profileTable.profileRev, 1),
+            ),
           }),
-          'full group-meta rebuild must retain the departed source-scoped identity',
+          'full group-meta rebuild must retain historical exact profiles',
         ).toBeDefined();
         expect(
           await appB.database.query.message.findFirst({
@@ -2492,7 +2470,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
 
     const [originGroup] = await appA.database
-      .select({ groupId: messageThread.groupId })
+      .select({ groupId: messageThread.id })
       .from(messageThread)
       .where(eq(messageThread.id, firstGroupThreadA))
       .limit(1);
@@ -2522,7 +2500,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const relationship = await findGroupRelationship(
           appA.database,
           originGroup.groupId!,
-          daveStubIdOnA,
+          daveAddressOnA,
         );
         const [pair, intents] = await Promise.all([
           relationship.pair,
@@ -2755,7 +2733,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(
           await findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
             account: 'dave',
-            domain: DOM_B,
+            domain: 'local',
           }),
           'group-meta DEPART must remove the member from the current roster',
         ).toBeUndefined();
@@ -2950,7 +2928,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             }),
             findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
               account: 'bob',
-              domain: DOM_B,
+              domain: 'local',
             }),
           ]);
           expect(bobOnOrigin).toBeUndefined();
@@ -3070,7 +3048,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             }),
             findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
               account: 'bob',
-              domain: DOM_B,
+              domain: 'local',
             }),
           ]);
         expect(originAudience).toBeDefined();
@@ -3180,7 +3158,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
           findCurrentGroupMemberByAddress(appB, firstMirrorBId, {
             account: 'bob',
-            domain: DOM_B,
+            domain: 'local',
           }),
         ]);
         expect(originMember).toBeDefined();
@@ -3318,7 +3296,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const originAuthorization = await findGroupRelationship(
       appA.database,
       originThread!.groupId,
-      bobStubIdOnA,
+      bobAddressOnA,
     );
     expect(originAuthorization.pair?.active ?? false).toBe(false);
     expect(
@@ -3337,12 +3315,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const oldThreadA = await findActiveP2pBetween(
       appA,
       aliceLocalIdA,
-      bobStubIdOnA,
+      bobAddressOnA,
     );
     const oldThreadB = await findActiveP2pBetween(
       appB,
       bobLocalIdB,
-      aliceStubIdOnB,
+      aliceAddressOnB,
     );
     expect(oldThreadA).toBeDefined();
     expect(oldThreadB).toBeDefined();
@@ -3397,7 +3375,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ).toBeUndefined();
 
     // appA tore it down — the P2P thread is soft-left (no active thread between alice and bob's stub).
-    const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
+    const threadA = await findActiveP2pParticipant(appA, bobAddressOnA);
     expect(threadA).toBeUndefined();
 
     // The delete transaction owns the thread lock, so later sends cannot race
@@ -3428,7 +3406,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(revive.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appA.database, revive.body);
     expect(
-      await findActiveP2pBetween(appA, aliceLocalIdA, bobStubIdOnA),
+      await findActiveP2pBetween(appA, aliceLocalIdA, bobAddressOnA),
     ).toEqual(oldThreadA);
 
     await appB.restart();
@@ -3436,7 +3414,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await findActiveP2pBetween(appB, aliceStubIdOnB, bobLocalIdB),
+          await findActiveP2pBetween(appB, aliceAddressOnB, bobLocalIdB),
         ).toEqual(oldThreadB);
         expect(
           await appB.database.query.message.findFirst({
@@ -3452,10 +3430,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await findActiveP2pBetween(appA, aliceLocalIdA, bobStubIdOnA),
+          await findActiveP2pBetween(appA, aliceLocalIdA, bobAddressOnA),
         ).toEqual(oldThreadA);
         expect(
-          await findActiveP2pBetween(appB, bobLocalIdB, aliceStubIdOnB),
+          await findActiveP2pBetween(appB, bobLocalIdB, aliceAddressOnB),
         ).toEqual(oldThreadB);
       },
       { timeout: 40_000, interval: 150 },
@@ -3520,12 +3498,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const threadA = await findActiveP2pBetween(
       appA,
       aliceLocalIdA,
-      bobStubIdOnA,
+      bobAddressOnA,
     );
     const threadB = await findActiveP2pBetween(
       appB,
       bobLocalIdB,
-      aliceStubIdOnB,
+      aliceAddressOnB,
     );
     expect(threadA).toBeDefined();
     expect(threadB).toBeDefined();
@@ -3540,7 +3518,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await findActiveP2pBetween(appB, bobLocalIdB, aliceStubIdOnB),
+          await findActiveP2pBetween(appB, bobLocalIdB, aliceAddressOnB),
         ).toBeUndefined();
         const boundary = await appB.database.query.message.findFirst({
           where: and(

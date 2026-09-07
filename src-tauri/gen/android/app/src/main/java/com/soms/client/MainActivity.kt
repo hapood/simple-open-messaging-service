@@ -2056,17 +2056,17 @@ class MainActivity : TauriActivity() {
         /** Caller begins a call. Native SQLite presentation is resolved first; only then is the `starting`
          *  snapshot published and the call foreground service started. */
         @JavascriptInterface
-        fun initiate(calleeUserId: Int, callSid: String, callType: String, peerAccount: String, peerDomain: String) {
+        fun initiate(threadId: Int, callSid: String, callType: String, peerAccount: String, peerDomain: String) {
             val a = activityRef.get() ?: return
             a.runOnUiThread {
                 a.ensureCallPermissions(callType) {
                     // Native SQLite is the presentation authority. Resolve it off the UI thread and only
                     // publish the starting snapshot after the name/avatar are ready.
                     Thread {
-                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerDomain)
+                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerDomain, threadId)
                         a.runOnUiThread {
                             if (CallController.initiate(
-                                    calleeUserId,
+                                    threadId,
                                     callSid,
                                     callType,
                                     peerAccount,
@@ -2119,8 +2119,8 @@ class MainActivity : TauriActivity() {
         /** Relay one WebRTC frame the web layer generated (the renegotiate / media-state path — offers /
          *  answers / ICE are posted natively by CallController's observers on Android). */
         @JavascriptInterface
-        fun signal(callSid: String, toUserId: Int, kind: String, payload: String) {
-            CallController.signal(callSid, toUserId, kind, payload)
+        fun signal(callSid: String, kind: String, payload: String) {
+            CallController.signal(callSid, kind, payload)
         }
 
         /** Mute/unmute the local mic (CallController toggles the audio track's enabled state). */

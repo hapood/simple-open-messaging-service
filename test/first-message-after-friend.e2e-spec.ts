@@ -13,7 +13,7 @@ import {
   clientStateFeed,
   accountThreadState,
   threadAudience,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { RelationshipService } from '../src/relationship/relationship.service';
 import {
@@ -66,7 +66,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
   beforeEach(async () => {
     // Truncating User CASCADE-clears threads, messages, invites, etc. — a fresh graph per test.
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -97,7 +99,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ account: alice.account, domain: 'local' });
+      .send({ account: 'alice', domain: 'local' });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     expect(accept.body.data).toMatchObject({ status: 'PENDING' });
@@ -300,34 +302,29 @@ describe('First message after friend-add is delivered (single instance)', () => 
       database.db,
       'peer.test',
     );
-    const [foreignBob] = await database.db
-      .insert(user)
-      .values({
-        account: 'bob',
-        name: 'Bob',
-        domain: 'peer.test',
-        namespaceId,
-        updatedAt: new Date(),
-      })
-      .returning({ id: user.id });
+    const foreignBob = { account: 'bob', domain: 'peer.test', namespaceId };
 
     const relationships = app.get(RelationshipService);
     await database.db.transaction(async (tx) => {
       await relationships.writeLocalP2PIntentInTx(
         tx,
         alice.id,
-        foreignBob.id,
+        foreignBob,
         true,
       );
-      await relationships.writeLocalP2PIntentInTx(
-        tx,
-        foreignBob.id,
-        alice.id,
-        true,
-      );
+      await relationships.applyRemoteP2PIntentInTx(tx, {
+        localUserId: alice.id,
+        peerUserId: foreignBob,
+        status: 'REQUESTED',
+        profileRev: 0,
+        note: '',
+        requestedAt: new Date(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        origin: foreignBob.domain,
+      });
     });
     const friendship = (
-      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+      await findP2PRelationship(database.db, alice.id, foreignBob)
     ).pair;
     expect(friendship?.threadId).not.toBeNull();
     const audiences = await database.db
@@ -360,24 +357,19 @@ describe('First message after friend-add is delivered (single instance)', () => 
       database.db,
       'strict-peer.test',
     );
-    const [foreignBob] = await database.db
-      .insert(user)
-      .values({
-        account: 'strict-bob',
-        name: 'Bob',
-        domain: 'strict-peer.test',
-        namespaceId,
-        updatedAt: new Date(),
-      })
-      .returning({ id: user.id });
+    const foreignBob = {
+      account: 'strict-bob',
+      domain: 'strict-peer.test',
+      namespaceId,
+    };
     const relationships = app.get(RelationshipService);
     await database.db.transaction((tx) =>
-      relationships.writeLocalP2PIntentInTx(tx, alice.id, foreignBob.id, true),
+      relationships.writeLocalP2PIntentInTx(tx, alice.id, foreignBob, true),
     );
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: alice.id,
-        peerUserId: foreignBob.id,
+        peerUserId: foreignBob,
         status: 'REQUESTED',
         profileRev: 1,
         note: 'crossed request',
@@ -388,7 +380,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     );
 
     const afterCrossedRequest = (
-      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+      await findP2PRelationship(database.db, alice.id, foreignBob)
     ).pair;
     expect(afterCrossedRequest?.active).toBe(true);
     expect(afterCrossedRequest?.threadId).not.toBeNull();
@@ -396,7 +388,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: alice.id,
-        peerUserId: foreignBob.id,
+        peerUserId: foreignBob,
         status: 'ACCEPTED',
         profileRev: 1,
         note: 'crossed request',
@@ -407,7 +399,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     );
 
     const afterConfirmation = (
-      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+      await findP2PRelationship(database.db, alice.id, foreignBob)
     ).pair;
     expect(afterConfirmation?.active).toBe(true);
     expect(afterConfirmation?.threadId).not.toBeNull();

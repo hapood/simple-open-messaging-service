@@ -307,61 +307,16 @@ export const forwardBundle = pgTable(
   ],
 );
 
-export const user = pgTable(
-  'User',
-  {
-    id: serial().primaryKey().notNull(),
-    account: varchar({ length: 31 }).notNull(),
-    name: text().notNull(),
-    avatar: text().default('').notNull(),
-    bio: varchar({ length: 255 }).default('').notNull(),
-    domain: varchar({ length: 63 }).default('local').notNull(),
-    /** Publisher identity namespace which materialized this projection; 0 for local data. */
-    namespaceId: integer().default(0).notNull(),
-    availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    /** Local authoring default; federation peers can only resolve explicit references. */
-    defaultProfileRev: integer().default(0).notNull(),
-  },
-  (table) => [
-    unique('User_account_domain_namespaceId_key').on(
-      table.account,
-      table.domain,
-      table.namespaceId,
-    ),
-    index('User_address_idx').on(table.account, table.domain),
-    index('User_namespace_address_idx').on(
-      table.namespaceId,
-      table.account,
-      table.domain,
-    ),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'User_namespaceId_fkey',
-    }).onDelete('restrict'),
-    check('User_account_check', sql`${table.account} NOT LIKE '!%'`),
-    check(
-      'User_availability_check',
-      sql`${table.availability} IN ('AVAILABLE', 'REMOVED')`,
-    ),
-    check('User_defaultProfileRev_check', sql`${table.defaultProfileRev} >= 0`),
-  ],
-);
-
-/** Local authentication/control-plane account. Federated identities never receive one. */
+/** Local user account. Foreign subjects are represented only by addressed references and profiles. */
 export const account = pgTable(
   'Account',
   {
-    /** Shared primary key with the locally-created User identity. */
-    id: integer().primaryKey().notNull(),
+    id: serial().primaryKey().notNull(),
+    account: varchar({ length: 31 }).notNull(),
+    domain: varchar({ length: 63 }).default('local').notNull(),
+    namespaceId: integer().default(0).notNull(),
+    defaultProfileRev: integer().default(0).notNull(),
+    availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
     hashPwd: varchar({ length: 127 }),
     mustChangePassword: boolean().default(false).notNull(),
     disabledAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -375,11 +330,45 @@ export const account = pgTable(
       .notNull(),
   },
   (table) => [
-    foreignKey({
-      columns: [table.id],
-      foreignColumns: [user.id],
-      name: 'Account_id_fkey',
-    }).onDelete('cascade'),
+    check(
+      'Account_local_identity_check',
+      sql`${table.domain} = 'local' AND ${table.namespaceId} = 0`,
+    ),
+    unique('Account_account_key').on(table.account),
+    check('Account_account_check', sql`${table.account} NOT LIKE '!%'`),
+    check(
+      'Account_defaultProfileRev_check',
+      sql`${table.defaultProfileRev} >= 0`,
+    ),
+    check(
+      'Account_availability_check',
+      sql`${table.availability} IN ('AVAILABLE', 'REMOVED')`,
+    ),
+  ],
+);
+
+/** Locally authored group account. Mirrored groups have a thread, never a GroupAccount. */
+export const groupAccount = pgTable(
+  'GroupAccount',
+  {
+    id: serial().primaryKey().notNull(),
+    account: varchar({ length: 31 }).notNull(),
+    defaultProfileRev: integer().default(0).notNull(),
+    dissolvedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    unique('GroupAccount_account_key').on(table.account),
+    check('GroupAccount_account_check', sql`${table.account} LIKE '!%'`),
+    check(
+      'GroupAccount_defaultProfileRev_check',
+      sql`${table.defaultProfileRev} >= 0`,
+    ),
   ],
 );
 
@@ -627,7 +616,17 @@ export const messageThread = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
-    groupId: integer(),
+    /** Group subject address; null for a P2P thread. */
+    groupAccount: varchar({ length: 31 }),
+    groupDomain: varchar({ length: 63 }),
+    /** Only authoritative local groups own a GroupAccount. */
+    groupAccountId: integer(),
+    /** Dissolution learned from the authority of a mirrored group. */
+    groupDissolvedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     pullUntil: integer().default(0).notNull(),
     /** Identity namespace which owns this thread coordinate space. */
     authorityNamespaceId: integer().default(0).notNull(),
@@ -637,20 +636,24 @@ export const messageThread = pgTable(
     authorizationEpoch: integer().default(0).notNull(),
   },
   (table) => [
-    uniqueIndex('MessageThread_groupId_key').using(
-      'btree',
-      table.groupId.asc().nullsLast().op('int4_ops'),
+    uniqueIndex('MessageThread_group_address_key').on(
+      table.groupAccount,
+      table.groupDomain,
+      table.authorityNamespaceId,
     ),
+    uniqueIndex('MessageThread_groupAccountId_key').on(table.groupAccountId),
     foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'MessageThread_groupId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
+      columns: [table.groupAccountId],
+      foreignColumns: [groupAccount.id],
+      name: 'MessageThread_groupAccountId_fkey',
+    }).onDelete('restrict'),
     check(
-      'MessageThread_groupId_type_check',
-      sql`(type = 'P2P'::"MessageThreadType") = ("groupId" IS NULL)`,
+      'MessageThread_group_type_check',
+      sql`(${table.type} = 'GROUP' AND ${table.groupAccount} IS NOT NULL AND ${table.groupDomain} IS NOT NULL) OR (${table.type} = 'P2P' AND ${table.groupAccount} IS NULL AND ${table.groupDomain} IS NULL AND ${table.groupAccountId} IS NULL AND ${table.groupDissolvedAt} IS NULL)`,
+    ),
+    check(
+      'MessageThread_group_identity_check',
+      sql`${table.type} <> 'GROUP' OR ((${table.groupDomain} = 'local') = (${table.authorityNamespaceId} = 0) AND (${table.groupDomain} = 'local') = (${table.groupAccountId} IS NOT NULL) AND ${table.groupAccount} LIKE '!%')`,
     ),
     foreignKey({
       columns: [table.authorityNamespaceId],
@@ -840,6 +843,8 @@ export const message = pgTable(
     /** Author identity snapshot. Both fields are null only for server-authored SYSTEM notices. */
     creatorAccount: varchar({ length: 31 }),
     creatorDomain: varchar({ length: 63 }),
+    /** Subject namespace is independent of the stream which delivered the message. */
+    creatorNamespaceId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -863,6 +868,15 @@ export const message = pgTable(
     localState: messageLocalState().default('READY').notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.creatorNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'Message_creatorNamespaceId_fkey',
+    }).onDelete('restrict'),
+    check(
+      'Message_creator_namespace_check',
+      sql`${table.creatorDomain} IS NULL OR ((${table.creatorDomain} = 'local') = (${table.creatorNamespaceId} = 0))`,
+    ),
     check('Message_seq_check', sql`${table.seq} > 0`),
     check('Message_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
@@ -1545,58 +1559,13 @@ export const fileSyncProgress = pgTable(
   ],
 );
 
-export const group = pgTable(
-  'Group',
+/** Immutable user and group profile snapshots addressed independently of account records. */
+export const profileTable = pgTable(
+  'Profile',
   {
-    id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
-    domain: varchar({ length: 63 }).default('local').notNull(),
-    namespaceId: integer().default(0).notNull(),
-    name: varchar({ length: 30 }).notNull(),
-    avatar: text().default('').notNull(),
-    description: varchar({ length: 255 }).default('').notNull(),
-    /** Local authoring default; federation peers can only resolve explicit references. */
-    defaultProfileRev: integer().default(0).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    dissolvedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-  },
-  (table) => [
-    unique('Group_account_domain_namespaceId_key').on(
-      table.account,
-      table.domain,
-      table.namespaceId,
-    ),
-    foreignKey({
-      columns: [table.domain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'Group_namespace_fkey',
-    }).onDelete('restrict'),
-    check(
-      'Group_namespace_check',
-      sql`(${table.domain} = 'local') = (${table.namespaceId} = 0)`,
-    ),
-    check('Group_account_sigil_check', sql`${table.account} LIKE '!%'`),
-    check(
-      'Group_defaultProfileRev_check',
-      sql`${table.defaultProfileRev} >= 0`,
-    ),
-  ],
-);
-
-/** Immutable user and group profile snapshots. */
-export const profileVersion = pgTable(
-  'ProfileVersion',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    userId: integer(),
-    groupId: integer(),
+    domain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     profileRev: integer().notNull(),
     displayName: varchar({ length: 30 }).notNull(),
     avatar: text().default('').notNull(),
@@ -1606,27 +1575,21 @@ export const profileVersion = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('ProfileVersion_userId_profileRev_key')
-      .on(table.userId, table.profileRev)
-      .where(sql`${table.userId} IS NOT NULL`),
-    uniqueIndex('ProfileVersion_groupId_profileRev_key')
-      .on(table.groupId, table.profileRev)
-      .where(sql`${table.groupId} IS NOT NULL`),
+    primaryKey({
+      columns: [
+        table.account,
+        table.domain,
+        table.namespaceId,
+        table.profileRev,
+      ],
+      name: 'Profile_pkey',
+    }),
     foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'ProfileVersion_userId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'ProfileVersion_groupId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'ProfileVersion_owner_check',
-      sql`(${table.userId} IS NOT NULL) <> (${table.groupId} IS NOT NULL)`,
-    ),
-    check('ProfileVersion_profileRev_check', sql`${table.profileRev} > 0`),
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'Profile_namespaceId_fkey',
+    }).onDelete('restrict'),
+    check('Profile_profileRev_check', sql`${table.profileRev} > 0`),
   ],
 );
 
@@ -1682,7 +1645,10 @@ export const groupRequestProjection = pgTable(
   {
     managerUserId: integer().notNull(),
     threadId: integer().notNull(),
-    memberUserId: integer().notNull(),
+    memberAccount: varchar({ length: 31 }).notNull(),
+    memberDomain: varchar({ length: 63 }).notNull(),
+    memberNamespaceId: integer().notNull(),
+    memberProfileRev: integer().notNull(),
     direction: varchar({ length: 15 }).notNull(),
     feedId: integer().notNull(),
     requestId: bigint({ mode: 'bigint' }).notNull(),
@@ -1710,7 +1676,9 @@ export const groupRequestProjection = pgTable(
       columns: [
         table.managerUserId,
         table.threadId,
-        table.memberUserId,
+        table.memberAccount,
+        table.memberDomain,
+        table.memberNamespaceId,
         table.direction,
       ],
       name: 'GroupRequestProjection_pkey',
@@ -1736,9 +1704,9 @@ export const groupRequestProjection = pgTable(
       name: 'GroupRequestProjection_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.memberUserId],
-      foreignColumns: [user.id],
-      name: 'GroupRequestProjection_memberUserId_fkey',
+      columns: [table.memberNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'GroupRequestProjection_memberNamespaceId_fkey',
     }).onDelete('cascade'),
     check('GroupRequestProjection_feedId_check', sql`${table.feedId} > 0`),
     check(
@@ -1924,7 +1892,7 @@ export const peerStateFeedTarget = pgTable(
 export const groupMetaFeed = pgTable(
   'GroupMetaFeed',
   {
-    groupId: integer().primaryKey().notNull(),
+    threadId: integer().primaryKey().notNull(),
     /** Origin allocation end or mirror's last completely applied round cursor. */
     feedEndId: bigint({ mode: 'bigint' })
       .default(sql`0`)
@@ -1935,9 +1903,9 @@ export const groupMetaFeed = pgTable(
   },
   (table) => [
     foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'GroupMetaFeed_groupId_fkey',
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'GroupMetaFeed_threadId_fkey',
     }).onDelete('cascade'),
     check('GroupMetaFeed_feedEndId_check', sql`${table.feedEndId} >= 0`),
   ],
@@ -1947,10 +1915,11 @@ export const groupMetaFeed = pgTable(
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
-    groupId: integer().notNull(),
+    threadId: integer().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
-    /** Local identity projection for the protocol member Address. */
-    memberUserId: integer().notNull(),
+    memberAccount: varchar({ length: 31 }).notNull(),
+    memberDomain: varchar({ length: 63 }).notNull(),
+    memberNamespaceId: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
     /** Local mirror bookkeeping only; never serialized. */
@@ -1964,28 +1933,30 @@ export const groupMetaMemberFeed = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.groupId, table.feedId],
+      columns: [table.threadId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
     index('GroupMetaMemberFeed_member_feed_idx').on(
-      table.groupId,
-      table.memberUserId,
+      table.threadId,
+      table.memberAccount,
+      table.memberDomain,
+      table.memberNamespaceId,
       table.feedId,
     ),
     index('GroupMetaMemberFeed_full_sync_idx').on(
-      table.groupId,
+      table.threadId,
       table.fullSyncRunId,
       table.feedId,
     ),
     foreignKey({
-      columns: [table.memberUserId],
-      foreignColumns: [user.id],
-      name: 'GroupMetaMemberFeed_memberUserId_fkey',
+      columns: [table.memberNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'GroupMetaMemberFeed_memberNamespaceId_fkey',
     }).onDelete('restrict'),
     foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'GroupMetaMemberFeed_groupId_fkey',
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'GroupMetaMemberFeed_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.fullSyncRunId],
@@ -2006,7 +1977,7 @@ export const groupMetaMemberFeed = pgTable(
 export const groupMetaProfileFeed = pgTable(
   'GroupMetaProfileFeed',
   {
-    groupId: integer().primaryKey().notNull(),
+    threadId: integer().primaryKey().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
     profileRev: integer().notNull(),
     /** Local mirror bookkeeping only; never serialized. */
@@ -2020,9 +1991,9 @@ export const groupMetaProfileFeed = pgTable(
   },
   (table) => [
     foreignKey({
-      columns: [table.groupId],
-      foreignColumns: [group.id],
-      name: 'GroupMetaProfileFeed_groupId_fkey',
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'GroupMetaProfileFeed_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.fullSyncRunId],

@@ -16,10 +16,11 @@ import { Injectable } from '@nestjs/common';
  */
 export interface ActiveCallSummary {
   callSid: string;
+  threadId: number;
   /** ringing | connected (best-effort — the connect-time snapshot; accepted is transient, skipped). */
   state: string;
-  /** The OTHER participant's userId. */
-  peerUserId: number;
+  /** The other participant's local Account ID, or null for a foreign endpoint. */
+  peerUserId: number | null;
   peerAccount: string;
   peerDomain: string;
   callType: 'AUDIO' | 'VIDEO';

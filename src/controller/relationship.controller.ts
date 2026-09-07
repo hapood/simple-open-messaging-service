@@ -100,23 +100,27 @@ export class RelationshipController {
             account,
             domain,
           );
-    const [actor, target] = await Promise.all([
+    const [actor, localTarget] = await Promise.all([
       this.userService.findUniqueUser({ id: me }),
-      this.userService.findUniqueUser({
-        account_domain: { account, domain },
-        namespaceId: remoteContext?.namespaceId ?? 0,
-      }),
+      domain === 'local'
+        ? this.userService.findUniqueUser({
+            account_domain: { account, domain },
+            namespaceId: 0,
+          })
+        : Promise.resolve(null),
     ]);
     if (!actor) throw new Error('authenticated user profile is missing');
-    if (target?.id === me) {
+    if (localTarget?.id === me) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
         'can not revoke relationship with self',
       );
     }
-    if (domain === 'local' && target) {
+    if (localTarget) {
       const [relationship] =
-        await this.relationships.friendRelationshipStatuses(me, [target.id]);
+        await this.relationships.friendRelationshipStatuses(me, [
+          localTarget.id,
+        ]);
       if (
         relationship.status === 'OUTGOING_PENDING' ||
         relationship.status === 'INCOMING_PENDING'
@@ -126,7 +130,7 @@ export class RelationshipController {
             type: 'USER_PAIR',
             endpoints: [
               { account: actor.account, domain: actor.domain },
-              { account: target.account, domain: target.domain },
+              { account: localTarget.account, domain: localTarget.domain },
             ],
           },
           taskType:
@@ -134,7 +138,7 @@ export class RelationshipController {
               ? DurableTaskType.REVOKE_RELATIONSHIP_REQUEST
               : DurableTaskType.REJECT_RELATIONSHIP_REQUEST,
           actorUserId: me,
-          payload: { peerUserId: target.id },
+          payload: { peerUserId: localTarget.id },
         });
         return { taskId: taskId.toString(), status: 'PENDING' };
       }
@@ -172,6 +176,11 @@ export class RelationshipController {
         );
       }
     }
+    const target =
+      localTarget ??
+      (remoteContext?.namespaceId
+        ? { account, domain, namespaceId: remoteContext.namespaceId }
+        : null);
     if (!target) {
       throw new BusinessException(
         BusinessCode.FRIEND_NOT_FOUND,
@@ -180,7 +189,7 @@ export class RelationshipController {
     }
     const threadId = await this.participantService.findP2PThreadBetween(
       me,
-      target.id,
+      localTarget?.id ?? target,
     );
     if (threadId === null) {
       throw new BusinessException(

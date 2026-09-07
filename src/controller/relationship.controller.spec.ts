@@ -281,6 +281,49 @@ describe('RelationshipController.revokeRelationship', () => {
     expect(participantService.endP2P).not.toHaveBeenCalled();
   });
 
+  it('ends a federated friendship using its address without a remote account lookup', async () => {
+    const users = {
+      findUniqueUser: vi
+        .fn()
+        .mockResolvedValue({ id: 7, account: 'alice', domain: 'local' }),
+    };
+    const relationships = {
+      federatedRelationshipContext: vi
+        .fn()
+        .mockResolvedValue({ namespaceId: 12, status: 'FRIEND' }),
+    };
+    const participants = {
+      findP2PThreadBetween: vi.fn().mockResolvedValue(42),
+    };
+    const tasks = { enqueueTask: vi.fn().mockResolvedValue({ taskId: 95n }) };
+    const controller = new RelationshipController(
+      users as never,
+      relationships as never,
+      participants as never,
+      {} as never,
+      tasks as never,
+      {} as never,
+    );
+    await expect(
+      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'peer.test',
+      }),
+    ).resolves.toEqual({ taskId: '95', status: 'PENDING' });
+    expect(users.findUniqueUser).toHaveBeenCalledExactlyOnceWith({ id: 7 });
+    expect(participants.findP2PThreadBetween).toHaveBeenCalledWith(7, {
+      account: 'bob',
+      domain: 'peer.test',
+      namespaceId: 12,
+    });
+    expect(tasks.enqueueTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskType: 'END_FRIENDSHIP',
+        payload: { threadId: 42 },
+      }),
+    );
+  });
+
   it('validates and queues an addressed federated revoke', async () => {
     const userService = {
       findUniqueUser: vi
@@ -316,9 +359,8 @@ describe('RelationshipController.revokeRelationship', () => {
       'bob',
       'peer.test',
     );
-    expect(userService.findUniqueUser).toHaveBeenCalledWith({
-      account_domain: { account: 'bob', domain: 'peer.test' },
-      namespaceId: 2,
+    expect(userService.findUniqueUser).toHaveBeenCalledExactlyOnceWith({
+      id: 7,
     });
     expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
       scope: {

@@ -1,3 +1,7 @@
+import {
+  groupState as groupStateTable,
+  groupStateFields,
+} from '../group/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -31,11 +35,11 @@ export class FederationThreadAccessService {
   async assertGroupWritable(threadId: number): Promise<void> {
     await this.assertLocalSendNamespaceActive(threadId);
     const [state] = await this.database.db
-      .select({ dissolvedAt: tables.group.dissolvedAt })
+      .select({ dissolvedAt: groupStateFields.dissolvedAt })
       .from(tables.messageThread)
       .innerJoin(
-        tables.group,
-        eq(tables.group.id, tables.messageThread.groupId),
+        groupStateTable,
+        eq(groupStateTable.id, tables.messageThread.id),
       )
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);

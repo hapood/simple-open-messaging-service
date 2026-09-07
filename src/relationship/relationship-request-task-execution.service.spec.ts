@@ -4,7 +4,7 @@ import { RelationshipRequestTaskExecutionService } from './relationship-request-
 function createHarness(peerDomain: string) {
   const tx = {
     query: {
-      user: {
+      account: {
         findFirst: vi.fn().mockResolvedValue({ domain: peerDomain }),
       },
     },

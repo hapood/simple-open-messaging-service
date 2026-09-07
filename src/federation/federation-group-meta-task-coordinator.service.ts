@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { inArray, sql } from 'drizzle-orm';
 import { isValidGroupAccount, isValidSomfpDomain } from '../common/account.js';
@@ -60,13 +61,14 @@ export class FederationGroupMetaTaskCoordinator {
       feedEndId: string | null;
     }>(sql`
         SELECT source.id AS "groupId", feed."feedEndId"
-        FROM "Group" source
-        LEFT JOIN "GroupMetaFeed" feed ON feed."groupId" = source.id
+        FROM ${groupStateSql} source
+        JOIN "MessageThread" thread ON thread.id = source.id
+        LEFT JOIN "GroupMetaFeed" feed ON feed."threadId" = source.id
         WHERE source.id = ${input.groupId}
           AND source.account = ${input.groupAccount}
           AND source.domain = ${input.peerDomain}
           AND source."namespaceId" = ${input.namespaceId}
-        FOR UPDATE OF source
+        FOR UPDATE OF thread
       `);
     const state = stateResult.rows[0];
     if (!state) throw new Error('group-meta mirror identity changed');

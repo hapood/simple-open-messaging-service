@@ -1,3 +1,9 @@
+import { groupStateSql } from '../group/group-state.js';
+import {
+  groupState as groupStateTable,
+  readGroupState,
+  groupStateFields,
+} from '../group/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
@@ -22,8 +28,8 @@ function currentThreadResourceAuthorizationSql(
       FROM "ThreadAudience" audience
       JOIN "MessageThread" authorized_thread
         ON authorized_thread.id = audience."threadId"
-      LEFT JOIN "Group" authorized_group
-        ON authorized_group.id = authorized_thread."groupId"
+      LEFT JOIN ${groupStateSql} authorized_group
+        ON authorized_group.id = authorized_thread.id
       WHERE audience."threadId" = ${threadId}
         AND audience."targetDomain" = ${signerDomain}
         AND audience."targetNamespaceId" = ${signerNamespaceId}
@@ -34,10 +40,10 @@ function currentThreadResourceAuthorizationSql(
     OR EXISTS (
       SELECT 1
       FROM "MessageThread" mirror_thread
-      JOIN "Group" mirror_group ON mirror_group.id = mirror_thread."groupId"
+      JOIN ${groupStateSql} mirror_group ON mirror_group.id = mirror_thread.id
       JOIN "AccountThreadState" local_state
         ON local_state."threadId" = mirror_thread.id
-      JOIN "User" local_identity
+      JOIN "Account" local_identity
         ON local_identity.id = local_state."accountId"
        AND local_identity.domain = 'local'
        AND local_identity."namespaceId" = 0
@@ -101,7 +107,7 @@ export class FederationPeerResourceService {
         threadId: tables.message.threadId,
         authorDomain: sql<string>`${tables.message.creatorDomain}`,
         threadType: tables.messageThread.type,
-        groupId: tables.messageThread.groupId,
+        groupId: tables.messageThread.id,
       })
       .from(tables.message)
       .innerJoin(
@@ -276,13 +282,13 @@ export class FederationPeerResourceService {
   ): Promise<boolean> {
     if (threadType === MessageThreadType.GROUP) {
       if (!toAccount.startsWith('!') || groupId === null) return false;
-      const group = await this.database.db.query.group.findFirst({
-        where: and(
-          eq(tables.group.id, groupId),
-          eq(tables.group.account, normalizeAccount(toAccount)),
+      const group = await readGroupState(
+        this.database.db,
+        and(
+          eq(groupStateTable.id, groupId),
+          eq(groupStateFields.account, normalizeAccount(toAccount)),
         ),
-        columns: { id: true },
-      });
+      );
       return group !== undefined;
     }
     if (toAccount.startsWith('!')) return false;

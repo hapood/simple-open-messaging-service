@@ -7,3 +7,10 @@ export function dataDirectory(...segments: string[]): string {
     : join(process.cwd(), 'data');
   return join(root, ...segments);
 }
+
+/** Persistent credentials and identity files; defaults to the application data directory. */
+export function configDirectory(...segments: string[]): string {
+  return process.env.SOMS_CONFIG_DIR
+    ? join(resolve(process.env.SOMS_CONFIG_DIR), ...segments)
+    : dataDirectory(...segments);
+}

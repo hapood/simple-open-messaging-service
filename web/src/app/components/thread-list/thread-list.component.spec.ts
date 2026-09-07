@@ -117,6 +117,19 @@ describe('ThreadListComponent', () => {
     });
   }
 
+  it('leaves the preview blank until a message body is available', async () => {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const thread = p2p(1, 2);
+    thread.lastMessageSeq = 5;
+    expect(comp.previewText(thread)).toBe('');
+    thread.lastMessageSeq = 0;
+    expect(comp.previewText(thread)).toBe('');
+    thread.lastMessagePreview = 'previous preview';
+    thread.lastMessageSeq = 6;
+    expect(comp.previewText(thread)).toBe('previous preview');
+  });
+
   it('ngOnInit triggers load() on first mount (LOADING + empty list) — the initial-boot trigger', () => {
     comp.ngOnInit();
     expect(loadSpy).toHaveBeenCalledTimes(1);

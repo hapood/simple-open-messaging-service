@@ -21,15 +21,13 @@ describe('message lookup with retained conversation history', () => {
     visibility = new MessageVisibilityService(database);
     forwards = new ForwardBundleService(database, {} as never, visibility);
     const [viewer] = await database.db
-      .insert(tables.user)
+      .insert(tables.account)
       .values({
         account: 'visibility-viewer',
-        name: 'Viewer',
         updatedAt: new Date(),
       })
       .returning();
     viewerId = viewer.id;
-    await database.db.insert(tables.account).values({ id: viewerId });
     const threads = await database.db
       .insert(tables.messageThread)
       .values([

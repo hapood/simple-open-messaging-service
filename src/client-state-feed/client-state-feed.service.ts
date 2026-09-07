@@ -1,3 +1,10 @@
+import { groupStateSql } from '../group/group-state.js';
+
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
+import { accountProfileFields } from '../user/account-profile.js';
 import { HttpStatus, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
@@ -5,7 +12,7 @@ import {
   account,
   clientStateFeed,
   groupRequestProjection,
-  user,
+  account as user,
 } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -242,7 +249,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
     write: {
       managerUserId: number;
       threadId: number;
-      memberUserId: number;
+      memberAccount: string;
+      memberDomain: string;
+      memberNamespaceId: number;
+      memberProfileRev: number;
       direction: 'APPLICATION' | 'INVITATION';
       requestId: bigint;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
@@ -256,6 +266,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         status: groupRequestProjection.status,
         note: groupRequestProjection.note,
         requestId: groupRequestProjection.requestId,
+        memberProfileRev: groupRequestProjection.memberProfileRev,
         requestedAt: groupRequestProjection.requestedAt,
         expiresAt: groupRequestProjection.expiresAt,
       })
@@ -264,7 +275,9 @@ export class ClientStateFeedService implements OnModuleDestroy {
         and(
           eq(groupRequestProjection.managerUserId, write.managerUserId),
           eq(groupRequestProjection.threadId, write.threadId),
-          eq(groupRequestProjection.memberUserId, write.memberUserId),
+          eq(groupRequestProjection.memberAccount, write.memberAccount),
+          eq(groupRequestProjection.memberDomain, write.memberDomain),
+          eq(groupRequestProjection.memberNamespaceId, write.memberNamespaceId),
           eq(groupRequestProjection.direction, write.direction),
         ),
       )
@@ -275,6 +288,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const note = write.note || current?.note || '';
     if (
       current?.status === write.status &&
+      current.memberProfileRev === write.memberProfileRev &&
       current.note === note &&
       current.requestId === write.requestId &&
       current.requestedAt.getTime() === requestedAt.getTime() &&
@@ -297,12 +311,15 @@ export class ClientStateFeedService implements OnModuleDestroy {
         target: [
           groupRequestProjection.managerUserId,
           groupRequestProjection.threadId,
-          groupRequestProjection.memberUserId,
+          groupRequestProjection.memberAccount,
+          groupRequestProjection.memberDomain,
+          groupRequestProjection.memberNamespaceId,
           groupRequestProjection.direction,
         ],
         set: {
           feedId: owner.feedId,
           requestId: write.requestId,
+          memberProfileRev: write.memberProfileRev,
           status: write.status,
           note,
           requestedAt,
@@ -378,14 +395,16 @@ export class ClientStateFeedService implements OnModuleDestroy {
     subjectUserId: number,
     consumerUserIds: readonly number[],
   ): Promise<PendingClientStateFeedUpdate[]> {
-    const subject = await tx.query.user.findFirst({
+    const subject = await tx.query.account.findFirst({
       where: eq(user.id, subjectUserId),
+      extras: {
+        name: accountProfileFields().name.as('name'),
+        avatar: accountProfileFields().avatar.as('avatar'),
+        bio: accountProfileFields().bio.as('bio'),
+      },
       columns: {
         account: true,
         domain: true,
-        name: true,
-        bio: true,
-        avatar: true,
         defaultProfileRev: true,
         namespaceId: true,
       },
@@ -417,19 +436,17 @@ export class ClientStateFeedService implements OnModuleDestroy {
   async cleanupProfileStateIfUnreferencedInTx(
     tx: DatabaseTransaction,
     ownerUserId: number,
-    subjectUserId: number,
+    subjectUserId: AccountTarget,
   ): Promise<void> {
-    const subject = await tx.query.user.findFirst({
-      where: eq(user.id, subjectUserId),
-      columns: { account: true, domain: true },
-    });
-    if (!subject) return;
+    const subject = await accountAddressInTx(tx, subjectUserId);
     const domain = subject.domain;
     const references = await tx.execute<{ referenced: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1 FROM "GroupRequestProjection" projection
         WHERE projection."managerUserId" = ${ownerUserId}
-          AND projection."memberUserId" = ${subjectUserId}
+          AND projection."memberAccount" = ${subject.account}
+          AND projection."memberDomain" = ${subject.domain}
+          AND projection."memberNamespaceId" = ${subject.namespaceId}
         UNION ALL
         SELECT 1 FROM "ClientStateFeed" intent
         WHERE intent."userId" = ${ownerUserId}
@@ -440,7 +457,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         UNION ALL
         SELECT 1
         FROM "MessageThread" thread
-        JOIN "User" owner_identity ON owner_identity.id = ${ownerUserId}
+        JOIN "Account" owner_identity ON owner_identity.id = ${ownerUserId}
         JOIN "RelationshipPair" owner_pair
           ON owner_pair."threadId" = thread.id
          AND owner_pair.kind = 'GROUP_MEMBER'
@@ -455,8 +472,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
           AND (
             SELECT member_fact.operation
             FROM "GroupMetaMemberFeed" member_fact
-            WHERE member_fact."groupId" = thread."groupId"
-              AND member_fact."memberUserId" = ${subjectUserId}
+            WHERE member_fact."threadId" = thread.id
+              AND member_fact."memberAccount" = ${subject.account}
+              AND member_fact."memberDomain" = ${subject.domain}
+              AND member_fact."memberNamespaceId" = ${subject.namespaceId}
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) = 'UPSERT'
@@ -494,11 +513,11 @@ export class ClientStateFeedService implements OnModuleDestroy {
       SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
              group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
-             group_state.avatar, group_state."defaultProfileRev" AS "profileRev",
+             group_state.avatar, group_state."profileRev" AS "profileRev",
              COALESCE(meta_feed."feedEndId", 0)::text AS "groupMetaFeedEndId"
       FROM "MessageThread" thread
-      JOIN "Group" group_state ON group_state.id = thread."groupId"
-      LEFT JOIN "GroupMetaFeed" meta_feed ON meta_feed."groupId" = group_state.id
+      JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+      LEFT JOIN "GroupMetaFeed" meta_feed ON meta_feed."threadId" = group_state.id
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
       LIMIT 1
     `);
@@ -509,7 +528,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     }>(sql`
       SELECT DISTINCT participant."accountId" AS "userId"
       FROM "AccountThreadState" participant
-      JOIN "User" identity ON identity.id = participant."accountId"
+      JOIN "Account" identity ON identity.id = participant."accountId"
       JOIN "RelationshipPair" pair
         ON pair."threadId" = participant."threadId"
        AND pair.kind = 'GROUP_MEMBER'

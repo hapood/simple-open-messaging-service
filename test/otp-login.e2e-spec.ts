@@ -10,7 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
   sessionToken,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { OtpLoginService } from '../src/auth/otp-login.service';
 import { BusinessCode } from '../src/common/business-code';
@@ -58,7 +58,7 @@ describe('OTP login e2e', () => {
     // CASCADE on User also clears SessionToken + LoginCode (both FK→User). All three are listed so a stray
     // row can't leak between tests even if an on-delete weren't CASCADE.
     await database.pool.query(
-      'TRUNCATE TABLE "LoginCode", "SessionToken", "User" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -73,11 +73,9 @@ describe('OTP login e2e', () => {
       .values({
         account,
         domain: 'local',
-        name: account,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
-    await database.db.insert(accountTable).values({ id: u.id });
     return u.id;
   }
 

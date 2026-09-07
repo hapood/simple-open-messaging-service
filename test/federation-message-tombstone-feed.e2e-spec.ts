@@ -13,7 +13,7 @@ import {
   messageThread,
   peerStateFeed,
   threadAudience,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { FederationMessageTombstoneFeedService } from '../src/federation/federation-message-tombstone-feed.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
@@ -35,14 +35,14 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageTombstoneFeedService(database);
   });
 
   afterAll(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
@@ -77,24 +77,15 @@ describe('FederationMessageTombstoneFeedService query', () => {
       activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
-    const [alice, bob] = await database.db
+    const [alice] = await database.db
       .insert(user)
-      .values([
-        {
-          account: 'alice',
-          name: 'Alice',
-          domain: 'local',
-          updatedAt: now,
-        },
-        {
-          account: 'bob',
-          name: 'Bob',
-          domain: peerDomain,
-          namespaceId,
-          updatedAt: now,
-        },
-      ])
+      .values({
+        account: 'alice',
+        domain: 'local',
+        updatedAt: now,
+      })
       .returning();
+    const bob = { account: 'bob', domain: peerDomain, namespaceId };
     const [thread] = await database.db
       .insert(messageThread)
       .values({
@@ -104,7 +95,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
         updatedAt: now,
       })
       .returning();
-    await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
+    await seedAcceptedRelationship(database.db, alice.id, bob, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       targetNamespaceId: namespaceId,
@@ -189,7 +180,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     await database.db
       .update(message)
-      .set({ creatorDomain: peerDomain })
+      .set({ creatorDomain: peerDomain, creatorNamespaceId: namespaceId })
       .where(and(eq(message.threadId, thread.id), eq(message.seq, 1)));
     const filtered = await service.query(
       peerDomain,

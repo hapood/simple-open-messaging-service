@@ -6,7 +6,7 @@ import {
   clientStateFeed,
   messageThread,
   accountThreadState,
-  user,
+  account as user,
 } from '../database/schema.js';
 import { planFeedRecipientIds } from './message-delivery-plan.js';
 

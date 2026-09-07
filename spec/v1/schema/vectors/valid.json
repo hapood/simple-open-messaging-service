@@ -1,9 +1,37 @@
 {
   "vectors": [
     {
+      "name": "forward quotes retain absent or bundle-local targets",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "values": [
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": 0
+        },
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": 1
+        }
+      ]
+    },
+    {
       "name": "quote coordinates select sender or receiver timeline",
       "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
-      "values": [{ "seq": 8 }, { "originSeq": 42 }, { "seq": 9007199254740990 }]
+      "values": [{ "seq": 0 }, { "seq": 8 }, { "originSeq": 42 }, { "seq": 9007199254740990 }]
     },
     {
       "name": "well-known supports v1 and a future major",

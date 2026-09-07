@@ -122,13 +122,10 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
     quota = mod.get(UserQuotaService);
     database = mod.get(DatabaseService);
     const local = await database.pool.query<{ id: number }>(
-      'INSERT INTO "User" (account, name, domain, "updatedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
-      ['quota-local', 'Quota Local', 'local'],
+      'INSERT INTO "Account" (account, domain, "updatedAt") VALUES ($1, $2, NOW()) RETURNING id',
+      ['quota-local', 'local'],
     );
     localUserId = local.rows[0].id;
-    await database.pool.query('INSERT INTO "Account" (id) VALUES ($1)', [
-      localUserId,
-    ]);
   });
 
   beforeEach(async () => {
@@ -138,7 +135,7 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
   });
 
   afterAll(async () => {
-    await database.pool.query('DELETE FROM "User" WHERE id = $1', [
+    await database.pool.query('DELETE FROM "Account" WHERE id = $1', [
       localUserId,
     ]);
     await mod.close();

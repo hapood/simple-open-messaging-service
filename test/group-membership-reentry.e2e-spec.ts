@@ -1,3 +1,4 @@
+import { accountAddressInTx } from '../src/user/account-address.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -38,14 +39,16 @@ describe('group membership re-entry and ownership transfer', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => app.close());
 
   async function befriend(
-    first: { id: number; token: string },
-    second: { id: number; token: string },
+    first: { id: number; token: string; account: string },
+    second: { id: number; token: string; account: string },
   ): Promise<void> {
     const sent = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
@@ -90,24 +93,19 @@ describe('group membership re-entry and ownership transfer', () => {
   }
 
   async function currentMember(threadId: number, userId: number) {
-    return database.db.transaction(async (tx) => {
-      const thread = await tx.query.messageThread.findFirst({
-        where: eq(messageThread.id, threadId),
-        columns: { groupId: true },
-      });
-      return readCurrentGroupMemberInTx(tx, thread!.groupId!, userId);
-    });
+    return database.db.transaction((tx) =>
+      readCurrentGroupMemberInTx(tx, threadId, userId),
+    );
   }
 
   async function latestMemberFact(threadId: number, userId: number) {
-    const thread = await database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { groupId: true },
-    });
+    const member = await accountAddressInTx(database.db, userId);
     return database.db.query.groupMetaMemberFeed.findFirst({
       where: and(
-        eq(groupMetaMemberFeed.groupId, thread!.groupId!),
-        eq(groupMetaMemberFeed.memberUserId, userId),
+        eq(groupMetaMemberFeed.threadId, threadId),
+        eq(groupMetaMemberFeed.memberAccount, member.account),
+        eq(groupMetaMemberFeed.memberDomain, member.domain),
+        eq(groupMetaMemberFeed.memberNamespaceId, member.namespaceId),
       ),
       orderBy: desc(groupMetaMemberFeed.feedId),
     });

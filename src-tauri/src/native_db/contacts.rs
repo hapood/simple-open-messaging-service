@@ -1,82 +1,87 @@
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 
-use super::{chrono_millis, json_text, open, parse_json};
+use super::{json_text, open, parse_json};
+
+pub(super) fn register_namespace(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    namespace: i64,
+    source: &str,
+) -> Result<(), String> {
+    let source = if namespace == 0 { "local" } else { source };
+    conn.execute("UPDATE namespaces SET status='ARCHIVED' WHERE user_id=?1 AND domain=?2 AND namespace_id<?3", params![user_id,source,namespace]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO namespaces(user_id,namespace_id,domain,status) VALUES(?1,?2,?3,CASE WHEN EXISTS(SELECT 1 FROM namespaces WHERE user_id=?1 AND domain=?3 AND namespace_id>?2) THEN 'ARCHIVED' ELSE 'ACTIVE' END)", params![user_id,namespace,source]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(super) fn write_profile(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    profile: &Value,
+) -> Result<bool, String> {
+    let account = profile
+        .get("account")
+        .and_then(Value::as_str)
+        .ok_or("profile has no account")?;
+    let domain = profile
+        .get("domain")
+        .and_then(Value::as_str)
+        .ok_or("profile has no domain")?;
+    let namespace = profile
+        .get("namespaceId")
+        .and_then(Value::as_i64)
+        .ok_or("profile has no namespace")?;
+    let (domain, namespace) = if domain == "local" || namespace == 0 {
+        ("local", 0)
+    } else {
+        (domain, namespace)
+    };
+    let rev = profile
+        .get("profileRev")
+        .and_then(Value::as_i64)
+        .ok_or("profile has no revision")?;
+    if rev < 1 {
+        return Ok(false);
+    }
+    let snapshot = serde_json::json!({ "account": account, "domain": domain, "namespaceId": namespace,
+        "profileRev": rev, "name": profile.get("name").and_then(Value::as_str).unwrap_or(account),
+        "avatar": profile.get("avatar").and_then(Value::as_str).unwrap_or(""),
+        "bio": profile.get("bio").and_then(Value::as_str).unwrap_or("") });
+    let existing: Option<String> = conn.query_row(
+        "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
+        params![user_id, account, domain, namespace, rev], |row| row.get(0))
+        .optional().map_err(|e| e.to_string())?;
+    if let Some(existing) = existing {
+        let previous = parse_json(existing)?;
+        if previous.get("name") != snapshot.get("name")
+            || previous.get("bio") != snapshot.get("bio")
+        {
+            return Err("conflicting cached profile revision".into());
+        }
+        return Ok(false);
+    }
+    conn.execute("INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![user_id,account,domain,namespace,rev,json_text(&snapshot)?]).map_err(|e| e.to_string())?;
+    Ok(true)
+}
 
 #[tauri::command]
 pub(crate) async fn native_db_get_profile(
     app: tauri::AppHandle,
     user_id: i64,
-    identity: String,
-) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
-        let value = if let Some(rest) = identity.strip_prefix("a:") {
-            let address: Value = serde_json::from_str(rest)
-                .map_err(|e| format!("parse profile address: {e}"))?;
-            let domain = address.get(0).and_then(Value::as_str).unwrap_or("");
-            let account = address.get(1).and_then(Value::as_str).unwrap_or("");
-            conn.query_row(
-                "SELECT identity.payload_json FROM users identity
-                 JOIN namespaces namespace ON namespace.user_id=identity.user_id
-                   AND namespace.namespace_id=identity.namespace_id
-                 WHERE identity.user_id=?1 AND identity.account=?2 AND identity.domain=?3
-                   AND namespace.domain=?3 AND namespace.status='ACTIVE' LIMIT 1",
-                params![user_id, account, domain], |row| row.get::<_, String>(0),
-            ).optional()
-        } else if let Some(raw) = identity.strip_prefix('u') {
-            conn.query_row(
-                "SELECT payload_json FROM users WHERE user_id=?1 AND surrogate_id=?2 LIMIT 1",
-                params![user_id, raw.parse::<i64>().unwrap_or(0)], |row| row.get::<_, String>(0),
-            ).optional()
-        } else if let Some(raw) = identity.strip_prefix('g') {
-            conn.query_row(
-                "SELECT payload_json FROM groups WHERE user_id=?1 AND surrogate_id=?2 LIMIT 1",
-                params![user_id, raw.parse::<i64>().unwrap_or(0)], |row| row.get::<_, String>(0),
-            ).optional()
-        } else {
-            Ok(None)
-        }.map_err(|e| format!("get profile: {e}"))?;
-        let Some(payload) = value else { return Ok(None); };
-        let record = parse_json(payload)?;
-        Ok(Some(serde_json::json!({
-            "identity": identity,
-            "id": record.get("id").cloned().unwrap_or(Value::from(0)),
-            "kind": if identity.starts_with('g') { "group" } else { "user" },
-            "name": record.get("name").cloned().unwrap_or(Value::String(String::new())),
-            "account": record.get("account").cloned().unwrap_or(Value::String(String::new())),
-            "avatar": record.get("avatar").cloned().unwrap_or(Value::String(String::new())),
-            "bio": record.get("bio").or_else(|| record.get("description")).cloned().unwrap_or(Value::String(String::new())),
-            "domain": record.get("domain").cloned().unwrap_or(Value::String(String::new())),
-            "profileRev": record.get("profileRev").cloned().unwrap_or(Value::from(0)),
-        })))
-    })
-    .await
-    .map_err(|e| format!("join profile read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_get_user(
-    app: tauri::AppHandle,
-    user_id: i64,
     account: String,
     domain: String,
     namespace_id: i64,
+    profile_rev: i64,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
-            .query_row(
-                "SELECT payload_json FROM users
-             WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4",
-                params![user_id, account, domain, namespace_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| format!("get user: {e}"))?;
+        let value = open(&app)?.query_row(
+            "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
+            params![user_id,account,domain,namespace_id,profile_rev], |row| row.get::<_,String>(0))
+            .optional().map_err(|e| e.to_string())?;
         value.map(parse_json).transpose()
-    })
-    .await
-    .map_err(|e| format!("join user read: {e}"))?
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -98,15 +103,16 @@ pub(crate) async fn native_db_get_group_member(
                'role',member.role,'left',json('false'),
                'profileRev',member.profile_rev,
                'profileMessageSeq',member.profile_message_seq,
-               'resolvedProfileRev',member.resolved_profile_rev,
-               'profileName',member.profile_name,
-               'profileAvatar',member.profile_avatar,
-               'profileBio',member.profile_bio,
-               'user',json(identity.payload_json))
-             FROM members member JOIN users identity
+               'resolvedProfileRev',identity.profile_rev,
+               'profileName',json_extract(identity.payload_json,'$.name'),
+               'profileAvatar',json_extract(identity.payload_json,'$.avatar'),
+               'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
+               'user',json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
+                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatar','','bio',''))))
+             FROM members member LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
               AND identity.domain=member.member_domain
-              AND identity.namespace_id=member.namespace_id
+              AND identity.namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
                AND member.member_domain=?4 AND member.namespace_id=?5
                AND member.left_state=0",
@@ -147,17 +153,18 @@ pub(crate) async fn native_db_query_group_members(
                    'left', json('false'),
                    'profileRev',member.profile_rev,
                    'profileMessageSeq',member.profile_message_seq,
-                   'resolvedProfileRev',member.resolved_profile_rev,
-                   'profileName',member.profile_name,
-                   'profileAvatar',member.profile_avatar,
-                   'profileBio',member.profile_bio,
-                   'user', json(identity.payload_json)
+                   'resolvedProfileRev',identity.profile_rev,
+                   'profileName',json_extract(identity.payload_json,'$.name'),
+                   'profileAvatar',json_extract(identity.payload_json,'$.avatar'),
+                   'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
+                   'user', json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
+                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatar','','bio','')))
                  )
-                 FROM members member JOIN users identity
+                 FROM members member LEFT JOIN profiles identity
                    ON identity.user_id=member.user_id
                   AND identity.account=member.member_account
                   AND identity.domain=member.member_domain
-                  AND identity.namespace_id=member.namespace_id
+                  AND identity.namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                    AND (member.namespace_id,member.member_domain,member.member_account)>(?3,?4,?5)
                    AND (?6='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?6))>0
@@ -233,90 +240,36 @@ pub(crate) async fn native_db_store_group_member_profile(
     bio: String,
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let changed = open(&app)?
-            .execute(
-                "UPDATE members SET resolved_profile_rev=?6,profile_name=?7,profile_avatar=?8,profile_bio=?9
-                 WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                   AND member_domain=?4 AND namespace_id=?5
-                   AND left_state=0 AND profile_rev=?6",
-                params![
-                    user_id,
-                    thread_id,
-                    account,
-                    domain,
-                    namespace_id,
-                    profile_rev,
-                    name,
-                    avatar,
-                    bio,
-                ],
-            )
-            .map_err(|e| format!("store group member profile: {e}"))?;
-        Ok(changed > 0)
-    })
-    .await
-    .map_err(|e| format!("join group member profile write: {e}"))?
+        let mut conn = open(&app)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let selected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2 AND member_account=?3 AND member_domain=?4 AND namespace_id=?5 AND profile_rev=?6 AND left_state=0)",
+            params![user_id,thread_id,account,domain,namespace_id,profile_rev], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if !selected { return Ok(false); }
+        write_profile(&tx,user_id,&serde_json::json!({"account":account,"domain":domain,"namespaceId":namespace_id,"profileRev":profile_rev,"name":name,"avatar":avatar,"bio":bio}))?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(true)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub(crate) async fn native_db_put_profile(
     app: tauri::AppHandle,
     user_id: i64,
-    identity: String,
-    profile_rev: i64,
     profile: Value,
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = identity;
-        let conn = open(&app)?;
-        let account = profile.get("account").and_then(Value::as_str).unwrap_or("");
-        let domain = profile.get("domain").and_then(Value::as_str).unwrap_or("");
-        let namespace_id = profile.get("namespaceId").and_then(Value::as_i64)
-            .ok_or_else(|| "profile has no namespaceId".to_string())?;
-        let surrogate_id = profile.get("id").and_then(Value::as_i64).filter(|id| *id > 0);
-        let now = chrono_millis();
-        let changed = if profile.get("kind").and_then(Value::as_str) == Some("group") {
-            let record = serde_json::json!({
-                "id": surrogate_id, "account": account, "domain": domain,
-                "namespaceId": namespace_id,
-                "name": profile.get("name").cloned().unwrap_or(Value::String(String::new())),
-                "avatar": profile.get("avatar").cloned().unwrap_or(Value::String(String::new())),
-                "description": profile.get("bio").cloned().unwrap_or(Value::String(String::new())),
-                "profileRev": profile_rev, "createdAt": now, "updatedAt": now,
-                "dissolvedAt": Value::Null,
-            });
-            conn.execute(
-                "INSERT INTO groups(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
-                   surrogate_id=COALESCE(excluded.surrogate_id,groups.surrogate_id),
-                   payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
-                 WHERE excluded.profile_rev >= groups.profile_rev",
-                params![user_id,account,domain,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
-            )
-        } else {
-            let record = serde_json::json!({
-                "id": surrogate_id, "account": account, "domain": domain,
-                "namespaceId": namespace_id,
-                "name": profile.get("name").cloned().unwrap_or(Value::String(String::new())),
-                "avatar": profile.get("avatar").cloned().unwrap_or(Value::String(String::new())),
-                "bio": profile.get("bio").cloned().unwrap_or(Value::String(String::new())),
-                "availability": "AVAILABLE", "profileRev": profile_rev,
-                "createdAt": now, "updatedAt": now,
-            });
-            conn.execute(
-                "INSERT INTO users(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
-                   surrogate_id=COALESCE(excluded.surrogate_id,users.surrogate_id),
-                   payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
-                 WHERE excluded.profile_rev >= users.profile_rev",
-                params![user_id,account,domain,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
-            )
+        let mut conn = open(&app)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let namespace = profile.get("namespaceId").and_then(Value::as_i64).ok_or("profile has no namespace")?;
+        let source = profile.get("sourceServer").and_then(Value::as_str).ok_or("profile has no source server")?;
+        let namespace = if profile.get("domain").and_then(Value::as_str) == Some("local") { 0 } else { namespace };
+        register_namespace(&tx, user_id, namespace, source)?;
+        if profile.get("kind").and_then(Value::as_str) == Some("user") && profile.get("domain").and_then(Value::as_str) == Some("local") && profile.get("id").and_then(Value::as_i64) == Some(user_id) {
+            tx.execute("INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'selfIdentity',?2) ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+                params![user_id,json_text(&serde_json::json!({"account": profile.get("account"), "domain": "local"}))?]).map_err(|e| e.to_string())?;
         }
-            .map_err(|e| format!("put profile: {e}"))?;
-        Ok(changed > 0)
-    })
-    .await
-    .map_err(|e| format!("join profile write: {e}"))?
+        let changed = write_profile(&tx, user_id, &profile)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(changed)
+    }).await.map_err(|e| e.to_string())?
 }

@@ -1,3 +1,4 @@
+import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
 import { alias } from 'drizzle-orm/pg-core';
 import { and, count, desc, eq, inArray, type SQL, sql } from 'drizzle-orm';
@@ -11,7 +12,7 @@ import {
   messageReport,
   messageThread,
   accountThreadState,
-  user,
+  account as user,
 } from '../database/schema.js';
 import type {
   AdminListMessageReportsDto,
@@ -63,7 +64,7 @@ export class MessageReportService {
         .where(
           and(eq(message.threadId, dto.threadId), inArray(message.seq, seqs)),
         );
-      const reporter = await tx.query.user.findFirst({
+      const reporter = await tx.query.account.findFirst({
         where: eq(user.id, userId),
         columns: { account: true, domain: true },
       });
@@ -141,11 +142,11 @@ export class MessageReportService {
           reporter: {
             id: reporter.id,
             account: reporter.account,
-            name: reporter.name,
+            name: accountProfileFields(reporter).name,
           },
           creator: {
             account: message.creatorAccount,
-            name: sql<string>`COALESCE(${creator.name}, ${message.creatorAccount})`,
+            name: sql<string>`COALESCE(${accountProfileFields(creator).name}, ${message.creatorAccount})`,
             domain: message.creatorDomain,
           },
           message: {

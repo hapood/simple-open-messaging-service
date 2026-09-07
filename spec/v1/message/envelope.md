@@ -22,7 +22,7 @@ interface BlobDescriptor {
 }
 
 type QuoteTarget =
-  | { seq: ThreadSequence }
+  | { seq: 0 | ThreadSequence }
   | { originSeq: ThreadSequence };
 
 type JsonObjectString = string;
@@ -187,14 +187,19 @@ The corresponding content document defines type-specific conditional fields.
 ## 7. Reference coordinates
 
 Only a `PURE_TEXT` reply may carry `quoteTarget`. A target MUST contain
-exactly one positive safe integer field:
+exactly one coordinate field:
 
-- `seq`: the target's sequence in the current sender's thread. The receiver
+- `seq`: zero for an explicitly absent target, otherwise the target's positive sequence in the current sender's thread. The receiver
   resolves it in that sender's coordinate space, not by its own local sequence.
 - `originSeq`: the target's sequence in the current receiver's thread. The
   receiver resolves it by its own local sequence.
 
-A mirror submitting to its group authority MUST use `seq` for locally authored
+A publisher MAY use `{ seq: 0 }` when the referenced target is absent,
+preserving the fact that this message is a reply without a navigable target. It MUST NOT trigger target lookup, history recovery,
+or navigation. Receivers and intermediate publishers MUST preserve this sentinel.
+`{ originSeq: 0 }` is invalid; zero has only the canonical `seq` spelling.
+
+For a positive target coordinate, a mirror submitting to its group authority MUST use `seq` for locally authored
 targets and `originSeq` for targets received from that authority, including other
 group members' messages. A P2P sender follows the same own-author/peer-author rule.
 An authoritative group server republishing to a mirror MUST use its own `seq`,
@@ -207,8 +212,12 @@ can use the same sequence in one group. Local namespace identifiers MUST NOT
 appear on the wire. No author, body, or content-type preview is transmitted.
 
 `quoteTarget` MUST NOT be null. Omission means an ordinary message, not an
-unresolved reply. The coordinate MUST be retained even when the target is
-unavailable or withdrawn; existence is a read-time concern, not a wire state.
+unresolved reply. A publisher MAY retain a known positive coordinate when the target body is
+unavailable or withdrawn, allowing later resolution. It MAY instead publish
+`{ seq: 0 }` for an absent target. Neither choice is mandatory. The selected
+wire reference remains subject to message immutability at its origin coordinate;
+an already published reply MUST NOT change merely because target availability
+changes. Explicit zero is distinct from a positive unresolved coordinate.
 Consumers MAY distinguish unpulled history from confirmed absence in presentation.
 
 ## 8. Processing receipts

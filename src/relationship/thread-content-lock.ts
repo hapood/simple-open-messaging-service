@@ -37,6 +37,41 @@ export async function acquireThreadContentLockInTx(
     : undefined;
 }
 
+/** The caller holds the P2P business scopes and pair row for the whole transaction.
+ * Lock only the child thread; do not reacquire its already-held parents. */
+export async function requireP2PThreadContentLockUnderPairInTx(
+  tx: DatabaseTransaction,
+  pairId: bigint,
+  threadId: number,
+): Promise<ThreadContentLock> {
+  const locked = await tx.execute(sql`
+    SELECT thread.id FROM "MessageThread" thread
+    JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
+    WHERE thread.id = ${threadId} AND thread.type = 'P2P'
+      AND pair.id = ${pairId} AND pair.kind = 'P2P'
+    FOR UPDATE OF thread
+  `);
+  if (locked.rows.length !== 1)
+    throw new Error('P2P content thread does not belong to the locked pair');
+  return { [acquired]: true, tx, threadId };
+}
+
+/** Acquire the child row after the caller has locked the group business scope. */
+export async function requireGroupThreadContentLockUnderGroupInTx(
+  tx: DatabaseTransaction,
+  groupId: number,
+  threadId: number,
+): Promise<ThreadContentLock> {
+  const locked = await tx.execute(sql`
+    SELECT id FROM "MessageThread"
+    WHERE id = ${threadId} AND id = ${groupId} AND type = 'GROUP'
+    FOR UPDATE
+  `);
+  if (locked.rows.length !== 1)
+    throw new Error('group relationship thread does not exist');
+  return { [acquired]: true, tx, threadId };
+}
+
 /** Acquire parent locks before the thread, including parents referenced by implicit FK checks.
  * Repeated calls in one transaction are safe; callers must enter before taking content-row locks. */
 export async function lockThreadContentInTx(
@@ -49,9 +84,8 @@ export async function lockThreadContentInTx(
     account: string | null;
     domain: string | null;
   }>(sql`
-    SELECT thread.type, thread."groupId", parent.account, parent.domain
+    SELECT thread.type, thread.id AS "groupId", thread."groupAccount" AS account, thread."groupDomain" AS domain
     FROM "MessageThread" thread
-    LEFT JOIN "Group" parent ON parent.id = thread."groupId"
     WHERE thread.id = ${threadId}
   `);
   const thread = located.rows[0];
@@ -66,9 +100,6 @@ export async function lockThreadContentInTx(
     await lockBusinessAccountsInTx(tx, [
       { account: thread.account, domain: thread.domain },
     ]);
-    await tx.execute(
-      sql`SELECT id FROM "Group" WHERE id = ${thread.groupId} FOR UPDATE`,
-    );
   } else {
     const pairs = await tx.execute<{
       id: string;

@@ -22,7 +22,8 @@ Ordinary text omits the outer message `quoteTarget`. A quoted reply MUST satisfy
 
 - The outer message contains `quoteTarget`.
 - `quoteTarget` identifies a target in the same thread using exactly
-  one of `seq` (sender coordinate) or `originSeq` (receiver coordinate).
+  one of `seq` (sender coordinate, or `0` for an explicitly absent target) or
+  positive `originSeq` (receiver coordinate).
 - The outer message `assets` is empty.
 
 A quote carries no author, body, or content-type preview. Its sole content
@@ -115,6 +116,20 @@ A consumer MUST reject at least the following cases:
 - `text` is empty, is not a string, or contains an unpaired surrogate.
 - Content contains an unknown field, including an embedded `quote`.
 - `quoteTarget` is null, has neither or both coordinate fields, an unknown
-  field, or a coordinate that is not a `PositiveSafeInteger`.
+  field, a negative or fractional coordinate, or `originSeq: 0`.
+  `seq: 0` is valid and preserves a reply without a navigable target.
 - `quoteTarget` identifies another thread.
 - The outer `assets` of a `PURE_TEXT` message is non-empty.
+
+## 7. Replies with an absent target
+
+A reply whose target is absent MAY carry `"quoteTarget": { "seq": 0 }`
+and ordinary `{ "text": "..." }` content. It remains distinguishable from
+an ordinary message, which omits `quoteTarget`. A publisher MAY also retain a positive reference to a
+message that has not arrived; receiving that reply does not require receiving
+its target first. Zero is permitted, not required. See [Reference coordinates](./envelope.md#7-reference-coordinates).
+
+Inside a history-forward bundle, references are rebuilt in the enclosing
+messages array. A selected target uses its bundle-local message ID; an
+unselected or nonexistent target SHOULD use zero. A positive reference with
+no matching bundle entry is also accepted as absent. See [Forward quotes](./forward.md#5-authors-quotes-and-assets).

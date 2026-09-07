@@ -43,7 +43,9 @@ describe('message report HTTP workflow', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => app.close());

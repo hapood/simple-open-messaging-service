@@ -7,7 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { pushToken, user } from '../src/database/schema';
+import { pushToken, account as user } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUser, seedSession } from './seed';
 
@@ -40,7 +40,7 @@ describe('Session management + login-policy e2e', () => {
     // CASCADE on User also clears SessionToken (FK→User); both listed so a stray session can't leak
     // between tests even if the on-delete weren't CASCADE.
     await database.pool.query(
-      'TRUNCATE TABLE "SessionToken", "User" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
   });
 

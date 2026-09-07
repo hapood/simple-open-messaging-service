@@ -68,7 +68,7 @@ async function setup(o: Overrides = {}) {
     twoFactorSecretCipher: o.twoFactorEnabled ? cipher : null,
     twoFactorEnabledAt: null,
     twoFactorLastUsedCounter: null,
-    user: { account: 'admin', name: 'admin' },
+    account: { account: 'admin', name: 'admin' },
   };
   const user = {
     id: 42,

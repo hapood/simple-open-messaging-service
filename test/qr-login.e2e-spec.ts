@@ -10,7 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
   sessionToken,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { BusinessCode } from '../src/common/business-code';
@@ -55,7 +55,7 @@ describe('QR login e2e', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "LoginCode", "SessionToken", "User" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -72,11 +72,9 @@ describe('QR login e2e', () => {
       .values({
         account,
         domain: 'local',
-        name: account,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
-    await database.db.insert(accountTable).values({ id: u.id });
     const token = await sessionTokens.issue(u.id, 'app', {
       ip: '127.0.0.1',
     });

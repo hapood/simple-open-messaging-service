@@ -37,7 +37,9 @@ describe('GroupDisbandFanoutService', () => {
         ],
       })
       .mockResolvedValueOnce({
-        rows: [{ pairId: '41', memberUserId: 9 }],
+        rows: [
+          { pairId: '41', account: 'member', domain: 'local', namespaceId: 0 },
+        ],
       });
     const childValues = vi.fn().mockResolvedValue(undefined);
     const checkpointWhere = vi.fn().mockResolvedValue(undefined);
@@ -63,7 +65,10 @@ describe('GroupDisbandFanoutService', () => {
       scopeKey: 'group-key',
       taskType: 'REVOKE_DISSOLVED_GROUP_MEMBER',
       actorUserId: 7,
-      payload: { threadId: 12, memberUserId: 9 },
+      payload: {
+        threadId: 12,
+        memberUserId: { account: 'member', domain: 'local', namespaceId: 0 },
+      },
       status: 'PENDING',
     });
     expect(checkpointSet).toHaveBeenCalledWith({

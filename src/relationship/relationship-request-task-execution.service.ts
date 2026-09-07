@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { user } from '../database/schema.js';
+import { account as user } from '../database/schema.js';
 import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { RelationshipService } from './relationship.service.js';
@@ -32,7 +32,7 @@ export class RelationshipRequestTaskExecutionService {
       peerUserId,
       actorUserId,
       async (tx, peerUserId) => {
-        const peer = await tx.query.user.findFirst({
+        const peer = await tx.query.account.findFirst({
           where: eq(user.id, peerUserId),
           columns: { domain: true },
         });
@@ -93,7 +93,7 @@ export class RelationshipRequestTaskExecutionService {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await mutate(async (tx, peerUserId) => {
-      const peer = await tx.query.user.findFirst({
+      const peer = await tx.query.account.findFirst({
         where: eq(user.id, peerUserId),
         columns: { domain: true },
       });

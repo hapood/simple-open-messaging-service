@@ -1,6 +1,17 @@
+vi.mock('../user/account-address.js', async (original) => ({
+  ...(await original<typeof import('../user/account-address.js')>()),
+  localAccountsForTargetsInTx: async (
+    _tx: unknown,
+    targets: { account: string }[],
+  ) =>
+    targets.map((target) => ({ id: target.account === 'old-owner' ? 1 : 2 })),
+}));
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group, accountThreadState } from '../database/schema.js';
+import {
+  messageThread as group,
+  accountThreadState,
+} from '../database/schema.js';
 import { AuthoritativeGroupMetaMutationService } from './authoritative-group-meta-mutation.service.js';
 
 function createHarness() {
@@ -83,14 +94,14 @@ describe('AuthoritativeGroupMetaMutationService', () => {
 
     expect(target.reconcileMembersInTx).toHaveBeenCalledWith(target.tx, 5, [
       {
-        userId: 1,
+        namespaceId: 0,
         account: 'old-owner',
         domain: 'local',
         operation: 'UPSERT',
         body: { role: GroupRole.MEMBER, profileRev: 4 },
       },
       {
-        userId: 2,
+        namespaceId: 0,
         account: 'new-owner',
         domain: 'local',
         operation: 'UPSERT',

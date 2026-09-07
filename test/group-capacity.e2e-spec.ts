@@ -1,3 +1,4 @@
+import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, count, eq } from 'drizzle-orm';
@@ -7,11 +8,11 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
   account as accountTable,
-  group,
+  groupAccount as group,
   messageThread,
   relationshipIntent,
   relationshipPair,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import {
   assertServerGroupCapacityInTx,
@@ -38,21 +39,15 @@ describe('origin-server group capacity', () => {
       .values(
         Array.from({ length: SERVER_MAX_GROUP_MEMBERS + 1 }, (_, index) => ({
           account: `cap-${suffix}-${index}`,
-          name: `capacity ${index}`,
           domain: 'local',
           updatedAt: new Date(),
         })),
       )
       .returning({ id: user.id, account: user.account });
-    await database.db
-      .insert(accountTable)
-      .values(people.map((person) => ({ id: person.id })));
     const [groupProfile] = await database.db
       .insert(group)
       .values({
         account: `!cap${suffix}`,
-        name: 'capacity group',
-        domain: 'local',
         updatedAt: new Date(),
       })
       .returning({ id: group.id, account: group.account });
@@ -60,7 +55,9 @@ describe('origin-server group capacity', () => {
       .insert(messageThread)
       .values({
         type: MessageThreadType.GROUP,
-        groupId: groupProfile.id,
+        groupAccount: groupProfile.account,
+        groupDomain: 'local',
+        groupAccountId: groupProfile.id,
         updatedAt: new Date(),
       })
       .returning({ id: messageThread.id });
@@ -77,7 +74,6 @@ describe('origin-server group capacity', () => {
           endpointBDomain: 'local',
           threadId: thread.id,
           active: true,
-          revision: 1,
           updatedAt: new Date(),
         })),
       )
@@ -96,6 +92,9 @@ describe('origin-server group capacity', () => {
 
     const join = (userId: number) =>
       database.db.transaction(async (tx) => {
+        await lockBusinessAccountsInTx(tx, [
+          { account: groupProfile.account, domain: 'local' },
+        ]);
         await assertServerGroupCapacityInTx(tx, thread.id, userId);
         const member = people.find((person) => person.id === userId)!;
         const [pair] = await tx
@@ -110,8 +109,7 @@ describe('origin-server group capacity', () => {
             endpointBDomain: 'local',
             threadId: thread.id,
             active: true,
-            revision: 1,
-            updatedAt: new Date(),
+              updatedAt: new Date(),
           })
           .returning({ id: relationshipPair.id });
         await tx.insert(relationshipIntent).values({

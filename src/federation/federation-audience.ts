@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
@@ -87,7 +88,7 @@ export async function closeFederatedAudienceInTx(
              ELSE ${peerDomain}
            END AS "subjectDomain"
     FROM "MessageThread" thread
-    LEFT JOIN "Group" group_state ON group_state.id = thread."groupId"
+    LEFT JOIN ${groupStateSql} group_state ON group_state.id = thread.id
     LEFT JOIN "RelationshipPair" pair
       ON pair."threadId" = thread.id AND pair.kind = 'P2P'
     LEFT JOIN LATERAL (
@@ -155,7 +156,7 @@ async function resolveAudienceNamespaceInTx(
       UNION
       SELECT group_profile."namespaceId"
       FROM "MessageThread" thread
-      JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+      JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
       WHERE thread.id = ${threadId} AND group_profile.domain = ${peerDomain}
     ) candidate
     WHERE candidate."namespaceId" > 0

@@ -1,3 +1,4 @@
+import { SessionLifecycleService } from './session-lifecycle.service';
 import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
@@ -6,6 +7,10 @@ import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { rawPreview, ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
+import {
+  ProfileResolutionService,
+  type ResolvedProfile,
+} from './profile-resolution.service';
 import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
 import { MsgService } from './message.service';
@@ -118,6 +123,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
           useValue: {
             sessionUserId,
             sessionProfile,
+            requestCacheRebuild: vi.fn().mockResolvedValue(undefined),
             // Mirror the real establishSession's session-tracking input: the repo's reset effect watches
             // sessionUserId, so the mock sets it for the HELLO→establish→session-active lifecycle (+ the
             // logout→null→reset test). The per-user IDB is pre-opened for '1' below.
@@ -299,6 +305,263 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await repo.load();
   }
 
+  it('applies a profile fact only to the matching namespace in memory and storage', async () => {
+    const old = p2p(91, 0);
+    const current = p2p(92, 0);
+    Object.assign(old.peerUser, {
+      account: 'peer',
+      domain: 'peer.test',
+      namespaceId: 7,
+      profileRev: 2,
+      name: 'Old namespace',
+    });
+    Object.assign(current.peerUser, {
+      account: 'peer',
+      domain: 'peer.test',
+      namespaceId: 8,
+      profileRev: 2,
+      name: 'Current namespace',
+    });
+    old.authorityNamespaceId = 7;
+    current.authorityNamespaceId = 8;
+    await populate([old, current]);
+    cursorSignal.set(98);
+    queryStateFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          scannedThrough: 99,
+          stateFeedEndId: 99,
+          hasMore: false,
+          items: [
+            {
+              feedId: 99,
+              eventType: 'PROFILE',
+              account: 'peer',
+              domain: 'peer.test',
+              namespaceId: 8,
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: {
+                displayName: 'Updated',
+                avatar: '',
+                bio: '',
+                profileRev: 2,
+              },
+            },
+          ],
+        },
+      }),
+    );
+    repo.onStateFeedUpdated(99);
+    await vi.waitFor(() => expect(cursorSignal()).toBe(99));
+    expect(repo.items().find((item) => item.threadId === 91)).toMatchObject({
+      peerUser: { name: 'Old namespace', namespaceId: 7 },
+    });
+    expect(repo.items().find((item) => item.threadId === 92)).toMatchObject({
+      peerUser: { name: 'Updated', namespaceId: 8 },
+    });
+    expect(
+      (await webdb.getThreads()).find((item) => item.threadId === 91),
+    ).toMatchObject({ peerUser: { name: 'Old namespace' } });
+    expect(
+      (await webdb.getThreads()).find((item) => item.threadId === 92),
+    ).toMatchObject({ peerUser: { name: 'Updated' } });
+  });
+
+  it('updates a placeholder peer from message resolution without applying self or older profiles', async () => {
+    const item = p2p(9, 0);
+    Object.assign(item.peerUser, {
+      account: 'peer',
+      domain: 'bravo.test',
+      profileRev: 0,
+    });
+    await populate([item]);
+    const resolved = TestBed.inject(ProfileResolutionService)['resolved'];
+    const profile = {
+      account: 'peer',
+      domain: 'bravo.test',
+      rev: 3,
+      name: 'Peer image',
+      bio: '',
+      avatarBase64: 'aW1hZ2U=',
+    };
+    resolved.next({ selector: { threadId: 9, messageSeq: 2 }, profile });
+    resolved.next({
+      selector: { threadId: 9, messageSeq: 3 },
+      profile: { ...profile, account: 'me', name: 'Self' },
+    });
+    resolved.next({
+      selector: { threadId: 9, messageSeq: 1 },
+      profile: { ...profile, rev: 99, name: 'Old' },
+    });
+    expect(repo.items()[0]).toMatchObject({
+      peerUser: {
+        name: 'Peer image',
+        profileRev: 3,
+        avatar: 'data:image/webp;base64,aW1hZ2U=',
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        peerUser: { profileRev: 3, avatar: 'data:image/webp;base64,aW1hZ2U=' },
+      }),
+    );
+    resolved.next({
+      selector: { threadId: 9, messageSeq: 4 },
+      profile: { ...profile, rev: 1, name: 'Later message' },
+    });
+    expect(repo.items()[0]).toMatchObject({
+      peerProfileMessageSeq: 4,
+      peerUser: { name: 'Later message', profileRev: 1 },
+    });
+    repo['upsertThread'](item);
+    expect(repo.items()[0]).toMatchObject({
+      peerProfileMessageSeq: 4,
+      peerUser: { name: 'Later message', profileRev: 1 },
+    });
+  });
+
+  it('does not let a pending relationship profile overwrite a message-selected profile', async () => {
+    const relationship = new Subject<ResolvedProfile>();
+    vi.spyOn(
+      TestBed.inject(ProfileResolutionService),
+      'resolve',
+    ).mockReturnValue(relationship);
+    const item = p2p(9, 0);
+    Object.assign(item.peerUser, {
+      account: 'peer',
+      domain: 'bravo.test',
+      profileRev: 9,
+    });
+    await populate([item]);
+    const profile = {
+      account: 'peer',
+      domain: 'bravo.test',
+      rev: 1,
+      name: 'Message',
+      bio: '',
+      avatarBase64: null,
+    };
+    TestBed.inject(ProfileResolutionService)['resolved'].next({
+      selector: { threadId: 9, messageSeq: 4 },
+      profile,
+    });
+    relationship.next({ ...profile, rev: 9, name: 'Relationship' });
+    relationship.complete();
+    expect(repo.items()[0]).toMatchObject({
+      peerProfileMessageSeq: 4,
+      peerUser: { name: 'Message', profileRev: 1 },
+    });
+  });
+
+  it('hydrates a cached private thread through the shared profile resolver and persists the avatar', async () => {
+    const resolved = new Subject<ResolvedProfile>();
+    const resolve = vi
+      .spyOn(TestBed.inject(ProfileResolutionService), 'resolve')
+      .mockReturnValue(resolved);
+    const item = p2p(9, 0);
+    Object.assign(item.peerUser, {
+      account: 'check03-b-001',
+      domain: 'bravo.test',
+      namespaceId: 1,
+      profileRev: 3,
+      avatar: '',
+    });
+    await populate([item]);
+    expect(resolve).toHaveBeenCalledWith({
+      account: 'check03-b-001',
+      domain: 'bravo.test',
+      rev: 3,
+    });
+    resolved.next({
+      account: 'check03-b-001',
+      domain: 'bravo.test',
+      rev: 3,
+      name: 'Resolved peer',
+      bio: 'Bio',
+      avatarBase64: 'aW1hZ2U=',
+    });
+    resolved.complete();
+    expect(repo.items()[0]).toMatchObject({
+      peerUser: {
+        name: 'Resolved peer',
+        avatar: 'data:image/webp;base64,aW1hZ2U=',
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        peerUser: {
+          name: 'Resolved peer',
+          avatar: 'data:image/webp;base64,aW1hZ2U=',
+        },
+      }),
+    );
+  });
+
+  it('does not let an old peer resolution overwrite a newer relationship profile', async () => {
+    const old = new Subject<ResolvedProfile>();
+    const current = new Subject<ResolvedProfile>();
+    vi.spyOn(TestBed.inject(ProfileResolutionService), 'resolve')
+      .mockReturnValueOnce(old)
+      .mockReturnValueOnce(current);
+    const item = p2p(9, 0);
+    Object.assign(item.peerUser, {
+      domain: 'bravo.test',
+      namespaceId: 1,
+      profileRev: 3,
+    });
+    await populate([item]);
+    repo['upsertThread']({
+      ...item,
+      peerUser: { ...item.peerUser, profileRev: 4 },
+    });
+    current.next({
+      account: 'u0',
+      domain: 'bravo.test',
+      rev: 4,
+      name: 'Current',
+      bio: '',
+      avatarBase64: null,
+    });
+    old.next({
+      account: 'u0',
+      domain: 'bravo.test',
+      rev: 3,
+      name: 'Old',
+      bio: '',
+      avatarBase64: 'b2xk',
+    });
+    expect(repo.items()[0]).toMatchObject({
+      peerUser: { name: 'Current', profileRev: 4, avatar: '' },
+    });
+    old.complete();
+    current.complete();
+  });
+
+  it('ignores a peer resolution that arrives after logout', async () => {
+    const resolved = new Subject<ResolvedProfile>();
+    vi.spyOn(
+      TestBed.inject(ProfileResolutionService),
+      'resolve',
+    ).mockReturnValue(resolved);
+    const item = p2p(9, 0);
+    item.peerUser.profileRev = 3;
+    await populate([item]);
+    TestBed.inject(SessionLifecycleService).endSession();
+    resolved.next({
+      account: 'u0',
+      domain: 'local',
+      rev: 3,
+      name: 'Old session',
+      bio: '',
+      avatarBase64: 'b2xk',
+    });
+    resolved.complete();
+    expect(repo.items()).toEqual([]);
+  });
+
   async function emitThreadContentHead(
     threadId: number,
     seq: number,
@@ -364,6 +627,81 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.status()).toBe('LOADING');
   });
 
+  it('warns instead of rejecting when the account database is not open', async () => {
+    await webdb.closeAndDelete('1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(repo.load()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      '[cache-paint] cached thread read failed',
+      expect.any(Error),
+    );
+    expect(repo.items()).toEqual([]);
+    expect(toastWarn).not.toHaveBeenCalled();
+    await webdb.openForUser('1');
+    emitHello({ userId: 1, stateFeedEndId: 2 });
+    await vi.waitFor(() => expect(cursorSignal()).toBe(2));
+  });
+
+  it.each(['getNamespaces', 'getThreads', 'getMeta'] as const)(
+    'warns and requests recovery when cache pre-read %s fails',
+    async (method) => {
+      const failure = new Error('cache read failed');
+      vi.spyOn(webdb, method).mockRejectedValueOnce(failure);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await expect(repo.load()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        '[cache-paint] cached thread read failed',
+        failure,
+      );
+      expect(
+        TestBed.inject(UserService).requestCacheRebuild,
+      ).toHaveBeenCalledOnce();
+      expect(toastWarn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('handles a detached preview read failure and requests recovery', async () => {
+    await seedCachedThread(p2p(1, 11));
+    const failure = new Error('message cache unreadable');
+    vi.spyOn(
+      TestBed.inject(MessageRepository),
+      'getNewestMessages',
+    ).mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await repo.load();
+    await vi.waitFor(() =>
+      expect(
+        TestBed.inject(UserService).requestCacheRebuild,
+      ).toHaveBeenCalledOnce(),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      '[cache-paint] cached message preview read failed',
+      failure,
+    );
+    expect(repo.items()[0].threadId).toBe(1);
+    expect(toastWarn).not.toHaveBeenCalled();
+  });
+
+  it('handles failed HELLO cache initialization without an unhandled rejection', async () => {
+    const failure = new Error('account cache cannot open');
+    establishSessionSpy.mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    emitHello({ userId: 1, stateFeedEndId: 2 });
+    await vi.waitFor(() =>
+      expect(
+        TestBed.inject(UserService).requestCacheRebuild,
+      ).toHaveBeenCalledOnce(),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      '[cache-recovery] session cache initialization failed',
+      failure,
+    );
+    expect(error).not.toHaveBeenCalled();
+    expect(toastWarn).not.toHaveBeenCalled();
+    expect(cursorSignal()).toBeUndefined();
+  });
+
   // The clobber guard: a cache-paint that runs AFTER a fresher HELLO delta already populated the list
   // must BAIL — a late IDB read must not revert the list to the (now stale) cache.
   // Regression guard for the "暂无消息 on first launch" bug: the list embeds NO preview content, so each
@@ -382,6 +720,156 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const items = repo.items();
     expect(items[0].lastMessagePreview).toBe('hello world');
     expect(items[0].lastMessageSenderId).toBe('[0,"local","u77"]');
+  });
+
+  it('fetches a preview body for a content head without any local messages', async () => {
+    await populate([p2p(1, 77)]);
+    const history = vi
+      .spyOn(TestBed.inject(MessageRepository), 'queryBrowserMessageHistory')
+      .mockResolvedValue({
+        failed: false,
+        hasOlder: false,
+        hasNewer: false,
+        items: [
+          {
+            kind: 'message',
+            message: {
+              threadId: 1,
+              seq: 5,
+              contentType: 'PURE_TEXT',
+              content: JSON.stringify({ text: 'cold preview' }),
+              creator: { account: 'u77', domain: 'local', namespaceId: 0 },
+              createdAt: 1234,
+              updatedAt: 1234,
+              isDeleted: false,
+            } as Message,
+          },
+        ],
+      });
+    await emitThreadContentHead(1, 5);
+    await flush(20);
+    expect(history).toHaveBeenCalledWith(1, { kind: 'latest', count: 1 });
+    expect(repo.items()[0]).toMatchObject({
+      lastMessagePreview: 'cold preview',
+      lastMessagePreviewSeq: 5,
+      lastMessageAt: 1234,
+    });
+    await emitThreadContentHead(1, 5);
+    expect(history).toHaveBeenCalledTimes(1);
+  });
+
+  it('pulls and commits preview bodies after SSE content updates without opening the chat', async () => {
+    await populate([p2p(1, 77)]);
+    let seq = 1;
+    const page = vi.fn().mockImplementation((query: { before?: number }) =>
+      of(
+        query.before === undefined
+          ? { code: 30006, data: { resumeAfter: 0, resumeBefore: seq + 1 } }
+          : {
+              code: 0,
+              data: {
+                messages: [
+                  {
+                    threadId: 1,
+                    seq,
+                    contentType: 'PURE_TEXT',
+                    content: JSON.stringify({ text: `preview ${seq}` }),
+                    creator: {
+                      account: 'u77',
+                      domain: 'local',
+                      namespaceId: 0,
+                    },
+                    createdAt: seq,
+                    updatedAt: seq,
+                    isDeleted: false,
+                  },
+                ],
+                gaps: [],
+                scannedThrough: seq,
+                hasMore: seq > 1,
+              },
+            },
+      ),
+    );
+    Object.assign(TestBed.inject(MsgService), {
+      queryMessageHistoryPage: page,
+    });
+
+    await emitThreadContentHead(1, seq);
+    await flush(20);
+    expect(repo.items()[0].lastMessagePreview).toBe('preview 1');
+    seq = 2;
+    await emitThreadContentHead(1, seq);
+    await flush(20);
+    expect(repo.items()[0].lastMessagePreview).toBe('preview 2');
+    expect(repo.openThreadId()).toBeUndefined();
+    expect(
+      (await TestBed.inject(MessageRepository).getNewestMessages([1])).get(1)
+        ?.seq,
+    ).toBe(2);
+    expect(
+      (await (await webdb.db()).get('threads', 1))?.lastMessagePreview,
+    ).toBe('preview 2');
+  });
+
+  it('keeps the old preview during a pending pull, failure, and gap, then retries on a content notification', async () => {
+    await populate([
+      p2p(1, 77, {
+        lastMessagePreview: 'old preview',
+        lastMessagePreviewSeq: 1,
+      }),
+    ]);
+    type Result = Awaited<
+      ReturnType<MessageRepository['queryBrowserMessageHistory']>
+    >;
+    let finish!: (result: Result) => void;
+    const history = vi
+      .spyOn(TestBed.inject(MessageRepository), 'queryBrowserMessageHistory')
+      .mockReturnValueOnce(
+        new Promise<Result>((resolve) => {
+          finish = resolve;
+        }),
+      );
+    await emitThreadContentHead(1, 2);
+    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
+    finish({ items: [], hasOlder: true, hasNewer: true, failed: true });
+    await flush(20);
+    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
+
+    history.mockResolvedValueOnce({
+      items: [
+        { kind: 'serverGap', left: 1, right: 2, state: 'SERVER_PENDING' },
+      ],
+      hasOlder: true,
+      hasNewer: false,
+      failed: false,
+    });
+    await emitThreadContentHead(1, 2);
+    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
+
+    history.mockResolvedValueOnce({
+      items: [
+        {
+          kind: 'message',
+          message: {
+            threadId: 1,
+            seq: 2,
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({ text: 'new preview' }),
+            creator: { account: 'u77', domain: 'local', namespaceId: 0 },
+            createdAt: 2,
+            updatedAt: 2,
+            isDeleted: false,
+          } as Message,
+        },
+      ],
+      hasOlder: true,
+      hasNewer: false,
+      failed: false,
+    });
+    await emitThreadContentHead(1, 2);
+    expect(history).toHaveBeenCalledTimes(3);
+    expect(repo.items()[0].lastMessagePreview).toBe('new preview');
   });
 
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
@@ -410,6 +898,78 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()).toEqual([]);
     expect(repo.status()).toBe('LOADING');
     expect(repo.error()).toBe('');
+  });
+
+  it('drops pre-HELLO cached rows on logout before rebuilding the same user session', async () => {
+    const stale = p2p(39, 21);
+    await populate([stale]);
+    expect(sessionUserId()).toBeNull();
+    await webdb.closeAndDelete('1');
+    sessionUserId.set(null);
+    TestBed.inject(SessionLifecycleService).endSession();
+    expect(repo.items()).toEqual([]);
+    TestBed.tick();
+    await webdb.recreateForUser('1');
+    expect(await webdb.getThreads()).toEqual([]);
+    const peer = stale.peerUser;
+    const items = [false, true].map((reverse, index) => ({
+      feedId: index + 1,
+      eventType: 'RELATIONSHIP_INTENT',
+      namespaceId: 0,
+      account: reverse ? peer.account : 'me',
+      domain: 'local',
+      subjectAccount: reverse ? 'me' : peer.account,
+      subjectDomain: 'local',
+      body: {
+        status: 'ACCEPTED',
+        direction: reverse ? 'INCOMING' : 'OUTGOING',
+        note: '',
+        requestedAt: 1,
+        expiresAt: null,
+        localThreadId: 61,
+        peer,
+      },
+    }));
+    queryStateFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          mode: 'full',
+          items,
+          scannedThrough: 2,
+          stateFeedEndId: 2,
+          hasMore: false,
+        },
+      }),
+    );
+    emitHello({ userId: 1, stateFeedEndId: 2 });
+    await flush(40);
+    expect((await webdb.getThreads()).map((t) => t.threadId)).toEqual([61]);
+    expect(
+      repo
+        .items()
+        .map((t) => t.threadId)
+        .sort((a, b) => a - b),
+    ).toEqual([61]);
+  });
+
+  it('discards an eager cache read that finishes after the session ends', async () => {
+    let finishRead!: (items: ConversationItem[]) => void;
+    const read = vi.spyOn(webdb, 'getThreads').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const loading = repo.load();
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+
+    TestBed.inject(SessionLifecycleService).endSession();
+    finishRead([p2p(39, 21)]);
+    await loading;
+
+    expect(repo.items()).toEqual([]);
+    expect(repo.status()).toBe('LOADING');
   });
 
   // ── live THREAD_CONTENT_HEAD projections ──────────────────────────────────────────────────────
@@ -745,10 +1305,73 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     ]);
   });
 
-  it('creates a group conversation from bilateral intents before applying its group-meta head', async () => {
+  it('commits group profile and member references before refreshing the same page message preview', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await flush(20);
     cursorSignal.set(1);
+    (TestBed.inject(UserService).queryGroupMeta as Mock).mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          account: '!dev',
+          mode: 'full',
+          scannedThrough: '2',
+          groupMetaFeedEndId: '2',
+          hasMore: false,
+          items: [
+            {
+              feedId: '1',
+              operation: 'GROUP_PROFILE',
+              body: { profileRev: 2 },
+            },
+            {
+              feedId: '2',
+              operation: 'UPSERT',
+              account: 'alice',
+              domain: 'local',
+              namespaceId: 0,
+              body: { role: 'OWNER', profileRev: 1 },
+            },
+          ],
+        },
+      }),
+    );
+    vi.spyOn(
+      TestBed.inject(ProfileResolutionService),
+      'resolve',
+    ).mockReturnValue(
+      of({
+        account: '!dev',
+        domain: 'local',
+        rev: 2,
+        name: 'Resolved dev',
+        bio: '',
+        avatarBase64: null,
+      }),
+    );
+    vi.spyOn(
+      TestBed.inject(MessageRepository),
+      'queryBrowserMessageHistory',
+    ).mockResolvedValue({
+      failed: false,
+      hasOlder: false,
+      hasNewer: false,
+      items: [
+        {
+          kind: 'message',
+          message: {
+            threadId: 12,
+            seq: 1,
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({ text: 'group preview' }),
+            creator: { account: 'alice', domain: 'local', namespaceId: 0 },
+            createdAt: 1,
+            updatedAt: 1,
+            isDeleted: false,
+          } as Message,
+        },
+      ],
+    });
     const group = {
       account: '!dev',
       domain: 'local',
@@ -809,17 +1432,27 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               eventType: 'GROUP_META_FEED_HEAD',
               subjectAccount: '',
               subjectDomain: 'local',
-              body: { groupMetaFeedEndId: '1' },
+              body: { groupMetaFeedEndId: '2' },
+            },
+            {
+              feedId: 5,
+              account: '',
+              domain: 'local',
+              namespaceId: 0,
+              eventType: 'THREAD_CONTENT_HEAD',
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: { threadId: 12, messageEndSeq: 1, tombstoneEndSeq: 0 },
             },
           ],
           hasMore: false,
-          scannedThrough: 4,
-          stateFeedEndId: 4,
+          scannedThrough: 5,
+          stateFeedEndId: 5,
         },
       }),
     );
 
-    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 4 } });
+    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 5 } });
     await flush(30);
 
     expect(toastWarn).not.toHaveBeenCalled();
@@ -827,9 +1460,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       expect.objectContaining({
         threadId: 12,
         type: 'GROUP',
-        group: expect.objectContaining({ account: '!dev', name: 'dev' }),
+        lastMessagePreview: 'group preview',
+        group: expect.objectContaining({
+          account: '!dev',
+          name: 'Resolved dev',
+          profileRev: 2,
+        }),
       }),
     ]);
+    expect(await webdb.getMeta('stateFeedId')).toBe(5);
   });
 
   it('publishes one friend-intent revision only after draining through the committed feed HWM', async () => {

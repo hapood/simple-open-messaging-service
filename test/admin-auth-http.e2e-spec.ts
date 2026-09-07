@@ -58,7 +58,9 @@ describe('Admin authentication HTTP security', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     // Each case starts a fresh fixed-window budget. Cover the address spellings Fastify can use for
     // an in-process request without reaching into KvStoreService's private maps.
     await kv.del(

@@ -11,6 +11,7 @@ import {
   executeBatch,
   finalizeTasks,
   settleWorkloadOperations,
+  unsubmittedGroupRequests,
 } from './random-execute.mjs';
 
 const alice = 'alice@alpha.test';
@@ -29,6 +30,26 @@ test('classifies a random acceptance of an expired or revoked incoming request a
   };
   for (const [changes, status, resultCode, expected] of [
     [{}, 'REJECTED', 20011, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20013, 'OBSERVED_UNAVAILABLE'],
+    [
+      { type: 'REJECT_REQUEST', scenario: 'FIXED' },
+      'REJECTED',
+      20013,
+      'REJECTED',
+    ],
+    [
+      { type: 'REJECT_REQUEST', observedFacts: { state: 'FRIEND' } },
+      'REJECTED',
+      20013,
+      'REJECTED',
+    ],
+    [{ type: 'REJECT_REQUEST' }, 'FAILED', 20013, 'FAILED'],
+    [
+      { type: 'ACCEPT_GROUP_APPLICATION', group: groupAddress },
+      'REJECTED',
+      10001,
+      'REJECTED',
+    ],
     [{ scenario: 'FIXED' }, 'REJECTED', 20011, 'REJECTED'],
     [{ group: groupAddress }, 'REJECTED', 20011, 'REJECTED'],
     [{ pair: undefined }, 'REJECTED', 20011, 'REJECTED'],
@@ -413,6 +434,9 @@ test('handles a revoked incoming request before admission with the same policy a
   };
   for (const [changes, code, expected] of [
     [{}, 20011, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST' }, 20013, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST', scenario: 'FIXED' }, 20013, 'ADMISSION_FAILED'],
+    [{ type: 'REJECT_REQUEST' }, 10001, 'ADMISSION_FAILED'],
     [{ scenario: 'FIXED' }, 20011, 'ADMISSION_FAILED'],
     [{ group: groupAddress }, 20011, 'ADMISSION_FAILED'],
     [{ pair: undefined }, 20011, 'ADMISSION_FAILED'],
@@ -694,4 +718,88 @@ test('uploads an avatar before a unary group profile update', async () => {
       avatar: '/uploads/avatars/group-512.webp',
     },
   ]);
+});
+
+test('does not resubmit group requests while their earlier decision is pending or completed', () => {
+  const request = {
+    direction: 'APPLICATION',
+    requestId: '48',
+    expiresAt: '2026-09-14T13:15:16.696Z',
+  };
+  const operation = {
+    group: groupAddress,
+    type: 'ACCEPT_GROUP_APPLICATION',
+    target: request,
+  };
+  for (const status of ['ADMITTED', 'SUCCEEDED', 'OBSERVED_UNAVAILABLE']) {
+    assert.deepEqual(
+      unsubmittedGroupRequests([request], groupAddress, [
+        { ...operation, status },
+      ]),
+      [],
+    );
+  }
+  for (const status of ['ADMISSION_FAILED', 'REJECTED', 'FAILED']) {
+    assert.deepEqual(
+      unsubmittedGroupRequests([request], groupAddress, [
+        { ...operation, status },
+      ]),
+      [request],
+    );
+  }
+  const completed = { ...operation, status: 'SUCCEEDED' };
+  for (const candidate of [
+    { ...request, requestId: '49' },
+    { ...request, expiresAt: '2026-09-15T13:15:16.696Z' },
+    { ...request, direction: 'INVITATION' },
+  ])
+    assert.deepEqual(
+      unsubmittedGroupRequests([candidate], groupAddress, [completed]),
+      [candidate],
+    );
+  assert.deepEqual(
+    unsubmittedGroupRequests([request], '!other@bravo.test', [completed]),
+    [request],
+  );
+});
+
+test('final barrier drains fanout children even when the dissolution parent is already complete', async () => {
+  const journal = {
+    operations: [
+      { id: 'dissolve', type: 'DISSOLVE_GROUP', status: 'SUCCEEDED' },
+    ],
+  };
+  let drained = false;
+  const options = {
+    operations: journal.operations,
+    log: journal,
+    actors: {
+      nodes: new Map([
+        ['alpha', {}],
+        ['bravo', {}],
+        ['charlie', {}],
+      ]),
+    },
+    label: 'final workload',
+    drain: true,
+    timeoutMs: 100,
+    onProgress() {},
+    onLog: async () => {},
+  };
+  await settleWorkloadOperations(options, {
+    waitForIdle: async ({ nodeNames }) => {
+      assert.deepEqual(nodeNames, ['alpha', 'bravo', 'charlie']);
+      drained = true;
+    },
+    finalize: async () => assert.fail('no unfinished parent commands'),
+  });
+  assert.equal(drained, true);
+  await assert.rejects(
+    settleWorkloadOperations(options, {
+      waitForIdle: async () => {
+        throw new Error('fanout child failed');
+      },
+    }),
+    /fanout child failed/,
+  );
 });

@@ -359,7 +359,7 @@ export class S2sController {
         'message is not available to this peer',
       );
     }
-    const profile = await this.federation.getStoredUserProfile(
+    const profile = await this.federation.getStoredProfile(
       reference.account,
       reference.domain,
       reference.namespaceId,
@@ -428,7 +428,7 @@ export class S2sController {
         'member profile revision is not allocated to this peer',
       );
     }
-    const profile = await this.federation.getStoredUserProfile(
+    const profile = await this.federation.getStoredProfile(
       memberAccount,
       memberDomain,
       allocation.memberNamespaceId,

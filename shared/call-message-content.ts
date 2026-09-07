@@ -21,8 +21,8 @@ export interface CallMessageContent {
   type: 'CALL';
   callType: CallMediaType;
   outcome: CallOutcome;
-  callerId: number;
-  calleeId: number;
+  callerId: number | null;
+  calleeId: number | null;
   startedAt?: number;
   endedAt: number;
   durationMs?: number;
@@ -69,10 +69,10 @@ export function parseCallMessageContent(
     (callType !== 'AUDIO' && callType !== 'VIDEO') ||
     typeof outcome !== 'string' ||
     !CALL_OUTCOMES.includes(outcome as CallOutcome) ||
-    typeof callerId !== 'number' ||
-    !Number.isInteger(callerId) ||
-    typeof calleeId !== 'number' ||
-    !Number.isInteger(calleeId) ||
+    (callerId !== null &&
+      (typeof callerId !== 'number' || !Number.isInteger(callerId))) ||
+    (calleeId !== null &&
+      (typeof calleeId !== 'number' || !Number.isInteger(calleeId))) ||
     !isFiniteMs(endedAt) ||
     (startedAt !== undefined && !isFiniteMs(startedAt)) ||
     (durationMs !== undefined && !isFiniteMs(durationMs)) ||

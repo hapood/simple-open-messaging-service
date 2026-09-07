@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq, sql } from 'drizzle-orm';
@@ -38,12 +39,13 @@ export class FederationThreadQueryDenialService {
     const result = await this.database.db.transaction(async (tx) => {
       const endpoints = await tx.execute<{
         localUserId: number;
-        remoteUserId: number;
+        remoteAccount: string;
       }>(sql`
         SELECT local_identity.id AS "localUserId",
-          remote_identity.id AS "remoteUserId"
+          CASE WHEN pair."endpointADomain" = ${peerDomain}
+            THEN pair."endpointAAccount" ELSE pair."endpointBAccount" END AS "remoteAccount"
         FROM "RelationshipPair" pair
-        JOIN "User" local_identity
+        JOIN "Account" local_identity
           ON local_identity.domain = 'local'
          AND local_identity."namespaceId" = 0
          AND ((pair."endpointAType" = 'USER'
@@ -52,16 +54,8 @@ export class FederationThreadQueryDenialService {
            OR (pair."endpointBType" = 'USER'
                AND pair."endpointBAccount" = local_identity.account
                AND pair."endpointBDomain" = local_identity.domain))
-        JOIN "User" remote_identity
-          ON remote_identity.domain = ${peerDomain}
-         AND remote_identity."namespaceId" = ${namespaceId}
-         AND ((pair."endpointAType" = 'USER'
-               AND pair."endpointAAccount" = remote_identity.account
-               AND pair."endpointADomain" = remote_identity.domain)
-           OR (pair."endpointBType" = 'USER'
-               AND pair."endpointBAccount" = remote_identity.account
-               AND pair."endpointBDomain" = remote_identity.domain))
         WHERE pair.kind = 'P2P'
+          AND (pair."endpointADomain" = ${peerDomain} OR pair."endpointBDomain" = ${peerDomain})
           AND pair."threadId" = ${threadId}
           AND pair."endpointANamespaceId" = ${namespaceId}
           AND pair."endpointBNamespaceId" = ${namespaceId}
@@ -76,7 +70,7 @@ export class FederationThreadQueryDenialService {
           SELECT group_profile.account AS "groupAccount",
             group_profile.domain AS "groupDomain"
           FROM "MessageThread" thread
-          JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+          JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           WHERE thread.id = ${threadId}
             AND thread.type = 'GROUP'
           LIMIT 1
@@ -105,12 +99,12 @@ export class FederationThreadQueryDenialService {
         }>(sql`
           SELECT thread."authorizationEpoch"
           FROM "MessageThread" thread
-          JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+          JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           WHERE thread.id = ${threadId}
             AND thread.type = 'GROUP'
             AND group_profile.account = ${groupLocation.groupAccount}
             AND group_profile.domain = ${groupLocation.groupDomain}
-          FOR UPDATE OF group_profile, thread
+          FOR UPDATE OF thread
         `);
         const lockedGroup = lockedGroups.rows[0];
         if (
@@ -126,39 +120,47 @@ export class FederationThreadQueryDenialService {
         const groupMembers = await tx.execute<{
           groupId: number;
           groupDomain: string;
-          memberUserId: number;
+          memberUserId: number | null;
+          memberAccount: string;
+          memberDomain: string;
         }>(sql`
           SELECT group_profile.id AS "groupId",
             group_profile.domain AS "groupDomain",
-            member_identity.id AS "memberUserId"
+            member_identity.id AS "memberUserId",
+            member.account AS "memberAccount", member.domain AS "memberDomain"
           FROM "MessageThread" thread
-          JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+          JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           JOIN "RelationshipPair" pair
             ON pair."threadId" = thread.id
            AND pair.kind = 'GROUP_MEMBER'
            AND pair.active = true
-          JOIN "User" member_identity
-            ON ((pair."endpointAType" = 'USER'
-                 AND pair."endpointAAccount" = member_identity.account
-                 AND pair."endpointADomain" = member_identity.domain)
-             OR (pair."endpointBType" = 'USER'
-                 AND pair."endpointBAccount" = member_identity.account
-                 AND pair."endpointBDomain" = member_identity.domain))
-          WHERE thread.id = ${threadId}
+          CROSS JOIN LATERAL (VALUES
+            (pair."endpointAType", pair."endpointAAccount", pair."endpointADomain"),
+            (pair."endpointBType", pair."endpointBAccount", pair."endpointBDomain")
+          ) member(kind, account, domain)
+          LEFT JOIN "Account" member_identity
+            ON member.domain = 'local' AND member_identity.account = member.account
+          WHERE member.kind = 'USER' AND thread.id = ${threadId}
             AND thread.type = 'GROUP'
             AND ((group_profile.domain = ${peerDomain}
                   AND group_profile."namespaceId" = ${namespaceId}
-                  AND member_identity.domain = 'local'
-                  AND member_identity."namespaceId" = 0)
+                  AND member.domain = 'local'
+                  AND member_identity.id IS NOT NULL)
               OR (group_profile.domain = 'local'
                   AND group_profile."namespaceId" = 0
-                  AND member_identity.domain = ${peerDomain}
-                  AND member_identity."namespaceId" = ${namespaceId}))
+                  AND member.domain = ${peerDomain}))
             AND pair."endpointANamespaceId" = ${namespaceId}
             AND pair."endpointBNamespaceId" = ${namespaceId}
-          ORDER BY member_identity.id
+          ORDER BY member.domain, member.account
         `);
-        const members = groupMembers.rows;
+        const members = groupMembers.rows.map((member) => ({
+          ...member,
+          target: member.memberUserId ?? {
+            account: member.memberAccount,
+            domain: member.memberDomain,
+            namespaceId,
+          },
+        }));
         if (members.length === 0) {
           return {
             outcome: 'GROUP_ALREADY_CLOSED' as const,
@@ -169,8 +171,10 @@ export class FederationThreadQueryDenialService {
         await this.relationshipMutations.lockGroupMutationInTx(
           tx,
           threadId,
-          members[0]!.memberUserId,
-          members.map((member) => member.memberUserId),
+          members[0]!.target,
+          members.flatMap((member) =>
+            member.memberUserId === null ? [] : [member.memberUserId],
+          ),
         );
 
         const allocated = new Map<string, bigint>();
@@ -180,7 +184,7 @@ export class FederationThreadQueryDenialService {
               ? await this.relationshipMutations.writeGroupRelationshipIntentInTx(
                   tx,
                   threadId,
-                  member.memberUserId,
+                  member.target,
                   '',
                   'REVOKED',
                   clientFeedUpdates,
@@ -188,7 +192,7 @@ export class FederationThreadQueryDenialService {
               : await this.relationshipMutations.writeMemberRelationshipIntentInTx(
                   tx,
                   threadId,
-                  member.memberUserId,
+                  member.memberUserId!,
                   'REVOKED',
                   clientFeedUpdates,
                 );
@@ -201,7 +205,7 @@ export class FederationThreadQueryDenialService {
         await this.relationshipIntents.readP2PRelationshipInTx(
           tx,
           endpoint.localUserId,
-          endpoint.remoteUserId,
+          { account: endpoint.remoteAccount, domain: peerDomain, namespaceId },
         );
       const thread = await tx.query.messageThread.findFirst({
         where: eq(tables.messageThread.id, threadId),
@@ -231,7 +235,7 @@ export class FederationThreadQueryDenialService {
       const allocated = await this.relationshipMutations.writeP2PIntentInTx(
         tx,
         endpoint.localUserId,
-        endpoint.remoteUserId,
+        { account: endpoint.remoteAccount, domain: peerDomain, namespaceId },
         false,
         '',
         clientFeedUpdates,

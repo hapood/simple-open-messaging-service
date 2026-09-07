@@ -2,17 +2,23 @@ import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient, HttpRequest, withXhr } from '@angular/common/http';
+import {
+  HttpClient,
+  provideHttpClient,
+  HttpRequest,
+  withXhr,
+} from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
 import { firstValueFrom } from 'rxjs';
-import { UserService } from './user.service';
+import { CACHE_REBUILD_RELOAD, UserService } from './user.service';
 import { LocalCacheVersionMismatchError, WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { User } from './model';
 import { PreferenceStore } from './preference-store.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 /** Flush microtasks + macrotasks so the cold HttpClient POST (subscribed inside updateSessionProfile)
  *  settles through to the sessionProfile signal. */
@@ -235,6 +241,7 @@ describe('UserService profile refresh', () => {
 });
 
 describe('UserService session lifecycle (establishSession / restoreWebdb / clearSession)', () => {
+  let reload: Mock;
   let svc: UserService;
   let httpMock: HttpTestingController;
   let webdb: {
@@ -303,10 +310,20 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         },
       ],
     });
+    reload = vi.fn();
+    TestBed.overrideProvider(CACHE_REBUILD_RELOAD, { useValue: reload });
     svc = TestBed.inject(UserService);
     httpMock = TestBed.inject(HttpTestingController);
     webdb = TestBed.inject(WebdbService) as unknown as typeof webdb;
     await TestBed.inject(PreferenceStore).remove('device', 'soms.lastUserId');
+    await TestBed.inject(PreferenceStore).remove(
+      'account:1',
+      'soms.cacheRebuild',
+    );
+    await TestBed.inject(PreferenceStore).remove(
+      'account:7',
+      'soms.cacheRebuild',
+    );
   });
 
   afterEach(() => {
@@ -475,12 +492,46 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).toBeUndefined();
   });
 
+  it('announces completed cleanup even when the session ended before HELLO', async () => {
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 1);
+    await svc.restoreWebdb();
+    expect(svc.sessionUserId()).toBeNull();
+    const ended = vi.fn();
+    const subscription = TestBed.inject(
+      SessionLifecycleService,
+    ).ended$.subscribe(ended);
+    let finishDeletion!: () => void;
+    webdb.closeAndDelete.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDeletion = resolve;
+        }),
+    );
+
+    const clearing = svc.clearSession();
+    expect(ended).not.toHaveBeenCalled();
+    finishDeletion();
+    await clearing;
+
+    expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
+    expect(svc.sessionUserId()).toBeNull();
+    expect(ended).toHaveBeenCalledTimes(1);
+    await svc.clearSession();
+    expect(ended).toHaveBeenCalledTimes(2);
+    subscription.unsubscribe();
+  });
+
   it('keeps the session retryable when durable cache deletion fails', async () => {
     await svc.establishSession(1, 0);
+    const ended = vi.fn();
+    const subscription = TestBed.inject(
+      SessionLifecycleService,
+    ).ended$.subscribe(ended);
     webdb.closeAndDelete.mockRejectedValue(new Error('cache busy'));
 
     await expect(svc.clearSession()).rejects.toThrowError('cache busy');
     expect(svc.sessionUserId()).toBe(1);
+    expect(ended).not.toHaveBeenCalled();
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBe(1);
@@ -489,6 +540,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
     expect(svc.sessionUserId()).toBeNull();
+    expect(ended).toHaveBeenCalledTimes(1);
+    subscription.unsubscribe();
   });
 
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
@@ -545,5 +598,112 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('restoreWebdb is a no-op when no userId was persisted (first-ever launch)', async () => {
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).not.toHaveBeenCalled();
+  });
+
+  it('defers missing-account recovery to normal HELLO initialization', async () => {
+    await svc.requestCacheRebuild();
+    expect(reload).not.toHaveBeenCalled();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+  });
+
+  it('allows another automatic recovery only after a new login', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('account:1', 'soms.cacheRebuild', 'attempted');
+    svc.prepareFreshCache();
+    await svc.establishSession(1, 0);
+    expect(
+      await preferences.get('account:1', 'soms.cacheRebuild'),
+    ).toBeUndefined();
+    await svc.requestCacheRebuild();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(await preferences.get('account:1', 'soms.cacheRebuild')).toBe(
+      'pending',
+    );
+  });
+
+  it('does not retry a failed rebuild when HELLO arrives after startup', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('device', 'soms.lastUserId', 7);
+    await preferences.set('account:7', 'soms.cacheRebuild', 'attempted');
+    const failure = new Error('database still unavailable');
+    webdb.openExistingForUser.mockRejectedValue(failure);
+    await svc.restoreWebdb();
+    await expect(svc.establishSession(7, 0)).rejects.toBe(failure);
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(svc.sessionUserId()).toBeNull();
+  });
+
+  it('coalesces recovery requests and rebuilds on the next boot without clearing the session', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('device', 'soms.lastUserId', 7);
+    await svc.restoreWebdb();
+    const ended = vi.fn();
+    const subscription = TestBed.inject(
+      SessionLifecycleService,
+    ).ended$.subscribe(ended);
+    await Promise.all([svc.requestCacheRebuild(), svc.requestCacheRebuild()]);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
+      'pending',
+    );
+
+    const nextBoot = TestBed.runInInjectionContext(
+      () => new UserService(TestBed.inject(HttpClient)),
+    );
+    await nextBoot.restoreWebdb();
+    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
+    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
+    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
+      'attempted',
+    );
+    expect(await preferences.get('device', 'soms.lastUserId')).toBe(7);
+    expect(nextBoot.stateFeedCursor()).toBeUndefined();
+    expect(ended).not.toHaveBeenCalled();
+    await nextBoot.requestCacheRebuild();
+    expect(reload).toHaveBeenCalledOnce();
+    subscription.unsubscribe();
+  });
+
+  it('warns and stops if the one automatic rebuild fails', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('device', 'soms.lastUserId', 7);
+    await preferences.set('account:7', 'soms.cacheRebuild', 'pending');
+    const failure = new Error('storage unavailable');
+    webdb.recreateForUser.mockRejectedValue(failure);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(svc.restoreWebdb()).resolves.toBeUndefined();
+    await svc.requestCacheRebuild();
+    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
+    expect(reload).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[cache-recovery] account cache rebuild unavailable',
+      failure,
+    );
+    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
+      'attempted',
+    );
+  });
+
+  it('rebuilds after cached profile reading fails, not only after opening fails', async () => {
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
+    webdb.getMeta.mockRejectedValueOnce(new Error('corrupt profile'));
+    await expect(svc.restoreWebdb()).resolves.toBeUndefined();
+    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
+  });
+
+  it('warns without rejecting if the recovery marker cannot be saved', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('device', 'soms.lastUserId', 7);
+    await svc.restoreWebdb();
+    const failure = new Error('preferences unavailable');
+    vi.spyOn(preferences, 'set').mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(svc.requestCacheRebuild()).resolves.toBeUndefined();
+    expect(reload).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[cache-recovery] could not schedule cache rebuild',
+      failure,
+    );
   });
 });

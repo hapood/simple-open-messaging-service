@@ -80,10 +80,7 @@ import {
   MediaAvailabilityRegistration,
   MediaAvailabilityService,
 } from '../../services/media-availability.service';
-import {
-  avatarUrl,
-  UserService,
-} from '../../services/user.service';
+import { avatarUrl, UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -253,7 +250,7 @@ export class MessageThreadComponent implements OnDestroy {
   readonly nativeComposerActive = input(false);
   private readonly chatInput = viewChild(ChatInputComponent);
 
-  /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
+  /** Emits the threadId once messages or the retry surface can be presented after `init()` — the A/B buffer host
    *  awaits this before cross-fading a pane in, so the reveal never races a half-initialized kernel. Carries
    *  `threadId` (NOT `trd.id` — that's the AccountThreadState row id, a different value) so the host can
    *  discard stale emits from a superseded reset. Not emitted on teardown. */
@@ -1173,6 +1170,8 @@ export class MessageThreadComponent implements OnDestroy {
         this.initialLoading.set(false);
         this.initialLoadFailed.set(true);
         this.kernelReady = false;
+        // The error surface is ready for presentation too; otherwise the host hides its retry button.
+        this.ready.emit(trd.threadId);
         if (isDevMode())
           console.warn('[chat] initial message load failed', error);
       });
@@ -2630,14 +2629,18 @@ export class MessageThreadComponent implements OnDestroy {
     this.reinit();
   }
 
-  /** Whether the kernel is live for the currently-bound thread (init settled AND not since idled). The A/B
+  /** Whether this pane has a reusable message or retry surface for the currently-bound thread. The A/B
    *  host's fg-resident branch reads this so it only re-inits a genuinely COLD pane (re-open after a close)
    *  and skips a spurious reset on an already-warm one — which matters because every `promote()` flips
    *  `fgSlot` and re-triggers the coordinator, so without this guard a warm pane would be reset on every
    *  switch. A plain method (not a signal): a synchronous snapshot read, intentionally untracked. */
   isWarm(): boolean {
     const trd = this.userMsgTrd();
-    return !!trd && this.kernelReady && this.currentTrdId === trd.threadId;
+    return (
+      !!trd &&
+      (this.kernelReady || this.initialLoadFailed()) &&
+      this.currentTrdId === trd.threadId
+    );
   }
 
   /** Ensure this pane is initialized for its CURRENT bound thread, emitting `ready` when so. The A/B host

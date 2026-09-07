@@ -67,24 +67,26 @@ export async function readNodeMessageAudit(
 ) {
   const identityColumns =
     kind === 'GROUP'
-      ? 'grp."account", grp."domain"'
+      ? 'thread."groupAccount" AS "account", thread."groupDomain" AS "domain"'
       : 'pair."endpointAAccount", pair."endpointADomain", pair."endpointBAccount", pair."endpointBDomain"';
   const identityJoin =
     kind === 'GROUP'
-      ? 'INNER JOIN "Group" grp ON grp."id" = thread."groupId"'
+      ? ''
       : 'INNER JOIN "RelationshipPair" pair ON pair."threadId" = thread."id" AND pair."kind" = \'P2P\'';
+  const threadFilter = `WHERE thread."type" = '${kind === 'GROUP' ? 'GROUP' : 'P2P'}'`;
   const threads = await client.query(`
       SELECT ${identityColumns}, thread."id" AS "threadId",
              thread."curSeq", thread."clearedSeq", thread."authorityNamespaceId"
       FROM "MessageThread" thread
       ${identityJoin}
+      ${threadFilter}
     `);
   const messages = await client.query(`
       SELECT ${identityColumns}, msg."id"::text AS "id",
              msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
              msg."contentType", msg."content", msg."clientMessageId", msg."isDeleted",
              msg."localState", msg."creatorAccount", msg."creatorDomain",
-             msg."sourceNamespaceId", namespace."domain" AS "sourceDomain",
+             msg."creatorNamespaceId", msg."sourceNamespaceId", namespace."domain" AS "sourceDomain",
              quote_namespace."domain" AS "quoteSourceDomain",
              bundle."messages" AS "forwardMessages"
       FROM "Message" msg
@@ -96,6 +98,7 @@ export async function readNodeMessageAudit(
           THEN (msg."content"::jsonb #>> '{quote,namespaceId}')::integer END
       LEFT JOIN "ForwardMessage" carrier ON carrier."messageId" = msg."id"
       LEFT JOIN "ForwardBundle" bundle ON bundle."id" = carrier."bundleId"
+      ${threadFilter}
       ORDER BY msg."threadId", msg."seq"
     `);
   const deletions = await client.query(`
@@ -103,6 +106,7 @@ export async function readNodeMessageAudit(
       FROM "DeletedMessage" deleted
       INNER JOIN "MessageThread" thread ON thread."id" = deleted."threadId"
       ${identityJoin}
+      ${threadFilter}
     `);
   const assets = await client.query(`
       SELECT ${identityColumns}, msg."threadId", msg."id"::text AS "messageId",
@@ -113,6 +117,7 @@ export async function readNodeMessageAudit(
       INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
       ${identityJoin}
       LEFT JOIN "MediaAsset" media ON media."digest" = asset."digest"
+      ${threadFilter}
     `);
   const groupAddress = (row) =>
     kind === 'GROUP'
@@ -151,7 +156,8 @@ export async function readNodeMessageAudit(
   ]) {
     const rows = await client.query(`SELECT evidence.* FROM "${table}" evidence
       INNER JOIN "MessageThread" thread ON thread."id" = evidence."threadId"
-      ${identityJoin}`);
+      ${identityJoin}
+      ${threadFilter}`);
     for (const row of rows.rows) {
       const thread = byThread.get(row.threadId);
       if (thread) {
@@ -226,16 +232,13 @@ async function avatarDigest(node, avatar) {
 export async function readNodeProfileAudit(client, node) {
   const versions = await client.query(`
       SELECT version."profileRev", version."displayName", version."avatar", version."bio",
-             usr."account" AS "userAccount", usr."domain" AS "userDomain",
-             grp."account" AS "groupAccount", grp."domain" AS "groupDomain"
-      FROM "ProfileVersion" version
-      LEFT JOIN "User" usr ON usr."id" = version."userId"
-      LEFT JOIN "Group" grp ON grp."id" = version."groupId"
+             version."account", version."domain", version."namespaceId"
+      FROM "Profile" version
     `);
   const intents = await client.query(`
       SELECT pair."endpointAAccount", pair."endpointADomain",
              pair."endpointAType", pair."endpointBAccount", pair."endpointBDomain",
-             pair."endpointBType",
+             pair."endpointBType", pair."endpointANamespaceId", pair."endpointBNamespaceId",
              intent."authorSide", intent."status", intent."expiresAt", intent."profileRev"
       FROM "RelationshipIntent" intent
       INNER JOIN "RelationshipPair" pair ON pair."id" = intent."pairId"
@@ -246,18 +249,17 @@ export async function readNodeProfileAudit(client, node) {
   // A foreign group may retain a source-scoped shell for a native account.
   // Local display uses the native exact version, never that foreign self copy.
   const authoritativeLocalRows = versions.rows.filter(
-    (row) =>
-      (row.userAccount ? row.userDomain : row.groupDomain) !== node.domain,
+    (row) => row.domain !== node.domain,
   );
   const entries = await mapConcurrent(
     authoritativeLocalRows,
     4,
     async (row) => {
-      const account = row.userAccount ?? row.groupAccount;
-      const domain = row.userAccount ? row.userDomain : row.groupDomain;
+      const account = row.account;
+      const domain = row.domain;
       const address = normalized(account, domain);
       return [
-        `${address}#${row.profileRev}`,
+        profileKey(address, row.profileRev, row.namespaceId),
         {
           address,
           profileRev: row.profileRev,
@@ -282,6 +284,10 @@ export async function readNodeProfileAudit(client, node) {
           row.authorSide === 'A'
             ? normalized(row.endpointAAccount, row.endpointADomain)
             : normalized(row.endpointBAccount, row.endpointBDomain),
+        namespaceId:
+          row.authorSide === 'A'
+            ? row.endpointANamespaceId
+            : row.endpointBNamespaceId,
         subjectAddress:
           row.authorSide === 'A'
             ? normalized(row.endpointBAccount, row.endpointBDomain)
@@ -292,6 +298,20 @@ export async function readNodeProfileAudit(client, node) {
         source: 'RELATIONSHIP_INTENT',
       })),
   };
+}
+
+export function profileKey(address, revision, namespaceId = 0) {
+  return `${address}#${revision}${namespaceId === 0 ? '' : `@${namespaceId}`}`;
+}
+
+function referencedProfileKey(node, reference) {
+  return profileKey(
+    reference.address,
+    reference.profileRev,
+    addressDomain(reference.address) === node.domain
+      ? 0
+      : reference.namespaceId,
+  );
 }
 
 function profileSignature(profile) {
@@ -1041,6 +1061,7 @@ export function compareFederationSnapshot({
             references.push({
               address: messageSignature(node, message).creator,
               profileRev: message.profileRev,
+              namespaceId: message.creatorNamespaceId,
               source: `P2P_MESSAGE:${pair}:${message.seq}`,
             });
         }
@@ -1062,7 +1083,7 @@ export function compareFederationSnapshot({
           if (
             canResolve ||
             profiles[node.name].versions.has(
-              `${reference.address}#${reference.profileRev}`,
+              referencedProfileKey(node, reference),
             )
           )
             references.push(reference);
@@ -1071,6 +1092,7 @@ export function compareFederationSnapshot({
           addGroupReference({
             address: group.address,
             profileRev: group.defaultProfileRev,
+            namespaceId: group.namespaceId,
             source: 'GROUP_META_PROFILE',
           });
         for (const member of group.roster) {
@@ -1078,6 +1100,7 @@ export function compareFederationSnapshot({
             addGroupReference({
               address: member.address,
               profileRev: member.profileRev,
+              namespaceId: member.namespaceId,
               source: 'GROUP_META_MEMBER',
             });
         }
@@ -1090,18 +1113,21 @@ export function compareFederationSnapshot({
             addGroupReference({
               address: message.creatorAddress,
               profileRev: message.profileRev,
+              namespaceId: message.creatorNamespaceId,
               source: `MESSAGE:${message.seq}`,
             });
         }
       }
       const seen = new Set();
       for (const reference of references) {
-        const key = `${reference.address}#${reference.profileRev}`;
+        const key = referencedProfileKey(node, reference);
         if (seen.has(key)) continue;
         seen.add(key);
         const actual = profiles[node.name].versions.get(key);
         const authorityNode = nodeForAddress(reference.address);
-        const authoritative = profiles[authorityNode.name].versions.get(key);
+        const authoritative = profiles[authorityNode.name].versions.get(
+          profileKey(reference.address, reference.profileRev),
+        );
         if (!actual) {
           failures.push({
             kind: 'PROFILE_MISSING',

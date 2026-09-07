@@ -1,3 +1,4 @@
+import { account } from '../database/schema.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-membership-finalizer.service.js';
 
@@ -13,7 +14,14 @@ vi.mock('./federation-audience.js', () => ({
 
 function queryResult<T>(value: T) {
   const query: Record<string, unknown> = {};
-  for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'limit'])
+  for (const method of [
+    'from',
+    'innerJoin',
+    'leftJoin',
+    'where',
+    'limit',
+    'orderBy',
+  ])
     query[method] = vi.fn(() => query);
   query.then = (
     resolve: (result: T) => unknown,
@@ -34,7 +42,13 @@ function harness(state: Record<string, unknown>) {
   const where = vi.fn().mockResolvedValue(undefined);
   const set = vi.fn(() => ({ where }));
   const tx = {
-    select: vi.fn(() => queryResult([state])),
+    query: {
+      account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
+    },
+    select: vi.fn(() => ({
+      from: (table: unknown) =>
+        queryResult(table === account ? [{ id: 11 }] : [state]),
+    })),
     update: vi.fn(() => ({ set })),
   };
   return {
@@ -140,7 +154,7 @@ describe('AuthoritativeGroupMembershipFinalizer', () => {
       target.service.finalizeInTx(target.tx as never, {
         threadId: 7,
         groupId: 5,
-        memberUserId: 11,
+        memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
         active: true,
         canonicalRosterChanged: true,
       }),
@@ -170,7 +184,7 @@ describe('AuthoritativeGroupMembershipFinalizer', () => {
       target.service.finalizeInTx(target.tx as never, {
         threadId: 7,
         groupId: 5,
-        memberUserId: 11,
+        memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
         active: true,
         canonicalRosterChanged: true,
       }),

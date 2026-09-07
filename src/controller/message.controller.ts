@@ -326,7 +326,7 @@ export class MessageController {
         quoteVisibility.hideCreators = peers.map((peer) => ({
           account: peer.account,
           domain: peer.domain,
-          namespaceId: peer.user.namespaceId,
+          namespaceId: peer.namespaceId,
         }));
     }
     await this.userQuota.assertCanSend(req.user.userId);

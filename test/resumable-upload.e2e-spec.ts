@@ -6,7 +6,11 @@ import { randomUUID } from 'node:crypto';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { message, messageThread, user } from '../src/database/schema';
+import {
+  message,
+  messageThread,
+  account as user,
+} from '../src/database/schema';
 import { MessageService } from '../src/message/message.service';
 import { ResumableUploadService } from '../src/upload/resumable-upload.service';
 import { eq } from 'drizzle-orm';
@@ -37,7 +41,6 @@ describe('sequential resumable uploads', () => {
       .values({
         account: `resume-${randomUUID().slice(0, 8)}`,
         hashPwd: 'x',
-        name: 'resume',
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -47,7 +50,6 @@ describe('sequential resumable uploads', () => {
       .values({
         account: `resume-peer-${randomUUID().slice(0, 8)}`,
         hashPwd: 'x',
-        name: 'resume peer',
         updatedAt: now,
       })
       .returning({ id: user.id });

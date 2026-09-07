@@ -258,7 +258,7 @@ export class FederationMessageFeedService {
               createdAt: message.createdAt,
               clientMessageId: message.clientMessageId,
               threadType: messageThread.type,
-              groupId: messageThread.groupId,
+              groupId: messageThread.id,
               authorityNamespaceId: messageThread.authorityNamespaceId,
               authorAccount: sql<string>`${message.creatorAccount}`,
               authorDomain: sql<string>`${message.creatorDomain}`,

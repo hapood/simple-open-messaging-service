@@ -5,32 +5,32 @@ import { readNodeProfileAudit } from './final-audit.mjs';
 test('uses only native versions for locally authoritative accounts, never foreign self copies', async () => {
   const rows = [
     {
-      userAccount: 'self',
-      userDomain: 'local',
+      account: 'self',
+      domain: 'local',
       profileRev: 1,
       displayName: 'Historical local',
       bio: '',
       avatar: '',
     },
     {
-      userAccount: 'self',
-      userDomain: 'bravo.test',
+      account: 'self',
+      domain: 'bravo.test',
       profileRev: 1,
       displayName: 'Wrong foreign copy',
       bio: '',
       avatar: '',
     },
     {
-      userAccount: 'self',
-      userDomain: 'bravo.test',
+      account: 'self',
+      domain: 'bravo.test',
       profileRev: 3,
       displayName: 'Foreign-only revision',
       bio: '',
       avatar: '',
     },
     {
-      userAccount: 'other',
-      userDomain: 'charlie.test',
+      account: 'other',
+      domain: 'charlie.test',
       profileRev: 1,
       displayName: 'Remote',
       bio: '',
@@ -39,7 +39,7 @@ test('uses only native versions for locally authoritative accounts, never foreig
   ];
   const client = {
     query: async (sql) => ({
-      rows: sql.includes('FROM "ProfileVersion"') ? rows : [],
+      rows: sql.includes('FROM "Profile"') ? rows : [],
     }),
   };
   const result = await readNodeProfileAudit(client, {

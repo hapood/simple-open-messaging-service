@@ -37,6 +37,16 @@ export type Message = Omit<
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 
+/** Namespace zero and the local sentinel both identify a subject on this server.
+ * Source/authority namespace fields are separate and must not use this conversion. */
+export function localSubjectIdentity<
+  T extends { domain: string; namespaceId: number },
+>(identity: T): T {
+  return identity.domain === 'local' || identity.namespaceId === 0
+    ? { ...identity, domain: 'local', namespaceId: 0 }
+    : identity;
+}
+
 export function messageCreatorKey(creator: MessageCreator): string;
 export function messageCreatorKey(creator: null): null;
 export function messageCreatorKey(
@@ -44,13 +54,17 @@ export function messageCreatorKey(
 ): string | null {
   return creator === null
     ? null
-    : JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
+    : JSON.stringify([
+        localSubjectIdentity(creator).namespaceId,
+        localSubjectIdentity(creator).domain,
+        creator.account,
+      ]);
 }
 
 /** JSON-safe identity persisted inside ClientStateFeed preview bodies. PostgreSQL JSONB cannot store the
  * NUL-separated in-memory creator key, so durable thread previews use an explicit tuple encoding. */
 export function messagePreviewSenderKey(creator: MessageCreator): string {
-  return JSON.stringify([creator.namespaceId, creator.domain, creator.account]);
+  return messageCreatorKey(creator);
 }
 
 export function parseUserIdentityKey(key: string): {
@@ -68,7 +82,11 @@ export function parseUserIdentityKey(key: string): {
       domain.length > 0 &&
       typeof account === 'string' &&
       account.length > 0
-      ? { account, domain, namespaceId: namespaceId as number }
+      ? localSubjectIdentity({
+          account,
+          domain,
+          namespaceId: namespaceId as number,
+        })
       : null;
   } catch {
     return null;
@@ -126,6 +144,8 @@ export type ConversationItem = ConversationItemBase &
     | {
         type: 'P2P';
         peerUser: S['UserResponseDto'];
+        /** Greatest peer-authored message coordinate selecting this thread's display profile. */
+        peerProfileMessageSeq?: number;
         group?: never;
       }
     | {
@@ -150,7 +170,7 @@ export function createP2PConversation(
   peer: P2PPeerInput,
   overrides: Partial<P2PConversationItem> = {},
 ): P2PConversationItem {
-  const peerUser = {
+  const peerUser = localSubjectIdentity({
     avatar: '',
     bio: '',
     isGroup: false,
@@ -162,7 +182,7 @@ export function createP2PConversation(
     isDeleted: false,
     ...peer,
     ...overrides.peerUser,
-  };
+  });
   return {
     threadId,
     authorityNamespaceId: peerUser.namespaceId,
@@ -196,7 +216,7 @@ export function createGroupConversation(
   group: GroupInput,
   overrides: Partial<GroupConversationItem> = {},
 ): GroupConversationItem {
-  const groupProfile = {
+  const groupProfile = localSubjectIdentity({
     avatar: '',
     description: '',
     domain: 'local',
@@ -210,7 +230,7 @@ export function createGroupConversation(
     groupMetaFeedId: '0',
     ...group,
     ...overrides.group,
-  };
+  });
   return {
     threadId,
     authorityNamespaceId: groupProfile.namespaceId,

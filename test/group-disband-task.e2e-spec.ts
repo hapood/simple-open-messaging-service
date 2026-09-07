@@ -10,7 +10,7 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   durableTask,
-  group,
+  groupAccount as group,
   groupMetaMemberFeed,
   messageThread,
   relationshipPair,
@@ -39,7 +39,9 @@ describe('group disband task fan-out', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => app?.close());
@@ -84,7 +86,7 @@ describe('group disband task fan-out', () => {
     expect(joined.body.code).toBe(BusinessCode.OK);
     await waitForDurableTask(database.db, joined.body.data.taskId);
     const [threadBeforeDissolve] = await database.db
-      .select({ groupId: messageThread.groupId })
+      .select({ groupId: messageThread.groupAccountId })
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
       .limit(1);
@@ -92,7 +94,7 @@ describe('group disband task fan-out', () => {
     const [metaBeforeDissolve] = await database.db
       .select({ value: count() })
       .from(groupMetaMemberFeed)
-      .where(eq(groupMetaMemberFeed.groupId, threadBeforeDissolve!.groupId!));
+      .where(eq(groupMetaMemberFeed.threadId, threadId));
 
     const beforeUnauthorized = await database.db
       .select({ id: durableTask.id })
@@ -137,8 +139,22 @@ describe('group disband task fan-out', () => {
     ]);
     expect(children.map(({ payload }) => payload)).toEqual(
       expect.arrayContaining([
-        { threadId, memberUserId: owner.id },
-        { threadId, memberUserId: member.id },
+        {
+          threadId,
+          memberUserId: {
+            account: owner.account,
+            domain: 'local',
+            namespaceId: 0,
+          },
+        },
+        {
+          threadId,
+          memberUserId: {
+            account: member.account,
+            domain: 'local',
+            namespaceId: 0,
+          },
+        },
       ]),
     );
     for (const child of children) {
@@ -151,7 +167,7 @@ describe('group disband task fan-out', () => {
         clearedSeq: messageThread.clearedSeq,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.groupAccountId))
       .where(eq(messageThread.id, threadId))
       .limit(1);
     expect(hostedGroup[0]?.dissolvedAt).toBeInstanceOf(Date);
@@ -159,7 +175,7 @@ describe('group disband task fan-out', () => {
     const [metaAfterDissolve] = await database.db
       .select({ value: count() })
       .from(groupMetaMemberFeed)
-      .where(eq(groupMetaMemberFeed.groupId, threadBeforeDissolve!.groupId!));
+      .where(eq(groupMetaMemberFeed.threadId, threadId));
     expect(metaAfterDissolve.value).toBe(metaBeforeDissolve.value);
     const relationships = await database.db.query.relationshipPair.findMany({
       where: and(

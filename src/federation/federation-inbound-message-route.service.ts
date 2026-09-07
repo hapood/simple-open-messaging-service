@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -74,7 +75,7 @@ export class FederationInboundMessageRouteService {
                thread."federationVersion",
                group_user.account AS "toAccount"
         FROM "MessageThread" thread
-        JOIN "Group" group_user ON group_user.id = thread."groupId"
+        JOIN ${groupStateSql} group_user ON group_user.id = thread.id
         WHERE thread.type = 'GROUP'
           AND group_user.account = ${normalizeAccount(item.thread.account)}
           AND group_user.domain = ${sourceDomain}
@@ -102,7 +103,7 @@ export class FederationInboundMessageRouteService {
                  group_user.account AS "toAccount"
           FROM "RelationshipPair" pair
           JOIN "MessageThread" thread ON thread.id = pair."threadId"
-          JOIN "Group" group_user ON group_user.id = thread."groupId"
+          JOIN ${groupStateSql} group_user ON group_user.id = thread.id
           WHERE pair.kind = 'GROUP_MEMBER'
             AND pair.active = true
             AND thread.type = 'GROUP'
@@ -160,7 +161,7 @@ export class FederationInboundMessageRouteService {
         JOIN "MessageThread" thread ON thread.id = pair."threadId"
         JOIN "AccountThreadState" local_participant
           ON local_participant."threadId" = thread.id
-        JOIN "User" local_user ON local_user.id = local_participant."accountId"
+        JOIN "Account" local_user ON local_user.id = local_participant."accountId"
         WHERE thread.type = 'P2P'
           AND pair.kind = 'P2P'
           AND pair.active = true
@@ -263,7 +264,7 @@ export class FederationInboundMessageRouteService {
              message_thread."federationVersion",
              group_user.domain AS "groupDomain"
       FROM "MessageThread" message_thread
-      JOIN "Group" group_user ON group_user.id = message_thread."groupId"
+      JOIN ${groupStateSql} group_user ON group_user.id = message_thread.id
       WHERE message_thread.type = 'GROUP'
         AND group_user.account = ${normalizeAccount(thread.account)}
         AND group_user.domain = ${sourceDomain}
@@ -279,7 +280,7 @@ export class FederationInboundMessageRouteService {
         SELECT m."creatorAccount" AS account
         FROM "Message" m
         JOIN "MessageThread" t ON t.id = m."threadId"
-        JOIN "Group" g ON g.id = t."groupId"
+        JOIN ${groupStateSql} g ON g.id = t.id
         WHERE g.account = ${normalizeAccount(thread.account)}
           AND g.domain = 'local' AND g."namespaceId" = 0
           AND m."sourceNamespaceId" = ${namespaceId}

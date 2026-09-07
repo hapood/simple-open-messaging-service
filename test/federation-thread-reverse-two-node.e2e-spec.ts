@@ -1,8 +1,15 @@
+import {
+  groupState as group,
+  groupStateFields,
+  readGroupState,
+} from '../src/group/group-state.js';
+import type { NamespacedAddress } from '../src/common/client-identity.js';
 import { randomUUID } from 'node:crypto';
 import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -17,7 +24,6 @@ import {
   deletedMessage,
   federationThreadHistoryGap,
   federationThreadSyncState,
-  group,
   groupMetaMemberFeed,
   message,
   messageThread,
@@ -25,7 +31,7 @@ import {
   relationshipIntent,
   systemSetting,
   threadAudience,
-  user,
+  identityNamespace,
 } from '../src/database/schema.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import {
@@ -39,6 +45,7 @@ import {
 import {
   establishFederatedFriendship,
   registerAndLogin,
+  resolveFederatedCard,
   uploadAvatar,
 } from './federation-test-helpers.js';
 import { findGroupRelationship } from './seed.js';
@@ -55,7 +62,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
   let tokenA: string;
   let tokenB: string;
   let bobLocalIdB: number;
-  let bobStubIdA: number;
+  let bobAddressOnA: NamespacedAddress;
   let carolLocalIdA: number;
   let tokenCarol: string;
 
@@ -68,7 +75,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     bobLocalIdB = bob.id;
     await uploadAvatar(appA, tokenA, await makePng(37));
     await uploadAvatar(appB, tokenB, await makePng(73));
-    const friendship = await establishFederatedFriendship({
+    await establishFederatedFriendship({
       local: appA,
       remote: appB,
       localUserId: alice.id,
@@ -80,7 +87,13 @@ describe('federation reverse thread rounds (two nodes)', () => {
       localDomain: FED_DOMAIN_A,
       remoteDomain: FED_DOMAIN_B,
     });
-    bobStubIdA = friendship.remoteStubIdOnLocal;
+    bobAddressOnA = {
+      account: 'reversebob',
+      domain: FED_DOMAIN_B,
+      namespaceId: (await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      }))!.id,
+    };
     const carol = await registerAndLogin(appA, 'reversecarol', 'Reverse Carol');
     tokenCarol = carol.token;
     carolLocalIdA = carol.id;
@@ -103,6 +116,15 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appA.database, localFriendAccepted.body);
   }, 120_000);
+
+  beforeEach(async () => {
+    // Fault-injection cases share these nodes. Complete real Health recovery before the next case.
+    const resolved = await Promise.all([
+      resolveFederatedCard(appA, tokenA, 'reversebob', FED_DOMAIN_B),
+      resolveFederatedCard(appB, tokenB, 'reversealice', FED_DOMAIN_A),
+    ]);
+    for (const result of resolved) expect(result.event).toBe('resolved');
+  });
 
   afterEach(async () => {
     proxy?.blockReverseMessages(false);
@@ -137,9 +159,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
     );
     const originThreadId = created.body.data.threadId as number;
     const [originGroup] = await appA.database
-      .select({ account: group.account })
+      .select({ account: groupStateFields.account })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, originThreadId))
       .limit(1);
     expect(originGroup).toBeDefined();
@@ -158,13 +180,13 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const mirror = await vi.waitFor(
       async () => {
         const [row] = await appB.database
-          .select({ id: messageThread.id, groupId: messageThread.groupId })
+          .select({ id: messageThread.id, groupId: messageThread.id })
           .from(messageThread)
-          .innerJoin(group, eq(group.id, messageThread.groupId))
+          .innerJoin(group, eq(group.id, messageThread.id))
           .where(
             and(
-              eq(group.account, originGroup.account),
-              eq(group.domain, FED_DOMAIN_A),
+              eq(groupStateFields.account, originGroup.account),
+              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);
@@ -177,7 +199,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const relationship = await findGroupRelationship(
           appB.database,
-          mirror.groupId!,
+          mirror.id!,
           bobLocalIdB,
         );
         const invitation = relationship.pair
@@ -214,7 +236,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     return {
       originThreadId,
       mirrorThreadId: mirror.id,
-      mirrorGroupId: mirror.groupId!,
+      mirrorGroupId: mirror.id!,
     };
   }
 
@@ -301,9 +323,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
   it('filters third-party mirror copies before a later local gallery submission', async () => {
     const { originThreadId, mirrorThreadId, mirrorGroupId } =
       await createJoinedFederatedGroup('mirror-owned-gallery');
-    const mirrorGroup = await appB.database.query.group.findFirst({
-      where: eq(group.id, mirrorGroupId),
-    });
+    const mirrorGroup = await readGroupState(
+      appB.database,
+      eq(group.id, mirrorGroupId),
+    );
     // Model a retained third-node copy ahead of the next locally authored message.
     // It is not a submission by this server and must never be returned by the filtered feed.
     await appB.database.transaction(async (tx) => {
@@ -320,6 +343,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         sourceNamespaceId: mirrorGroup!.namespaceId,
         creatorAccount: 'third-member',
         creatorDomain: 'third.test',
+        creatorNamespaceId: mirrorGroup!.namespaceId,
         profileRev: 0,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'third-party-copy' }),
@@ -363,7 +387,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           where: and(
             eq(message.threadId, originThreadId),
             eq(message.creatorAccount, 'reversebob'),
-            eq(message.originSeq, source!.seq),
+            eq(message.contentType, ContentType.GALLERY),
           ),
         });
         expect(received).toMatchObject({
@@ -388,9 +412,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
   it('propagates a remote member withdrawal to the group origin', async () => {
     const { originThreadId, mirrorThreadId, mirrorGroupId } =
       await createJoinedFederatedGroup('remote-member-withdrawal');
-    const mirrorGroup = await appB.database.query.group.findFirst({
-      where: eq(group.id, mirrorGroupId),
-    });
+    const mirrorGroup = await readGroupState(
+      appB.database,
+      eq(group.id, mirrorGroupId),
+    );
     // Model independently allocated local history without depending on the timing
     // of join system messages. The next real send fills the new local tail.
     await appB.database
@@ -413,7 +438,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
           where: and(
             eq(message.threadId, originThreadId),
             eq(message.creatorAccount, 'reversebob'),
-            eq(message.originSeq, sent.body.data.originSeq),
+            eq(
+              message.content,
+              JSON.stringify({ text: 'remote-member-withdrawal-source' }),
+            ),
           ),
         });
         expect(row).toMatchObject({ isDeleted: false });
@@ -573,9 +601,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
     );
     const originThreadId = created.body.data.threadId as number;
     const [originGroup] = await appA.database
-      .select({ account: group.account })
+      .select({ account: groupStateFields.account })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, originThreadId))
       .limit(1);
     expect(originGroup).toBeDefined();
@@ -595,15 +623,15 @@ describe('federation reverse thread rounds (two nodes)', () => {
         const [row] = await appB.database
           .select({
             id: messageThread.id,
-            groupId: messageThread.groupId,
+            groupId: messageThread.id,
             authorityNamespaceId: messageThread.authorityNamespaceId,
           })
           .from(messageThread)
-          .innerJoin(group, eq(group.id, messageThread.groupId))
+          .innerJoin(group, eq(group.id, messageThread.id))
           .where(
             and(
-              eq(group.account, originGroup.account),
-              eq(group.domain, FED_DOMAIN_A),
+              eq(groupStateFields.account, originGroup.account),
+              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);
@@ -616,7 +644,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const relationship = await findGroupRelationship(
           appB.database,
-          mirror.groupId!,
+          mirror.id!,
           bobLocalIdB,
         );
         const intent = relationship.pair
@@ -642,10 +670,8 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const originRelationship = await findGroupRelationship(
           appA.database,
-          (await appA.database.query.messageThread.findFirst({
-            where: eq(messageThread.id, originThreadId),
-          }))!.groupId!,
-          bobStubIdA,
+          originThreadId,
+          bobAddressOnA,
         );
         expect(originRelationship.pair?.active).toBe(true);
         expect(
@@ -738,7 +764,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       beforeRestart.state.activeGapId,
     );
     expect(
-      (await findGroupRelationship(appB.database, mirror.groupId!, bobLocalIdB))
+      (await findGroupRelationship(appB.database, mirror.id!, bobLocalIdB))
         .pair,
     ).toMatchObject({ active: true, threadId: mirror.id });
     await appB.start();
@@ -824,9 +850,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
     );
     const originThreadId = created.body.data.threadId as number;
     const [originGroup] = await appA.database
-      .select({ account: group.account, groupId: messageThread.groupId })
+      .select({ account: groupStateFields.account, groupId: messageThread.id })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, originThreadId))
       .limit(1);
     expect(originGroup).toBeDefined();
@@ -898,13 +924,13 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const mirror = await vi.waitFor(
       async () => {
         const [row] = await appB.database
-          .select({ id: messageThread.id, groupId: messageThread.groupId })
+          .select({ id: messageThread.id, groupId: messageThread.id })
           .from(messageThread)
-          .innerJoin(group, eq(group.id, messageThread.groupId))
+          .innerJoin(group, eq(group.id, messageThread.id))
           .where(
             and(
-              eq(group.account, originGroup.account),
-              eq(group.domain, FED_DOMAIN_A),
+              eq(groupStateFields.account, originGroup.account),
+              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);
@@ -918,7 +944,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         async () => {
           const relationship = await findGroupRelationship(
             appB.database,
-            mirror.groupId!,
+            mirror.id!,
             bobLocalIdB,
           );
           const invitation = relationship.pair
@@ -966,12 +992,11 @@ describe('federation reverse thread rounds (two nodes)', () => {
         const departedCarolFacts = await appB.database
           .select({ feedId: groupMetaMemberFeed.feedId })
           .from(groupMetaMemberFeed)
-          .innerJoin(user, eq(user.id, groupMetaMemberFeed.memberUserId))
           .where(
             and(
-              eq(groupMetaMemberFeed.groupId, mirror.groupId!),
-              eq(user.account, 'reversecarol'),
-              eq(user.domain, FED_DOMAIN_A),
+              eq(groupMetaMemberFeed.threadId, mirror.id!),
+              eq(groupMetaMemberFeed.memberAccount, 'reversecarol'),
+              eq(groupMetaMemberFeed.memberDomain, FED_DOMAIN_A),
             ),
           );
         expect(departedCarolFacts).toEqual([]);
@@ -1327,7 +1352,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .update(threadAudience)
       .set({
         messageAccessAfterSeq: active.gap.endSeq,
-        updatedAt: new Date(),
       })
       .where(
         and(

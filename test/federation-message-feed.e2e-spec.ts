@@ -14,7 +14,7 @@ import {
   peerStateFeed,
   relationshipIntent,
   threadAudience,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import {
@@ -40,14 +40,14 @@ describe('FederationMessageFeedService thread query', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageFeedService(database);
   });
 
   afterAll(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
@@ -82,29 +82,20 @@ describe('FederationMessageFeedService thread query', () => {
       activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
-    const [alice, bob] = await database.db
+    const [alice] = await database.db
       .insert(user)
-      .values([
-        {
-          account: 'alice',
-          name: 'Alice',
-          domain: 'local',
-          updatedAt: now,
-        },
-        {
-          account: 'bob',
-          name: 'Bob',
-          domain: peerDomain,
-          namespaceId,
-          updatedAt: now,
-        },
-      ])
+      .values({
+        account: 'alice',
+        domain: 'local',
+        updatedAt: now,
+      })
       .returning();
+    const bob = { account: 'bob', domain: peerDomain, namespaceId };
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', curSeq: 0, updatedAt: now })
       .returning();
-    await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
+    await seedAcceptedRelationship(database.db, alice.id, bob, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       targetNamespaceId: namespaceId,

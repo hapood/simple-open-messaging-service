@@ -11,7 +11,7 @@ import {
   account,
   durableTask,
   relationshipIntent,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
 import {
@@ -51,7 +51,9 @@ describe('Friend-request client state e2e', () => {
 
   beforeEach(async () => {
     // Isolate every run: truncating User CASCADE-clears Invite, RefreshToken, threads, etc.
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -177,25 +179,16 @@ describe('Friend-request client state e2e', () => {
       database.db,
       peerDomain,
     );
-    const [b] = await database.db
-      .insert(user)
-      .values({
-        account: 'expired-b',
-        name: 'B',
-        domain: peerDomain,
-        namespaceId,
-        updatedAt: new Date(),
-      })
-      .returning({ id: user.id });
+    const b = { account: 'expired-b', domain: peerDomain, namespaceId };
     const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     const pastExpiresAt = new Date(
       pastRequestedAt.getTime() + 6 * 24 * 60 * 60 * 1000,
     );
 
     await database.db.transaction((tx) =>
-      relationships.writeLocalP2PIntentInTx(tx, a.id, b.id, true),
+      relationships.writeLocalP2PIntentInTx(tx, a.id, b, true),
     );
-    const relationship = await findP2PRelationship(database.db, a.id, b.id);
+    const relationship = await findP2PRelationship(database.db, a.id, b);
     await database.db.transaction(async (tx) => {
       await tx
         .update(relationshipIntent)
@@ -208,7 +201,7 @@ describe('Friend-request client state e2e', () => {
         );
       await relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
-        peerUserId: b.id,
+        peerUserId: b,
         status: 'REQUESTED',
         profileRev: 0,
         note: 'arrived too late',
@@ -218,14 +211,14 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    let pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
+    let pair = (await findP2PRelationship(database.db, a.id, b)).pair;
     expect(pair?.active).toBe(false);
     expect(pair?.threadId).not.toBeNull();
 
     await database.db.transaction(async (tx) => {
       // The same explicit request must renew an expired direction even when status and note are
       // unchanged. It refreshes its expiry, but cannot activate while the peer direction is expired.
-      await relationships.writeLocalP2PIntentInTx(tx, a.id, b.id, true);
+      await relationships.writeLocalP2PIntentInTx(tx, a.id, b, true);
     });
     const renewedLocal = await database.db.query.relationshipIntent.findFirst({
       where: and(
@@ -235,14 +228,14 @@ describe('Friend-request client state e2e', () => {
     });
     expect(renewedLocal?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
 
-    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
+    pair = (await findP2PRelationship(database.db, a.id, b)).pair;
     expect(pair?.active).toBe(false);
 
     await database.db.transaction(async (tx) => {
       const now = new Date();
       await relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
-        peerUserId: b.id,
+        peerUserId: b,
         status: 'REQUESTED',
         profileRev: 0,
         note: 'renewed',
@@ -252,7 +245,7 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
+    pair = (await findP2PRelationship(database.db, a.id, b)).pair;
     // Applying the peer-owned renewed request promotes only the effective local request. Crossed
     // requests are already confirmed while the peer-owned direction remains REQUESTED.
     expect(pair?.active).toBe(true);
@@ -261,7 +254,7 @@ describe('Friend-request client state e2e', () => {
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
         localUserId: a.id,
-        peerUserId: b.id,
+        peerUserId: b,
         status: 'ACCEPTED',
         profileRev: 0,
         note: 'renewed',
@@ -270,7 +263,7 @@ describe('Friend-request client state e2e', () => {
         origin: peerDomain,
       }),
     );
-    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
+    pair = (await findP2PRelationship(database.db, a.id, b)).pair;
     expect(pair?.active).toBe(true);
     expect(pair?.threadId).not.toBeNull();
   });

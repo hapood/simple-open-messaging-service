@@ -6,7 +6,7 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   account,
   sessionToken,
-  user as userTable,
+  account as userTable,
 } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';

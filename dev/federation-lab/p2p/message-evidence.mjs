@@ -47,6 +47,7 @@ export function quoteIdentity(node, message, thread, messages, key) {
     quote.namespaceId === undefined
       ? (quote.sourceSeq ?? quote.seq)
       : quote.seq;
+  if (coordinateSeq === 0) return { absent: true };
   const target = thread.messages.find((row) =>
     namespaceId === 0
       ? row.seq === coordinateSeq

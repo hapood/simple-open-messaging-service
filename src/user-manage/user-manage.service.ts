@@ -1,7 +1,9 @@
+import { groupStateSql } from '../group/group-state.js';
+import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, pushToken, user } from '../database/schema.js';
+import { account, pushToken, account as user } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -42,12 +44,13 @@ export class UserManageService {
             latest."createdAt" AS "joinedAt", group_profile.account AS "groupAccount",
             group_profile.name AS "groupName"
           FROM "MessageThread" thread
-          JOIN "Group" group_profile ON group_profile.id = thread."groupId"
+          JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           JOIN LATERAL (
             SELECT member_fact.operation, member_fact.body, member_fact."createdAt"
             FROM "GroupMetaMemberFeed" member_fact
-            WHERE member_fact."groupId" = group_profile.id
-              AND member_fact."memberUserId" = ${id}
+            WHERE member_fact."threadId" = group_profile.id
+              AND member_fact."memberAccount" = (SELECT account FROM "Account" WHERE id = ${id})
+              AND member_fact."memberDomain" = 'local' AND member_fact."memberNamespaceId" = 0
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) latest ON latest.operation = 'UPSERT'
@@ -95,9 +98,9 @@ export class UserManageService {
         .select({
           id: user.id,
           account: user.account,
-          name: user.name,
-          avatar: user.avatar,
-          bio: user.bio,
+          name: accountProfileFields(user).name,
+          avatar: accountProfileFields(user).avatar,
+          bio: accountProfileFields(user).bio,
           domain: user.domain,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
@@ -107,7 +110,6 @@ export class UserManageService {
           mustChangePassword: account.mustChangePassword,
         })
         .from(user)
-        .innerJoin(account, eq(account.id, user.id))
         .where(where)
         .orderBy(desc(user.createdAt))
         .offset(opts.skip ?? 0)
@@ -115,7 +117,6 @@ export class UserManageService {
       this.database.db
         .select({ value: count() })
         .from(user)
-        .innerJoin(account, eq(account.id, user.id))
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -236,7 +237,6 @@ export class UserManageService {
     const target = await this.database.db
       .select({ id: account.id })
       .from(account)
-      .innerJoin(user, eq(user.id, account.id))
       .where(
         and(eq(user.id, id), eq(user.domain, 'local'), eq(user.namespaceId, 0)),
       )

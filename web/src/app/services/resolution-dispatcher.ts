@@ -22,7 +22,9 @@ export type ResolutionTerminal<T> =
 
 /** Shared request/SSE single-flight, early-terminal reconciliation and reconnect recovery. */
 export class ResolutionDispatcher<S, T> {
+  private sessionEpoch = 0;
   private readonly active = new Map<string, Observable<T>>();
+  private readonly initial = new Map<string, Promise<void>>();
   private readonly terminals = new Map<
     string,
     { value: ResolutionTerminal<T>; expiresAt: number }
@@ -54,13 +56,22 @@ export class ResolutionDispatcher<S, T> {
     const key = JSON.stringify(selector);
     const existing = this.active.get(key);
     if (existing) return existing;
+    let initialDone!: () => void;
+    this.initial.set(
+      key,
+      new Promise<void>((resolve) => (initialDone = resolve)),
+    );
     const request = new Observable<T>((subscriber) => {
-      void this.run(selector).then(
+      void this.run(selector, initialDone).then(
         (result) => {
           subscriber.next(result);
           subscriber.complete();
+          initialDone();
         },
-        (error) => subscriber.error(error),
+        (error) => {
+          subscriber.error(error);
+          initialDone();
+        },
       );
     }).pipe(
       share({
@@ -72,13 +83,44 @@ export class ResolutionDispatcher<S, T> {
     );
     this.active.set(key, request);
     request.subscribe({
-      error: () => this.active.delete(key),
-      complete: () => this.active.delete(key),
+      error: () => {
+        if (this.active.get(key) !== request) return;
+        this.active.delete(key);
+        this.initial.delete(key);
+      },
+      complete: () => {
+        if (this.active.get(key) !== request) return;
+        this.active.delete(key);
+        this.initial.delete(key);
+      },
     });
     return request;
   }
 
-  private async run(selector: S): Promise<T> {
+  /** Detach completed-session requests from future selectors. Existing subscribers own their teardown. */
+  reset(): void {
+    this.sessionEpoch++;
+    this.active.clear();
+    this.initial.clear();
+    this.terminals.clear();
+    this.waiters.clear();
+  }
+
+  /** Wait for the first response, including delivery of READY data, but never for a PENDING terminal. */
+  prepare(selector: S): Promise<void> {
+    this.resolve(selector);
+    // An offline/cold connection has no immediate response to wait for. Keep cached rows usable;
+    // the existing request resumes through HELLO and enriches them in the background.
+    if (!this.realtime.helloReady$.value) return Promise.resolve();
+    return this.initial.get(JSON.stringify(selector)) ?? Promise.resolve();
+  }
+
+  private async run(selector: S, initialDone: () => void): Promise<T> {
+    const epoch = this.sessionEpoch;
+    const assertSession = () => {
+      if (epoch !== this.sessionEpoch)
+        throw new Error('resolution session ended');
+    };
     for (;;) {
       await firstValueFrom(
         this.realtime.helloReady$.pipe(
@@ -87,12 +129,16 @@ export class ResolutionDispatcher<S, T> {
           timeout(30_000),
         ),
       );
+      assertSession();
       const generation = this.realtime.helloGeneration$.value;
       const response = await firstValueFrom(
         from(this.start(selector)).pipe(timeout(30_000)),
       );
+      assertSession();
       if (response.status === 'READY') return response.result;
+      initialDone();
       const terminal = await this.awaitTerminal(response.requestId, generation);
+      assertSession();
       if (!terminal) continue;
       if ('result' in terminal) return terminal.result;
       throw new Error(`resolution failed: ${terminal.reason}`);

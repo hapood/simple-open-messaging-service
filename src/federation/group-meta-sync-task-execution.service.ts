@@ -1,3 +1,12 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
+import { MessageService } from '../message/message.service.js';
+import { SystemMessageType } from '../message/system-message.js';
+import {
+  requireGroupThreadContentLockUnderGroupInTx,
+  type ThreadContentLock,
+} from '../relationship/thread-content-lock.js';
+import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from '../group-meta/current-group-roster.js';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
@@ -18,14 +27,16 @@ import {
 import { GroupRole } from '../database/enums.js';
 import {
   durableTask,
-  group,
   groupMetaFeed,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   messageThread,
 } from '../database/schema.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
-import { upsertSourceUserInTx } from '../user/source-user.js';
+import {
+  toClientIdentity,
+  type NamespacedAddress,
+} from '../common/client-identity.js';
 import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -49,6 +60,7 @@ export class GroupMetaSyncTaskExecutionService {
     private readonly client: FederationGroupMetaClient,
     private readonly groupRosterProjection: FederationGroupRosterProjectionService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly messages: MessageService,
   ) {}
 
   async execute(task: DurableTask): Promise<GroupMetaSyncCompletionEffect> {
@@ -109,6 +121,9 @@ export class GroupMetaSyncTaskExecutionService {
     )
       throw new Error('invalid group-meta full recovery target');
     await this.database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: payload.groupAccount, domain: payload.peerDomain },
+      ]);
       const locked = await lockTaskInTx(tx, taskId);
       const current = readGroupMetaSyncTask(locked);
       requireSamePull(current.payload, current.checkpoint, payload, checkpoint);
@@ -139,6 +154,9 @@ export class GroupMetaSyncTaskExecutionService {
       throw new Error('group-meta page did not reach its fixed target');
     const items = page.items.map((item) => validateItem(item, checkpoint.mode));
     await this.database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: payload.groupAccount, domain: payload.peerDomain },
+      ]);
       const locked = await lockTaskInTx(tx, taskId);
       const current = readGroupMetaSyncTask(locked);
       requireSamePull(current.payload, current.checkpoint, payload, checkpoint);
@@ -185,7 +203,7 @@ export class GroupMetaSyncTaskExecutionService {
           fullSyncRunId: groupMetaProfileFeed.fullSyncRunId,
         })
         .from(groupMetaProfileFeed)
-        .where(eq(groupMetaProfileFeed.groupId, payload.groupId))
+        .where(eq(groupMetaProfileFeed.threadId, payload.groupId))
         .limit(1);
       if (existing?.fullSyncRunId === taskId && existing.feedId !== item.feedId)
         throw new Error('full group-meta returned more than one profile item');
@@ -196,19 +214,19 @@ export class GroupMetaSyncTaskExecutionService {
           await tx
             .update(groupMetaProfileFeed)
             .set({ fullSyncRunId: taskId, updatedAt: new Date() })
-            .where(eq(groupMetaProfileFeed.groupId, payload.groupId));
+            .where(eq(groupMetaProfileFeed.threadId, payload.groupId));
         return;
       }
       await tx
         .insert(groupMetaProfileFeed)
         .values({
-          groupId: payload.groupId,
+          threadId: payload.groupId,
           feedId: item.feedId,
           profileRev: item.profileRev,
           fullSyncRunId: mode === 'full' ? taskId : null,
         })
         .onConflictDoUpdate({
-          target: groupMetaProfileFeed.groupId,
+          target: groupMetaProfileFeed.threadId,
           set: {
             feedId: item.feedId,
             profileRev: item.profileRev,
@@ -219,23 +237,24 @@ export class GroupMetaSyncTaskExecutionService {
       return;
     }
 
-    const memberUserId = await upsertSourceUserInTx(tx, {
-      account: item.account,
-      domain: item.domain,
-      namespaceId: payload.namespaceId,
-      name: item.account,
-      avatar: null,
-      bio: '',
-      profileRev: 0,
-    });
+    const member = toClientIdentity(
+      {
+        account: item.account,
+        domain: item.domain,
+        namespaceId: payload.namespaceId,
+      },
+      loadFederationConfig().domain,
+    );
     if (mode === 'full') {
       const duplicate = await tx
         .select({ feedId: groupMetaMemberFeed.feedId })
         .from(groupMetaMemberFeed)
         .where(
           and(
-            eq(groupMetaMemberFeed.groupId, payload.groupId),
-            eq(groupMetaMemberFeed.memberUserId, memberUserId),
+            eq(groupMetaMemberFeed.threadId, payload.groupId),
+            eq(groupMetaMemberFeed.memberAccount, member.account),
+            eq(groupMetaMemberFeed.memberDomain, member.domain),
+            eq(groupMetaMemberFeed.memberNamespaceId, member.namespaceId),
             eq(groupMetaMemberFeed.fullSyncRunId, taskId),
             ne(groupMetaMemberFeed.feedId, item.feedId),
           ),
@@ -246,14 +265,16 @@ export class GroupMetaSyncTaskExecutionService {
     }
     const [existing] = await tx
       .select({
-        memberUserId: groupMetaMemberFeed.memberUserId,
+        account: groupMetaMemberFeed.memberAccount,
+        domain: groupMetaMemberFeed.memberDomain,
+        namespaceId: groupMetaMemberFeed.memberNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
       })
       .from(groupMetaMemberFeed)
       .where(
         and(
-          eq(groupMetaMemberFeed.groupId, payload.groupId),
+          eq(groupMetaMemberFeed.threadId, payload.groupId),
           eq(groupMetaMemberFeed.feedId, item.feedId),
         ),
       )
@@ -264,7 +285,9 @@ export class GroupMetaSyncTaskExecutionService {
         : {};
     if (existing) {
       if (
-        existing.memberUserId !== memberUserId ||
+        existing.account !== member.account ||
+        existing.domain !== member.domain ||
+        existing.namespaceId !== member.namespaceId ||
         existing.operation !== item.operation ||
         !isDeepStrictEqual(existing.body, body)
       )
@@ -275,16 +298,18 @@ export class GroupMetaSyncTaskExecutionService {
           .set({ fullSyncRunId: taskId, updatedAt: new Date() })
           .where(
             and(
-              eq(groupMetaMemberFeed.groupId, payload.groupId),
+              eq(groupMetaMemberFeed.threadId, payload.groupId),
               eq(groupMetaMemberFeed.feedId, item.feedId),
             ),
           );
       return;
     }
     await tx.insert(groupMetaMemberFeed).values({
-      groupId: payload.groupId,
+      threadId: payload.groupId,
       feedId: item.feedId,
-      memberUserId,
+      memberAccount: member.account,
+      memberDomain: member.domain,
+      memberNamespaceId: member.namespaceId,
       operation: item.operation,
       body,
       fullSyncRunId: mode === 'full' ? taskId : null,
@@ -297,6 +322,9 @@ export class GroupMetaSyncTaskExecutionService {
     checkpoint: Extract<GroupMetaSyncCheckpoint, { phase: 'CLEANUP_MEMBERS' }>,
   ): Promise<void> {
     await this.database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: payload.groupAccount, domain: payload.peerDomain },
+      ]);
       const locked = await lockTaskInTx(tx, taskId);
       const current = readGroupMetaSyncTask(locked);
       requireSameTask(current.payload, payload);
@@ -308,7 +336,7 @@ export class GroupMetaSyncTaskExecutionService {
         .from(groupMetaMemberFeed)
         .where(
           and(
-            eq(groupMetaMemberFeed.groupId, payload.groupId),
+            eq(groupMetaMemberFeed.threadId, payload.groupId),
             sql`${groupMetaMemberFeed.fullSyncRunId} IS DISTINCT FROM ${taskId}`,
           ),
         )
@@ -317,7 +345,7 @@ export class GroupMetaSyncTaskExecutionService {
       if (stale.length > 0)
         await tx.delete(groupMetaMemberFeed).where(
           and(
-            eq(groupMetaMemberFeed.groupId, payload.groupId),
+            eq(groupMetaMemberFeed.threadId, payload.groupId),
             inArray(
               groupMetaMemberFeed.feedId,
               stale.map((row) => row.feedId),
@@ -344,21 +372,34 @@ export class GroupMetaSyncTaskExecutionService {
     checkpoint: Extract<GroupMetaSyncCheckpoint, { phase: 'FINALIZE' }>,
   ): Promise<GroupMetaSyncCompletionEffect> {
     return this.database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: payload.groupAccount, domain: payload.peerDomain },
+      ]);
       const locked = await lockTaskInTx(tx, taskId);
       const current = readGroupMetaSyncTask(locked);
       requireSameTask(current.payload, payload);
       if (!isDeepStrictEqual(current.checkpoint, checkpoint))
         throw new Error('group-meta final checkpoint changed');
       await requireMirrorInTx(tx, payload);
+      const [thread] = await tx
+        .select({ id: messageThread.id })
+        .from(messageThread)
+        .where(eq(messageThread.id, payload.groupId))
+        .limit(1);
+      if (!thread) throw new Error('group-meta mirror thread is missing');
+      const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
+        tx,
+        payload.groupId,
+        thread.id,
+      );
       const roster = await tx.execute<{ role: GroupRole }>(sql`
         SELECT latest.body ->> 'role' AS role
         FROM (
-          SELECT DISTINCT ON (member_identity.domain, member_identity.account)
+          SELECT DISTINCT ON (member_fact."memberDomain", member_fact."memberAccount")
             member_fact.operation, member_fact.body
           FROM "GroupMetaMemberFeed" member_fact
-          JOIN "User" member_identity ON member_identity.id = member_fact."memberUserId"
-          WHERE member_fact."groupId" = ${payload.groupId}
-          ORDER BY member_identity.domain, member_identity.account,
+          WHERE member_fact."threadId" = ${payload.groupId}
+          ORDER BY member_fact."memberDomain", member_fact."memberAccount",
                    member_fact."feedId" DESC
         ) latest
         WHERE latest.operation = 'UPSERT'
@@ -374,7 +415,7 @@ export class GroupMetaSyncTaskExecutionService {
           fullSyncRunId: groupMetaProfileFeed.fullSyncRunId,
         })
         .from(groupMetaProfileFeed)
-        .where(eq(groupMetaProfileFeed.groupId, payload.groupId))
+        .where(eq(groupMetaProfileFeed.threadId, payload.groupId))
         .limit(1);
       if (!profile) throw new Error('group-meta mirror has no profile item');
       if (checkpoint.mode === 'full' && profile.fullSyncRunId !== taskId)
@@ -383,22 +424,36 @@ export class GroupMetaSyncTaskExecutionService {
       const [feed] = await tx
         .select({ feedEndId: groupMetaFeed.feedEndId })
         .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.groupId, payload.groupId))
+        .where(eq(groupMetaFeed.threadId, payload.groupId))
         .limit(1);
       if (feed && feed.feedEndId > through)
         throw new Error('group-meta mirror cursor moved beyond task target');
+      // Full snapshots establish a baseline; only a committed delta can prove an observed departure.
+      if (checkpoint.mode === 'delta' && feed && feed.feedEndId < through)
+        await this.writeObservedDeparturesInTx(
+          tx,
+          payload,
+          thread.id,
+          threadLock,
+          feed.feedEndId,
+          through,
+        );
       await tx
         .insert(groupMetaFeed)
-        .values({ groupId: payload.groupId, feedEndId: through })
+        .values({ threadId: payload.groupId, feedEndId: through })
         .onConflictDoUpdate({
-          target: groupMetaFeed.groupId,
+          target: groupMetaFeed.threadId,
           set: { feedEndId: through, updatedAt: new Date() },
         });
       await tx
-        .update(group)
-        .set({ defaultProfileRev: profile.profileRev, updatedAt: new Date() })
-        .where(eq(group.id, payload.groupId));
-      const projection = await this.applyCommittedGroupMetaInTx(tx, payload);
+        .update(messageThread)
+        .set({ updatedAt: new Date() })
+        .where(eq(messageThread.id, thread.id));
+      const projection = await this.applyCommittedGroupMetaInTx(
+        tx,
+        payload,
+        threadLock,
+      );
       const clientFeedUpdates =
         projection.threadId > 0
           ? await this.clientStateFeed.publishGroupStateToLocalAccountsInTx(
@@ -430,17 +485,64 @@ export class GroupMetaSyncTaskExecutionService {
     });
   }
 
+  private async writeObservedDeparturesInTx(
+    tx: DatabaseTransaction,
+    payload: GroupMetaSyncTaskPayload,
+    threadId: number,
+    threadLock: ThreadContentLock,
+    after: bigint,
+    through: bigint,
+  ): Promise<void> {
+    const departed = await tx.execute<
+      Record<string, unknown> & NamespacedAddress
+    >(sql`
+      WITH transitions AS (
+        SELECT "feedId", "memberAccount" AS account, "memberDomain" AS domain,
+               "memberNamespaceId" AS "namespaceId", operation,
+               lag(operation) OVER (
+                 PARTITION BY "memberAccount", "memberDomain", "memberNamespaceId"
+                 ORDER BY "feedId"
+               ) AS previous
+        FROM "GroupMetaMemberFeed"
+        WHERE "threadId" = ${payload.groupId} AND "feedId" <= ${through}
+      )
+      SELECT account, domain, "namespaceId" FROM transitions
+      WHERE "feedId" > ${after} AND operation = 'DEPART' AND previous = 'UPSERT'
+        AND domain <> 'local'
+      ORDER BY "feedId"
+    `);
+    if (!departed.rows.length) return;
+    const recipientUserIds = await readCurrentLocalAuthorizedGroupMemberIdsInTx(
+      tx,
+      {
+        groupId: payload.groupId,
+        threadId,
+      },
+    );
+    if (!recipientUserIds.length) return;
+    // Local members use their directed relationship transition, preventing a second notice when
+    // the roster later catches up. Other members are observed through the Group Meta cursor.
+    for (const member of departed.rows)
+      await this.messages.writeDepartureMessageInTx(
+        tx,
+        threadId,
+        SystemMessageType.GROUP_LEFT,
+        member,
+        { threadLock, recipientUserIds, visibleThroughUserIds: [] },
+      );
+  }
+
   private async applyCommittedGroupMetaInTx(
     tx: DatabaseTransaction,
     payload: GroupMetaSyncTaskPayload,
+    threadLock: ThreadContentLock,
   ) {
-    const localDomain = loadFederationConfig().domain;
     const [mirror] = await tx
       .select({
         threadId: messageThread.id,
       })
       .from(group)
-      .innerJoin(messageThread, eq(messageThread.groupId, group.id))
+      .innerJoin(messageThread, eq(messageThread.id, group.id))
       .where(eq(group.id, payload.groupId))
       .limit(1);
     if (!mirror?.threadId)
@@ -455,20 +557,19 @@ export class GroupMetaSyncTaskExecutionService {
              latest.body ->> 'role' AS role,
              local_identity.id AS "localUserId"
       FROM (
-        SELECT DISTINCT ON (member_identity.domain, member_identity.account)
-          member_identity.account,
-          member_identity.domain,
+        SELECT DISTINCT ON (member_fact."memberDomain", member_fact."memberAccount")
+          member_fact."memberAccount" AS account,
+          member_fact."memberDomain" AS domain,
+          member_fact."memberNamespaceId" AS "namespaceId",
           member_fact.operation,
           member_fact.body
         FROM "GroupMetaMemberFeed" member_fact
-        JOIN "User" member_identity
-          ON member_identity.id = member_fact."memberUserId"
-        WHERE member_fact."groupId" = ${payload.groupId}
-        ORDER BY member_identity.domain, member_identity.account,
+        WHERE member_fact."threadId" = ${payload.groupId}
+        ORDER BY member_fact."memberDomain", member_fact."memberAccount",
                  member_fact."feedId" DESC
       ) latest
-      LEFT JOIN "User" local_identity
-        ON latest.domain = ${localDomain}
+      LEFT JOIN "Account" local_identity
+        ON latest.domain = 'local' AND latest."namespaceId" = 0
        AND local_identity.account = latest.account
        AND local_identity.domain = 'local'
        AND local_identity."namespaceId" = 0
@@ -498,6 +599,7 @@ export class GroupMetaSyncTaskExecutionService {
           ? null
           : { account: owners[0]!.account, domain: owners[0]!.domain },
       changes: [],
+      threadLock,
     });
   }
 }
@@ -603,9 +705,9 @@ async function requireMirrorInTx(
     .where(
       and(
         eq(group.id, payload.groupId),
-        eq(group.account, payload.groupAccount),
-        eq(group.domain, payload.peerDomain),
-        eq(group.namespaceId, payload.namespaceId),
+        eq(groupStateFields.account, payload.groupAccount),
+        eq(groupStateFields.domain, payload.peerDomain),
+        eq(groupStateFields.namespaceId, payload.namespaceId),
       ),
     )
     .limit(1);

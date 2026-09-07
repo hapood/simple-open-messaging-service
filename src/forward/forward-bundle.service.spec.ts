@@ -106,7 +106,7 @@ function databaseFake(childDepth: number, tx?: unknown) {
         message: {
           findFirst: vi.fn().mockResolvedValue(sourceQueryRow(childDepth)),
         },
-        user: {
+        account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'alice',
             domain: 'local',
@@ -579,9 +579,10 @@ describe('ForwardBundleService', () => {
     expect(prepared.messages[0]).toMatchObject({ id: 1 });
     expect(prepared.messages[1]).toMatchObject({ id: 2 });
     expect(prepared.messages[1].quoteTargetId).toBe(1);
+    expect(JSON.parse(prepared.messages[1].content)).toEqual({ text: 'reply' });
   });
 
-  it('omits an unselected quote target', async () => {
+  it('retains an absent quote when its target is not selected', async () => {
     const reply = textQueryRow(
       7,
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
@@ -597,7 +598,8 @@ describe('ForwardBundleService', () => {
 
     expect(prepared.messages).toHaveLength(1);
     expect(prepared.messages[0]).toMatchObject({ id: 1 });
-    expect(prepared.messages[0].quoteTargetId).toBeUndefined();
+    expect(prepared.messages[0].quoteTargetId).toBe(0);
+    expect(JSON.parse(prepared.messages[0].content)).toEqual({ text: 'reply' });
   });
 
   it('omits the optional profile when the exact message revision is unavailable', async () => {
@@ -754,7 +756,7 @@ describe('ForwardBundleService', () => {
       },
     ],
     [
-      'missing quote target',
+      'negative quote target',
       {
         id: 1,
         author: { account: 'a', domain: 'peer.test' },
@@ -762,7 +764,7 @@ describe('ForwardBundleService', () => {
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
-        quote: { preview: 'B：missing', targetId: 2 },
+        quoteTargetId: -1,
       },
     ],
     [
@@ -774,7 +776,7 @@ describe('ForwardBundleService', () => {
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
-        quote: null,
+        quoteTargetId: null,
       },
     ],
   ])('rejects federated %s', async (_label, wireMessage) => {

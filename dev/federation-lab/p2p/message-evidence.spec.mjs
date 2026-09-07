@@ -96,3 +96,29 @@ test('maps publisher seq 3 to foreign author origin seq 2 without a local target
     true,
   );
 });
+
+test('explicit absent quotes compare equally across nodes and differ from ordinary text', () => {
+  for (const name of ['alpha', 'bravo']) {
+    const node = { name, domain: `${name}.test` };
+    assert.deepEqual(
+      quoteIdentity(
+        node,
+        { content: { text: 'reply', quote: { seq: 0, namespaceId: 0 } } },
+        { messages: [] },
+        {},
+        'pair',
+      ),
+      { absent: true },
+    );
+    assert.equal(
+      quoteIdentity(
+        node,
+        { content: { text: 'ordinary' } },
+        { messages: [] },
+        {},
+        'pair',
+      ),
+      null,
+    );
+  }
+});

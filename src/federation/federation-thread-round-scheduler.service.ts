@@ -27,7 +27,10 @@ import {
 } from './federation-thread-round.events.js';
 import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
 import { FEDERATION_THREAD_ROUND_DEFAULT_TAKE } from './federation-thread-round.constants.js';
-import { FederationThreadRoundRemoteError } from './federation-thread-round-error.js';
+import {
+  FederationThreadRoundAuthorizationEpochChangedError,
+  FederationThreadRoundRemoteError,
+} from './federation-thread-round-error.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
@@ -605,9 +608,15 @@ export class FederationThreadRoundSchedulerService
       this.wakeStateFeed(peerDomain, 0n);
       return false;
     }
-    this.logger.warn(
-      `${direction} round failed for thread ${threadId}: ${(error as Error).message}`,
-    );
+    if (cause instanceof FederationThreadRoundAuthorizationEpochChangedError) {
+      this.logger.debug(
+        `stale ${direction} round for thread ${threadId} from ${peerDomain}: ${cause.message}`,
+      );
+    } else {
+      this.logger.warn(
+        `${direction} round failed for thread ${threadId}: ${(error as Error).message}`,
+      );
+    }
     const decision = this.retryDecision(cause);
     if (decision.retry) {
       if (!(await this.isNamespaceActive(peerDomain, namespaceId))) {

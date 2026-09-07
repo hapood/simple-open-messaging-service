@@ -137,6 +137,7 @@ describe('federation thread synchronization state', () => {
             sourceNamespaceId: namespaceId,
             creatorAccount: 'bob',
             creatorDomain: peerDomain,
+            creatorNamespaceId: namespaceId,
             contentType: 'IMAGE',
             content: JSON.stringify({ digest: 'a'.repeat(64) }),
             localState: 'STUB',
@@ -183,7 +184,7 @@ describe('federation thread synchronization state', () => {
           applyDependencies,
         }),
       ),
-    ).rejects.toThrow('reverse round authorization epoch changed');
+    ).rejects.toThrow('federation round authorization epoch changed');
 
     expect(applyDependencies).not.toHaveBeenCalled();
     const [gap] = await database.db
@@ -390,12 +391,12 @@ describe('federation thread synchronization state', () => {
         );
         const local = await tx.execute<{ id: number }>(sql`
           WITH created_group AS (
-            INSERT INTO "Group" (account, name, domain, "updatedAt")
-            VALUES ('!migration-authority', 'Migration authority', 'local', CURRENT_TIMESTAMP)
+            INSERT INTO "GroupAccount" (account, "updatedAt")
+            VALUES ('!migration-authority', CURRENT_TIMESTAMP)
             RETURNING id
           )
-          INSERT INTO "MessageThread" (type, "groupId", "curSeq", "authorityNamespaceId", "updatedAt")
-          SELECT 'GROUP', id, 1, 0, CURRENT_TIMESTAMP FROM created_group RETURNING id
+          INSERT INTO "MessageThread" (type, "groupAccountId", "groupAccount", "groupDomain", "curSeq", "authorityNamespaceId", "updatedAt")
+          SELECT 'GROUP', id, '!migration-authority', 'local', 1, 0, CURRENT_TIMESTAMP FROM created_group RETURNING id
       `);
         const localId = local.rows[0].id;
         await tx.execute(

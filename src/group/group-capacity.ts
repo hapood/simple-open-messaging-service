@@ -1,3 +1,8 @@
+import { groupStateSql } from './group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -11,25 +16,25 @@ export const SERVER_MAX_GROUP_MEMBERS = 999;
 export const SERVER_GROUP_FULL_REASON = `Group invitations, including pending invitations, have reached this server's ${SERVER_MAX_GROUP_MEMBERS}-person limit.`;
 
 /**
- * Serialize joins at the origin group and reserve one local membership slot.
+ * Check capacity while the caller holds the origin group business scope and thread lock.
  * Existing locally authorized members consume no new slot, which keeps retries idempotent. The
  * origin reserves capacity when it authors REQUESTED; member acceptance is deliberately irrelevant.
  */
 export async function assertServerGroupCapacityInTx(
   tx: DatabaseTransaction,
   threadId: number,
-  memberUserId: number,
+  memberUserId: AccountTarget,
 ): Promise<void> {
+  const member = await accountAddressInTx(tx, memberUserId);
   const locked = await tx.execute<{
     groupId: number;
     account: string;
     domain: string;
   }>(sql`
     SELECT g.id AS "groupId", g.account, g.domain
-    FROM "Group" g
-    JOIN "MessageThread" thread ON thread."groupId" = g.id
+    FROM ${groupStateSql} g
+    JOIN "MessageThread" thread ON thread.id = g.id
     WHERE thread.id = ${threadId}
-    FOR UPDATE OF g
   `);
   if (locked.rows.length === 0) {
     throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
@@ -43,7 +48,7 @@ export async function assertServerGroupCapacityInTx(
       COUNT(*) AS "authorizedCount",
       COALESCE(BOOL_OR(
         (pair."endpointBAccount", pair."endpointBDomain") =
-        (SELECT member.account, member.domain FROM "User" member WHERE member.id = ${memberUserId})
+        (${member.account}, ${member.domain})
       ), false) AS "alreadyAuthorized"
     FROM "RelationshipPair" pair
     JOIN "RelationshipIntent" intent

@@ -1,4 +1,11 @@
-import { forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
+import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  localAccountsForTargetsInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
+import type { NamespacedAddress } from '../common/client-identity.js';
+import { Injectable } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -7,23 +14,21 @@ import {
 } from '../database/database.service.js';
 import {
   account as accountTable,
-  group,
   relationshipPair,
   relationshipIntent,
   messageThread,
   threadAudience,
   accountThreadState,
-  user,
+  account as user,
+  profileTable,
 } from '../database/schema.js';
 import { MessageThreadType } from '../database/enums.js';
 import { normalizeAccount } from '../common/account.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import {
   closeFederatedAudienceInTx,
@@ -31,7 +36,7 @@ import {
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
-import { lockBusinessAccountsInTx } from './business-scope-lock.js';
+import { requireP2PThreadContentLockUnderPairInTx } from './thread-content-lock.js';
 
 /** Relationship-request TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -76,18 +81,13 @@ export function applyFederatedPendingProfileSnapshot(
  */
 @Injectable()
 export class RelationshipService {
-  private readonly config = loadFederationConfig();
-
   constructor(
     private readonly database: DatabaseService,
     private readonly participantService: AccountThreadStateService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly relationshipIntents: RelationshipIntentService,
     private readonly namespaces: FederationNamespaceService,
-    @Optional() private readonly messages?: MessageService,
-    @Optional()
-    @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
+    private readonly messages: MessageService,
   ) {}
 
   /** Reap never-activated request shells after every authored request has expired. The transaction
@@ -134,16 +134,16 @@ export class RelationshipService {
   ): Promise<void> {
     const [state] = await tx
       .select({
-        groupId: messageThread.groupId,
-        account: group.account,
-        domain: group.domain,
-        name: group.name,
-        avatar: group.avatar,
-        description: group.description,
-        profileRev: group.defaultProfileRev,
+        groupId: messageThread.id,
+        account: groupStateFields.account,
+        domain: groupStateFields.domain,
+        name: groupStateFields.name,
+        avatar: groupStateFields.avatar,
+        description: groupStateFields.description,
+        profileRev: groupStateFields.profileRev,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, threadId))
       .limit(1);
     if (!state?.groupId || state.domain !== 'local') return;
@@ -152,7 +152,7 @@ export class RelationshipService {
         eq(relationshipIntent.authorSide, 'A'),
         sql`EXISTS (
             SELECT 1 FROM "RelationshipPair" pair
-            JOIN "User" identity ON identity.id = ${memberUserId}
+            JOIN "Account" identity ON identity.id = ${memberUserId}
             WHERE pair.id = ${relationshipIntent.pairId}
               AND pair."threadId" = ${threadId}
               AND pair."endpointBAccount" = identity.account
@@ -162,7 +162,7 @@ export class RelationshipService {
           )`,
       ),
     });
-    const member = await tx.query.user.findFirst({
+    const member = await tx.query.account.findFirst({
       where: eq(user.id, memberUserId),
       columns: { account: true },
     });
@@ -170,11 +170,11 @@ export class RelationshipService {
     const feedId = await this.clientStateFeed.writeInTx(tx, {
       userId: memberUserId,
       account: state.account,
-      domain: this.config.domain,
+      domain: 'local',
       namespaceId: 0,
       eventType: 'RELATIONSHIP_INTENT',
       subjectAccount: member.account,
-      subjectDomain: this.config.domain,
+      subjectDomain: 'local',
       body: {
         status:
           request.status === 'ACCEPTED'
@@ -188,7 +188,7 @@ export class RelationshipService {
         threadId,
         group: {
           account: state.account,
-          domain: this.config.domain,
+          domain: 'local',
           isLocal: true,
           name: state.name,
           avatar: state.avatar,
@@ -201,8 +201,7 @@ export class RelationshipService {
       pendingFeedUpdates.push({ userId: memberUserId, feedId });
   }
 
-  /** Create an outbound federated request by immutable Address. The callback materializes the
-   * existing remote User shell and writes the authoritative RelationshipIntent. */
+  /** Create or refresh an outbound federated request by Address. */
   async createFederatedRelationshipRequest(
     localUserId: number,
     remoteAccount: string,
@@ -213,6 +212,7 @@ export class RelationshipService {
       tx: DatabaseTransaction,
       state: {
         namespaceId: number;
+        created: boolean;
         requestedAt: Date;
         expiresAt: Date;
         note: string;
@@ -224,56 +224,34 @@ export class RelationshipService {
     const trimmed = note.slice(0, 255);
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
-      const local = await tx.query.user.findFirst({
-        where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
-        columns: { account: true, domain: true },
-      });
-      if (!local) throw new Error('local relationship endpoint does not exist');
-      await lockBusinessAccountsInTx(tx, [
-        local,
-        { account, domain: remoteDomain },
-      ]);
       const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
-      const remote = await tx.query.user.findFirst({
-        where: and(
-          eq(user.account, account),
-          eq(user.domain, remoteDomain),
-          eq(user.namespaceId, context.namespaceId),
-        ),
-        columns: { id: true },
-      });
-      const current = remote
-        ? (
-            await this.relationshipIntents.readP2PRelationshipInTx(
-              tx,
-              localUserId,
-              remote.id,
-            )
-          ).firstIntent
-        : undefined;
-      if (
-        current?.status === 'REQUESTED' &&
-        current.expiresAt !== null &&
-        current.expiresAt > now
-      ) {
-        return { created: false };
-      }
+      const relationship =
+        await this.relationshipIntents.readP2PRelationshipByAddressInTx(
+          tx,
+          localUserId,
+          { account, domain: remoteDomain, namespaceId: context.namespaceId },
+        );
+      const current = relationship?.localIntent;
+      const created =
+        !current ||
+        current.status === 'REVOKED' ||
+        (current.expiresAt !== null && current.expiresAt <= now);
       const requestedAt = now;
       const expiresAt = new Date(now.getTime() + INVITE_TTL_MS);
       await afterWrite(tx, {
         namespaceId: context.namespaceId,
+        created,
         requestedAt,
         expiresAt,
         note: trimmed,
         snapshot,
       });
-      return { created: true };
+      return { created };
     });
     return result;
   }
 
-  /** Relationship state for an exact federated Address, including requests that intentionally have
-   * no User stub yet. */
+  /** Relationship state for an exact federated Address without a local account row. */
   async federatedRelationshipStatus(
     localUserId: number,
     remoteAccount: string,
@@ -347,7 +325,7 @@ export class RelationshipService {
         domain === 'local'
           ? 0
           : (await this.namespaces.captureActiveInTx(tx, domain)).namespaceId;
-      const local = await tx.query.user.findFirst({
+      const local = await tx.query.account.findFirst({
         where: eq(user.id, localUserId),
         columns: { account: true, domain: true },
       });
@@ -389,7 +367,7 @@ export class RelationshipService {
       }
       const peer =
         domain === 'local'
-          ? await tx.query.user.findFirst({
+          ? await tx.query.account.findFirst({
               where: and(
                 eq(user.account, account),
                 eq(user.domain, 'local'),
@@ -416,7 +394,7 @@ export class RelationshipService {
   async writeLocalP2PIntentInTx(
     tx: DatabaseTransaction,
     actorUserId: number,
-    peerUserId: number,
+    peerUserId: AccountTarget,
     wantsFriend: boolean,
     note = '',
     peerSnapshot?: FederatedPendingProfileSnapshot,
@@ -424,10 +402,7 @@ export class RelationshipService {
     const threadId = wantsFriend
       ? await this.ensureP2PThreadShellInTx(tx, actorUserId, peerUserId)
       : null;
-    const peer = await tx.query.user.findFirst({
-      where: eq(user.id, peerUserId),
-      columns: { domain: true },
-    });
+    const peer = await accountAddressInTx(tx, peerUserId);
     const written = await this.relationshipIntents.writeP2PAuthoredIntentInTx(
       tx,
       {
@@ -451,98 +426,70 @@ export class RelationshipService {
       else
         await closeFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
     }
-    return this.writeRelationshipRequestClientStateInTx(
-      tx,
-      actorUserId,
-      peerUserId,
-      peerSnapshot,
-    );
+    return [
+      ...(pairEffect.clientFeedUpdates ?? []),
+      ...(await this.writeRelationshipRequestClientStateInTx(
+        tx,
+        actorUserId,
+        peerUserId,
+        peerSnapshot,
+      )),
+    ];
   }
 
   async writeRelationshipRequestClientStateInTx(
     tx: DatabaseTransaction,
-    firstUserId: number,
-    secondUserId: number,
-    secondUserSnapshot?: FederatedPendingProfileSnapshot,
+    firstTarget: AccountTarget,
+    secondTarget: AccountTarget,
+    _secondUserSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Array<{ userId: number; feedId: number }>> {
-    const first = await tx.query.user.findFirst({
-      where: eq(user.id, firstUserId),
-    });
-    const second = await tx.query.user.findFirst({
-      where: eq(user.id, secondUserId),
-    });
+    const first = await accountAddressInTx(tx, firstTarget);
+    const second = await accountAddressInTx(tx, secondTarget);
     const relationship = await this.relationshipIntents.readP2PRelationshipInTx(
       tx,
-      firstUserId,
-      secondUserId,
+      first,
+      second,
     );
-    if (!first || !second) throw new Error('client friend intent user missing');
-    const users = new Map([
-      [first.id, first],
-      [second.id, second],
-    ]);
+    const recipients = await localAccountsForTargetsInTx(tx, [first, second]);
     const pending: Array<{ userId: number; feedId: number }> = [];
     const directions = [
-      relationship.firstIntent && {
-        ...relationship.firstIntent,
-        authorUserId: firstUserId,
-        subjectUserId: secondUserId,
-      },
-      relationship.secondIntent && {
-        ...relationship.secondIntent,
-        authorUserId: secondUserId,
-        subjectUserId: firstUserId,
-      },
-    ].filter((value) => value !== undefined);
-    for (const direction of directions) {
-      const actor = users.get(direction.authorUserId)!;
-      const subject = users.get(direction.subjectUserId)!;
-      const commonBody = {
-        status:
-          direction.status === 'ACCEPTED'
-            ? 'ACCEPTED'
-            : direction.status === 'REVOKED'
-              ? 'REVOKED'
-              : 'REQUESTED',
-        note: direction.note,
-        requestedAt:
-          direction.requestedAt === null
-            ? null
-            : new Date(direction.requestedAt).getTime(),
-        expiresAt:
-          direction.expiresAt === null
-            ? null
-            : new Date(direction.expiresAt).getTime(),
-      };
-      for (const owner of [actor, subject]) {
-        if (owner.domain !== 'local' || owner.availability !== 'AVAILABLE')
-          continue;
-        const peer = owner.id === actor.id ? subject : actor;
-        const projectedPeer = this.clientInviteUser(peer);
-        if (peer.id === secondUserId && secondUserSnapshot) {
-          Object.assign(
-            projectedPeer,
-            applyFederatedPendingProfileSnapshot(
-              projectedPeer,
-              secondUserSnapshot,
-            ),
-          );
-        }
-        const body = {
-          ...commonBody,
-          direction: owner.id === actor.id ? 'OUTGOING' : 'INCOMING',
-          localThreadId: relationship.pair.threadId,
-          peer: projectedPeer,
-        };
+      { actor: first, subject: second, intent: relationship.firstIntent },
+      { actor: second, subject: first, intent: relationship.secondIntent },
+    ];
+    const namespaceId = Math.max(first.namespaceId, second.namespaceId);
+    for (const { actor, subject, intent } of directions) {
+      if (!intent) continue;
+      for (const owner of recipients) {
+        if (owner.availability !== 'AVAILABLE') continue;
+        const outgoing =
+          actor.domain === 'local' && actor.account === owner.account;
+        const peer = outgoing ? subject : actor;
+        const peerIntent = directions.find(
+          (direction) =>
+            direction.actor.account === peer.account &&
+            direction.actor.domain === peer.domain,
+        )?.intent;
         const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
           account: actor.account,
           domain: actor.domain,
-          namespaceId: peer.namespaceId,
-          eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: subject.account,
           subjectDomain: subject.domain,
-          body,
+          namespaceId,
+          eventType: 'RELATIONSHIP_INTENT',
+          body: {
+            status: intent.status,
+            note: intent.note,
+            requestedAt: intent.requestedAt?.getTime() ?? null,
+            expiresAt: intent.expiresAt?.getTime() ?? null,
+            direction: outgoing ? 'OUTGOING' : 'INCOMING',
+            localThreadId: relationship.pair.threadId,
+            peer: await this.clientInviteUser(
+              tx,
+              peer,
+              peerIntent?.profileRev ?? 0,
+            ),
+          },
         });
         if (feedId !== null) pending.push({ userId: owner.id, feedId });
       }
@@ -550,15 +497,29 @@ export class RelationshipService {
     return pending;
   }
 
-  private clientInviteUser(value: typeof user.$inferSelect) {
+  private async clientInviteUser(
+    tx: DatabaseTransaction,
+    value: NamespacedAddress,
+    rev: number,
+  ) {
+    const profile =
+      rev > 0
+        ? await tx.query.profileTable.findFirst({
+            where: and(
+              eq(profileTable.account, value.account),
+              eq(profileTable.domain, value.domain),
+              eq(profileTable.namespaceId, value.namespaceId),
+              eq(profileTable.profileRev, rev),
+            ),
+          })
+        : undefined;
     return {
-      id: value.id,
       account: value.account,
-      name: value.name,
-      avatar: value.avatar,
-      bio: value.bio,
+      name: profile?.displayName ?? value.account,
+      avatar: profile?.avatar ?? '',
+      bio: profile?.bio ?? '',
       domain: value.domain,
-      profileRev: value.defaultProfileRev,
+      profileRev: rev,
     };
   }
 
@@ -567,7 +528,7 @@ export class RelationshipService {
   async closeLocalP2PIntentInTx(
     tx: DatabaseTransaction,
     userAId: number,
-    userBId: number,
+    userBId: AccountTarget,
     reason = '',
   ): Promise<void> {
     await this.writeLocalP2PIntentInTx(tx, userAId, userBId, false, reason);
@@ -608,8 +569,8 @@ export class RelationshipService {
           END AS direction
         FROM "RelationshipIntent" intent
         JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-        JOIN "User" self ON self.id = ${me}
-        JOIN "User" peer ON peer.id IN (${sql.join(
+        JOIN "Account" self ON self.id = ${me}
+        JOIN "Account" peer ON peer.id IN (${sql.join(
           userIds.map((userId) => sql`${userId}`),
           sql`, `,
         )})
@@ -700,17 +661,6 @@ export class RelationshipService {
       );
     // Notify local devices only after the client-state writes commit.
     this.clientStateFeed.notifyFeedUpdates(pendingFeedUpdates);
-    if (
-      result.status === 'auto-accepted' &&
-      this.messages &&
-      this.messageFanout
-    ) {
-      const system = await this.messages.tryWriteSystemMessage(
-        result.threadId,
-        SystemMessageType.FRIEND_ADDED,
-      );
-      if (system) void this.messageFanout.dispatch(system);
-    }
     return result;
   }
 
@@ -718,19 +668,21 @@ export class RelationshipService {
   async createGroupInvite(
     fromUserId: number,
     threadId: number,
-    toUserId: number,
+    toUserId: AccountTarget,
     note = '',
     afterWrite?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<string> {
     const trimmed = (note ?? '').slice(0, 255);
     return this.database.db.transaction(async (tx) => {
+      const memberIdentity = await accountAddressInTx(tx, toUserId);
       const target = await tx.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { groupId: true },
+        columns: { id: true, type: true },
       });
-      if (!target?.groupId) throw new Error('group invite target is invalid');
+      if (target?.type !== 'GROUP')
+        throw new Error('group invite target is invalid');
       await this.relationshipIntents.lockGroupMutationInTx(tx, {
-        groupId: target.groupId,
+        groupId: target.id,
         memberUserId: toUserId,
         threadId,
         projectionUserIds: [fromUserId],
@@ -738,7 +690,7 @@ export class RelationshipService {
       if (afterWrite) await afterWrite(tx);
       else
         await this.relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
-          groupId: target.groupId,
+          groupId: target.id,
           memberUserId: toUserId,
           threadId,
           author: 'GROUP',
@@ -750,13 +702,12 @@ export class RelationshipService {
           eq(relationshipIntent.authorSide, 'A'),
           sql`EXISTS (
             SELECT 1 FROM "RelationshipPair" pair
-            JOIN "User" member_identity ON member_identity.id = ${toUserId}
             WHERE pair.id = ${relationshipIntent.pairId}
               AND pair."threadId" = ${threadId}
-              AND pair."endpointBAccount" = member_identity.account
-              AND pair."endpointBDomain" = member_identity.domain
+              AND pair."endpointBAccount" = ${memberIdentity.account}
+              AND pair."endpointBDomain" = ${memberIdentity.domain}
               AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
-              AND pair."endpointBNamespaceId" = member_identity."namespaceId"
+              AND pair."endpointBNamespaceId" = ${memberIdentity.namespaceId}
           )`,
         ),
         columns: {
@@ -764,12 +715,6 @@ export class RelationshipService {
         },
       });
       if (!request) throw new Error('group request write disappeared');
-      const memberIdentity = await tx.query.user.findFirst({
-        where: eq(user.id, toUserId),
-        columns: { domain: true },
-      });
-      if (!memberIdentity)
-        throw new Error('group invite member identity missing');
       if (memberIdentity.domain !== 'local')
         await openFederatedAudienceInTx(tx, memberIdentity.domain, threadId);
       return request.id.toString();
@@ -834,7 +779,7 @@ export class RelationshipService {
           peerUserId,
         );
         if (!state.pair.active || state.pair.threadId === null) {
-          const peer = await tx.query.user.findFirst({
+          const peer = await tx.query.account.findFirst({
             where: eq(user.id, peerUserId),
             columns: { domain: true },
           });
@@ -852,13 +797,6 @@ export class RelationshipService {
     );
     // Notify local devices only after the client-state writes commit.
     this.clientStateFeed.notifyFeedUpdates(pendingFeedUpdates);
-    if (result.threadId !== undefined && this.messages && this.messageFanout) {
-      const system = await this.messages.tryWriteSystemMessage(
-        result.threadId,
-        SystemMessageType.FRIEND_ADDED,
-      );
-      if (system) void this.messageFanout.dispatch(system);
-    }
     return result;
   }
 
@@ -936,7 +874,7 @@ export class RelationshipService {
     tx: DatabaseTransaction,
     params: {
       localUserId: number;
-      peerUserId: number;
+      peerUserId: AccountTarget;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
       profileRev: number;
       note: string;
@@ -981,6 +919,7 @@ export class RelationshipService {
       params.localUserId,
       params.peerUserId,
       applied.shouldBeActive,
+      { actorUserId: params.peerUserId, subjectUserId: params.peerUserId },
     );
     const localDirection = (
       await this.relationshipIntents.readP2PRelationshipInTx(
@@ -1004,12 +943,14 @@ export class RelationshipService {
           pairEffect.threadId,
         );
     }
-    const clientFeedUpdates =
-      await this.writeRelationshipRequestClientStateInTx(
+    const clientFeedUpdates = [
+      ...(pairEffect.clientFeedUpdates ?? []),
+      ...(await this.writeRelationshipRequestClientStateInTx(
         tx,
         params.localUserId,
         params.peerUserId,
-      );
+      )),
+    ];
     if (pairEffect.active) {
       return {
         changed: true,
@@ -1051,10 +992,16 @@ export class RelationshipService {
 
   private async reconcileFriendPairInTx(
     tx: DatabaseTransaction,
-    userAId: number,
-    userBId: number,
+    userAId: AccountTarget,
+    userBId: AccountTarget,
     desiredActive: boolean,
-  ): Promise<{ active: boolean; transitioned: boolean; threadId?: number }> {
+    departure = { actorUserId: userAId, subjectUserId: userBId },
+  ): Promise<{
+    active: boolean;
+    transitioned: boolean;
+    threadId?: number;
+    clientFeedUpdates?: Array<{ userId: number; feedId: number }>;
+  }> {
     const current = (
       await this.relationshipIntents.readP2PRelationshipInTx(
         tx,
@@ -1078,18 +1025,74 @@ export class RelationshipService {
         userBId,
         true,
       );
-      return { active: true, transitioned: true, threadId };
+      // The relationship read already holds the business scopes and pair row. Acquire only
+      // its child content lock, then pass the capability through the message writer.
+      const threadLock = await requireP2PThreadContentLockUnderPairInTx(
+        tx,
+        current.id,
+        threadId,
+      );
+      const recipients = (
+        await localAccountsForTargetsInTx(tx, [userAId, userBId])
+      ).map((row) => ({ userId: row.id }));
+      await this.messages.writeSystemMessageInTx(
+        tx,
+        threadId,
+        SystemMessageType.FRIEND_ADDED,
+        undefined,
+        {
+          threadLock,
+          actorUserId: userAId,
+          recipientUserIds: recipients.map((row) => row.userId),
+        },
+      );
+      const clientFeedUpdates = await tx
+        .select({
+          userId: accountTable.id,
+          feedId: accountTable.stateFeedAllocatedThrough,
+        })
+        .from(accountTable)
+        .where(
+          inArray(
+            accountTable.id,
+            recipients.map((row) => row.userId),
+          ),
+        )
+        .orderBy(accountTable.id);
+      return { active: true, transitioned: true, threadId, clientFeedUpdates };
     }
     if (!desiredActive && current.active) {
+      let clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       if (current.threadId !== null) {
-        // Relationship-write gate: message creation updates this row before re-checking participant
-        // access. This lock is not needed by the audience/feed boundary itself.
-        await tx
-          .select({ id: messageThread.id })
-          .from(messageThread)
-          .where(eq(messageThread.id, current.threadId))
-          .for('update')
-          .limit(1);
+        const threadLock = await requireP2PThreadContentLockUnderPairInTx(
+          tx,
+          current.id,
+          current.threadId,
+        );
+        const recipients = (
+          await localAccountsForTargetsInTx(tx, [userAId, userBId])
+        ).map((row) => ({ userId: row.id }));
+        const recipientUserIds = recipients.map((row) => row.userId);
+        await this.messages.writeDepartureMessageInTx(
+          tx,
+          current.threadId,
+          SystemMessageType.FRIEND_REMOVED,
+          departure.subjectUserId,
+          {
+            threadLock,
+            actorUserId: departure.actorUserId,
+            recipientUserIds,
+            visibleThroughUserIds: recipientUserIds,
+          },
+        );
+        clientFeedUpdates = await tx
+          .select({
+            userId: accountTable.id,
+            feedId: accountTable.stateFeedAllocatedThrough,
+          })
+          .from(accountTable)
+          .where(inArray(accountTable.id, recipientUserIds))
+          .orderBy(accountTable.id);
         await this.closeP2PAudiencesInTx(tx, current.threadId);
       }
       await this.relationshipIntents.setPairActiveInTx(
@@ -1101,6 +1104,7 @@ export class RelationshipService {
       return {
         active: false,
         transitioned: true,
+        clientFeedUpdates,
         ...(current.threadId === null ? {} : { threadId: current.threadId }),
       };
     }
@@ -1115,8 +1119,8 @@ export class RelationshipService {
    * AccountThreadState is created only for local accounts and owns client conversation state. */
   private async ensureP2PThreadShellInTx(
     tx: DatabaseTransaction,
-    userAId: number,
-    userBId: number,
+    userAId: AccountTarget,
+    userBId: AccountTarget,
   ): Promise<number> {
     const pair = await this.relationshipIntents.lockPairInTx(
       tx,
@@ -1147,10 +1151,10 @@ export class RelationshipService {
         .set({ threadId, updatedAt: new Date() })
         .where(eq(relationshipPair.id, pair.id));
     }
-    const localAccounts = await tx
-      .select({ id: accountTable.id })
-      .from(accountTable)
-      .where(inArray(accountTable.id, [userAId, userBId]));
+    const localAccounts = await localAccountsForTargetsInTx(tx, [
+      userAId,
+      userBId,
+    ]);
     const participantRows = localAccounts.map((localAccount) => ({
       accountId: localAccount.id,
       threadId,
@@ -1202,8 +1206,8 @@ export class RelationshipService {
   private async reactivateP2PFriendshipInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    userAId: number,
-    userBId: number,
+    userAId: AccountTarget,
+    userBId: AccountTarget,
   ): Promise<number> {
     const [locked] = await tx
       .select({ id: messageThread.id, curSeq: messageThread.curSeq })
@@ -1218,78 +1222,47 @@ export class RelationshipService {
     );
     if (restoredThreadId !== threadId)
       throw new Error('retained P2P pair changed thread while locked');
-    const participants = await tx
-      .select({
-        id: user.id,
-        domain: user.domain,
-      })
-      .from(user)
-      .where(inArray(user.id, [userAId, userBId]));
-    if (participants.length !== 2)
-      throw new Error('retained P2P audience participants disappeared');
-    const localAudiences = participants
-      .filter((participant) => participant.domain === 'local')
-      .map((participant) => ({
-        targetDomain: 'local',
-        localUserId: participant.id,
-        threadId,
-      }));
-    if (localAudiences.length > 0)
-      await tx
-        .insert(threadAudience)
-        .values(localAudiences)
-        .onConflictDoNothing();
-    const peerDomains = new Set(
-      participants
-        .map((participant) => participant.domain)
-        .filter((domain) => domain !== 'local'),
-    );
-    for (const peerDomain of peerDomains)
-      await openFederatedAudienceInTx(tx, peerDomain, threadId);
+    await this.openP2PAudiencesInTx(tx, threadId, [userAId, userBId]);
     return threadId;
   }
 
   /** Create the P2P thread, its two roster members, local participant state, and audiences. */
   private async createP2PFriendshipInTx(
     tx: DatabaseTransaction,
-    userAId: number,
-    userBId: number,
+    userAId: AccountTarget,
+    userBId: AccountTarget,
   ): Promise<number> {
     const threadId = await this.ensureP2PThreadShellInTx(tx, userAId, userBId);
-    const participants = await tx
-      .select({
-        id: user.id,
-        account: user.account,
-        domain: user.domain,
-      })
-      .from(user)
-      .where(inArray(user.id, [userAId, userBId]));
-    if (participants.length !== 2) {
-      throw new Error('P2P audience participants are missing');
-    }
+    await this.openP2PAudiencesInTx(tx, threadId, [userAId, userBId]);
+    return threadId;
+  }
 
-    const localAudience = participants
-      .filter((participant) => participant.domain === 'local')
-      .map((participant) => ({
-        targetDomain: 'local',
-        localUserId: participant.id,
-        threadId,
-      }));
-    const peerDomains = [
-      ...new Set(
-        participants
-          .map((participant) => participant.domain)
-          .filter((domain) => domain !== 'local'),
-      ),
-    ];
-    if (localAudience.length > 0)
+  private async openP2PAudiencesInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    endpoints: readonly AccountTarget[],
+  ): Promise<void> {
+    const locals = await localAccountsForTargetsInTx(tx, endpoints);
+    if (locals.length)
       await tx
         .insert(threadAudience)
-        .values(localAudience)
+        .values(
+          locals.map((local) => ({
+            targetDomain: 'local',
+            localUserId: local.id,
+            threadId,
+          })),
+        )
         .onConflictDoNothing();
-    for (const peerDomain of peerDomains)
-      await openFederatedAudienceInTx(tx, peerDomain, threadId);
-    return threadId;
+    const identities = await Promise.all(
+      endpoints.map((endpoint) => accountAddressInTx(tx, endpoint)),
+    );
+    for (const domain of new Set(
+      identities
+        .filter((endpoint) => endpoint.domain !== 'local')
+        .map((endpoint) => endpoint.domain),
+    ))
+      await openFederatedAudienceInTx(tx, domain, threadId);
   }
 
   private async requireCurrentPendingIntentInTx(

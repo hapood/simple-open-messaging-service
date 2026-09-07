@@ -2,17 +2,18 @@ import { HttpStatus } from '@nestjs/common';
 import { and, asc, eq, lte, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { toClientIdentity } from '../common/client-identity.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
   groupMetaMemberFeed,
   groupMetaProfileFeed,
-  user,
 } from '../database/schema.js';
 
 interface GroupMetaFeedItemBase {
   feedId: string;
   account: string;
   domain: string;
+  namespaceId?: number;
 }
 
 export type GroupMetaFeedItem =
@@ -45,7 +46,7 @@ export interface GroupMetaPageRead {
   through?: bigint;
   end: bigint;
   visibleAfter: bigint;
-  client?: boolean;
+  client?: { localDomain: string };
 }
 
 const MAX_TAKE = 200;
@@ -106,16 +107,16 @@ export async function readGroupMetaPageInTx(
       ? await tx
           .select({
             feedId: groupMetaMemberFeed.feedId,
-            memberAccount: user.account,
-            memberDomain: user.domain,
+            memberAccount: groupMetaMemberFeed.memberAccount,
+            memberDomain: groupMetaMemberFeed.memberDomain,
+            memberNamespaceId: groupMetaMemberFeed.memberNamespaceId,
             operation: groupMetaMemberFeed.operation,
             body: groupMetaMemberFeed.body,
           })
           .from(groupMetaMemberFeed)
-          .innerJoin(user, eq(user.id, groupMetaMemberFeed.memberUserId))
           .where(
             and(
-              eq(groupMetaMemberFeed.groupId, params.groupId),
+              eq(groupMetaMemberFeed.threadId, params.groupId),
               sql`${groupMetaMemberFeed.feedId} > ${params.after}`,
               lte(groupMetaMemberFeed.feedId, scanEnd),
             ),
@@ -127,21 +128,22 @@ export async function readGroupMetaPageInTx(
             feedId: string;
             memberAccount: string;
             memberDomain: string;
+            memberNamespaceId: number;
             operation: 'UPSERT';
             body: Record<string, unknown>;
           }>(sql`
             SELECT latest.* FROM (
-              SELECT DISTINCT ON (member_identity.domain, member_identity.account)
+              SELECT DISTINCT ON (member_fact."memberNamespaceId", member_fact."memberDomain", member_fact."memberAccount")
                 member_fact."feedId",
-                member_identity.account AS "memberAccount",
-                member_identity.domain AS "memberDomain",
+                member_fact."memberAccount" AS "memberAccount",
+                member_fact."memberDomain" AS "memberDomain",
+                member_fact."memberNamespaceId" AS "memberNamespaceId",
                 member_fact.operation,
                 member_fact.body
               FROM "GroupMetaMemberFeed" member_fact
-              JOIN "User" member_identity ON member_identity.id = member_fact."memberUserId"
-              WHERE member_fact."groupId" = ${params.groupId}
+              WHERE member_fact."threadId" = ${params.groupId}
                 AND member_fact."feedId" <= ${scanEnd}
-              ORDER BY member_identity.domain, member_identity.account, member_fact."feedId" DESC
+              ORDER BY member_fact."memberNamespaceId", member_fact."memberDomain", member_fact."memberAccount", member_fact."feedId" DESC
             ) latest
             WHERE latest.operation = 'UPSERT' AND latest."feedId" > ${params.after}
             ORDER BY latest."feedId"
@@ -156,7 +158,7 @@ export async function readGroupMetaPageInTx(
     .from(groupMetaProfileFeed)
     .where(
       and(
-        eq(groupMetaProfileFeed.groupId, params.groupId),
+        eq(groupMetaProfileFeed.threadId, params.groupId),
         sql`${groupMetaProfileFeed.feedId} > ${params.after}`,
         lte(groupMetaProfileFeed.feedId, scanEnd),
       ),
@@ -164,10 +166,16 @@ export async function readGroupMetaPageInTx(
     .limit(1);
   const items: GroupMetaFeedItem[] = [
     ...memberRows.map((row): GroupMetaFeedItem => {
-      const base = {
-        feedId: row.feedId.toString(),
+      const identity = {
         account: row.memberAccount,
         domain: row.memberDomain,
+        namespaceId: row.memberNamespaceId,
+      };
+      const base = {
+        feedId: row.feedId.toString(),
+        ...(params.client
+          ? toClientIdentity(identity, params.client.localDomain)
+          : { account: identity.account, domain: identity.domain }),
       };
       return row.operation === 'UPSERT'
         ? { ...base, operation: 'UPSERT', body: row.body }

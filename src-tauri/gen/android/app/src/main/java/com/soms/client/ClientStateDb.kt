@@ -60,29 +60,45 @@ object ClientStateDb {
         }
     }
 
-    /** Resolve a direct-call UserProfile by its canonical account+domain within the current device-cache
-     * owner. FederatedMemberProfile's source-peer triple is intentionally not used: it is a group-published
-     * member snapshot, whereas 1:1 calls address a User profile. */
-    fun getCallPeer(ctx: Context, account: String, domain: String): CallPeer? {
+    private fun inlineAvatar(value: String?): Pair<String, ByteArray>? {
+        if (value == null || !value.startsWith("data:")) return null
+        val marker = value.indexOf(";base64,")
+        if (marker < 5) return null
+        return try { value.substring(5, marker) to Base64.decode(value.substring(marker + 8), Base64.DEFAULT) }
+        catch (_: IllegalArgumentException) { null }
+    }
+
+    /** Resolve the exact profile selected by this P2P thread, without a synthetic user row. */
+    fun getCallPeer(ctx: Context, account: String, domain: String, threadId: Int): CallPeer? {
         val ownerUserId = SomsSecureStore.getCurrentUserId(ctx) ?: return null
         return try {
             open(ctx).use { db ->
                 db.rawQuery(
-                    """SELECT COALESCE(json_extract(p.payload_json, '$.name'), ''),
-                              a.mime, a.data
-                         FROM profiles p
-                    LEFT JOIN avatars a ON a.user_id = p.user_id AND a.identity = p.identity
-                        WHERE p.user_id = ?1
-                          AND json_extract(p.payload_json, '$.account') = ?2
-                          AND COALESCE(json_extract(p.payload_json, '$.domain'), '') = ?3
-                     ORDER BY p.profile_rev DESC LIMIT 1""".trimIndent(),
-                    arrayOf(ownerUserId.toString(), account, domain),
+                    """SELECT COALESCE(json_extract(p.payload_json, '$.name'), json_extract(t.payload_json, '$.peerUser.name'), ?3),
+                              a.mime, a.data, COALESCE(json_extract(p.payload_json, '$.avatar'), json_extract(t.payload_json, '$.peerUser.avatar'), '')
+                         FROM threads t
+                    LEFT JOIN profiles p ON p.user_id = t.user_id
+                          AND p.account = json_extract(t.payload_json, '$.peerUser.account')
+                          AND p.domain = json_extract(t.payload_json, '$.peerUser.domain')
+                          AND p.namespace_id = json_extract(t.payload_json, '$.peerUser.namespaceId')
+                          AND p.profile_rev = json_extract(t.payload_json, '$.peerUser.profileRev')
+                    LEFT JOIN avatars a ON a.user_id = t.user_id
+                          AND a.source_path = json_extract(p.payload_json, '$.avatar')
+                        WHERE t.user_id = ?1 AND t.thread_id = ?2
+                          AND json_extract(t.payload_json, '$.type') = 'P2P'
+                          AND json_extract(t.payload_json, '$.peerUser.account') = ?3
+                          AND json_extract(t.payload_json, '$.peerUser.domain') = ?4
+                        LIMIT 1""".trimIndent(),
+                    arrayOf(ownerUserId.toString(), threadId.toString(), account, domain),
                 ).use { cursor ->
-                    if (!cursor.moveToFirst()) null else CallPeer(
+                    if (!cursor.moveToFirst()) null else {
+                        val inline = inlineAvatar(cursor.getString(3))
+                        CallPeer(
                         name = cursor.getString(0) ?: "",
-                        avatarMime = if (cursor.isNull(1)) null else cursor.getString(1),
-                        avatarBytes = if (cursor.isNull(2)) null else cursor.getBlob(2),
-                    )
+                        avatarMime = inline?.first ?: if (cursor.isNull(1)) null else cursor.getString(1),
+                        avatarBytes = inline?.second ?: if (cursor.isNull(2)) null else cursor.getBlob(2),
+                        )
+                    }
                 }
             }
         } catch (e: Exception) {

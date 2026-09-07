@@ -4,7 +4,7 @@ import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, user as userTable } from '../database/schema.js';
+import { account, account as userTable } from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
 /** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
@@ -91,7 +91,6 @@ export class SseService implements OnModuleDestroy {
           profileRev: userTable.defaultProfileRev,
         })
         .from(account)
-        .innerJoin(userTable, eq(userTable.id, account.id))
         .where(eq(account.id, userId))
         .limit(1);
       const frame = formatSseFrame('HELLO', {
@@ -300,12 +299,21 @@ export class SseService implements OnModuleDestroy {
     else this.clients[payload.userId] = survivors;
   }
 
-  /** Process exit / hot reload: clear all heartbeat timers to avoid handle-leak warnings. */
+  /** End held responses so HTTP shutdown does not wait indefinitely for SSE clients. */
   onModuleDestroy() {
     for (const uid of Object.keys(this.clients)) {
       const id = Number(uid);
-      this.clients[id].forEach(({ ping }) => clearInterval(ping));
+      const clients = this.clients[id];
+      // Detach before closing: close callbacks must not mutate the iteration.
       delete this.clients[id];
+      for (const { res, ping } of clients) {
+        clearInterval(ping);
+        try {
+          res.end();
+        } catch {
+          // A broken connection must not prevent the remaining streams from closing.
+        }
+      }
     }
   }
 }

@@ -1,4 +1,5 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { UserService, type ClientStateFeedItem } from './user.service';
@@ -12,6 +13,7 @@ import {
   GroupConversationItem,
   Message,
   messagePreviewSenderKey,
+  localSubjectIdentity,
   P2PConversationItem,
   ThreadReadState,
   User,
@@ -22,6 +24,9 @@ import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import { FederationNamespaceService } from './federation-namespace.service';
 import { ProfileResolutionService } from './profile-resolution.service';
+import { isTauri } from './runtime';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { isFullConsoleLoggingEnabled } from './log-buffer';
 
 const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
 
@@ -75,8 +80,13 @@ export class ThreadRepository {
   private readonly transloco = inject(TranslocoService);
   private readonly namespaces = inject(FederationNamespaceService);
   private readonly profileResolutions = inject(ProfileResolutionService);
+  private readonly peerProfileRequests = new Set<string>();
 
   private readonly _items = signal<ConversationItem[]>([]);
+  private readonly previewQueue = new Set<number>();
+  private readonly previewRevisions = new Map<number, string>();
+  private previewWorkers = 0;
+  private previewEpoch = 0;
   readonly items = this._items.asReadonly();
 
   private readonly _status = signal<ConversationLoadStatus>('LOADING');
@@ -196,11 +206,56 @@ export class ThreadRepository {
   private readonly sseSub: Subscription;
 
   constructor() {
+    this.profileResolutions.resolved$
+      .pipe(takeUntilDestroyed())
+      .subscribe(({ selector, profile }) => {
+        if (!('messageSeq' in selector)) return;
+        const thread = this._items().find(
+          (item) => item.threadId === selector.threadId,
+        );
+        if (
+          thread?.type !== 'P2P' ||
+          thread.peerUser.account !== profile.account ||
+          thread.peerUser.domain !== profile.domain ||
+          selector.messageSeq <= (thread.peerProfileMessageSeq ?? 0)
+        )
+          return;
+        const changed = {
+          ...thread,
+          peerProfileMessageSeq: selector.messageSeq,
+          peerUser: {
+            ...thread.peerUser,
+            name: profile.name,
+            bio: profile.bio,
+            avatar: profile.avatarBase64
+              ? `data:image/webp;base64,${profile.avatarBase64}`
+              : '',
+            profileRev: profile.rev,
+          },
+        };
+        this._items.update((items) =>
+          items.map((item) => (item === thread ? changed : item)),
+        );
+        void this.persistThread(changed);
+      });
+    // Cached rows can be painted before HELLO, while sessionUserId is already null. Logout must
+    // reset them explicitly rather than relying on an identity signal transition.
+    inject(SessionLifecycleService)
+      .ended$.pipe(takeUntilDestroyed())
+      .subscribe(() => this.reset());
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
       switch (m.event) {
         case 'HELLO':
-          void this.onHello(m.data as HelloPayload | undefined);
+          void this.onHello(m.data as HelloPayload | undefined).catch(
+            async (error) => {
+              console.warn(
+                '[cache-recovery] session cache initialization failed',
+                error,
+              );
+              await this.userService.requestCacheRebuild();
+            },
+          );
           break;
         case 'STATE_FEED_UPDATED':
           if (m.data !== undefined)
@@ -234,6 +289,10 @@ export class ThreadRepository {
    * across users. Resets {@link _status} to LOADING so the freshly-mounted list re-loads on the next HELLO.
    */
   private reset(): void {
+    this.previewEpoch++;
+    this.peerProfileRequests.clear();
+    this.previewQueue.clear();
+    this.previewRevisions.clear();
     this._items.set([]);
     this._status.set('LOADING');
     this._error.set('');
@@ -242,6 +301,7 @@ export class ThreadRepository {
     this._pendingTopId = null;
     this._deltaInFlight = false;
     this._pendingTailFeedId = undefined;
+    this._fullStateDrainTarget = undefined;
     this._drainRelationshipIntentRevision = undefined;
     this._drainRelationshipRequestRevision = undefined;
     this.lastSeenSeq.clear();
@@ -277,18 +337,29 @@ export class ThreadRepository {
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
    *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
   private async paintFromCache(): Promise<void> {
-    this.namespaces.replace(await this.webdb.getNamespaces());
-    if (this._items().length > 0) return; // already populated — don't clobber a fresher state
-    const cached = await this.readCachedThreads();
-    if (cached.length > 0 && this._items().length === 0) {
-      for (const item of cached) {
-        if (typeof item.lastReadSeq === 'number')
-          this.localStableReadSeq.set(item.threadId, item.lastReadSeq);
+    const epoch = this.previewEpoch;
+    try {
+      const namespaces = await this.webdb.getNamespaces();
+      if (epoch !== this.previewEpoch) return;
+      this.namespaces.replace(namespaces);
+      if (this._items().length > 0) return; // already populated — don't clobber a fresher state
+      const cached = await this.readCachedThreads();
+      if (epoch !== this.previewEpoch) return;
+      if (cached.length > 0 && this._items().length === 0) {
+        for (const item of cached) {
+          if (typeof item.lastReadSeq === 'number')
+            this.localStableReadSeq.set(item.threadId, item.lastReadSeq);
+        }
+        this.applyItems(cached); // flips READY
+        void this.hydratePreviews(); // re-derive previews from the local message store
+      } else if (this._items().length === 0 && this._status() !== 'READY') {
+        this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
       }
-      this.applyItems(cached); // flips READY
-      void this.hydratePreviews(); // re-derive previews from the local message store
-    } else if (this._items().length === 0 && this._status() !== 'READY') {
-      this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
+    } catch (error) {
+      // Cache paint is optional; HELLO owns initialization and authoritative recovery.
+      console.warn('[cache-paint] cached thread read failed', error);
+      if (epoch === this.previewEpoch)
+        await this.userService.requestCacheRebuild();
     }
   }
 
@@ -397,12 +468,22 @@ export class ThreadRepository {
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
    *  absent items. (Via the facade from peer-profile / chat-open.) */
   updatePeerUser(threadId: number, user: User): void {
+    user = localSubjectIdentity(user);
     let changed: P2PConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find(
         (t) => t.threadId === threadId && t.type === 'P2P',
       );
-      if (!found || found.type !== 'P2P') return list;
+      if (
+        !found ||
+        found.type !== 'P2P' ||
+        found.peerProfileMessageSeq != null ||
+        user.profileRev !== found.peerUser.profileRev ||
+        user.account !== found.peerUser.account ||
+        user.domain !== found.peerUser.domain ||
+        user.namespaceId !== found.peerUser.namespaceId
+      )
+        return list;
       changed = { ...found, peerUser: user };
       return list.map((t) =>
         t.threadId === threadId && t.type === 'P2P' ? changed! : t,
@@ -424,6 +505,7 @@ export class ThreadRepository {
       dissolvedAt?: number | null;
       memberCount?: number;
       groupMetaFeedId?: string;
+      profileRev?: number;
       role?: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
     },
   ): void {
@@ -442,6 +524,7 @@ export class ThreadRepository {
           group.memberCount = patch.memberCount;
         if (patch.groupMetaFeedId !== undefined)
           group.groupMetaFeedId = patch.groupMetaFeedId;
+        if (patch.profileRev !== undefined) group.profileRev = patch.profileRev;
         changed = {
           ...t,
           ...(patch.role !== undefined ? { role: patch.role } : {}),
@@ -556,6 +639,22 @@ export class ThreadRepository {
         base.unshift(reconciled);
       } else {
         const current = base[idx];
+        if (
+          current.type === 'P2P' &&
+          reconciled.type === 'P2P' &&
+          current.peerProfileMessageSeq != null &&
+          current.peerProfileMessageSeq >
+            (reconciled.peerProfileMessageSeq ?? 0) &&
+          current.peerUser.account === reconciled.peerUser.account &&
+          current.peerUser.domain === reconciled.peerUser.domain &&
+          current.peerUser.namespaceId === reconciled.peerUser.namespaceId
+        ) {
+          reconciled = {
+            ...reconciled,
+            peerUser: current.peerUser,
+            peerProfileMessageSeq: current.peerProfileMessageSeq,
+          };
+        }
         reconciled = {
           ...reconciled,
           lastReadSeq: current.lastReadSeq,
@@ -588,8 +687,12 @@ export class ThreadRepository {
     this._status.set('READY');
     void this.persistThread(reconciled);
     // A fresh item carries an embedded peer/group profile — write it through too (avatar freshness).
-    if (reconciled.type === 'P2P') this.writePeerProfile(reconciled.peerUser);
-    else if (reconciled.type === 'GROUP')
+    if (reconciled.type === 'P2P') {
+      if (reconciled.peerProfileMessageSeq == null) {
+        this.writePeerProfile(reconciled.peerUser);
+        this.resolveThreadPeerProfile(reconciled);
+      }
+    } else if (reconciled.type === 'GROUP')
       this.writeGroupProfile(reconciled.group);
   }
 
@@ -601,6 +704,8 @@ export class ThreadRepository {
     this._items.set(ordered);
     this._status.set('READY');
     if (topId != null) this._topInserted.set(topId);
+    for (const item of ordered)
+      if (item.type === 'P2P') this.resolveThreadPeerProfile(item);
   }
 
   private normalizeGroupProjection(item: ConversationItem): ConversationItem {
@@ -632,6 +737,66 @@ export class ThreadRepository {
     }
     this._pendingTopId = null;
     return topId;
+  }
+
+  /** Relationship snapshots carry a profile revision even when their image bytes are absent.
+   * Resolve that exact revision through the shared dispatcher and keep the list's durable projection current. */
+  private resolveThreadPeerProfile(thread: P2PConversationItem): void {
+    const { account, domain, profileRev: rev, namespaceId } = thread.peerUser;
+    // Local PROFILE facts already contain the full avatar; the account selector uses canonical
+    // federation domains and must not receive the local storage sentinel.
+    if (
+      thread.peerProfileMessageSeq != null ||
+      domain === 'local' ||
+      !(rev > 0)
+    )
+      return;
+    const epoch = this.previewEpoch;
+    const key = JSON.stringify([
+      epoch,
+      thread.threadId,
+      namespaceId,
+      domain,
+      account,
+      rev,
+    ]);
+    if (this.peerProfileRequests.has(key)) return;
+    this.peerProfileRequests.add(key);
+    this.profileResolutions.resolve({ account, domain, rev }).subscribe({
+      next: (profile) => {
+        if (epoch !== this.previewEpoch || profile.rev !== rev) return;
+        let changed: P2PConversationItem | undefined;
+        this._items.update((items) =>
+          items.map((item) => {
+            if (
+              item.type !== 'P2P' ||
+              item.peerProfileMessageSeq != null ||
+              item.threadId !== thread.threadId ||
+              item.peerUser.account !== account ||
+              item.peerUser.domain !== domain ||
+              item.peerUser.namespaceId !== namespaceId ||
+              item.peerUser.profileRev !== rev
+            )
+              return item;
+            changed = {
+              ...item,
+              peerUser: {
+                ...item.peerUser,
+                name: profile.name,
+                bio: profile.bio,
+                avatar: profile.avatarBase64
+                  ? `data:image/webp;base64,${profile.avatarBase64}`
+                  : '',
+              },
+            };
+            return changed;
+          }),
+        );
+        if (changed) void this.persistThread(changed);
+      },
+      error: () => this.peerProfileRequests.delete(key),
+      complete: () => this.peerProfileRequests.delete(key),
+    });
   }
 
   private resolveThreadGroupProfile(
@@ -678,56 +843,6 @@ export class ThreadRepository {
     });
   }
 
-  private applyPeerProfile(u: User): void {
-    let changed: P2PConversationItem | undefined;
-    this._items.update((list) => {
-      const found = list.find(
-        (t) => t.type === 'P2P' && t.peerUser?.id === u.id,
-      );
-      if (!found || found.type !== 'P2P') return list;
-      // Concurrent pulls may finish out of order; never regress an already-applied profile.
-      if ((u.profileRev ?? 0) < (found.peerUser.profileRev ?? 0)) return list;
-      changed = { ...found, peerUser: u };
-      return list.map((t) =>
-        t.type === 'P2P' && t.peerUser?.id === u.id ? changed! : t,
-      );
-    });
-    if (changed) {
-      void this.persistThread(changed);
-      this.writePeerProfile(u);
-    }
-  }
-
-  private applyPeerProfileRemoval(
-    userId: number,
-    account: string,
-    domain: string,
-  ): void {
-    let changed: ConversationItem | undefined;
-    this._items.update((list) =>
-      list.map((item) => {
-        if (item.type !== 'P2P' || item.peerUser?.id !== userId) return item;
-        changed = {
-          ...item,
-          peerUser: {
-            ...item.peerUser,
-            account,
-            domain,
-            name: account,
-            avatar: '',
-            bio: '',
-            isDeleted: true,
-          },
-        };
-        return changed;
-      }),
-    );
-    if (changed) {
-      void this.persistThread(changed);
-      void this.persistThreadOrder();
-    }
-  }
-
   /** Apply a durable content projection after its State Feed page commits locally. */
   private applyThreadContentHead(
     head: ThreadContentHead,
@@ -762,6 +877,7 @@ export class ThreadRepository {
       };
       const next = list.slice();
       next[idx] = changed;
+      this.queuePreview(changed);
       return next;
     });
     return existed;
@@ -843,7 +959,7 @@ export class ThreadRepository {
     }
     await this.pullDelta(d.stateFeedEndId);
     // 4. Re-derive previews from the local message store.
-    void this.hydratePreviews();
+    void this.hydratePreviews(true);
   }
 
   private async syncReadDelta(target: number): Promise<void> {
@@ -988,6 +1104,21 @@ export class ThreadRepository {
         )
           throw new Error('invalid client state feed page');
         const delta = page.items;
+        if (isFullConsoleLoggingEnabled())
+          console.debug(
+            '[state-feed] received page',
+            JSON.stringify({
+              mode: page.mode,
+              after: cursor,
+              through: targetFeedId,
+              scannedThrough: page.scannedThrough,
+              stateFeedEndId: page.stateFeedEndId,
+              items: delta.map(({ feedId, eventType }) => ({
+                feedId,
+                eventType,
+              })),
+            }),
+          );
         const groupMeta = await this.prefetchGroupMeta(delta);
         // The rows and cursor are one durable unit. If this fails, leave both memory and cursor untouched;
         // the next HELLO retries the same idempotent range.
@@ -1020,9 +1151,36 @@ export class ThreadRepository {
             (thread) => thread.threadId === update.threadId,
           );
           if (persisted?.type !== 'GROUP') continue;
+          const memory = this.items().find(
+            (thread) => thread.threadId === update.threadId,
+          );
+          if (
+            memory?.type === 'GROUP' &&
+            (memory.group.account !== persisted.group.account ||
+              memory.group.domain !== persisted.group.domain ||
+              memory.group.namespaceId !== persisted.group.namespaceId)
+          )
+            console.warn(
+              '[state-feed] group identity differs before memory update',
+              JSON.stringify({
+                scannedThrough: page.scannedThrough,
+                threadId: update.threadId,
+                memory: {
+                  account: memory.group.account,
+                  domain: memory.group.domain,
+                  namespaceId: memory.group.namespaceId,
+                },
+                persisted: {
+                  account: persisted.group.account,
+                  domain: persisted.group.domain,
+                  namespaceId: persisted.group.namespaceId,
+                },
+              }),
+            );
           this.applyGroupUpdate(update.threadId, {
             memberCount: persisted.group.memberCount,
             groupMetaFeedId: persisted.group.groupMetaFeedId,
+            profileRev: persisted.group.profileRev,
             role: persisted.role,
           });
         }
@@ -1130,6 +1288,20 @@ export class ThreadRepository {
             }
           }
         }
+        // Resolve group profile references only after relationship rows from this same page are
+        // visible in memory, including a just-created group conversation.
+        for (const update of groupMeta) {
+          const reference = update.page.items
+            .filter((item) => item.operation === 'GROUP_PROFILE')
+            .at(-1);
+          if (reference?.operation !== 'GROUP_PROFILE') continue;
+          this.resolveThreadGroupProfile(
+            update.threadId,
+            update.page.account,
+            update.sourceServer,
+            reference.body.profileRev,
+          );
+        }
         if (relationshipIntentRevision !== undefined)
           this._drainRelationshipIntentRevision = Math.max(
             this._drainRelationshipIntentRevision ?? 0,
@@ -1144,6 +1316,16 @@ export class ThreadRepository {
             relationshipRequestRevision,
           );
         this.userService.advanceStateFeedCursor(page.scannedThrough);
+        if (isFullConsoleLoggingEnabled())
+          console.debug(
+            '[state-feed] committed page',
+            JSON.stringify({
+              after: cursor,
+              scannedThrough: page.scannedThrough,
+              hasMore: page.hasMore,
+              groupThreadIds: groupMeta.map((update) => update.threadId),
+            }),
+          );
         if (page.hasMore)
           this._pendingTailFeedId = Math.max(
             this._pendingTailFeedId ?? targetFeedId,
@@ -1173,7 +1355,15 @@ export class ThreadRepository {
         duration: 'forever',
         interactive: true,
       });
-      console.error('[state-feed] processing aborted', error);
+      console.error(
+        '[state-feed] processing aborted',
+        error,
+        JSON.stringify({
+          after: cursor,
+          through: targetFeedId,
+          currentCursor: this.userService.stateFeedCursor(),
+        }),
+      );
     } finally {
       this._deltaInFlight = false;
       const tail = this._pendingTailFeedId;
@@ -1206,18 +1396,24 @@ export class ThreadRepository {
       { eventType: 'PROFILE' }
     >,
   ): void {
+    item = localSubjectIdentity(item);
     const matchingGroups = this._items().filter(
       (thread): thread is GroupConversationItem =>
         thread.type === 'GROUP' &&
         thread.group.account === item.account &&
-        thread.group.domain === item.domain,
+        thread.group.domain === item.domain &&
+        thread.group.namespaceId === item.namespaceId &&
+        thread.group.profileRev <= item.body.profileRev,
     );
     this._items.update((threads) =>
       threads.map((thread) => {
         if (
           thread.type === 'P2P' &&
+          thread.peerProfileMessageSeq == null &&
+          thread.peerUser.profileRev === item.body.profileRev &&
           thread.peerUser.account === item.account &&
-          (thread.peerUser.domain ?? '') === item.domain
+          (thread.peerUser.domain ?? '') === item.domain &&
+          thread.peerUser.namespaceId === item.namespaceId
         )
           return {
             ...thread,
@@ -1232,14 +1428,17 @@ export class ThreadRepository {
         if (
           thread.type === 'GROUP' &&
           thread.group.account === item.account &&
-          thread.group.domain === item.domain
+          thread.group.domain === item.domain &&
+          thread.group.namespaceId === item.namespaceId &&
+          thread.group.profileRev <= item.body.profileRev
         )
           return {
             ...thread,
             group: {
               ...thread.group,
-              name: thread.group.account,
-              avatar: '',
+              name: item.body.displayName,
+              avatar: item.body.avatar ?? '',
+              description: item.body.bio,
               profileRev: item.body.profileRev,
             },
           };
@@ -1253,19 +1452,32 @@ export class ThreadRepository {
         item.domain,
         item.body.profileRev,
       );
+    for (const thread of this._items())
+      if (
+        thread.type === 'P2P' &&
+        thread.peerUser.account === item.account &&
+        thread.peerUser.domain === item.domain &&
+        thread.peerUser.namespaceId === item.namespaceId
+      )
+        this.resolveThreadPeerProfile(thread);
   }
 
   private async prefetchGroupMeta(
     items: import('./user.service').ClientStateFeedItem[],
   ): Promise<import('./webdb.service').ClientGroupMetaApply[]> {
     const updates: import('./webdb.service').ClientGroupMetaApply[] = [];
-    for (const item of items) {
+    for (const entry of items) {
+      const item =
+        entry.eventType === 'GROUP_META_FEED_HEAD'
+          ? localSubjectIdentity(entry)
+          : entry;
       if (item.eventType !== 'GROUP_META_FEED_HEAD') continue;
       const thread = this.items().find(
         (candidate) =>
           candidate.type === 'GROUP' &&
           candidate.group.account === item.account &&
-          candidate.group.domain === item.domain,
+          candidate.group.domain === item.domain &&
+          candidate.group.namespaceId === item.namespaceId,
       );
       const groupIntents = items.filter(
         (candidate) =>
@@ -1285,7 +1497,23 @@ export class ThreadRepository {
         (!thread || thread.type !== 'GROUP') &&
         projectedThreadId === undefined
       )
-        throw new Error('group-meta head has no local thread');
+        throw new Error(
+          `group-meta head has no local thread: ${JSON.stringify({
+            feedId: item.feedId,
+            account: item.account,
+            domain: item.domain,
+            namespaceId: item.namespaceId,
+            groupMetaFeedEndId: item.body.groupMetaFeedEndId,
+            localGroups: this.items()
+              .filter((candidate) => candidate.type === 'GROUP')
+              .map((candidate) => ({
+                threadId: candidate.threadId,
+                account: candidate.group.account,
+                domain: candidate.group.domain,
+                namespaceId: candidate.group.namespaceId,
+              })),
+          })}`,
+        );
       const threadId =
         thread?.type === 'GROUP' ? thread.threadId : projectedThreadId!;
       const current =
@@ -1309,6 +1537,19 @@ export class ThreadRepository {
         if (response.code !== 0 || !response.data)
           throw new Error('group-meta pull failed');
         const page = response.data;
+        if (
+          page.items.some(
+            (entry) =>
+              entry.operation !== 'GROUP_PROFILE' &&
+              (!entry.account ||
+                !entry.domain ||
+                !Number.isSafeInteger(entry.namespaceId) ||
+                entry.namespaceId < 0),
+          )
+        )
+          throw new Error(
+            'group-meta member is missing its namespace-qualified identity',
+          );
         through ??= page.groupMetaFeedEndId;
         if (
           page.mode !== mode ||
@@ -1340,34 +1581,44 @@ export class ThreadRepository {
     return updates;
   }
 
-  /** Re-derive each thread's list preview (`lastMessagePreview` + `lastMessageSenderId`) from the LOCAL
-   *  message store — the durable, local-first source. The threadlist snapshot deliberately embeds NO preview
-   *  content (the body is pulled, never denormalized — see query-thread/valid), so the list derives its
-   *  preview from each thread's newest cached message. This covers EVERY thread with a cached newest message
-   *  (not just the catch-up page of the newest `take`), and on a cold start the local store is already
-   *  populated from the prior session → previews paint instantly from the cached-paint items with no network
-   *  round-trip and no "暂无消息" flash. Runs on boot (right after the snapshot, before the network pull) +
-   *  on boot only. Catch-up previews are applied directly to thread rows and never touch this store. Leaves
-   *  `lastMessageAt` untouched (the
-   *  snapshot's value is the authoritative sort key); a thread with no cached message yet keeps its prior
-   *  preview. */
-  private async hydratePreviews(): Promise<void> {
+  /** Paint cached previews immediately. After HELLO, also reconcile each content head through the
+   * history source, since structural state-feed rows intentionally carry no message bodies. */
+  private async hydratePreviews(refresh = false): Promise<void> {
+    const epoch = this.previewEpoch;
+    try {
+      await this.hydratePreviewsFromCache(refresh);
+    } catch (error) {
+      console.warn('[cache-paint] cached message preview read failed', error);
+      if (epoch === this.previewEpoch)
+        await this.userService.requestCacheRebuild();
+    }
+  }
+
+  private async hydratePreviewsFromCache(refresh: boolean): Promise<void> {
     const items = this._items();
     if (items.length === 0) return;
+    const epoch = this.previewEpoch;
+    if (refresh) for (const item of items) this.queuePreview(item);
     // One batched read (a single transaction, one reverse cursor per thread) — never N independent lookups.
     const newest = await this.messageRepo.getNewestMessages(
       items.map((it) => it.threadId),
     );
+    if (epoch !== this.previewEpoch) return;
     if (newest.size === 0) return; // nothing cached locally yet — leave the items' previews as-is
     const byThread = new Map<
       number,
-      { lastMessagePreview: string; lastMessageSenderId: string | null }
+      {
+        lastMessagePreview: string;
+        lastMessageSenderId: string | null;
+        lastMessagePreviewSeq: number;
+      }
     >();
     for (const it of items) {
       const m = newest.get(it.threadId);
       if (!m) continue;
       byThread.set(it.threadId, {
         lastMessagePreview: rawPreview(m.contentType, m.content),
+        lastMessagePreviewSeq: m.seq,
         lastMessageSenderId: this.creatorKeyForThread(m.creator, it),
       });
     }
@@ -1377,6 +1628,7 @@ export class ThreadRepository {
       const patch = byThread.get(it.threadId);
       if (
         !patch ||
+        (it.lastMessagePreviewSeq ?? 0) > patch.lastMessagePreviewSeq ||
         (it.lastMessagePreview === patch.lastMessagePreview &&
           it.lastMessageSenderId === patch.lastMessageSenderId)
       ) {
@@ -1393,6 +1645,87 @@ export class ThreadRepository {
     void this.persistThreads(hydrated);
   }
 
+  /** Content heads carry coordinates only. Fetch one source item to populate a cold or stale preview,
+   * with bounded concurrency and one request per observed content revision. */
+  private queuePreview(item: ConversationItem): void {
+    if (!(item.lastMessageSeq && item.lastMessageSeq > 0)) return;
+    const revision = `${item.lastMessageSeq}:${item.tombstoneEndSeq ?? 0}`;
+    if (this.previewRevisions.get(item.threadId) === revision) return;
+    this.previewRevisions.set(item.threadId, revision);
+    this.previewQueue.add(item.threadId);
+    queueMicrotask(() => this.drainPreviews());
+  }
+
+  private drainPreviews(): void {
+    while (this.previewWorkers < 4 && this.previewQueue.size) {
+      const threadId = this.previewQueue.values().next().value!;
+      this.previewQueue.delete(threadId);
+      this.previewWorkers++;
+      const epoch = this.previewEpoch;
+      const revision = this.previewRevisions.get(threadId);
+      const lifetime = this.webdb.captureMessageLifetime();
+      void (async () => {
+        try {
+          const demand = { kind: 'latest' as const, count: 1 };
+          const result = isTauri()
+            ? await this.messageRepo.queryNativeMessageHistory(threadId, demand)
+            : await this.messageRepo.queryBrowserMessageHistory(
+                threadId,
+                demand,
+              );
+          if (
+            epoch !== this.previewEpoch ||
+            lifetime.aborted ||
+            this.previewRevisions.get(threadId) !== revision
+          )
+            return;
+          if (result.failed) {
+            this.previewRevisions.delete(threadId);
+            return;
+          }
+          const latest = result.items.at(-1);
+          const message =
+            latest?.kind === 'message' ? latest.message : undefined;
+          // A missing body or a server gap does not replace the last usable preview. Leave cold
+          // rows blank, and allow a later content notification or reconnect to retry this revision.
+          if (!message) {
+            this.previewRevisions.delete(threadId);
+            return;
+          }
+          this._items.update((items) =>
+            items.map((current) => {
+              if (current.threadId !== threadId) return current;
+              const updated = {
+                ...current,
+                lastMessagePreview: rawPreview(
+                  message.contentType,
+                  message.content,
+                ),
+                lastMessagePreviewSeq: message.seq,
+                lastMessageSenderId: this.creatorKeyForThread(
+                  message.creator,
+                  current,
+                ),
+                lastMessageAt: message.createdAt,
+              };
+              void this.persistThread(updated);
+              return updated;
+            }),
+          );
+        } catch {
+          if (
+            epoch === this.previewEpoch &&
+            this.previewRevisions.get(threadId) === revision
+          )
+            this.previewRevisions.delete(threadId);
+        } finally {
+          this.previewWorkers--;
+          this.drainPreviews();
+        }
+      })();
+    }
+  }
+
   private creatorKeyForThread(
     creator: Message['creator'],
     thread: ConversationItem,
@@ -1406,28 +1739,24 @@ export class ThreadRepository {
   /** Read all cached threads from IDB. Their durable content heads are replayed by ClientStateFeed; keep
    * the fixed/non-fixed boundary here, without reconstructing order from wall-clock timestamps. */
   private async readCachedThreads(): Promise<ConversationItem[]> {
-    try {
-      const all = await this.webdb.getThreads();
-      const storedOrder = await this.webdb.getMeta('threadListOrder');
-      const ids = Array.isArray(storedOrder)
-        ? storedOrder.filter(
-            (id): id is number => Number.isSafeInteger(id) && id > 0,
-          )
-        : [];
-      const rank = new Map(ids.map((id, index) => [id, index]));
-      const restored = all
-        .map((item, index) => ({ item, index }))
-        .sort(
-          (a, b) =>
-            (rank.get(a.item.threadId) ?? Number.MAX_SAFE_INTEGER) -
-              (rank.get(b.item.threadId) ?? Number.MAX_SAFE_INTEGER) ||
-            a.index - b.index,
+    const all = await this.webdb.getThreads();
+    const storedOrder = await this.webdb.getMeta('threadListOrder');
+    const ids = Array.isArray(storedOrder)
+      ? storedOrder.filter(
+          (id): id is number => Number.isSafeInteger(id) && id > 0,
         )
-        .map(({ item }) => item);
-      return stablePinnedTiers(restored);
-    } catch {
-      return [];
-    }
+      : [];
+    const rank = new Map(ids.map((id, index) => [id, index]));
+    const restored = all
+      .map((item, index) => ({ item, index }))
+      .sort(
+        (a, b) =>
+          (rank.get(a.item.threadId) ?? Number.MAX_SAFE_INTEGER) -
+            (rank.get(b.item.threadId) ?? Number.MAX_SAFE_INTEGER) ||
+          a.index - b.index,
+      )
+      .map(({ item }) => item);
+    return stablePinnedTiers(restored);
   }
 
   private persistThreadOrder(items = this._items()): Promise<void> {

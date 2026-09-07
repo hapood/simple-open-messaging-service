@@ -406,12 +406,19 @@ export class MessageRepository {
           response.data.resumeBefore <= response.data.resumeAfter
         )
           throw new Error('message query returned invalid recovery bounds');
+        const previousBounds = [lower, upper, cursor];
         lower = Math.max(lower, response.data.resumeAfter);
         upper = Math.min(upper, response.data.resumeBefore - 1);
         cursor =
           direction === 'older'
             ? Math.min(cursor, response.data.resumeBefore)
             : Math.max(cursor, response.data.resumeAfter);
+        if (
+          lower === previousBounds[0] &&
+          upper === previousBounds[1] &&
+          cursor === previousBounds[2]
+        )
+          throw new Error('message cursor recovery made no progress');
         continue;
       }
       if (response.code !== 0 || !this.isHistoryPage(response.data))

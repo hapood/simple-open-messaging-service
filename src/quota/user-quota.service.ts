@@ -8,7 +8,7 @@ import {
 } from '../database/database.service.js';
 import {
   account,
-  user,
+  account as user,
   userQuotaDailyAllowance,
   userQuotaDailyUsage,
   userQuotaFileByteUsage,
@@ -592,7 +592,6 @@ export class UserQuotaService implements OnModuleInit {
     const [row] = await this.database.db
       .select({ domain: user.domain })
       .from(user)
-      .innerJoin(account, eq(account.id, user.id))
       .where(eq(user.id, userId))
       .limit(1);
     if (!row)

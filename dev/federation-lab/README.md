@@ -1,4 +1,4 @@
-# Three-node manual federation lab
+# Three-node federation lab
 
 This lab starts three independent development SOMS nodes on one machine. It intentionally bypasses
 DNS/SRV and TLS through `SOMS_DEV_FEDERATION_ROUTES`; recognition, key pinning, HTTP signatures,
@@ -50,35 +50,63 @@ log_error_verbosity = verbose
 files through `pg_ls_logdir()` and `pg_read_file()`, which also works when the database data directory
 is inside a container or VM that does not share the application's filesystem.
 
-The normal development entry point builds the backend, starts both frontend development servers with
-HMR, and starts the lab:
+Build and run the backend and frontend independently in separate terminals:
 
 ```bash
-npm run dev
+# Terminal 1
+npm run build:be
+npm run dev:be
 ```
 
-This mode uses unhashed frontend module names and source maps. The shared dev servers are
-implementation details; browse through the `310x` edge URLs so each session reaches the intended
-backend node.
-
-For independent restarts, run the process groups in separate terminals:
-
 ```bash
-npm run dev:be
+# Terminal 2: frontend HMR
 npm run dev:fe
 ```
 
-The backend command builds before starting all three Node processes. The frontend command starts
-Angular, Vite, and Caddy without connecting to PostgreSQL.
+The backend command starts three Node processes from existing build outputs without
+building automatically. `dev:fe` starts Angular/Vite with HMR through Caddy without
+connecting to PostgreSQL. To serve static assets, run `npm run build:fe`, then
+`npm run dev:fe:built`. Browse through the `310x`
+edge URLs so each session reaches the intended backend node.
 
-Use `Ctrl+C` to stop all six child processes. Shutdown stops new durable-task dispatch and waits
+Use `Ctrl+C` in each terminal to stop its child processes. Shutdown stops new durable-task dispatch and waits
 for in-flight executions before unregistering handlers. Unstarted durable work remains available
 for startup recovery. The launcher waits up to 60 seconds, exits as soon as all children finish,
 and logs a warning and exits nonzero if it must force remaining children to stop.
 
-Starting the backend recreates all three lab databases
-before applying migrations. Node identity files and workload reports persist under
-`dev/federation-lab/runtime/`, while database records always start empty.
+Starting the backend creates any missing lab databases and applies pending migrations.
+Existing database records are preserved across restarts. Credentials and node identity files
+persist under `dev/federation-lab/local/<node>/`; mutable data and workload reports live under
+`dev/federation-lab/runtime/`. To clear lab data, stop the lab
+and explicitly run `npm run dev:reset` before starting it again.
+
+## Federation consistency test
+
+The maintained runner is [p2p/run.mjs](p2p/run.mjs). Its API actors, workload selection,
+snapshot readers, final audit, and unit tests live together in `p2p/`.
+Stop existing lab backends and run from the repository root:
+
+```bash
+npm run build:be
+npm run federation:test
+```
+
+`federation:test` resets the three lab databases and runtime state, starts the built
+backends with process and database diagnostics, runs the workload, and stops the owned
+processes. All workload settings are explicit in the `package.json` script: final
+verification, 600 random decisions, five users and groups per node, 10 admissions per
+second, concurrency 12, round size 10, task timeout 120000 ms, progress every 25 decisions,
+and convergence timeout/interval/samples of 300000 ms / 1000 ms / 3. The account prefix
+is `p2p`; a clean reset makes it reusable.
+
+The script uses `--seed=random`. The launcher resolves and records the actual integer
+seed in `session.json`, and the workload records it in its artifacts. Replay selection
+randomness with `npm run federation:test -- --seed=1894910172`; asynchronous timing may
+still change the observed workload. Edit the package script to change workload settings.
+
+The prefix must start with a lowercase letter and contain at most 10 lowercase letters,
+digits, or hyphens. A new prefix avoids account collisions; a fresh lab remains the acceptance
+baseline because retained data and background work can affect timing.
 
 The federation consistency workload attaches to these same running backends. Its administrator and user
 actors live only in the workload process, while every account and session is created through the real
@@ -102,7 +130,7 @@ Established P2P friends usually send text or media and occasionally withdraw a m
 relationship. Re-established friendships retain their prior messages in the consistency comparison.
 The baseline admits at most one ordinary operation per group or P2P pair in a round.
 
-After half the random-operation budget has settled, the runner selects one active group and asks its
+After half the random-operation budget has been submitted, the runner selects one active group and asks its
 current owner to dissolve it. The other active group survives until the end. Clients that observe
 dissolution stop selecting group actions; discovery returning NOT_FOUND or an explicit GROUP_DISSOLVED
 result is recorded as observed unavailability, not an unexplained admission failure. Other failures,
@@ -121,16 +149,8 @@ to overlap. The runner polls the administrator task list for `PENDING`, `PROCESS
 `ASYNC_PROCESSING` activity. After the round barrier is idle, it polls the incremental Oracle until
 the round's federated state converges before observing the next state:
 
-```bash
-npm run federation:p2p
-# Equivalent, clearer name for the expanded workload:
-npm run federation:consistency
-# Skip per-round convergence assertions; the full final oracle is still required:
-npm run federation:consistency -- --verify-mode=final
-```
-
-`--verify-mode=round` is the default: every batch waits for two stable oracle
-samples and verifies the batch's effects. `--verify-mode=final` omits these
+`--verify-mode=round` is available in the workload runner: every batch waits for two stable oracle
+samples and verifies the batch's effects. The package script selects `--verify-mode=final`, which omits these
 intermediate assertions and convergence waits. Random batches do not wait for the
 durable queue to drain in final mode. They still observe current state and completed
 task outcomes for operation selection, without asserting those outcomes per round.
@@ -147,6 +167,15 @@ For random cancellation of an observed outgoing pending request, a task-level
 acceptance may have completed before the queued cancellation runs. The original
 result code is retained; this never turns cancellation into ending a friendship
 and never suppresses a `FAILED` task.
+For a random rejection based on `INCOMING_PENDING`, `INVITE_ALREADY_HANDLED` is
+also expected unavailability when the request has already been handled or withdrawn.
+This applies at admission and task completion, preserves the original error code, and
+never suppresses fixed-scenario failures, other error codes, or `FAILED` tasks.
+Group management excludes request generations already submitted or successfully handled
+by this run, even if a lagging projection still says `REQUESTED`. The key includes the
+group, request ID, direction, and expiration so a renewed application remains eligible.
+Unexpected group `NOT_FOUND` results still fail the run.
+
 After all operations, the harness drains the queue and checks all admission/task
 failures before the final oracle. Observational snapshots do not read/hash media bytes. The final audit
 still checks convergence, coverage, profiles, seq/originSeq, message content,
@@ -156,6 +185,11 @@ overwrite, and failures are localized less precisely than in round mode.
 Final mode also skips the midpoint-wide lazy profile check: an observational
 snapshot may still select a viewer whose leave has already completed. Midpoint
 group dissolution still runs, and the final profile audit remains required.
+In final mode, midpoint dissolution only submits its command and observes the current state;
+it does not drain the queue or assert its outcome before subsequent random operations. The final
+workload barrier always drains all three queues, even if every parent command has already been
+observed complete, so member-revocation children must finish before final validation. Round mode
+retains the midpoint task barrier and convergence checks.
 
 Fixed reference-withdrawal scenarios retain their narrow prerequisite waits
 (the remote target must be visible before it can be quoted or forwarded) and
@@ -233,19 +267,123 @@ node dev/federation-lab/p2p/audit-run.mjs path/to/operations.json
 ```
 
 This diagnostic does not exercise lazy profile APIs or claim complete workload coverage.
-The default baseline uses three nodes with 5 users and 5 groups each. It does not stop the lab or remove its
-data. Run it against a fresh lab; repeating the same account prefix correctly fails with an
-already-existing account. Smaller diagnostic runs may be used while developing the harness, but do
+The default baseline uses three nodes with 5 users and 5 groups each. `federation:test`
+resets data before each workload and stops its backends afterward. Workload artifacts
+remain available until the next reset; preserve a failed run before starting another. Smaller diagnostic runs may be used while developing the harness, but do
 not replace the 3-by-5-user/5-group acceptance run.
+
+### Logs and timing diagnostics
+
+Backend business/access logs are separate from the workload's `[p2p]` progress output.
+Every runner progress/error line is also appended with a UTC timestamp to
+`runtime/p2p-runs/<run-id>/progress.jsonl`, including drain timings, convergence samples,
+and terminal errors. This file is written independently of the backend log level and remains
+available when the workload fails. Existing runs cannot recover terminal output that was not saved.
+
+The backend launcher defaults to `FED_LAB_LOG_LEVEL=warn`, so successful requests and ordinary
+business events may be absent. Set `FED_LAB_LOG_LEVEL=info` before starting or restarting the
+backend processes to retain request timing; changing it only for the workload process does
+not affect an already-running backend.
+
+Each node writes JSON records to `runtime/<node>/data/logs/soms.log` and rotated files in the
+same directory. To follow all three current files from the repository root:
+
+```bash
+tail -F dev/federation-lab/runtime/{alpha,bravo,charlie}/data/logs/soms.log
+```
+
+Correlate backend timestamps, request IDs, and durable task IDs with
+`runtime/p2p-runs/<run-id>/operations.jsonl` and `operations.json`. The operation journal records
+admission and terminal outcomes; the interval from `admittedAt` to `finishedAt` includes queueing
+and execution and is not the time spent by the runner waiting for global idleness.
+
+A drain barrier requires two consecutive samples with no pending, processing, or asynchronously
+processing tasks on any node. Each sample concurrently issues four status requests per node
+(twelve requests for the default topology), including a check for failed tasks, then waits 500 milliseconds before the next sample.
+The final idle sample returns without another sleep. Drain progress includes:
+
+| Field                          | Meaning                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------- |
+| `elapsed`                      | Total wall-clock time since this barrier began.                                         |
+| `sample`, `idleSamples`        | Sample number and consecutive idle samples out of two required.                         |
+| `sampleMs`                     | Wall-clock time for the current sample across all nodes.                                |
+| Per-node `queryMs`             | Wall-clock time for that node's concurrent status requests.                             |
+| Per-node `statusMs`            | Individual `PENDING`, `PROCESSING`, `ASYNC_PROCESSING`, and `FAILED` request durations. |
+| `queryTotalMs`, `sleepTotalMs` | Cumulative sample time and actual polling sleep time.                                   |
+
+Concurrent request durations must not be added to estimate elapsed time. Request measurements
+include response decoding and any administrator session renewal/retry; they do not isolate SQL
+execution. Use backend request logs and database diagnostics for that distinction. State changes,
+slow samples, periodic progress, and the second idle sample produce drain logs. Two empty-queue
+lines alone do not mean the dissolution itself took the entire reported interval.
+
+### Diagnose a workload with one command
+
+Stop existing lab backends first, then run from the repository root:
+
+```bash
+npm run federation:test
+```
+
+Build the backend first with `npm run build:be`. The command checks build outputs,
+resets the lab databases and runtime, starts three instrumented backends and the database
+collector, waits for readiness, and runs the instrumented workload. Workload parameters
+are defined in `package.json`, with a random seed resolved separately on every invocation.
+To reuse a recorded seed:
+
+```bash
+npm run federation:test -- --seed=2874283404
+```
+
+The command stops its own backends and collector after success, failure, or Ctrl+C. It does not
+stop an existing lab: if a backend already responds, startup fails with instructions to stop it.
+A missing build output or a failed reset, collector, backend, or workload makes the command fail. Graceful shutdown can take
+up to 65 seconds. This launcher uses POSIX process groups and is intended for the Linux lab.
+
+Backend warnings, errors, and fatal records are mirrored to the terminal in real time,
+including multiline details. Child stderr is also forwarded so startup failures and
+collector errors remain visible. Complete stdout/stderr logs are still saved, and workload
+progress continues to print normally.
+
+All diagnostic files go into the printed `dev/federation-lab/diagnostic-runs/<timestamp>/` directory:
+`backend.log`, `collector.log`, `workload.log`, `reset.log`, `session.json`, and the process/database
+JSONL samples. This directory survives `dev:reset`; the usual workload reports and `progress.jsonl`
+still live under `runtime/p2p-runs/` and must be preserved before resetting. Set `SOMS_DIAGNOSTICS_DIR`
+only when a custom output directory is needed.
+
+The [database collector](diagnostics/collect.mjs) samples sessions, blockers, and operating-system
+pressure. The [process preload](diagnostics/preload.mjs) records HTTP durations, event-loop delay,
+CPU usage, and pool acquisition waits for the backends and workload. The unified command enables both;
+there is no need to launch them separately. Backend business/access logging defaults to `info`.
+Database activity is sampled once per second, so absence of a sampled lock wait does not prove
+that no brief contention occurred. HTTP timings measure requests, not task execution time.
+
+### Verify changes to the runner
+
+```bash
+node --test dev/federation-lab/p2p/*.spec.mjs
+npm run test:e2e -- test/federation-lab-snapshot.e2e-spec.ts
+```
+
+The PostgreSQL regression test stays under `test/` to use the repository's isolated, migrated
+E2E databases. It exercises the lab readers against the account/profile schema, including local
+and mirrored groups, addressed members, request projections, and publisher-scoped profiles.
+Runner queries must evolve with the schema: groups use `MessageThread` plus `GroupAccount` and
+`Profile`; foreign members are addressed references, not local account rows.
+
+## Built assets and reset
 
 To test prebuilt assets rather than frontend development servers, run:
 
 ```bash
-npm run dev:built
+npm run build:development
+# Start in separate terminals:
+npm run dev:be
+npm run dev:fe:built
 ```
 
 This builds the backend and both frontends with development source maps, packages the client update
-bundle, then runs the same three-node topology with `web/dist/web/browser` and `admin-web/dist`.
+bundle. The separate runtime commands serve the same three-node topology with `web/dist/web/browser` and `admin-web/dist`.
 These assets retain content hashes. Use `npm run build:production` separately when validating
 optimized, source-map-free deployment artifacts.
 
@@ -256,10 +394,15 @@ npm run dev:reset
 ```
 
 Reset permanently drops only the three explicitly named `soms_fed_lab_*` databases and removes the
-lab runtime directory.
+lab runtime directory, including uploaded files and workload reports. It preserves `local/`,
+including node identities and credentials. Both startup and reset copy any legacy credential files
+from `runtime/<node>/data/` into `local/<node>/` only when the destination is absent. Existing local
+files are never overwritten, and legacy copies remain until runtime is reset. The next backend
+start creates fresh databases and applies migrations.
 
-If the runtime was created by a version of the lab that used `*.local` identities, reset it before
-starting this version. Federation identities are persisted and cannot be renamed in place.
+For a complete identity reset, stop the lab, run `npm run dev:reset`, then remove `local/` explicitly.
+This is also required for old `*.local` identities: persisted federation identities cannot be renamed
+in place.
 
 ## Browser sessions
 
@@ -280,3 +423,17 @@ process environments; the repository `.env`, invoking shell, and system environm
 
 Never expose these ports outside a trusted development machine. The application itself also rejects
 the insecure transport and static routing variables whenever `NODE_ENV=production`.
+
+## Persistent local configuration
+
+The Git-ignored `dev/federation-lab/local/alpha/`, `local/bravo/`, and `local/charlie/` directories
+hold each node's `vapid-key.json`, `jwt-admin.key`, `password-pepper.key`, `2fa.key`,
+`soms-s2s-key.json`, and optional `google-services.json` and `firebase-service-account.json`.
+The backend reads these files directly through `SOMS_CONFIG_DIR`; missing application-owned keys
+are generated there on first boot. Each node retains independent credentials. Root `data/` files
+are never imported. Place optional Firebase files in the relevant node directory before startup.
+
+Environment variables continue to come from the repository `.env`; per-node `.env` files are not
+loaded. `SOMS_DATA_DIR` continues to point to runtime data, while `SOMS_CONFIG_DIR` points to local
+configuration. Outside the lab, an unset `SOMS_CONFIG_DIR` defaults to `SOMS_DATA_DIR` (or `./data`).
+Back up both directories when they are configured separately.

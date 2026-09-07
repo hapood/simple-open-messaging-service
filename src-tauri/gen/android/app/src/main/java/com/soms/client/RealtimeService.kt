@@ -442,26 +442,27 @@ class RealtimeService : Service() {
             val sid = active.optString("callSid", "")
             val state = active.optString("state", "")
             val peerId = active.optInt("peerUserId", 0)
+            val threadId = active.optInt("threadId", 0)
             val peerAccount = active.optString("peerAccount", "")
             val peerDomain = active.optString("peerDomain", "")
             val isCaller = active.optBoolean("isCaller", false)
             val callType = active.optString("callType", "AUDIO")
-            if (sid.isEmpty() || peerId == 0 || peerAccount.isEmpty()) return
+            if (sid.isEmpty() || threadId <= 0 || peerAccount.isEmpty()) return
             if (state == "ringing" && !isCaller && CallController.phase == "idle") {
                 SomsLog.i("Rt") { "HELLO activeCall: re-seeding incoming (missed CALL_EVENT) sid=$sid peer=$peerId" }
                 // Presentation is resolved from native SQLite by the canonical peer address; the summary
                 // carries identity only. seedIncoming is idempotent + rings.
-                val peer = ClientStateDb.getCallPeer(this, peerAccount, peerDomain)
+                val peer = ClientStateDb.getCallPeer(this, peerAccount, peerDomain, threadId)
                 CallController.seedIncoming(
                     sid, peerId, peerAccount, peerDomain, peer?.name ?: "",
-                    peer?.avatarDataUrl() ?: "", 0, callType,
+                    peer?.avatarDataUrl() ?: "", threadId, callType,
                 )
                 // The recovery missed the original incoming (SSE was down) → if backgrounded, ALSO post the
                 // call notification (seedIncoming rings but doesn't notify). startIncoming's seedIncoming is a
                 // no-op now (already seeded); its startIncomingForeground posts the notification.
                 if (!SomsMessagingService.appInForeground) {
                     CallService.startIncoming(
-                        this, sid, peerId, peerAccount, peerDomain, 0, callType,
+                        this, sid, peerId, peerAccount, peerDomain, threadId, callType,
                     )
                 }
             }

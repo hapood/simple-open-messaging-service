@@ -12,7 +12,8 @@ export interface GroupJoinRequest {
   feedId: number;
   id: string;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
-  userId: number;
+  namespaceId: number;
+  profileRev: number;
   account: string;
   domain: string;
   name: string;
@@ -23,7 +24,9 @@ export interface GroupJoinRequest {
 }
 
 export interface GroupInviteCandidate {
-  userId: number;
+  threadId?: number;
+  namespaceId: number;
+  profileRev: number;
   account: string;
   domain: string;
   name: string;
@@ -67,7 +70,7 @@ export class GroupService {
 
   queryInviteCandidates(params: {
     groupId: number;
-    afterUserId?: number;
+    afterThreadId?: number;
     search?: string;
     take?: number;
   }) {
@@ -75,7 +78,7 @@ export class GroupService {
       StandardResponse<{
         data: GroupInviteCandidate[];
         hasMore: boolean;
-        afterUserId: number | null;
+        afterThreadId: number | null;
       }>
     >(`${apiPrefix()}/group/invite-candidates`, params);
   }

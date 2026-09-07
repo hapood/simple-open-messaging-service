@@ -1,3 +1,7 @@
+import {
+  groupState as groupStateTable,
+  groupStateFields,
+} from '../group/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
@@ -326,17 +330,17 @@ export class FederationInboundMessagePageService {
             // they cannot overwrite the original message's authority coordinate.
             const [authoritativeGroup] = !('peerAccount' in item.thread)
               ? await tx
-                  .select({ id: tables.group.id })
+                  .select({ id: groupStateTable.id })
                   .from(tables.messageThread)
                   .innerJoin(
-                    tables.group,
-                    eq(tables.group.id, tables.messageThread.groupId),
+                    groupStateTable,
+                    eq(groupStateTable.id, tables.messageThread.id),
                   )
                   .where(
                     and(
                       eq(tables.messageThread.id, route.threadId),
-                      eq(tables.group.domain, domain),
-                      eq(tables.group.namespaceId, token.namespaceId),
+                      eq(groupStateFields.domain, domain),
+                      eq(groupStateFields.namespaceId, token.namespaceId),
                     ),
                   )
                   .limit(1)
@@ -383,18 +387,19 @@ export class FederationInboundMessagePageService {
           continue;
         }
         if (item.contentType === ContentType.CALL) {
-          const caller = await tx.query.user.findFirst({
-            where: and(
-              eq(tables.user.account, route.creatorAccount),
-              eq(tables.user.domain, route.creatorDomain),
-              eq(tables.user.namespaceId, token.namespaceId),
-            ),
-            columns: { id: true },
-          });
+          const caller =
+            route.creatorDomain === 'local'
+              ? await tx.query.account.findFirst({
+                  where: and(
+                    eq(tables.account.account, route.creatorAccount),
+                    eq(tables.account.namespaceId, 0),
+                  ),
+                  columns: { id: true },
+                })
+              : undefined;
           const call = parseFederatedCallContent(item.content);
           if (
             !call ||
-            !caller ||
             !('peerAccount' in item.thread) ||
             route.recipients.length !== 1
           ) {
@@ -407,7 +412,7 @@ export class FederationInboundMessagePageService {
           storedContent = buildCallContent({
             callType: call.mediaType,
             outcome: call.outcome,
-            callerId: caller.id,
+            callerId: caller?.id ?? null,
             calleeId: route.recipients[0],
             ...(call.startedAt === undefined
               ? {}

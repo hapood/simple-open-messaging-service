@@ -7,18 +7,18 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
-  group,
+  groupAccount as groupAccountTable,
   groupMetaFeed,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   messageThread,
   message,
   peerStateFeed,
-  profileVersion,
+  profileTable,
   relationshipIntent,
   relationshipPair,
   threadAudience,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
@@ -27,6 +27,7 @@ import { seedFederatedPeerNamespace } from './seed.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { S2sController } from '../src/federation/s2s.controller.js';
+import { readGroupMetaPageInTx } from '../src/group-meta/group-meta-page.js';
 
 describe('canonical Group Meta feed', () => {
   const suffix = Date.now().toString(36);
@@ -43,8 +44,6 @@ describe('canonical Group Meta feed', () => {
   let groupId: number;
   let threadId: number;
   let ownerUserId: number;
-  let memberUserId: number;
-  let observerUserId: number;
   let peerNamespaceId: number;
   let otherPeerNamespaceId: number;
 
@@ -61,73 +60,33 @@ describe('canonical Group Meta feed', () => {
       otherPeerDomain,
     );
 
-    const identities = await database.db
+    const [owner] = await database.db
       .insert(user)
-      .values([
-        {
-          account: ownerAccount,
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Owner',
-          defaultProfileRev: 1,
-          updatedAt: new Date(),
-        },
-        {
-          account: memberAccount,
-          domain: peerDomain,
-          namespaceId: peerNamespaceId,
-          name: 'Member',
-          defaultProfileRev: 1,
-          updatedAt: new Date(),
-        },
-        {
-          account: observerAccount,
-          domain: otherPeerDomain,
-          namespaceId: otherPeerNamespaceId,
-          name: 'Observer',
-          defaultProfileRev: 1,
-          updatedAt: new Date(),
-        },
-      ])
-      .returning({ id: user.id, account: user.account });
-    ownerUserId = identities.find(
-      (identity) => identity.account === ownerAccount,
-    )!.id;
-    memberUserId = identities.find(
-      (identity) => identity.account === memberAccount,
-    )!.id;
-    observerUserId = identities.find(
-      (identity) => identity.account === observerAccount,
-    )!.id;
-    await database.db.insert(profileVersion).values({
-      userId: ownerUserId,
+      .values({ account: ownerAccount, defaultProfileRev: 1 })
+      .returning();
+    ownerUserId = owner.id;
+    await database.db.insert(profileTable).values({
+      account: ownerAccount,
+      domain: 'local',
+      namespaceId: 0,
       profileRev: 1,
       displayName: 'Owner',
-      avatar: '',
-      bio: '',
     });
-
-    const [createdGroup] = await database.db
-      .insert(group)
-      .values({
-        account: groupAccount,
-        domain: 'local',
-        namespaceId: 0,
-        name: 'Group',
-        defaultProfileRev: 1,
-        updatedAt: new Date(),
-      })
-      .returning({ id: group.id });
-    groupId = createdGroup.id;
+    const [control] = await database.db
+      .insert(groupAccountTable)
+      .values({ account: groupAccount, defaultProfileRev: 1 })
+      .returning();
     const [thread] = await database.db
       .insert(messageThread)
       .values({
         type: MessageThreadType.GROUP,
-        groupId,
+        groupAccount,
+        groupDomain: 'local',
+        groupAccountId: control.id,
         updatedAt: new Date(),
       })
-      .returning({ id: messageThread.id });
-    threadId = thread.id;
+      .returning();
+    groupId = threadId = thread.id;
 
     await authorizePeer(peerDomain, peerNamespaceId, memberAccount);
     await authorizePeer(otherPeerDomain, otherPeerNamespaceId, observerAccount);
@@ -136,23 +95,27 @@ describe('canonical Group Meta feed', () => {
   beforeEach(async () => {
     await database.db
       .delete(groupMetaMemberFeed)
-      .where(eq(groupMetaMemberFeed.groupId, groupId));
+      .where(eq(groupMetaMemberFeed.threadId, groupId));
     await database.db
       .delete(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.groupId, groupId));
+      .where(eq(groupMetaProfileFeed.threadId, groupId));
     await database.db
       .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.groupId, groupId));
+      .where(eq(groupMetaFeed.threadId, groupId));
   });
 
   afterAll(async () => {
+    await database.db.delete(message).where(eq(message.threadId, threadId));
     await database.db
       .delete(relationshipPair)
       .where(eq(relationshipPair.threadId, threadId));
-    await database.db.delete(group).where(eq(group.id, groupId));
     await database.db
-      .delete(user)
-      .where(inArray(user.id, [ownerUserId, memberUserId, observerUserId]));
+      .delete(messageThread)
+      .where(eq(messageThread.id, threadId));
+    await database.db
+      .delete(groupAccountTable)
+      .where(eq(groupAccountTable.account, groupAccount));
+    await database.db.delete(user).where(eq(user.id, ownerUserId));
     await database.db
       .delete(federatedPeer)
       .where(inArray(federatedPeer.domain, [peerDomain, otherPeerDomain]));
@@ -211,12 +174,12 @@ describe('canonical Group Meta feed', () => {
       database,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
     );
-    await database.db.insert(profileVersion).values(
+    await database.db.insert(profileTable).values(
       [1, 2, 3].map((profileRev) => ({
-        groupId,
+        account: groupAccount,
+        domain: 'local',
+        namespaceId: 0,
         profileRev,
         displayName: `Group revision ${profileRev}`,
         avatar: '',
@@ -309,30 +272,30 @@ describe('canonical Group Meta feed', () => {
         .set({ status: 'ACCEPTED', expiresAt: null })
         .where(eq(relationshipIntent.pairId, pair.id));
       await database.db
-        .delete(profileVersion)
-        .where(eq(profileVersion.groupId, groupId));
+        .delete(profileTable)
+        .where(
+          and(
+            eq(profileTable.account, groupAccount),
+            eq(profileTable.domain, 'local'),
+            eq(profileTable.namespaceId, 0),
+          ),
+        );
     }
   });
 
   it('serves a third-party message author profile from its captured namespace, not the requesting peer', async () => {
-    await database.db.insert(profileVersion).values({
-      userId: memberUserId,
+    await database.db.insert(profileTable).values({
+      account: memberAccount,
+      domain: peerDomain,
+      namespaceId: peerNamespaceId,
       profileRev: 7,
       displayName: 'Historical member',
     });
-    // A same-address shell in the requester namespace must not win the lookup.
-    const [decoy] = await database.db
-      .insert(user)
-      .values({
-        account: memberAccount,
-        domain: peerDomain,
-        namespaceId: otherPeerNamespaceId,
-        name: 'Wrong namespace',
-        updatedAt: new Date(),
-      })
-      .returning();
-    await database.db.insert(profileVersion).values({
-      userId: decoy.id,
+    // The same address through another publisher must not win the exact lookup.
+    await database.db.insert(profileTable).values({
+      account: memberAccount,
+      domain: peerDomain,
+      namespaceId: otherPeerNamespaceId,
       profileRev: 7,
       displayName: 'Wrong namespace',
     });
@@ -343,6 +306,7 @@ describe('canonical Group Meta feed', () => {
       sourceNamespaceId: peerNamespaceId,
       creatorAccount: memberAccount,
       creatorDomain: peerDomain,
+      creatorNamespaceId: peerNamespaceId,
       profileRev: 7,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'third-party author' }),
@@ -363,13 +327,11 @@ describe('canonical Group Meta feed', () => {
       database,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
     );
     const controller = new S2sController(
       {
         ourDomain: localDomain,
-        getStoredUserProfile: profiles.getStoredUserProfile.bind(profiles),
+        getStoredProfile: profiles.getStoredProfile.bind(profiles),
       } as never,
       new FederationMessageFeedService(database),
       {} as never,
@@ -396,8 +358,14 @@ describe('canonical Group Meta feed', () => {
         displayName: 'Historical member',
       });
       await database.db
-        .delete(profileVersion)
-        .where(eq(profileVersion.userId, decoy.id));
+        .delete(profileTable)
+        .where(
+          and(
+            eq(profileTable.account, memberAccount),
+            eq(profileTable.domain, peerDomain),
+            eq(profileTable.namespaceId, otherPeerNamespaceId),
+          ),
+        );
       await expect(
         controller.getMessageAuthorProfile(
           request,
@@ -437,23 +405,73 @@ describe('canonical Group Meta feed', () => {
       await database.db
         .delete(peerStateFeed)
         .where(eq(peerStateFeed.account, groupAccount));
-      await database.db.delete(user).where(eq(user.id, decoy.id));
     }
   });
 
   const owner = () => ({
-    userId: ownerUserId,
+    namespaceId: 0,
     account: ownerAccount,
     domain: 'local',
     body: { role: GroupRole.OWNER, profileRev: 1 },
   });
 
   const member = () => ({
-    userId: memberUserId,
+    namespaceId: peerNamespaceId,
     account: memberAccount,
     domain: peerDomain,
     body: { role: GroupRole.MEMBER, profileRev: 1 },
   });
+
+  it.each(['full', 'delta'] as const)(
+    'includes client member namespaces and compact profile references in %s pages',
+    async (mode) => {
+      await database.db.transaction((tx) =>
+        feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      );
+      const [head] = await database.db
+        .select()
+        .from(groupMetaFeed)
+        .where(eq(groupMetaFeed.threadId, groupId));
+      const page = await database.db.transaction((tx) =>
+        readGroupMetaPageInTx(tx, {
+          groupId,
+          account: groupAccount,
+          mode,
+          after: 0n,
+          take: 100,
+          end: head.feedEndId,
+          visibleAfter: 0n,
+          client: { localDomain },
+        }),
+      );
+      expect(page.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            account: ownerAccount,
+            domain: 'local',
+            namespaceId: 0,
+            operation: 'UPSERT',
+            body: { role: 'OWNER', profileRev: 1 },
+          }),
+          expect.objectContaining({
+            account: memberAccount,
+            domain: peerDomain,
+            namespaceId: peerNamespaceId,
+            operation: 'UPSERT',
+          }),
+          expect.objectContaining({
+            operation: 'GROUP_PROFILE',
+            body: { profileRev: 1 },
+          }),
+        ]),
+      );
+      const profile = page.items.find(
+        (item) => item.operation === 'GROUP_PROFILE',
+      )!;
+      expect(profile).not.toHaveProperty('account');
+      expect(profile).not.toHaveProperty('namespaceId');
+    },
+  );
 
   it('returns only the current roster in full and a bodyless DEPART in delta', async () => {
     await database.db.transaction((tx) =>

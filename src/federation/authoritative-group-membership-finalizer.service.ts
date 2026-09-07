@@ -1,12 +1,17 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  localAccountsForTargetsInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
-  group,
   groupMetaFeed,
   messageThread,
   threadAudience,
-  user,
+  account as user,
 } from '../database/schema.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
@@ -34,24 +39,22 @@ export class AuthoritativeGroupMembershipFinalizer {
     params: {
       threadId: number;
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       active: boolean;
       canonicalRosterChanged: boolean;
     },
   ): Promise<AuthoritativeGroupMembershipFinalization> {
+    const member = await accountAddressInTx(tx, params.memberUserId);
     const [state] = await tx
       .select({
-        account: group.account,
-        domain: group.domain,
-        namespaceId: group.namespaceId,
+        account: groupStateFields.account,
+        domain: groupStateFields.domain,
+        namespaceId: groupStateFields.namespaceId,
         feedEndId: groupMetaFeed.feedEndId,
-        memberDomain: user.domain,
-        memberNamespaceId: user.namespaceId,
       })
       .from(group)
-      .innerJoin(messageThread, eq(messageThread.groupId, group.id))
-      .innerJoin(user, eq(user.id, params.memberUserId))
-      .leftJoin(groupMetaFeed, eq(groupMetaFeed.groupId, group.id))
+      .innerJoin(messageThread, eq(messageThread.id, group.id))
+      .leftJoin(groupMetaFeed, eq(groupMetaFeed.threadId, group.id))
       .where(
         and(
           eq(group.id, params.groupId),
@@ -65,23 +68,26 @@ export class AuthoritativeGroupMembershipFinalizer {
 
     const feedEndId = state.feedEndId ?? 0n;
     let audienceChanged: boolean;
-    if (state.memberDomain === 'local') {
+    if (member.domain === 'local') {
+      const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
+      if (!localAccount)
+        throw new Error('local group member account is missing');
       audienceChanged = params.active
         ? await this.openLocalAudienceInTx(
             tx,
             params.threadId,
-            params.memberUserId,
+            localAccount.id,
             feedEndId,
           )
         : await this.closeLocalAudienceInTx(
             tx,
             params.threadId,
-            params.memberUserId,
+            localAccount.id,
           );
     } else if (params.active) {
       audienceChanged = await openFederatedAudienceInTx(
         tx,
-        state.memberDomain,
+        member.domain,
         params.threadId,
         feedEndId,
       );
@@ -90,8 +96,8 @@ export class AuthoritativeGroupMembershipFinalizer {
       // audience insert is an idempotent no-op.
       await this.threadContentHeads.refreshInTx(
         tx,
-        state.memberDomain,
-        state.memberNamespaceId,
+        member.domain,
+        member.namespaceId,
         params.threadId,
       );
     } else {
@@ -102,17 +108,13 @@ export class AuthoritativeGroupMembershipFinalizer {
           WHERE pair.kind = 'GROUP_MEMBER'
             AND pair."threadId" = ${params.threadId}
             AND pair.active = true
-            AND pair."endpointBDomain" = ${state.memberDomain}
-            AND pair."endpointBNamespaceId" = ${state.memberNamespaceId}
+            AND pair."endpointBDomain" = ${member.domain}
+            AND pair."endpointBNamespaceId" = ${member.namespaceId}
         ) AS active
       `);
       audienceChanged = activePeerMembership.rows[0]?.active
         ? false
-        : await closeFederatedAudienceInTx(
-            tx,
-            state.memberDomain,
-            params.threadId,
-          );
+        : await closeFederatedAudienceInTx(tx, member.domain, params.threadId);
     }
 
     if (audienceChanged && !params.active)

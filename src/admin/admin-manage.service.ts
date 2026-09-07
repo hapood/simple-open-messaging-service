@@ -1,7 +1,8 @@
+import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
 import { count, desc, eq, ilike, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { admin, user } from '../database/schema.js';
+import { admin, account as user } from '../database/schema.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { AdminRole } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -53,7 +54,7 @@ export class AdminManageService {
           lastLoginIp: admin.lastLoginIp,
           createdAt: admin.createdAt,
           account: user.account,
-          name: user.name,
+          name: accountProfileFields(user).name,
         })
         .from(admin)
         .innerJoin(user, eq(user.id, admin.userId))
@@ -85,22 +86,15 @@ export class AdminManageService {
   }
 
   async create(dto: AdminCreateDto) {
-    const candidate = await this.database.db.query.user.findFirst({
+    const candidate = await this.database.db.query.account.findFirst({
       where: eq(user.id, dto.userId),
       columns: { availability: true },
       with: {
-        account: { columns: { id: true } },
         admins: { columns: { id: true } },
       },
     });
     if (!candidate)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (!candidate.account) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'an external identity cannot become an admin',
-      );
-    }
     if (candidate.availability === 'REMOVED') {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,

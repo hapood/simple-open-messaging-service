@@ -3,7 +3,10 @@ import { BusinessCode } from '../common/business-code.js';
 import { Logger } from '@nestjs/common';
 import { FederationThreadSourceInactiveError } from './federation-errors.js';
 import { S2sResponseError } from './federation-errors.js';
-import { FederationThreadRoundRemoteError } from './federation-thread-round-error.js';
+import {
+  FederationThreadRoundAuthorizationEpochChangedError,
+  FederationThreadRoundRemoteError,
+} from './federation-thread-round-error.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 
 function source(threadId: number) {
@@ -92,6 +95,49 @@ function harness() {
 }
 
 describe('FederationThreadRoundSchedulerService', () => {
+  it.each(['message', 'tombstone', 'reverse'] as const)(
+    'logs stale %s rounds at debug and preserves retries and other warnings',
+    async (direction) => {
+      vi.useFakeTimers();
+      const { scheduler, forward, reverse } = harness();
+      const run =
+        direction === 'message'
+          ? forward.runMessages
+          : direction === 'tombstone'
+            ? forward.runTombstones
+            : reverse.run;
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const debug = vi
+        .spyOn(Logger.prototype, 'debug')
+        .mockImplementation(() => {});
+      run
+        .mockRejectedValueOnce(
+          new FederationThreadRoundAuthorizationEpochChangedError(),
+        )
+        .mockRejectedValueOnce(new Error('network unavailable'));
+      try {
+        await scheduler.wake(1, 'a.test', direction);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(debug).toHaveBeenCalledWith(
+          expect.stringContaining('authorization epoch changed'),
+        );
+        expect(warn).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(run).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('network unavailable'),
+        );
+      } finally {
+        await scheduler.onModuleDestroy();
+        warn.mockRestore();
+        debug.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(['message', 'tombstone', 'reverse'] as const)(
     'logs handled %s authorization denials only at debug level',
     async (direction) => {

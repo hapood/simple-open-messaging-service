@@ -17,9 +17,10 @@ advisory locks for its participating account addresses. Existing database rows
 are then locked in one fixed order and all mutation decisions are made from
 data re-read after those locks were acquired.
 
-The advisory lock closes the bootstrap gap; it does not replace row locks.
-Row locks still protect concrete records, foreign-key projections, and code
-that does not participate in business-scope locking.
+The group business scope serializes changes to the same group. Do not additionally
+lock a GroupAccount row for that purpose. Thread, relationship, and projection row
+locks are retained where they protect their own shared records and allocation
+ordering. All group mutation entry points must participate in the business scope.
 
 ## 2. Canonical scopes
 

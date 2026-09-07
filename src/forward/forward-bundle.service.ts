@@ -316,10 +316,7 @@ export class ForwardBundleService {
                 : await this.exactProfileForMessage({
                     account: row.creatorAccount,
                     domain: row.creatorDomain,
-                    namespaceId:
-                      row.creatorDomain === 'local'
-                        ? 0
-                        : row.sourceNamespaceId,
+                    namespaceId: row.creatorNamespaceId,
                     profileRev: row.profileRev,
                   });
             return {
@@ -410,6 +407,17 @@ export class ForwardBundleService {
         message.content,
       );
       for (const asset of mediaAssets) assets.set(this.assetKey(asset), asset);
+      const text =
+        message.contentType === ContentType.PURE_TEXT
+          ? parseTextMessageContent(message.content)
+          : null;
+      const resolvedQuote = parseTextMessageContent(
+        enrichedRows[index].content,
+      )?.quote;
+      const selectedTarget =
+        resolvedQuote && resolvedQuote.seq > 0
+          ? selectedIndex.get(`${message.threadId}:${resolvedQuote.seq}`)
+          : undefined;
       messages.push({
         id: index + 1,
         author: {
@@ -423,22 +431,19 @@ export class ForwardBundleService {
         contentType: message.contentType,
         content: localizeForwardMediaContent(
           message.contentType,
-          message.content,
+          text
+            ? stringifyTextMessageContent({ text: text.text })
+            : message.content,
           mediaAssets,
         ),
         sentAt: message.createdAt.getTime(),
         ...(message.forwardMessage
           ? { childBundleId: message.forwardMessage.bundleId }
           : {}),
-        ...(parseTextMessageContent(enrichedRows[index].content)?.quote &&
-        selectedIndex.get(
-          `${message.threadId}:${parseTextMessageContent(enrichedRows[index].content)!.quote!.seq}`,
-        ) !== undefined
+        ...(text?.quote
           ? {
               quoteTargetId:
-                selectedIndex.get(
-                  `${message.threadId}:${parseTextMessageContent(enrichedRows[index].content)!.quote!.seq}`,
-                )! + 1,
+                selectedTarget === undefined ? 0 : selectedTarget + 1,
             }
           : {}),
       });
@@ -775,6 +780,19 @@ export class ForwardBundleService {
       const ids = new Set<number>();
       for (const message of messages) {
         if (
+          Object.keys(message).some(
+            (key) =>
+              ![
+                'id',
+                'author',
+                'profile',
+                'contentType',
+                'content',
+                'sentAt',
+                'childBundleId',
+                'quoteTargetId',
+              ].includes(key),
+          ) ||
           !Number.isSafeInteger(message.id) ||
           message.id < 1 ||
           ids.has(message.id) ||
@@ -841,8 +859,7 @@ export class ForwardBundleService {
         if (
           message.quoteTargetId !== undefined &&
           (!Number.isSafeInteger(message.quoteTargetId) ||
-            message.quoteTargetId < 1 ||
-            !ids.has(message.quoteTargetId))
+            message.quoteTargetId < 0)
         ) {
           throw this.invalidWire('invalid forward quote target');
         }
@@ -1082,13 +1099,11 @@ export class ForwardBundleService {
       avatar: string;
     }>(sql`
       SELECT snapshot."displayName", snapshot.avatar
-      FROM "User" identity
-      JOIN "ProfileVersion" snapshot
-        ON snapshot."userId" = identity.id
-       AND snapshot."profileRev" = ${selector.profileRev}
-      WHERE identity.account = ${selector.account}
-        AND identity.domain = ${selector.domain}
-        AND identity."namespaceId" = ${selector.namespaceId}
+      FROM "Profile" snapshot
+      WHERE snapshot.account = ${selector.account}
+        AND snapshot.domain = ${selector.domain}
+        AND snapshot."namespaceId" = ${selector.namespaceId}
+        AND snapshot."profileRev" = ${selector.profileRev}
       LIMIT 1
     `);
     const profile = result.rows[0];

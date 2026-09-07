@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { accountThreadState } from '../database/schema.js';
+import { accountThreadState, account } from '../database/schema.js';
 import { FederationGroupMembershipService } from './federation-group-membership.service.js';
 
 function queryResult<T>(value: T) {
   const query: Record<string, unknown> = {};
-  for (const method of ['from', 'where', 'limit'])
+  for (const method of ['from', 'where', 'limit', 'orderBy'])
     query[method] = vi.fn(() => query);
   query.then = (
     resolve: (result: T) => unknown,
@@ -23,10 +23,6 @@ function harness(params?: {
     account: 'alice',
     domain: 'local',
   };
-  const findUser = vi.fn().mockResolvedValue(identity);
-  const findAccount = vi
-    .fn()
-    .mockResolvedValue(params?.localAccount === false ? undefined : { id: 11 });
   const participantConflict = vi.fn().mockResolvedValue(undefined);
   const participantValues = vi.fn(() => ({
     onConflictDoUpdate: participantConflict,
@@ -39,16 +35,13 @@ function harness(params?: {
     rows: params?.current ? [params.current] : [],
   });
   const tx = {
-    query: {
-      user: { findFirst: findUser },
-      account: { findFirst: findAccount },
-      group: {
-        findFirst: vi.fn().mockResolvedValue({ defaultProfileRev: 1 }),
-      },
-    },
+    query: { account: { findFirst: vi.fn().mockResolvedValue(identity) } },
     execute,
     insert,
-    select: vi.fn(() => queryResult([])),
+    select: vi.fn(() => ({
+      from: (table: unknown) =>
+        queryResult(table === account ? [identity] : [{ profileRev: 1 }]),
+    })),
   };
   const reconcileMembersInTx = vi.fn().mockResolvedValue(4n);
   const reconcileProfileInTx = vi.fn().mockResolvedValue(3n);
@@ -95,7 +88,7 @@ describe('FederationGroupMembershipService', () => {
 
     expect(target.reconcileMembersInTx).toHaveBeenCalledWith(target.tx, 5, [
       {
-        userId: 11,
+        namespaceId: 0,
         account: 'alice',
         domain: 'local',
         operation: 'UPSERT',

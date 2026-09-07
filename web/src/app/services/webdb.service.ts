@@ -13,6 +13,7 @@ import {
   type IDBPTransaction,
 } from 'idb';
 import {
+  localSubjectIdentity,
   createGroupConversation,
   createP2PConversation,
   parseUserIdentityKey,
@@ -79,34 +80,17 @@ export interface AvatarRecord {
   lastRender: number;
 }
 
-/** Person profile. Its logical primary key mirrors backend User exactly. */
-export interface UserRecord {
-  id?: number;
-  name: string;
+export interface ProfileSelector {
   account: string;
-  avatar: string;
-  bio: string;
   domain: string;
   namespaceId: number;
-  availability: 'AVAILABLE' | 'REMOVED';
-  createdAt: number;
-  updatedAt: number;
   profileRev: number;
 }
 
-/** Group profile. Groups have one authoritative address and are not represented as User rows. */
-export interface GroupRecord {
-  id?: number;
+export interface ProfileSnapshot extends ProfileSelector {
   name: string;
-  account: string;
   avatar: string;
-  description: string;
-  domain: string;
-  namespaceId: number;
-  profileRev: number;
-  createdAt: number;
-  updatedAt: number;
-  dissolvedAt?: number | null;
+  bio: string;
 }
 
 export interface NamespaceRecord {
@@ -123,7 +107,7 @@ interface NamespaceRegistryStore {
   };
 }
 
-/** One materialized roster member pointing to a User logical key. */
+/** One materialized roster member selecting an exact profile revision. */
 export interface MemberRecord {
   threadId: number;
   account: string;
@@ -135,33 +119,23 @@ export interface MemberRecord {
   profileRev: number;
   /** Message that most recently selected profileRev inside this group. */
   profileMessageSeq?: number | null;
-  /** Exact resolved display data remains group-scoped instead of mutating the source User row. */
+}
+
+export interface ResolvedMemberRecord extends MemberRecord {
+  /** Presentation is joined from the selected immutable profile. */
   resolvedProfileRev?: number;
   profileName?: string;
   profileAvatar?: string;
   profileBio: string;
+  user: ProfileSnapshot;
 }
 
-export interface ResolvedMemberRecord extends MemberRecord {
-  user: UserRecord;
-}
-
-/** UI profile view materialized from a User or Group cache row. */
-export interface ProfileRecord {
-  identity: string;
-  id: number;
-  kind: 'user' | 'group';
-  name: string;
-  account: string;
-  avatar: string;
-  bio: string;
-  domain: string;
-  profileRev: number;
-}
-
-export interface ProfileWriteRecord extends ProfileRecord {
+/** Optional UI context is used for avatar signalling and the signed-in account address only. */
+export interface ProfileWriteRecord extends ProfileSnapshot {
+  identity?: string;
+  id?: number;
+  kind?: 'user' | 'group';
   sourceServer: string;
-  namespaceId: number;
 }
 
 export interface ClientGroupMetaApply {
@@ -236,15 +210,9 @@ export interface WebdbSchema extends DBSchema {
     indexes: { domain: string };
   };
   avatars: { key: string; value: AvatarRecord };
-  users: {
-    key: [string, string, number];
-    value: UserRecord;
-    indexes: { address: [string, string, number]; id: number };
-  };
-  groups: {
-    key: [string, string, number];
-    value: GroupRecord;
-    indexes: { id: number };
+  profiles: {
+    key: [string, string, number, number];
+    value: ProfileSnapshot;
   };
   members: {
     key: [number, string, string, number];
@@ -282,7 +250,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 14;
+export const CACHE_SCHEMA_VERSION = 15;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 3;
 const IDB_FORMAT_VERSION = 1;
 
@@ -590,8 +558,7 @@ export class WebdbService implements OnDestroy {
     const required = [
       'avatars',
       'namespaces',
-      'users',
-      'groups',
+      'profiles',
       'members',
       'threads',
       'relationshipRequests',
@@ -605,7 +572,6 @@ export class WebdbService implements OnDestroy {
       const version = await db.get('settings', 'schemaVersion');
       return (
         version?.value === CACHE_SCHEMA_VERSION &&
-        db.transaction('users').store.indexNames.contains('address') &&
         db.transaction('members').store.indexNames.contains('thread') &&
         db.transaction('members').store.indexNames.contains('address')
       );
@@ -631,15 +597,9 @@ export class WebdbService implements OnDestroy {
           namespaceId: 0,
           status: 'ACTIVE',
         });
-        const users = db.createObjectStore('users', {
-          keyPath: ['account', 'domain', 'namespaceId'],
+        db.createObjectStore('profiles', {
+          keyPath: ['account', 'domain', 'namespaceId', 'profileRev'],
         });
-        users.createIndex('address', ['account', 'domain', 'namespaceId']);
-        users.createIndex('id', 'id', { unique: true });
-        const groups = db.createObjectStore('groups', {
-          keyPath: ['account', 'domain', 'namespaceId'],
-        });
-        groups.createIndex('id', 'id', { unique: true });
         const members = db.createObjectStore('members', {
           keyPath: ['threadId', 'account', 'domain', 'namespaceId'],
         });
@@ -1215,8 +1175,26 @@ export class WebdbService implements OnDestroy {
     return (await this.db()).getAll('threads');
   }
 
+  private normalizeThreadSubject(item: ConversationItem): ConversationItem {
+    return item.type === 'P2P'
+      ? {
+          ...item,
+          peerUser: localSubjectIdentity(item.peerUser),
+          authorityNamespaceId: localSubjectIdentity(item.peerUser).namespaceId,
+        }
+      : {
+          ...item,
+          group: localSubjectIdentity(item.group),
+          authorityNamespaceId: localSubjectIdentity(item.group).namespaceId,
+        };
+  }
+
   async replaceThreads(items: ConversationItem[]): Promise<void> {
-    return this.runAccountOperation(() => this.replaceThreadsInternal(items));
+    return this.runAccountOperation(() =>
+      this.replaceThreadsInternal(
+        items.map((item) => this.normalizeThreadSubject(item)),
+      ),
+    );
   }
 
   private async replaceThreadsInternal(
@@ -1242,7 +1220,9 @@ export class WebdbService implements OnDestroy {
   }
 
   async putThread(item: ConversationItem): Promise<void> {
-    return this.runAccountOperation(() => this.putThreadInternal(item));
+    return this.runAccountOperation(() =>
+      this.putThreadInternal(this.normalizeThreadSubject(item)),
+    );
   }
 
   private async putThreadInternal(item: ConversationItem): Promise<void> {
@@ -1386,8 +1366,7 @@ export class WebdbService implements OnDestroy {
       [
         'threads',
         'namespaces',
-        'users',
-        'groups',
+        'profiles',
         'members',
         'relationshipRequests',
         'relationshipIntents',
@@ -1573,13 +1552,6 @@ export class WebdbService implements OnDestroy {
               member = await member.continue();
             }
             await threads.delete(threadId);
-            await tx
-              .objectStore('groups')
-              .delete([
-                existing.group.account,
-                existing.group.domain,
-                existing.group.namespaceId ?? 0,
-              ]);
           }
         } else {
           const friendBody = body as Omit<
@@ -1609,7 +1581,10 @@ export class WebdbService implements OnDestroy {
               ...existing,
               friendshipActive: active,
               conversationState: active ? 'ACTIVE' : 'READ_ONLY',
-              peerUser: { ...existing.peerUser, ...peer },
+              peerUser:
+                existing.peerProfileMessageSeq != null
+                  ? existing.peerUser
+                  : { ...existing.peerUser, ...peer },
             });
           else if (active)
             await threads.put(createP2PConversation(threadId, peer));
@@ -1633,7 +1608,27 @@ export class WebdbService implements OnDestroy {
         .objectStore('threads')
         .get(update.threadId);
       if (currentThread?.type !== 'GROUP') continue;
-      for (const item of update.page.items) {
+      for (const entry of update.page.items) {
+        const item =
+          entry.operation === 'GROUP_PROFILE'
+            ? entry
+            : localSubjectIdentity(entry);
+        if (item.operation === 'GROUP_PROFILE') {
+          const thread = await tx.objectStore('threads').get(update.threadId);
+          if (thread?.type === 'GROUP')
+            await tx.objectStore('threads').put({
+              ...thread,
+              group: { ...thread.group, profileRev: item.body.profileRev },
+            });
+          continue;
+        }
+        await this.registerNamespace(
+          namespaces as unknown as NamespaceRegistryStore,
+          item.namespaceId === update.namespaceId
+            ? update.sourceServer
+            : item.domain,
+          item.namespaceId,
+        );
         const previous = await members
           .index('address')
           .get([update.threadId, item.account, item.domain, item.namespaceId]);
@@ -1641,34 +1636,18 @@ export class WebdbService implements OnDestroy {
           if (previous) await members.put({ ...previous, left: true });
           continue;
         }
-        const body = item.body as {
-          role: 'OWNER' | 'ADMIN' | 'MEMBER';
-          profileRev: number;
-          profileMessageSeq?: number | null;
-          profileResolved?: boolean;
-          displayName: string;
-          avatar: string | null;
-          bio: string;
-        };
-        const existingUser = await tx
-          .objectStore('users')
-          .get([item.account, item.domain, item.namespaceId]);
-        if (
-          body.profileResolved !== false &&
-          (!existingUser || body.profileRev >= existingUser.profileRev)
-        )
-          await tx.objectStore('users').put({
-            ...(existingUser?.id === undefined ? {} : { id: existingUser.id }),
+        const body = item.body;
+        const profileResolved =
+          body.profileResolved ?? typeof body.displayName === 'string';
+        if (profileResolved && body.profileRev > 0)
+          await this.writeSnapshot(tx.objectStore('profiles'), {
             account: item.account,
             domain: item.domain,
             namespaceId: item.namespaceId,
-            name: body.displayName,
-            avatar: body.avatar ?? '',
-            bio: body.bio,
-            availability: 'AVAILABLE',
             profileRev: body.profileRev,
-            createdAt: existingUser?.createdAt ?? Date.now(),
-            updatedAt: Date.now(),
+            name: body.displayName ?? item.account,
+            avatar: body.avatar ?? '',
+            bio: body.bio ?? '',
           });
         await members.put({
           threadId: update.threadId,
@@ -1679,22 +1658,6 @@ export class WebdbService implements OnDestroy {
           left: false,
           profileRev: body.profileRev,
           profileMessageSeq: body.profileMessageSeq ?? null,
-          resolvedProfileRev:
-            body.profileResolved !== false
-              ? body.profileRev
-              : previous?.resolvedProfileRev,
-          profileName:
-            body.profileResolved !== false
-              ? body.displayName
-              : previous?.profileName,
-          profileAvatar:
-            body.profileResolved !== false
-              ? (body.avatar ?? '')
-              : previous?.profileAvatar,
-          profileBio:
-            body.profileResolved !== false
-              ? body.bio
-              : (previous?.profileBio ?? ''),
         });
       }
       const currentMembers = await members
@@ -1703,11 +1666,8 @@ export class WebdbService implements OnDestroy {
       const activeMembers = currentMembers.filter((member) => !member.left);
       const thread = await tx.objectStore('threads').get(update.threadId);
       if (thread?.type === 'GROUP') {
-        const selfUserId = Number(this.currentUserId);
-        const [selfUser] = await tx
-          .objectStore('users')
-          .index('id')
-          .getAll(selfUserId, 1);
+        const selfUser = (await tx.objectStore('settings').get('selfIdentity'))
+          ?.value as { account: string; domain: string } | undefined;
         const self = activeMembers.find(
           (member) =>
             selfUser !== undefined &&
@@ -1729,60 +1689,29 @@ export class WebdbService implements OnDestroy {
         });
       }
     }
-    for (const op of items) {
+    for (const entry of items) {
+      const op =
+        entry.eventType === 'PROFILE' ? localSubjectIdentity(entry) : entry;
       if (op.eventType === 'RELATIONSHIP_INTENT') continue;
       if (op.eventType === 'PROFILE') {
         const body = op.body;
-        const now = Date.now();
-        if (op.account.startsWith('!')) {
-          const groups = tx.objectStore('groups');
-          const namespaceId = op.namespaceId;
-          const previous = await groups.get([
-            op.account,
-            op.domain,
-            namespaceId,
-          ]);
-          await groups.put({
-            id: previous?.id,
+        if (typeof body.displayName === 'string' && body.profileRev > 0)
+          await this.writeSnapshot(tx.objectStore('profiles'), {
             account: op.account,
             domain: op.domain,
-            namespaceId,
-            name: op.account,
-            avatar: '',
-            description: previous?.description ?? '',
+            namespaceId: op.namespaceId,
             profileRev: body.profileRev,
-            dissolvedAt: previous?.dissolvedAt ?? null,
-            createdAt: previous?.createdAt ?? now,
-            updatedAt: now,
-          });
-        } else {
-          const users = tx.objectStore('users');
-          const namespaceId = op.namespaceId;
-          const previous = await users.get([
-            op.account,
-            op.domain,
-            namespaceId,
-          ]);
-          await users.put({
-            id: previous?.id,
-            account: op.account,
-            domain: op.domain,
-            namespaceId,
-            availability: 'AVAILABLE',
-            createdAt: previous?.createdAt ?? now,
-            updatedAt: now,
             name: body.displayName,
             avatar: body.avatar ?? '',
-            bio: body.bio,
-            profileRev: body.profileRev,
+            bio: body.bio ?? '',
           });
-        }
         const relationshipRequests = tx.objectStore('relationshipRequests');
         for (const request of await relationshipRequests.getAll()) {
           if (request.kind === 'GROUP') {
             if (
               request.group?.account !== op.account ||
-              request.group.domain !== op.domain
+              request.group.domain !== op.domain ||
+              request.group.namespaceId !== op.namespaceId
             )
               continue;
             await relationshipRequests.put({
@@ -1802,8 +1731,11 @@ export class WebdbService implements OnDestroy {
         for (const thread of await threads.getAll()) {
           if (
             thread.type === 'P2P' &&
+            thread.peerProfileMessageSeq == null &&
+            thread.peerUser.profileRev === body.profileRev &&
             thread.peerUser.account === op.account &&
-            (thread.peerUser.domain ?? '') === op.domain
+            (thread.peerUser.domain ?? '') === op.domain &&
+            thread.peerUser.namespaceId === op.namespaceId
           )
             await threads.put({
               ...thread,
@@ -1818,14 +1750,17 @@ export class WebdbService implements OnDestroy {
           else if (
             thread.type === 'GROUP' &&
             thread.group.account === op.account &&
-            thread.group.domain === op.domain
+            thread.group.domain === op.domain &&
+            thread.group.namespaceId === op.namespaceId &&
+            thread.group.profileRev <= body.profileRev
           )
             await threads.put({
               ...thread,
               group: {
                 ...thread.group,
-                name: thread.group.account,
-                avatar: '',
+                name: body.displayName,
+                avatar: body.avatar ?? '',
+                description: body.bio,
                 profileRev: body.profileRev,
               },
             });
@@ -1974,27 +1909,54 @@ export class WebdbService implements OnDestroy {
     });
   }
 
-  async getProfile(identity: string): Promise<ProfileRecord | undefined> {
-    return this.runAccountOperation(() => this.getProfileInternal(identity));
-  }
-
-  async getUser(
-    account: string,
-    domain: string,
-    namespaceId: number,
-  ): Promise<UserRecord | undefined> {
+  async getProfile(
+    selector: ProfileSelector,
+  ): Promise<ProfileSnapshot | undefined> {
+    selector = localSubjectIdentity(selector);
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return (
-          (await tauriInvoke<UserRecord | null>('native_db_get_user', {
+          (await tauriInvoke<ProfileSnapshot | null>('native_db_get_profile', {
             userId: Number(this.currentUserId),
-            account,
-            domain,
-            namespaceId,
+            ...selector,
           })) ?? undefined
         );
-      return (await this.db()).get('users', [account, domain, namespaceId]);
+      return (await this.db()).get('profiles', [
+        selector.account,
+        selector.domain,
+        selector.namespaceId,
+        selector.profileRev,
+      ]);
     });
+  }
+
+  private memberUser(
+    member: MemberRecord,
+    snapshot?: ProfileSnapshot,
+  ): ProfileSnapshot {
+    return {
+      account: member.account,
+      domain: member.domain,
+      namespaceId: member.namespaceId,
+      profileRev: member.profileRev,
+      name: snapshot?.name ?? member.account,
+      avatar: snapshot?.avatar ?? '',
+      bio: snapshot?.bio ?? '',
+    };
+  }
+
+  private resolveMember(
+    member: MemberRecord,
+    snapshot?: ProfileSnapshot,
+  ): ResolvedMemberRecord {
+    return {
+      ...member,
+      user: this.memberUser(member, snapshot),
+      resolvedProfileRev: snapshot?.profileRev,
+      profileName: snapshot?.name,
+      profileAvatar: snapshot?.avatar,
+      profileBio: snapshot?.bio ?? '',
+    };
   }
 
   async queryGroupMembers(params: {
@@ -2036,18 +1998,19 @@ export class WebdbService implements OnDestroy {
         .sort(compareMemberIdentity);
       for (const member of members) {
         if (result.length >= params.take) break;
-        const user = await db.get('users', [
+        const snapshot = await db.get('profiles', [
           member.account,
           member.domain,
           member.namespaceId,
+          member.profileRev,
         ]);
-        if (!user) continue;
+        const user = this.memberUser(member, snapshot);
         if (
           !search ||
           user.name.toLocaleLowerCase().includes(search) ||
           user.account.toLocaleLowerCase().includes(search)
         )
-          result.push({ ...member, user });
+          result.push(this.resolveMember(member, snapshot));
       }
       return result;
     });
@@ -2059,6 +2022,7 @@ export class WebdbService implements OnDestroy {
     domain: string,
     namespaceId: number,
   ): Promise<ResolvedMemberRecord | undefined> {
+    ({ domain, namespaceId } = localSubjectIdentity({ domain, namespaceId }));
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return (
@@ -2081,8 +2045,13 @@ export class WebdbService implements OnDestroy {
         namespaceId,
       ]);
       if (!member || member.left) return undefined;
-      const user = await db.get('users', [account, domain, namespaceId]);
-      return user ? { ...member, user } : undefined;
+      const snapshot = await db.get('profiles', [
+        account,
+        domain,
+        namespaceId,
+        member.profileRev,
+      ]);
+      return this.resolveMember(member, snapshot);
     });
   }
 
@@ -2096,6 +2065,7 @@ export class WebdbService implements OnDestroy {
     profileRev: number,
     messageSeq: number,
   ): Promise<boolean> {
+    identity = localSubjectIdentity(identity);
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return tauriInvoke<boolean>(
@@ -2117,20 +2087,7 @@ export class WebdbService implements OnDestroy {
       ];
       const tx = db.transaction('members', 'readwrite');
       let previous = await tx.store.get(key);
-      if (!previous) {
-        previous = (await tx.store.index('thread').getAll(threadId)).find(
-          (member) =>
-            member.account === identity.account &&
-            member.domain === identity.domain,
-        );
-        if (previous)
-          key = [
-            previous.threadId,
-            previous.account,
-            previous.domain,
-            previous.namespaceId,
-          ];
-      }
+
       if (
         !previous ||
         previous.left ||
@@ -2158,6 +2115,7 @@ export class WebdbService implements OnDestroy {
     },
     profile: { rev: number; name: string; avatar: string; bio: string },
   ): Promise<boolean> {
+    identity = localSubjectIdentity(identity);
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return tauriInvoke<boolean>('native_db_store_group_member_profile', {
@@ -2176,196 +2134,94 @@ export class WebdbService implements OnDestroy {
         identity.domain,
         identity.namespaceId,
       ];
-      const tx = db.transaction('members', 'readwrite');
-      let previous = await tx.store.get(key);
-      if (!previous) {
-        previous = (await tx.store.index('thread').getAll(threadId)).find(
-          (member) =>
-            member.account === identity.account &&
-            member.domain === identity.domain,
-        );
-        if (previous)
-          key = [
-            previous.threadId,
-            previous.account,
-            previous.domain,
-            previous.namespaceId,
-          ];
-      }
+      const tx = db.transaction(['members', 'profiles'], 'readwrite');
+      let previous = await tx.objectStore('members').get(key);
+
       if (!previous || previous.left || previous.profileRev !== profile.rev) {
         await tx.done;
         return false;
       }
-      await tx.store.put({
-        ...previous,
-        resolvedProfileRev: profile.rev,
-        profileName: profile.name,
-        profileAvatar: profile.avatar,
-        profileBio: profile.bio,
+      await this.writeSnapshot(tx.objectStore('profiles'), {
+        ...identity,
+        profileRev: profile.rev,
+        name: profile.name,
+        avatar: profile.avatar,
+        bio: profile.bio,
       });
       await tx.done;
       return true;
     });
   }
 
-  private async getProfileInternal(
-    identity: string,
-  ): Promise<ProfileRecord | undefined> {
-    if (isTauri() && this.currentUserId != null) {
-      return (
-        (await tauriInvoke<ProfileRecord | null>('native_db_get_profile', {
-          userId: Number(this.currentUserId),
-          identity,
-        })) ?? undefined
-      );
-    }
-    const db = await this.db();
-    if (identity.startsWith('a:')) {
-      let address: unknown;
-      try {
-        address = JSON.parse(identity.slice(2));
-      } catch {
-        return undefined;
-      }
-      if (
-        !Array.isArray(address) ||
-        address.length !== 2 ||
-        typeof address[0] !== 'string' ||
-        typeof address[1] !== 'string'
-      )
-        return undefined;
-      const [domain, account] = address;
-      const namespace = (
-        await db.getAllFromIndex('namespaces', 'domain', domain)
-      )
-        .filter((item) => item.status === 'ACTIVE')
-        .sort((a, b) => b.namespaceId - a.namespaceId)[0];
-      const record = namespace
-        ? await db.get('users', [account, domain, namespace.namespaceId])
-        : undefined;
-      return record ? this.userAsProfile(identity, record) : undefined;
-    }
-    const match = /^([ug])(\d+)$/.exec(identity);
-    if (!match) return undefined;
-    const id = Number(match[2]);
-    if (match[1] === 'u') {
-      const record = await db.getFromIndex('users', 'id', id);
-      return record ? this.userAsProfile(identity, record) : undefined;
-    }
-    const record = await db.getFromIndex('groups', 'id', id);
-    return record ? this.groupAsProfile(identity, record) : undefined;
-  }
-
   async putProfile(record: ProfileWriteRecord): Promise<boolean> {
-    return this.runAccountOperation(() => this.putProfileInternal(record));
-  }
-
-  private async putProfileInternal(
-    record: ProfileWriteRecord,
-  ): Promise<boolean> {
-    if (isTauri() && this.currentUserId != null) {
-      return tauriInvoke<boolean>('native_db_put_profile', {
-        userId: Number(this.currentUserId),
-        identity: record.identity,
-        profileRev: record.profileRev,
-        profile: record,
-      });
-    }
-    const db = await this.db();
-    if (record.kind === 'user') {
-      const tx = db.transaction(['namespaces', 'users'], 'readwrite');
-      const key: [string, string, number] = [
-        record.account,
-        record.domain,
-        record.namespaceId,
-      ];
-      const users = tx.objectStore('users');
-      const previous = await users.get(key);
-      if (previous && previous.profileRev > record.profileRev) {
-        await tx.done;
-        return false;
-      }
+    record = localSubjectIdentity(record);
+    return this.runAccountOperation(async () => {
+      if (record.profileRev < 1) return false;
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<boolean>('native_db_put_profile', {
+          userId: Number(this.currentUserId),
+          profile: record,
+        });
+      const tx = (await this.db()).transaction(
+        ['namespaces', 'profiles', 'settings'],
+        'readwrite',
+      );
       await this.registerNamespace(
         tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
         record.sourceServer,
         record.namespaceId,
       );
-      await users.put({
-        id: record.id || previous?.id,
+      if (
+        record.kind === 'user' &&
+        record.domain === 'local' &&
+        record.id === Number(this.currentUserId)
+      )
+        await tx.objectStore('settings').put({
+          key: 'selfIdentity',
+          value: { account: record.account, domain: 'local' },
+        });
+      const written = await this.writeSnapshot(tx.objectStore('profiles'), {
         account: record.account,
         domain: record.domain,
         namespaceId: record.namespaceId,
+        profileRev: record.profileRev,
         name: record.name,
         avatar: record.avatar,
         bio: record.bio,
-        availability: 'AVAILABLE',
-        profileRev: record.profileRev,
-        createdAt: previous?.createdAt ?? Date.now(),
-        updatedAt: Date.now(),
       });
       await tx.done;
-    } else {
-      const tx = db.transaction(['namespaces', 'groups'], 'readwrite');
-      const key: [string, string, number] = [
-        record.account,
-        record.domain,
-        record.namespaceId,
-      ];
-      const groups = tx.objectStore('groups');
-      const previous = await groups.get(key);
-      if (previous && previous.profileRev > record.profileRev) {
-        await tx.done;
-        return false;
+      return written;
+    });
+  }
+
+  private async writeSnapshot(
+    store: {
+      get(
+        key: [string, string, number, number],
+      ): Promise<ProfileSnapshot | undefined>;
+      put(record: ProfileSnapshot): Promise<unknown>;
+      transaction: { abort(): void; done: Promise<void> };
+    },
+    record: ProfileSnapshot,
+  ): Promise<boolean> {
+    record = localSubjectIdentity(record);
+    const previous = await store.get([
+      record.account,
+      record.domain,
+      record.namespaceId,
+      record.profileRev,
+    ]);
+    if (previous) {
+      if (previous.name !== record.name || previous.bio !== record.bio) {
+        store.transaction.abort();
+        await store.transaction.done.catch(() => {});
+        throw new Error('conflicting cached profile revision');
       }
-      await this.registerNamespace(
-        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-        record.domain,
-        record.namespaceId,
-      );
-      await groups.put({
-        id: record.id || previous?.id,
-        account: record.account,
-        domain: record.domain,
-        namespaceId: record.namespaceId,
-        name: record.name,
-        avatar: record.avatar,
-        description: record.bio,
-        profileRev: record.profileRev,
-        dissolvedAt: previous?.dissolvedAt ?? null,
-        createdAt: previous?.createdAt ?? Date.now(),
-        updatedAt: Date.now(),
-      });
-      await tx.done;
+      // Avatar URLs and inline bytes are transport representations of the same revision.
+      return false;
     }
+    await store.put(record);
     return true;
-  }
-
-  private userAsProfile(identity: string, record: UserRecord): ProfileRecord {
-    return {
-      identity,
-      id: record.id ?? 0,
-      kind: 'user',
-      name: record.name,
-      account: record.account,
-      avatar: record.avatar,
-      bio: record.bio,
-      domain: record.domain,
-      profileRev: record.profileRev,
-    };
-  }
-
-  private groupAsProfile(identity: string, record: GroupRecord): ProfileRecord {
-    return {
-      identity,
-      id: record.id ?? 0,
-      kind: 'group',
-      name: record.name,
-      account: record.account,
-      avatar: record.avatar,
-      bio: record.description,
-      domain: record.domain,
-      profileRev: record.profileRev,
-    };
   }
 
   // ---- message store -----------------------------------------------------------------------
@@ -2383,6 +2239,10 @@ export class WebdbService implements OnDestroy {
   }
 
   async putCachedMessages(messages: Message[]): Promise<void> {
+    messages = messages.map((message) => ({
+      ...message,
+      creator: message.creator && localSubjectIdentity(message.creator),
+    }));
     if (messages.length === 0) return;
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
@@ -2557,7 +2417,11 @@ export class WebdbService implements OnDestroy {
     });
     const messageStore = tx.objectStore('messages');
     const committedMessages: Message[] = [];
-    for (const message of input.messages) {
+    for (const entry of input.messages) {
+      const message = {
+        ...entry,
+        creator: entry.creator && localSubjectIdentity(entry.creator),
+      };
       const existing = await messageStore.get([input.threadId, message.seq]);
       if (existing?.isDeleted) continue;
       await messageStore.put(message);

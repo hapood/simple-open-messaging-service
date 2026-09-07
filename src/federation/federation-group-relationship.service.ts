@@ -1,3 +1,4 @@
+import type { AccountTarget } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
@@ -22,7 +23,7 @@ export class FederationGroupRelationshipService {
     params: {
       threadId: number;
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       author: 'GROUP' | 'MEMBER';
       hostedLocally: boolean;
       status: RelationshipIntentStatus;
@@ -66,7 +67,7 @@ export class FederationGroupRelationshipService {
     params: {
       threadId: number;
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       active: boolean;
       hostedLocally: boolean;
       initialRole?: typeof GroupRole.OWNER;
@@ -126,7 +127,7 @@ export class FederationGroupRelationshipService {
     params: {
       threadId: number;
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       hostedLocally: boolean;
       afterPairDeactivated: () => Promise<T>;
     },

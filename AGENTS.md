@@ -26,7 +26,10 @@ under `deploy/`; architecture and protocol documentation belongs in `docs/`.
 
 - `npm install` installs backend dependencies.
 - `npm install --prefix web && npm install --prefix admin-web` installs both UIs.
-- `npm run dev` starts the API, bundle watcher, Angular client, and admin console.
+- `npm run build:be` and `npm run build:fe` build the backend and frontends.
+- `npm run dev:be` runs the built backend; `npm run dev:fe` runs frontend HMR in a separate terminal.
+- `npm run dev:fe:built` serves prebuilt frontend assets.
+- `npm run federation:test` resets lab databases and runs the built backend workload with diagnostics.
 - `npm run build` compiles the API; run it with `--prefix web` or
   `--prefix admin-web` to build a UI.
 - `npm run db:migrate` applies existing database migrations; `npm run db:status`

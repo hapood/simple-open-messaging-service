@@ -1,62 +1,66 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  account as accountTable,
-  profileVersion,
-  user,
-} from '../database/schema.js';
+import { account as accountTable, profileTable } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+
+const selectedProfile = and(
+  eq(profileTable.account, accountTable.account),
+  eq(profileTable.domain, 'local'),
+  eq(profileTable.namespaceId, 0),
+  eq(profileTable.profileRev, accountTable.defaultProfileRev),
+);
+
+const publicUserColumns = {
+  id: accountTable.id,
+  account: accountTable.account,
+  name: sql<string>`COALESCE(${profileTable.displayName}, ${accountTable.account})`,
+  avatar: sql<string>`COALESCE(${profileTable.avatar}, '')`,
+  bio: sql<string>`COALESCE(${profileTable.bio}, '')`,
+  domain: sql<'local'>`'local'::text`,
+  namespaceId: sql<number>`0::integer`,
+  createdAt: accountTable.createdAt,
+  updatedAt: accountTable.updatedAt,
+  availability: accountTable.availability,
+  defaultProfileRev: accountTable.defaultProfileRev,
+};
 
 @Injectable()
 export class UserService {
   constructor(private readonly database: DatabaseService) {}
 
-  // Sensitive columns are omitted at the query layer (never loaded → can't leak into responses),
-  // so there are no per-site `delete` lines. hashPwd is omitted by default; the opt-in read below
-  // re-includes it where a legitimate internal consumer (the login path) needs it.
   findUniqueUser(where: UserLookup) {
     return this.database.db
       .select(publicUserColumns)
-      .from(user)
+      .from(accountTable)
+      .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
       .limit(1)
       .then(([row]) => row ?? null);
   }
 
-  /** Login path only: keeps hashPwd (argon2.verify needs it). Auth-only. */
+  /** Password hashes are selected only by the authentication path. */
   findUniqueUserForAuth(where: UserLookup) {
     return this.database.db
-      .select({ ...publicUserColumns, ...accountColumns })
-      .from(user)
-      .innerJoin(accountTable, eq(accountTable.id, user.id))
+      .select({
+        ...publicUserColumns,
+        hashPwd: accountTable.hashPwd,
+        mustChangePassword: accountTable.mustChangePassword,
+        disabledAt: accountTable.disabledAt,
+      })
+      .from(accountTable)
+      .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
       .limit(1)
       .then(([row]) => row ?? null);
   }
 
-  /** Self-profile only: omits hashPwd. Client state is synchronized through the unified state revision;
-   *  the friend-request seen cursor is device-local. */
   findSelfProfile(userId: number) {
     return this.findUniqueUser({ id: userId });
   }
 
-  updateUser(params: {
-    where: UserLookup;
-    data: Partial<typeof user.$inferInsert>;
-  }) {
-    const { where, data } = params;
-    return this.database.db
-      .update(user)
-      .set({ ...data, updatedAt: new Date() })
-      .where(userLookupCondition(where))
-      .returning()
-      .then(([row]) => row);
-  }
-
-  /** Create an immutable complete profile snapshot and advance only the local default pointer. */
   async updateProfile(
     userId: number,
     data: { name: string; bio: string; avatar?: string | null },
@@ -64,41 +68,49 @@ export class UserService {
     return this.database.db.transaction(async (tx) => {
       const [current] = await tx
         .select({
-          defaultProfileRev: user.defaultProfileRev,
-          avatar: user.avatar,
+          account: accountTable.account,
+          defaultProfileRev: accountTable.defaultProfileRev,
         })
-        .from(user)
-        .where(eq(user.id, userId))
+        .from(accountTable)
+        .where(eq(accountTable.id, userId))
         .for('update')
         .limit(1);
-      if (!current) {
+      if (!current)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'user not found',
           HttpStatus.NOT_FOUND,
         );
-      }
+      const previous = await tx.query.profileTable.findFirst({
+        where: and(
+          eq(profileTable.account, current.account),
+          eq(profileTable.domain, 'local'),
+          eq(profileTable.namespaceId, 0),
+          eq(profileTable.profileRev, current.defaultProfileRev),
+        ),
+      });
       const nextRev = current.defaultProfileRev + 1;
-      const avatar =
-        data.avatar === undefined ? current.avatar : (data.avatar ?? '');
-      await tx.insert(profileVersion).values({
-        userId,
+      await tx.insert(profileTable).values({
+        account: current.account,
+        domain: 'local',
+        namespaceId: 0,
         profileRev: nextRev,
         displayName: data.name,
-        avatar,
         bio: data.bio,
+        avatar:
+          data.avatar === undefined
+            ? (previous?.avatar ?? '')
+            : (data.avatar ?? ''),
       });
+      await tx
+        .update(accountTable)
+        .set({ defaultProfileRev: nextRev, updatedAt: new Date() })
+        .where(eq(accountTable.id, userId));
       const [row] = await tx
-        .update(user)
-        .set({
-          name: data.name,
-          bio: data.bio,
-          avatar,
-          defaultProfileRev: nextRev,
-          updatedAt: new Date(),
-        })
-        .where(eq(user.id, userId))
-        .returning(publicUserColumns);
+        .select(publicUserColumns)
+        .from(accountTable)
+        .leftJoin(profileTable, selectedProfile)
+        .where(eq(accountTable.id, userId));
       return row;
     });
   }
@@ -110,57 +122,57 @@ export class UserService {
       availability?: 'AVAILABLE' | 'REMOVED';
     };
   }) {
-    // Default-omit sensitive columns; callers that need them must use an explicit internal query.
+    const addresses = params.where?.addresses?.filter(
+      (address) => address.domain === 'local',
+    );
     return this.database.db
       .select(publicUserColumns)
-      .from(user)
+      .from(accountTable)
+      .leftJoin(profileTable, selectedProfile)
       .where(
         and(
-          params.where?.id ? inArray(user.id, params.where.id.in) : undefined,
-          params.where?.addresses?.length
-            ? or(
-                ...params.where.addresses.map((address) =>
-                  and(
-                    eq(user.account, normalizeAccount(address.account)),
-                    eq(user.domain, address.domain),
-                  ),
-                ),
-              )
+          params.where?.id
+            ? inArray(accountTable.id, params.where.id.in)
+            : undefined,
+          params.where?.addresses !== undefined
+            ? addresses?.length
+              ? inArray(
+                  accountTable.account,
+                  addresses.map((address) => normalizeAccount(address.account)),
+                )
+              : sql`false`
             : undefined,
           params.where?.availability === undefined
             ? undefined
-            : eq(user.availability, params.where.availability),
+            : eq(accountTable.availability, params.where.availability),
         ),
       );
   }
 
-  /** Local identity discovery: case-insensitive substring match on account OR name. Local, non-deleted
-   *  users and groups only (domain='local') — federated stubs are not discoverable here. Returns { list, total }
-   *  for pagination. The caller (POST /user/search) caps `take` as an abuse guardrail. */
   async searchUsers(
     q: string,
     opts: { skip?: number; take: number },
-  ): Promise<{
-    list: PublicUser[];
-    total: number;
-  }> {
+  ): Promise<{ list: PublicUser[]; total: number }> {
     const where = and(
-      eq(user.availability, 'AVAILABLE'),
-      eq(user.domain, 'local'),
-      eq(user.namespaceId, 0),
-      or(ilike(user.account, `%${q}%`), ilike(user.name, `%${q}%`)),
+      eq(accountTable.availability, 'AVAILABLE'),
+      or(
+        ilike(accountTable.account, `%${q}%`),
+        ilike(profileTable.displayName, `%${q}%`),
+      ),
     );
     const [list, total] = await Promise.all([
       this.database.db
         .select(publicUserColumns)
-        .from(user)
+        .from(accountTable)
+        .leftJoin(profileTable, selectedProfile)
         .where(where)
-        .orderBy(desc(user.createdAt))
+        .orderBy(desc(accountTable.createdAt))
         .offset(opts.skip ?? 0)
         .limit(opts.take),
       this.database.db
         .select({ value: count() })
-        .from(user)
+        .from(accountTable)
+        .leftJoin(profileTable, selectedProfile)
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -168,50 +180,34 @@ export class UserService {
   }
 
   addUser(params: { account: string; name: string; hashPwd?: string | null }) {
-    const account = normalizeAccount(params.account); // case-insensitive
-    // Defense-in-depth at the single creation choke point: RegisterDto's @Matches guards the HTTP path,
-    // but addUser is also reachable from internal/admin/test callers — enforce the USER grammar here so an
-    // illegal account can never reach the DB regardless of caller. (A `!`-group account is rejected too —
-    // addUser is for persons; groups are minted via mintGroupAccount at their own create sites.)
-    if (!isValidUserAccount(account)) {
+    const address = normalizeAccount(params.account);
+    if (!isValidUserAccount(address))
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         `invalid account [${params.account}]`,
         HttpStatus.BAD_REQUEST,
       );
-    }
     return this.database.db.transaction(async (tx) => {
-      const [newUser] = await tx
-        .insert(user)
+      const [created] = await tx
+        .insert(accountTable)
         .values({
-          account,
-          // Display name is now a required registration input (no longer defaulted to account).
-          name: params.name,
-          avatar: '',
-          namespaceId: 0,
+          account: address,
           defaultProfileRev: 1,
-          updatedAt: new Date(),
+          hashPwd: params.hashPwd ?? null,
         })
-        .onConflictDoNothing({
-          target: [user.account, user.domain, user.namespaceId],
-        })
-        .returning({ id: user.id, account: user.account });
-      if (!newUser) return { status: 2 };
-      await tx.insert(accountTable).values({
-        id: newUser.id,
-        hashPwd: params.hashPwd ?? null,
-      });
-      await tx.insert(profileVersion).values({
-        userId: newUser.id,
+        .onConflictDoNothing({ target: accountTable.account })
+        .returning({ id: accountTable.id, account: accountTable.account });
+      if (!created) return { status: 2 };
+      await tx.insert(profileTable).values({
+        account: address,
+        domain: 'local',
+        namespaceId: 0,
         profileRev: 1,
         displayName: params.name,
         avatar: '',
         bio: '',
       });
-      return {
-        status: 0,
-        data: { id: newUser.id, account: newUser.account },
-      };
+      return { status: 0, data: created };
     });
   }
 }
@@ -223,53 +219,31 @@ export type UserLookup = (
       account_domain: { account: string; domain: string };
       namespaceId: number;
     }
-) & {
-  availability?: 'AVAILABLE' | 'REMOVED';
-};
+) & { availability?: 'AVAILABLE' | 'REMOVED' };
 
-const publicUserColumns = {
-  id: user.id,
-  account: user.account,
-  name: user.name,
-  avatar: user.avatar,
-  bio: user.bio,
-  domain: user.domain,
-  namespaceId: user.namespaceId,
-  createdAt: user.createdAt,
-  updatedAt: user.updatedAt,
-  availability: user.availability,
-  defaultProfileRev: user.defaultProfileRev,
-};
-
-const accountColumns = {
-  hashPwd: accountTable.hashPwd,
-  mustChangePassword: accountTable.mustChangePassword,
-  disabledAt: accountTable.disabledAt,
-};
-
-export type PublicUser = Pick<
-  typeof user.$inferSelect,
-  keyof typeof publicUserColumns
+export type PublicUser = NonNullable<
+  Awaited<ReturnType<UserService['findUniqueUser']>>
 >;
 
 function userLookupCondition(where: UserLookup) {
-  if (where.account_domain && !Number.isInteger(where.namespaceId)) {
+  if (where.account_domain && !Number.isInteger(where.namespaceId))
     throw new Error('address lookup requires an explicit namespaceId');
-  }
-  const unique = where.id
-    ? eq(user.id, where.id)
-    : where.account_domain
-      ? and(
-          eq(user.account, where.account_domain.account),
-          eq(user.domain, where.account_domain.domain),
-          eq(user.namespaceId, where.namespaceId),
-        )
-      : undefined;
+  const unique =
+    where.id !== undefined
+      ? eq(accountTable.id, where.id)
+      : where.account_domain
+        ? where.account_domain.domain === 'local' && where.namespaceId === 0
+          ? eq(
+              accountTable.account,
+              normalizeAccount(where.account_domain.account),
+            )
+          : sql`false`
+        : undefined;
   if (!unique) throw new Error('user lookup requires id or account_domain');
   return and(
     unique,
     where.availability === undefined
       ? undefined
-      : eq(user.availability, where.availability),
+      : eq(accountTable.availability, where.availability),
   );
 }

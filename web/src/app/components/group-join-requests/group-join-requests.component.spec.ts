@@ -17,7 +17,8 @@ function row(feedId: number, status: GroupJoinRequest['status'] = 'REQUESTED') {
     feedId,
     id: String(feedId),
     status,
-    userId: feedId,
+    namespaceId: 0,
+    profileRev: 1,
     account: `user-${feedId}`,
     domain: 'local',
     name: `User ${feedId}`,
@@ -47,7 +48,7 @@ describe('GroupJoinRequestsComponent', () => {
       queryInviteCandidates: vi.fn(() =>
         of({
           code: 0,
-          data: { data: [], hasMore: false, afterUserId: null },
+          data: { data: [], hasMore: false, afterThreadId: null },
         }),
       ),
       markJoinRequestsRead: vi.fn(() => of({ code: 0 })),
@@ -101,10 +102,12 @@ describe('GroupJoinRequestsComponent', () => {
     expect(component.applications()).toEqual([row(2)]);
   });
 
-  it('invites a transient resolved profile by address, not its zero id', async () => {
+  it('invites a foreign friend by its address', async () => {
     const { component, groups } = create(vi.fn(() => of(response())));
     const candidate = {
-      userId: 0,
+      threadId: 12,
+      namespaceId: 7,
+      profileRev: 1,
       account: 'friend',
       domain: 'peer.test',
       name: 'Friend',
@@ -138,11 +141,13 @@ describe('GroupJoinRequestsComponent', () => {
     expect(component.candidates()[0].state).toBe('INVITED');
   });
 
-  it('re-enables a transient candidate by address after revoking its invitation', async () => {
+  it('re-enables a foreign candidate by address after revoking its invitation', async () => {
     const { component } = create(vi.fn(() => of(response())));
     component.candidates.set([
       {
-        userId: 0,
+        threadId: 12,
+        namespaceId: 7,
+        profileRev: 1,
         account: 'friend',
         domain: 'peer.test',
         name: 'Friend',

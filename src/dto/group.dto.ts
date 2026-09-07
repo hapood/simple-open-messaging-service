@@ -100,13 +100,13 @@ export class GroupIdDto {
 export class QueryGroupInviteCandidatesDto extends GroupIdDto {
   @ApiPropertyOptional({
     example: 42,
-    description: 'Exclusive user-id cursor. Omit for the first page.',
+    description: 'Exclusive P2P thread-id cursor. Omit for the first page.',
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  afterUserId?: number;
+  afterThreadId?: number;
 
   @ApiPropertyOptional({
     example: 'alice',

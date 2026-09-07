@@ -1,3 +1,7 @@
+import {
+  groupState as groupStateTable,
+  groupStateFields,
+} from '../group/group-state.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -23,11 +27,11 @@ export class FederationOutboundMessageSignalService {
   async notifyGroupLeave(threadId: number): Promise<void> {
     try {
       const [thread] = await this.database.db
-        .select({ domain: tables.group.domain })
+        .select({ domain: groupStateFields.domain })
         .from(tables.messageThread)
         .innerJoin(
-          tables.group,
-          eq(tables.group.id, tables.messageThread.groupId),
+          groupStateTable,
+          eq(groupStateTable.id, tables.messageThread.id),
         )
         .where(eq(tables.messageThread.id, threadId))
         .limit(1);
@@ -54,12 +58,12 @@ export class FederationOutboundMessageSignalService {
         this.database.db
           .select({
             type: tables.messageThread.type,
-            groupDomain: tables.group.domain,
+            groupDomain: groupStateFields.domain,
           })
           .from(tables.messageThread)
           .leftJoin(
-            tables.group,
-            eq(tables.group.id, tables.messageThread.groupId),
+            groupStateTable,
+            eq(groupStateTable.id, tables.messageThread.id),
           )
           .where(eq(tables.messageThread.id, threadId))
           .limit(1)
@@ -127,12 +131,12 @@ export class FederationOutboundMessageSignalService {
       this.database.db
         .select({
           type: tables.messageThread.type,
-          groupDomain: tables.group.domain,
+          groupDomain: groupStateFields.domain,
         })
         .from(tables.messageThread)
         .leftJoin(
-          tables.group,
-          eq(tables.group.id, tables.messageThread.groupId),
+          groupStateTable,
+          eq(groupStateTable.id, tables.messageThread.id),
         )
         .where(eq(tables.messageThread.id, threadId))
         .limit(1)
@@ -150,8 +154,8 @@ export class FederationOutboundMessageSignalService {
     if (!thread) return;
     const peers = new Set<string>(
       thread.type === 'GROUP' &&
-        thread.groupDomain !== null &&
-        thread.groupDomain !== 'local'
+      thread.groupDomain !== null &&
+      thread.groupDomain !== 'local'
         ? [thread.groupDomain]
         : audiences.map(({ domain }) => domain),
     );

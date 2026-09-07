@@ -52,7 +52,12 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
-    const thread = { threadId: 9, type: 'P2P' } as ConversationItem;
+    const thread = {
+      threadId: 9,
+      authorityNamespaceId: 0,
+      type: 'P2P',
+      peerUser: { account: 'peer', domain: 'local', namespaceId: 0 },
+    } as ConversationItem;
     responses.set('native_db_threads', [thread]);
 
     expect(await service.getThreads()).toEqual([thread]);
@@ -138,13 +143,13 @@ describe('WebdbService native SQLite routing', () => {
     responses.set('native_db_get_meta', 12);
 
     expect(await service.putProfile(profile)).toBe(true);
-    expect(await service.getProfile('u8')).toEqual(profile);
+    expect(await service.getProfile(profile)).toEqual(profile);
     await service.putMeta('stateFeedId', 12);
     expect(await service.getMeta('stateFeedId')).toBe(12);
 
     expect(
       calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
-    ).toEqual(expect.objectContaining({ userId: 42, profileRev: 6, profile }));
+    ).toEqual(expect.objectContaining({ userId: 42, profile }));
   });
 
   it('queries a paginated group roster through native SQLite', async () => {

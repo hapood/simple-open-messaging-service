@@ -1,3 +1,4 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, or, sql } from 'drizzle-orm';
@@ -5,12 +6,10 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import {
-  group,
   groupMetaFeed,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   threadAudience,
-  user,
 } from '../database/schema.js';
 import {
   DatabaseService,
@@ -21,7 +20,7 @@ import { loadFederationConfig } from './federation.config.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
 export interface GroupMetaMemberWrite {
-  userId: number;
+  namespaceId: number;
   account: string;
   domain: string;
   body: Record<string, unknown>;
@@ -93,9 +92,9 @@ export class GroupMetaFeedService {
           .from(group)
           .where(
             and(
-              eq(group.account, groupAccount),
-              eq(group.domain, 'local'),
-              eq(group.namespaceId, 0),
+              eq(groupStateFields.account, groupAccount),
+              eq(groupStateFields.domain, 'local'),
+              eq(groupStateFields.namespaceId, 0),
             ),
           )
           .limit(1);
@@ -103,18 +102,16 @@ export class GroupMetaFeedService {
         const storedMemberDomain =
           memberDomain === this.ourDomain ? 'local' : memberDomain;
         const rows = await tx.execute<{ memberNamespaceId: number }>(sql`
-          SELECT member_identity."namespaceId" AS "memberNamespaceId"
+          SELECT latest."memberNamespaceId"
           FROM (
-            SELECT member_fact."memberUserId", member_fact.operation, member_fact.body
+            SELECT member_fact."memberNamespaceId", member_fact.operation, member_fact.body
             FROM "GroupMetaMemberFeed" member_fact
-            JOIN "User" member_identity ON member_identity.id = member_fact."memberUserId"
-            WHERE member_fact."groupId" = ${source.groupId}
-              AND member_identity.account = ${memberAccount}
-              AND member_identity.domain = ${storedMemberDomain}
+            WHERE member_fact."threadId" = ${source.groupId}
+              AND member_fact."memberAccount" = ${memberAccount}
+              AND member_fact."memberDomain" = ${storedMemberDomain}
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) latest
-          JOIN "User" member_identity ON member_identity.id = latest."memberUserId"
           WHERE latest.operation = 'UPSERT'
             AND latest.body ->> 'profileRev' = ${profileRev.toString()}
         `);
@@ -140,23 +137,22 @@ export class GroupMetaFeedService {
     let feedEndId = await this.lockFeedInTx(tx, groupId);
     const history = await tx
       .select({
-        account: user.account,
-        domain: user.domain,
-        userId: groupMetaMemberFeed.memberUserId,
+        account: groupMetaMemberFeed.memberAccount,
+        domain: groupMetaMemberFeed.memberDomain,
+        namespaceId: groupMetaMemberFeed.memberNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
         feedId: groupMetaMemberFeed.feedId,
       })
       .from(groupMetaMemberFeed)
-      .innerJoin(user, eq(user.id, groupMetaMemberFeed.memberUserId))
       .where(
         and(
-          eq(groupMetaMemberFeed.groupId, groupId),
+          eq(groupMetaMemberFeed.threadId, groupId),
           or(
             ...members.map((member) =>
               and(
-                eq(user.domain, member.domain),
-                eq(user.account, member.account),
+                eq(groupMetaMemberFeed.memberDomain, member.domain),
+                eq(groupMetaMemberFeed.memberAccount, member.account),
               ),
             ),
           ),
@@ -177,7 +173,7 @@ export class GroupMetaFeedService {
       .filter((member) => {
         const previous = current.get(memberKey(member));
         return (
-          previous?.userId !== member.userId ||
+          previous?.namespaceId !== member.namespaceId ||
           previous?.operation !== member.operation ||
           !isDeepStrictEqual(previous.body, member.body)
         );
@@ -186,9 +182,11 @@ export class GroupMetaFeedService {
     if (changes.length === 0) return feedEndId;
     await tx.insert(groupMetaMemberFeed).values(
       changes.map((change) => ({
-        groupId,
+        threadId: groupId,
         feedId: ++feedEndId,
-        memberUserId: change.userId,
+        memberAccount: change.account,
+        memberDomain: change.domain,
+        memberNamespaceId: change.namespaceId,
         operation: change.operation,
         body: change.body,
         updatedAt: new Date(),
@@ -207,15 +205,15 @@ export class GroupMetaFeedService {
     const [current] = await tx
       .select({ profileRev: groupMetaProfileFeed.profileRev })
       .from(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.groupId, groupId))
+      .where(eq(groupMetaProfileFeed.threadId, groupId))
       .limit(1);
     if (current?.profileRev === profileRev) return feedEndId;
     feedEndId += 1n;
     await tx
       .insert(groupMetaProfileFeed)
-      .values({ groupId, feedId: feedEndId, profileRev })
+      .values({ threadId: groupId, feedId: feedEndId, profileRev })
       .onConflictDoUpdate({
-        target: groupMetaProfileFeed.groupId,
+        target: groupMetaProfileFeed.threadId,
         set: { feedId: feedEndId, profileRev, updatedAt: new Date() },
       });
     await this.advanceFeedInTx(tx, groupId, feedEndId);
@@ -231,15 +229,14 @@ export class GroupMetaFeedService {
     let feedEndId = await this.lockFeedInTx(tx, groupId);
     const history = await tx
       .select({
-        account: user.account,
-        domain: user.domain,
-        userId: groupMetaMemberFeed.memberUserId,
+        account: groupMetaMemberFeed.memberAccount,
+        domain: groupMetaMemberFeed.memberDomain,
+        namespaceId: groupMetaMemberFeed.memberNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
       })
       .from(groupMetaMemberFeed)
-      .innerJoin(user, eq(user.id, groupMetaMemberFeed.memberUserId))
-      .where(eq(groupMetaMemberFeed.groupId, groupId))
+      .where(eq(groupMetaMemberFeed.threadId, groupId))
       .orderBy(asc(groupMetaMemberFeed.feedId));
     const current = new Map(
       history.map((item) => [memberKey(item), item] as const),
@@ -258,7 +255,7 @@ export class GroupMetaFeedService {
       const previous = current.get(key);
       if (
         previous?.operation === 'UPSERT' &&
-        previous.userId === member.userId &&
+        previous.namespaceId === member.namespaceId &&
         isDeepStrictEqual(previous.body, member.body)
       )
         continue;
@@ -270,7 +267,7 @@ export class GroupMetaFeedService {
       changes.push({
         account: previous.account,
         domain: previous.domain,
-        userId: previous.userId,
+        namespaceId: previous.namespaceId,
         operation: 'DEPART',
         body: {},
       });
@@ -279,9 +276,11 @@ export class GroupMetaFeedService {
     if (changes.length > 0) {
       await tx.insert(groupMetaMemberFeed).values(
         changes.map((change) => ({
-          groupId,
+          threadId: groupId,
           feedId: ++feedEndId,
-          memberUserId: change.userId,
+          memberAccount: change.account,
+          memberDomain: change.domain,
+          memberNamespaceId: change.namespaceId,
           operation: change.operation,
           body: change.operation === 'DEPART' ? {} : change.body,
           updatedAt: new Date(),
@@ -291,15 +290,15 @@ export class GroupMetaFeedService {
     const [currentProfile] = await tx
       .select({ profileRev: groupMetaProfileFeed.profileRev })
       .from(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.groupId, groupId))
+      .where(eq(groupMetaProfileFeed.threadId, groupId))
       .limit(1);
     if (currentProfile?.profileRev !== profileRev) {
       feedEndId += 1n;
       await tx
         .insert(groupMetaProfileFeed)
-        .values({ groupId, feedId: feedEndId, profileRev })
+        .values({ threadId: groupId, feedId: feedEndId, profileRev })
         .onConflictDoUpdate({
-          target: groupMetaProfileFeed.groupId,
+          target: groupMetaProfileFeed.threadId,
           set: { feedId: feedEndId, profileRev, updatedAt: new Date() },
         });
     }
@@ -313,12 +312,12 @@ export class GroupMetaFeedService {
   ): Promise<bigint> {
     await tx
       .insert(groupMetaFeed)
-      .values({ groupId })
-      .onConflictDoNothing({ target: groupMetaFeed.groupId });
+      .values({ threadId: groupId })
+      .onConflictDoNothing({ target: groupMetaFeed.threadId });
     const locked = await tx.execute<{ feedEndId: string }>(sql`
       SELECT "feedEndId"
       FROM "GroupMetaFeed"
-      WHERE "groupId" = ${groupId}
+      WHERE "threadId" = ${groupId}
       FOR UPDATE
     `);
     const feed = locked.rows[0];
@@ -334,7 +333,7 @@ export class GroupMetaFeedService {
     await tx
       .update(groupMetaFeed)
       .set({ feedEndId, updatedAt: new Date() })
-      .where(eq(groupMetaFeed.groupId, groupId));
+      .where(eq(groupMetaFeed.threadId, groupId));
   }
 
   async serve(
@@ -364,9 +363,9 @@ export class GroupMetaFeedService {
         .from(group)
         .where(
           and(
-            eq(group.account, account),
-            eq(group.domain, 'local'),
-            eq(group.namespaceId, 0),
+            eq(groupStateFields.account, account),
+            eq(groupStateFields.domain, 'local'),
+            eq(groupStateFields.namespaceId, 0),
           ),
         )
         .limit(1);
@@ -379,7 +378,7 @@ export class GroupMetaFeedService {
       const [feed] = await tx
         .select({ feedEndId: groupMetaFeed.feedEndId })
         .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.groupId, source.groupId))
+        .where(eq(groupMetaFeed.threadId, source.groupId))
         .limit(1);
       const [audience] = await tx
         .select({ visibleAfter: threadAudience.groupMetaVisibleAfter })

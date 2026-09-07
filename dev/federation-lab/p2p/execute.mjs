@@ -67,17 +67,41 @@ export async function waitForTaskQueueIdle({
   const deadline = Date.now() + timeoutMs;
   let stableIdleSamples = 0;
   let previousSignature;
+  let lastLoggedAt = 0;
+  let sample = 0;
+  let queryTotalMs = 0;
+  let sleepTotalMs = 0;
   while (Date.now() < deadline) {
+    sample += 1;
+    const sampleStartedAt = performance.now();
     const snapshots = await Promise.all(
-      nodeNames.map(async (nodeName) => ({
-        nodeName,
-        activity: await actors.node(nodeName).admin.durableTaskActivity(),
-      })),
+      nodeNames.map(async (nodeName) => {
+        const nodeStartedAt = performance.now();
+        const activity = await actors
+          .node(nodeName)
+          .admin.durableTaskActivity();
+        return {
+          nodeName,
+          activity,
+          durationMs: Math.round(performance.now() - nodeStartedAt),
+        };
+      }),
     );
+    const sampleMs = Math.round(performance.now() - sampleStartedAt);
+    queryTotalMs += sampleMs;
     let pending = 0;
     const processing = [];
     const asyncProcessing = [];
     for (const { nodeName, activity } of snapshots) {
+      if (activity.failedCount > 0 || activity.failed?.length > 0) {
+        const failures = (activity.failed ?? []).map(
+          (task) =>
+            `${task.id} ${task.taskType} scope=${task.scopeKey}: ${task.lastError ?? 'unknown error'}`,
+        );
+        throw new Error(
+          `${description}: ${nodeName} has ${activity.failedCount ?? activity.failed.length} FAILED durable tasks; ${failures.join('; ')}`,
+        );
+      }
       if (!Number.isInteger(activity?.pendingCount))
         throw new Error(`${nodeName} returned invalid pending task count`);
       pending += activity.pendingCount;
@@ -89,8 +113,10 @@ export async function waitForTaskQueueIdle({
     const idle =
       pending === 0 && processing.length === 0 && asyncProcessing.length === 0;
     stableIdleSamples = idle ? stableIdleSamples + 1 : 0;
-    const perNode = snapshots.map(({ nodeName, activity }) => ({
+    const perNode = snapshots.map(({ nodeName, activity, durationMs }) => ({
       nodeName,
+      durationMs,
+      queryMs: activity.queryMs,
       pending: activity.pendingCount,
       processing: (activity.processing ?? []).map(({ id }) => String(id)),
       asyncProcessing: (activity.asyncProcessing ?? []).map(({ id }) =>
@@ -98,7 +124,12 @@ export async function waitForTaskQueueIdle({
       ),
     }));
     const signature = JSON.stringify({ pending, processing, asyncProcessing });
-    if (signature !== previousSignature || stableIdleSamples === 2) {
+    if (
+      signature !== previousSignature ||
+      stableIdleSamples === 2 ||
+      sampleMs >= 1000 ||
+      Date.now() - lastLoggedAt >= 5000
+    ) {
       onProgress(
         `[p2p][drain] ${description}: ` +
           perNode
@@ -106,17 +137,30 @@ export async function waitForTaskQueueIdle({
               (node) =>
                 `${node.nodeName}{pending=${node.pending},` +
                 `processing=[${node.processing.join(',')}],` +
-                `async=[${node.asyncProcessing.join(',')}]}`,
+                `async=[${node.asyncProcessing.join(',')}],` +
+                `queryMs=${node.durationMs}` +
+                (node.queryMs
+                  ? `,statusMs=[${Object.entries(node.queryMs)
+                      .sort(([left], [right]) => left.localeCompare(right))
+                      .map(([status, duration]) => `${status}:${duration}`)
+                      .join(',')}]`
+                  : '') +
+                `}`,
             )
             .join(' ') +
+          ` sample=${sample} idleSamples=${stableIdleSamples}/2 sampleMs=${sampleMs}` +
+          ` queryTotalMs=${queryTotalMs} sleepTotalMs=${sleepTotalMs}` +
           ` elapsed=${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
       );
       previousSignature = signature;
+      lastLoggedAt = Date.now();
     }
-    // These are three separate status queries. Two empty samples prevent a task transition between
+    // These are separate status queries. Two empty samples prevent a task transition between
     // requests from producing a false idle barrier.
     if (stableIdleSamples >= 2) return;
+    const sleepStartedAt = performance.now();
     await sleep(500);
+    sleepTotalMs += Math.round(performance.now() - sleepStartedAt);
   }
   throw new Error(`timed out waiting for ${description}`);
 }

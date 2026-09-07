@@ -12,9 +12,9 @@ import {
   admin,
   relationshipPair,
   mediaAsset,
-  profileVersion,
+  profileTable,
   sessionToken,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
@@ -114,30 +114,26 @@ async function seedSessionToken(
 
 /** Seed a local user + an `app` session directly (registration is closed + password login is disabled
  *  under APP_OTP_AND_QR, so the old register→login pair no longer works) — the standard setup for a
- *  federation user. Returns { id, token }. */
+ *  federation user. Returns { id, account, token }. */
 export async function registerAndLogin(
-  app: AppLike,
+  app: Pick<AppLike, 'database'>,
   account: string,
   name: string,
-): Promise<{ id: number; token: string }> {
+): Promise<{ id: number; account: string; token: string }> {
   const u = await app.database.transaction(async (tx) => {
     const [created] = await tx
       .insert(user)
       .values({
         account,
         domain: 'local',
-        name,
         defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
-    await tx.insert(accountTable).values({
-      id: created.id,
-      hashPwd: null,
-      mustChangePassword: false,
-    });
-    await tx.insert(profileVersion).values({
-      userId: created.id,
+    await tx.insert(profileTable).values({
+      account,
+      domain: 'local',
+      namespaceId: 0,
       profileRev: 1,
       displayName: name,
       avatar: '',
@@ -146,7 +142,7 @@ export async function registerAndLogin(
     return created;
   });
   const token = await seedSessionToken(app.database, u.id, 'app');
-  return { id: u.id, token };
+  return { id: u.id, account, token };
 }
 
 export async function resolveFederatedCard(
@@ -190,7 +186,7 @@ export async function establishFederatedFriendship(params: {
   localDomain: string;
   remoteDomain: string;
   note?: string;
-}): Promise<{ remoteStubIdOnLocal: number; localStubIdOnRemote: number }> {
+}): Promise<{ localThreadId: number; remoteThreadId: number }> {
   let card: Awaited<ReturnType<typeof resolveFederatedCard>> | undefined;
   for (let attempt = 1; attempt <= 3; attempt++) {
     card = await resolveFederatedCard(
@@ -264,68 +260,52 @@ export async function establishFederatedFriendship(params: {
   // multi-worker run.
   const convergenceDeadline = Date.now() + 30_000;
   while (Date.now() < convergenceDeadline) {
-    const [remoteStub, localStub] = await Promise.all([
-      params.local.database.query.user.findFirst({
+    const canonicalUserPair = (
+      first: { account: string; domain: string },
+      second: { account: string; domain: string },
+    ) =>
+      [first, second].sort(
+        (left, right) =>
+          left.domain.localeCompare(right.domain) ||
+          left.account.localeCompare(right.account),
+      );
+    const [localA, localB] = canonicalUserPair(
+      { account: params.localAccount, domain: 'local' },
+      { account: params.remoteAccount, domain: params.remoteDomain },
+    );
+    const [remoteA, remoteB] = canonicalUserPair(
+      { account: params.remoteAccount, domain: 'local' },
+      { account: params.localAccount, domain: params.localDomain },
+    );
+    const [localPair, remotePair] = await Promise.all([
+      params.local.database.query.relationshipPair.findFirst({
         where: and(
-          eq(user.account, params.remoteAccount),
-          eq(user.domain, params.remoteDomain),
+          eq(relationshipPair.endpointAType, 'USER'),
+          eq(relationshipPair.endpointAAccount, localA.account),
+          eq(relationshipPair.endpointADomain, localA.domain),
+          eq(relationshipPair.endpointBType, 'USER'),
+          eq(relationshipPair.endpointBAccount, localB.account),
+          eq(relationshipPair.endpointBDomain, localB.domain),
+          eq(relationshipPair.active, true),
         ),
       }),
-      params.remote.database.query.user.findFirst({
+      params.remote.database.query.relationshipPair.findFirst({
         where: and(
-          eq(user.account, params.localAccount),
-          eq(user.domain, params.localDomain),
+          eq(relationshipPair.endpointAType, 'USER'),
+          eq(relationshipPair.endpointAAccount, remoteA.account),
+          eq(relationshipPair.endpointADomain, remoteA.domain),
+          eq(relationshipPair.endpointBType, 'USER'),
+          eq(relationshipPair.endpointBAccount, remoteB.account),
+          eq(relationshipPair.endpointBDomain, remoteB.domain),
+          eq(relationshipPair.active, true),
         ),
       }),
     ]);
-    if (remoteStub && localStub) {
-      const canonicalUserPair = (
-        first: { account: string; domain: string },
-        second: { account: string; domain: string },
-      ) =>
-        [first, second].sort(
-          (left, right) =>
-            left.domain.localeCompare(right.domain) ||
-            left.account.localeCompare(right.account),
-        );
-      const [localA, localB] = canonicalUserPair(
-        { account: params.localAccount, domain: 'local' },
-        { account: params.remoteAccount, domain: params.remoteDomain },
-      );
-      const [remoteA, remoteB] = canonicalUserPair(
-        { account: params.remoteAccount, domain: 'local' },
-        { account: params.localAccount, domain: params.localDomain },
-      );
-      const [localPair, remotePair] = await Promise.all([
-        params.local.database.query.relationshipPair.findFirst({
-          where: and(
-            eq(relationshipPair.endpointAType, 'USER'),
-            eq(relationshipPair.endpointAAccount, localA.account),
-            eq(relationshipPair.endpointADomain, localA.domain),
-            eq(relationshipPair.endpointBType, 'USER'),
-            eq(relationshipPair.endpointBAccount, localB.account),
-            eq(relationshipPair.endpointBDomain, localB.domain),
-            eq(relationshipPair.active, true),
-          ),
-        }),
-        params.remote.database.query.relationshipPair.findFirst({
-          where: and(
-            eq(relationshipPair.endpointAType, 'USER'),
-            eq(relationshipPair.endpointAAccount, remoteA.account),
-            eq(relationshipPair.endpointADomain, remoteA.domain),
-            eq(relationshipPair.endpointBType, 'USER'),
-            eq(relationshipPair.endpointBAccount, remoteB.account),
-            eq(relationshipPair.endpointBDomain, remoteB.domain),
-            eq(relationshipPair.active, true),
-          ),
-        }),
-      ]);
-      if (localPair && remotePair)
-        return {
-          remoteStubIdOnLocal: remoteStub.id,
-          localStubIdOnRemote: localStub.id,
-        };
-    }
+    if (localPair?.threadId && remotePair?.threadId)
+      return {
+        localThreadId: localPair.threadId,
+        remoteThreadId: remotePair.threadId,
+      };
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error('federated friendship did not converge');
@@ -364,7 +344,6 @@ export async function getAdminCookie(
             account,
             domain: 'local',
             namespaceId: 0,
-            name: account,
             defaultProfileRev: 1,
             updatedAt: new Date(),
           })
@@ -372,28 +351,22 @@ export async function getAdminCookie(
       )[0];
     await tx
       .update(user)
-      .set({ name: account, defaultProfileRev: 1, updatedAt: new Date() })
+      .set({ defaultProfileRev: 1, updatedAt: new Date() })
       .where(eq(user.id, created.id));
     await tx
-      .insert(accountTable)
-      .values({
-        id: created.id,
+      .update(accountTable)
+      .set({
         hashPwd: passwordHash,
         mustChangePassword: false,
+        disabledAt: null,
       })
-      .onConflictDoUpdate({
-        target: accountTable.id,
-        set: {
-          hashPwd: passwordHash,
-          mustChangePassword: false,
-          disabledAt: null,
-          updatedAt: new Date(),
-        },
-      });
+      .where(eq(accountTable.id, created.id));
     await tx
-      .insert(profileVersion)
+      .insert(profileTable)
       .values({
-        userId: created.id,
+        account,
+        domain: 'local',
+        namespaceId: 0,
         profileRev: 1,
         displayName: account,
         avatar: '',

@@ -15,6 +15,7 @@ import {
   messageThread,
 } from '../database/schema.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
+import { FederationThreadRoundAuthorizationEpochChangedError } from './federation-thread-round-error.js';
 
 export interface FederationReverseWindow {
   authorizationEpoch: number;
@@ -42,7 +43,7 @@ export class FederationThreadSyncStateService {
       RETURNING "authorizationEpoch"
     `);
     if ((locked.rows ?? []).length === 0) {
-      throw new Error('federation round authorization epoch changed');
+      throw new FederationThreadRoundAuthorizationEpochChangedError();
     }
     return threadLock;
   }
@@ -503,7 +504,7 @@ export class FederationThreadSyncStateService {
       RETURNING "authorizationEpoch"
     `);
     if (!epoch.rows[0])
-      throw new Error('reverse round authorization epoch changed');
+      throw new FederationThreadRoundAuthorizationEpochChangedError();
 
     const stateResult = await tx.execute<{
       activeGapId: string | null;
@@ -642,7 +643,7 @@ export class FederationThreadSyncStateService {
       RETURNING "authorizationEpoch"
     `);
     if ((epoch.rows ?? []).length === 0) {
-      throw new Error('reverse round authorization epoch changed');
+      throw new FederationThreadRoundAuthorizationEpochChangedError();
     }
     const state = await tx.execute<{ activeGapId: string | null }>(sql`
       SELECT "activeGapId"

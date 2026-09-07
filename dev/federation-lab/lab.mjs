@@ -4,6 +4,8 @@ import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { prepareLabConfig } from './local-config.mjs';
+import { ensureLabDatabase } from './database.mjs';
 import { stopLabChildren } from './shutdown.mjs';
 import {
   federationLabDatabaseUrl,
@@ -57,19 +59,14 @@ function run(command, args, options = {}) {
   });
 }
 
-async function recreateDatabase(database) {
+async function prepareDatabase(database) {
   const admin = new URL(baseDatabaseUrl);
   admin.pathname = '/postgres';
   const client = new Client({ connectionString: admin.toString() });
   await client.connect();
   try {
-    await client.query(
-      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1',
-      [database],
-    );
-    await client.query(`DROP DATABASE IF EXISTS "${database}"`);
-    await client.query(`CREATE DATABASE "${database}"`);
-    console.log(`[lab] recreated ${database}`);
+    const created = await ensureLabDatabase(client, database);
+    console.log(`[lab] ${created ? 'created' : 'reusing'} ${database}`);
   } finally {
     await client.end();
   }
@@ -137,7 +134,12 @@ async function waitForServices(services) {
 }
 
 const requiredOutputs = [];
-if (runBackend) requiredOutputs.push(join(root, 'dist', 'src', 'main.js'));
+if (runBackend) {
+  requiredOutputs.push(
+    join(root, 'dist', 'src', 'main.js'),
+    join(root, 'dist', 'scripts', 'migrate-db.js'),
+  );
+}
 if (runFrontend && !devServer) {
   requiredOutputs.push(
     join(root, 'web', 'dist', 'web', 'browser', 'index.html'),
@@ -151,10 +153,15 @@ if (requiredOutputs.some((output) => !existsSync(output))) {
 if (runBackend) {
   mkdirSync(runtimeDir, { recursive: true });
   for (const node of nodes) {
-    await recreateDatabase(node.database);
-    await run('npm', ['run', 'db:migrate'], {
-      env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
-    });
+    await prepareDatabase(node.database);
+    await run(
+      process.execPath,
+      [join(root, 'dist', 'scripts', 'migrate-db.js'), 'migrate'],
+      {
+        env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
+      },
+    );
+    prepareLabConfig(labDir, node.name);
     const nodeDir = join(runtimeDir, node.name);
     mkdirSync(join(nodeDir, 'data'), { recursive: true });
     // Backends run from the repository root and receive their mutable
@@ -186,6 +193,7 @@ function labEnvironment(node, peerRoutes) {
     SOMS_DEV_FEDERATION_ROUTES: JSON.stringify(peerRoutes),
     DATABASE_URL: databaseUrl(node.database),
     SOMS_DATA_DIR: join(runtimeDir, node.name, 'data'),
+    SOMS_CONFIG_DIR: join(labDir, 'local', node.name),
     LOG_DIR: join(runtimeDir, node.name, 'data', 'logs'),
     LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'warn',
   };
@@ -275,11 +283,21 @@ if (runBackend) {
   for (const node of nodes) {
     const peerRoutes = { ...routes };
     delete peerRoutes[node.domain];
-    const child = spawn('node', [join(root, 'dist', 'src', 'main.js')], {
-      cwd: root,
-      stdio: 'inherit',
-      env: labEnvironment(node, peerRoutes),
-    });
+    const diagnosticsArgs = process.env.SOMS_DIAGNOSTICS_DIR
+      ? [
+          '--import',
+          join(root, 'dev', 'federation-lab', 'diagnostics', 'preload.mjs'),
+        ]
+      : [];
+    const child = spawn(
+      'node',
+      [...diagnosticsArgs, join(root, 'dist', 'src', 'main.js')],
+      {
+        cwd: root,
+        stdio: 'inherit',
+        env: labEnvironment(node, peerRoutes),
+      },
+    );
     children.push(child);
     child.once('exit', (code, signal) => {
       if (!stopping) {

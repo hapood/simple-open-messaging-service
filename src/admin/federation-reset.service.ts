@@ -67,12 +67,11 @@ export class FederationResetService {
       const namespaceId = peer.activeNamespaceId;
       const result = await tx.execute<PreviewCounts>(sql`
         WITH remote_users AS (
-          SELECT id FROM "User" WHERE "namespaceId" = ${namespaceId}
+          SELECT DISTINCT account, domain FROM "Profile" WHERE "namespaceId" = ${namespaceId} AND account NOT LIKE '!%'
         ), remote_group_meta_facts AS (
-          SELECT member_fact."groupId"
+          SELECT member_fact."threadId"
           FROM "GroupMetaMemberFeed" member_fact
-          JOIN remote_users remote_user
-            ON remote_user.id = member_fact."memberUserId"
+          WHERE member_fact."memberNamespaceId" = ${namespaceId}
         ), affected_threads AS (
           SELECT pair."threadId"
           FROM "RelationshipPair" pair
@@ -82,7 +81,7 @@ export class FederationResetService {
           UNION
           SELECT thread.id
           FROM remote_group_meta_facts member_fact
-          JOIN "MessageThread" thread ON thread."groupId" = member_fact."groupId"
+          JOIN "MessageThread" thread ON thread.id = member_fact."threadId"
         )
         SELECT
           (SELECT count(*)::int FROM remote_users) AS "foreignUserCount",

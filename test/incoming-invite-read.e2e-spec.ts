@@ -28,7 +28,9 @@ describe('incoming invitation read watermark', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -44,6 +46,7 @@ describe('incoming invitation read watermark', () => {
         userId: seeded.id,
         account: 'inviter',
         domain: 'local',
+        namespaceId: 0,
         eventType: 'PROFILE',
         subjectAccount: '',
         subjectDomain: '',

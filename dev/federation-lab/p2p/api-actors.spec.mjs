@@ -16,6 +16,50 @@ function response(data, headers = {}) {
   );
 }
 
+test('preserves an HTTP 200 profile denial in the reported error', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 10001,
+        message: 'profile is not available',
+        data: null,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Request-Id': 'profile-denied',
+        },
+      },
+    );
+  try {
+    const actor = new LabUserActor({
+      node: { domain: 'bravo.test', backendBaseUrl: 'http://127.0.0.1:3202' },
+      id: 5,
+      account: 'p2p-b-005',
+      token: 'private-test-token',
+    });
+    await assert.rejects(
+      actor.resolveProfile({
+        account: 'p2p-a-004',
+        domain: 'alpha.test',
+        rev: 3,
+      }),
+      (error) => {
+        assert.match(
+          error.message,
+          /HTTP 200 code=10001 message=profile is not available requestId=profile-denied/,
+        );
+        assert.equal(error.details.requestId, 'profile-denied');
+        assert.ok(!error.message.includes('private-test-token'));
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('keeps three administrators and API-provisioned OTP users in memory', async () => {
   const responses = [
     response(
@@ -174,12 +218,24 @@ test('coalesces concurrent administrator session renewal', async () => {
       password: 'bootstrap-password',
     });
 
-    await admin.durableTaskActivity();
+    const activity = await admin.durableTaskActivity();
+    assert.equal(activity.pendingCount, 0);
+    assert.equal(activity.failedCount, 0);
+    assert.deepEqual(activity.failed, []);
+    for (const status of [
+      'PENDING',
+      'PROCESSING',
+      'ASYNC_PROCESSING',
+      'FAILED',
+    ]) {
+      assert.ok(Number.isInteger(activity.queryMs[status]));
+      assert.ok(activity.queryMs[status] >= 0);
+    }
 
     assert.equal(loginCount, 2);
     assert.equal(
       calls.filter(([url]) => url.endsWith('/admin/durable-tasks')).length,
-      6,
+      8,
     );
   } finally {
     globalThis.fetch = originalFetch;

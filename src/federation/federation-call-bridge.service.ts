@@ -162,11 +162,11 @@ export class FederationCallBridgeService {
     }
 
     await this.quota.peek(peerDomain, 'requests');
-    const peerStubId = await this.users.ensureForeignUser(
-      frame.payload.fromAccount,
-      peerDomain,
-      namespaceId,
-    );
+    const peerAddress = {
+      account: frame.payload.fromAccount,
+      domain: peerDomain,
+      namespaceId: namespaceId,
+    };
     const localUserId = await this.users.findLocalUserId(
       frame.payload.toAccount,
     );
@@ -178,7 +178,7 @@ export class FederationCallBridgeService {
     }
     const threadId = await this.participants.findP2PThreadBetween(
       localUserId,
-      peerStubId,
+      peerAddress,
     );
     if (threadId === null) {
       throw new BusinessException(
@@ -188,7 +188,6 @@ export class FederationCallBridgeService {
     }
     await this.eventEmitter.emitAsync('call.frame.inbound', {
       localUserId,
-      peerStubId,
       peerDomain,
       namespaceId,
       signatureExpiresAtSec,

@@ -13,7 +13,7 @@ export function isFederationQuoteTarget(
   const seq = (value as Record<string, unknown>)[keys[0]];
   return (
     Number.isSafeInteger(seq) &&
-    Number(seq) > 0 &&
+    Number(seq) >= (keys[0] === 'seq' ? 0 : 1) &&
     Number(seq) < Number.MAX_SAFE_INTEGER
   );
 }
@@ -23,6 +23,7 @@ export function storeFederationQuote(
   target: FederationQuoteTarget,
   namespaceId: number,
 ): { seq: number; namespaceId: number } {
+  if (target.seq === 0) return { seq: 0, namespaceId: 0 };
   return target.seq !== undefined
     ? { seq: target.seq, namespaceId }
     : { seq: target.originSeq, namespaceId: 0 };
@@ -42,6 +43,7 @@ export function publishFederationQuote(
   groupAuthority: boolean,
   peerNamespaceId: number,
 ): FederationQuoteTarget {
+  if (coordinate.seq === 0) return { seq: 0 };
   if (target) {
     if (groupAuthority || target.creatorDomain === 'local')
       return { seq: target.seq };

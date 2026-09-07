@@ -510,3 +510,113 @@ fn quote_tombstones_are_scoped_to_user_and_thread() {
         vec![4, 6]
     );
 }
+
+fn profile_cache_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+    super::create_cache_schema(&conn).unwrap();
+    super::validate_cache_schema(&conn).unwrap();
+    conn
+}
+
+#[test]
+fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
+    use super::contacts::{register_namespace, write_profile};
+    let conn = profile_cache_db();
+    register_namespace(&conn, 1, 0, "local").unwrap();
+    register_namespace(&conn, 1, 7, "authority.test").unwrap();
+    for (domain, namespace, rev, name) in [
+        ("local", 7, 3, "New"),
+        ("own.test", 0, 2, "Old"),
+        ("third.test", 7, 3, "Mirror"),
+    ] {
+        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"namespaceId":namespace,"profileRev":rev,"name":name,"avatar":"","bio":""})).unwrap();
+    }
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 3);
+    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT json_extract(payload_json,'$.name') name FROM profiles WHERE domain='local' AND namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
+    assert_eq!(names, "Old,New");
+    let old_tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','groups')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_tables, 0);
+}
+
+#[test]
+fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
+    let mut conn = profile_cache_db();
+    conn.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(1,90,?1)", [serde_json::json!({"threadId":90,"type":"GROUP","authorityNamespaceId":7,"group":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":1}}).to_string()]).unwrap();
+    let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
+    "mode":"full","scannedThrough":"3","items":[
+        {"operation":"UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2,"profileResolved":false}},
+        {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2,"displayName":"Other","bio":""}},
+        {"operation":"GROUP_PROFILE","body":{"profileRev":4}}
+    ]}}]);
+    super::client_state::apply_state_feed_page(
+        &mut conn,
+        1,
+        vec![],
+        99,
+        serde_json::from_value(page).unwrap(),
+        false,
+    )
+    .unwrap();
+    let local_ns: i64 = conn
+        .query_row(
+            "SELECT namespace_id FROM members WHERE member_account='me'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(local_ns, 0);
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+    let profiles: i64 = conn
+        .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(profiles, 1);
+    let source: String = conn
+        .query_row(
+            "SELECT domain FROM namespaces WHERE user_id=1 AND namespace_id=7",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, "authority.test");
+    let payload: String = conn
+        .query_row("SELECT payload_json FROM threads", [], |row| row.get(0))
+        .unwrap();
+    let thread: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(thread["authorityNamespaceId"], 7);
+    assert_eq!(thread["group"]["profileRev"], 4);
+    let cursor: String = conn
+        .query_row(
+            "SELECT value_json FROM sync_state WHERE key='stateFeedId'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cursor, "99");
+}
+
+#[test]
+fn native_message_creator_localization_preserves_message_source() {
+    let mut message = serde_json::json!({"sourceNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":7}});
+    super::messages::normalize_message_creator(&mut message);
+    assert_eq!(message["creator"]["namespaceId"], 0);
+    assert_eq!(message["creator"]["domain"], "local");
+    assert_eq!(message["sourceNamespaceId"], 7);
+    let mut foreign =
+        serde_json::json!({"creator":{"account":"other","domain":"third.test","namespaceId":7}});
+    let original = foreign.clone();
+    super::messages::normalize_message_creator(&mut foreign);
+    assert_eq!(foreign, original);
+}

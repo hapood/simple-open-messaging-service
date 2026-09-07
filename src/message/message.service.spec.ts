@@ -37,25 +37,42 @@ function databaseMock(queries: {
   return {
     db: {
       query: {
+        profileTable: {
+          findMany: async () => {
+            const rows = queries.user
+              ? await queries.user()
+              : [
+                  {
+                    account: 'alice',
+                    domain: 'local',
+                    namespaceId: 0,
+                    name: 'Alice',
+                  },
+                ];
+            return rows.map((row: { name: string }) => ({
+              ...row,
+              displayName: row.name,
+              profileRev: 1,
+            }));
+          },
+        },
         message: { findMany: queries.message ?? vi.fn() },
         messageAsset: { findMany: queries.mediaMessage ?? vi.fn() },
         mediaAsset: { findMany: queries.mediaAsset ?? vi.fn() },
         pendingMedia: {
           findMany: queries.pendingMedia ?? vi.fn().mockResolvedValue([]),
         },
-        user: {
+        account: {
           findMany:
             queries.user ??
-            vi
-              .fn()
-              .mockResolvedValue([
-                {
-                  account: 'alice',
-                  domain: 'local',
-                  namespaceId: 0,
-                  name: 'Alice',
-                },
-              ]),
+            vi.fn().mockResolvedValue([
+              {
+                account: 'alice',
+                domain: 'local',
+                namespaceId: 0,
+                name: 'Alice',
+              },
+            ]),
         },
       },
       execute: queries.execute ?? vi.fn(),
@@ -71,6 +88,8 @@ function mk(
     threadId: 1,
     creatorAccount: 'alice',
     creatorDomain: 'local',
+    creatorNamespaceId: 0,
+    profileRev: 1,
     contentType: 'IMAGE' as ContentType,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -93,6 +112,7 @@ describe('stripMessageId author projection namespace', () => {
         seq: 1,
         content: '{}',
         creatorDomain: 'local',
+        creatorNamespaceId: 0,
         sourceNamespaceId: 7,
       }),
     );
@@ -100,14 +120,15 @@ describe('stripMessageId author projection namespace', () => {
     expect(result.creator?.namespaceId).toBe(0);
   });
 
-  it('uses the source namespace for a remote author projection', () => {
+  it('uses the stored subject namespace independently of the message source', () => {
     const result = stripMessageId(
       mk({
         id: 1n,
         seq: 1,
         content: '{}',
         creatorDomain: 'remote.test',
-        sourceNamespaceId: 7,
+        creatorNamespaceId: 7,
+        sourceNamespaceId: 11,
       }),
     );
 
@@ -218,11 +239,12 @@ describe('MessageService.queryClientMessagePage', () => {
         db: {
           transaction,
           query: {
+            profileTable: { findMany: vi.fn().mockResolvedValue([]) },
             message: { findMany: vi.fn() },
             messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
             mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
             pendingMedia: { findMany: vi.fn().mockResolvedValue([]) },
-            user: { findMany: vi.fn().mockResolvedValue([]) },
+            account: { findMany: vi.fn().mockResolvedValue([]) },
           },
         },
       } as never,
@@ -272,6 +294,7 @@ describe('MessageService.queryClientMessagePage', () => {
           ]),
         ),
       query: {
+        profileTable: { findMany: vi.fn().mockResolvedValue([]) },
         message: {
           findMany: vi.fn().mockResolvedValue([
             mk({
@@ -556,7 +579,7 @@ describe('MessageService.queryMessages quote previews', () => {
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'original' }),
       }),
-      user: { name: 'Alice' },
+      account: { name: 'Alice' },
     };
     const store = {
       message: {
@@ -643,7 +666,7 @@ describe('MessageService.queryMessages quote previews', () => {
           size: 2048,
         }),
       }),
-      user: { name: 'Alice' },
+      account: { name: 'Alice' },
     };
     const svc = new MessageService(
       databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
@@ -682,7 +705,7 @@ describe('MessageService.queryMessages quote previews', () => {
           image: 'data:image/webp;base64,preview',
         }),
       }),
-      user: { name: 'Alice' },
+      account: { name: 'Alice' },
     };
     const svc = new MessageService(
       databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
@@ -721,21 +744,19 @@ describe('MessageService.queryMessages quote previews', () => {
           avatar: '/uploads/cas/aa/bb/avatar.webp',
         }),
       }),
-      user: { name: 'Bob' },
+      account: { name: 'Bob' },
     };
     const svc = new MessageService(
       databaseMock({
         message: vi.fn().mockResolvedValue([target]),
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'bob',
-              domain: 'local',
-              namespaceId: 0,
-              name: 'Bob',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'bob',
+            domain: 'local',
+            namespaceId: 0,
+            name: 'Bob',
+          },
+        ]),
       }) as never,
       {} as never,
     );

@@ -3,11 +3,7 @@ import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  account as accountTable,
-  loginCode,
-  user as userTable,
-} from '../database/schema.js';
+import { account as accountTable, loginCode } from '../database/schema.js';
 import { SessionTokenService } from './session-token.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import {
@@ -114,8 +110,7 @@ export class OtpLoginService {
     const [target] = await this.database.db
       .select({ id: accountTable.id })
       .from(accountTable)
-      .innerJoin(userTable, eq(userTable.id, accountTable.id))
-      .where(and(eq(accountTable.id, userId), eq(userTable.domain, 'local')))
+      .where(and(eq(accountTable.id, userId), eq(accountTable.domain, 'local')))
       .limit(1);
     if (!target) {
       throw new BusinessException(
@@ -191,23 +186,20 @@ export class OtpLoginService {
     }
     const [user] = await this.database.db
       .select({
-        id: userTable.id,
-        availability: userTable.availability,
+        id: accountTable.id,
+        availability: accountTable.availability,
         disabledAt: accountTable.disabledAt,
         mustChangePassword: accountTable.mustChangePassword,
       })
-      .from(userTable)
-      .innerJoin(accountTable, eq(accountTable.id, userTable.id))
-      .where(and(eq(userTable.account, acct), eq(userTable.domain, 'local')))
+      .from(accountTable)
+      .where(
+        and(eq(accountTable.account, acct), eq(accountTable.domain, 'local')),
+      )
       .limit(1);
     // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code. NOT
     // counted toward the lock — there is no real account to protect, and counting arbitrary input strings
     // would let an attacker fill the failure map.
-    if (
-      !user ||
-      user.availability === 'REMOVED' ||
-      user.disabledAt !== null
-    ) {
+    if (!user || user.availability === 'REMOVED' || user.disabledAt !== null) {
       throw new BusinessException(
         BusinessCode.OTP_INVALID,
         'invalid one-time code',

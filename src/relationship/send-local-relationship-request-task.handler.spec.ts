@@ -29,6 +29,7 @@ function task(payload: Record<string, unknown> = {}): DurableTask {
 
 function createHarness(options?: {
   friends?: boolean;
+  created?: boolean;
   identities?: Array<{
     id: number;
     availability: string;
@@ -41,8 +42,7 @@ function createHarness(options?: {
       { id: 9, availability: 'AVAILABLE', disabledAt: null },
     ],
   );
-  const innerJoin = vi.fn(() => ({ where }));
-  const from = vi.fn(() => ({ innerJoin }));
+  const from = vi.fn(() => ({ where }));
   const select = vi.fn(() => ({ from }));
   const database = { db: { select } } as unknown as DatabaseService;
   const dispatcher = new DurableTaskDispatcherService();
@@ -57,7 +57,7 @@ function createHarness(options?: {
       _note: string,
       afterWrite: (transaction: typeof tx, created: boolean) => Promise<void>,
     ) => {
-      await afterWrite(tx, true);
+      await afterWrite(tx, options?.created ?? true);
       return { status: 'created' } as const;
     },
   );
@@ -86,29 +86,32 @@ function createHarness(options?: {
 }
 
 describe('SendLocalRelationshipRequestTaskHandler', () => {
-  it('reuses the existing relationship transaction and quota callback', async () => {
-    const harness = createHarness();
+  it.each([true, false])(
+    'charges new and refreshed requests in the relationship transaction (created=%s)',
+    async (created) => {
+      const harness = createHarness({ created });
 
-    await harness.dispatcher.execute(task());
+      await harness.dispatcher.execute(task());
 
-    expect(harness.createRelationshipRequest).toHaveBeenCalledWith(
-      7,
-      9,
-      'hello',
-      expect.any(Function),
-    );
-    expect(harness.tick).toHaveBeenCalledWith(7, 'requests', harness.tx);
-    expect(harness.writeLocalP2PIntentInTx).toHaveBeenCalledWith(
-      harness.tx,
-      7,
-      9,
-      true,
-      'hello',
-    );
-    expect(harness.notifyFeedUpdates).toHaveBeenCalledWith([
-      { userId: 7, feedId: 3 },
-    ]);
-  });
+      expect(harness.createRelationshipRequest).toHaveBeenCalledWith(
+        7,
+        9,
+        'hello',
+        expect.any(Function),
+      );
+      expect(harness.tick).toHaveBeenCalledWith(7, 'requests', harness.tx);
+      expect(harness.writeLocalP2PIntentInTx).toHaveBeenCalledWith(
+        harness.tx,
+        7,
+        9,
+        true,
+        'hello',
+      );
+      expect(harness.notifyFeedUpdates).toHaveBeenCalledWith([
+        { userId: 7, feedId: 3 },
+      ]);
+    },
+  );
 
   it('treats an already-active friendship as an idempotent success', async () => {
     const harness = createHarness({ friends: true });

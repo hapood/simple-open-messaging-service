@@ -1,3 +1,5 @@
+import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { accountProfileFields } from '../user/account-profile.js';
 import {
   Injectable,
   Logger,
@@ -7,7 +9,7 @@ import {
 import { OnEvent } from '@nestjs/event-emitter';
 import { and, eq, gt, lt, lte } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { callTombstone, user } from '../database/schema.js';
+import { callTombstone, account as user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
@@ -74,10 +76,10 @@ interface LiveCall {
    *  Becomes the terminal bubble's clientMessageId (idempotent terminal write). */
   callSid: string;
   threadId: number;
-  /** The caller. LOCAL on the caller server; a foreigner STUB on the callee server. */
-  callerId: number;
-  /** The callee. LOCAL on the callee server; a foreigner STUB on the caller server. */
-  calleeId: number;
+  /** Local caller Account ID; null on the foreign callee server. */
+  callerId: number | null;
+  /** Local callee Account ID; null on the foreign caller server. */
+  calleeId: number | null;
   callType: CallMediaType;
   initialCallType: CallMediaType;
   state: 'ringing' | 'accepted' | 'connected';
@@ -129,13 +131,10 @@ interface LiveCall {
 export interface InboundCallFramePayload {
   /** The LOCAL user this frame is for (the callee for `incoming`; the local participant otherwise). */
   localUserId?: number;
-  /** The foreign sender's LOCAL stub id (the caller's stub on the callee server; used as CALL_EVENT/CALL_SIGNAL
-   *  `fromUserId` so the client renders the peer from the localized stub). */
-  peerStubId?: number;
   /** The verified HTTP signer domain; Call Frame bodies carry account names only. */
   peerDomain: string;
   namespaceId: number;
-  /** The LOCAL P2P thread between the local user and the peer stub. */
+  /** The local P2P thread identified by the authorized relationship. */
   threadId?: number;
   signatureExpiresAtSec: number;
   frame: S2SCallFrame;
@@ -168,9 +167,7 @@ export class CallsService implements OnModuleDestroy {
   private readonly logger = new Logger(CallsService.name);
   /** Authoritative live call state, keyed by callSid. Dropped on restart (by design). */
   private readonly activeCalls = new Map<string, LiveCall>();
-  /** Busy-line index: userId → the callSid of the one active call that user is in. A user may be in
-   *  at most one active (ringing/accepted) call as caller OR callee. (For a federated call the foreign
-   *  STUB also occupies a slot on the caller server — correct: the foreign user can be in only one call.) */
+  /** Busy-line index for real local accounts only. The peer server owns its participants' busy slots. */
   private readonly activeByUser = new Map<number, string>();
   /** Per-call ringing timers (ringing → missed), keyed by callSid. Cleared on any earlier terminal
    *  transition + on shutdown. */
@@ -195,35 +192,46 @@ export class CallsService implements OnModuleDestroy {
    *  callee), and arm the ringing-timeout. Idempotent on callSid. */
   async initiate(
     callerId: number,
-    dto: { callSid: string; calleeUserId: number; callType: CallMediaType },
+    dto: { callSid: string; threadId: number; callType: CallMediaType },
   ): Promise<{ callSid: string; threadId: number }> {
-    if (callerId === dto.calleeUserId) {
+    const threadId = dto.threadId;
+    if (
+      !(await isThreadMutuallyAuthorized(this.database.db, callerId, threadId))
+    ) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_ALLOWED,
-        'cannot call yourself',
+        'thread is not available',
       );
     }
-    // Authorization: caller + callee must share an active P2P thread (be friends).
-    const threadId = await this.participants.findP2PThreadBetween(
-      callerId,
-      dto.calleeUserId,
-    );
-    if (threadId === null) {
+    const [callee] = await this.participants.findP2PPeers([threadId], callerId);
+    if (!callee)
       throw new BusinessException(
         BusinessCode.CALL_NOT_ALLOWED,
-        'not friends with this user',
+        'not a P2P thread',
+      );
+    const localCallee =
+      callee.domain === 'local' && callee.namespaceId === 0
+        ? await this.database.db.query.account.findFirst({
+            where: eq(user.account, callee.account),
+            columns: { id: true },
+          })
+        : undefined;
+    const calleeId = localCallee?.id ?? null;
+    if (
+      (callee.domain === 'local' && calleeId === null) ||
+      calleeId === callerId
+    ) {
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_ALLOWED,
+        'invalid call recipient',
       );
     }
-
     // Idempotent: check the live call BEFORE the busy guard — the caller's own in-flight call would
     // otherwise trip the busy check on retry. A callSid held by a different (caller,callee) pair is
     // impossible in practice (client-generated UUID); refuse rather than leak.
     const existing = this.activeCalls.get(dto.callSid);
     if (existing) {
-      if (
-        existing.callerId === callerId &&
-        existing.calleeId === dto.calleeUserId
-      ) {
+      if (existing.callerId === callerId && existing.threadId === threadId) {
         if (existing.state === 'ringing') await this.ring(existing);
         return { callSid: existing.callSid, threadId: existing.threadId };
       }
@@ -238,17 +246,13 @@ export class CallsService implements OnModuleDestroy {
     // block (no await between) — closes the TOCTOU race where two concurrent initiates (A→B + B→A) both
     // pass the check during each other's await, then both register (glare: each side then sees the other's
     // late incoming while its own outgoing screen is up).
-    const callee = await this.database.db.query.user.findFirst({
-      where: eq(user.id, dto.calleeUserId),
-      columns: { account: true, domain: true, namespaceId: true },
-    });
-    const federated = callee?.domain !== 'local';
+    const federated = calleeId === null;
 
     // New call: neither party may already be in an active call (one active call per user). The check + the
     // activeByUser.set below are SYNCHRONOUS (no await between) → atomic on the event loop → no glare race.
     if (
       this.activeByUser.has(callerId) ||
-      this.activeByUser.has(dto.calleeUserId)
+      (calleeId !== null && this.activeByUser.has(calleeId))
     ) {
       throw new BusinessException(
         BusinessCode.CALL_BUSY,
@@ -260,7 +264,7 @@ export class CallsService implements OnModuleDestroy {
       callSid: dto.callSid,
       threadId,
       callerId,
-      calleeId: dto.calleeUserId,
+      calleeId,
       callType: dto.callType,
       initialCallType: dto.callType,
       state: 'ringing',
@@ -277,10 +281,10 @@ export class CallsService implements OnModuleDestroy {
     };
     this.activeCalls.set(call.callSid, call);
     this.logger.debug(
-      `[call] initiate sid=${call.callSid} caller=${callerId} callee=${dto.calleeUserId} state=ringing`,
+      `[call] initiate sid=${call.callSid} caller=${callerId} callee=${calleeId} state=ringing`,
     );
     this.activeByUser.set(callerId, call.callSid);
-    this.activeByUser.set(dto.calleeUserId, call.callSid);
+    if (calleeId !== null) this.activeByUser.set(calleeId, call.callSid);
     this.armRingTimer(call);
     this.syncCallState(call);
 
@@ -324,13 +328,27 @@ export class CallsService implements OnModuleDestroy {
   /** Ring the callee: in-band SSE (the online device renders the incoming-call UI) + a push wake-up
    *  to ALL the callee's devices (the phone rings even when the desktop SSE is live). Carries the
    *  caller's display name/avatar so the callee UI can render without an extra fetch. Called for LOCAL
-   *  calls + the federated callee server (where callerId is the localized foreigner stub). */
+   *  calls and the federated callee server, using the thread-selected peer profile. */
   private async ring(call: LiveCall): Promise<void> {
-    const caller = await this.database.db.query.user.findFirst({
-      where: eq(user.id, call.callerId),
-      columns: { account: true, domain: true, name: true, avatar: true },
-    });
-    this.emit(call.calleeId, 'incoming', {
+    const calleeId = this.requireLocalId(call.calleeId);
+    const caller =
+      call.callerId === null
+        ? {
+            ...(
+              await this.participants.findP2PPeers([call.threadId], calleeId)
+            )[0],
+            account: call.peerAccount!,
+            domain: call.peerDomain!,
+          }
+        : await this.database.db.query.account.findFirst({
+            where: eq(user.id, call.callerId),
+            columns: { account: true, domain: true },
+            extras: {
+              name: accountProfileFields().name.as('name'),
+              avatar: accountProfileFields().avatar.as('avatar'),
+            },
+          });
+    this.emit(calleeId, 'incoming', {
       callSid: call.callSid,
       threadId: call.threadId,
       callerUserId: call.callerId,
@@ -341,13 +359,9 @@ export class CallsService implements OnModuleDestroy {
       callType: call.callType,
     });
     if (caller?.account) {
-      this.callState.setPeerIdentity(
-        call.calleeId,
-        caller.account,
-        caller.domain,
-      );
+      this.callState.setPeerIdentity(calleeId, caller.account, caller.domain);
     }
-    void this.push.dispatchForCall(call.calleeId, {
+    void this.push.dispatchForCall(calleeId, {
       callSid: call.callSid,
       callerUserId: call.callerId,
       callerName: caller?.name ?? '',
@@ -628,7 +642,6 @@ export class CallsService implements OnModuleDestroy {
     dto: {
       id: string;
       callSid: string;
-      toUserId: number;
       kind: CallSignalType;
       payload: string;
     },
@@ -647,12 +660,6 @@ export class CallsService implements OnModuleDestroy {
       );
     }
     const peer = fromUserId === call.callerId ? call.calleeId : call.callerId;
-    if (dto.toUserId !== peer) {
-      throw new BusinessException(
-        BusinessCode.CALL_NOT_PARTICIPANT,
-        'relay target is not the call peer',
-      );
-    }
     if (call.terminal) {
       throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
     }
@@ -691,7 +698,7 @@ export class CallsService implements OnModuleDestroy {
           );
         });
     } else {
-      this.sse.onCallSignal(dto.toUserId, {
+      this.sse.onCallSignal(this.requireLocalId(peer), {
         event: 'CALL_SIGNAL',
         id: dto.id,
         callSid: dto.callSid,
@@ -738,7 +745,6 @@ export class CallsService implements OnModuleDestroy {
       case 'incoming':
         return this.onInboundIncoming(
           payload.localUserId!,
-          payload.peerStubId!,
           peerDomain,
           namespaceId,
           payload.threadId!,
@@ -840,7 +846,6 @@ export class CallsService implements OnModuleDestroy {
    *  live-state guard, so a busy reject / duplicate burns no quota. */
   private async onInboundIncoming(
     localUserId: number,
-    peerStubId: number,
     peerDomain: string,
     namespaceId: number,
     threadId: number,
@@ -854,7 +859,6 @@ export class CallsService implements OnModuleDestroy {
       }
       const sameCall =
         existing.localRole === 'callee' &&
-        existing.callerId === peerStubId &&
         existing.calleeId === localUserId &&
         existing.peerAccount === frame.payload.fromAccount &&
         existing.localAccount === frame.payload.toAccount &&
@@ -882,7 +886,7 @@ export class CallsService implements OnModuleDestroy {
     const calleeCall: LiveCall = {
       callSid: frame.callSid,
       threadId,
-      callerId: peerStubId, // the foreign caller → local stub (ring() reads its localized name/avatar)
+      callerId: null,
       calleeId: localUserId,
       callType: frame.callType,
       initialCallType: frame.callType,
@@ -1039,11 +1043,11 @@ export class CallsService implements OnModuleDestroy {
     await this.quota.tick(call.peerDomain!, 'signals');
     call.seenSignalIds.add(frame.payload.signalId);
     const localUserId = this.localUserId(call);
-    const peerStubId =
+    const peerLocalId =
       call.localRole === 'caller' ? call.calleeId : call.callerId;
     this.stage(
       call,
-      peerStubId,
+      peerLocalId,
       frame.payload.signalId,
       frame.payload.signalType,
       frame.payload.data,
@@ -1052,7 +1056,7 @@ export class CallsService implements OnModuleDestroy {
       event: 'CALL_SIGNAL',
       id: frame.payload.signalId,
       callSid: frame.callSid,
-      fromUserId: peerStubId,
+      fromUserId: peerLocalId,
       kind: frame.payload.signalType,
       payload: frame.payload.data,
     });
@@ -1350,7 +1354,7 @@ export class CallsService implements OnModuleDestroy {
     );
     try {
       const msg = await this.messages.writeMsgToThread(
-        call.callerId,
+        this.requireLocalId(call.callerId),
         call.threadId,
         content,
         ContentType.CALL,
@@ -1377,24 +1381,27 @@ export class CallsService implements OnModuleDestroy {
   private syncCallState(call: LiveCall): void {
     const base = {
       callSid: call.callSid,
+      threadId: call.threadId,
       state: call.state,
       startedAt: call.startedAt,
       callType: call.callType,
     };
-    this.callState.set(call.callerId, {
-      ...base,
-      peerUserId: call.calleeId,
-      peerAccount: call.peerAccount ?? '',
-      peerDomain: call.peerDomain ?? '',
-      isCaller: true,
-    });
-    this.callState.set(call.calleeId, {
-      ...base,
-      peerUserId: call.callerId,
-      peerAccount: '',
-      peerDomain: '',
-      isCaller: false,
-    });
+    if (call.callerId !== null)
+      this.callState.set(call.callerId, {
+        ...base,
+        peerUserId: call.calleeId,
+        peerAccount: call.peerAccount ?? '',
+        peerDomain: call.peerDomain ?? '',
+        isCaller: true,
+      });
+    if (call.calleeId !== null)
+      this.callState.set(call.calleeId, {
+        ...base,
+        peerUserId: call.callerId,
+        peerAccount: '',
+        peerDomain: '',
+        isCaller: false,
+      });
   }
 
   private release(call: LiveCall): void {
@@ -1402,12 +1409,12 @@ export class CallsService implements OnModuleDestroy {
       `[call] release sid=${call.callSid} state=${call.state} caller=${call.callerId} callee=${call.calleeId}`,
     );
     this.activeCalls.delete(call.callSid);
-    if (this.activeByUser.get(call.callerId) === call.callSid)
-      this.activeByUser.delete(call.callerId);
-    if (this.activeByUser.get(call.calleeId) === call.callSid)
-      this.activeByUser.delete(call.calleeId);
-    this.callState.clear(call.callerId);
-    this.callState.clear(call.calleeId);
+    for (const id of [call.callerId, call.calleeId]) {
+      if (id === null) continue;
+      if (this.activeByUser.get(id) === call.callSid)
+        this.activeByUser.delete(id);
+      this.callState.clear(id);
+    }
     this.clearRingTimer(call.callSid);
   }
 
@@ -1416,7 +1423,7 @@ export class CallsService implements OnModuleDestroy {
    *  deduped by its raw payload (a retransmit / a replayed S2S frame must not duplicate). */
   private stage(
     call: LiveCall,
-    senderId: number,
+    senderId: number | null,
     id: string,
     kind: string,
     payload: string,
@@ -1502,8 +1509,14 @@ export class CallsService implements OnModuleDestroy {
       });
       void this.sendFrame(call, op, extra);
     } else {
-      this.emit(call.callerId, op, { callSid: call.callSid, ...extra });
-      this.emit(call.calleeId, op, { callSid: call.callSid, ...extra });
+      this.emit(this.requireLocalId(call.callerId), op, {
+        callSid: call.callSid,
+        ...extra,
+      });
+      this.emit(this.requireLocalId(call.calleeId), op, {
+        callSid: call.callSid,
+        ...extra,
+      });
     }
   }
 
@@ -1570,9 +1583,16 @@ export class CallsService implements OnModuleDestroy {
     return true;
   }
 
+  private requireLocalId(id: number | null): number {
+    if (id === null) throw new Error('call endpoint is not local');
+    return id;
+  }
+
   /** The LOCAL participant on this server (only meaningful for a federated call). */
   private localUserId(call: LiveCall): number {
-    return call.localRole === 'caller' ? call.callerId : call.calleeId;
+    return this.requireLocalId(
+      call.localRole === 'caller' ? call.callerId : call.calleeId,
+    );
   }
 
   /** The foreign participant's wire address (only meaningful for a federated call). */

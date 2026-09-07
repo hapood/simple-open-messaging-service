@@ -42,13 +42,12 @@ export class InitiateCallDto {
 
   @ApiProperty({
     example: 7,
-    description:
-      'The callee userId (must be a friend — share an active P2P thread).',
+    description: 'The active P2P thread identifying the call peer.',
   })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  calleeUserId!: number;
+  threadId!: number;
 
   @ApiProperty({
     enum: ['AUDIO', 'VIDEO'],
@@ -127,16 +126,6 @@ export class SignalCallDto {
     message: 'callSid must be a canonical lowercase RFC UUID',
   })
   callSid!: string;
-
-  @ApiProperty({
-    example: 7,
-    description:
-      'The peer userId to relay to (must be the OTHER call participant).',
-  })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  toUserId!: number;
 
   @ApiProperty({
     enum: CALL_SIGNAL_TYPES,

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group, messageThread, profileVersion } from '../database/schema.js';
+import {
+  groupAccount,
+  messageThread,
+  profileTable,
+} from '../database/schema.js';
 import { GroupService } from './group.service.js';
 
 describe('GroupService creation', () => {
@@ -23,7 +27,7 @@ describe('GroupService creation', () => {
           returning: vi
             .fn()
             .mockResolvedValue(
-              table === group
+              table === groupAccount
                 ? [groupState]
                 : table === messageThread
                   ? [thread]
@@ -67,7 +71,7 @@ describe('GroupService creation', () => {
       owner: 11,
     });
 
-    expect(insertedTables).toEqual([group, messageThread, profileVersion]);
+    expect(insertedTables).toEqual([groupAccount, messageThread, profileTable]);
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       7,

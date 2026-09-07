@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
@@ -183,6 +183,38 @@ describe('UploadService.saveAvatar — byte-preserving storage', () => {
     await expect(
       readFile(join(root!, url.slice('/uploads/'.length))),
     ).resolves.toEqual(source);
+  });
+
+  it('deduplicates concurrent client and federation avatar writes in the avatar directory', async () => {
+    const source = Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64');
+    const digest = createHash('sha256').update(source).digest('hex');
+    const urls = await Promise.all([
+      svc.saveAvatarFromClientBase64(ONE_PIXEL_PNG_BASE64),
+      svc.saveAvatarFromWire({
+        b64: ONE_PIXEL_PNG_BASE64,
+        w: 1,
+        h: 1,
+        mimeType: 'image/png',
+      }),
+    ]);
+    expect(urls).toEqual(Array(2).fill(`/uploads/avatars/${digest}.png`));
+    expect((await readdir(join(root!, 'avatars'))).sort()).toEqual([
+      `${digest}.png`,
+      'tmp',
+    ]);
+    expect(await readdir(join(root!, 'avatars', 'tmp'))).toEqual([]);
+    expect(await svc.readAvatarAsWire(urls[0])).toMatchObject({
+      b64: ONE_PIXEL_PNG_BASE64,
+    });
+  });
+
+  it('rejects avatar reads outside the avatar directory', async () => {
+    expect(
+      await svc.readAvatarAsWire('/uploads/avatars/../secret.png'),
+    ).toBeNull();
+    expect(
+      await svc.readAvatarAsWire('/uploads/msg-assets/other.png'),
+    ).toBeNull();
   });
 });
 

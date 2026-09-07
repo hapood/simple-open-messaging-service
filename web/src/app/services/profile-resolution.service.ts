@@ -1,8 +1,9 @@
-import { Injectable } from '@angular/core';
-import { Observable, firstValueFrom, of } from 'rxjs';
+import { Injectable, Optional } from '@angular/core';
+import { Observable, Subject, firstValueFrom, of } from 'rxjs';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ResolutionDispatcher } from './resolution-dispatcher';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 export interface ResolvedProfile {
   account: string;
@@ -19,12 +20,30 @@ export type ProfileSelector =
 
 @Injectable({ providedIn: 'root' })
 export class ProfileResolutionService {
+  private readonly resolved = new Subject<{
+    selector: ProfileSelector;
+    profile: ResolvedProfile;
+  }>();
+  readonly resolved$ = this.resolved.asObservable();
   private readonly results = new Map<string, ResolvedProfile>();
+  private sessionEpoch = 0;
+  private readonly observedRequests = new WeakSet<
+    Observable<ResolvedProfile>
+  >();
   private readonly dispatcher: ResolutionDispatcher<
     ProfileSelector,
     ResolvedProfile
   >;
-  constructor(users: UserService, realtime: WebsocketService) {
+  constructor(
+    users: UserService,
+    realtime: WebsocketService,
+    @Optional() lifecycle?: SessionLifecycleService,
+  ) {
+    lifecycle?.ended$.subscribe(() => {
+      this.sessionEpoch++;
+      this.results.clear();
+      this.dispatcher.reset();
+    });
     this.dispatcher = new ResolutionDispatcher<
       ProfileSelector,
       ResolvedProfile
@@ -54,7 +73,6 @@ export class ProfileResolutionService {
           return null;
         const data = value.data;
         if (value.event === 'PROFILE_RESOLVED' && validProfile(data.profile)) {
-          this.remember(data.profile);
           return { requestId: data.requestId!, result: data.profile };
         }
         if (
@@ -78,11 +96,31 @@ export class ProfileResolutionService {
         : undefined;
     if (cached) return of(cached);
     const request = this.dispatcher.resolve(normalized);
+    if (this.observedRequests.has(request)) return request;
+    this.observedRequests.add(request);
+    const epoch = this.sessionEpoch;
     request.subscribe({
-      next: (profile) => this.remember(profile),
+      next: (profile) => {
+        if (epoch !== this.sessionEpoch) return;
+        this.remember(profile);
+        this.resolved.next({ selector: normalized, profile });
+      },
       error: () => {},
     });
     return request;
+  }
+  /** Called immediately after subscribing: READY profiles reach the subscriber before first paint;
+   * PENDING profiles continue through the shared dispatcher after the caller renders. */
+  prepare(selector: ProfileSelector): Promise<void> {
+    const normalized = normalizeSelector(selector);
+    if (
+      'rev' in normalized &&
+      this.results.has(
+        profileKey(normalized.account, normalized.domain, normalized.rev),
+      )
+    )
+      return Promise.resolve();
+    return this.dispatcher.prepare(normalized);
   }
   private remember(profile: ResolvedProfile) {
     const key = profileKey(profile.account, profile.domain, profile.rev);

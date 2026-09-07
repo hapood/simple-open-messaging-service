@@ -10,6 +10,20 @@ export function assertVerificationMode(mode) {
   return mode;
 }
 
+export function shouldSettleWorkloadBatch(
+  mode,
+  batch,
+  { randomBatch = false } = {},
+) {
+  assertVerificationMode(mode);
+  if (mode === 'round') return true;
+  // Dissolution fanout may continue alongside later random work. Its child tasks
+  // and effects are checked by the mandatory final queue barrier and audit.
+  const dissolution =
+    batch.length > 0 && batch.every(({ type }) => type === 'DISSOLVE_GROUP');
+  return !randomBatch && !dissolution;
+}
+
 export async function verifyMidpointProfiles(mode, verify) {
   assertVerificationMode(mode);
   // Final-mode observations may still contain viewers whose leave has completed.

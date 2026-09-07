@@ -1,3 +1,4 @@
+process.env.SOMS_DOMAIN ??= 'chat.example';
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../relationship/thread-content-lock.js', () => ({
   lockThreadContentInTx: vi.fn().mockResolvedValue(true),
@@ -60,7 +61,7 @@ describe('MessageService local system messages', () => {
     const service = new MessageService({} as never, {} as never);
     const tx = {
       query: {
-        user: {
+        account: {
           findFirst: vi
             .fn()
             .mockResolvedValue({ account: 'alice', domain: 'local.test' }),
@@ -138,7 +139,7 @@ describe('MessageService local system messages', () => {
     };
     const tx = {
       query: {
-        user: {
+        account: {
           findFirst: vi
             .fn()
             .mockResolvedValue({ account: 'bob', domain: 'local' }),

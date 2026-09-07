@@ -1,13 +1,14 @@
+import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { group, messageThread } from '../src/database/schema.js';
+import { groupAccount, messageThread } from '../src/database/schema.js';
 import { sql } from 'drizzle-orm';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 
-describe('thread epoch lock and parent foreign-key checks', () => {
+describe('group business scope and content lock ordering', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   beforeAll(async () => {
@@ -24,18 +25,21 @@ describe('thread epoch lock and parent foreign-key checks', () => {
     'the production %s waits for the group before touching the thread',
     async (entry) => {
       const [parent] = await database.db
-        .insert(group)
+        .insert(groupAccount)
         .values({
           account: `!parent-${entry.replace(' ', '-')}`,
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Epoch parent',
           updatedAt: new Date(),
         })
         .returning();
       const [thread] = await database.db
         .insert(messageThread)
-        .values({ type: 'GROUP', groupId: parent.id, updatedAt: new Date() })
+        .values({
+          type: 'GROUP',
+          groupAccount: parent.account,
+          groupDomain: 'local',
+          groupAccountId: parent.id,
+          updatedAt: new Date(),
+        })
         .returning();
       const membership = await database.pool.connect();
       let result: Promise<unknown> | undefined;
@@ -45,8 +49,13 @@ describe('thread epoch lock and parent foreign-key checks', () => {
           rows: [session],
         } = await membership.query('SELECT pg_backend_pid() AS pid');
         await membership.query(
-          'SELECT id FROM "Group" WHERE id=$1 FOR UPDATE',
-          [parent.id],
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [
+            businessAccountScopeKey({
+              account: parent.account,
+              domain: 'local',
+            }),
+          ],
         );
         result = database.db
           .transaction(async (tx) => {
@@ -116,72 +125,46 @@ describe('thread epoch lock and parent foreign-key checks', () => {
     },
   );
 
-  it.each([
-    'UPDATE',
-    'ROW_LOCK',
-    'REPEATED_ALLOCATION',
-    'PARENT_NO_KEY_UPDATE',
-  ] as const)(
-    '%s before allocation while the parent group is locked',
-    async (mode) => {
-      const [parent] = await database.db
-        .insert(group)
-        .values({
-          account: `!p-${mode.toLowerCase()}`,
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Parent lock probe',
-          updatedAt: new Date(),
-        })
-        .returning();
-      const [thread] = await database.db
-        .insert(messageThread)
-        .values({
-          type: 'GROUP',
-          groupId: parent.id,
-          updatedAt: new Date(),
-        })
-        .returning();
-      const content = await database.pool.connect();
-      const membership = await database.pool.connect();
-      try {
-        await content.query('BEGIN');
-        await content.query("SET LOCAL lock_timeout = '500ms'");
-        await content.query(
-          mode === 'UPDATE' || mode === 'PARENT_NO_KEY_UPDATE'
-            ? 'UPDATE "MessageThread" SET "authorizationEpoch" = "authorizationEpoch" WHERE id = $1 RETURNING id'
-            : 'SELECT id FROM "MessageThread" WHERE id = $1 FOR NO KEY UPDATE',
-          [thread.id],
-        );
-        if (mode === 'REPEATED_ALLOCATION')
-          await content.query(
-            'UPDATE "MessageThread" SET "curSeq" = "curSeq" + 1 WHERE id = $1',
-            [thread.id],
-          );
-        await membership.query('BEGIN');
-        await membership.query(
-          mode === 'PARENT_NO_KEY_UPDATE'
-            ? 'SELECT id FROM "Group" WHERE id = $1 FOR NO KEY UPDATE'
-            : 'SELECT id FROM "Group" WHERE id = $1 FOR UPDATE',
-          [parent.id],
-        );
-        const allocation = content.query(
+  it('updating group controls does not require an additional parent row lock before content allocation', async () => {
+    const [parent] = await database.db
+      .insert(groupAccount)
+      .values({ account: '!control-lock' })
+      .returning();
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: 'GROUP',
+        groupAccount: parent.account,
+        groupDomain: 'local',
+        groupAccountId: parent.id,
+        updatedAt: new Date(),
+      })
+      .returning();
+    const content = await database.pool.connect();
+    const controls = await database.pool.connect();
+    try {
+      await content.query('BEGIN');
+      await content.query("SET LOCAL lock_timeout = '500ms'");
+      await content.query(
+        'UPDATE "MessageThread" SET "curSeq" = "curSeq" + 1 WHERE id = $1',
+        [thread.id],
+      );
+      await controls.query('BEGIN');
+      await controls.query(
+        'UPDATE "GroupAccount" SET "defaultProfileRev" = 1 WHERE id = $1',
+        [parent.id],
+      );
+      await expect(
+        content.query(
           'UPDATE "MessageThread" SET "curSeq" = "curSeq" + 1 WHERE id = $1 RETURNING "curSeq"',
           [thread.id],
-        );
-        if (mode === 'UPDATE' || mode === 'REPEATED_ALLOCATION') {
-          await expect(allocation).rejects.toMatchObject({ code: '55P03' });
-        } else {
-          await expect(allocation).resolves.toMatchObject({
-            rows: [{ curSeq: 1 }],
-          });
-        }
-      } finally {
-        await content.query('ROLLBACK');
-        await membership.query('ROLLBACK');
-        content.release();
-        membership.release();
-      }
-    },
-  );
+        ),
+      ).resolves.toMatchObject({ rows: [{ curSeq: 2 }] });
+    } finally {
+      await content.query('ROLLBACK');
+      await controls.query('ROLLBACK');
+      content.release();
+      controls.release();
+    }
+  });
 });

@@ -1,3 +1,13 @@
+import {
+  groupState as groupStateTable,
+  readGroupState,
+  groupStateFields,
+} from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  localAccountsForTargetsInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, ne } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -14,7 +24,6 @@ import {
   type FederatedPendingProfileSnapshot,
 } from '../relationship/relationship.service.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import { upsertSourceUserInTx } from '../user/source-user.js';
 import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
@@ -58,6 +67,17 @@ export class FederationRelationshipMutationService {
     private readonly groupRelationships: FederationGroupRelationshipService,
   ) {}
 
+  /** Call after the group command lock, before departure messages allocate client state. */
+  async lockMemberRelationshipFeedInTx(
+    tx: DatabaseTransaction,
+    group: { domain: string; namespaceId: number },
+  ): Promise<void> {
+    if (group.domain === 'local') return;
+    await this.stateFeed.lockTargetsInTx(tx, [
+      { peerDomain: group.domain, namespaceId: group.namespaceId },
+    ]);
+  }
+
   async writeMemberRelationshipIntentInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -75,36 +95,22 @@ export class FederationRelationshipMutationService {
     } = options;
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [thread] = await tx
-      .select({ groupId: tables.messageThread.groupId })
+      .select({ groupId: tables.messageThread.id })
       .from(tables.messageThread)
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (!thread?.groupId) throw new Error('group join target is invalid');
-    const group = await tx.query.group.findFirst({
-      where: eq(tables.group.id, thread.groupId),
-      columns: {
-        account: true,
-        domain: true,
-        namespaceId: true,
-        name: true,
-        avatar: true,
-        description: true,
-        defaultProfileRev: true,
-      },
-    });
-    const member = await tx.query.user.findFirst({
-      where: eq(tables.user.id, memberUserId),
+    const group = await readGroupState(
+      tx,
+      eq(groupStateTable.id, thread.groupId),
+    );
+    const member = await tx.query.account.findFirst({
+      where: eq(tables.account.id, memberUserId),
       columns: { account: true, domain: true },
     });
     if (!group || !member || member.domain !== 'local')
       throw new Error('group join identities are invalid');
-    if (group.domain !== 'local')
-      await this.stateFeed.lockTargetsInTx(tx, [
-        {
-          peerDomain: group.domain,
-          namespaceId: group.namespaceId!,
-        },
-      ]);
+    await this.lockMemberRelationshipFeedInTx(tx, group);
     const projectedGroup = applyFederatedPendingProfileSnapshot(
       { name: group.name, avatar: group.avatar },
       groupSnapshot,
@@ -172,7 +178,7 @@ export class FederationRelationshipMutationService {
               name: projectedGroup.name,
               avatar: projectedGroup.avatar,
               description: group.description,
-              profileRev: group.defaultProfileRev,
+              profileRev: group.profileRev,
             },
           },
         });
@@ -226,7 +232,7 @@ export class FederationRelationshipMutationService {
             name: projectedGroup.name,
             avatar: projectedGroup.avatar,
             description: group.description,
-            profileRev: group.defaultProfileRev,
+            profileRev: group.profileRev,
           },
         },
       });
@@ -247,7 +253,7 @@ export class FederationRelationshipMutationService {
   async writeGroupRelationshipIntentInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    memberUserId: number,
+    memberUserId: AccountTarget,
     note: string,
     status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED',
     clientFeedUpdates: PendingClientStateFeedUpdate[],
@@ -262,27 +268,23 @@ export class FederationRelationshipMutationService {
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [state] = await tx
       .select({
-        groupId: tables.group.id,
-        groupAccount: tables.group.account,
-        groupName: tables.group.name,
-        groupAvatar: tables.group.avatar,
-        groupDescription: tables.group.description,
-        groupProfileRev: tables.group.defaultProfileRev,
-        groupNamespaceId: tables.group.namespaceId,
+        groupId: groupStateTable.id,
+        groupAccount: groupStateFields.account,
+        groupName: groupStateFields.name,
+        groupAvatar: groupStateFields.avatar,
+        groupDescription: groupStateFields.description,
+        groupProfileRev: groupStateFields.profileRev,
+        groupNamespaceId: groupStateFields.namespaceId,
       })
       .from(tables.messageThread)
       .innerJoin(
-        tables.group,
-        eq(tables.group.id, tables.messageThread.groupId),
+        groupStateTable,
+        eq(groupStateTable.id, tables.messageThread.id),
       )
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (!state?.groupId) throw new Error('group invite target is invalid');
-    const member = await tx.query.user.findFirst({
-      where: eq(tables.user.id, memberUserId),
-      columns: { account: true, domain: true, namespaceId: true },
-    });
-    if (!member) throw new Error('group invite identity is invalid');
+    const member = await accountAddressInTx(tx, memberUserId);
     if (member.domain !== 'local')
       await this.stateFeed.lockTargetsInTx(tx, [
         {
@@ -312,9 +314,9 @@ export class FederationRelationshipMutationService {
     if (membership.active) {
       if (membership.pairChanged)
         await tx
-          .update(tables.group)
+          .update(tables.messageThread)
           .set({ updatedAt: new Date() })
-          .where(eq(tables.group.id, state.groupId));
+          .where(eq(tables.messageThread.id, threadId));
     }
     await this.writeGroupRequestEffectsInTx(
       tx,
@@ -330,13 +332,16 @@ export class FederationRelationshipMutationService {
       membership.request.status === 'REQUESTED',
     );
     if (member.domain === 'local') {
+      const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
+      if (!localAccount)
+        throw new Error('local invitation recipient is missing');
       const endpoints = groupIntentEndpoints(
         state.groupAccount,
         member.account,
         'GROUP',
       );
       const feedId = await this.clientStateFeed.writeInTx(tx, {
-        userId: memberUserId,
+        userId: localAccount.id,
         account: endpoints.account,
         domain: 'local',
         namespaceId: 0,
@@ -361,7 +366,7 @@ export class FederationRelationshipMutationService {
         },
       });
       if (feedId !== null)
-        clientFeedUpdates.push({ userId: memberUserId, feedId });
+        clientFeedUpdates.push({ userId: localAccount.id, feedId });
       return new Map();
     }
     const relationship: PeerStateFeedWrite = {
@@ -387,23 +392,19 @@ export class FederationRelationshipMutationService {
   async writeP2PIntentInTx(
     tx: DatabaseTransaction,
     localUserId: number,
-    peerUserId: number,
+    peerUserId: AccountTarget,
     wantsFriend: boolean,
     note: string,
     clientFeedUpdates: PendingClientStateFeedUpdate[],
     forceConfirmationReindex = false,
   ): Promise<Map<string, bigint>> {
-    const remote = await tx.query.user.findFirst({
+    const remote = await accountAddressInTx(tx, peerUserId);
+    if (remote.domain === 'local')
+      throw new Error('federated friend must be foreign');
+    const local = await tx.query.account.findFirst({
       where: and(
-        eq(tables.user.id, peerUserId),
-        ne(tables.user.domain, 'local'),
-      ),
-      columns: { account: true, domain: true, namespaceId: true },
-    });
-    const local = await tx.query.user.findFirst({
-      where: and(
-        eq(tables.user.id, localUserId),
-        eq(tables.user.domain, 'local'),
+        eq(tables.account.id, localUserId),
+        eq(tables.account.domain, 'local'),
       ),
       columns: { account: true },
     });
@@ -469,10 +470,10 @@ export class FederationRelationshipMutationService {
     },
     clientFeedUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<string, bigint>> {
-    const local = await tx.query.user.findFirst({
+    const local = await tx.query.account.findFirst({
       where: and(
-        eq(tables.user.id, localUserId),
-        eq(tables.user.domain, 'local'),
+        eq(tables.account.id, localUserId),
+        eq(tables.account.domain, 'local'),
       ),
       columns: { account: true },
     });
@@ -483,12 +484,11 @@ export class FederationRelationshipMutationService {
       { account: local.account, domain: 'local' },
       { account: normalizeAccount(remote.account), domain: remote.domain },
     ]);
-    const remoteUserId = await this.materializeFederatedUserInTx(
-      tx,
-      remote.account,
-      remote.domain,
-      remote.namespaceId,
-    );
+    const remoteUserId = {
+      account: remote.account,
+      domain: remote.domain,
+      namespaceId: remote.namespaceId,
+    };
     await this.relationshipIntents.lockPairInTx(tx, localUserId, remoteUserId);
     await this.stateFeed.lockTargetsInTx(tx, [
       { peerDomain: remote.domain, namespaceId: remote.namespaceId },
@@ -545,24 +545,6 @@ export class FederationRelationshipMutationService {
     return this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
-  private async materializeFederatedUserInTx(
-    tx: DatabaseTransaction,
-    account: string,
-    domain: string,
-    namespaceId: number,
-  ): Promise<number> {
-    const normalized = normalizeAccount(account);
-    if (normalized.startsWith('!'))
-      throw new Error('group identity cannot be materialized as User');
-    return upsertSourceUserInTx(tx, {
-      account: normalized,
-      domain,
-      namespaceId,
-      name: normalized,
-      profileRev: 0,
-    });
-  }
-
   /**
    * Acquires the GROUP business aggregate lock and the canonical dependent row
    * locks before the caller re-reads mutable command state.
@@ -570,16 +552,16 @@ export class FederationRelationshipMutationService {
   async lockGroupMutationInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    memberUserId: number,
+    memberUserId: AccountTarget,
     projectionUserIds: readonly number[] = [],
-  ): Promise<void> {
+  ) {
     const [thread] = await tx
-      .select({ groupId: tables.messageThread.groupId })
+      .select({ groupId: tables.messageThread.id })
       .from(tables.messageThread)
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (!thread?.groupId) throw new Error('group relationship thread missing');
-    await this.relationshipIntents.lockGroupMutationInTx(tx, {
+    return this.relationshipIntents.lockGroupMutationInTx(tx, {
       threadId,
       groupId: thread.groupId,
       memberUserId,
@@ -591,7 +573,7 @@ export class FederationRelationshipMutationService {
     tx: DatabaseTransaction,
     threadId: number,
     groupId: number,
-    memberUserId: number,
+    memberUserId: AccountTarget,
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' = 'REQUESTED',
     direction: 'APPLICATION' | 'INVITATION' = 'APPLICATION',

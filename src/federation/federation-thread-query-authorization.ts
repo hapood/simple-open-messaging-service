@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { HttpStatus } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -45,8 +46,8 @@ export async function resolveAuthorizedFederationThreadInTx(
       SELECT thread.id AS "threadId",
         COALESCE(audience."messageAccessAfterSeq", 0) AS "messageAccessAfterSeq",
         'ORIGIN_DISTRIBUTION' AS "groupQueryDirection"
-      FROM "Group" group_state
-      JOIN "MessageThread" thread ON thread."groupId" = group_state.id
+      FROM ${groupStateSql} group_state
+      JOIN "MessageThread" thread ON thread.id = group_state.id
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
        AND pair.kind = 'GROUP_MEMBER'
@@ -105,11 +106,11 @@ export async function resolveAuthorizedFederationThreadInTx(
       SELECT thread.id AS "threadId",
         0 AS "messageAccessAfterSeq",
         'MIRROR_TO_ORIGIN' AS "groupQueryDirection"
-      FROM "Group" group_state
-      JOIN "MessageThread" thread ON thread."groupId" = group_state.id
+      FROM ${groupStateSql} group_state
+      JOIN "MessageThread" thread ON thread.id = group_state.id
       JOIN "AccountThreadState" local_state
         ON local_state."threadId" = thread.id
-      JOIN "User" local_identity
+      JOIN "Account" local_identity
         ON local_identity.id = local_state."accountId"
        AND local_identity.domain = 'local'
        AND local_identity."namespaceId" = 0

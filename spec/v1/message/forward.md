@@ -67,7 +67,7 @@ interface ForwardBundleMessageBase {
   author: ForwardAuthor;
   profile?: ForwardProfileSnapshot;
   sentAt: EpochMilliseconds;
-  quoteTargetId?: PositiveSafeInteger;
+  quoteTargetId?: SafeInteger;
 }
 
 type ForwardBundleMessage = ForwardBundleMessageBase &
@@ -95,7 +95,7 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - Each `children[].id` MUST be unique within the response, MUST differ from the parent `id`, and MUST NOT be used as an independent resource-request target.
 - The parent `messages[]` and each child `messages[]` have independent message-ID spaces.
 - Each `id` MUST be unique within one `messages[]`; different bundle arrays may reuse the same ID.
-- `quoteTargetId` may reference only a message ID in the same enclosing `messages[]` and MUST NOT cross a bundle boundary.
+- A positive `quoteTargetId` is resolved only in the same enclosing `messages[]` and MUST NOT cross a bundle boundary. Zero denotes an absent target and does not reference a message ID.
 - An inner message with `contentType: 'FORWARD'` MUST carry `childBundleId`, which MUST match one `children[].id`.
 - A non-FORWARD inner message MUST omit `childBundleId`.
 - Child references may contain self-cycles and mutual cycles. The consumer does not recursively expand the graph; it scans the parent messages and flat children once each.
@@ -118,7 +118,20 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - `profile.avatarDigest`, when present, MUST appear in the parent `assets`.
   The profile snapshot deliberately carries no `profileRev`: it is frozen and
   self-contained inside the bundle and creates no exact-profile query right.
-- `quoteTargetId` is conditional; when present, it MUST identify a target in the same enclosing `messages[]`. A quote carries no preview.
+- A reply carries `quoteTargetId`. If its original target is
+  included in the same enclosing `messages[]`, `quoteTargetId` MUST be that target's
+  bundle-local message ID. When the target is absent, the publisher SHOULD use
+  `quoteTargetId: 0`, preserving reply intent without a navigable target. A consumer MUST
+  also accept a positive reference whose target is absent and MUST NOT resolve
+  it in another bundle or the carrier thread. An ordinary message MUST omit it.
+- `quoteTargetId` is a nonnegative safe integer. A quote carries no preview;
+  `content.quote` and source-thread namespace identifiers MUST NOT appear.
+- Both the publisher's stored snapshot and every imported snapshot MUST use this
+  bundle-local reference. Later arrival of a source message does not change an immutable bundle.
+- Forwarding a reply and its target together MUST rebuild the reference from
+  the source thread's resolved target to the target's ID in the new bundle.
+  An inner reply may itself be the target of another inner reply. Each child
+  array has an independent reference space.
 - The filename, MIME type, and media kind come from the inner content that references the digest and are not repeated in the asset descriptor.
 - An inner CONTACT_CARD retains its original address and display snapshot; its optional `avatarDigest` participates in the parent asset set like every other inner-content digest.
 - The deduplicated set of all profile-avatar and inner-content digests MUST exactly equal the parent `assets`.
@@ -218,9 +231,20 @@ A consumer MUST reject at least the following cases:
 - A FORWARD inner message lacks `childBundleId`.
 - A non-FORWARD inner message carries `childBundleId`.
 - A message ID is duplicated within one messages array.
-- `quoteTargetId` does not exist in the same enclosing messages array.
+- A quote is null, negative, fractional, or nonnumeric.
 - The profile-avatar or content-digest set differs from the parent `assets`.
 - `author` carries display fields, or `profile` carries identity fields or a
   `profileRev`.
 - Any object contains an unknown field.
 - The bundle can be read, validated, or persisted only partially.
+
+## 10. Reply examples
+
+For a bundle containing only a reply, its text content is `{"text":"reply"}`
+and its outer reference is `"quoteTargetId": 0`. The source thread's
+sequence and namespace are not retained.
+
+If message ID `1` is the selected original, reply ID `2` carries
+`"quoteTargetId": 1`. A reply to that reply, ID `3`, carries
+`"quoteTargetId": 2`. This remains true when the source thread used
+entirely different sequence numbers. These IDs never authorize source history.

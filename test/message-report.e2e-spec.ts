@@ -15,7 +15,7 @@ import {
   message,
   messageReport,
   messageThread,
-  user,
+  account as user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { MessageReportService } from '../src/message/message-report.service.js';
@@ -53,7 +53,9 @@ describe('message report workflow', () => {
 
   beforeEach(async () => {
     await database.db.execute(
-      sql.raw('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE'),
+      sql.raw(
+        'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+      ),
     );
     const now = new Date();
     const users = await database.db
@@ -61,19 +63,16 @@ describe('message report workflow', () => {
       .values([
         {
           account: 'reporter',
-          name: 'Reporter',
           domain: 'local',
           updatedAt: now,
         },
         {
           account: 'creator',
-          name: 'Creator',
           domain: 'local',
           updatedAt: now,
         },
         {
           account: 'moderator',
-          name: 'Moderator',
           domain: 'local',
           updatedAt: now,
         },
@@ -84,10 +83,6 @@ describe('message report workflow', () => {
     const moderatorId = users.find(
       (entry) => entry.account === 'moderator',
     )!.id;
-    await database.db
-      .insert(accountTable)
-      .values(users.map((entry) => ({ id: entry.id })))
-      .onConflictDoNothing({ target: accountTable.id });
     const [adminRow] = await database.db
       .insert(admin)
       .values({ userId: moderatorId, updatedAt: now })

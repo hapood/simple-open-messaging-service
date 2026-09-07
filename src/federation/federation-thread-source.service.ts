@@ -1,8 +1,9 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageThreadType } from '../database/enums.js';
-import { group, messageThread } from '../database/schema.js';
+import { messageThread } from '../database/schema.js';
 import {
   FederationMessageContextError,
   FederationThreadSourceInactiveError,
@@ -20,12 +21,12 @@ export class FederationThreadSourceService {
   ): Promise<FederationReverseThreadSource> {
     const [groupThread] = await this.database.db
       .select({
-        account: group.account,
-        domain: group.domain,
-        namespaceId: group.namespaceId,
+        account: groupStateFields.account,
+        domain: groupStateFields.domain,
+        namespaceId: groupStateFields.namespaceId,
       })
       .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(group, eq(group.id, messageThread.id))
       .where(
         and(
           eq(messageThread.id, threadId),
@@ -50,22 +51,18 @@ export class FederationThreadSourceService {
       const active = await this.database.db.execute(sql`
         SELECT 1
         FROM "RelationshipPair" pair
-        JOIN "User" member_identity
-          ON ((pair."endpointAType" = 'USER'
-               AND pair."endpointAAccount" = member_identity.account
-               AND pair."endpointADomain" = member_identity.domain)
-           OR (pair."endpointBType" = 'USER'
-               AND pair."endpointBAccount" = member_identity.account
-               AND pair."endpointBDomain" = member_identity.domain))
         WHERE pair.kind = 'GROUP_MEMBER'
           AND pair.active = true
           AND pair."threadId" = ${threadId}
-          AND ((${groupThread.domain} = ${peerDomain}
-                AND member_identity.domain = 'local'
-                AND member_identity."namespaceId" = 0)
-            OR (${groupThread.domain} = 'local'
-                AND member_identity.domain = ${peerDomain}
-                AND member_identity."namespaceId" = ${namespaceId}))
+          AND EXISTS (
+            SELECT 1 FROM (VALUES
+              (pair."endpointAType", pair."endpointADomain"),
+              (pair."endpointBType", pair."endpointBDomain")
+            ) member(kind, domain)
+            WHERE member.kind = 'USER'
+              AND ((${groupThread.domain} = ${peerDomain} AND member.domain = 'local')
+                OR (${groupThread.domain} = 'local' AND member.domain = ${peerDomain}))
+          )
           AND pair."endpointANamespaceId" = ${namespaceId}
           AND pair."endpointBNamespaceId" = ${namespaceId}
         LIMIT 1

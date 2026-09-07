@@ -17,6 +17,10 @@ import { firstValueFrom, Subject, of } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
+import {
+  ProfileResolutionService,
+  type ResolvedProfile,
+} from '../../services/profile-resolution.service';
 import type {
   ConversationItem,
   Message,
@@ -97,6 +101,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     dbResult: StandardResponse<Message[]>,
     tid = 42,
     outbox = new ThreadSendOutbox(),
+    profileResolver?: ProfileResolutionService,
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -265,11 +270,23 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       sessionProfile: () => ({ id: 1, account: 'me', domain: 'local' }),
     } as unknown as UserService;
     const profileRepo = {
-      getUser: vi
+      cacheProfile: vi.fn().mockResolvedValue(undefined),
+      getProfile: vi
         .fn()
-        .mockName('getUser')
+        .mockName('getProfile')
         .mockImplementation(
-          async (account: string, domain: string, namespaceId: number) => {
+          async ({
+            account,
+            domain,
+            namespaceId,
+            profileRev,
+          }: {
+            account: string;
+            domain: string;
+            namespaceId: number;
+            profileRev: number;
+          }) => {
+            if (profileResolver) return undefined;
             const user = users.find(
               (candidate) =>
                 candidate.account.toLowerCase() === account &&
@@ -280,6 +297,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
                   identity: JSON.stringify([namespaceId, domain, account]),
                   kind: 'user',
                   ...user,
+                  profileRev,
                   account,
                 }
               : undefined;
@@ -299,6 +317,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         onNewerAvailable: newerAvailable,
       },
       profileRepo,
+      profileResolver,
     );
     return {
       src,
@@ -315,6 +334,85 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       queryUserInfo,
     };
   }
+
+  it('includes an initially READY avatar in the first rendered message', async () => {
+    const resolved = new Subject<ResolvedProfile>();
+    let finish!: () => void;
+    const resolver = {
+      resolve: vi.fn(() => resolved),
+      prepare: vi.fn(() => new Promise<void>((resolve) => (finish = resolve))),
+    };
+    const { src } = setup(
+      { code: 0, message: 'ok', data: [row(10, 2)], hasMore: false },
+      42,
+      new ThreadSendOutbox(),
+      resolver as unknown as ProfileResolutionService,
+    );
+    let painted = false;
+    const initial = src.init(-1, 50, 0).then((items) => {
+      painted = true;
+      return items;
+    });
+    await vi.waitFor(() => expect(resolver.prepare).toHaveBeenCalledOnce());
+    expect(painted).toBe(false);
+    resolved.next({
+      account: 'peer',
+      domain: 'local',
+      rev: 3,
+      name: 'Ready peer',
+      bio: '',
+      avatarBase64: 'aW1hZ2U=',
+    });
+    resolved.complete();
+    finish();
+    const items = await initial;
+    expect(items[0].data).toMatchObject({
+      name: 'Ready peer',
+      avatar: 'data:image/webp;base64,aW1hZ2U=',
+    });
+  });
+
+  it('renders on PENDING and resolves later messages from an already known sender', async () => {
+    const pending = new Map<number, Subject<ResolvedProfile>>();
+    const resolver = {
+      resolve: vi.fn(({ messageSeq }: { messageSeq: number }) => {
+        const result = new Subject<ResolvedProfile>();
+        pending.set(messageSeq, result);
+        return result;
+      }),
+      prepare: vi.fn(async () => {}),
+    };
+    const { src, profiles, repo } = setup(
+      { code: 0, message: 'ok', data: [row(10, 2)], hasMore: true },
+      42,
+      new ThreadSendOutbox(),
+      resolver as unknown as ProfileResolutionService,
+    );
+    expect(await src.init(-1, 50, 0)).toHaveLength(1);
+    pending.get(10)!.next({
+      account: 'peer',
+      domain: 'local',
+      rev: 3,
+      name: 'Later peer',
+      bio: '',
+      avatarBase64: 'aW1hZ2U=',
+    });
+    pending.get(10)!.complete();
+    expect(profiles).toHaveBeenCalledWith(
+      10,
+      expect.objectContaining({ avatar: 'data:image/webp;base64,aW1hZ2U=' }),
+    );
+    (repo.queryMessages as Mock).mockResolvedValue({
+      data: [row(9, 2)],
+      hasMore: false,
+    });
+    await src.getOlder(10, 50);
+    expect(resolver.resolve).toHaveBeenCalledWith({
+      threadId: 42,
+      messageSeq: 9,
+    });
+    pending.get(9)!.complete();
+  });
 
   it('liveSignal$ does not issue HTTP when no newer demand is mounted', async () => {
     const { src, repo, liveSignal$ } = setup({

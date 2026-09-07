@@ -22,6 +22,7 @@ import {
   type FederationMessageFeedMessage,
 } from '../src/federation/federation-message-feed.service.js';
 import type { FederationQuoteTarget } from '../src/federation/federation-quote-target.js';
+import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
 import { resolveStoredQuotes } from '../src/message/quote-reference.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
 
@@ -71,25 +72,27 @@ describe('federation quote coordinates across three persisted node views', () =>
   afterAll(async () => mod.close());
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "MessageThread", "Group" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "MessageThread", "GroupAccount", "Profile" RESTART IDENTITY CASCADE',
     );
     const views: View[] = [];
     for (const [domain, namespaceId] of namespaces) {
-      const [group] = await database.db
-        .insert(tables.group)
-        .values({
-          account: `!quote-${views.length}`,
-          name: 'Quote regression',
-          updatedAt: new Date(),
-        })
-        .returning();
       const authorityNamespaceId =
         views.length === 0 ? 0 : namespaces.get('alpha.quote.test')!;
+      const groupAccount = `!quote-${views.length}`;
+      const [localGroup] =
+        authorityNamespaceId === 0
+          ? await database.db
+              .insert(tables.groupAccount)
+              .values({ account: groupAccount, updatedAt: new Date() })
+              .returning()
+          : [];
       const [thread] = await database.db
         .insert(tables.messageThread)
         .values({
           type: 'GROUP',
-          groupId: group.id,
+          groupAccount,
+          groupDomain: localGroup ? 'local' : 'alpha.quote.test',
+          groupAccountId: localGroup?.id,
           authorityNamespaceId,
           curSeq: 50,
           updatedAt: new Date(),
@@ -122,6 +125,11 @@ describe('federation quote coordinates across three persisted node views', () =>
         creatorDomain: 'local',
         updatedAt: new Date(),
         ...overrides,
+        creatorNamespaceId:
+          overrides.creatorNamespaceId ??
+          (overrides.creatorDomain && overrides.creatorDomain !== 'local'
+            ? Number(overrides.sourceNamespaceId)
+            : 0),
       })
       .returning();
     return row;
@@ -281,6 +289,61 @@ describe('federation quote coordinates across three persisted node views', () =>
     expect(JSON.parse(projected.content).quote).toEqual({
       seq: 42,
       status: 'NOT_FOUND',
+    });
+  });
+
+  it.each([0, 99])(
+    'imports and republishes a bundle with absent target %i',
+    async (seq) => {
+      const forwards = new ForwardBundleService(
+        database,
+        {} as never,
+        {} as never,
+      );
+      const messages = [
+        {
+          id: 1,
+          author: { account: 'user', domain: bravo.domain },
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'reply without a target entry' }),
+          sentAt: 1,
+          quoteTargetId: seq,
+        },
+      ];
+      const imported = await forwards.importClosure(bravo.domain, {
+        id: `absent-quote-${seq}`,
+        messages,
+        children: [],
+        assets: [],
+      });
+      const stored = await database.db.query.forwardBundle.findFirst({
+        where: eq(tables.forwardBundle.id, imported.localRootBundleId),
+      });
+      expect(stored?.messages).toEqual(messages);
+      expect(
+        (await forwards.buildClosure(imported.localRootBundleId)).messages,
+      ).toEqual(messages);
+    },
+  );
+
+  it('keeps an explicit absent quote through receipt, redistribution, and reads', async () => {
+    const reply = await receive(alpha, charlie, 51, { seq: 0 });
+    expect(JSON.parse(reply.content).quote).toEqual({ seq: 0, namespaceId: 0 });
+    const distribution = await publish(alpha, bravo, reply);
+    expect(distribution.quoteTarget).toEqual({ seq: 0 });
+    const mirrored = await receive(
+      bravo,
+      alpha,
+      distribution.seq,
+      distribution.quoteTarget!,
+    );
+    const [projected] = await resolveStoredQuotes(database.db, [mirrored]);
+    expect(JSON.parse(projected.content).quote).toEqual({
+      seq: 0,
+      status: 'NOT_FOUND',
+    });
+    expect((await publish(bravo, alpha, mirrored)).quoteTarget).toEqual({
+      seq: 0,
     });
   });
 

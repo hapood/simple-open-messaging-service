@@ -2,14 +2,14 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AdminBootstrapService } from './admin-bootstrap.service.js';
 import { AdminRole } from '../database/enums.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
-import { account, admin, user } from '../database/schema.js';
+import { account, admin, profileTable as user } from '../database/schema.js';
 
 /**
  * AdminBootstrapService self-seeds the first admin on every app start. These specs lock the operational
  * contract that matters:
  *   1. idempotent — an existing admin is a no-op (no second create, no password needed);
  *   2. no password → WARN + continue, never creates and never throws (the chat product stays up);
- *   3. password present → creates User + SUPER_ADMIN profile with a peppered argon2id-hashed password;
+ *   3. password present → creates Account + exact Profile + SUPER_ADMIN role with a peppered argon2id-hashed password;
  *   4. a DB failure during seed is swallowed (logged) so the app still boots.
  * Pure-vitest, hand-rolled Drizzle fake (no Nest DI container).
  */
@@ -27,7 +27,7 @@ function makeService(opts: {
     : vi.fn(async () => opts.existingUser ?? null);
   const database = {
     db: {
-      query: { user: { findFirst: findUnique } },
+      query: { account: { findFirst: findUnique } },
       select: vi.fn(() => {
         const query = {
           from: () => query,
@@ -52,7 +52,7 @@ function makeService(opts: {
       })),
     },
   };
-  userInsert.mockImplementation(() => ({
+  accountInsert.mockImplementation(() => ({
     onConflictDoNothing: vi.fn(() => ({
       returning: vi.fn().mockResolvedValue([{ id: 42 }]),
     })),
@@ -60,9 +60,10 @@ function makeService(opts: {
   adminInsert.mockImplementation(() => ({
     onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
   }));
-  accountInsert.mockImplementation(() => ({
-    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
-  }));
+  Object.assign(database.db, {
+    transaction: async (fn: (tx: typeof database.db) => unknown) =>
+      fn(database.db),
+  });
   const svc = new AdminBootstrapService(
     database as never,
     new PasswordHasher(),
@@ -104,7 +105,7 @@ describe('AdminBootstrapService', () => {
     expect(warn).toHaveBeenCalled();
   });
 
-  it('creates the User + SUPER_ADMIN profile with a hashed password when the password is set', async () => {
+  it('creates the Account + exact Profile + SUPER_ADMIN role with a hashed password when the password is set', async () => {
     process.env.ADMIN_BOOTSTRAP_PASSWORD = 's3cret-bootstrap-pw';
     const { svc, userInsert, accountInsert, adminInsert } = makeService({
       existingUser: null,
@@ -122,7 +123,7 @@ describe('AdminBootstrapService', () => {
       string,
       unknown
     >;
-    expect(accountCreate.id).toBe(42);
+    expect(accountCreate.account).toBe('admin');
     expect(accountCreate.hashPwd).not.toBe('s3cret-bootstrap-pw');
     expect(typeof accountCreate.hashPwd).toBe('string');
     expect((accountCreate.hashPwd as string).length).toBeGreaterThan(0);

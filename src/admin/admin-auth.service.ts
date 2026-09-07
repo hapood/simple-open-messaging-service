@@ -1,3 +1,4 @@
+import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable, HttpStatus, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'crypto';
@@ -5,10 +6,9 @@ import { and, count, desc, eq, gt, isNull, like } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   admin,
-  account as accountTable,
   adminSession,
   systemSetting,
-  user,
+  account as user,
 } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { AdminRole } from '../database/enums.js';
@@ -163,20 +163,18 @@ export class AdminAuthService implements OnModuleInit {
       );
     }
     const [userRow] = await this.database.db
-      .select({ id: user.id, hashPwd: accountTable.hashPwd })
+      .select({ id: user.id, hashPwd: user.hashPwd })
       .from(user)
-      .innerJoin(accountTable, eq(accountTable.id, user.id))
       .where(and(eq(user.account, acct), eq(user.domain, 'local')))
       .limit(1);
     // Non-revealing: a missing / deleted / group identity, no admin profile, a disabled admin, a no-password
     // account, or a wrong password are all indistinguishable from the caller's view (INVALID_CREDENTIALS).
     // NOT counted when there is no real enabled admin to protect (avoids filling the failure map with noise).
-    const adminProfile =
-      userRow
-        ? await this.database.db.query.admin.findFirst({
-            where: eq(admin.userId, userRow.id),
-          })
-        : null;
+    const adminProfile = userRow
+      ? await this.database.db.query.admin.findFirst({
+          where: eq(admin.userId, userRow.id),
+        })
+      : null;
     const passwordOk =
       !!adminProfile &&
       adminProfile.enabled &&
@@ -243,7 +241,7 @@ export class AdminAuthService implements OnModuleInit {
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
       },
-      with: { user: { columns: { account: true } } },
+      with: { account: { columns: { account: true } } },
     });
     // 2FA disabled / admin gone mid-challenge → the admin must restart login (no session to leak).
     if (
@@ -258,7 +256,7 @@ export class AdminAuthService implements OnModuleInit {
         HttpStatus.OK,
       );
     }
-    const acct = adminRow.user.account;
+    const acct = adminRow.account.account;
     const ban = this.bruteForce.activeBanUntil([
       { dimension: BAN_DIM_ADMIN_2FA, value: acct },
     ]);
@@ -305,7 +303,12 @@ export class AdminAuthService implements OnModuleInit {
     const adminRow = await this.database.db.query.admin.findFirst({
       where: eq(admin.id, adminId),
       columns: { twoFactorEnabled: true },
-      with: { user: { columns: { account: true, name: true } } },
+      with: {
+        account: {
+          columns: { account: true },
+          extras: { name: accountProfileFields().name.as('name') },
+        },
+      },
     });
     if (!adminRow)
       throw new BusinessException(
@@ -322,8 +325,8 @@ export class AdminAuthService implements OnModuleInit {
     }
     return this.twoFactor.beginSetup(
       adminId,
-      adminRow.user.account,
-      adminRow.user.name,
+      adminRow.account.account,
+      adminRow.account.name,
     );
   }
 
@@ -379,8 +382,7 @@ export class AdminAuthService implements OnModuleInit {
         twoFactorLastUsedCounter: true,
       },
       with: {
-        user: { columns: { account: true } },
-        account: { columns: { hashPwd: true } },
+        account: { columns: { account: true, hashPwd: true } },
       },
     });
     if (!adminRow)
@@ -396,7 +398,7 @@ export class AdminAuthService implements OnModuleInit {
         HttpStatus.OK,
       );
     }
-    const acct = adminRow.user.account;
+    const acct = adminRow.account.account;
     if (
       !adminRow.account.hashPwd ||
       !(await this.passwordHasher.verify(adminRow.account.hashPwd, password))
@@ -436,7 +438,7 @@ export class AdminAuthService implements OnModuleInit {
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
       },
-      with: { user: { columns: { account: true } } },
+      with: { account: { columns: { account: true } } },
     });
     if (
       !adminRow ||
@@ -449,7 +451,7 @@ export class AdminAuthService implements OnModuleInit {
         HttpStatus.OK,
       );
     }
-    const acct = adminRow.user.account;
+    const acct = adminRow.account.account;
     if (
       !(await this.verifyFactor(
         adminRow,
@@ -529,7 +531,7 @@ export class AdminAuthService implements OnModuleInit {
     const adminRow = await this.database.db.query.admin.findFirst({
       where: eq(admin.id, adminId),
       columns: { enabled: true, webauthnEnabled: true },
-      with: { user: { columns: { account: true } } },
+      with: { account: { columns: { account: true } } },
     });
     if (!adminRow || !adminRow.enabled || !adminRow.webauthnEnabled) {
       throw new BusinessException(
@@ -539,7 +541,7 @@ export class AdminAuthService implements OnModuleInit {
       );
     }
     const ban = this.bruteForce.activeBanUntil([
-      { dimension: BAN_DIM_ADMIN_2FA, value: adminRow.user.account },
+      { dimension: BAN_DIM_ADMIN_2FA, value: adminRow.account.account },
     ]);
     if (ban !== undefined) {
       throw new BusinessException(
@@ -574,7 +576,7 @@ export class AdminAuthService implements OnModuleInit {
     const adminRow = await this.database.db.query.admin.findFirst({
       where: eq(admin.id, adminId),
       columns: { enabled: true },
-      with: { user: { columns: { account: true } } },
+      with: { account: { columns: { account: true } } },
     });
     if (!adminRow || !adminRow.enabled) {
       throw new BusinessException(
@@ -583,7 +585,7 @@ export class AdminAuthService implements OnModuleInit {
         HttpStatus.OK,
       );
     }
-    const acct = adminRow.user.account;
+    const acct = adminRow.account.account;
     const ban = this.bruteForce.activeBanUntil([
       { dimension: BAN_DIM_ADMIN_2FA, value: acct },
     ]);
@@ -632,8 +634,10 @@ export class AdminAuthService implements OnModuleInit {
       where: eq(admin.id, adminId),
       columns: { id: true },
       with: {
-        user: { columns: { account: true, name: true } },
-        account: { columns: { hashPwd: true } },
+        account: {
+          columns: { account: true, hashPwd: true },
+          extras: { name: accountProfileFields().name.as('name') },
+        },
       },
     });
     if (!adminRow)
@@ -654,8 +658,8 @@ export class AdminAuthService implements OnModuleInit {
     }
     return this.webAuthn.beginRegistration(
       adminId,
-      adminRow.user.account,
-      adminRow.user.name,
+      adminRow.account.account,
+      adminRow.account.name,
       nickname,
     );
   }
@@ -966,12 +970,17 @@ export class AdminAuthService implements OnModuleInit {
     const adminRow = await this.database.db.query.admin.findFirst({
       where: eq(admin.id, adminId),
       columns: { role: true },
-      with: { user: { columns: { account: true, name: true } } },
+      with: {
+        account: {
+          columns: { account: true },
+          extras: { name: accountProfileFields().name.as('name') },
+        },
+      },
     });
     if (!adminRow) return null;
     return {
-      account: adminRow.user.account,
-      name: adminRow.user.name,
+      account: adminRow.account.account,
+      name: adminRow.account.name,
       role: adminRow.role,
     };
   }

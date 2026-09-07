@@ -131,6 +131,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
   corresponding message. The response carries the current feed end and the next cursor for deterministic
   catch-up.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
+  Member `UPSERT` and `DEPART` items include `account`, `domain`, and the server-local `namespaceId`.
+  `UPSERT.body` carries role and profile revision references; clients resolve profile content separately.
+  `GROUP_PROFILE` carries only `feedId` and `body.profileRev`, without a member identity.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -232,6 +235,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 - **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
 - **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, wakes live clients through `STATE_FEED_UPDATED`, and notifies offline recipients through Push. `clientMessageId` is the send-idempotency key (a retry returns the original message).
+- **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. A positive `n` must identify a visible message in the same local thread when sending; `0` explicitly preserves a reply with no target. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
 ### POST `/send-media` — Send media (staged)
@@ -243,6 +247,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 - **Body**: `{ threadId, sourceMessages: [{ threadId, seq }], clientMessageId }` (1–100 source messages).
 - **Behavior**: the server, never the client, snapshots sender display data and content into a `ForwardBundle.manifest` JSONB document. `manifest.children` is an ordered array of directly nested bundle ids; `ForwardBundleDependency` mirrors it for indexed traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains only `bundleId`, up to three 100-grapheme summary lines and counts.
 - **Depth**: a leaf bundle is depth 1 and a parent is `1 + max(child.depth)`. Maximum depth is 3. Attempting to forward an existing depth-3 card returns `30004`; the server recomputes this regardless of frontend checks.
+- **History replies**: bundle text contains only `text`; `quoteTargetId` on the entry refers to a message ID in that same bundle array. Selected reply targets are remapped to those IDs; absent or unselected targets are emitted as `0`. Imported positive references without a target entry are also displayed as unavailable. DIRECT mode strips reply context.
 - **Read**: `GET /forward-bundles/:bundleId` returns the visible root and its complete child closure after checking that the caller participates in a thread containing the root card.
 
 ### POST `/query-messages` — Paginated history
@@ -258,6 +263,8 @@ under `/group/*` because the group, rather than the current user, authors that d
   at/below the first remaining coordinate is rejected before the message-row query with the same
   `30006 { resumeAfter, resumeBefore }` recovery payload. The client must retry from those server-owned
   cursors; it does not merge a locally stored clear boundary into the request.
+- The endpoint `through` is clipped to the visible history window in either direction. An endpoint
+  beyond that window does not invalidate an otherwise valid starting cursor.
 
 ### POST `/deleted-messages/query` — Paginated tombstones
 

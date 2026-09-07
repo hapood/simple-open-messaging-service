@@ -14,7 +14,7 @@ import {
   messageThread,
   relationshipPair,
   pendingMedia,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
@@ -63,7 +63,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .insert(user)
       .values({
         account: `st-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
-        name: 'stage',
         updatedAt: now,
       })
       .returning({ id: user.id, account: user.account });
@@ -75,15 +74,11 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         .values(
           [1, 2, 3].map((n) => ({
             account: `st-target-${n}-${randomUUID().slice(0, 8)}`,
-            name: `target ${n}`,
             updatedAt: now,
           })),
         )
         .returning({ id: user.id })
     ).map((row) => row.id);
-    await database.db
-      .insert(accountTable)
-      .values([userId, ...inviteTargetIds].map((id) => ({ id, hashPwd: 'x' })));
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: now })
@@ -107,7 +102,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
       .catch(() => {});
     await database.pool
-      .query('DELETE FROM "User" WHERE id = ANY($1)', [
+      .query('DELETE FROM "Account" WHERE id = ANY($1)', [
         [userId, ...inviteTargetIds],
       ])
       .catch(() => {});
@@ -190,7 +185,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
-    const target = await database.db.query.user.findFirst({
+    const target = await database.db.query.account.findFirst({
       where: eq(user.id, inviteTargetIds[1]),
       columns: { account: true, domain: true },
     });

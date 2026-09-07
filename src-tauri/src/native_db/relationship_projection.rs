@@ -420,7 +420,9 @@ pub(super) fn apply_friend_thread_from_facts(
                         };
                     peer_object.insert("namespaceId".into(), Value::from(peer_namespace_id));
                 }
-                thread["peerUser"] = peer;
+                if thread.get("peerProfileMessageSeq").and_then(Value::as_i64).is_none() {
+                    thread["peerUser"] = peer;
+                }
             }
             tx.execute(
                 "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",

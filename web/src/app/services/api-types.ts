@@ -4195,10 +4195,10 @@ export interface components {
              */
             groupId: number;
             /**
-             * @description Exclusive user-id cursor. Omit for the first page.
+             * @description Exclusive P2P thread-id cursor. Omit for the first page.
              * @example 42
              */
-            afterUserId?: number;
+            afterThreadId?: number;
             /**
              * @description Optional case-insensitive account or display-name search.
              * @example alice
@@ -4486,7 +4486,7 @@ export interface components {
              * @description The callee userId (must be a friend — share an active P2P thread).
              * @example 7
              */
-            calleeUserId: number;
+            threadId: number;
             /**
              * @description Call media direction.
              * @enum {string}
@@ -4535,7 +4535,6 @@ export interface components {
              * @description The peer userId to relay to (must be the OTHER call participant).
              * @example 7
              */
-            toUserId: number;
             /**
              * @description Signaling frame kind.
              * @enum {string}

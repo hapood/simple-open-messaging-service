@@ -9,13 +9,12 @@ import {
   account,
   durableTask,
   federatedPeer,
-  group,
+  groupAccount as group,
   groupMetaFeed,
   messageThread,
   peerStateFeed,
   peerStateFeedTarget,
   threadAudience,
-  user,
 } from '../src/database/schema.js';
 import type { DurableTask } from '../src/durable-task/durable-task.types.js';
 import { FEDERATION_STATE_FEED_PUSH } from '../src/federation/federation-state-feed.events.js';
@@ -58,33 +57,37 @@ describe('Group Meta head fan-out task execution', () => {
     peerNamespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
 
     const [localIdentity] = await database.db
-      .insert(user)
+      .insert(account)
       .values({
         account: `projection-local-${suffix}`,
         domain: 'local',
-        name: 'Local member',
         updatedAt: new Date(),
       })
-      .returning({ id: user.id });
+      .returning({ id: account.id });
     localUserId = localIdentity.id;
-    await database.db.insert(account).values({ id: localUserId });
 
     const [createdGroup] = await database.db
       .insert(group)
       .values({
         account: groupAccount,
-        domain: 'local',
-        name: 'Projection Group',
         updatedAt: new Date(),
       })
       .returning({ id: group.id });
     groupId = createdGroup.id;
-    await database.db.insert(groupMetaFeed).values({ groupId, feedEndId: 12n });
     const [thread] = await database.db
       .insert(messageThread)
-      .values({ type: 'GROUP', groupId, updatedAt: new Date() })
+      .values({
+        type: 'GROUP',
+        groupAccount,
+        groupDomain: 'local',
+        groupAccountId: groupId,
+        updatedAt: new Date(),
+      })
       .returning({ id: messageThread.id });
     threadId = thread.id;
+    await database.db
+      .insert(groupMetaFeed)
+      .values({ threadId, feedEndId: 12n });
     const audiences = await database.db
       .insert(threadAudience)
       .values([
@@ -122,7 +125,6 @@ describe('Group Meta head fan-out task execution', () => {
       .where(eq(messageThread.id, threadId));
     await database.db.delete(group).where(eq(group.id, groupId));
     await database.db.delete(account).where(eq(account.id, localUserId));
-    await database.db.delete(user).where(eq(user.id, localUserId));
     await database.db
       .delete(federatedPeer)
       .where(eq(federatedPeer.domain, peerDomain));
@@ -227,7 +229,7 @@ describe('Group Meta head fan-out task execution', () => {
         await tx
           .update(groupMetaFeed)
           .set({ feedEndId: 13n })
-          .where(eq(groupMetaFeed.groupId, groupId));
+          .where(eq(groupMetaFeed.threadId, threadId));
       });
       expect(await fanout).toBeNull();
       expect(

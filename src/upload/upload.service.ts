@@ -1,7 +1,8 @@
+import { AVATAR_URL_RE } from './avatar-path.js';
+import { saveContentAddressedBuffer } from './cas-storage.js';
 import { Injectable } from '@nestjs/common';
 import {
   existsSync,
-  mkdirSync,
   writeFile,
   readFile,
   rename,
@@ -665,13 +666,6 @@ export class UploadService {
     }
   }
 
-  /** Ensure the flat uploads root exists. */
-  private ensureDir() {
-    if (!existsSync(this.uploadDir)) {
-      mkdirSync(this.uploadDir, { recursive: true });
-    }
-  }
-
   /**
    * Content-addressed save: sha256 → data/cas/<digest[0:2]>/<digest[2:4]>/<digest>.
    *
@@ -695,26 +689,13 @@ export class UploadService {
     ext: string,
     buf: Buffer,
   ): Promise<{ url: string; digest: string; ext: string; size: number }> {
-    const digest = createHash('sha256').update(buf).digest('hex');
-    const { abs, url } = this.casShardPath(digest);
-    await mkdirAsync(dirname(abs), { recursive: true });
-    await mkdirAsync(this.casTmpDir, { recursive: true });
-    // Atomic publish: write a unique tmp path in the CAS tmp dir, then rename onto the shard (same
-    // filesystem → atomic). Identical concurrent uploads overwrite each other harmlessly. File-first
-    // (rename before the row): keeps the reader invariant that a MediaAsset row implies a present shard.
-    const tmp = join(
+    const digest = await saveContentAddressedBuffer(
+      buf,
+      (hash) => this.casShardPath(hash).abs,
       this.casTmpDir,
-      `${digest}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
     );
-    let renamed = false;
-    try {
-      await writeFileAsync(tmp, buf);
-      await renameAsync(tmp, abs);
-      renamed = true;
-      await this.mediaAsset.publishReady(digest, BigInt(buf.length));
-    } finally {
-      if (!renamed) await unlinkAsync(tmp).catch(() => {});
-    }
+    await this.mediaAsset.publishReady(digest, BigInt(buf.length));
+    const { url } = this.casShardPath(digest);
     return { url, digest, ext, size: buf.length };
   }
 
@@ -1185,13 +1166,19 @@ export class UploadService {
     ) {
       throw new Error('avatar exceeds federation dimension limit');
     }
-    this.ensureDir();
     const avatarsDir = join(this.uploadDir, 'avatars');
-    await mkdirAsync(avatarsDir, { recursive: true });
-    const base = `${Date.now()}-${randomBytes(6).toString('hex')}`;
-    const filename = `${base}.${detected.ext}`;
-    await writeFileAsync(join(avatarsDir, filename), buf);
-    return `/uploads/avatars/${filename}`;
+    const digest = await saveContentAddressedBuffer(
+      buf,
+      (hash) => join(avatarsDir, `${hash}.${detected.ext}`),
+      join(avatarsDir, 'tmp'),
+    );
+    return `/uploads/avatars/${digest}.${detected.ext}`;
+  }
+
+  /** Resolve an avatar URL within its dedicated storage directory. */
+  private async readAvatarBytes(url: string): Promise<Buffer | null> {
+    if (!AVATAR_URL_RE.test(url)) return null;
+    return readFileAsync(join(this.uploadDir, url.slice('/uploads/'.length)));
   }
 
   /** Decode an authenticated client's canonical base64 avatar and run the normal image pipeline. */
@@ -1223,11 +1210,9 @@ export class UploadService {
   async readAvatarAsWire(
     url: string,
   ): Promise<{ b64: string; w: number; h: number; mimeType: string } | null> {
-    if (!url?.startsWith('/uploads/')) return null;
     try {
-      const buf = await readFileAsync(
-        join(this.uploadDir, url.slice('/uploads/'.length)),
-      );
+      const buf = await this.readAvatarBytes(url);
+      if (!buf) return null;
       const meta = await sharp(buf).metadata();
       const detected = detectMedia(buf);
       if (detected?.family !== 'image') return null;

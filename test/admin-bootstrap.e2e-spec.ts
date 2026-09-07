@@ -9,7 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { DatabaseService } from '../src/database/database.service';
 import { AdminRole } from '../src/database/enums.js';
-import { admin, user } from '../src/database/schema.js';
+import { admin, account as user } from '../src/database/schema.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 
@@ -21,7 +21,7 @@ import { BusinessCode } from '../src/common/business-code';
  * admin/login endpoint accepts the seeded password.
  *
  * Three branches:
- *   1. ADMIN_BOOTSTRAP_PASSWORD set + no admin → creates User(account=admin) + Admin(SUPER_ADMIN, enabled),
+ *   1. ADMIN_BOOTSTRAP_PASSWORD set + no admin → creates Account(account=admin) + Profile + Admin(SUPER_ADMIN, enabled),
  *      and the password logs in via HTTP admin/login (argon2 round-trip through the real row);
  *   2. ADMIN_BOOTSTRAP_PASSWORD unset + no admin → the app STILL boots, no admin is created (no weak
  *      default), and login is rejected;
@@ -30,7 +30,7 @@ import { BusinessCode } from '../src/common/business-code';
 const BOOT_PWD = 'bootstrap-e2e-password';
 
 /** Standalone client for pre-boot cleanup (the fork DB persists across runs; truncate before each case so
- *  every boot starts from an empty User table — CASCADE reaches Admin / tokens / audit logs). */
+ *  every boot starts from an empty Account/Profile tables — CASCADE reaches Admin / tokens / audit logs). */
 let cleanup: Pool;
 
 beforeAll(async () => {
@@ -42,7 +42,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await cleanup.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+  await cleanup.query(
+    'TRUNCATE TABLE "Account", "Profile" RESTART IDENTITY CASCADE',
+  );
 });
 
 /** Boot a fresh AppModule+Fastify app (OnApplicationBootstrap fires during listen). */

@@ -1,3 +1,5 @@
+import { groupStateSql } from '../group/group-state.js';
+
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -5,6 +7,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { groupMetaFeed } from '../database/schema.js';
 import { readGroupMetaPageInTx } from '../group-meta/group-meta-page.js';
+import { loadFederationConfig } from '../federation/federation.config.js';
 
 @Injectable()
 export class ClientGroupMetaFeedService {
@@ -20,8 +23,8 @@ export class ClientGroupMetaFeedService {
     }>(sql`
       SELECT group_state.id AS "groupId", group_state.account
       FROM "MessageThread" thread
-      JOIN "Group" group_state ON group_state.id = thread."groupId"
-      JOIN "User" local_user ON local_user.id = ${userId}
+      JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+      JOIN "Account" local_user ON local_user.id = ${userId}
       WHERE thread.type = 'GROUP'
         AND EXISTS (
           SELECT 1 FROM "RelationshipPair" pair
@@ -56,8 +59,8 @@ export class ClientGroupMetaFeedService {
       const authorized = await tx.execute<{ groupId: number }>(sql`
         SELECT group_state.id AS "groupId"
         FROM "MessageThread" thread
-        JOIN "Group" group_state ON group_state.id = thread."groupId"
-        JOIN "User" local_user ON local_user.id = ${userId}
+        JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+        JOIN "Account" local_user ON local_user.id = ${userId}
         WHERE thread.type = 'GROUP'
           AND group_state.id = ${groupId}
           AND group_state.account = ${account}
@@ -77,7 +80,7 @@ export class ClientGroupMetaFeedService {
       const [feed] = await tx
         .select({ feedEndId: groupMetaFeed.feedEndId })
         .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.groupId, groupId))
+        .where(eq(groupMetaFeed.threadId, groupId))
         .limit(1);
       return readGroupMetaPageInTx(tx, {
         groupId,
@@ -88,7 +91,7 @@ export class ClientGroupMetaFeedService {
         through,
         end: feed?.feedEndId ?? 0n,
         visibleAfter: 0n,
-        client: true,
+        client: { localDomain: loadFederationConfig().domain },
       });
     });
   }

@@ -1,3 +1,11 @@
+import {
+  groupState as group,
+  readGroupState,
+} from '../src/group/group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../src/user/account-address.js';
 // In-process e2e seeding helpers for the admin-provisioned login model.
 //
 // Self-registration is closed (PUBLIC_CONFIG.registrationOpen = false) and password login is disabled
@@ -12,13 +20,12 @@ import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
   federatedPeer,
-  group,
   identityNamespace,
-  profileVersion,
+  profileTable,
   relationshipIntent,
   relationshipPair,
   accountThreadState,
-  user,
+  account as user,
 } from '../src/database/schema';
 import type { Database } from '../src/database/database.service';
 import {
@@ -84,17 +91,11 @@ function relationshipNamespaceForFixture(
 export async function findGroupRelationship(
   database: Database,
   groupId: number,
-  memberUserId: number,
+  memberUserId: AccountTarget,
 ) {
   const [groupIdentity, memberIdentity] = await Promise.all([
-    database.query.group.findFirst({
-      where: eq(group.id, groupId),
-      columns: { account: true, domain: true, namespaceId: true },
-    }),
-    database.query.user.findFirst({
-      where: eq(user.id, memberUserId),
-      columns: { account: true, domain: true, namespaceId: true },
-    }),
+    readGroupState(database, eq(group.id, groupId)),
+    accountAddressInTx(database, memberUserId),
   ]);
   if (!groupIdentity || !memberIdentity)
     throw new Error('group relationship endpoint missing');
@@ -121,22 +122,19 @@ export async function findGroupRelationship(
 /** Resolve the canonical address pair and authored sides used by relationship assertions. */
 export async function findP2PRelationship(
   database: Database,
-  firstUserId: number,
-  secondUserId: number,
+  firstUserId: AccountTarget,
+  secondUserId: AccountTarget,
 ) {
-  const identities = await database
-    .select({
-      id: user.id,
-      account: user.account,
-      domain: user.domain,
-      namespaceId: user.namespaceId,
-    })
-    .from(user)
-    .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
-  const first = identities.find((identity) => identity.id === firstUserId);
-  const second = identities.find((identity) => identity.id === secondUserId);
-  if (!first || !second || first.id === second.id)
-    throw new Error('relationship lookup user missing');
+  const [first, second] = await Promise.all([
+    accountAddressInTx(database, firstUserId),
+    accountAddressInTx(database, secondUserId),
+  ]);
+  if (
+    first.account === second.account &&
+    first.domain === second.domain &&
+    first.namespaceId === second.namespaceId
+  )
+    throw new Error('relationship endpoints must differ');
   const relationshipNamespaceId = relationshipNamespaceForFixture([
     first.namespaceId,
     second.namespaceId,
@@ -160,49 +158,45 @@ export async function findP2PRelationship(
   });
   return {
     pair,
-    firstSide:
-      endpoints[0].id === firstUserId ? ('A' as const) : ('B' as const),
-    secondSide:
-      endpoints[0].id === secondUserId ? ('A' as const) : ('B' as const),
+    firstSide: endpoints[0] === first ? ('A' as const) : ('B' as const),
+    secondSide: endpoints[0] === second ? ('A' as const) : ('B' as const),
   };
 }
 
 /** Seed the two directed facts required for an active P2P relationship. */
 export async function seedAcceptedRelationship(
   database: Database,
-  firstUserId: number,
-  secondUserId: number,
+  firstUserId: AccountTarget,
+  secondUserId: AccountTarget,
   threadId: number,
 ): Promise<void> {
   const updatedAt = new Date();
   await database.transaction(async (tx) => {
-    const identities = await tx
-      .select({
-        id: user.id,
-        account: user.account,
-        domain: user.domain,
-        namespaceId: user.namespaceId,
-      })
-      .from(user)
-      .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
-    const first = identities.find((identity) => identity.id === firstUserId);
-    const second = identities.find((identity) => identity.id === secondUserId);
-    if (!first || !second) throw new Error('relationship seed user missing');
+    const [first, second] = await Promise.all([
+      accountAddressInTx(tx, firstUserId),
+      accountAddressInTx(tx, secondUserId),
+    ]);
+    const identities = [first, second];
     const relationshipNamespaceId = relationshipNamespaceForFixture(
       identities.map((identity) => identity.namespaceId),
     );
-    const localAccountIds = identities
-      .filter((identity) => identity.domain === 'local')
-      .map((identity) => ({ id: identity.id }));
-    if (localAccountIds.length > 0)
-      await tx
-        .insert(accountTable)
-        .values(localAccountIds)
-        .onConflictDoNothing({ target: accountTable.id });
+    const localAccountIds = [firstUserId, secondUserId]
+      .filter((target): target is number => typeof target === 'number')
+      .map((id) => ({ id }));
     const endpoints = [first, second].sort(
       (left, right) =>
         left.domain.localeCompare(right.domain) ||
         left.account.localeCompare(right.account),
+    );
+    const revisions = await Promise.all(
+      endpoints.map(async (identity) => {
+        if (identity.domain !== 'local') return 0;
+        const row = await tx.query.account.findFirst({
+          where: eq(accountTable.account, identity.account),
+          columns: { defaultProfileRev: true },
+        });
+        return row?.defaultProfileRev ?? 0;
+      }),
     );
     const [pair] = await tx
       .insert(relationshipPair)
@@ -218,7 +212,6 @@ export async function seedAcceptedRelationship(
         endpointBNamespaceId: relationshipNamespaceId,
         threadId,
         active: true,
-        revision: 1,
         updatedAt,
       })
       .onConflictDoUpdate({
@@ -232,7 +225,7 @@ export async function seedAcceptedRelationship(
           relationshipPair.endpointBDomain,
           relationshipPair.endpointBNamespaceId,
         ],
-        set: { threadId, active: true, revision: 1, updatedAt },
+        set: { threadId, active: true, updatedAt },
       })
       .returning({ id: relationshipPair.id });
     await tx
@@ -241,6 +234,7 @@ export async function seedAcceptedRelationship(
         {
           pairId: pair.id,
           authorSide: 'A',
+          profileRev: revisions[0],
           status: 'ACCEPTED',
           requestedAt: updatedAt,
           updatedAt,
@@ -248,6 +242,7 @@ export async function seedAcceptedRelationship(
         {
           pairId: pair.id,
           authorSide: 'B',
+          profileRev: revisions[1],
           status: 'ACCEPTED',
           requestedAt: updatedAt,
           updatedAt,
@@ -257,6 +252,7 @@ export async function seedAcceptedRelationship(
         target: [relationshipIntent.pairId, relationshipIntent.authorSide],
         set: {
           status: 'ACCEPTED',
+          profileRev: sql`excluded."profileRev"`,
           requestedAt: updatedAt,
           expiresAt: null,
           updatedAt,
@@ -295,18 +291,16 @@ export async function seedUser(
       .values({
         account,
         domain: 'local',
-        name: opts.name ?? account,
+        hashPwd: passwordHash,
+        mustChangePassword: false,
         defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: user.id, account: user.account });
-    await tx.insert(accountTable).values({
-      id: created.id,
-      hashPwd: passwordHash,
-      mustChangePassword: false,
-    });
-    await tx.insert(profileVersion).values({
-      userId: created.id,
+    await tx.insert(profileTable).values({
+      account: created.account,
+      domain: 'local',
+      namespaceId: 0,
       profileRev: 1,
       displayName: opts.name ?? account,
       avatar: '',

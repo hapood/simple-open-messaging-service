@@ -51,7 +51,12 @@ describe('ProfileRepository', () => {
       bio: '',
       profileRev: 1,
     });
-    const got = await repo.getProfile('u9');
+    const got = await repo.getProfile({
+      account: 'alice',
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: 1,
+    });
     expect(got?.name).toBe('Alice');
     expect(got?.avatar).toBe('/uploads/avatars/a-512.webp');
     expect(refreshSpy).toHaveBeenCalledWith(
@@ -60,7 +65,7 @@ describe('ProfileRepository', () => {
     );
   });
 
-  it('does NOT refresh when the avatar path is unchanged (name-only update)', async () => {
+  it('stores a new revision independently even when its avatar path is unchanged', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
       account: 'alice',
@@ -84,8 +89,17 @@ describe('ProfileRepository', () => {
       bio: '',
       profileRev: 2,
     });
-    expect(refreshSpy).not.toHaveBeenCalled();
-    expect((await repo.getProfile('u9'))?.name).toBe('Alice Smith');
+    expect(refreshSpy).toHaveBeenCalledWith('u9', '/p/x');
+    expect(
+      (
+        await repo.getProfile({
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 2,
+        })
+      )?.name,
+    ).toBe('Alice Smith');
   });
 
   it('refreshes when the avatar path changes', async () => {
@@ -131,10 +145,17 @@ describe('ProfileRepository', () => {
   });
 
   it('getProfile returns undefined for an unknown identity', async () => {
-    expect(await repo.getProfile('u999')).toBeUndefined();
+    expect(
+      await repo.getProfile({
+        account: 'missing',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 1,
+      }),
+    ).toBeUndefined();
   });
 
-  it('does not let an older profile revision overwrite a newer one', async () => {
+  it('retains independently selected old and new revisions', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
       account: 'alice',
@@ -158,7 +179,25 @@ describe('ProfileRepository', () => {
       bio: '',
       profileRev: 4,
     });
-    expect((await repo.getProfile('u9'))?.name).toBe('New');
-    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(
+      (
+        await repo.getProfile({
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 5,
+        })
+      )?.name,
+    ).toBe('New');
+    expect(
+      (
+        await repo.getProfile({
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 4,
+        })
+      )?.name,
+    ).toBe('Old');
   });
 });

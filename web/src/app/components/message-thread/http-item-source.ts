@@ -156,7 +156,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ) => void;
   private readonly onNewerAvailable: (seq: number) => void;
   private readonly seqsByCreator = new Map<string, Set<number>>();
-  private readonly profilesInFlight = new Map<string, Promise<void>>();
   private readonly profilesBySeq = new Map<
     number,
     {
@@ -856,7 +855,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     };
   }
 
-  /** Resolve every authored row from the local source-scoped User table before constructing UI items. */
+  /** Resolve each author at the revision selected by that message. */
   private async ensureProfiles(msgs: Message[]): Promise<void> {
     if (this.conv.type === 'GROUP' && this.memberProfiles) {
       await Promise.all(
@@ -878,45 +877,39 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         }),
       );
     }
-    const missing = new Set<string>();
-    for (const m of msgs) {
-      if (m.creator === null) continue;
-      const key = this.creatorKey(m.creator)!;
-      if (!this.profiles.has(key)) missing.add(key);
-    }
-    if (missing.size === 0) return;
-    if (!this.profileRepo)
-      throw new Error('source-scoped User repository is unavailable');
     await Promise.all(
-      [...missing].map((key) => {
-        const active = this.profilesInFlight.get(key);
-        if (active) return active;
-        const load = (async () => {
-          const identity = parseUserIdentityKey(key);
-          if (!identity) throw new Error('invalid User identity key');
-          const cached = await this.profileRepo!.getUser(
-            identity.account,
-            identity.domain,
-            identity.namespaceId,
-          );
-          if (!cached)
-            throw new Error(
-              `User is missing: ${identity.account}@${identity.domain} in namespace ${identity.namespaceId}`,
-            );
+      msgs.map(async (message) => {
+        if (message.creator === null) return;
+        const key = this.creatorKey(message.creator)!;
+        const identity = parseUserIdentityKey(key);
+        if (!identity) throw new Error('invalid profile identity key');
+        const cached = await this.profileRepo?.getProfile({
+          ...identity,
+          profileRev: message.profileRev,
+        });
+        const presentation = {
+          name: cached?.name ?? identity.account,
+          account: identity.account,
+          avatar: cached?.avatar ?? '',
+          avatarIdentityId: JSON.stringify([
+            key,
+            'profile',
+            message.profileRev,
+          ]),
+          domain: identity.domain,
+          isSelf: this.isSelfAddress(identity.account, identity.domain),
+        };
+        if (cached) this.profilesBySeq.set(message.seq, presentation);
+        if (!this.profiles.has(key))
           this.profiles.set(key, {
-            name: cached.name,
-            account: cached.account,
-            avatar: cached.avatar,
-            avatarIdentityId: key,
-            domain: cached.domain,
-            isSelf: this.isSelfAddress(cached.account, cached.domain),
+            ...presentation,
+            name: identity.account,
+            avatar: '',
           });
-        })().finally(() => this.profilesInFlight.delete(key));
-        this.profilesInFlight.set(key, load);
-        return load;
       }),
     );
     if (!this.profileResolver) return;
+    const preparations: Promise<void>[] = [];
     for (const message of msgs) {
       if (
         message.creator === null ||
@@ -949,6 +942,27 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               ),
             };
             this.profilesBySeq.set(message.seq, profile);
+            const subject = parseUserIdentityKey(creatorKey);
+            if (subject && resolved.rev === message.profileRev) {
+              const sourceServer =
+                subject.namespaceId === 0
+                  ? 'local'
+                  : this.conv.type === 'GROUP' &&
+                      subject.namespaceId === this.conv.authorityNamespaceId
+                    ? this.conv.group.domain
+                    : subject.domain;
+              void this.profileRepo?.cacheProfile(
+                {
+                  ...subject,
+                  profileRev: resolved.rev,
+                  name: resolved.name,
+                  avatar: profile.avatar,
+                  bio: resolved.bio,
+                },
+                sourceServer,
+              );
+            }
+
             if (this.conv.type === 'GROUP' && this.memberProfiles) {
               const identity = parseUserIdentityKey(creatorKey);
               if (identity)
@@ -979,7 +993,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         });
       this.profileSubscriptions.add(subscription);
       if (subscription.closed) this.profileSubscriptions.delete(subscription);
+      preparations.push(
+        this.profileResolver.prepare({
+          threadId: this.conv.threadId,
+          messageSeq: message.seq,
+        }),
+      );
     }
+    await Promise.all(preparations);
   }
 }
 

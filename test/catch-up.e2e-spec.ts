@@ -11,7 +11,7 @@ import {
   message,
   messageThread,
   accountThreadState,
-  user,
+  account as user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ClientThreadContentHeadWriter } from '../src/message/client-message-feed.service.js';
@@ -52,7 +52,9 @@ describe('client state feed + notification feed', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const recipient = await seedUser(app, 'recip', { name: 'Recip' });
     recipientId = recipient.id;
     sessionToken = await seedSession(app, recipientId, 'app');
@@ -64,15 +66,9 @@ describe('client state feed + notification feed', () => {
   /** Seed one P2P thread: 3 messages (seq 1..3) from a fresh peer. */
   async function seedThread(opts: { name: string }): Promise<number> {
     const now = new Date();
-    const [peer] = await database.db
-      .insert(user)
-      .values({
-        account: opts.name.toLowerCase(),
-        hashPwd: 'x',
-        name: opts.name,
-        updatedAt: now,
-      })
-      .returning({ id: user.id });
+    const peer = await seedUser(app, opts.name.toLowerCase(), {
+      name: opts.name,
+    });
     const [thread] = await database.db
       .insert(messageThread)
       .values({
@@ -98,6 +94,7 @@ describe('client state feed + notification feed', () => {
         content: JSON.stringify({ text: `${opts.name}-${index}` }),
         creatorAccount: opts.name.toLowerCase(),
         creatorDomain: 'local',
+        profileRev: 1,
         createdAt: new Date(base + index),
         updatedAt: now,
       })),
@@ -165,6 +162,7 @@ describe('client state feed + notification feed', () => {
         content: JSON.stringify({ text: 'self-only' }),
         creatorAccount: 'recip',
         creatorDomain: 'local',
+        profileRev: 1,
         createdAt: now,
         updatedAt: now,
       });

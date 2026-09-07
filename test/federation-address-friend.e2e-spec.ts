@@ -5,7 +5,10 @@ import {
   clientStateFeed,
   message,
   accountThreadState,
-  user,
+  account as user,
+  identityNamespace,
+  relationshipIntent,
+  userQuotaDailyUsage,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -20,7 +23,7 @@ import { registerAndLogin } from './federation-test-helpers.js';
 import { findP2PRelationship } from './seed.js';
 import { waitForAcceptedDurableTask } from './durable-task-helpers.js';
 
-describe('federated Address friend request shells', () => {
+describe('federated Address friend requests', () => {
   let appA: FedApp;
   let appB: FedApp;
   let proxy: S2sProxy;
@@ -63,7 +66,7 @@ describe('federated Address friend request shells', () => {
     expect(lookup.text).not.toContain('event: progress');
   });
 
-  it('keeps lookup Address-based, creates the requester shell, and establishes after accept', async () => {
+  it('keeps foreign identities address-based and establishes the requester thread after accept', async () => {
     const lookup = await request(appA.baseUrl)
       .get('/api/v1/user/resolve-federated-stream')
       .query({ account: 'address-bob', domain: FED_DOMAIN_B })
@@ -74,7 +77,7 @@ describe('federated Address friend request shells', () => {
     expect(lookup.text).toContain('"id":0');
 
     expect(
-      await appA.database.query.user.findFirst({
+      await appA.database.query.account.findFirst({
         where: and(
           eq(user.account, 'address-bob'),
           eq(user.domain, FED_DOMAIN_B),
@@ -94,13 +97,13 @@ describe('federated Address friend request shells', () => {
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
     expect(sent.body.data).toMatchObject({ status: 'PENDING' });
     await waitForAcceptedDurableTask(appA.database, sent.body);
-    const requesterStub = await appA.database.query.user.findFirst({
+    const requesterStub = await appA.database.query.account.findFirst({
       where: and(
         eq(user.account, 'address-bob'),
         eq(user.domain, FED_DOMAIN_B),
       ),
     });
-    expect(requesterStub).toBeDefined();
+    expect(requesterStub).toBeUndefined();
     const [requesterShell] = await appA.database
       .select({ id: accountThreadState.id })
       .from(accountThreadState)
@@ -168,25 +171,27 @@ describe('federated Address friend request shells', () => {
 
     await vi.waitFor(
       async () => {
-        const [bobStubOnA, aliceStubOnB] = await Promise.all([
-          appA.database.query.user.findFirst({
-            where: and(
-              eq(user.account, 'address-bob'),
-              eq(user.domain, FED_DOMAIN_B),
-            ),
+        const [nsB, nsA] = await Promise.all([
+          appA.database.query.identityNamespace.findFirst({
+            where: eq(identityNamespace.domain, FED_DOMAIN_B),
           }),
-          appB.database.query.user.findFirst({
-            where: and(
-              eq(user.account, 'address-alice'),
-              eq(user.domain, FED_DOMAIN_A),
-            ),
+          appB.database.query.identityNamespace.findFirst({
+            where: eq(identityNamespace.domain, FED_DOMAIN_A),
           }),
         ]);
-        expect(bobStubOnA).toBeDefined();
-        expect(aliceStubOnB).toBeDefined();
+        const bobOnA = {
+          account: 'address-bob',
+          domain: FED_DOMAIN_B,
+          namespaceId: nsB!.id,
+        };
+        const aliceOnB = {
+          account: 'address-alice',
+          domain: FED_DOMAIN_A,
+          namespaceId: nsA!.id,
+        };
         const [relationshipA, relationshipB] = await Promise.all([
-          findP2PRelationship(appA.database, aliceId, bobStubOnA!.id),
-          findP2PRelationship(appB.database, bobId, aliceStubOnB!.id),
+          findP2PRelationship(appA.database, aliceId, bobOnA),
+          findP2PRelationship(appB.database, bobId, aliceOnB),
         ]);
         const pairA = relationshipA.pair;
         const pairB = relationshipB.pair;
@@ -227,5 +232,122 @@ describe('federated Address friend request shells', () => {
       },
       { timeout: 10_000, interval: 100 },
     );
+  });
+
+  it('refreshes and revokes an outgoing request without a foreign account row', async () => {
+    const charlie = await registerAndLogin(appB, 'address-charlie', 'Charlie');
+    const target = { account: charlie.account, domain: FED_DOMAIN_B };
+    const send = async (note: string) => {
+      const response = await request(appA.baseUrl)
+        .post('/api/v1/relationship/request')
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ ...target, displayName: 'Charlie', note });
+      expect(response.body.code, JSON.stringify(response.body)).toBe(
+        BusinessCode.OK,
+      );
+      await waitForAcceptedDurableTask(appA.database, response.body);
+    };
+    await send('original request');
+    const namespace = await appA.database.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.domain, FED_DOMAIN_B),
+    });
+    const relationship = await findP2PRelationship(appA.database, aliceId, {
+      ...target,
+      namespaceId: namespace!.id,
+    });
+    const readRequest = () =>
+      appA.database.query.relationshipIntent.findFirst({
+        where: and(
+          eq(relationshipIntent.pairId, relationship.pair!.id),
+          eq(relationshipIntent.authorSide, relationship.firstSide),
+        ),
+      });
+    const before = await readRequest();
+    expect(before?.status).toBe('REQUESTED');
+    const requestCount = async () => {
+      const rows = await appA.database
+        .select({
+          count: sql<number>`COALESCE(SUM(${userQuotaDailyUsage.count}), 0)::integer`,
+        })
+        .from(userQuotaDailyUsage)
+        .where(
+          and(
+            eq(userQuotaDailyUsage.userId, aliceId),
+            eq(userQuotaDailyUsage.category, 'requests'),
+          ),
+        );
+      return rows[0].count;
+    };
+    const usedBeforeRefresh = await requestCount();
+    await send('updated request');
+    expect(await requestCount()).toBe(usedBeforeRefresh + 1);
+    const refreshed = await readRequest();
+    expect(refreshed).toMatchObject({
+      id: before!.id,
+      status: 'REQUESTED',
+      note: 'updated request',
+    });
+    expect(refreshed!.requestedAt!.getTime()).toBeGreaterThan(
+      before!.requestedAt!.getTime(),
+    );
+    expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(
+      before!.expiresAt!.getTime(),
+    );
+    expect(
+      refreshed!.expiresAt!.getTime() - refreshed!.requestedAt!.getTime(),
+    ).toBe(7 * 24 * 60 * 60 * 1000);
+
+    const readMirroredRequest = async () => {
+      const remoteNamespace =
+        await appB.database.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, FED_DOMAIN_A),
+        });
+      const mirrored = await findP2PRelationship(appB.database, charlie.id, {
+        account: 'address-alice',
+        domain: FED_DOMAIN_A,
+        namespaceId: remoteNamespace!.id,
+      });
+      expect(mirrored.pair).toBeDefined();
+      return await appB.database.query.relationshipIntent.findFirst({
+        where: and(
+          eq(relationshipIntent.pairId, mirrored.pair!.id),
+          eq(relationshipIntent.authorSide, mirrored.secondSide),
+        ),
+      });
+    };
+    await vi.waitFor(
+      async () => {
+        expect(await readMirroredRequest()).toMatchObject({
+          status: 'REQUESTED',
+          note: 'updated request',
+          requestedAt: refreshed!.requestedAt,
+          expiresAt: refreshed!.expiresAt,
+        });
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+
+    const revoked = await request(appA.baseUrl)
+      .post('/api/v1/relationship/revoke')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send(target);
+    expect(revoked.body.code, JSON.stringify(revoked.body)).toBe(
+      BusinessCode.OK,
+    );
+    await waitForAcceptedDurableTask(appA.database, revoked.body);
+    expect((await readRequest())?.status).toBe('REVOKED');
+    await vi.waitFor(
+      async () => {
+        expect((await readMirroredRequest())?.status).toBe('REVOKED');
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    for (const app of [appA, appB]) {
+      expect(
+        await app.database.query.account.findMany({
+          where: sql`${user.domain} <> 'local' OR ${user.namespaceId} <> 0`,
+        }),
+      ).toEqual([]);
+    }
   });
 });

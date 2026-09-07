@@ -286,7 +286,7 @@ export class NotificationQueryService {
     attachedByThread: Map<number, AttachedMessage>,
     mentions: Map<number, UnreadMentionState> = new Map(),
   ): Promise<HydratedThreadItem[]> {
-    // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
+    // P2P presentation follows the peer intent-selected profile; the thread supplies a stable notification key.
     const p2pThreadIds = rows
       .filter((p) => p.thread.type === 'P2P')
       .map((p) => p.threadId);
@@ -294,30 +294,18 @@ export class NotificationQueryService {
       p2pThreadIds,
       userId,
     );
-    const peerUsers =
-      p2pThreadIds.length > 0
-        ? await this.userService.queryUsers({
-            where: {
-              id: { in: peers.map((p) => p.userId) },
-              availability: 'AVAILABLE',
-            },
-          })
-        : [];
-    const peerByThread = new Map<
-      number,
-      { name: string; avatar: string; id: number }
-    >();
-    peers.forEach((p) => {
-      const u = peerUsers.find((u) => u.id === p.userId);
-      if (u)
-        peerByThread.set(p.threadId, {
-          name: u.name || 'Unknown',
-          avatar: u.avatar ?? '',
-          id: u.id,
-        });
-    });
+    const peerByThread = new Map(
+      peers.map((peer) => [
+        peer.threadId,
+        {
+          name: peer.name,
+          avatar: peer.avatar,
+          id: peer.threadId,
+        },
+      ]),
+    );
 
-    // GROUP display name + sender = the group identity row (id = the group's user id).
+    // Group presentation follows the group thread profile.
     const groupThreadIds = rows
       .filter((p) => p.thread.type === 'GROUP')
       .map((p) => p.threadId);

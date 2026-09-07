@@ -4,7 +4,12 @@ import { inArray } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { GroupRole } from '../src/database/enums.js';
-import { group, groupMetaMemberFeed, user } from '../src/database/schema.js';
+import {
+  groupAccount as group,
+  messageThread,
+  groupMetaMemberFeed,
+  account as user,
+} from '../src/database/schema.js';
 import { readCurrentGroupRosterInTx } from '../src/group-meta/current-group-roster.js';
 
 describe('current Group Meta roster', () => {
@@ -26,14 +31,12 @@ describe('current Group Meta roster', () => {
           account: `owner-${suffix}`,
           domain: 'local',
           namespaceId: 0,
-          name: 'Owner',
           updatedAt: new Date(),
         },
         {
           account: `departed-${suffix}`,
           domain: 'local',
           namespaceId: 0,
-          name: 'Departed',
           updatedAt: new Date(),
         },
       ])
@@ -43,32 +46,46 @@ describe('current Group Meta roster', () => {
       .insert(group)
       .values({
         account: `!roster-${suffix}`,
-        domain: 'local',
-        namespaceId: 0,
-        name: 'Roster',
         updatedAt: new Date(),
       })
       .returning({ id: group.id });
-    groupId = createdGroup.id;
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: 'GROUP',
+        groupAccount: `!roster-${suffix}`,
+        groupDomain: 'local',
+        groupAccountId: createdGroup.id,
+        authorityNamespaceId: 0,
+        updatedAt: new Date(),
+      })
+      .returning();
+    groupId = thread.id;
     await database.db.insert(groupMetaMemberFeed).values([
       {
-        groupId,
+        threadId: groupId,
         feedId: 1n,
-        memberUserId: userIds[0]!,
+        memberAccount: `owner-${suffix}`,
+        memberDomain: 'local',
+        memberNamespaceId: 0,
         operation: 'UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },
       {
-        groupId,
+        threadId: groupId,
         feedId: 2n,
-        memberUserId: userIds[1]!,
+        memberAccount: `departed-${suffix}`,
+        memberDomain: 'local',
+        memberNamespaceId: 0,
         operation: 'UPSERT',
         body: { role: GroupRole.MEMBER, profileRev: 1 },
       },
       {
-        groupId,
+        threadId: groupId,
         feedId: 3n,
-        memberUserId: userIds[1]!,
+        memberAccount: `departed-${suffix}`,
+        memberDomain: 'local',
+        memberNamespaceId: 0,
         operation: 'DEPART',
         body: {},
       },
@@ -76,7 +93,10 @@ describe('current Group Meta roster', () => {
   });
 
   afterAll(async () => {
-    await database.db.delete(group).where(inArray(group.id, [groupId]));
+    await database.db
+      .delete(messageThread)
+      .where(inArray(messageThread.id, [groupId]));
+    await database.db.delete(group);
     await database.db.delete(user).where(inArray(user.id, userIds));
     await module.close();
   });
@@ -88,7 +108,9 @@ describe('current Group Meta roster', () => {
 
     expect(roster).toEqual([
       expect.objectContaining({
-        userId: userIds[0],
+        account: `owner-${suffix}`,
+        domain: 'local',
+        namespaceId: 0,
         role: GroupRole.OWNER,
         profileRev: 1,
       }),

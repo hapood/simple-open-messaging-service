@@ -366,14 +366,13 @@ object CallController {
         /** A local ICE candidate is ready → trickle it to the peer over /calls/signal. */
         override fun onIceCandidate(candidate: IceCandidate) {
             val sid = callSid ?: return
-            val peer = peerUserId.takeIf { it != 0 } ?: return
             SomsLog.d(TAG) { "local ICE candidate → relay (sdpMid=${candidate.sdpMid})" }
             val payload = JSONObject()
                 .put("candidate", candidate.sdp)
                 .put("sdpMid", candidate.sdpMid ?: "")
                 .put("sdpMLineIndex", candidate.sdpMLineIndex)
                 .toString()
-            postSignal(sid, peer, "ice", payload)
+            postSignal(sid, "ice", payload)
         }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -723,7 +722,7 @@ object CallController {
                 override fun onCreateSuccess(p0: SessionDescription?) {}
                 override fun onSetSuccess() {
                     callExecutor.execute {
-                        postSignal(sid, peerUserId, "offer", sdp.description)
+                        postSignal(sid, "offer", sdp.description)
                         setStep("offer-sent")
                     }
                 }
@@ -757,7 +756,7 @@ object CallController {
                 override fun onCreateSuccess(p0: SessionDescription?) {}
                 override fun onSetSuccess() {
                     callExecutor.execute {
-                        postSignal(sid, peerUserId, "answer", sdp.description)
+                        postSignal(sid, "answer", sdp.description)
                         setStep("answer-sent")
                     }
                 }
@@ -788,7 +787,7 @@ object CallController {
      *  create the PC + offer + trickle ICE. The bridge starts [CallService] after this returns true, so its
      *  first mandatory foreground notification is built from the same snapshot as the WebView call chrome. */
     fun initiate(
-        calleeUserId: Int,
+        targetThreadId: Int,
         sid: String,
         type: String,
         account: String,
@@ -803,7 +802,7 @@ object CallController {
         if (phase != "idle") return false
         callSid = sid
         threadId = 0
-        peerUserId = calleeUserId
+        peerUserId = 0
         callType = type
         cameraEnabled = false
         remoteCameraEnabled = type == "VIDEO"
@@ -822,7 +821,7 @@ object CallController {
             var registeredOnServer = false
             var origin: String? = null
             try {
-                SomsLog.i(TAG) { "initiate calleeUserId=$calleeUserId sid=$sid type=$type" }
+                SomsLog.i(TAG) { "initiate targetThreadId=$targetThreadId sid=$sid type=$type" }
                 origin = activeOrigin()
                 if (origin == null) {
                     SomsLog.w(TAG) { "initiate: no origin" }
@@ -830,7 +829,7 @@ object CallController {
                     return@execute
                 }
                 val r = post("$origin${SomsSecureStore.API_PREFIX}/calls/initiate",
-                    JSONObject().put("callSid", sid).put("calleeUserId", calleeUserId).put("callType", type))
+                    JSONObject().put("callSid", sid).put("threadId", targetThreadId).put("callType", type))
                 if (!r.ok) {
                     SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }
                     if (callSid == sid && phase == "starting") teardown()
@@ -845,7 +844,7 @@ object CallController {
                 }
                 callSid = sid
                 threadId = r.data?.optInt("threadId") ?: 0
-                peerUserId = calleeUserId
+                peerUserId = 0
                 callType = type
                 cameraEnabled = false
                 remoteCameraEnabled = type == "VIDEO"
@@ -991,8 +990,8 @@ object CallController {
     /** Relay one WebRTC frame to the peer. The JS bridge forwards frames the Angular layer generates only on
      *  the web fallback path; on Android the native observers post offers/answers/ICE directly, so this is
      *  primarily the renegotiate/media-state path. */
-    fun signal(sid: String, toUserId: Int, kind: String, payload: String) = callExecutor.execute {
-        postSignal(sid, toUserId, kind, payload)
+    fun signal(sid: String, kind: String, payload: String) = callExecutor.execute {
+        postSignal(sid, kind, payload)
     }
 
     /** Begin the one-way AUDIO→VIDEO upgrade after the Activity granted CAMERA permission. The existing
@@ -1035,10 +1034,8 @@ object CallController {
 
     private fun signalVideoState(enabled: Boolean) {
         val sid = callSid ?: return
-        if (peerUserId == 0) return
         postSignal(
             sid,
-            peerUserId,
             "video-state",
             JSONObject().put("enabled", enabled).toString(),
         )
@@ -1334,14 +1331,13 @@ object CallController {
         else -> emptyArray()
     }
 
-    private fun postSignal(callSid: String, toUserId: Int, kind: String, payload: String) {
+    private fun postSignal(callSid: String, kind: String, payload: String) {
         val origin = activeOrigin() ?: return
         post(
             "$origin${SomsSecureStore.API_PREFIX}/calls/signal",
             JSONObject()
                 .put("id", UUID.randomUUID().toString())
                 .put("callSid", callSid)
-                .put("toUserId", toUserId)
                 .put("kind", kind)
                 .put("payload", payload),
         )

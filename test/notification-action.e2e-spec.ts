@@ -7,7 +7,11 @@ import { asc, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { message, messageThread, user } from '../src/database/schema';
+import {
+  message,
+  messageThread,
+  account as user,
+} from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ClientThreadContentHeadWriter } from '../src/message/client-message-feed.service.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
@@ -44,20 +48,14 @@ describe('notifications/action (descriptor button round-trip)', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const recipient = await seedUser(app, 'recip', { name: 'Recip' });
     recipientId = recipient.id;
     sessionToken = await seedSession(app, recipientId, 'app');
     const now = new Date();
-    const [peer] = await database.db
-      .insert(user)
-      .values({
-        account: 'alice',
-        hashPwd: 'x',
-        name: 'Alice',
-        updatedAt: now,
-      })
-      .returning({ id: user.id });
+    const peer = await seedUser(app, 'alice', { name: 'Alice' });
     peerId = peer.id;
     const [thread] = await database.db
       .insert(messageThread)
@@ -82,6 +80,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
         content: JSON.stringify({ text: 'yo' }),
         creatorAccount: 'recip',
         creatorDomain: 'local',
+        profileRev: 1,
         createdAt: new Date(Date.now() - 1000),
         updatedAt: now,
       },
@@ -93,6 +92,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
         content: JSON.stringify({ text: 'hi' }),
         creatorAccount: 'alice',
         creatorDomain: 'local',
+        profileRev: 1,
         createdAt: now,
         updatedAt: now,
       },
@@ -172,7 +172,6 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .values({
         account: 'bob',
         hashPwd: 'x',
-        name: 'Bob',
         updatedAt: now,
       })
       .returning({ id: user.id });

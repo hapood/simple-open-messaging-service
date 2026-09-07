@@ -3,6 +3,7 @@
 // (store, SSE, push, participants, MessageService, MessageFanoutService) are mocked; the service is
 // instantiated directly (the codebase's unit-spec convention).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { CallsService } from './calls.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -13,6 +14,11 @@ import type {
   S2SCallFrame,
   S2SAddress,
 } from '../federation/federation.service.js';
+
+vi.mock('../relationship/relationship-authorization.js', () => ({
+  isThreadMutuallyAuthorized: async (db: { authorized: boolean }) =>
+    db.authorized,
+}));
 
 /** Build a minimal Message-like object writeMsgToThread resolves with (Omit<Message,'id'>). */
 function mkMsg(
@@ -41,13 +47,22 @@ function mkMocks() {
   return {
     database: {
       db: {
+        authorized: true,
         query: {
-          user: {
-            findFirst: vi.fn().mockResolvedValue({
-              account: 'alice',
-              domain: 'local',
-              name: 'Alice',
-              avatar: 'a.webp',
+          account: {
+            findFirst: vi.fn().mockImplementation(({ where, columns }) => {
+              const address = new PgDialect().sqlToQuery(where).params[0];
+              return Promise.resolve({
+                id:
+                  typeof address === 'string'
+                    ? Number(address.replace('user', ''))
+                    : address,
+                account: 'alice',
+                domain: 'local',
+                namespaceId: 0,
+                name: 'Alice',
+                avatar: 'a.webp',
+              });
             }),
           },
           callTombstone: { findFirst: vi.fn().mockResolvedValue(null) },
@@ -67,7 +82,19 @@ function mkMocks() {
     },
     sse: { onCallEvent: vi.fn(), onCallSignal: vi.fn() },
     push: { dispatchForCall: vi.fn().mockResolvedValue(undefined) },
-    participants: { findP2PThreadBetween: vi.fn().mockResolvedValue(10) },
+    participants: {
+      findP2PPeers: vi.fn().mockImplementation(async ([threadId]: number[]) => [
+        {
+          threadId,
+          account: `user${threadId - 8}`,
+          domain: 'local',
+          namespaceId: 0,
+          name: 'Alice',
+          avatar: 'a.webp',
+          profileRev: 1,
+        },
+      ]),
+    },
     messages: { writeMsgToThread: vi.fn().mockResolvedValue(mkMsg()) },
     fanout: { dispatch: vi.fn().mockResolvedValue(undefined) },
     federation: { sendCallFrame: vi.fn().mockResolvedValue(undefined) },
@@ -120,7 +147,7 @@ describe('CallsService.initiate', () => {
     const { svc, m } = mkService();
     const res = await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
@@ -149,7 +176,7 @@ describe('CallsService.initiate', () => {
   it('refuses calling yourself', async () => {
     const { svc } = mkService();
     await expect(
-      svc.initiate(1, { callSid: 'cs1', calleeUserId: 1, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs1', threadId: 9, callType: 'AUDIO' }),
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_ALLOWED,
     );
@@ -159,13 +186,12 @@ describe('CallsService.initiate', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     const signal = {
       id: 'signal-retry',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'offer' as const,
       payload: 'OFFER_SDP',
     };
@@ -182,9 +208,9 @@ describe('CallsService.initiate', () => {
 
   it('refuses a non-friend callee (no P2P thread)', async () => {
     const { svc, m } = mkService();
-    m.participants.findP2PThreadBetween.mockResolvedValue(null);
+    m.database.db.authorized = false;
     await expect(
-      svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' }),
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_ALLOWED,
     );
@@ -194,11 +220,11 @@ describe('CallsService.initiate', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     }); // caller 1 now busy
     await expect(
-      svc.initiate(1, { callSid: 'cs2', calleeUserId: 3, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs2', threadId: 11, callType: 'AUDIO' }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
@@ -206,11 +232,11 @@ describe('CallsService.initiate', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     }); // callee 2 now busy
     await expect(
-      svc.initiate(3, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(3, { callSid: 'cs2', threadId: 10, callType: 'AUDIO' }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
@@ -220,8 +246,8 @@ describe('CallsService.initiate', () => {
     // fires them concurrently via Promise.allSettled so their awaits interleave.
     const { svc } = mkService();
     const results = await Promise.allSettled([
-      svc.initiate(1, { callSid: 'csAB', calleeUserId: 2, callType: 'AUDIO' }),
-      svc.initiate(2, { callSid: 'csBA', calleeUserId: 1, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'csAB', threadId: 10, callType: 'AUDIO' }),
+      svc.initiate(2, { callSid: 'csBA', threadId: 9, callType: 'AUDIO' }),
     ]);
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
     const rejected = results.filter((r) => r.status === 'rejected');
@@ -236,20 +262,20 @@ describe('CallsService.initiate', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     m.sse.onCallEvent.mockClear();
     const res = await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
     expect(m.sse.onCallEvent).toHaveBeenCalled(); // re-rang
     // The caller is still in exactly one call: a brand-new callSid still trips busy on the caller.
     await expect(
-      svc.initiate(1, { callSid: 'csX', calleeUserId: 3, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'csX', threadId: 11, callType: 'AUDIO' }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 });
@@ -259,7 +285,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     m.sse.onCallEvent.mockClear();
@@ -277,7 +303,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     m.sse.onCallEvent.mockClear();
@@ -311,7 +337,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     const a = mkService();
     await a.svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     const incoming = a.m.sse.onCallEvent.mock.calls
@@ -328,7 +354,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     const b = mkService();
     await b.svc.initiate(1, {
       callSid: 'cs2',
-      calleeUserId: 3,
+      threadId: 11,
       callType: 'AUDIO',
     });
     b.m.sse.onCallEvent.mockClear();
@@ -339,7 +365,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     const c = mkService();
     await c.svc.initiate(4, {
       callSid: 'cs3',
-      calleeUserId: 5,
+      threadId: 13,
       callType: 'VIDEO',
     });
     c.m.sse.onCallEvent.mockClear();
@@ -353,7 +379,7 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.decline(2, 'cs1');
@@ -383,7 +409,7 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.cancel(1, 'cs1');
@@ -394,7 +420,7 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'VIDEO',
     });
     await svc.accept(2, 'cs1'); // answered — NOT connected yet (no startedAt)
@@ -416,7 +442,7 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // answered, media never came up
@@ -435,7 +461,7 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -450,16 +476,16 @@ describe('CallsService terminal bubble persistence', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.cancel(1, 'cs1');
     // Both 1 and 2 are free again — a fresh call between them succeeds.
     await expect(
-      svc.initiate(2, { callSid: 'cs2', calleeUserId: 1, callType: 'AUDIO' }),
+      svc.initiate(2, { callSid: 'cs2', threadId: 9, callType: 'AUDIO' }),
     ).resolves.toEqual({
       callSid: 'cs2',
-      threadId: 10,
+      threadId: 9,
     });
   });
 });
@@ -469,7 +495,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(svc.accept(99, 'cs1')).rejects.toSatisfy(
@@ -481,7 +507,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // → accepted
@@ -492,7 +518,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(svc.ringing(99, 'cs1')).rejects.toSatisfy(
@@ -506,7 +532,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(svc.decline(99, 'cs1')).rejects.toSatisfy(
@@ -518,7 +544,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(svc.cancel(99, 'cs1')).rejects.toSatisfy(
@@ -530,7 +556,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -544,7 +570,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(svc.end(1, 'cs1')).rejects.toSatisfy(
@@ -556,7 +582,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -569,7 +595,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -600,7 +626,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -617,7 +643,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.decline(2, 'cs1');
@@ -631,14 +657,13 @@ describe('CallsService.signal (relay)', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
     await svc.signal(1, {
       id: 'signal-1',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'ice',
       payload: '{"cand":1}',
     });
@@ -658,14 +683,13 @@ describe('CallsService.signal (relay)', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(
       svc.signal(99, {
         id: 'signal-1',
         callSid: 'cs1',
-        toUserId: 2,
         kind: 'ice',
         payload: '{}',
       }),
@@ -674,18 +698,17 @@ describe('CallsService.signal (relay)', () => {
     );
   });
 
-  it('rejects relaying to anyone but the call peer', async () => {
+  it('rejects a non-participant even when the call SID is known', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await expect(
-      svc.signal(1, {
+      svc.signal(77, {
         id: 'signal-1',
         callSid: 'cs1',
-        toUserId: 77,
         kind: 'ice',
         payload: '{}',
       }),
@@ -700,7 +723,6 @@ describe('CallsService.signal (relay)', () => {
       svc.signal(1, {
         id: 'signal-1',
         callSid: 'nope',
-        toUserId: 2,
         kind: 'ice',
         payload: '{}',
       }),
@@ -722,7 +744,7 @@ describe('CallsService ringing timeout', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     m.sse.onCallEvent.mockClear();
@@ -737,7 +759,7 @@ describe('CallsService ringing timeout', () => {
     expect(lastBubbleContent(m)?.outcome).toBe('missed');
     // Slots released → caller can place a new call.
     await expect(
-      svc.initiate(1, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs2', threadId: 10, callType: 'AUDIO' }),
     ).resolves.toBeDefined();
   });
 
@@ -745,7 +767,7 @@ describe('CallsService ringing timeout', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // answered — the timer is STILL armed (media not yet up)
@@ -762,7 +784,7 @@ describe('CallsService ringing timeout', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
@@ -781,7 +803,7 @@ describe('CallsService ringing timeout', () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // answered, media never comes up
@@ -824,7 +846,6 @@ function inbound(
   svc: CallsService,
   args: {
     localUserId: number;
-    peerStubId: number;
     threadId?: number;
     peerDomain?: string;
     namespaceId?: number;
@@ -834,7 +855,6 @@ function inbound(
 ): Promise<void> {
   return svc.onInboundCallFrame({
     localUserId: args.localUserId,
-    peerStubId: args.peerStubId,
     peerDomain: args.peerDomain ?? 'bbb.local',
     namespaceId: args.namespaceId ?? 3,
     threadId: args.threadId ?? 10,
@@ -845,18 +865,55 @@ function inbound(
 }
 
 describe('CallsService federated initiate (outbound)', () => {
-  it('a foreigner callee is rung via an S2S incoming frame (no local ring); both busy slots set', async () => {
-    const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
+  it('does not reserve a foreign endpoint as a local account or expose it in HELLO', async () => {
+    const { svc, m, callState } = mkService();
+    m.participants.findP2PPeers.mockResolvedValueOnce([
+      {
+        threadId: 10,
+        account: 'remote',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Remote',
+        avatar: '',
+        profileRev: 1,
+      },
+    ]);
+    await svc.initiate(1, {
+      callSid: 'foreign-call',
+      threadId: 10,
+      callType: 'AUDIO',
     });
+    expect(callState.get(1)).toMatchObject({
+      threadId: 10,
+      peerUserId: null,
+      peerAccount: 'remote',
+      peerDomain: 'bbb.local',
+    });
+    expect(callState.get(2)).toBeNull();
+    await expect(
+      svc.initiate(2, {
+        callSid: 'local-call',
+        threadId: 11,
+        callType: 'AUDIO',
+      }),
+    ).resolves.toMatchObject({ threadId: 11 });
+    expect(callState.get(2)).toMatchObject({ peerUserId: 3 });
+  });
+
+  it('a foreign callee is rung over S2S and only the local caller owns a busy slot', async () => {
+    const { svc, m } = mkService();
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     const res = await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'VIDEO',
     });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
@@ -874,24 +931,26 @@ describe('CallsService federated initiate (outbound)', () => {
     // No local ring — the foreign callee is rung on its own server.
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
     expect(m.push.dispatchForCall).not.toHaveBeenCalled();
-    // Both busy slots set (caller + the foreign stub) → a second call trips busy.
+    // The local caller is busy; the foreign participant has no local busy slot.
     await expect(
-      svc.initiate(1, { callSid: 'cs2', calleeUserId: 3, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs2', threadId: 11, callType: 'AUDIO' }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
   it('a ring failure writes an `unreachable` bubble + throws CALL_PEER_UNREACHABLE + releases slots', async () => {
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     m.federation.sendCallFrame.mockRejectedValue(new Error('network down'));
     await expect(
-      svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' }),
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
     );
@@ -899,7 +958,7 @@ describe('CallsService federated initiate (outbound)', () => {
     // Slots released → a fresh call can start.
     m.federation.sendCallFrame.mockResolvedValue(undefined);
     await expect(
-      svc.initiate(1, { callSid: 'csX', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(1, { callSid: 'csX', threadId: 10, callType: 'AUDIO' }),
     ).resolves.toBeDefined();
   });
 
@@ -907,16 +966,18 @@ describe('CallsService federated initiate (outbound)', () => {
     vi.useFakeTimers();
     try {
       const { svc, m } = mkService();
-      m.database.db.query.user.findFirst.mockResolvedValue({
-        account: 'bob',
-        domain: 'bbb.local',
-        namespaceId: 3,
-        name: 'Bob',
-        avatar: '',
-      });
+      m.participants.findP2PPeers.mockResolvedValue([
+        {
+          account: 'bob',
+          domain: 'bbb.local',
+          namespaceId: 3,
+          name: 'Bob',
+          avatar: '',
+        },
+      ]);
       await svc.initiate(1, {
         callSid: 'cs1',
-        calleeUserId: 2,
+        threadId: 10,
         callType: 'AUDIO',
       });
       m.federation.sendCallFrame.mockClear();
@@ -939,7 +1000,6 @@ describe('CallsService federated initiate (outbound)', () => {
       const { svc, m } = mkService();
       await inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame(),
       });
       await svc.accept(2, 'cs1');
@@ -963,21 +1023,22 @@ describe('CallsService federated initiate (outbound)', () => {
 
   it('does not let the caller server author connected', async () => {
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'accepted' }),
     });
     m.federation.sendCallFrame.mockClear();
@@ -996,10 +1057,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('incoming registers callee-side state, rings the local user, and ticks quota once', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
       2,
-      expect.objectContaining({ type: 'incoming', callerUserId: 5 }),
+      expect.objectContaining({ type: 'incoming', callerUserId: null }),
     );
     expect(m.push.dispatchForCall).toHaveBeenCalledWith(
       2,
@@ -1015,12 +1076,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     const { svc, m } = mkService();
     await svc.initiate(2, {
       callSid: 'local1',
-      calleeUserId: 3,
+      threadId: 11,
       callType: 'AUDIO',
     }); // occupy user 2
     m.quota.tick.mockClear();
     await expect(
-      inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() }),
+      inbound(svc, { localUserId: 2, frame: mkFrame() }),
     ).rejects.toSatisfy(
       (e: unknown) =>
         (e as { bizCode?: number }).bizCode === BusinessCode.CALL_BUSY,
@@ -1030,7 +1091,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('a duplicate incoming ring is an idempotent no-op (no second ring, no quota burn)', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     const admission = m.database.db.insert.mock.results[0].value;
     expect(admission.values).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1042,7 +1103,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.database.db.insert.mockClear();
     m.sse.onCallEvent.mockClear();
     m.quota.tick.mockClear();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     expect(m.database.db.insert).not.toHaveBeenCalled();
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
     expect(m.quota.tick).not.toHaveBeenCalled();
@@ -1050,7 +1111,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('preflights an incoming account collision before identity resolution', async () => {
     const { svc } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
 
     expect(
       svc.onInboundIncomingPreflight({
@@ -1076,13 +1137,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('rejects a callSid collision instead of attaching it to the active call', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     m.quota.tick.mockClear();
 
     await expect(
       inbound(svc, {
         localUserId: 3,
-        peerStubId: 5,
         frame: mkFrame({
           payload: { fromAccount: 'bob', toAccount: 'charlie' },
         }),
@@ -1097,13 +1157,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('treats a later frame from another signer as an unknown call without touching the active call', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     m.sse.onCallSignal.mockClear();
 
     await expect(
       inbound(svc, {
         localUserId: 3,
-        peerStubId: 5,
         peerDomain: 'other.local',
         frame: mkFrame({
           op: 'signal',
@@ -1119,12 +1178,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('rejects an op sent in the opposite server direction', async () => {
     const { svc } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
 
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({ op: 'accepted' }),
       }),
     ).rejects.toSatisfy(
@@ -1136,12 +1194,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('rejects connected and video-upgraded before their prerequisite state', async () => {
     const { svc } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
 
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({
           op: 'connected',
           payload: { startedAt: Date.now() },
@@ -1153,7 +1210,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({ op: 'video-upgraded', callType: 'VIDEO' }),
       }),
     ).rejects.toSatisfy(
@@ -1166,22 +1222,23 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     // accepted + connected + ended frames the peer sends back — the caller server authors the `completed`
     // bubble, stamping startedAt from the `connected` frame (NOT `accepted`).
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     m.sse.onCallEvent.mockClear();
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'accepted' }),
     });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
@@ -1190,12 +1247,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
     });
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
     expect(lastBubbleContent(m)?.outcome).toBe('completed');
@@ -1204,38 +1259,36 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('absorbs a connected replay and preserves the first accepted startedAt', async () => {
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'accepted' }),
     });
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
     });
 
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'connected', payload: { startedAt: 1001 } }),
     });
 
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
     expect(lastBubbleContent(m)?.startedAt).toBe(1000);
@@ -1243,14 +1296,13 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('applies a federated video upgrade on the callee server and notifies its local participant', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
     await svc.connected(2, 'cs1');
     m.sse.onCallEvent.mockClear();
 
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({ op: 'video-upgraded', callType: 'VIDEO' }),
     });
 
@@ -1266,22 +1318,23 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('an inbound `ringing` frame notifies the caller (idempotent on replay)', async () => {
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     }); // caller-side live call
     m.sse.onCallEvent.mockClear();
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'ringing' }),
     });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
@@ -1292,18 +1345,16 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     m.sse.onCallEvent.mockClear();
     await inbound(svc, {
       localUserId: 1,
-      peerStubId: 2,
       frame: mkFrame({ op: 'ringing' }),
     });
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
   });
 
-  it('signal relays a WebRTC frame to the local user with fromUserId = the peer stub', async () => {
+  it('signal relays a foreign frame without inventing a local sender ID', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
         payload: { signalType: 'ice', data: '{"cand":1}' },
@@ -1312,7 +1363,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
       2,
       expect.objectContaining({
-        fromUserId: 5,
+        fromUserId: null,
         kind: 'ice',
         payload: '{"cand":1}',
       }),
@@ -1321,11 +1372,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('inbound signal stages on the callee server for the local callee to GET', async () => {
     const { svc } = mkService();
-    // localUserId=2 is the callee; peerStubId=5 is the foreign caller's local stub.
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    // Only the callee has an Account ID on this server.
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
         payload: {
@@ -1337,7 +1387,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     });
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
         payload: { signalId: 'ice-1', signalType: 'ice', data: 'ICE_1' },
@@ -1352,13 +1401,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('uses the first signal body for an id and treats later bodies with that id as successful no-ops', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     m.sse.onCallSignal.mockClear();
     m.quota.tick.mockClear();
 
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
         payload: {
@@ -1370,7 +1418,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     });
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
         payload: {
@@ -1391,13 +1438,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('allows caller cancellation to win after the callee accepted locally', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
     m.sse.onCallEvent.mockClear();
 
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({ op: 'cancelled' }),
     });
 
@@ -1410,16 +1456,18 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('rejects accepted during the tombstone-write window after local cancellation starts', async () => {
     const { svc, m } = mkService();
-    m.database.db.query.user.findFirst.mockResolvedValue({
-      account: 'bob',
-      domain: 'bbb.local',
-      namespaceId: 3,
-      name: 'Bob',
-      avatar: '',
-    });
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
 
@@ -1435,7 +1483,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await expect(
       inbound(svc, {
         localUserId: 1,
-        peerStubId: 2,
         frame: mkFrame({ op: 'accepted' }),
       }),
     ).rejects.toSatisfy(
@@ -1452,11 +1499,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       const now = 1_700_000_000_123;
       vi.setSystemTime(now);
       const { svc, m } = mkService();
-      await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+      await inbound(svc, { localUserId: 2, frame: mkFrame() });
       const signatureExpiresAtSec = Math.floor(now / 1000) + offset;
       await inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         signatureExpiresAtSec,
         frame: mkFrame({ op: 'cancelled' }),
       });
@@ -1477,7 +1523,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         signatureExpiresAtSec: signatureExpiresAtSec + 10,
         frame: mkFrame({ op: 'cancelled' }),
       });
@@ -1495,7 +1540,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       const expiresAt = new Date(1_700_000_020_000);
       await inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         signatureExpiresAtSec: expiresAt.getTime() / 1000,
         frame: mkFrame({ op: 'cancelled' }),
       });
@@ -1517,7 +1561,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     const now = 1_700_000_000_123;
     vi.setSystemTime(now);
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     let finishDelete!: () => void;
     const gate = new Promise<void>((resolve) => {
       finishDelete = resolve;
@@ -1553,7 +1597,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await expect(
       inbound(svc, {
         localUserId: 1,
-        peerStubId: 2,
         frame: mkFrame({ op: 'accepted' }),
       }),
     ).rejects.toSatisfy(
@@ -1568,7 +1611,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await expect(
       inbound(svc, {
         localUserId: 1,
-        peerStubId: 2,
         frame: mkFrame({ op: 'accepted' }),
       }),
     ).rejects.toSatisfy(
@@ -1581,7 +1623,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({ op: 'missed' }),
       }),
     ).rejects.toSatisfy(
@@ -1593,13 +1634,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('allows completed to end an accepted call before media connects', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
 
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({
           op: 'ended',
           payload: { endReason: 'completed' },
@@ -1615,13 +1655,12 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('rejects a connection timeout after media connects', async () => {
     const { svc } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
     await svc.connected(2, 'cs1');
     await expect(
       inbound(svc, {
         localUserId: 2,
-        peerStubId: 5,
         frame: mkFrame({ op: 'ended', payload: { endReason: 'timeout' } }),
       }),
     ).rejects.toSatisfy(
@@ -1631,12 +1670,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it("the callee server does not author a bubble; it pulls the caller server's", async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
     await svc.connected(2, 'cs1');
     await inbound(svc, {
       localUserId: 2,
-      peerStubId: 5,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
     // The callee server released the call and emitted `ended`, but wrote no bubble.
@@ -1653,7 +1691,7 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
 
@@ -1661,7 +1699,6 @@ describe('CallsService signaling store-and-forward', () => {
       svc.signal(2, {
         id: 'bad-offer',
         callSid: 'cs1',
-        toUserId: 1,
         kind: 'offer',
         payload: 'SDP',
       }),
@@ -1672,7 +1709,6 @@ describe('CallsService signaling store-and-forward', () => {
       svc.signal(2, {
         id: 'early-answer',
         callSid: 'cs1',
-        toUserId: 1,
         kind: 'answer',
         payload: 'SDP',
       }),
@@ -1683,7 +1719,6 @@ describe('CallsService signaling store-and-forward', () => {
       svc.signal(1, {
         id: 'early-video-state',
         callSid: 'cs1',
-        toUserId: 2,
         kind: 'video-state',
         payload: '{"enabled":true}',
       }),
@@ -1696,7 +1731,6 @@ describe('CallsService signaling store-and-forward', () => {
       svc.signal(2, {
         id: 'answer-1',
         callSid: 'cs1',
-        toUserId: 1,
         kind: 'answer',
         payload: 'SDP',
       }),
@@ -1707,27 +1741,24 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.signal(1, {
       id: 'offer-1',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'offer',
       payload: 'OFFER_SDP',
     });
     await svc.signal(1, {
       id: 'ice-1',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'ice',
       payload: 'ICE_1',
     });
     await svc.signal(1, {
       id: 'ice-2',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'ice',
       payload: 'ICE_2',
     });
@@ -1745,21 +1776,19 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
     await svc.signal(2, {
       id: 'answer-1',
       callSid: 'cs1',
-      toUserId: 1,
       kind: 'answer',
       payload: 'ANSWER_SDP',
     });
     await svc.signal(2, {
       id: 'ice-1',
       callSid: 'cs1',
-      toUserId: 1,
       kind: 'ice',
       payload: 'CALLEE_ICE',
     });
@@ -1773,20 +1802,18 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.signal(1, {
       id: 'ice-retry',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'ice',
       payload: 'ICE_X',
     });
     await svc.signal(1, {
       id: 'ice-retry',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'ice',
       payload: 'ICE_X',
     }); // retransmit
@@ -1799,13 +1826,12 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.signal(1, {
       id: 'offer-1',
       callSid: 'cs1',
-      toUserId: 2,
       kind: 'offer',
       payload: 'OFFER_SDP',
     });
@@ -1818,7 +1844,7 @@ describe('CallsService signaling store-and-forward', () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     let threw: unknown = null;
@@ -1849,7 +1875,7 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
     const { svc, callState } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     expect(callState.get(1)).toMatchObject({
@@ -1875,7 +1901,7 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
     const { svc, callState } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
-      calleeUserId: 2,
+      threadId: 10,
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');

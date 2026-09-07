@@ -1,3 +1,7 @@
+import {
+  groupState as groupStateTable,
+  groupStateFields,
+} from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -432,12 +436,15 @@ export class FederationMediaLocalizationService {
       .select({
         type: tables.messageThread.type,
         group: {
-          account: tables.group.account,
-          domain: tables.group.domain,
+          account: groupStateFields.account,
+          domain: groupStateFields.domain,
         },
       })
       .from(tables.messageThread)
-      .leftJoin(tables.group, eq(tables.group.id, tables.messageThread.groupId))
+      .leftJoin(
+        groupStateTable,
+        eq(groupStateTable.id, tables.messageThread.id),
+      )
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (thread?.type === MessageThreadType.GROUP && thread.group) {

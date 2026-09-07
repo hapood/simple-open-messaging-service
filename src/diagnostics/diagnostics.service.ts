@@ -1,3 +1,4 @@
+import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { existsSync, mkdir, writeFile, rename } from 'fs';
 import { promisify } from 'util';
@@ -6,7 +7,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { FastifyRequest } from 'fastify';
 import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { diagnosticsReport, user } from '../database/schema.js';
+import { diagnosticsReport, account as user } from '../database/schema.js';
 import type { JsonValue } from '../database/json.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -181,7 +182,10 @@ export class DiagnosticsService {
     if (dto.search) {
       const pattern = `%${dto.search}%`;
       filters.push(
-        or(ilike(user.name, pattern), ilike(user.account, pattern))!,
+        or(
+          ilike(accountProfileFields(user).name, pattern),
+          ilike(user.account, pattern),
+        )!,
       );
     }
     const where = and(...filters);
@@ -191,9 +195,9 @@ export class DiagnosticsService {
           id: diagnosticsReport.id,
           reporter: {
             id: user.id,
-            name: user.name,
+            name: accountProfileFields(user).name,
             account: user.account,
-            avatar: user.avatar,
+            avatar: accountProfileFields(user).avatar,
           },
           bundleBytes: diagnosticsReport.bundleBytes,
           manifest: diagnosticsReport.manifest,

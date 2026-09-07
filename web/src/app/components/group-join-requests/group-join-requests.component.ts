@@ -87,7 +87,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
 
   private invitationBefore?: number;
   private applicationBefore?: number;
-  private candidateAfterUserId?: number;
+  private candidateAfterThreadId?: number;
   private resolveSub?: Subscription;
 
   constructor() {
@@ -251,7 +251,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           const user = result.user;
           this.candidates.set([
             {
-              userId: user.id,
+              namespaceId: user.namespaceId,
+              profileRev: user.profileRev,
               account: user.account,
               domain: user.domain || 'local',
               name: user.name,
@@ -350,7 +351,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       const res = await firstValueFrom(
         this.groups.queryInviteCandidates({
           groupId,
-          afterUserId: append ? this.candidateAfterUserId : undefined,
+          afterThreadId: append ? this.candidateAfterThreadId : undefined,
           search: this.appliedSearch() || undefined,
           take: 20,
         }),
@@ -359,7 +360,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       this.candidates.update((rows) =>
         append ? [...rows, ...res.data!.data] : res.data!.data,
       );
-      this.candidateAfterUserId = res.data.afterUserId ?? undefined;
+      this.candidateAfterThreadId = res.data.afterThreadId ?? undefined;
       this.candidatesHasMore.set(res.data.hasMore);
       if (!append && res.data.data.length === 0) this.prepareExactFallback();
     } catch {

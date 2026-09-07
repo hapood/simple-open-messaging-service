@@ -84,15 +84,19 @@ describe('FederationRelationshipMutationService', () => {
   it('writes a friend intent and its peer projections in the caller transaction', async () => {
     const requestedAt = new Date('2026-08-28T00:00:00.000Z');
     const expiresAt = new Date('2026-09-04T00:00:00.000Z');
+    const peer = {
+      account: 'remote-user',
+      domain: 'peer.example',
+      namespaceId: 12,
+    };
     const findFirst = vi
       .fn()
-      .mockResolvedValueOnce({
-        account: 'remote-user',
-        domain: 'peer.example',
-        namespaceId: 12,
-      })
-      .mockResolvedValueOnce({ account: 'local-user' });
-    const tx = { query: { user: { findFirst } } } as never;
+      .mockResolvedValue({
+        account: 'local-user',
+        domain: 'local',
+        namespaceId: 0,
+      });
+    const tx = { query: { account: { findFirst } } } as never;
     const relationshipIntents = {
       lockPairInTx: vi.fn().mockResolvedValue({}),
       readP2PRelationshipInTx: vi.fn().mockResolvedValue({
@@ -134,7 +138,7 @@ describe('FederationRelationshipMutationService', () => {
     const result = await service.writeP2PIntentInTx(
       tx,
       1,
-      2,
+      peer,
       true,
       'hello',
       clientFeedUpdates,
@@ -143,7 +147,7 @@ describe('FederationRelationshipMutationService', () => {
     expect(relationships.writeLocalP2PIntentInTx).toHaveBeenCalledWith(
       tx,
       1,
-      2,
+      peer,
       true,
       'hello',
     );
@@ -153,7 +157,7 @@ describe('FederationRelationshipMutationService', () => {
     expect(relationshipIntents.readP2PRelationshipInTx).toHaveBeenCalledWith(
       tx,
       1,
-      2,
+      peer,
     );
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(
       tx,
@@ -176,20 +180,26 @@ describe('FederationRelationshipMutationService', () => {
     const requestedAt = new Date('2026-09-04T00:00:00.000Z');
     const order: string[] = [];
     const tx = {
-      select: vi.fn(() => queryResult([{ groupId: 9 }])),
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementation(() =>
+          queryResult([
+            {
+              id: 9,
+              account: '!remote-group',
+              domain: 'peer.example',
+              namespaceId: 12,
+              name: 'Remote group',
+              avatar: '',
+              description: '',
+              profileRev: 4,
+            },
+          ]),
+        ),
       query: {
-        group: {
-          findFirst: vi.fn().mockResolvedValue({
-            account: '!remote-group',
-            domain: 'peer.example',
-            namespaceId: 12,
-            name: 'Remote group',
-            avatar: '',
-            description: '',
-            defaultProfileRev: 4,
-          }),
-        },
-        user: {
+        account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
             domain: 'local',
@@ -273,7 +283,7 @@ describe('FederationRelationshipMutationService', () => {
     expect(clientFeedUpdates).toEqual([{ userId: 7, feedId: 21 }]);
   });
 
-  it('locks both account addresses before materializing a first-contact peer', async () => {
+  it('locks both account addresses for a first-contact request without creating a peer account', async () => {
     const order: string[] = [];
     const tx = {
       execute: vi.fn().mockImplementation(async () => {
@@ -281,7 +291,7 @@ describe('FederationRelationshipMutationService', () => {
         return { rows: [] };
       }),
       query: {
-        user: {
+        account: {
           findFirst: vi.fn().mockResolvedValue({ account: 'local-user' }),
         },
       },
@@ -320,16 +330,6 @@ describe('FederationRelationshipMutationService', () => {
       {} as never,
       {} as never,
     );
-    vi.spyOn(
-      service as unknown as {
-        materializeFederatedUserInTx: () => Promise<number>;
-      },
-      'materializeFederatedUserInTx',
-    ).mockImplementation(async () => {
-      order.push('materialize');
-      return 2;
-    });
-
     await service.writeAddressedRelationshipRequestInTx(
       tx,
       1,
@@ -346,7 +346,6 @@ describe('FederationRelationshipMutationService', () => {
     expect(order).toEqual([
       'account-lock',
       'account-lock',
-      'materialize',
       'pair-lock',
       'peer-lock',
       'client',

@@ -6,7 +6,7 @@ import {
   loginCode,
   pushToken,
   sessionToken,
-  user,
+  account as user,
   webAuthnCredential,
 } from '../database/schema.js';
 

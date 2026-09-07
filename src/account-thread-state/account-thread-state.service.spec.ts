@@ -26,7 +26,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [{ id: 10n, active: true }] })
-        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: 10 }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED' }] })
@@ -50,7 +50,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       createdAt: new Date(),
     };
     const messages = {
-      writeSystemMessageInTx: vi
+      writeDepartureMessageInTx: vi
         .fn()
         .mockResolvedValue({ message: systemMessage }),
     };
@@ -67,20 +67,26 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       systemMessage,
       localRecipientIds: [1, 2],
     });
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
+    expect(messages.writeDepartureMessageInTx).toHaveBeenCalledWith(
       tx,
       10,
       'FRIEND_REMOVED',
-      2,
-      { actorUserId: 1, markReadUserId: 1, recipientUserIds: [1, 2] },
+      { account: 'bob', domain: 'local', namespaceId: 0 },
+      {
+        actorUserId: 1,
+        markReadUserId: 1,
+        recipientUserIds: [1, 2],
+        visibleThroughUserIds: [1, 2],
+        threadLock: expect.objectContaining({ tx, threadId: 10 }),
+      },
     );
     expect(tx.execute).toHaveBeenCalledTimes(13);
     // Both canonical account scopes are locked first, followed by
     // RelationshipPair, MessageThread, intents, and participant rows.
     expect(tx.execute.mock.invocationCallOrder[4]).toBeLessThan(
-      tx.update.mock.invocationCallOrder[0],
+      messages.writeDepartureMessageInTx.mock.invocationCallOrder[0],
     );
-    expect(tx.update).toHaveBeenCalledOnce();
+    expect(tx.update).not.toHaveBeenCalled();
     expect(tx.delete).not.toHaveBeenCalled(); // history-only compatibility grants no longer exist
     expect(stateFeed.writeManyInTx).not.toHaveBeenCalled();
   });
@@ -106,7 +112,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [endpoints] })
         .mockResolvedValueOnce({ rows: [{ id: 8n }] })
-        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: 10 }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ status: 'REVOKED' }] }),
@@ -119,7 +125,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         ),
       },
     };
-    const messages = { writeSystemMessageInTx: vi.fn() };
+    const messages = { writeDepartureMessageInTx: vi.fn() };
     const service = new AccountThreadStateService(
       database as never,
       {} as never,
@@ -133,7 +139,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       systemMessage: null,
       localRecipientIds: [1, 2],
     });
-    expect(messages.writeSystemMessageInTx).not.toHaveBeenCalled();
+    expect(messages.writeDepartureMessageInTx).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
   });
 });

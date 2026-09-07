@@ -15,8 +15,7 @@ import {
   message,
   messageThread,
   pendingMedia,
-  user,
-  group,
+  account as user,
   relationshipPair,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
@@ -28,7 +27,6 @@ describe('federated message deletion transaction ordering', () => {
   let database: DatabaseService;
   let deletions: DeletedMessageService;
   let threadId: number;
-  let creatorId: number;
   let namespaceId: number;
 
   const peerDomain = 'peer.test';
@@ -60,7 +58,7 @@ describe('federated message deletion transaction ordering', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     const now = new Date();
     const [existingNamespace] = await database.db
@@ -91,17 +89,6 @@ describe('federated message deletion transaction ordering', () => {
       activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
-    const [creator] = await database.db
-      .insert(user)
-      .values({
-        account: 'bob',
-        name: 'Bob',
-        domain: peerDomain,
-        namespaceId,
-        updatedAt: now,
-      })
-      .returning({ id: user.id });
-    creatorId = creator.id;
     const [thread] = await database.db
       .insert(messageThread)
       .values({
@@ -162,6 +149,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           creatorAccount: 'bob',
           creatorDomain: peerDomain,
+          creatorNamespaceId: namespaceId,
           originSeq: 7,
           sourceNamespaceId: namespaceId,
           seq,
@@ -321,55 +309,44 @@ describe('federated message deletion transaction ordering', () => {
           account: 'alice',
           domain: 'local',
           namespaceId: 0,
-          name: 'Alice',
           updatedAt: new Date(),
         })
         .returning();
       let scope = { account: author.account, domain: author.domain };
       if (kind === 'GROUP') {
-        const [parent] = await database.db
-          .insert(group)
-          .values({
-            account: '!lock-parent',
-            domain: peerDomain,
-            namespaceId,
-            name: 'Group',
-            updatedAt: new Date(),
-          })
-          .returning();
         await database.db
           .update(messageThread)
-          .set({ type: 'GROUP', groupId: parent.id })
+          .set({
+            type: 'GROUP',
+            groupAccount: '!lock-parent',
+            groupDomain: peerDomain,
+          })
           .where(eq(messageThread.id, threadId));
-        scope = { account: parent.account, domain: parent.domain };
+        scope = { account: '!lock-parent', domain: peerDomain };
       } else {
-        await database.db
-          .insert(relationshipPair)
-          .values({
-            kind: 'P2P',
-            threadId,
-            active: true,
-            endpointAType: 'USER',
-            endpointAAccount: author.account,
-            endpointADomain: 'local',
-            endpointANamespaceId: namespaceId,
-            endpointBType: 'USER',
-            endpointBAccount: 'bob',
-            endpointBDomain: peerDomain,
-            endpointBNamespaceId: namespaceId,
-          });
-      }
-      await database.db
-        .insert(message)
-        .values({
+        await database.db.insert(relationshipPair).values({
+          kind: 'P2P',
           threadId,
-          seq: 1,
-          creatorAccount: author.account,
-          creatorDomain: 'local',
-          contentType: 'PURE_TEXT',
-          content: '{"text":"business ordering"}',
-          updatedAt: new Date(),
+          active: true,
+          endpointAType: 'USER',
+          endpointAAccount: author.account,
+          endpointADomain: 'local',
+          endpointANamespaceId: namespaceId,
+          endpointBType: 'USER',
+          endpointBAccount: 'bob',
+          endpointBDomain: peerDomain,
+          endpointBNamespaceId: namespaceId,
         });
+      }
+      await database.db.insert(message).values({
+        threadId,
+        seq: 1,
+        creatorAccount: author.account,
+        creatorDomain: 'local',
+        contentType: 'PURE_TEXT',
+        content: '{"text":"business ordering"}',
+        updatedAt: new Date(),
+      });
       const blocker = await database.pool.connect();
       let result: Promise<unknown> | undefined;
       try {
@@ -426,7 +403,6 @@ describe('federated message deletion transaction ordering', () => {
           account: 'alice',
           domain: 'local',
           namespaceId: 0,
-          name: 'Alice',
           updatedAt: new Date(),
         })
         .returning();
@@ -520,6 +496,7 @@ describe('federated message deletion transaction ordering', () => {
         seq: 1,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
+        creatorNamespaceId: namespaceId,
         sourceNamespaceId: namespaceId,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'missing coordinate' }),
@@ -587,6 +564,7 @@ describe('federated message deletion transaction ordering', () => {
         seq: 1,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
+        creatorNamespaceId: namespaceId,
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,

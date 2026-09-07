@@ -55,7 +55,7 @@ npm run db:status
 These commands operate on the single database named by the root `.env`. They are useful for schema
 maintenance outside the federation lab. The lab backend command automatically creates and migrates
 its isolated `soms_fed_lab_alpha`, `soms_fed_lab_bravo`, and `soms_fed_lab_charlie` databases, so a
-manual migration is not required before `npm run dev`.
+manual migration is not required before `npm run dev:be`.
 
 `database/migrations/0000_base.sql` is the greenfield baseline. Because migration history was
 compacted, the runner rejects a database containing a mixed legacy and current migration ledger.
@@ -66,56 +66,37 @@ The bootstrap is a no-op after an administrator exists.
 
 ## Start the Development Stack
 
-The frontend has three intentionally separate build profiles:
-
-| Profile            | Command                    | Hashing | Source maps | Runtime                                       |
-| ------------------ | -------------------------- | ------- | ----------- | --------------------------------------------- |
-| Development server | `npm run dev`              | No      | Yes         | Angular/Vite HMR through the federation edges |
-| Development build  | `npm run dev:built`        | Yes     | Yes         | Prebuilt, unminified static assets            |
-| Production build   | `npm run build:production` | Yes     | No          | Optimized deployment assets                   |
+Build and run are separate. Launch the backend and frontend in separate terminals;
+there is no combined `dev` command, and backend runtime commands never build automatically.
 
 ```bash
-npm run dev
+# Build the backend and compiled migration runner.
+npm run build:be
+# Terminal 1: start the three built backend processes.
+npm run dev:be
 ```
 
-This builds the backend, starts the Angular and Vite development servers with HMR and unhashed
-in-memory frontend assets, and exposes both through three local Caddy edges. The browser endpoints
-are `http://localhost:3101`, `http://localhost:3102`, and `http://localhost:3103`; each node's admin
-console is available below `/admin/`. Continue using the `310x` endpoints rather than opening the
-frontend development-server ports directly, because each edge routes API traffic to the matching
-federation node.
-
-The two process groups can also be restarted independently in separate terminals:
-
 ```bash
-npm run dev:be
+# Terminal 2: start Angular/Vite with HMR through Caddy.
 npm run dev:fe
 ```
 
-`dev:be` builds and starts the three Node processes. Backend source changes require restarting
-this process group. `dev:fe` starts the shared Angular and Vite dev servers plus Caddy, does not
-access PostgreSQL, and applies frontend changes through HMR.
+The browser endpoints are `http://localhost:3101`, `http://localhost:3102`, and
+`http://localhost:3103`; each node's admin console is available below `/admin/`.
+Backend source changes require rebuilding and restarting `dev:be`. Frontend source
+changes are applied through HMR. To inspect static build outputs instead, run
+`npm run build:fe` followed by `npm run dev:fe:built`.
+`dev:fe` does not access PostgreSQL.
 
-To verify the same prebuilt frontend assets used by deployment, run:
+`npm run build` remains the backend build entry point. `npm run build:development`
+builds the backend and both frontends without starting processes. Use
+`npm run build:production` for optimized deployment assets without source maps.
 
-```bash
-npm run dev:built
-```
-
-This builds all three applications with development source maps, packages the client update bundle,
-and serves the resulting static assets. See the [federation lab guide](../../dev/federation-lab/README.md)
-for topology, persistent data, browser session isolation, and reset instructions.
-
-When the built backend is already running separately, rebuild and restart only the static frontend
-group with:
-
-```bash
-npm run dev:fe:build
-npm run dev:fe:built
-```
-
-To permanently remove the three lab databases and their local runtime state, stop both process
-groups and explicitly run `npm run dev:reset`.
+See the [federation lab guide](../../dev/federation-lab/README.md) for topology,
+persistent data, browser session isolation, and reset instructions. To remove the
+three lab databases and their runtime state, stop the processes and run
+`npm run dev:reset`. The automated `npm run federation:test` command always resets
+before starting its own backends and collecting diagnostics; build the backend first.
 
 ## Build and Test
 

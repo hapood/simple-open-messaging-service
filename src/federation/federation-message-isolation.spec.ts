@@ -63,7 +63,7 @@ function createMessagePageService() {
 }
 
 describe('federation message context isolation', () => {
-  it.each([{ seq: 8 }, { originSeq: 8 }])(
+  it.each([{ seq: 0 }, { seq: 8 }, { originSeq: 8 }])(
     'accepts a single quote coordinate %j at the envelope boundary',
     (quoteTarget) => {
       const validator = new FederationInboundMessageValidatorService();

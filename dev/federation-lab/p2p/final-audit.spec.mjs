@@ -149,6 +149,16 @@ test('accepts matching final rosters, intents, message coordinates, and bodies',
   assert.deepEqual(result.failures, []);
 });
 
+test('business convergence permits lazy profiles but still rejects stale membership', () => {
+  const value = fixture();
+  value.profiles.bravo.versions.clear();
+  assert.equal(compareFederationSnapshot(value).passed, false);
+  value.validateProfiles = false;
+  assert.equal(compareFederationSnapshot(value).passed, true);
+  value.groups.bravo.groups.get(groupAddress).roster = [];
+  assert.equal(compareFederationSnapshot(value).passed, false);
+});
+
 function galleryFixture() {
   const value = fixture();
   for (const [node, threadId, seq] of [
@@ -730,4 +740,24 @@ test('audits retained P2P messages after re-adding a friend, but skips inactive 
   );
   for (const node of ['alpha', 'bravo']) value.p2p[node].pairs.active = [];
   assert.equal(compareFederationSnapshot(value).passed, true);
+});
+
+test('requires the referenced publisher namespace even when another copy is cached', () => {
+  const value = fixture();
+  const member = value.groups.bravo.groups
+    .get(groupAddress)
+    .roster.find(({ address }) => address === alice);
+  member.namespaceId = 7;
+  const cached = value.profiles.bravo.versions.get(`${alice}#1`);
+  value.profiles.bravo.versions.set(`${alice}#1@8`, cached);
+  let result = compareFederationSnapshot(value);
+  assert.ok(
+    result.failures.some(
+      (failure) =>
+        failure.kind === 'PROFILE_MISSING' && failure.namespaceId === 7,
+    ),
+  );
+  value.profiles.bravo.versions.set(`${alice}#1@7`, cached);
+  result = compareFederationSnapshot(value);
+  assert.equal(result.passed, true);
 });

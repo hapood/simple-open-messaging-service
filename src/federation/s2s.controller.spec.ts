@@ -13,7 +13,7 @@ function target() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
     pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
-    getStoredUserProfile: vi.fn().mockResolvedValue({
+    getStoredProfile: vi.fn().mockResolvedValue({
       account: 'alice',
       domain: 'member.example',
       profileRev: 4,
@@ -496,7 +496,7 @@ describe('S2sController message author profiles', () => {
       { type: 'GROUP', account: '!group' },
       12,
     );
-    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+    expect(federation.getStoredProfile).toHaveBeenCalledWith(
       'carol',
       'charlie.test',
       3,
@@ -517,7 +517,7 @@ describe('S2sController message author profiles', () => {
     await expect(
       controller.getMessageAuthorProfile(req, '!group', undefined, '12'),
     ).rejects.toBe(refusal);
-    expect(federation.getStoredUserProfile).not.toHaveBeenCalled();
+    expect(federation.getStoredProfile).not.toHaveBeenCalled();
   });
 
   it('reads a locally authored message profile from namespace zero', async () => {
@@ -528,7 +528,7 @@ describe('S2sController message author profiles', () => {
       namespaceId: 0,
       profileRev: 4,
     });
-    federation.getStoredUserProfile.mockResolvedValueOnce({
+    federation.getStoredProfile.mockResolvedValueOnce({
       account: 'alice',
       domain: 'local.example',
       profileRev: 4,
@@ -545,7 +545,7 @@ describe('S2sController message author profiles', () => {
 
     await controller.getMessageAuthorProfile(req, 'alice', 'bob', '12');
 
-    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+    expect(federation.getStoredProfile).toHaveBeenCalledWith(
       'alice',
       'local.example',
       0,
@@ -581,7 +581,7 @@ describe('S2sController group member profiles', () => {
       'member.example',
       4,
     );
-    expect(federation.getStoredUserProfile).toHaveBeenCalledWith(
+    expect(federation.getStoredProfile).toHaveBeenCalledWith(
       'alice',
       'member.example',
       12,

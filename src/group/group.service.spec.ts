@@ -1,9 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group, profileVersion } from '../database/schema.js';
+import { groupAccount as group, profileTable } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
 
+vi.mock('../user/account-address.js', () => ({
+  accountAddressInTx: async (_tx: unknown, target: number | object) =>
+    typeof target === 'number'
+      ? { account: `u${target}`, domain: 'local', namespaceId: 0 }
+      : target,
+  localAccountsForTargetsInTx: async (_tx: unknown, targets: number[]) =>
+    targets.map((id) => ({
+      id,
+      account: `u${id}`,
+      domain: 'local',
+      namespaceId: 0,
+    })),
+}));
 type SelectResult = unknown[];
 
 function createTx(options: {
@@ -108,7 +121,10 @@ function createService(
     },
   };
   const federation = {
-    lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
+    lockMemberRelationshipFeedInTx: vi.fn().mockResolvedValue(undefined),
+    lockGroupMutationInTx: vi
+      .fn()
+      .mockResolvedValue({ threadLock: { threadId: 10 } }),
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     reconcileGroupJoinRequestManagerInTx: vi.fn().mockResolvedValue(undefined),
@@ -274,17 +290,17 @@ describe('GroupService membership lifecycle', () => {
       name: 'Old name',
       description: 'Old bio',
       avatar: 'old-avatar',
-      defaultProfileRev: 3,
+      profileRev: 3,
       dissolvedAt: null,
     };
     const updated = {
       ...current,
       name: 'New name',
       description: 'New bio',
-      defaultProfileRev: 4,
+      profileRev: 4,
     };
     const tx = createTx({
-      selects: [[{ group: current }], [{ groupId: 99 }]],
+      selects: [[{ group: current }], [{ groupId: 99 }], [updated]],
       updateResults: [[updated]],
       executeResults: [
         {
@@ -321,9 +337,11 @@ describe('GroupService membership lifecycle', () => {
 
     expect(tx.inserted).toEqual([
       {
-        table: profileVersion,
+        table: profileTable,
         value: {
-          groupId: 99,
+          account: '!group',
+          domain: 'local',
+          namespaceId: 0,
           profileRev: 4,
           displayName: 'New name',
           avatar: 'old-avatar',
@@ -350,7 +368,7 @@ describe('GroupService membership lifecycle', () => {
       name: 'Same name',
       description: 'Same bio',
       avatar: 'same-avatar',
-      defaultProfileRev: 3,
+      profileRev: 3,
       dissolvedAt: null,
     };
     const tx = createTx({
@@ -478,7 +496,7 @@ describe('GroupService membership lifecycle', () => {
     expect(reconcileGroupJoinRequestManagerInTx).toHaveBeenCalledWith(
       tx,
       10,
-      2,
+      { account: 'u2', domain: 'local', namespaceId: 0 },
       expect.any(Array),
     );
   });
@@ -531,7 +549,7 @@ describe('GroupService membership lifecycle', () => {
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       10,
-      2,
+      { account: 'u2', domain: 'local', namespaceId: 0 },
       'REVOKED',
       expect.any(Array),
       '',
@@ -697,7 +715,7 @@ describe('GroupService membership lifecycle', () => {
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       10,
-      2,
+      { account: 'u2', domain: 'local', namespaceId: 0 },
       'REVOKED',
       expect.any(Array),
       '',
@@ -847,7 +865,7 @@ describe('GroupService membership lifecycle', () => {
       createdAt: new Date(),
     };
     const messages = {
-      writeSystemMessageInTx: vi
+      writeDepartureMessageInTx: vi
         .fn()
         .mockResolvedValue({ message: systemMessage }),
     };
@@ -857,7 +875,7 @@ describe('GroupService membership lifecycle', () => {
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: true });
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
+    expect(messages.writeDepartureMessageInTx).toHaveBeenCalledWith(
       tx,
       10,
       'GROUP_LEFT',
@@ -866,6 +884,14 @@ describe('GroupService membership lifecycle', () => {
         actorUserId: 1,
         markReadUserId: 1,
         recipientUserIds: [1, 2],
+        visibleThroughUserIds: [
+          expect.objectContaining({
+            account: 'member',
+            domain: 'local',
+            namespaceId: 0,
+          }),
+        ],
+        threadLock: { threadId: 10 },
       },
     );
     expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
@@ -876,7 +902,7 @@ describe('GroupService membership lifecycle', () => {
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(1);
+    expect(messages.writeDepartureMessageInTx).toHaveBeenCalledTimes(1);
   });
 
   it('does not publish effects when a kick transaction rejects during state-feed projection', async () => {
@@ -928,7 +954,7 @@ describe('GroupService membership lifecycle', () => {
       .fn()
       .mockRejectedValue(rollback);
     const messages = {
-      writeSystemMessageInTx: vi.fn().mockResolvedValue({
+      writeDepartureMessageInTx: vi.fn().mockResolvedValue({
         message: { threadId: 10, seq: 9, creator: null, createdAt: new Date() },
       }),
     };

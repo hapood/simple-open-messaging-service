@@ -1,6 +1,12 @@
+import {
+  groupState as groupStateTable,
+  readGroupState,
+  groupStateFields,
+} from '../group/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
+import { writeProfileSnapshotInTx } from '../user/profile-store.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -13,18 +19,7 @@ import { S2sResponseError } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
-import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
-import { FederationUserDirectoryService } from './federation-user-directory.service.js';
-import type { FederationContext } from './federation-namespace.service.js';
-
-type ProfileWriteGate =
-  | {
-      threadId: number;
-      peerDomain: string;
-      expectedFederationVersion: number;
-    }
-  | { peerToken: FederationContext };
 
 const FEDERATED_PROFILE_NAME_MAX_CODE_POINTS = 30;
 const FEDERATED_PROFILE_BIO_MAX_CODE_POINTS = 120;
@@ -42,8 +37,6 @@ export class FederationProfileService {
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
     private readonly peerHttp: FederationPeerHttp,
-    private readonly threadAccess: FederationThreadAccessService,
-    private readonly users: FederationUserDirectoryService,
   ) {}
 
   async toS2SProfile(user: {
@@ -79,54 +72,6 @@ export class FederationProfileService {
     };
   }
 
-  async getStoredUserProfile(
-    account: string,
-    domain: string,
-    namespaceId: number,
-    rev: number,
-  ): Promise<S2SProfile | null> {
-    if (rev < 1) return null;
-    const storedDomain =
-      namespaceId === 0 && domain === this.config.domain ? 'local' : domain;
-    const row = await this.database.db
-      .select({
-        account: tables.user.account,
-        displayName: tables.profileVersion.displayName,
-        avatar: tables.profileVersion.avatar,
-        bio: tables.profileVersion.bio,
-        profileRev: tables.profileVersion.profileRev,
-      })
-      .from(tables.user)
-      .innerJoin(
-        tables.profileVersion,
-        and(
-          eq(tables.profileVersion.userId, tables.user.id),
-          eq(tables.profileVersion.profileRev, rev),
-        ),
-      )
-      .where(
-        and(
-          eq(tables.user.account, normalizeAccount(account)),
-          eq(tables.user.domain, storedDomain),
-          eq(
-            tables.user.namespaceId,
-            storedDomain === 'local' ? 0 : namespaceId,
-          ),
-        ),
-      )
-      .limit(1)
-      .then(([value]) => value);
-    if (!row) return null;
-    return this.toS2SProfile({
-      account: row.account,
-      domain,
-      name: row.displayName,
-      avatar: row.avatar,
-      bio: row.bio,
-      profileRev: row.profileRev,
-    });
-  }
-
   async getStoredProfile(
     account: string,
     domain: string,
@@ -134,39 +79,16 @@ export class FederationProfileService {
     rev: number,
   ): Promise<S2SProfile | null> {
     if (rev < 1) return null;
-    if (!account.startsWith('!')) {
-      return this.getStoredUserProfile(account, domain, namespaceId, rev);
-    }
     const storedDomain =
       namespaceId === 0 && domain === this.config.domain ? 'local' : domain;
-    const row = await this.database.db
-      .select({
-        account: tables.group.account,
-        displayName: tables.profileVersion.displayName,
-        avatar: tables.profileVersion.avatar,
-        bio: tables.profileVersion.bio,
-        profileRev: tables.profileVersion.profileRev,
-      })
-      .from(tables.group)
-      .innerJoin(
-        tables.profileVersion,
-        and(
-          eq(tables.profileVersion.groupId, tables.group.id),
-          eq(tables.profileVersion.profileRev, rev),
-        ),
-      )
-      .where(
-        and(
-          eq(tables.group.account, normalizeAccount(account)),
-          eq(tables.group.domain, storedDomain),
-          eq(
-            tables.group.namespaceId,
-            storedDomain === 'local' ? 0 : namespaceId,
-          ),
-        ),
-      )
-      .limit(1)
-      .then(([value]) => value);
+    const row = await this.database.db.query.profileTable.findFirst({
+      where: and(
+        eq(tables.profileTable.account, normalizeAccount(account)),
+        eq(tables.profileTable.domain, storedDomain),
+        eq(tables.profileTable.namespaceId, namespaceId),
+        eq(tables.profileTable.profileRev, rev),
+      ),
+    });
     if (!row) return null;
     return this.toS2SProfile({
       account: row.account,
@@ -178,91 +100,33 @@ export class FederationProfileService {
     });
   }
 
-  /** Persist one exact foreign snapshot without comparing revision numbers or moving a default pointer. */
+  /** Store an exact snapshot without creating a user/group identity or moving a default pointer. */
   async materializeExactForeignProfile(
     profile: S2SProfile,
     sourceDomain: string,
     namespaceId: number,
   ): Promise<void> {
     this.assertPositiveRevision(profile.profileRev);
-    if (profile.account.startsWith('!')) {
-      const group = await this.database.db.query.group.findFirst({
-        where: and(
-          eq(tables.group.account, normalizeAccount(profile.account)),
-          eq(tables.group.domain, profile.domain),
-          eq(tables.group.namespaceId, namespaceId),
-        ),
-        columns: { id: true },
-      });
-      if (!group) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'group profile shell is unavailable',
-        );
-      }
-      const prepared = await this.prepareForeignProfileData(profile);
-      await this.database.db
-        .insert(tables.profileVersion)
-        .values({
-          groupId: group.id,
-          profileRev: profile.profileRev,
-          displayName: prepared.name,
-          avatar: prepared.avatar,
-          bio: prepared.bio,
-        })
-        .onConflictDoUpdate({
-          target: [
-            tables.profileVersion.groupId,
-            tables.profileVersion.profileRev,
-          ],
-          targetWhere: sql`${tables.profileVersion.groupId} IS NOT NULL`,
-          set: {
-            displayName: prepared.name,
-            avatar: prepared.avatar,
-            bio: prepared.bio,
-          },
-          setWhere: sql`${sourceDomain} = ${profile.domain}`,
-        });
-      return;
-    }
-    const existing = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, normalizeAccount(profile.account)),
-        eq(tables.user.domain, profile.domain),
-        eq(tables.user.namespaceId, namespaceId),
-      ),
-      columns: { id: true },
-    });
-    const userId =
-      existing?.id ??
-      (await this.users.ensureForeignUser(
-        profile.account,
-        profile.domain,
-        namespaceId,
-      ));
     const prepared = await this.prepareForeignProfileData(profile);
-    await this.database.db
-      .insert(tables.profileVersion)
-      .values({
-        userId,
+    await this.database.db.transaction(async (tx) => {
+      const source = await tx.query.identityNamespace.findFirst({
+        where: and(
+          eq(tables.identityNamespace.id, namespaceId),
+          eq(tables.identityNamespace.domain, sourceDomain),
+        ),
+      });
+      if (!source || namespaceId === 0)
+        throw new Error('foreign profile publisher namespace is unavailable');
+      await writeProfileSnapshotInTx(tx, {
+        account: normalizeAccount(profile.account),
+        domain: profile.domain,
+        namespaceId,
         profileRev: profile.profileRev,
         displayName: prepared.name,
         avatar: prepared.avatar,
         bio: prepared.bio,
-      })
-      .onConflictDoUpdate({
-        target: [
-          tables.profileVersion.userId,
-          tables.profileVersion.profileRev,
-        ],
-        targetWhere: sql`${tables.profileVersion.userId} IS NOT NULL`,
-        set: {
-          displayName: prepared.name,
-          avatar: prepared.avatar,
-          bio: prepared.bio,
-        },
-        setWhere: sql`${sourceDomain} = ${profile.domain}`,
       });
+    });
   }
 
   async getLocalAccountProfile(
@@ -271,41 +135,39 @@ export class FederationProfileService {
     if (address.domain !== this.config.domain) return null;
     const account = normalizeAccount(address.account);
     if (account.startsWith('!')) {
-      const group = await this.database.db.query.group.findFirst({
-        where: and(
-          eq(tables.group.account, account),
-          eq(tables.group.domain, 'local'),
-          eq(tables.group.namespaceId, 0),
+      const group = await readGroupState(
+        this.database.db,
+        and(
+          eq(groupStateFields.account, account),
+          eq(groupStateFields.domain, 'local'),
+          eq(groupStateFields.namespaceId, 0),
         ),
-      });
-      if (!group || group.defaultProfileRev === 0 || group.dissolvedAt)
-        return null;
+      );
+      if (!group || group.profileRev === 0 || group.dissolvedAt) return null;
       return this.toS2SProfile({
         account: group.account,
         domain: this.config.domain,
         name: group.name,
         avatar: group.avatar,
         bio: group.description,
-        profileRev: group.defaultProfileRev,
+        profileRev: group.profileRev,
       });
     }
-    const user = await this.database.db.query.user.findFirst({
+    const user = await this.database.db.query.account.findFirst({
       where: and(
-        eq(tables.user.account, account),
-        eq(tables.user.domain, 'local'),
-        eq(tables.user.namespaceId, 0),
+        eq(tables.account.account, account),
+        eq(tables.account.domain, 'local'),
+        eq(tables.account.namespaceId, 0),
       ),
     });
     if (!user || user.domain !== 'local' || user.defaultProfileRev === 0)
       return null;
-    return this.toS2SProfile({
-      account: user.account,
-      domain: this.config.domain,
-      name: user.name,
-      avatar: user.avatar,
-      bio: user.bio,
-      profileRev: user.defaultProfileRev,
-    });
+    return this.getStoredProfile(
+      user.account,
+      this.config.domain,
+      0,
+      user.defaultProfileRev,
+    );
   }
 
   /** Resolve one exact locally-owned revision after applying this server's disclosure policy. */
@@ -330,35 +192,40 @@ export class FederationProfileService {
             this.profileNotDisclosed();
           const [value] = await tx
             .select({
-              groupId: tables.group.id,
-              account: tables.group.account,
-              displayName: tables.profileVersion.displayName,
-              avatar: tables.profileVersion.avatar,
-              bio: tables.profileVersion.bio,
-              profileRev: tables.profileVersion.profileRev,
+              groupId: groupStateTable.id,
+              account: groupStateFields.account,
+              displayName: tables.profileTable.displayName,
+              avatar: tables.profileTable.avatar,
+              bio: tables.profileTable.bio,
+              profileRev: tables.profileTable.profileRev,
             })
-            .from(tables.group)
+            .from(groupStateTable)
             .innerJoin(
-              tables.profileVersion,
+              tables.profileTable,
               and(
-                eq(tables.profileVersion.groupId, tables.group.id),
-                eq(tables.profileVersion.profileRev, rev),
+                eq(tables.profileTable.account, groupStateFields.account),
+                eq(tables.profileTable.domain, groupStateFields.domain),
+                eq(
+                  tables.profileTable.namespaceId,
+                  groupStateFields.namespaceId,
+                ),
+                eq(tables.profileTable.profileRev, rev),
               ),
             )
             .leftJoin(
               tables.groupMetaProfileFeed,
               and(
-                eq(tables.groupMetaProfileFeed.groupId, tables.group.id),
+                eq(tables.groupMetaProfileFeed.threadId, groupStateTable.id),
                 eq(tables.groupMetaProfileFeed.profileRev, rev),
               ),
             )
             .where(
               and(
-                eq(tables.group.account, account),
-                eq(tables.group.domain, 'local'),
-                eq(tables.group.namespaceId, 0),
+                eq(groupStateFields.account, account),
+                eq(groupStateFields.domain, 'local'),
+                eq(groupStateFields.namespaceId, 0),
                 sql`(
-                  ${tables.groupMetaProfileFeed.groupId} IS NOT NULL
+                  ${tables.groupMetaProfileFeed.threadId} IS NOT NULL
                   OR EXISTS (
                     SELECT 1
                     FROM "RelationshipIntent" intent
@@ -372,13 +239,13 @@ export class FederationProfileService {
                       AND (
                         (intent."authorSide" = 'A'
                           AND pair."endpointAType" = 'GROUP'
-                          AND pair."endpointAAccount" = ${tables.group.account}
+                          AND pair."endpointAAccount" = ${groupStateFields.account}
                           AND pair."endpointADomain" = 'local'
                           AND pair."endpointBDomain" = ${peerDomain})
                         OR
                         (intent."authorSide" = 'B'
                           AND pair."endpointBType" = 'GROUP'
-                          AND pair."endpointBAccount" = ${tables.group.account}
+                          AND pair."endpointBAccount" = ${groupStateFields.account}
                           AND pair."endpointBDomain" = 'local'
                           AND pair."endpointADomain" = ${peerDomain})
                       )
@@ -409,26 +276,28 @@ export class FederationProfileService {
 
     const row = await this.database.db
       .select({
-        userId: tables.user.id,
-        account: tables.user.account,
-        displayName: tables.profileVersion.displayName,
-        avatar: tables.profileVersion.avatar,
-        bio: tables.profileVersion.bio,
-        profileRev: tables.profileVersion.profileRev,
+        userId: tables.account.id,
+        account: tables.account.account,
+        displayName: tables.profileTable.displayName,
+        avatar: tables.profileTable.avatar,
+        bio: tables.profileTable.bio,
+        profileRev: tables.profileTable.profileRev,
       })
-      .from(tables.user)
+      .from(tables.account)
       .innerJoin(
-        tables.profileVersion,
+        tables.profileTable,
         and(
-          eq(tables.profileVersion.userId, tables.user.id),
-          eq(tables.profileVersion.profileRev, rev),
+          eq(tables.profileTable.account, tables.account.account),
+          eq(tables.profileTable.domain, tables.account.domain),
+          eq(tables.profileTable.namespaceId, tables.account.namespaceId),
+          eq(tables.profileTable.profileRev, rev),
         ),
       )
       .where(
         and(
-          eq(tables.user.account, normalizeAccount(account)),
-          eq(tables.user.domain, 'local'),
-          eq(tables.user.namespaceId, 0),
+          eq(tables.account.account, normalizeAccount(account)),
+          eq(tables.account.domain, 'local'),
+          eq(tables.account.namespaceId, 0),
         ),
       )
       .limit(1)
@@ -477,17 +346,6 @@ export class FederationProfileService {
     );
   }
 
-  async ensureForeignUserLocalized(
-    userId: number,
-    address: S2SAddress,
-  ): Promise<void> {
-    const peerToken = await this.threadAccess.capturePeerResponseToken(
-      address.domain,
-    );
-    const profile = await this.fetchRemoteAccount(address);
-    await this.localizeForeignProfile(userId, profile, { peerToken });
-  }
-
   async fetchRemoteAccount(address: S2SAddress): Promise<S2SProfile> {
     const profile = await this.peerHttp.get<S2SProfile>(
       `/s2s/v1/accounts/${encodeFederationResourceComponent(address.account)}`,
@@ -503,80 +361,9 @@ export class FederationProfileService {
     return profile;
   }
 
-  async localizeForeignProfile(
-    userId: number,
-    profile: S2SProfile,
-    gate?: ProfileWriteGate,
-  ): Promise<void> {
-    const stub = await this.database.db.query.user.findFirst({
-      where: eq(tables.user.id, userId),
-      columns: { id: true },
-    });
-    if (!stub) return;
-
-    const data = await this.prepareForeignProfileData(profile);
-    if (gate) {
-      await this.database.db.transaction(async (tx) => {
-        if ('peerToken' in gate) {
-          await this.threadAccess.assertPeerResponseWritable(
-            tx,
-            gate.peerToken,
-          );
-        } else {
-          await this.threadAccess.assertResponseWritable(
-            tx,
-            gate.threadId,
-            gate.peerDomain,
-            gate.expectedFederationVersion,
-          );
-        }
-        await tx
-          .update(tables.user)
-          .set({ ...data, updatedAt: new Date() })
-          .where(eq(tables.user.id, userId));
-      });
-      return;
-    }
-    await this.database.db
-      .update(tables.user)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(tables.user.id, userId));
-  }
-
-  async upsertForeignUserFromPeerResponse(
-    account: string,
-    domain: string,
-    profile: S2SProfile,
-    peerToken: FederationContext,
-  ): Promise<number> {
-    if (peerToken.domain !== domain) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'peer response token domain does not match foreign user domain',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.database.db.transaction(async (tx) => {
-      await this.threadAccess.assertPeerResponseWritable(tx, peerToken);
-      const userId = await this.users.ensureForeignUserInTransaction(
-        tx,
-        account,
-        domain,
-        peerToken.namespaceId,
-      );
-      const data = await this.prepareForeignProfileData(profile);
-      await tx
-        .update(tables.user)
-        .set({ ...data, updatedAt: new Date() })
-        .where(eq(tables.user.id, userId));
-      return userId;
-    });
-  }
-
   private async prepareForeignProfileData(profile: S2SProfile): Promise<{
     name: string;
     bio: string;
-    defaultProfileRev: number;
     avatar: string;
   }> {
     this.assertPositiveRevision(profile.profileRev);
@@ -620,7 +407,6 @@ export class FederationProfileService {
         profile.bio,
         FEDERATED_PROFILE_BIO_MAX_CODE_POINTS,
       ),
-      defaultProfileRev: profile.profileRev,
       avatar,
     };
   }

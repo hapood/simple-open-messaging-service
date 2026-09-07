@@ -18,7 +18,7 @@ interface CallEventPayload {
   type: string;
   callSid: string;
   threadId?: number;
-  callerUserId?: number;
+  callerUserId?: number | null;
   callerName?: string;
   callerAvatar?: string;
   callType?: 'AUDIO' | 'VIDEO';
@@ -117,7 +117,7 @@ export class CallEventService implements OnDestroy {
             m.data as {
               id: string;
               callSid: string;
-              fromUserId: number;
+              fromUserId: number | null;
               kind: string;
               payload: string;
             },
@@ -289,8 +289,7 @@ export class CallEventService implements OnDestroy {
       this.locallyTerminatedCallSid = null;
     }
     const current = this.callState();
-    const base =
-      current.callSid === callSid ? current : this.lastOwnedSnapshot;
+    const base = current.callSid === callSid ? current : this.lastOwnedSnapshot;
     if (!base || base.callSid !== callSid) return;
 
     this.clearTerminalDisplay();
@@ -302,15 +301,16 @@ export class CallEventService implements OnDestroy {
       step: '',
       terminalReason,
     });
-    this.terminalDisplayTimer = setTimeout(() => {
-      this.terminalDisplayTimer = null;
-      if (this.callState().callSid === callSid) {
-        this.callState.set({ ...IDLE_CALL });
-      }
-    },
-    terminalReason === 'busy'
-      ? BUSY_TERMINAL_DISPLAY_MS
-      : TERMINAL_DISPLAY_MS,
+    this.terminalDisplayTimer = setTimeout(
+      () => {
+        this.terminalDisplayTimer = null;
+        if (this.callState().callSid === callSid) {
+          this.callState.set({ ...IDLE_CALL });
+        }
+      },
+      terminalReason === 'busy'
+        ? BUSY_TERMINAL_DISPLAY_MS
+        : TERMINAL_DISPLAY_MS,
     );
   }
 

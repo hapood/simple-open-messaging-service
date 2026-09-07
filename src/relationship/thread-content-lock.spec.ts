@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { requireThreadContentLockInTx } from './thread-content-lock.js';
+import {
+  requireThreadContentLockInTx,
+  requireP2PThreadContentLockUnderPairInTx,
+} from './thread-content-lock.js';
 
 describe('content parent lock ordering', () => {
+  it('rejects a child thread outside the held P2P pair without issuing parent locks', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    await expect(
+      requireP2PThreadContentLockUnderPairInTx({ execute } as never, 9n, 7),
+    ).rejects.toThrow('does not belong to the locked pair');
+    expect(execute).toHaveBeenCalledOnce();
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0][0]);
+    expect(query.sql).toContain('FOR UPDATE OF thread');
+    expect(query.params).toEqual([7, 9n]);
+  });
+
   it.each(['GROUP', 'P2P'])(
     'locks %s parents before its thread',
     async (type) => {
@@ -10,7 +24,7 @@ describe('content parent lock ordering', () => {
       const execute = vi.fn(async (query) => {
         const compiled = new PgDialect().sqlToQuery(query);
         queries.push(compiled);
-        if (compiled.sql.includes('LEFT JOIN'))
+        if (compiled.sql.includes('SELECT thread.type'))
           return {
             rows: [
               {
@@ -57,18 +71,15 @@ describe('content parent lock ordering', () => {
           '["business-scope","ACCOUNT","local","a"]',
           '["business-scope","ACCOUNT","local","z"]',
         ]);
-      const parentIndex = queries.findIndex((query) =>
-        query.sql.includes(
-          type === 'GROUP'
-            ? 'SELECT id FROM "Group"'
-            : 'SELECT id FROM "RelationshipPair"',
-        ),
-      );
       const advisoryIndex = queries.findLastIndex((query) =>
         query.sql.includes('pg_advisory_xact_lock'),
       );
-      expect(parentIndex).toBeGreaterThan(advisoryIndex);
-      expect(parentIndex).toBeLessThan(queries.length - 1);
+      const rowLocks = queries.filter((query) =>
+        query.sql.includes('FOR UPDATE'),
+      );
+      expect(rowLocks).toHaveLength(type === 'GROUP' ? 1 : 2);
+      expect(queries.indexOf(rowLocks[0])).toBeGreaterThan(advisoryIndex);
+      if (type === 'P2P') expect(rowLocks[0].sql).toContain('RelationshipPair');
     },
   );
 });

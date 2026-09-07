@@ -23,12 +23,17 @@ async function readEnvelope(response, operation) {
     });
   }
   if (!response.ok || body?.code !== 0) {
-    throw new LabApiError(`${operation} failed`, {
-      status: response.status,
-      code: body?.code,
-      message: body?.message,
-      data: body?.data,
-    });
+    const requestId = response.headers.get('x-request-id');
+    throw new LabApiError(
+      `${operation} failed: HTTP ${response.status} code=${body?.code ?? 'unknown'} message=${body?.message ?? 'unknown'}${requestId ? ` requestId=${requestId}` : ''}`,
+      {
+        status: response.status,
+        code: body?.code,
+        message: body?.message,
+        data: body?.data,
+        requestId,
+      },
+    );
   }
   return body.data;
 }
@@ -518,18 +523,28 @@ export class LabAdminActor {
   }
 
   async durableTaskActivity() {
-    const [pending, processing, asyncProcessing] = await Promise.all(
-      ['PENDING', 'PROCESSING', 'ASYNC_PROCESSING'].map((status) =>
-        this.durableTasks({
-          status,
-          take: status === 'PENDING' ? 1 : 200,
-        }),
+    const queryMs = {};
+    const [pending, processing, asyncProcessing, failed] = await Promise.all(
+      ['PENDING', 'PROCESSING', 'ASYNC_PROCESSING', 'FAILED'].map(
+        async (status) => {
+          const startedAt = performance.now();
+          const result = await this.durableTasks({
+            status,
+            take: status === 'PENDING' ? 1 : 200,
+          });
+          // Includes response decoding and any session renewal/retry.
+          queryMs[status] = Math.round(performance.now() - startedAt);
+          return result;
+        },
       ),
     );
     return {
+      queryMs,
       pendingCount: pending.total,
       processing: processing.list ?? [],
       asyncProcessing: asyncProcessing.list ?? [],
+      failedCount: failed.total,
+      failed: failed.list ?? [],
     };
   }
 

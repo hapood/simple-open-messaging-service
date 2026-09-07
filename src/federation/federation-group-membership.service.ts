@@ -1,12 +1,17 @@
+import { groupState as group, readGroupState } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  localAccountsForTargetsInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import {
   account,
-  group,
   accountThreadState,
-  user,
+  account as user,
 } from '../database/schema.js';
 import { readCurrentGroupMemberInTx } from '../group-meta/current-group-roster.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
@@ -27,7 +32,7 @@ export class FederationGroupMembershipService {
     params: {
       threadId: number;
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       active: boolean;
       hostedLocally: boolean;
       memberProfileRev?: number;
@@ -36,15 +41,8 @@ export class FederationGroupMembershipService {
       updateCanonicalRoster?: boolean;
     },
   ): Promise<GroupMembershipSyncResult> {
-    const identity = await tx.query.user.findFirst({
-      where: eq(user.id, params.memberUserId),
-      columns: { id: true, account: true, domain: true },
-    });
-    const localAccount = await tx.query.account.findFirst({
-      where: eq(account.id, params.memberUserId),
-      columns: { id: true },
-    });
-    if (!identity) throw new Error('group member identity is missing');
+    const identity = await accountAddressInTx(tx, params.memberUserId);
+    const [localAccount] = await localAccountsForTargetsInTx(tx, [identity]);
     const current =
       params.hostedLocally && params.updateCanonicalRoster !== false
         ? await readCurrentGroupMemberInTx(
@@ -63,7 +61,7 @@ export class FederationGroupMembershipService {
         return { canonicalRosterChanged: false };
       await this.groupMetaFeed.reconcileMembersInTx(tx, params.groupId, [
         {
-          userId: current.userId,
+          namespaceId: current.namespaceId,
           account: current.account,
           domain: current.domain,
           operation: 'DEPART',
@@ -89,19 +87,16 @@ export class FederationGroupMembershipService {
         throw new Error(
           'active group membership has no valid profile revision',
         );
-      const source = await tx.query.group.findFirst({
-        where: eq(group.id, params.groupId),
-        columns: { defaultProfileRev: true },
-      });
+      const source = await readGroupState(tx, eq(group.id, params.groupId));
       if (!source) throw new Error('authoritative group profile is missing');
       await this.groupMetaFeed.reconcileProfileInTx(
         tx,
         params.groupId,
-        source.defaultProfileRev,
+        source.profileRev,
       );
       await this.groupMetaFeed.reconcileMembersInTx(tx, params.groupId, [
         {
-          userId: identity.id,
+          namespaceId: identity.namespaceId,
           account: identity.account,
           domain: identity.domain,
           operation: 'UPSERT',

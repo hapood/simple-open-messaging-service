@@ -1,7 +1,8 @@
 import { Injectable, inject } from '@angular/core';
 import {
   WebdbService,
-  type ProfileRecord,
+  type ProfileSnapshot,
+  type ProfileSelector,
   type ProfileWriteRecord,
 } from './webdb.service';
 import { AvatarRepository } from './avatar-cache.service';
@@ -22,7 +23,7 @@ export interface ProfileData {
 
 /**
  * The DB-layer repository for profiles (self + peer + group) — the read/write half of the strict 3-tier
- * for the profile domain. Profiles are cached in IDB keyed by stable identity (`u<userId>` / `g<groupId>`)
+ * for the profile domain. Profiles are cached by account, domain, namespace, and exact revision
  * so the UI can render last-known profile data instantly (offline / before refresh).
  *
  * Owns avatar-refresh signalling: on every {@link putProfile}, if the avatar path differs from the
@@ -47,8 +48,7 @@ export class ProfileRepository {
     data: ProfileData,
   ): Promise<void> {
     try {
-      const prev = await this.webdb.getProfile(identity);
-      if (prev && data.profileRev < prev.profileRev) return;
+      const prev = await this.webdb.getProfile(data);
       const record: ProfileWriteRecord = {
         identity,
         id: data.id,
@@ -71,36 +71,25 @@ export class ProfileRepository {
     }
   }
 
-  /** Read a cached profile by identity (undefined when absent / IDB unavailable). */
-  async getProfile(identity: string): Promise<ProfileRecord | undefined> {
+  /** Cache a resolved message snapshot without changing any thread/self avatar selection. */
+  async cacheProfile(
+    snapshot: ProfileSnapshot,
+    sourceServer: string,
+  ): Promise<void> {
     try {
-      return await this.webdb.getProfile(identity);
+      await this.webdb.putProfile({ ...snapshot, sourceServer });
     } catch {
-      return undefined;
+      // Cache unavailability does not prevent rendering the resolved message.
     }
   }
 
-  async getUser(
-    account: string,
-    domain: string,
-    namespaceId: number,
-  ): Promise<ProfileRecord | undefined> {
-    const record = await this.webdb.getUser(
-      account,
-      domain,
-      namespaceId,
-    );
-    if (!record) return undefined;
-    return {
-      identity: JSON.stringify([namespaceId, domain, account]),
-      id: record.id ?? 0,
-      kind: 'user',
-      name: record.name,
-      account: record.account,
-      avatar: record.avatar,
-      bio: record.bio,
-      domain: record.domain,
-      profileRev: record.profileRev,
-    };
+  async getProfile(
+    selector: ProfileSelector,
+  ): Promise<ProfileSnapshot | undefined> {
+    try {
+      return await this.webdb.getProfile(selector);
+    } catch {
+      return undefined;
+    }
   }
 }

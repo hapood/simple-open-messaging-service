@@ -3,7 +3,14 @@ import { GroupController } from './group.controller.js';
 
 describe('group invitation admission', () => {
   it('normalizes the local public domain and deduplicates equivalent addresses', async () => {
-    const resolve = vi.fn().mockResolvedValue({ userId: 12, threadId: 50 });
+    const resolve = vi
+      .fn()
+      .mockResolvedValue({
+        account: 'friend',
+        domain: 'local',
+        namespaceId: 0,
+        threadId: 50,
+      });
     const enqueueTask = vi.fn().mockResolvedValue({ taskId: 1n });
     const controller = Object.create(
       GroupController.prototype,
@@ -36,7 +43,12 @@ describe('group invitation admission', () => {
       domain: 'local',
     });
     expect(enqueueTask).toHaveBeenCalledWith(
-      expect.objectContaining({ payload: { threadId: 7, targetUserId: 12 } }),
+      expect.objectContaining({
+        payload: {
+          threadId: 7,
+          targetUserId: { account: 'friend', domain: 'local', namespaceId: 0 },
+        },
+      }),
     );
     expect(result).toEqual({
       invited: [{ account: 'friend', domain: 'local' }],

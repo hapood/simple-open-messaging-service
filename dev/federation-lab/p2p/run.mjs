@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { createProgressLogger } from './progress-log.mjs';
+import '../diagnostics/preload.mjs';
 import { randomInt } from 'node:crypto';
 import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -20,10 +22,7 @@ import {
   attachCreatedGroups,
   readGroupWorkloadSnapshot,
 } from './group-facts.mjs';
-import {
-  readFederationAuditSnapshot,
-  waitForFederationConvergence,
-} from './final-audit.mjs';
+import { waitForFederationConvergence } from './final-audit.mjs';
 import { resolveWorkloadProfiles } from './profile-resolution.mjs';
 import { summarizeCoverage } from './coverage.mjs';
 import { assertVerificationMode } from './verification-mode.mjs';
@@ -190,6 +189,9 @@ async function restoreQuotaDefaults(actors, originals) {
   return restorations.filter(({ status }) => status === 'rejected').length;
 }
 
+let logProgress = console.log;
+let logFailure = console.error;
+
 async function main() {
   assertKnownOptions();
   const usersPerNode = integerOption('users-per-node', 5, 1, 999);
@@ -223,6 +225,10 @@ async function main() {
   const startedAt = new Date();
   const runId = `${startedAt.toISOString().replaceAll(/[-:.TZ]/g, '')}-${prefix}`;
   const runDir = join(runtimeDir, runId);
+  await mkdir(runDir, { recursive: true });
+  const progressLogger = createProgressLogger(runDir);
+  logProgress = progressLogger.info;
+  logFailure = progressLogger.error;
   const plan = buildUserPlan(
     prefix,
     usersPerNode,
@@ -329,12 +335,12 @@ async function main() {
     writeJson(runDir, 'provision.json', report),
   ]);
 
-  console.log(`[p2p] run ${runId}; seed=${seed}; artifacts=${runDir}`);
-  console.log(
+  logProgress(`[p2p] run ${runId}; seed=${seed}; artifacts=${runDir}`);
+  logProgress(
     `[p2p] online workload ready: ${operationCount} random decisions in ` +
       `${Math.ceil(operationCount / roundSize)} rounds; direction is chosen before state inspection`,
   );
-  console.log(
+  logProgress(
     `[p2p] connecting to ${federationLabNodes.length} nodes; provisioning ${plan.length} users through admin + OTP APIs`,
   );
   await assertLabReady();
@@ -365,7 +371,7 @@ async function main() {
       }
       completed += 1;
       if (completed === plan.length || completed % 25 === 0) {
-        console.log(`[p2p] users ready ${completed}/${plan.length}`);
+        logProgress(`[p2p] users ready ${completed}/${plan.length}`);
       }
       return {
         node: item.nodeName,
@@ -402,7 +408,7 @@ async function main() {
           );
         groupsCompleted += 1;
         if (groupsCompleted === groupPlan.length || groupsCompleted % 10 === 0)
-          console.log(
+          logProgress(
             `[p2p] groups ready ${groupsCompleted}/${groupPlan.length}`,
           );
         return { ...item, threadId: created.threadId };
@@ -449,12 +455,12 @@ async function main() {
     }
     report.finishedAt = new Date().toISOString();
     await writeJson(runDir, 'provision.json', report);
-    console.log(`[p2p] report ${join(runDir, 'provision.json')}`);
+    logProgress(`[p2p] report ${join(runDir, 'provision.json')}`);
   }
 
   if (report.status !== 'SUCCEEDED') process.exitCode = 1;
   else {
-    console.log(
+    logProgress(
       `[p2p] ${actors.userCount} in-memory user actors authenticated; lab remains running for UI inspection`,
     );
   }
@@ -480,7 +486,7 @@ async function main() {
   let quotasRestored = false;
   let workloadConnections;
   try {
-    console.log(
+    logProgress(
       `[p2p] executing ${operationCount} online random decisions; ` +
         `accepted operations are appended to ${operationsPath}`,
     );
@@ -530,12 +536,12 @@ async function main() {
             ),
           }),
         ]);
-        console.log(
+        logProgress(
           `[p2p] ${topology.domain} request quotas raised to user=${requestLimit}, federation=${federationRequestLimit}`,
         );
       }),
     );
-    console.log(
+    logProgress(
       '[p2p] connecting read-only fact observer to three lab databases',
     );
     workloadConnections = await connectP2pAuditDatabases(baseDatabaseUrl);
@@ -551,6 +557,7 @@ async function main() {
       progressEvery,
       operationsPerSecond,
       onLog: persistOperationLog,
+      onProgress: logProgress,
     });
     execution.operationCount = operationLog.operations.length;
     execution.status = 'SUCCEEDED';
@@ -582,16 +589,16 @@ async function main() {
       execution.error = execution.error
         ? `${execution.error}; ${message}`
         : message;
-      console.error(`[p2p] ${message}`);
+      logFailure(`[p2p] ${message}`);
     }
     execution.finishedAt = new Date().toISOString();
     await writeJson(runDir, 'execution.json', execution);
     await writeJson(runDir, 'coverage.json', summarizeCoverage(operationLog));
-    console.log(`[p2p] execution report ${join(runDir, 'execution.json')}`);
+    logProgress(`[p2p] execution report ${join(runDir, 'execution.json')}`);
   }
   if (execution.status !== 'SUCCEEDED') process.exitCode = 1;
   else
-    console.log(
+    logProgress(
       `[p2p] ${execution.operationCount} logical operations completed with expected outcomes`,
     );
 
@@ -613,18 +620,27 @@ async function main() {
   await writeJson(runDir, 'audit.json', audit);
   let connections;
   try {
-    console.log('[p2p] connecting read-only auditor to three lab databases');
+    logProgress('[p2p] connecting read-only auditor to three lab databases');
     connections = await connectP2pAuditDatabases(baseDatabaseUrl);
-    const profileSnapshot = await readFederationAuditSnapshot(
+    // Durable task completion does not include asynchronous peer-state pulls.
+    // Resolve profiles only after their relationship authorization has converged.
+    logProgress('[p2p] waiting for business state before resolving profiles');
+    const { snapshot: profileSnapshot } = await waitForFederationConvergence({
       connections,
-      operationLog,
-    );
+      log: operationLog,
+      timeoutMs: convergenceTimeoutMs,
+      intervalMs: convergenceIntervalMs,
+      stableSamples: convergenceSamples,
+      onProgress: logProgress,
+      validateProfiles: false,
+    });
     const profileResolutions = await resolveWorkloadProfiles({
       actors,
       groups: profileSnapshot.groups,
       profiles: profileSnapshot.profiles,
       p2p: profileSnapshot.p2p,
       p2pMessages: profileSnapshot.p2pMessages,
+      onProgress: logProgress,
       log: operationLog,
       timeoutMs: taskTimeoutMs,
     });
@@ -638,12 +654,13 @@ async function main() {
       timeoutMs: convergenceTimeoutMs,
       intervalMs: convergenceIntervalMs,
       stableSamples: convergenceSamples,
+      onProgress: logProgress,
     });
     audit.convergenceSamples = converged.samples;
     audit.snapshot = converged.snapshot;
     audit.comparison = converged.comparison;
     audit.status = audit.comparison.passed ? 'SUCCEEDED' : 'FAILED';
-    console.log(
+    logProgress(
       `[federation][audit] groups=${audit.comparison.groups}, ` +
         `finalFriends=${audit.comparison.p2pFriends.finalFriends}, ` +
         `messages=${audit.comparison.liveMessages}, ` +
@@ -655,7 +672,7 @@ async function main() {
     if (error?.snapshot) audit.snapshot = error.snapshot;
     if (error?.comparison) {
       audit.comparison = error.comparison;
-      console.error(
+      logFailure(
         `[federation][audit][failures] ${JSON.stringify(error.comparison.failures.slice(0, 50))}`,
       );
     }
@@ -675,20 +692,18 @@ async function main() {
     }
     audit.finishedAt = new Date().toISOString();
     await writeJson(runDir, 'audit.json', audit);
-    console.log(`[p2p] audit report ${join(runDir, 'audit.json')}`);
+    logProgress(`[p2p] audit report ${join(runDir, 'audit.json')}`);
   }
   if (audit.status !== 'SUCCEEDED') {
     process.exitCode = 1;
     throw new Error(audit.error ?? 'federation final consistency audit failed');
   }
-  console.log(
+  logProgress(
     '[federation] final intents, rosters, messages, and media PASSED',
   );
 }
 
 main().catch((error) => {
-  console.error(
-    `[p2p] ${error instanceof Error ? error.message : String(error)}`,
-  );
+  logFailure(`[p2p] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

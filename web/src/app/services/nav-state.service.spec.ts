@@ -6,6 +6,7 @@ import {
 import { TestBed } from '@angular/core/testing';
 import { NavStateMachineService } from './nav-state.service';
 import { UserService } from './user.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 /** The nav state machine is the trickiest, most regression-prone logic in the shell — its `back()` layering
  *  and the section/reset methods have no compile-time guard, so these tests lock the invariants in. */
@@ -214,6 +215,26 @@ describe('NavStateMachineService', () => {
     expect(svc.searchOpen()).toBe(false);
     expect(svc.settingsCategoryStack()).toEqual([]);
     expect(svc.paneStack()).toEqual([]);
+  });
+
+  it('closes cached navigation on logout before HELLO identifies the session', () => {
+    TestBed.inject(ApplicationRef).tick();
+    expect(sessionUserId()).toBeNull();
+    svc.openChat(39);
+    svc.openAside('profile');
+    svc.openSearch();
+    svc.openSettingsCategory('devices');
+    svc.pushPane({ kind: 'dialog' });
+    svc.setTopSection('profile');
+
+    TestBed.inject(SessionLifecycleService).endSession();
+
+    expect(svc.chatThreadId()).toBeUndefined();
+    expect(svc.aside()).toEqual([]);
+    expect(svc.searchOpen()).toBe(false);
+    expect(svc.settingsCategoryStack()).toEqual([]);
+    expect(svc.paneStack()).toEqual([]);
+    expect(svc.topSection()).toBe('chats');
   });
 
   it('does not reset on login or when the same id is re-emitted (reconnect HELLO)', () => {

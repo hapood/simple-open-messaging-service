@@ -1,5 +1,13 @@
+import {
+  groupState as groupStateTable,
+  groupStateFields,
+} from '../group/group-state.js';
+import {
+  requireThreadContentLockInTx,
+  type ThreadContentLock,
+} from '../relationship/thread-content-lock.js';
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import * as tables from '../database/schema.js';
@@ -24,6 +32,7 @@ export class FederationGroupRosterProjectionService {
       dissolved: boolean;
       owner: { account: string; domain: string } | null;
       changes: ReadonlyArray<GroupRosterProjectionChange>;
+      threadLock?: ThreadContentLock;
     },
   ): Promise<{
     threadId: number;
@@ -35,19 +44,19 @@ export class FederationGroupRosterProjectionService {
       throw new Error('invalid federated group owner');
     const [mirror] = await tx
       .select({
-        groupId: tables.group.id,
+        groupId: groupStateTable.id,
         threadId: tables.messageThread.id,
       })
-      .from(tables.group)
+      .from(groupStateTable)
       .innerJoin(
         tables.messageThread,
-        eq(tables.messageThread.groupId, tables.group.id),
+        eq(tables.messageThread.id, groupStateTable.id),
       )
       .where(
         and(
-          eq(tables.group.account, params.groupAccount),
-          eq(tables.group.domain, params.peerDomain),
-          eq(tables.group.namespaceId, params.namespaceId),
+          eq(groupStateFields.account, params.groupAccount),
+          eq(groupStateFields.domain, params.peerDomain),
+          eq(groupStateFields.namespaceId, params.namespaceId),
         ),
       )
       .limit(1);
@@ -58,18 +67,14 @@ export class FederationGroupRosterProjectionService {
         statePushDomains: [],
         systemMessages: [],
       };
-    await tx.execute(sql`
-      SELECT id FROM "MessageThread"
-      WHERE id = ${mirror.threadId}
-      FOR UPDATE
-    `);
+    await requireThreadContentLockInTx(tx, mirror.threadId, params.threadLock);
     await tx
-      .update(tables.group)
+      .update(tables.messageThread)
       .set({
-        dissolvedAt: params.dissolved ? new Date() : null,
+        groupDissolvedAt: params.dissolved ? new Date() : null,
         updatedAt: new Date(),
       })
-      .where(eq(tables.group.id, mirror.groupId));
+      .where(eq(tables.messageThread.id, mirror.threadId));
 
     return {
       threadId: mirror.threadId,

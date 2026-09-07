@@ -72,16 +72,17 @@ export class MessageHeaderComponent {
    *  reads avatar bytes nor serializes them across the JS bridge. */
   placeCall(): void {
     if (this.callActive()) return;
-    const peer = this.userMsgTrd()?.peerUser;
-    if (peer?.id === undefined) return;
+    const thread = this.userMsgTrd();
+    const peer = thread?.peerUser;
+    if (!thread || !peer) return;
     this.callAdapter.initiate(
-      peer.id,
+      thread.threadId,
       uuid(),
       'AUDIO',
       peer.name ?? '',
       peer.avatar ?? '',
       peer.account,
-      peer.domain !== 'local' ? (peer.domain ?? '') : '',
+      peer.domain,
     );
   }
 

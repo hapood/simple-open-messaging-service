@@ -1,3 +1,12 @@
+import {
+  groupState as groupStateTable,
+  readGroupState,
+} from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  localAccountsForTargetsInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
@@ -10,7 +19,6 @@ import {
   readCurrentLocalGroupManagersInTx,
 } from '../group-meta/current-group-roster.js';
 import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
-import { loadFederationConfig } from './federation.config.js';
 
 type GroupRequestStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
 type GroupRequestDirection = 'APPLICATION' | 'INVITATION';
@@ -18,15 +26,13 @@ type GroupRequestDirection = 'APPLICATION' | 'INVITATION';
 /** Maintains the manager-facing projection derived from group relationship intents. */
 @Injectable()
 export class FederationGroupRequestProjectionService {
-  private readonly config = loadFederationConfig();
-
   constructor(private readonly clientStateFeed: ClientStateFeedService) {}
 
   async writeEffectsInTx(
     tx: DatabaseTransaction,
     threadId: number,
     groupId: number,
-    memberUserId: number,
+    memberUserId: AccountTarget,
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     status: GroupRequestStatus = 'REQUESTED',
     direction: GroupRequestDirection = 'APPLICATION',
@@ -34,10 +40,11 @@ export class FederationGroupRequestProjectionService {
     managerUserId?: number,
   ): Promise<void> {
     if (!clientFeedUpdates) return;
-    const groupIdentity = await tx.query.group.findFirst({
-      where: eq(tables.group.id, groupId),
-      columns: { account: true, domain: true },
-    });
+    const member = await accountAddressInTx(tx, memberUserId);
+    const groupIdentity = await readGroupState(
+      tx,
+      eq(groupStateTable.id, groupId),
+    );
     const [request] = await tx
       .select({
         id: tables.relationshipIntent.id,
@@ -51,14 +58,13 @@ export class FederationGroupRequestProjectionService {
         tables.relationshipIntent,
         eq(tables.relationshipIntent.pairId, tables.relationshipPair.id),
       )
-      .innerJoin(tables.user, eq(tables.user.id, memberUserId))
       .where(
         and(
           eq(tables.relationshipPair.threadId, threadId),
           eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
           eq(tables.relationshipPair.endpointBType, 'USER'),
-          eq(tables.relationshipPair.endpointBAccount, tables.user.account),
-          eq(tables.relationshipPair.endpointBDomain, tables.user.domain),
+          eq(tables.relationshipPair.endpointBAccount, member.account),
+          eq(tables.relationshipPair.endpointBDomain, member.domain),
           eq(
             tables.relationshipIntent.authorSide,
             direction === 'APPLICATION' ? 'B' : 'A',
@@ -66,24 +72,30 @@ export class FederationGroupRequestProjectionService {
         ),
       )
       .limit(1);
-    const member = await tx.query.user.findFirst({
-      where: eq(tables.user.id, memberUserId),
-      columns: {
-        id: true,
-        account: true,
-        domain: true,
-        name: true,
-        avatar: true,
-        bio: true,
-        defaultProfileRev: true,
-      },
-    });
+    const [memberIntent] = await tx
+      .select({ profileRev: tables.relationshipIntent.profileRev })
+      .from(tables.relationshipIntent)
+      .innerJoin(
+        tables.relationshipPair,
+        eq(tables.relationshipPair.id, tables.relationshipIntent.pairId),
+      )
+      .where(
+        and(
+          eq(tables.relationshipPair.threadId, threadId),
+          eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
+          eq(tables.relationshipPair.endpointBAccount, member.account),
+          eq(tables.relationshipPair.endpointBDomain, member.domain),
+          eq(tables.relationshipIntent.authorSide, 'B'),
+        ),
+      )
+      .limit(1);
     const managers = await readCurrentLocalGroupManagersInTx(tx, {
       groupId,
       threadId,
       managerUserId,
     });
     if (!groupIdentity || !request || !member) return;
+    const [localMember] = await localAccountsForTargetsInTx(tx, [member]);
     const existingManagers = createIfMissing
       ? new Set<number>()
       : new Set(
@@ -96,19 +108,30 @@ export class FederationGroupRequestProjectionService {
               .where(
                 and(
                   eq(tables.groupRequestProjection.threadId, threadId),
-                  eq(tables.groupRequestProjection.memberUserId, memberUserId),
+                  eq(
+                    tables.groupRequestProjection.memberAccount,
+                    member.account,
+                  ),
+                  eq(tables.groupRequestProjection.memberDomain, member.domain),
+                  eq(
+                    tables.groupRequestProjection.memberNamespaceId,
+                    member.namespaceId,
+                  ),
                   eq(tables.groupRequestProjection.direction, direction),
                 ),
               )
           ).map((row) => row.managerUserId),
         );
     for (const manager of managers) {
-      if (manager.userId === memberUserId) continue;
+      if (manager.userId === localMember?.id) continue;
       if (!createIfMissing && !existingManagers.has(manager.userId)) continue;
       const feedId = await this.clientStateFeed.writeGroupRequestInTx(tx, {
         managerUserId: manager.userId,
         threadId,
-        memberUserId: member.id,
+        memberAccount: member.account,
+        memberDomain: member.domain,
+        memberNamespaceId: member.namespaceId,
+        memberProfileRev: memberIntent?.profileRev ?? 0,
         direction,
         requestId: request.id,
         status,
@@ -118,16 +141,19 @@ export class FederationGroupRequestProjectionService {
       });
       if (feedId === null) continue;
       clientFeedUpdates.push({ userId: manager.userId, feedId });
-      clientFeedUpdates.push(
-        ...(await this.clientStateFeed.recordProfileStateInTx(tx, member.id, [
-          manager.userId,
-        ])),
-      );
+      if (localMember)
+        clientFeedUpdates.push(
+          ...(await this.clientStateFeed.recordProfileStateInTx(
+            tx,
+            localMember.id,
+            [manager.userId],
+          )),
+        );
       const headFeedId =
         await this.clientStateFeed.writeGroupJoinRequestHeadInTx(tx, {
           userId: manager.userId,
           account: groupIdentity.account,
-          domain: this.config.domain,
+          domain: groupIdentity.domain,
           threadId,
           latestFeedId: feedId,
           latestRequestAt: request.requestedAt?.getTime() ?? Date.now(),
@@ -145,12 +171,12 @@ export class FederationGroupRequestProjectionService {
   ): Promise<void> {
     const thread = await tx.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
-      columns: { groupId: true },
+      columns: { id: true, type: true },
     });
-    if (!thread?.groupId) return;
+    if (thread?.type !== 'GROUP') return;
     const manager = await readCurrentGroupMemberInTx(
       tx,
-      thread.groupId,
+      thread.id,
       managerUserId,
     );
     const isActiveManager =
@@ -167,24 +193,30 @@ export class FederationGroupRequestProjectionService {
           ),
         )
         .returning({
-          memberUserId: tables.groupRequestProjection.memberUserId,
+          account: tables.groupRequestProjection.memberAccount,
+          domain: tables.groupRequestProjection.memberDomain,
+          namespaceId: tables.groupRequestProjection.memberNamespaceId,
         });
       for (const request of removed)
         await this.clientStateFeed.cleanupProfileStateIfUnreferencedInTx(
           tx,
           managerUserId,
-          request.memberUserId,
+          request,
         );
       return;
     }
     const requests = await tx
       .selectDistinctOn(
         [
-          tables.groupRequestProjection.memberUserId,
+          tables.groupRequestProjection.memberAccount,
+          tables.groupRequestProjection.memberDomain,
+          tables.groupRequestProjection.memberNamespaceId,
           tables.groupRequestProjection.direction,
         ],
         {
-          memberUserId: tables.groupRequestProjection.memberUserId,
+          account: tables.groupRequestProjection.memberAccount,
+          domain: tables.groupRequestProjection.memberDomain,
+          namespaceId: tables.groupRequestProjection.memberNamespaceId,
           status: tables.groupRequestProjection.status,
           direction: tables.groupRequestProjection.direction,
         },
@@ -197,7 +229,9 @@ export class FederationGroupRequestProjectionService {
         ),
       )
       .orderBy(
-        tables.groupRequestProjection.memberUserId,
+        tables.groupRequestProjection.memberAccount,
+        tables.groupRequestProjection.memberDomain,
+        tables.groupRequestProjection.memberNamespaceId,
         tables.groupRequestProjection.direction,
         desc(tables.groupRequestProjection.feedId),
       );
@@ -205,8 +239,8 @@ export class FederationGroupRequestProjectionService {
       await this.writeEffectsInTx(
         tx,
         threadId,
-        thread.groupId,
-        request.memberUserId,
+        thread.id,
+        request,
         clientFeedUpdates,
         request.status as GroupRequestStatus,
         request.direction as GroupRequestDirection,

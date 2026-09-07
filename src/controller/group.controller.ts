@@ -162,7 +162,14 @@ export class GroupController {
           },
           taskType: DurableTaskType.INVITE_GROUP_MEMBER,
           actorUserId: inviter,
-          payload: { threadId: group.threadId, targetUserId: friend.userId },
+          payload: {
+            threadId: group.threadId,
+            targetUserId: {
+              account: friend.account,
+              domain: friend.domain,
+              namespaceId: friend.namespaceId,
+            },
+          },
         });
         invited.push(address);
         tasks.push({
@@ -230,7 +237,7 @@ export class GroupController {
     return this.groupService.queryInviteCandidates(
       req.threadAccess!.threadId,
       req.user.userId,
-      dto.afterUserId,
+      dto.afterThreadId,
       dto.search,
       dto.take ?? 20,
     );
@@ -487,7 +494,7 @@ export class GroupController {
       threadId,
       req.user.userId,
       DurableTaskType.KICK_GROUP_MEMBER,
-      { targetUserId: target.userId },
+      { targetUserId: target },
     );
   }
 
@@ -510,7 +517,7 @@ export class GroupController {
       threadId,
       req.user.userId,
       DurableTaskType.TRANSFER_GROUP_OWNERSHIP,
-      { targetUserId: target.userId },
+      { targetUserId: target },
     );
   }
 
@@ -533,7 +540,7 @@ export class GroupController {
       threadId,
       req.user.userId,
       DurableTaskType.SET_GROUP_MEMBER_ROLE,
-      { targetUserId: target.userId, role: dto.role },
+      { targetUserId: target, role: dto.role },
     );
   }
 

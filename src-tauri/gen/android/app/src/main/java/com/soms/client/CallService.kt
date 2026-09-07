@@ -77,7 +77,7 @@ class CallService : Service() {
         val callerDomain = intent?.getStringExtra(EXTRA_CALLER_DOMAIN) ?: ""
         val incomingThreadId = intent?.getIntExtra(EXTRA_THREAD_ID, 0) ?: 0
         val localPeer = if (isIncoming && callerAccount.isNotEmpty()) {
-            ClientStateDb.getCallPeer(this, callerAccount, callerDomain)
+            ClientStateDb.getCallPeer(this, callerAccount, callerDomain, incomingThreadId)
         } else null
         // Promote to foreground FIRST. The phoneCall FGS must call startForeground within ~5s of
         // startForegroundService or the system throws RemoteServiceException + kills the process (observed

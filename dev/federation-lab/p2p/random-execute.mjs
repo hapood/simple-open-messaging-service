@@ -17,6 +17,7 @@ import {
   finishWorkloadBatch,
   assertVerificationMode,
   verifyMidpointProfiles,
+  shouldSettleWorkloadBatch,
 } from './verification-mode.mjs';
 export { admitOperation } from './operations.mjs';
 import {
@@ -216,6 +217,16 @@ export function chooseRandomRound({
     selectedUsers.flatMap((user) =>
       selectedGroups.map((group) => {
         const facts = observeUserGroup(groupSnapshot, user, group);
+        facts.pendingApplications = unsubmittedGroupRequests(
+          facts.pendingApplications,
+          group.address,
+          log.operations,
+        );
+        facts.pendingInvitations = unsubmittedGroupRequests(
+          facts.pendingInvitations,
+          group.address,
+          log.operations,
+        );
         facts.previouslyLeft = log.operations.some(
           (operation) =>
             operation.group === group.address &&
@@ -383,6 +394,31 @@ function actionCounts(operations) {
     .join(' ');
 }
 
+// A projection may still show REQUESTED while an earlier management task is
+// admitted or completed. Scope deduplication to the request generation so a
+// renewed application remains eligible even if its durable identity is reused.
+export function unsubmittedGroupRequests(requests, group, operations) {
+  const managementTypes = new Set([
+    'ACCEPT_GROUP_APPLICATION',
+    'REJECT_GROUP_APPLICATION',
+    'REVOKE_GROUP_INVITATION',
+  ]);
+  return requests.filter(
+    (request) =>
+      !operations.some(
+        (operation) =>
+          operation.group === group &&
+          managementTypes.has(operation.type) &&
+          ['ADMITTED', 'SUCCEEDED', 'OBSERVED_UNAVAILABLE'].includes(
+            operation.status,
+          ) &&
+          operation.target?.direction === request.direction &&
+          operation.target?.requestId === request.requestId &&
+          operation.target?.expiresAt === request.expiresAt,
+      ),
+  );
+}
+
 // Request cancellation can win either before admission or during task execution.
 // INVITE_EXPIRED also denotes an intent that is no longer REQUESTED.
 function isUnavailableIncomingRequest(operation, code) {
@@ -390,9 +426,9 @@ function isUnavailableIncomingRequest(operation, code) {
     !operation.scenario &&
       !operation.group &&
       operation.pair &&
-      operation.type === 'ACCEPT_REQUEST' &&
       operation.observedFacts?.state === 'INCOMING_PENDING' &&
-      code === 20011,
+      ((operation.type === 'ACCEPT_REQUEST' && code === 20011) ||
+        (operation.type === 'REJECT_REQUEST' && code === 20013)),
   );
 }
 
@@ -534,11 +570,20 @@ export async function executeBatch({
 }
 
 export async function settleWorkloadOperations(
-  { operations, log, actors, label, timeoutMs, onProgress, onLog },
+  {
+    operations,
+    log,
+    actors,
+    label,
+    timeoutMs,
+    onProgress,
+    onLog,
+    drain = false,
+  },
   { waitForIdle = waitForTaskQueueIdle, finalize = finalizeTasks } = {},
 ) {
   const admitted = operations.filter(({ status }) => status === 'ADMITTED');
-  if (admitted.length > 0) {
+  if (drain || admitted.length > 0) {
     await waitForIdle({
       actors,
       nodeNames: [...actors.nodes.keys()],
@@ -626,7 +671,7 @@ export async function executeRandomP2pWorkload({
       totalLabel: '',
       operationsPerSecond,
       pace,
-      settle: verifyMode === 'round' || !randomBatch,
+      settle: shouldSettleWorkloadBatch(verifyMode, batch, { randomBatch }),
       confirmUnavailable: async (decision) => {
         if (!randomBatch || !decision.pair) return false;
         const current = await readP2pConsistencySnapshot(
@@ -786,6 +831,8 @@ export async function executeRandomP2pWorkload({
       log,
       actors,
       label: 'final workload',
+      // Parent commands may already be observed complete while fanout children remain.
+      drain: true,
       timeoutMs,
       onProgress,
       onLog,

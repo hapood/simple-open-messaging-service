@@ -1,9 +1,75 @@
 {
   "vectors": [
     {
+      "name": "forward quotes reject invalid coordinates",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "values": [
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": null
+        },
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": -1
+        },
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": 1.5
+        },
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": {
+            "originSeq": 1
+          }
+        },
+        {
+          "id": 1,
+          "author": {
+            "account": "alice",
+            "domain": "a.example"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": {
+            "seq": 0,
+            "namespaceId": 2
+          }
+        }
+      ]
+    },
+    {
       "name": "quote coordinates reject null ambiguous legacy and unscoped shapes",
       "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
-      "values": [null, {}, { "seq": 8, "originSeq": 8 }, { "targetSeq": 8 }, { "seq": 8, "namespaceId": 3 }, { "seq": 0 }, { "originSeq": -1 }, { "seq": 1.5 }, { "seq": 9007199254740991 }]
+      "values": [null, {}, { "seq": 8, "originSeq": 8 }, { "targetSeq": 8 }, { "seq": 8, "namespaceId": 3 }, { "originSeq": 0 }, { "originSeq": -1 }, { "seq": 1.5 }, { "seq": 9007199254740991 }]
     },
     {
       "name": "well-known scalar version is obsolete",

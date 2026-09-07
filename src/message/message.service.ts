@@ -1,3 +1,22 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
+import {
+  account,
+  forwardMessage,
+  mediaAsset,
+  messageAsset,
+  message,
+  messageThread,
+  pendingMedia,
+  fileSyncProgress,
+  federationThreadHistoryGap,
+  profileTable,
+  accountThreadState,
+  account as user,
+} from '../database/schema.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   lockThreadContentInTx,
@@ -24,20 +43,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import { ContentType, MessageThreadType } from '../database/enums.js';
-import {
-  account,
-  forwardMessage,
-  mediaAsset,
-  messageAsset,
-  message,
-  messageThread,
-  pendingMedia,
-  fileSyncProgress,
-  federationThreadHistoryGap,
-  group,
-  accountThreadState,
-  user,
-} from '../database/schema.js';
+
 import { rawDate } from '../database/raw-result.js';
 import { isUniqueViolation } from '../database/database-error.js';
 import {
@@ -95,7 +101,7 @@ export interface MessageAuthorAddress {
 }
 export type PublicMessage<T extends Message = Message> = Omit<
   T,
-  'id' | 'creatorAccount' | 'creatorDomain'
+  'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'
 > & {
   creator: MessageAuthorAddress | null;
 };
@@ -146,11 +152,8 @@ export interface AwayNotificationMessage {
   createdAt: Date;
 }
 
-function authorNamespaceId(message: {
-  creatorDomain: string | null;
-  sourceNamespaceId: number;
-}): number {
-  return message.creatorDomain === 'local' ? 0 : message.sourceNamespaceId;
+function authorNamespaceId(message: { creatorNamespaceId: number }): number {
+  return message.creatorNamespaceId;
 }
 
 /**
@@ -165,14 +168,16 @@ export function stripMessageId<
     id: bigint;
     creatorAccount: string | null;
     creatorDomain: string | null;
+    creatorNamespaceId: number;
     sourceNamespaceId: number;
   },
 >(
   msg: T,
-): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain'> & {
+): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'> & {
   creator: MessageAuthorAddress | null;
 } {
-  const { id, creatorAccount, creatorDomain, ...rest } = msg;
+  const { id, creatorAccount, creatorDomain, creatorNamespaceId, ...rest } =
+    msg;
   return {
     ...rest,
     creator:
@@ -231,7 +236,7 @@ export class MessageService {
     domain: string;
     namespaceId: number;
   }> {
-    const author = await this.database.db.query.user.findFirst({
+    const author = await this.database.db.query.account.findFirst({
       where: and(
         eq(user.id, userId),
         eq(user.domain, 'local'),
@@ -389,7 +394,7 @@ export class MessageService {
         }
         const quoteSeq = textContent?.quote?.seq;
         const quoteTarget =
-          quoteSeq === undefined
+          quoteSeq === undefined || quoteSeq === 0
             ? null
             : await tx.query.message
                 .findFirst({
@@ -400,17 +405,23 @@ export class MessageService {
                 })
                 .then(async (row) => {
                   if (!row || row.creatorAccount === null) return row;
-                  const creatorItem = await tx.query.user.findFirst({
+                  const snapshot = await tx.query.profileTable.findFirst({
                     where: and(
-                      eq(user.account, row.creatorAccount),
-                      eq(user.domain, row.creatorDomain!),
-                      eq(user.namespaceId, authorNamespaceId(row)),
+                      eq(profileTable.account, row.creatorAccount),
+                      eq(profileTable.domain, row.creatorDomain!),
+                      eq(profileTable.namespaceId, authorNamespaceId(row)),
+                      eq(profileTable.profileRev, row.profileRev),
                     ),
-                    columns: { name: true },
+                    columns: { displayName: true },
                   });
-                  return { ...row, creatorItem };
+                  return {
+                    ...row,
+                    creatorItem: snapshot
+                      ? { name: snapshot.displayName }
+                      : undefined,
+                  };
                 });
-        if (quoteSeq !== undefined && !quoteTarget) {
+        if (quoteSeq !== undefined && quoteSeq > 0 && !quoteTarget) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
             'quoted message not found',
@@ -437,10 +448,10 @@ export class MessageService {
           );
         }
         let storedContent =
-          textContent && quoteTarget
+          textContent && quoteSeq !== undefined
             ? stringifyTextMessageContent({
                 text: textContent.text,
-                quote: { seq: quoteTarget.seq, namespaceId: 0 },
+                quote: { seq: quoteSeq, namespaceId: 0 },
               })
             : content;
         storedContent = contextualizeCasUrls(storedContent, threadId, seq);
@@ -529,17 +540,59 @@ export class MessageService {
     }
   }
 
+  /** One transactional path for actual relationship departures and their retained-history boundary.
+   * Call only for an active-to-inactive transition while holding its relationship locks. */
+  async writeDepartureMessageInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    type:
+      | typeof SystemMessageType.FRIEND_REMOVED
+      | typeof SystemMessageType.GROUP_LEFT,
+    subjectUserId: AccountTarget,
+    options: {
+      threadLock?: ThreadContentLock;
+      actorUserId?: AccountTarget;
+      recipientUserIds: readonly number[];
+      visibleThroughUserIds: readonly number[];
+      markReadUserId?: number;
+    },
+  ): Promise<{ message: PublicMessage; messageId: bigint }> {
+    const result = await this.writeSystemMessageInTx(
+      tx,
+      threadId,
+      type,
+      subjectUserId,
+      options,
+    );
+    if (options.visibleThroughUserIds.length > 0)
+      await tx
+        .update(accountThreadState)
+        .set({
+          messageVisibleThroughSeq: result.message.seq,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(accountThreadState.threadId, threadId),
+            inArray(accountThreadState.accountId, [
+              ...options.visibleThroughUserIds,
+            ]),
+          ),
+        );
+    return result;
+  }
+
   /** Server-only structured timeline notice. It is persisted for this server's clients only and is
    * never allocated to the federation message feed. Relationship/roster state remains authoritative. */
   async writeSystemMessageInTx(
     tx: DatabaseTransaction,
     threadId: number,
     type: SystemMessageType,
-    subjectUserId?: number,
+    subjectUserId?: AccountTarget,
     options?: {
       threadLock?: ThreadContentLock;
       count?: number;
-      actorUserId?: number;
+      actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
@@ -567,20 +620,14 @@ export class MessageService {
       options?.subjectAddress ??
       (subjectUserId === undefined
         ? undefined
-        : await tx.query.user.findFirst({
-            where: eq(user.id, subjectUserId),
-            columns: { account: true, domain: true },
-          }));
+        : await accountAddressInTx(tx, subjectUserId));
     if (subjectUserId !== undefined && !subject)
       throw new Error('system message subject does not exist');
     const actor =
       options?.actorAddress ??
       (options?.actorUserId === undefined
         ? undefined
-        : await tx.query.user.findFirst({
-            where: eq(user.id, options.actorUserId),
-            columns: { account: true, domain: true },
-          }));
+        : await accountAddressInTx(tx, options.actorUserId));
     if (options?.actorUserId !== undefined && !actor)
       throw new Error('system message actor does not exist');
     const toAddress = (identity: { account: string; domain: string }) => ({
@@ -648,10 +695,10 @@ export class MessageService {
   async writeSystemMessage(
     threadId: number,
     type: SystemMessageType,
-    subjectUserId?: number,
+    subjectUserId?: AccountTarget,
     options?: {
       count?: number;
-      actorUserId?: number;
+      actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
@@ -670,10 +717,10 @@ export class MessageService {
   async tryWriteSystemMessage(
     threadId: number,
     type: SystemMessageType,
-    subjectUserId?: number,
+    subjectUserId?: AccountTarget,
     options?: {
       count?: number;
-      actorUserId?: number;
+      actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
@@ -729,6 +776,7 @@ export class MessageService {
       columns: {
         creatorAccount: true,
         creatorDomain: true,
+        creatorNamespaceId: true,
         sourceNamespaceId: true,
       },
     });
@@ -1068,7 +1116,7 @@ export class MessageService {
           )
           .returning({ id: pendingMedia.id });
         if (!winner) return null;
-        const creator = await tx.query.user.findFirst({
+        const creator = await tx.query.account.findFirst({
           where: and(
             eq(user.account, stage.creatorAccount),
             eq(user.domain, stage.creatorDomain),
@@ -1079,13 +1127,16 @@ export class MessageService {
         if (!creator) throw new Error('local staged message author is missing');
         const creatorUserId = creator.id;
         const [participant] = await tx
-          .select({ type: messageThread.type, dissolvedAt: group.dissolvedAt })
+          .select({
+            type: messageThread.type,
+            dissolvedAt: groupStateFields.dissolvedAt,
+          })
           .from(accountThreadState)
           .innerJoin(
             messageThread,
             eq(messageThread.id, accountThreadState.threadId),
           )
-          .leftJoin(group, eq(group.id, messageThread.groupId))
+          .leftJoin(group, eq(group.id, messageThread.id))
           .where(
             and(
               eq(accountThreadState.accountId, creatorUserId),
@@ -1139,7 +1190,7 @@ export class MessageService {
             creatorAccount: stage.creatorAccount,
             creatorDomain: stage.creatorDomain,
             profileRev: sql`(
-              SELECT profile."defaultProfileRev" FROM "User" profile
+              SELECT profile."defaultProfileRev" FROM "Account" profile
               WHERE profile.account = ${stage.creatorAccount}
                 AND profile.domain = ${stage.creatorDomain}
                 AND profile."namespaceId" = ${stage.namespaceId}
@@ -1282,14 +1333,9 @@ export class MessageService {
         const queryEnd = forward
           ? Math.min(through ?? upper - 1, upper - 1)
           : 0;
-        const queryStart = forward ? 0 : (through ?? lower + 1);
-        if (!forward && queryStart < lower + 1)
-          throw new BusinessException(
-            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-            'message query boundary is outside the available coordinate space',
-            HttpStatus.OK,
-            cursorData,
-          );
+        const queryStart = forward
+          ? 0
+          : Math.max(through ?? lower + 1, lower + 1);
 
         const rows = await this.queryMessageRows(
           tx,
@@ -1616,19 +1662,21 @@ export class MessageService {
               account: target.creatorAccount,
               domain: target.creatorDomain,
               namespaceId: authorNamespaceId(target),
+              profileRev: target.profileRev,
             },
           ],
     );
     const authors =
       authorAddresses.length === 0
         ? []
-        : await this.database.db.query.user.findMany({
+        : await this.database.db.query.profileTable.findMany({
             where: or(
               ...authorAddresses.map((author) =>
                 and(
-                  eq(user.account, author.account),
-                  eq(user.domain, author.domain),
-                  eq(user.namespaceId, author.namespaceId),
+                  eq(profileTable.account, author.account),
+                  eq(profileTable.domain, author.domain),
+                  eq(profileTable.namespaceId, author.namespaceId),
+                  eq(profileTable.profileRev, author.profileRev),
                 ),
               ),
             ),
@@ -1636,13 +1684,19 @@ export class MessageService {
               account: true,
               domain: true,
               namespaceId: true,
-              name: true,
+              displayName: true,
+              profileRev: true,
             },
           });
     const authorNames = new Map(
       authors.map((author) => [
-        JSON.stringify([author.account, author.domain, author.namespaceId]),
-        author.name,
+        JSON.stringify([
+          author.account,
+          author.domain,
+          author.namespaceId,
+          author.profileRev,
+        ]),
+        author.displayName,
       ]),
     );
     const visibleTargets = targets.filter((target) => {
@@ -1674,6 +1728,7 @@ export class MessageService {
                   target.creatorAccount,
                   target.creatorDomain,
                   authorNamespaceId(target),
+                  target.profileRev,
                 ]),
               ) ?? target.creatorAccount),
           target.contentType,
@@ -1979,7 +2034,7 @@ export class MessageService {
         WHERE msg."threadId" = tp."threadId"
           AND msg.seq > COALESCE(tp."lastReadSeq", 0)
           AND NOT EXISTS (
-            SELECT 1 FROM "User" self
+            SELECT 1 FROM "Account" self
             WHERE self.id = ${userId}
               AND self.account = msg."creatorAccount"
               AND self.domain = msg."creatorDomain"
@@ -2044,14 +2099,11 @@ export class MessageService {
         WHERE m."threadId" = ${threadId}
           AND m.seq > a."lastReadSeq"
           AND NOT EXISTS (
-            SELECT 1 FROM "User" self
+            SELECT 1 FROM "Account" self
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = CASE
-                WHEN m."creatorDomain" = 'local' THEN 0
-                ELSE m."sourceNamespaceId"
-              END
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -2074,7 +2126,7 @@ export class MessageService {
         ) AS "mentionContents",
         u.account
       FROM advanced a
-      JOIN "User" u ON u.id = ${userId}
+      JOIN "Account" u ON u.id = ${userId}
       LEFT JOIN sample s ON TRUE
       GROUP BY a."lastReadSeq", a."readRevision", u.account
     `;
@@ -2110,7 +2162,7 @@ export class MessageService {
       )
       .orderBy(asc(accountThreadState.readRevision));
     if (participants.length === 0) return [];
-    const self = await this.database.db.query.user.findFirst({
+    const self = await this.database.db.query.account.findFirst({
       where: eq(user.id, userId),
       columns: { account: true },
     });
@@ -2154,14 +2206,11 @@ export class MessageService {
   ): Promise<Map<number, AwayThreadAttentionState>> {
     const hiddenClause = hideCreatorIds.length
       ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "User" hidden_author
+          SELECT 1 FROM "Account" hidden_author
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = CASE
-              WHEN m."creatorDomain" = 'local' THEN 0
-              ELSE m."sourceNamespaceId"
-            END
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const globalClause =
@@ -2202,14 +2251,11 @@ export class MessageService {
           ${globalClause}
           ${threadClause}
           AND NOT EXISTS (
-            SELECT 1 FROM "User" self
+            SELECT 1 FROM "Account" self
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = CASE
-                WHEN m."creatorDomain" = 'local' THEN 0
-                ELSE m."sourceNamespaceId"
-              END
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -2260,14 +2306,11 @@ export class MessageService {
     if (threadIds.length === 0) return new Map();
     const hiddenClause = hideCreatorIds.length
       ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "User" hidden_author
+          SELECT 1 FROM "Account" hidden_author
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = CASE
-              WHEN m."creatorDomain" = 'local' THEN 0
-              ELSE m."sourceNamespaceId"
-            END
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const globalClause =
@@ -2296,18 +2339,15 @@ export class MessageService {
       ranked AS (
         SELECT m."threadId", m.seq,
                m."creatorAccount", m."creatorDomain",
-               COALESCE(u.name, m."creatorAccount") AS "senderName",
+               COALESCE(u."displayName", m."creatorAccount") AS "senderName",
                m."contentType", m.content, m."createdAt",
                ROW_NUMBER() OVER (PARTITION BY m."threadId" ORDER BY m.seq DESC) AS rn
         FROM "Message" m
-        LEFT JOIN "User" u
+        LEFT JOIN "Profile" u
           ON u.account = m."creatorAccount"
          AND u.domain = m."creatorDomain"
-         AND u."namespaceId" = CASE
-           WHEN m."creatorDomain" = 'local' THEN 0
-           ELSE m."sourceNamespaceId"
-         END
-         AND u.availability = 'AVAILABLE'
+         AND u."namespaceId" = m."creatorNamespaceId"
+         AND u."profileRev" = m."profileRev"
         JOIN "AccountThreadState" tp
           ON tp."threadId" = m."threadId"
          AND tp."accountId" = ${userId}
@@ -2317,14 +2357,11 @@ export class MessageService {
           ${globalClause}
           AND m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
           AND NOT EXISTS (
-            SELECT 1 FROM "User" self
+            SELECT 1 FROM "Account" self
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = CASE
-                WHEN m."creatorDomain" = 'local' THEN 0
-                ELSE m."sourceNamespaceId"
-              END
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -2394,14 +2431,11 @@ export class MessageService {
         ON m."threadId" = tp."threadId"
        AND m.seq > COALESCE(tp."lastReadSeq", 0)
        AND NOT EXISTS (
-         SELECT 1 FROM "User" self
+         SELECT 1 FROM "Account" self
          WHERE self.id = ${userId}
            AND self.account = m."creatorAccount"
            AND self.domain = m."creatorDomain"
-           AND self."namespaceId" = CASE
-             WHEN m."creatorDomain" = 'local' THEN 0
-             ELSE m."sourceNamespaceId"
-           END
+           AND self."namespaceId" = m."creatorNamespaceId"
        )
       WHERE tp."accountId" = ${userId}
         AND tp."threadId" IN (${this.joinSql(threadIds)})
@@ -2441,14 +2475,11 @@ export class MessageService {
       : sql.empty();
     const hiddenClause = hideCreatorIds.length
       ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "User" hidden_author
+          SELECT 1 FROM "Account" hidden_author
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = CASE
-              WHEN m."creatorDomain" = 'local' THEN 0
-              ELSE m."sourceNamespaceId"
-            END
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const rows = await this.queryRaw<
@@ -2464,14 +2495,11 @@ export class MessageService {
         AND m."isDeleted" = false
         AND m."localState" = 'READY'
         AND NOT EXISTS (
-          SELECT 1 FROM "User" self
+          SELECT 1 FROM "Account" self
           WHERE self.id = ${userId}
             AND self.account = m."creatorAccount"
             AND self.domain = m."creatorDomain"
-            AND self."namespaceId" = CASE
-              WHEN m."creatorDomain" = 'local' THEN 0
-              ELSE m."sourceNamespaceId"
-            END
+            AND self."namespaceId" = m."creatorNamespaceId"
         )
         ${hiddenClause}
         AND m."contentType" = 'PURE_TEXT'

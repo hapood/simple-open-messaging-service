@@ -131,7 +131,7 @@ describe('ClientStateFeedService', () => {
     });
     const tx = {
       query: {
-        user: {
+        account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'member',
             domain: 'peer.test',

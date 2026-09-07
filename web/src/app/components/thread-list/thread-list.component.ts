@@ -181,10 +181,8 @@ export class ThreadListComponent implements OnInit {
     const base =
       (markerKey
         ? `${this.transloco.translate(markerKey)}${markerSuffix}`
-        : raw) ??
-      this.transloco.translate('common.noMessagesYet') ??
-      '';
-    if (t.lastMessageSenderId == null) return base;
+        : raw) ?? '';
+    if (!base || t.lastMessageSenderId == null) return base;
     const self = this.userService.sessionProfile();
     if (
       self &&

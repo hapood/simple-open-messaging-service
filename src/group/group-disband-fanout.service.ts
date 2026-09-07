@@ -38,23 +38,14 @@ export class GroupDisbandFanoutService {
       const afterPairId = readCursor(current.afterPairId);
       const next = await tx.execute<{
         pairId: string;
-        memberUserId: number;
+        account: string;
+        domain: string;
+        namespaceId: number;
       }>(sql`
-        SELECT pair.id AS "pairId", member.id AS "memberUserId"
+        SELECT pair.id AS "pairId", pair."endpointBAccount" AS account,
+          pair."endpointBDomain" AS domain,
+          CASE WHEN pair."endpointBDomain" = 'local' THEN 0 ELSE pair."endpointBNamespaceId" END AS "namespaceId"
         FROM "RelationshipPair" pair
-        JOIN "User" member ON (
-          pair."endpointAType" = 'USER'
-          AND member.account = pair."endpointAAccount"
-          AND member.domain = pair."endpointADomain"
-          AND (member."namespaceId" = 0
-            OR member."namespaceId" = pair."endpointANamespaceId")
-        ) OR (
-          pair."endpointBType" = 'USER'
-          AND member.account = pair."endpointBAccount"
-          AND member.domain = pair."endpointBDomain"
-          AND (member."namespaceId" = 0
-            OR member."namespaceId" = pair."endpointBNamespaceId")
-        )
         WHERE pair."threadId" = ${threadId}
           AND pair.kind = 'GROUP_MEMBER'
           AND pair.active = true
@@ -75,7 +66,11 @@ export class GroupDisbandFanoutService {
         actorUserId: parent.actorUserId,
         payload: {
           threadId,
-          memberUserId: member.memberUserId,
+          memberUserId: {
+            account: member.account,
+            domain: member.domain,
+            namespaceId: member.namespaceId,
+          },
         },
         status: 'PENDING',
       });

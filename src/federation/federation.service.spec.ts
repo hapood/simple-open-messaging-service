@@ -87,7 +87,7 @@ describe('thread-query FORBIDDEN convergence', () => {
   function forbiddenHarness(epoch: number) {
     const tx = {
       execute: vi.fn().mockResolvedValue({
-        rows: [{ localUserId: 1, remoteUserId: 2 }],
+        rows: [{ localUserId: 1, remoteAccount: 'remote-user' }],
       }),
       query: {
         messageThread: {
@@ -130,7 +130,9 @@ describe('thread-query FORBIDDEN convergence', () => {
     members: Array<{
       groupId: number;
       groupDomain: string;
-      memberUserId: number;
+      memberUserId: number | null;
+      memberAccount?: string;
+      memberDomain?: string;
     }>,
   ) {
     const tx = {
@@ -195,7 +197,14 @@ describe('thread-query FORBIDDEN convergence', () => {
     ).resolves.toBe('P2P_REVOKED');
     expect(
       harness.relationshipMutations.writeP2PIntentInTx,
-    ).toHaveBeenCalledWith(harness.tx, 1, 2, false, '', expect.any(Array));
+    ).toHaveBeenCalledWith(
+      harness.tx,
+      1,
+      { account: 'remote-user', domain: 'peer.test', namespaceId: 5 },
+      false,
+      '',
+      expect.any(Array),
+    );
     expect(harness.clientStateFeed.notifyFeedUpdates).toHaveBeenCalledOnce();
   });
 
@@ -258,8 +267,20 @@ describe('thread-query FORBIDDEN convergence', () => {
 
   it('revokes every local-group direction for members hosted by the denied peer', async () => {
     const harness = groupForbiddenHarness(7, [
-      { groupId: 4, groupDomain: 'local', memberUserId: 2 },
-      { groupId: 4, groupDomain: 'local', memberUserId: 5 },
+      {
+        groupId: 4,
+        groupDomain: 'local',
+        memberUserId: null,
+        memberAccount: 'remote-2',
+        memberDomain: 'peer.test',
+      },
+      {
+        groupId: 4,
+        groupDomain: 'local',
+        memberUserId: null,
+        memberAccount: 'remote-5',
+        memberDomain: 'peer.test',
+      },
     ]);
 
     await expect(
@@ -274,7 +295,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       1,
       harness.tx,
       31,
-      2,
+      { account: 'remote-2', domain: 'peer.test', namespaceId: 5 },
       '',
       'REVOKED',
       expect.any(Array),
@@ -285,7 +306,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       2,
       harness.tx,
       31,
-      5,
+      { account: 'remote-5', domain: 'peer.test', namespaceId: 5 },
       '',
       'REVOKED',
       expect.any(Array),
@@ -422,7 +443,6 @@ describe('FederationProfileService resource path', () => {
       name: 'Alice',
       bio: '',
       avatar: '/avatar.webp',
-      defaultProfileRev: 7,
     });
     expect(saveAvatarFromWire).toHaveBeenCalledExactlyOnceWith({
       b64: bytes.toString('base64'),
@@ -502,6 +522,9 @@ describe('federated group join request', () => {
   it('delegates remote-group revocation without a second client-feed write', async () => {
     const { svc, database } = makeStubs();
     const tx = {
+      select: () => ({
+        from: () => ({ where: () => ({ limit: async () => [{ id: 23 }] }) }),
+      }),
       query: {
         group: {
           findFirst: vi.fn().mockResolvedValue({ id: 17 }),
@@ -1379,7 +1402,6 @@ describe('FederationThreadAccessService peer-bound response write gate', () => {
     );
   });
 });
-
 
 const localUser = (userId: number, account: string) => ({
   userId,

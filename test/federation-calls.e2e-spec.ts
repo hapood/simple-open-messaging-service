@@ -17,7 +17,7 @@ import {
   waitForSseEvent,
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { message, user } from '../src/database/schema.js';
+import { message, account as user } from '../src/database/schema.js';
 import { findP2PRelationship } from './seed.js';
 
 /**
@@ -42,8 +42,8 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
   let tokenFrank: string;
   let erinId: number;
   let frankId: number;
-  let frankStubIdOnA: number; // appA's stub of frank (foreign) — the `calleeUserId` erin dials
-  let erinStubIdOnB: number; // appB's stub of erin (foreign) — the bubble's creator on the pulled copy
+  let erinThreadId: number;
+  let frankThreadId: number;
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
@@ -61,10 +61,10 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     const friendship = await establishFederatedFriendship({
       local: appA,
       remote: appB,
-      localUserId: (await appA.database.query.user.findFirst({
+      localUserId: (await appA.database.query.account.findFirst({
         where: and(eq(user.account, 'erin'), eq(user.domain, 'local')),
       }))!.id,
-      remoteUserId: (await appB.database.query.user.findFirst({
+      remoteUserId: (await appB.database.query.account.findFirst({
         where: and(eq(user.account, 'frank'), eq(user.domain, 'local')),
       }))!.id,
       localToken: tokenErin,
@@ -75,19 +75,8 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       remoteDomain: DOM_B,
       note: 'hi',
     });
-    frankStubIdOnA = friendship.remoteStubIdOnLocal;
-    erinStubIdOnB = friendship.localStubIdOnRemote;
-    await vi.waitFor(
-      async () => {
-        const [relationshipOnA, relationshipOnB] = await Promise.all([
-          findP2PRelationship(appA.database, erinId, frankStubIdOnA),
-          findP2PRelationship(appB.database, frankId, erinStubIdOnB),
-        ]);
-        expect(relationshipOnA.pair).toMatchObject({ active: true });
-        expect(relationshipOnB.pair).toMatchObject({ active: true });
-      },
-      { timeout: 5000, interval: 100 },
-    );
+    erinThreadId = friendship.localThreadId;
+    frankThreadId = friendship.remoteThreadId;
   }, 120_000);
 
   afterAll(async () => {
@@ -135,7 +124,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       const initRes = await request(appA.baseUrl)
         .post('/api/v1/calls/initiate')
         .set('Authorization', `Bearer ${tokenErin}`)
-        .send({ callSid, calleeUserId: frankStubIdOnA, callType: 'AUDIO' });
+        .send({ callSid, threadId: erinThreadId, callType: 'AUDIO' });
       expect(initRes.body.code).toBe(BusinessCode.OK);
       await incomingP; // the ring crossed S2S → appB mirrored + rang frank
 
@@ -146,7 +135,6 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .send({
           id: randomUUID(),
           callSid,
-          toUserId: frankStubIdOnA,
           kind: 'offer',
           payload: 'OFFER_SDP',
         });
@@ -175,7 +163,6 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .send({
           id: randomUUID(),
           callSid,
-          toUserId: erinStubIdOnB,
           kind: 'answer',
           payload: 'ANSWER_SDP',
         });
@@ -240,7 +227,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       const initRes = await request(appA.baseUrl)
         .post('/api/v1/calls/initiate')
         .set('Authorization', `Bearer ${tokenErin}`)
-        .send({ callSid, calleeUserId: frankStubIdOnA, callType: 'AUDIO' });
+        .send({ callSid, threadId: erinThreadId, callType: 'AUDIO' });
       expect(initRes.body.code).toBe(BusinessCode.OK);
       await incomingP;
 
@@ -281,7 +268,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       const initRes = await request(appA.baseUrl)
         .post('/api/v1/calls/initiate')
         .set('Authorization', `Bearer ${tokenErin}`)
-        .send({ callSid, calleeUserId: frankStubIdOnA, callType: 'VIDEO' });
+        .send({ callSid, threadId: erinThreadId, callType: 'VIDEO' });
       expect(initRes.body.code).toBe(BusinessCode.OK);
       await incomingP;
 
@@ -300,14 +287,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(onA.contentType).toBe('CALL');
       expect(JSON.parse(onA.content).outcome).toBe('declined');
 
-      // The bubble pulls to appB — find frank's P2P thread with erin's stub, then the CALL row by originSeq.
-      const frankRelationship = await findP2PRelationship(
-        appB.database,
-        frankId,
-        erinStubIdOnB,
-      );
-      expect(frankRelationship.pair).toBeDefined();
-      const frankThreadId = frankRelationship.pair!.threadId!;
+      // The bubble pulls to Frank's thread using the originating server's local sequence.
       const onB = await pollFor(() =>
         appB.database.query.message.findFirst({
           where: and(
@@ -316,12 +296,16 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
             eq(message.creatorDomain, DOM_A),
             // The wire source coordinate is the original local seq even if a later delivery receipt
             // replaces the source row's provisional originSeq.
-            eq(message.originSeq, onA.originSeq ?? onA.seq),
+            eq(message.originSeq, onA.seq),
             eq(message.contentType, 'CALL'),
           ),
         }),
       );
-      expect(JSON.parse(onB.content).outcome).toBe('declined');
+      expect(JSON.parse(onB.content)).toMatchObject({
+        outcome: 'declined',
+        callerId: null,
+        calleeId: frankId,
+      });
     } finally {
       await frankSse.cancel();
     }

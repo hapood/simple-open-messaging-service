@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ServerResponse } from 'node:http';
+import { get } from 'node:http';
+import { once } from 'node:events';
+import { Test } from '@nestjs/testing';
+import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { SseService } from './sse.service.js';
 
 /**
- * SseService registry + disconnect. Pure unit tests (no DI; dependencies and raw responses are mocked).
+ * SseService registry, disconnect, and HTTP shutdown with a real held SSE connection.
  * Covers the per-session FORCE_LOGOUT (onSessionRevoked disconnects ONLY the
  * matching session, including multi-tab same-credential, and leaves other devices online), the all-device
  * broadcast (onSessionsInvalidated), and the unknown-session no-op. The @OnEvent handlers are invoked
@@ -55,6 +59,82 @@ describe('SseService', () => {
   function gotForceLogout(writes: string[]) {
     return writes.some((w) => w.includes('event: FORCE_LOGOUT'));
   }
+
+  it('ends every stream and clears heartbeats even when one close fails', () => {
+    vi.useFakeTimers();
+    const svc = makeService();
+    const clients = [mockRes(), mockRes(), mockRes()];
+    try {
+      svc.register(7, 11, clients[0].res);
+      svc.register(7, 11, clients[1].res);
+      svc.register(8, 22, clients[2].res);
+      vi.mocked(clients[0].res.end).mockImplementation(() => {
+        throw new Error('connection already closed');
+      });
+      // A synchronous close callback must not make iteration skip another tab.
+      vi.mocked(clients[1].res.end).mockImplementation(() => {
+        const close = vi
+          .mocked(clients[1].res.on)
+          .mock.calls.find(([event]) => event === 'close')![1];
+        close();
+        return clients[1].res;
+      });
+
+      svc.onModuleDestroy();
+      svc.onModuleDestroy();
+
+      for (const client of clients) {
+        expect(client.res.end).toHaveBeenCalledTimes(1);
+        expect(gotForceLogout(client.writes)).toBe(false);
+      }
+      expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the HTTP server while a client holds an SSE stream open', async () => {
+    const svc = makeService();
+    const module = await Test.createTestingModule({
+      providers: [{ provide: SseService, useValue: svc }],
+    }).compile();
+    const adapter = new FastifyAdapter();
+    const app = module.createNestApplication(adapter, { logger: false });
+    adapter.getInstance().get('/events', (_request, reply) => {
+      reply.hijack();
+      svc.register(7, 11, reply.raw);
+    });
+    await app.listen(0, '127.0.0.1');
+    const request = get(`${await app.getUrl()}/events`);
+    let closing: Promise<void> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const [response] = await once(request, 'response');
+      const ended = once(response, 'end');
+      response.resume();
+      expect(svc.isSessionOnline(7, 11)).toBe(true);
+
+      closing = app.close();
+      await Promise.race([
+        Promise.all([closing, ended]),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('shutdown blocked by open SSE stream')),
+            1000,
+          );
+        }),
+      ]);
+      expect(response.complete).toBe(true);
+      expect(svc.isSessionOnline(7, 11)).toBe(false);
+    } finally {
+      clearTimeout(timer);
+      request.destroy();
+      app.getHttpServer().closeAllConnections();
+      await (closing ?? app.close());
+    }
+  });
 
   it('always includes the mandatory stateFeedEndId in HELLO', async () => {
     const svc = makeService();

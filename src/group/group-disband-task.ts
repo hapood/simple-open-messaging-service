@@ -1,3 +1,7 @@
+import {
+  readAccountTarget,
+  type AccountTarget,
+} from '../user/account-address.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 
 export function readDisbandGroupTask(task: DurableTask): {
@@ -17,17 +21,14 @@ export function readDisbandGroupTask(task: DurableTask): {
 
 export function readDissolvedMemberRevokeTask(task: DurableTask): {
   threadId: number;
-  memberUserId: number;
+  memberUserId: AccountTarget;
 } {
   assertGroupTask(task);
   if (task.parentTaskId === null) {
     throw new Error('dissolved-member revoke has no parent');
   }
   const threadId = readPositiveInteger(task.payload.threadId, 'thread ID');
-  const memberUserId = readPositiveInteger(
-    task.payload.memberUserId,
-    'member user ID',
-  );
+  const memberUserId = readAccountTarget(task.payload.memberUserId);
   return { threadId, memberUserId };
 }
 

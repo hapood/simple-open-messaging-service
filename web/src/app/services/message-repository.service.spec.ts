@@ -21,7 +21,8 @@ function msg(threadId: number, seq: number, content = `m${seq}`): Message {
     contentType: 'PURE_TEXT',
     content,
     threadId,
-    creator: { account: 'me', domain: 'local' },
+    creator: { account: 'me', domain: 'local', namespaceId: 0 },
+    profileRev: 1,
     createdAt: seq * 1000,
     updatedAt: seq * 1000,
     isDeleted: false,
@@ -92,6 +93,49 @@ describe('MessageRepository', () => {
     repo = TestBed.inject(MessageRepository);
     webdb = TestBed.inject(WebdbService);
     await webdb.openForUser('1');
+  });
+
+  it('stops cursor recovery when the server returns unchanged bounds', async () => {
+    queryMessageHistoryPageSpy.mockReturnValue(
+      of({ code: 30006, data: { resumeAfter: 0, resumeBefore: 11 } }),
+    );
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'latest',
+      count: 10,
+    });
+    expect(result.failed).toBe(true);
+    expect(queryMessageHistoryPageSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a backward scan clipped by the server to cleared history', async () => {
+    queryMessageHistoryPageSpy.mockImplementation((request) => {
+      if (request.before === undefined)
+        return of({ code: 30006, data: { resumeAfter: 5, resumeBefore: 11 } });
+      return of({
+        code: 0,
+        data: {
+          messages: [msg(42, 10), msg(42, 6)],
+          gaps: [],
+          scannedThrough: Math.max(request.through, 6),
+          hasMore: false,
+        },
+      });
+    });
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'latest',
+      count: 10,
+    });
+    expect(result.failed).toBe(false);
+    expect(result.items).toEqual([
+      { kind: 'message', message: msg(42, 6) },
+      { kind: 'message', message: msg(42, 10) },
+    ]);
+    expect(queryMessageHistoryPageSpy).toHaveBeenLastCalledWith({
+      threadId: 42,
+      before: 11,
+      through: 5,
+      take: 10,
+    });
   });
 
   it('walks a mixed browser page and commits its message/gap ranges', async () => {

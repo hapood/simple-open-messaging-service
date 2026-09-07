@@ -1,3 +1,4 @@
+import { groupStateSql } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import {
@@ -51,16 +52,16 @@ export class FederationThreadContentHeadService {
       FROM "ThreadAudience" audience
       JOIN "MessageThread" audience_thread
         ON audience_thread.id = audience."threadId"
-      LEFT JOIN "Group" audience_group
-        ON audience_group.id = audience_thread."groupId"
+      LEFT JOIN ${groupStateSql} audience_group
+        ON audience_group.id = audience_thread.id
       WHERE audience."targetDomain" = ${peerDomain}
         AND audience."targetNamespaceId" = ${context.namespaceId}
         AND audience."localUserId" IS NULL
         AND (audience_thread.type = 'P2P' OR audience_group.domain = 'local')
       UNION
       SELECT thread.id AS "threadId"
-      FROM "Group" group_state
-      JOIN "MessageThread" thread ON thread."groupId" = group_state.id
+      FROM ${groupStateSql} group_state
+      JOIN "MessageThread" thread ON thread.id = group_state.id
       JOIN "AccountThreadState" local_state ON local_state."threadId" = thread.id
       WHERE thread.type = 'GROUP'
         AND group_state.domain = ${peerDomain}
@@ -135,7 +136,7 @@ export class FederationThreadContentHeadService {
              group_state.domain AS "groupDomain",
              group_state."namespaceId" AS "groupNamespaceId"
       FROM "MessageThread" thread
-      LEFT JOIN "Group" group_state ON group_state.id = thread."groupId"
+      LEFT JOIN ${groupStateSql} group_state ON group_state.id = thread.id
       WHERE thread.id = ${threadId}
       LIMIT 1
       FOR SHARE OF thread

@@ -1,4 +1,10 @@
-import { Injectable, signal, computed, inject } from '@angular/core';
+import {
+  Injectable,
+  InjectionToken,
+  signal,
+  computed,
+  inject,
+} from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, of, map, shareReplay, firstValueFrom } from 'rxjs';
 import { apiPrefix } from './constants';
@@ -12,7 +18,8 @@ import {
 import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
-import { isTauri } from './runtime';
+import { isTauri, tauriInvoke } from './runtime';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import type { FriendRequestProjection } from './friend-request-state';
 
 export type { User } from './model';
@@ -247,24 +254,37 @@ export type ClientStateFeedItem =
 export interface ClientGroupMetaFeedPage {
   account: string;
   mode: 'full' | 'delta';
-  items: Array<{
-    feedId: string;
-    account: string;
-    domain: string;
-    namespaceId: number;
-    operation: 'UPSERT' | 'DEPART';
-    body:
-      | {
+  items: Array<
+    | {
+        feedId: string;
+        account: string;
+        domain: string;
+        namespaceId: number;
+        operation: 'UPSERT';
+        body: {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
           profileMessageSeq?: number | null;
           profileResolved?: boolean;
-          displayName: string;
-          avatar: string | null;
-          bio: string;
-        }
-      | Record<string, never>;
-  }>;
+          displayName?: string;
+          avatar?: string | null;
+          bio?: string;
+        };
+      }
+    | {
+        feedId: string;
+        account: string;
+        domain: string;
+        namespaceId: number;
+        operation: 'DEPART';
+        body?: Record<string, never>;
+      }
+    | {
+        feedId: string;
+        operation: 'GROUP_PROFILE';
+        body: { profileRev: number };
+      }
+  >;
   scannedThrough: string;
   groupMetaFeedEndId: string;
   hasMore: boolean;
@@ -276,6 +296,12 @@ export interface ClientGroupMetaFeedPage {
  *  threadlist eager-paints the cached list BEFORE the SSE/HELLO round-trip (instant list for returning
  *  users). Cleared with the other user-scoped keys on logout (see USER_SCOPED_LS_KEYS). */
 const LAST_USER_ID_KEY = 'soms.lastUserId';
+const CACHE_REBUILD_KEY = 'soms.cacheRebuild';
+
+export const CACHE_REBUILD_RELOAD = new InjectionToken<() => void>(
+  'CACHE_REBUILD_RELOAD',
+  { providedIn: 'root', factory: () => () => window.location.reload() },
+);
 
 @Injectable({
   providedIn: 'root',
@@ -287,7 +313,7 @@ export class UserService {
    *  server-side-lookup only, so HELLO is the client's sole pre-profile-fetch source of its own userId).
    *  The per-user IDB store opens on this id via {@link establishSession}; it replaces the old coupling
    *  where the webdb opened on the profile fetch's sessionProfile().id (which made the fetch un-skippable).
-   *  Other services' session-end effects key off this signal to reset their in-memory caches on logout. */
+   *  SessionLifecycleService separately announces logout even when this id is still null. */
   readonly sessionUserId = signal<number | null>(null);
 
   /** The client's applied state-feed cursor — seeded from HELLO and advanced after
@@ -317,10 +343,47 @@ export class UserService {
   private readonly webdb = inject(WebdbService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly preferences = inject(PreferenceStore);
+  private readonly sessionLifecycle = inject(SessionLifecycleService);
   /** The user key whose DB is currently open (or null) — tracks {@link establishSession} / {@link clearSession}. */
   private webdbUserKey: string | null = null;
   /** Set only by a real credential/OTP/QR login. Cold-start restore and reconnect never set it. */
   private freshCachePending = false;
+  private cacheRebuildRequest?: Promise<void>;
+  private readonly reloadForCacheRebuild = inject(CACHE_REBUILD_RELOAD);
+
+  /** Persist recovery outside the damaged cache. Rebuild only after reload, when old writers are gone. */
+  requestCacheRebuild(): Promise<void> {
+    if (this.webdbUserKey === null || this.freshCachePending)
+      return Promise.resolve();
+    return (this.cacheRebuildRequest ??= this.scheduleCacheRebuild());
+  }
+
+  private async scheduleCacheRebuild(): Promise<void> {
+    try {
+      const userId =
+        this.webdbUserKey === null ? null : Number(this.webdbUserKey);
+      // A real first login has no partition yet. Its HELLO initializes a fresh cache normally.
+      if (userId === null || this.freshCachePending) return;
+      const scope = `account:${userId}` as const;
+      if (
+        (await this.preferences.get(scope, CACHE_REBUILD_KEY)) === 'attempted'
+      ) {
+        console.warn('[cache-recovery] automatic rebuild already attempted', {
+          userId,
+        });
+        return;
+      }
+      if (this.webdbUserKey !== String(userId)) return;
+      await this.preferences.set(scope, CACHE_REBUILD_KEY, 'pending');
+      if (this.webdbUserKey !== String(userId)) return;
+      console.warn('[cache-recovery] reloading to rebuild account cache', {
+        userId,
+      });
+      this.reloadForCacheRebuild();
+    } catch (error) {
+      console.warn('[cache-recovery] could not schedule cache rebuild', error);
+    }
+  }
 
   constructor(private http: HttpClient) {}
 
@@ -329,9 +392,8 @@ export class UserService {
     this.freshCachePending = true;
   }
 
-  /** Tear down the in-memory session (logout / account switch). Clears sessionUserId + sessionProfile →
-   *  every DB-layer repository's session-end effect (watching sessionUserId) resets its cache; the per-user
-   *  IDB is closed + deleted. Also wipes user-scoped client preferences such as recent emoji. */
+  /** Delete durable account data, clear identity, then explicitly reset in-memory consumers. The
+   * notification also covers pre-HELLO logout, when sessionUserId has never left null. */
   async clearSession(): Promise<void> {
     const prev = this.webdbUserKey;
     const previousUserId = this.sessionProfile()?.id;
@@ -341,6 +403,7 @@ export class UserService {
     await this.clearClientPreferences(previousUserId);
     this.webdbUserKey = null;
     this.freshCachePending = false;
+    this.cacheRebuildRequest = undefined;
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._stateFeedCursor.set(undefined);
@@ -349,6 +412,7 @@ export class UserService {
     this.relationshipRequestReadThroughFeedId.set(0);
     this.groupJoinRequestHeads.set(new Map());
     this.profileFetch = undefined;
+    this.sessionLifecycle.endSession();
   }
 
   /** Establish the session from the HELLO connect handshake — the cold-start / login entry point. Opens
@@ -360,8 +424,10 @@ export class UserService {
    *  per-account database and subsequently advanced by the unified state delta. */
   async establishSession(userId: number, profileRev: number): Promise<void> {
     if (this.freshCachePending) {
-      this.freshCachePending = false;
       await this.webdb.recreateForUser(String(userId));
+      await this.preferences.remove(`account:${userId}`, CACHE_REBUILD_KEY);
+      this.freshCachePending = false;
+      this.cacheRebuildRequest = undefined;
       this.webdbUserKey = null;
     }
     if (this.sessionUserId() === userId) {
@@ -372,13 +438,19 @@ export class UserService {
       await this.webdb.closeAndDelete(this.webdbUserKey);
     }
     this.webdbUserKey = String(userId);
-    this.sessionUserId.set(userId);
     this.persistLastUserId(userId); // remember for the next boot's eager IDB paint (pre-HELLO)
     try {
       await this.webdb.openExistingForUser(String(userId)); // strict read on the normal path
-    } catch {
+    } catch (error) {
       // Every local-cache validation/open failure is rebuildable state. The Webdb epoch prevents this
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
+      console.warn('[cache-recovery] session cache open failed', error);
+      const scope = `account:${userId}` as const;
+      if (
+        (await this.preferences.get(scope, CACHE_REBUILD_KEY)) === 'attempted'
+      )
+        throw error;
+      await this.preferences.set(scope, CACHE_REBUILD_KEY, 'attempted');
       await this.webdb.recreateForUser(String(userId));
     }
     const [latest, requestReadHead, groupHeads, groupReads] = await Promise.all(
@@ -389,6 +461,7 @@ export class UserService {
         this.webdb.getMeta('groupJoinRequestReadFeedIds'),
       ],
     );
+    this.sessionUserId.set(userId);
     this.relationshipRequestStateRevision.set(
       typeof latest === 'number' && latest >= 0 ? latest : 0,
     );
@@ -424,7 +497,11 @@ export class UserService {
           this.webdb.putMeta('relationshipRequestCleanupAt', Date.now()),
         );
     }
-    void this.gateSelfProfile(userId, profileRev);
+    void this.gateSelfProfile(userId, profileRev).catch(async (error) => {
+      console.warn('[cache-recovery] cached self profile read failed', error);
+      if (this.webdbUserKey === String(userId))
+        await this.requestCacheRebuild();
+    });
   }
 
   /** Gate the /user/my-profile fetch on the IDB-cached profileRev. Cache hit + fresh → skip the fetch;
@@ -617,21 +694,41 @@ export class UserService {
    *  HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser` reuse for the same
    *  user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever launch). */
   async restoreWebdb(): Promise<void> {
-    const userId = await this.readLastUserId();
-    if (userId === null) return;
-    // Track the open user so clearSession can close it (a pre-HELLO logout) + establishSession can detect
-    // a token-swap (close+reopen when HELLO's userId differs from the optimistic lastUserId).
-    this.webdbUserKey = String(userId);
     try {
-      await this.webdb.openExistingForUser(String(userId));
-    } catch {
+      const userId = await this.readLastUserId();
+      if (userId === null) return;
+      this.webdbUserKey = String(userId);
+      const scope = `account:${userId}` as const;
+      const recovery = await this.preferences.get(scope, CACHE_REBUILD_KEY);
+      if (recovery !== 'pending') {
+        try {
+          await this.webdb.openExistingForUser(String(userId));
+          await this.restoreCachedSelfProfile(userId);
+          return;
+        } catch (error) {
+          console.warn('[cache-recovery] account cache restore failed', error);
+          if (recovery === 'attempted') return;
+        }
+      }
+      // Persist before attempting: a failed rebuild must not cause a reload loop.
+      await this.preferences.set(scope, CACHE_REBUILD_KEY, 'attempted');
+      if (isTauri()) await tauriInvoke('native_db_recreate_cache');
       await this.webdb.recreateForUser(String(userId));
+      await this.restoreCachedSelfProfile(userId);
+      console.warn(
+        '[cache-recovery] account cache rebuilt; awaiting full state replay',
+        { userId },
+      );
+    } catch (error) {
+      console.warn('[cache-recovery] account cache rebuild unavailable', error);
     }
+  }
+
+  private async restoreCachedSelfProfile(userId: number): Promise<void> {
     const cached = (await this.webdb.getMeta('selfProfile')) as
       | User
       | null
       | undefined;
-    // Validate the partition owner defensively before exposing cached identity data to the UI.
     if (cached?.id === userId) this.sessionProfile.set(cached);
   }
 

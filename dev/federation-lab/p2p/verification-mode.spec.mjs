@@ -4,6 +4,7 @@ import {
   assertVerificationMode,
   finishWorkloadBatch,
   verifyMidpointProfiles,
+  shouldSettleWorkloadBatch,
 } from './verification-mode.mjs';
 
 const options = () => ({
@@ -81,4 +82,25 @@ test('round mode preserves divergence evidence on effect failure', async () => {
 test('invalid verification modes are rejected', () => {
   for (const mode of ['', 'off', 'none', 'FINAL'])
     assert.throws(() => assertVerificationMode(mode), /round or final/);
+});
+
+test('defers dissolution settlement in final mode and retains round barriers', () => {
+  const dissolution = [{ type: 'DISSOLVE_GROUP' }];
+  assert.equal(shouldSettleWorkloadBatch('final', dissolution), false);
+  assert.equal(shouldSettleWorkloadBatch('round', dissolution), true);
+  const message = [{ type: 'SEND_GROUP_MESSAGE' }];
+  assert.equal(
+    shouldSettleWorkloadBatch('final', message, { randomBatch: true }),
+    false,
+  );
+  assert.equal(
+    shouldSettleWorkloadBatch('round', message, { randomBatch: true }),
+    true,
+  );
+  // Quote/forward fixed scenarios retain the waits needed to read their targets.
+  assert.equal(shouldSettleWorkloadBatch('final', message), true);
+  assert.throws(
+    () => shouldSettleWorkloadBatch('unknown', dissolution),
+    /verify-mode/,
+  );
 });

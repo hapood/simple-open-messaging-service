@@ -338,7 +338,7 @@ Success `data` is the closed `ForwardWireBundle` defined by
 - `children` is the flat set of all nested child bundles and has unique IDs in
   this response. Internal references may form cycles; no recursive-depth test
   is applied.
-- Each bundle has an independent message-ID space. `quoteTargetId` resolves
+- Each bundle has an independent message-ID space. `quoteTargetId`, when positive, resolves
   only within its enclosing `messages` array.
 - The publisher MUST return its previously published closure in full. v1 sets
   no common byte, child-count, or message-count maximum. A consumer MAY decline

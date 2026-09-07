@@ -118,7 +118,6 @@ export async function resolveWorkloadProfiles({
           planned.address,
         );
       }
-      const latestMessageByMember = new Map();
       for (const message of projection.messages) {
         if (
           message.localState !== 'READY' ||
@@ -135,13 +134,10 @@ export async function resolveWorkloadProfiles({
           'MESSAGE_AUTHOR_HISTORY',
           message.clientMessageId,
         );
-        const previous = latestMessageByMember.get(message.creatorAddress);
-        if (!previous || message.seq > previous.seq)
-          latestMessageByMember.set(message.creatorAddress, message);
       }
       for (const member of projection.roster) {
-        const latest = latestMessageByMember.get(member.address);
-        if (latest) continue;
+        // Roster facts and messages can reference different exact revisions.
+        // Resolving message authors does not resolve the roster snapshot.
         add(
           nodeName,
           viewer,

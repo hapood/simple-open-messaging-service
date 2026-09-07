@@ -1,3 +1,4 @@
+import { toClientIdentity } from '../common/client-identity.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -102,7 +103,7 @@ export class FederationInboundMessageStoreService {
   ): Promise<FederationInboundMessageStoreResult> {
     const {
       threadId,
-      creator,
+      creator: incomingCreator,
       fetchedFromDomain,
       namespaceId,
       message: incoming,
@@ -116,6 +117,10 @@ export class FederationInboundMessageStoreService {
       downloadAuth,
       sequencePolicy,
     } = params;
+    const creator = toClientIdentity(
+      { ...incomingCreator, namespaceId },
+      this.config.domain,
+    );
     if (sequencePolicy) {
       mapFederationOriginSequence(incoming.originSeq, sequencePolicy);
     }
@@ -196,6 +201,7 @@ export class FederationInboundMessageStoreService {
           threadId,
           creatorAccount: creator.account,
           creatorDomain: creator.domain,
+          creatorNamespaceId: creator.namespaceId,
           seq,
           originSeq: incoming.originSeq,
           profileRev: incoming.profileRev,
@@ -272,6 +278,7 @@ export class FederationInboundMessageStoreService {
         threadId,
         creatorAccount: creator.account,
         creatorDomain: creator.domain,
+        creatorNamespaceId: creator.namespaceId,
         seq,
         originSeq: incoming.originSeq,
         profileRev: incoming.profileRev,

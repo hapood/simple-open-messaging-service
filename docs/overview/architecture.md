@@ -316,14 +316,19 @@ Two consistency boundaries are deliberate:
 
 ### Local System Messages
 
-After an authoritative friend or group-state transaction commits, the server may best-effort append a
-local `SYSTEM` message for client display. Supported events are `FRIEND_ADDED`, `FRIEND_REMOVED`,
+The server writes local `SYSTEM` messages for client display. Supported events are `FRIEND_ADDED`, `FRIEND_REMOVED`,
 `GROUP_JOINED`, `GROUP_LEFT`, `GROUP_ADMIN_GRANTED`, `GROUP_ADMIN_REVOKED`, and
 `GROUP_OWNER_TRANSFERRED`; voluntary leave and removal both render as `GROUP_LEFT`.
 
 These rows are server-authored presentation records, not business-state facts. They cannot be sent by a
-client or used as commands. Generation failures are logged without rolling back the committed state, and
-client parsing/rendering failures are logged and replaced with a generic localized fallback.
+client or used as commands. `FRIEND_ADDED` is written in the transaction that activates the relationship,
+along with its client content heads. Only an inactive-to-active transition creates the notice; duplicate
+requests and federation confirmations do not. A write failure rolls back the activation. The writer
+reuses the held relationship parents and passes its thread content lock to the message service.
+`FRIEND_REMOVED` is also transactional where its sequence establishes the retained-history visibility
+boundary. Other notices may be appended on a best-effort basis after their authoritative state commits.
+Client notifications remain best-effort after commit, and missed notifications are recoverable through
+state-feed synchronization. Client parsing/rendering failures use a generic localized fallback.
 
 ### 1:1 Calls
 

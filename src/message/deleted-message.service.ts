@@ -209,7 +209,7 @@ export class DeletedMessageService {
         SELECT message.id, message."creatorAccount", message."creatorDomain",
                message."contentType", message."isDeleted"
         FROM "Message" message
-        JOIN "User" author
+        JOIN "Account" author
          ON author.account = message."creatorAccount"
          AND author.domain = message."creatorDomain"
          AND author."namespaceId" = CASE

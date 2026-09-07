@@ -28,32 +28,23 @@ describe('group invitations by public address', () => {
       database.db,
       'invite-mirror.test',
     );
-    const [local, direct, decoy] = await database.db
-      .insert(tables.user)
-      .values([
-        {
-          account: 'inviter',
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Inviter',
-          updatedAt: new Date(),
-        },
-        {
-          account: 'friend',
-          domain: 'invite-direct.test',
-          namespaceId: directNs,
-          name: 'Friend',
-          updatedAt: new Date(),
-        },
-        {
-          account: 'friend',
-          domain: 'invite-direct.test',
-          namespaceId: mirrorNs,
-          name: 'Group copy',
-          updatedAt: new Date(),
-        },
-      ])
+    const [local] = await database.db
+      .insert(tables.account)
+      .values({
+        account: 'inviter',
+        updatedAt: new Date(),
+      })
       .returning();
+    const direct = {
+      account: 'friend',
+      domain: 'invite-direct.test',
+      namespaceId: directNs,
+    };
+    const decoy = { ...direct, namespaceId: mirrorNs };
+    await database.db.insert(tables.profileTable).values([
+      { ...direct, profileRev: 1, displayName: 'Friend' },
+      { ...decoy, profileRev: 1, displayName: 'Group copy' },
+    ]);
     const [thread] = await database.db
       .insert(tables.messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
@@ -102,10 +93,10 @@ describe('group invitations by public address', () => {
     expect(queue.enqueueTask).toHaveBeenCalledTimes(1);
     expect(queue.enqueueTask).toHaveBeenCalledWith(
       expect.objectContaining({
-        payload: { threadId: 9, targetUserId: direct.id },
+        payload: { threadId: 9, targetUserId: direct },
       }),
     );
-    expect(decoy.id).not.toBe(direct.id);
+    expect(decoy.namespaceId).not.toBe(direct.namespaceId);
     const unknown = await controller.inviteUsers(req, {
       groupId: 9,
       users: [{ account: 'unknown', domain: direct.domain }],
@@ -113,8 +104,8 @@ describe('group invitations by public address', () => {
     expect(unknown.tasks).toEqual([]);
     expect(queue.enqueueTask).toHaveBeenCalledTimes(1);
     expect(
-      await database.db.select({ id: tables.user.id }).from(tables.user),
-    ).toHaveLength(3);
+      await database.db.select({ id: tables.account.id }).from(tables.account),
+    ).toHaveLength(1);
     await database.db
       .update(tables.relationshipPair)
       .set({ active: false })

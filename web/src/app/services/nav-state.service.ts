@@ -7,6 +7,8 @@ import {
   type Type,
 } from '@angular/core';
 import { UserService } from './user.service';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 /** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. */
 export type AsidePanel =
@@ -152,6 +154,11 @@ export class NavStateMachineService {
       const url = tid === undefined ? '/' : `/chat/${tid}`;
       history.replaceState(history.state, '', url);
     });
+
+    // Logout before HELLO does not change sessionUserId, but must still close cached chat layers.
+    inject(SessionLifecycleService)
+      .ended$.pipe(takeUntilDestroyed())
+      .subscribe(() => this.resetForSessionEnd());
 
     // Session-end reset: when the session ends (sessionUserId → null — clearSession on logout / 401-bounce /
     // account switch), drop ALL nav layers so the next account logging into the same live SPA cannot inherit

@@ -396,16 +396,17 @@ closed.
 Relationship commands retain the established order:
 
 1. canonical USER_PAIR or GROUP advisory lock;
-2. relationship/group rows;
+2. the P2P relationship row, when applicable;
 3. MessageThread row;
 4. synchronization state, gap, Message, and projection rows.
 
 Content-round commits acquire the existing business scope and parent rows before
-MessageThread: a group address scope and Group row for group threads, or sorted
+MessageThread: a group address scope for group threads, or sorted
 endpoint account scopes and the existing RelationshipPair for P2P threads.
 They then lock MessageThread, compare the captured epoch, and write thread-local
-synchronization facts. Parent locks also cover implicit foreign-key checks during
-repeated thread updates; an unchanged epoch UPDATE is still a database write.
+synchronization facts. Group mutations share the group business scope; there is no
+additional explicit GroupAccount row lock. P2P relationship row locks retain their
+existing role in serializing pair transitions and foreign-key checks.
 No network fetch or media download takes place while these locks are held.
 A relationship transaction that commits first
 causes an epoch mismatch; a round transaction that commits first was authorized

@@ -1,4 +1,8 @@
 import {
+  readAccountTarget,
+  type AccountTarget,
+} from '../user/account-address.js';
+import {
   GroupRole,
   type GroupRole as GroupRoleValue,
 } from '../database/enums.js';
@@ -15,13 +19,10 @@ export function readLeaveGroupTask(task: DurableTask): GroupMembershipTaskBase {
 
 export function readTargetGroupTask(
   task: DurableTask,
-): GroupMembershipTaskBase & { targetUserId: number } {
+): GroupMembershipTaskBase & { targetUserId: AccountTarget } {
   return {
     ...readBase(task),
-    targetUserId: readPositiveInteger(
-      task.payload.targetUserId,
-      'target user ID',
-    ),
+    targetUserId: readAccountTarget(task.payload.targetUserId),
   };
 }
 
@@ -40,7 +41,7 @@ export function readGroupRequestTask(
   task: DurableTask,
 ): GroupMembershipTaskBase & {
   requestId: bigint;
-  memberUserId: number;
+  memberUserId: AccountTarget;
 } {
   const base = readBase(task);
   const requestId = task.payload.requestId;
@@ -50,10 +51,7 @@ export function readGroupRequestTask(
   return {
     ...base,
     requestId: BigInt(requestId),
-    memberUserId: readPositiveInteger(
-      task.payload.memberUserId,
-      'member user ID',
-    ),
+    memberUserId: readAccountTarget(task.payload.memberUserId),
   };
 }
 

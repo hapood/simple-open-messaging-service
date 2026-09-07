@@ -30,32 +30,23 @@ describe('revoking a friendship with a multiply mirrored identity', () => {
       database.db,
       'revoke-direct.test',
     );
-    const [local, decoy, remote] = await database.db
-      .insert(tables.user)
-      .values([
-        {
-          account: 'revoke-local',
-          domain: 'local',
-          namespaceId: 0,
-          name: 'Local',
-          updatedAt: new Date(),
-        },
-        {
-          account: 'revoke-peer',
-          domain: 'revoke-direct.test',
-          namespaceId: groupNs,
-          name: 'Group copy',
-          updatedAt: new Date(),
-        },
-        {
-          account: 'revoke-peer',
-          domain: 'revoke-direct.test',
-          namespaceId: directNs,
-          name: 'Direct copy',
-          updatedAt: new Date(),
-        },
-      ])
+    const [local] = await database.db
+      .insert(tables.account)
+      .values({
+        account: 'revoke-local',
+        updatedAt: new Date(),
+      })
       .returning();
+    const remote = {
+      account: 'revoke-peer',
+      domain: 'revoke-direct.test',
+      namespaceId: directNs,
+    };
+    const decoy = { ...remote, namespaceId: groupNs };
+    await database.db.insert(tables.profileTable).values([
+      { ...remote, profileRev: 1, displayName: 'Direct copy' },
+      { ...decoy, profileRev: 1, displayName: 'Group copy' },
+    ]);
     const [thread] = await database.db
       .insert(tables.messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
@@ -84,10 +75,8 @@ describe('revoking a friendship with a multiply mirrored identity', () => {
         account_domain: { account: remote.account, domain: remote.domain },
       } as never),
     ).toThrow('explicit namespaceId');
-    expect(
-      await participants.findP2PThreadBetween(local.id, decoy.id),
-    ).toBeNull();
-    expect(await participants.findP2PThreadBetween(local.id, remote.id)).toBe(
+    expect(await participants.findP2PThreadBetween(local.id, decoy)).toBeNull();
+    expect(await participants.findP2PThreadBetween(local.id, remote)).toBe(
       thread.id,
     );
     const queue = { enqueueTask: vi.fn().mockResolvedValue({ taskId: 1n }) };

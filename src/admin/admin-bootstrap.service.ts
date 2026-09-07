@@ -4,7 +4,7 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   account as accountTable,
   admin,
-  user as userTable,
+  profileTable,
 } from '../database/schema.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 
@@ -14,7 +14,7 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
  * bootstrap admin (account=admin, domain=local) exists:
  *
  *   - present            → no-op (no ADMIN_BOOTSTRAP_PASSWORD needed) — every boot after the first;
- *   - absent + password  → create the User + a linked SUPER_ADMIN profile, password hashed via the shared
+ *   - absent + password  → create the Account + a linked SUPER_ADMIN role, password hashed via the shared
  *                          PasswordHasher (Argon2id + pepper, the same path every login verifies against);
  *   - absent + no password → log a loud WARN and CONTINUE booting. The chat product stays up; the
  *                          operator sets ADMIN_BOOTSTRAP_PASSWORD and restarts to gain admin access.
@@ -48,10 +48,9 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
   private async ensureBootstrapAdmin(): Promise<void> {
     const [existing] = await this.database.db
       .select({ id: accountTable.id })
-      .from(userTable)
-      .innerJoin(accountTable, eq(accountTable.id, userTable.id))
+      .from(accountTable)
       .innerJoin(admin, eq(admin.userId, accountTable.id))
-      .where(and(eq(userTable.account, 'admin'), eq(userTable.domain, 'local')))
+      .where(eq(accountTable.account, 'admin'))
       .limit(1);
     if (existing) return;
 
@@ -66,48 +65,42 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
     }
 
     const hash = await this.passwordHasher.hash(pwd);
-    // Identity lives on User (single account namespace); the Admin row is the linked profile. upsert with
-    // update:{} absorbs the vanishing race between the findUnique above and the create (P2002-safe).
-    const createdUser = await this.database.db
-      .insert(userTable)
-      .values({
-        account: 'admin',
-        name: 'admin',
-        domain: 'local',
-        namespaceId: 0,
-        updatedAt: new Date(),
-      })
-      .onConflictDoNothing({
-        target: [userTable.account, userTable.domain, userTable.namespaceId],
-      })
-      .returning({ id: userTable.id });
-    const userId =
-      createdUser[0]?.id ??
-      (
-        await this.database.db.query.user.findFirst({
-          where: and(
-            eq(userTable.account, 'admin'),
-            eq(userTable.domain, 'local'),
-            eq(userTable.namespaceId, 0),
-          ),
+    // Create credentials, the initial immutable profile, and the administrative role atomically.
+    // A concurrent bootstrap reuses the existing local account without changing its credentials.
+    const userId = await this.database.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(accountTable)
+        .values({ account: 'admin', hashPwd: hash, defaultProfileRev: 1 })
+        .onConflictDoNothing({ target: accountTable.account })
+        .returning({ id: accountTable.id });
+      const local =
+        created ??
+        (await tx.query.account.findFirst({
+          where: eq(accountTable.account, 'admin'),
           columns: { id: true },
+        }));
+      if (!local) throw new Error('bootstrap admin account was not created');
+      if (created)
+        await tx.insert(profileTable).values({
+          account: 'admin',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 1,
+          displayName: 'Admin',
+          avatar: '',
+          bio: '',
+        });
+      await tx
+        .insert(admin)
+        .values({
+          userId: local.id,
+          role: 'SUPER_ADMIN',
+          enabled: true,
+          updatedAt: new Date(),
         })
-      )?.id;
-    if (userId === undefined)
-      throw new Error('bootstrap admin user was not created');
-    await this.database.db
-      .insert(accountTable)
-      .values({ id: userId, hashPwd: hash })
-      .onConflictDoNothing({ target: accountTable.id });
-    await this.database.db
-      .insert(admin)
-      .values({
-        userId,
-        role: 'SUPER_ADMIN',
-        enabled: true,
-        updatedAt: new Date(),
-      })
-      .onConflictDoNothing({ target: admin.userId });
+        .onConflictDoNothing({ target: admin.userId });
+      return local.id;
+    });
     this.logger.log(
       `bootstrap admin created: account=admin userId=${userId} — change the password or unset ADMIN_BOOTSTRAP_PASSWORD after first login`,
     );

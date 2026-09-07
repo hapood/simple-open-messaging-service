@@ -1,3 +1,4 @@
+import type { AccountTarget } from '../user/account-address.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -24,7 +25,7 @@ export class GroupInviteTaskExecutionService {
   async inviteMember(
     inviterUserId: number,
     threadId: number,
-    memberUserId: number,
+    memberUserId: AccountTarget,
   ): Promise<void> {
     if (
       (await this.participants.findP2PThreadBetween(

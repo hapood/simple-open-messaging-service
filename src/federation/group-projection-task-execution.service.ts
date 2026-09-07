@@ -1,3 +1,4 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
@@ -8,7 +9,6 @@ import {
 import { DatabaseService } from '../database/database.service.js';
 import {
   durableTask,
-  group,
   groupMetaFeed,
   messageThread,
   threadAudience,
@@ -64,9 +64,12 @@ export class GroupProjectionTaskExecutionService {
   ): Promise<ProjectionPageEffect> {
     return this.database.db.transaction(async (tx) => {
       const [identity] = await tx
-        .select({ account: group.account, domain: group.domain })
+        .select({
+          account: groupStateFields.account,
+          domain: groupStateFields.domain,
+        })
         .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .innerJoin(group, eq(group.id, messageThread.id))
         .where(eq(messageThread.id, payload.threadId))
         .limit(1);
       if (!identity)
@@ -113,14 +116,14 @@ export class GroupProjectionTaskExecutionService {
       const [state] = await tx
         .select({
           groupId: group.id,
-          account: group.account,
-          domain: group.domain,
-          namespaceId: group.namespaceId,
+          account: groupStateFields.account,
+          domain: groupStateFields.domain,
+          namespaceId: groupStateFields.namespaceId,
           feedEndId: groupMetaFeed.feedEndId,
         })
         .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.groupId))
-        .innerJoin(groupMetaFeed, eq(groupMetaFeed.groupId, group.id))
+        .innerJoin(group, eq(group.id, messageThread.id))
+        .innerJoin(groupMetaFeed, eq(groupMetaFeed.threadId, group.id))
         .where(eq(messageThread.id, payload.threadId))
         .limit(1);
       if (!state) throw new Error('Group Meta head fan-out source is missing');

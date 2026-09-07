@@ -1,3 +1,4 @@
+import type { NamespacedAddress } from '../src/common/client-identity.js';
 import { randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -23,7 +24,7 @@ import {
   pendingMedia,
   quotaDailyUsage,
   relationshipPair,
-  user,
+  identityNamespace,
 } from '../src/database/schema.js';
 import {
   bootFederationPair,
@@ -53,8 +54,8 @@ describe('federation durable missed transport (two nodes)', () => {
   let tokenB: string;
   let aliceIdA: number;
   let bobIdB: number;
-  let bobStubIdA: number;
-  let aliceStubIdB: number;
+  let bobAddressOnA: NamespacedAddress;
+  let aliceAddressOnB: NamespacedAddress;
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
@@ -71,7 +72,7 @@ describe('federation durable missed transport (two nodes)', () => {
     await uploadAvatar(appA, tokenA, await makePng(31));
     await uploadAvatar(appB, tokenB, await makePng(63));
 
-    const friendship = await establishFederatedFriendship({
+    await establishFederatedFriendship({
       local: appA,
       remote: appB,
       localUserId: aliceIdA,
@@ -84,13 +85,25 @@ describe('federation durable missed transport (two nodes)', () => {
       remoteDomain: FED_DOMAIN_B,
       note: 'durable missed e2e',
     });
-    bobStubIdA = friendship.remoteStubIdOnLocal;
-    aliceStubIdB = friendship.localStubIdOnRemote;
+    bobAddressOnA = {
+      account: 'missedbob',
+      domain: FED_DOMAIN_B,
+      namespaceId: (await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      }))!.id,
+    };
+    aliceAddressOnB = {
+      account: 'missedalice',
+      domain: FED_DOMAIN_A,
+      namespaceId: (await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_A),
+      }))!.id,
+    };
     await vi.waitFor(
       async () => {
         const [relationshipOnA, relationshipOnB] = await Promise.all([
-          findP2PRelationship(appA.database, aliceIdA, bobStubIdA),
-          findP2PRelationship(appB.database, bobIdB, aliceStubIdB),
+          findP2PRelationship(appA.database, aliceIdA, bobAddressOnA),
+          findP2PRelationship(appB.database, bobIdB, aliceAddressOnB),
         ]);
         expect(relationshipOnA.pair).toMatchObject({ active: true });
         expect(relationshipOnB.pair).toMatchObject({ active: true });
@@ -114,7 +127,7 @@ describe('federation durable missed transport (two nodes)', () => {
     const bobRelationship = await findP2PRelationship(
       appB.database,
       bobIdB,
-      aliceStubIdB,
+      aliceAddressOnB,
     );
     expect(bobRelationship.pair).toMatchObject({ active: true });
 
@@ -158,14 +171,10 @@ describe('federation durable missed transport (two nodes)', () => {
   });
 
   it('recovers a persisted inbound media download after the receiver process restarts', async () => {
-    const bobStub = await appA.database.query.user.findFirst({
-      where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
-    });
-    expect(bobStub).toBeDefined();
     const aliceRelationship = await findP2PRelationship(
       appA.database,
       aliceIdA,
-      bobStub!.id,
+      bobAddressOnA,
     );
     expect(aliceRelationship.pair).toMatchObject({ active: true });
 
@@ -336,14 +345,10 @@ describe('federation durable missed transport (two nodes)', () => {
   }, 60_000);
 
   it('automatically resumes a quota-paused media download after an admin grants a one-time allowance', async () => {
-    const bobStub = await appA.database.query.user.findFirst({
-      where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
-    });
-    expect(bobStub).toBeDefined();
     const aliceRelationship = await findP2PRelationship(
       appA.database,
       aliceIdA,
-      bobStub!.id,
+      bobAddressOnA,
     );
     expect(aliceRelationship.pair).toMatchObject({ active: true });
 
@@ -484,8 +489,8 @@ describe('federation durable missed transport (two nodes)', () => {
 
   it('converges a delayed-state unfriend and immediate re-add through current facts', async () => {
     const [relationshipOnA, relationshipOnB] = await Promise.all([
-      findP2PRelationship(appA.database, aliceIdA, bobStubIdA),
-      findP2PRelationship(appB.database, bobIdB, aliceStubIdB),
+      findP2PRelationship(appA.database, aliceIdA, bobAddressOnA),
+      findP2PRelationship(appB.database, bobIdB, aliceAddressOnB),
     ]);
     expect(relationshipOnA.pair).toMatchObject({ active: true });
     expect(relationshipOnB.pair).toMatchObject({ active: true });

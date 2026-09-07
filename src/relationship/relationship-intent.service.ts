@@ -1,3 +1,12 @@
+import { groupStateSql } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
+import {
+  requireGroupThreadContentLockUnderGroupInTx,
+  type ThreadContentLock,
+} from './thread-content-lock.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -6,7 +15,7 @@ import {
   messageThread,
   relationshipIntent,
   relationshipPair,
-  user,
+  account as user,
 } from '../database/schema.js';
 import {
   isEffectiveRelationshipIntent,
@@ -157,8 +166,8 @@ export class RelationshipIntentService {
   async writeP2PAuthoredIntentInTx(
     tx: DatabaseTransaction,
     params: {
-      authorUserId: number;
-      subjectUserId: number;
+      authorUserId: AccountTarget;
+      subjectUserId: AccountTarget;
       threadId: number | null;
       status: RelationshipIntentStatus;
       note?: string;
@@ -204,8 +213,8 @@ export class RelationshipIntentService {
   async applyRemoteP2PIntentInTx(
     tx: DatabaseTransaction,
     params: {
-      authorUserId: number;
-      subjectUserId: number;
+      authorUserId: AccountTarget;
+      subjectUserId: AccountTarget;
       threadId: number | null;
       status: RelationshipIntentStatus;
       profileRev: number;
@@ -256,7 +265,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
       author: 'GROUP' | 'MEMBER';
     },
@@ -274,7 +283,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
       author: 'GROUP' | 'MEMBER';
       status: RelationshipIntentStatus;
@@ -300,7 +309,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
       author: 'GROUP' | 'MEMBER';
       status: RelationshipIntentStatus;
@@ -313,10 +322,12 @@ export class RelationshipIntentService {
     changed: boolean;
     shouldBeActive: boolean;
     publishAccepted: boolean;
+    wasActive: boolean;
+    threadLock: ThreadContentLock;
   }> {
     const pair = await this.lockGroupMutationInTx(tx, params);
     const authorSide = params.author === 'GROUP' ? 'A' : 'B';
-    return this.applyRemoteIntentOnPairInTx(tx, {
+    const result = await this.applyRemoteIntentOnPairInTx(tx, {
       pair,
       authorSide,
       status: params.status,
@@ -325,13 +336,14 @@ export class RelationshipIntentService {
       requestedAt: params.requestedAt,
       expiresAt: params.expiresAt,
     });
+    return { ...result, wasActive: pair.active, threadLock: pair.threadLock };
   }
 
   /** Callers still identify P2P endpoints by User id, but storage is always address-based. */
   async lockPairInTx(
     tx: DatabaseTransaction,
-    firstUserId: number,
-    secondUserId: number,
+    firstUserId: AccountTarget,
+    secondUserId: AccountTarget,
     threadId: number | null = null,
   ): Promise<LockedPair> {
     return this.lockUserPairMutationInTx(
@@ -344,8 +356,8 @@ export class RelationshipIntentService {
 
   async readP2PRelationshipInTx(
     tx: DatabaseTransaction,
-    firstUserId: number,
-    secondUserId: number,
+    firstUserId: AccountTarget,
+    secondUserId: AccountTarget,
   ) {
     const pair = await this.lockUserPairMutationInTx(
       tx,
@@ -367,8 +379,8 @@ export class RelationshipIntentService {
 
   async setPairActiveInTx(
     tx: DatabaseTransaction,
-    firstUserId: number,
-    secondUserId: number,
+    firstUserId: AccountTarget,
+    secondUserId: AccountTarget,
     active: boolean,
   ): Promise<boolean> {
     const pair = await this.lockUserPairMutationInTx(
@@ -387,7 +399,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
       active: boolean;
     },
@@ -398,19 +410,17 @@ export class RelationshipIntentService {
       pair.id,
       params.active,
     );
-    if (changed && !params.active)
+    if (changed && !params.active && pair.endpointB.domain === 'local')
       await tx.execute(sql`
         UPDATE "MessageThread" thread
         SET "authorizationEpoch" = thread."authorizationEpoch" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
-        FROM "Group" group_profile, "User" member
+        FROM ${groupStateSql} group_profile
         WHERE thread.id = ${params.threadId}
-          AND thread."groupId" = group_profile.id
+          AND thread.id = group_profile.id
           AND group_profile.id = ${params.groupId}
           AND group_profile.domain <> 'local'
-          AND member.id = ${params.memberUserId}
-          AND member.domain = 'local'
-          AND NOT EXISTS (
+            AND NOT EXISTS (
             SELECT 1
             FROM "RelationshipPair" remaining_pair
             WHERE remaining_pair."threadId" = thread.id
@@ -439,7 +449,7 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
     },
   ): Promise<number> {
@@ -457,11 +467,12 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     params: {
       groupId: number;
-      memberUserId: number;
+      memberUserId: AccountTarget;
       threadId: number;
       projectionUserIds?: readonly number[];
     },
-  ): Promise<LockedPair> {
+  ): Promise<LockedPair & { threadLock: ThreadContentLock }> {
+    const member = await accountAddressInTx(tx, params.memberUserId);
     const located = await tx.execute<{
       groupAccount: string;
       groupDomain: string;
@@ -473,13 +484,11 @@ export class RelationshipIntentService {
       SELECT group_profile.account AS "groupAccount",
         group_profile.domain AS "groupDomain",
         group_profile."namespaceId" AS "groupNamespaceId",
-        member.account AS "memberAccount",
-        member.domain AS "memberDomain",
-        member."namespaceId" AS "memberNamespaceId"
-      FROM "Group" group_profile
-      CROSS JOIN "User" member
+        ${member.account}::text AS "memberAccount",
+        ${member.domain}::text AS "memberDomain",
+        ${member.namespaceId}::integer AS "memberNamespaceId"
+      FROM ${groupStateSql} group_profile
       WHERE group_profile.id = ${params.groupId}
-        AND member.id = ${params.memberUserId}
     `);
     const location = located.rows[0];
     if (!location)
@@ -489,36 +498,13 @@ export class RelationshipIntentService {
       domain: location.groupDomain,
     });
 
-    const endpoint = await tx.execute<{
-      groupAccount: string;
-      groupDomain: string;
-      groupNamespaceId: number;
-      memberAccount: string;
-      memberDomain: string;
-      memberNamespaceId: number;
-    }>(sql`
-      SELECT group_profile.account AS "groupAccount",
-        group_profile.domain AS "groupDomain",
-        group_profile."namespaceId" AS "groupNamespaceId",
-        member.account AS "memberAccount",
-        member.domain AS "memberDomain",
-        member."namespaceId" AS "memberNamespaceId"
-      FROM "Group" group_profile
-      CROSS JOIN "User" member
-      WHERE group_profile.id = ${params.groupId}
-        AND member.id = ${params.memberUserId}
-      FOR UPDATE OF group_profile
-    `);
-    const row = endpoint.rows[0];
-    if (!row) throw new Error('group relationship endpoint does not exist');
+    const row = location;
 
-    const thread = await tx.execute<{ id: number }>(sql`
-      SELECT id FROM "MessageThread"
-      WHERE id = ${params.threadId} AND "groupId" = ${params.groupId}
-      FOR UPDATE
-    `);
-    if (!thread.rows[0])
-      throw new Error('group relationship thread does not exist');
+    const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
+      tx,
+      params.groupId,
+      params.threadId,
+    );
 
     const relationshipNamespaceId = this.relationshipNamespaceId(
       row.groupNamespaceId,
@@ -542,20 +528,16 @@ export class RelationshipIntentService {
     });
     await this.lockIntentRowsInTx(tx, pair.id);
 
-    const projectionUserIds = [
-      ...new Set([params.memberUserId, ...(params.projectionUserIds ?? [])]),
-    ].sort((left, right) => left - right);
-    const userIds = sql.join(
-      projectionUserIds.map((userId) => sql`${userId}`),
-      sql`, `,
-    );
+    const projectionUserIds = [...new Set(params.projectionUserIds ?? [])];
     await tx.execute(sql`
-      SELECT id FROM "AccountThreadState"
-      WHERE "threadId" = ${params.threadId} AND "accountId" IN (${userIds})
-      ORDER BY "accountId"
-      FOR UPDATE
+      SELECT participant.id FROM "AccountThreadState" participant
+      JOIN "Account" owner ON owner.id = participant."accountId"
+      WHERE participant."threadId" = ${params.threadId}
+        AND ((owner.account = ${member.account} AND ${member.domain} = 'local')
+          OR owner.id = ANY(${sql.param(projectionUserIds)}::integer[]))
+      ORDER BY participant."accountId" FOR UPDATE OF participant
     `);
-    return pair;
+    return { ...pair, threadLock };
   }
 
   async lockGroupBusinessScopeInTx(
@@ -609,21 +591,19 @@ export class RelationshipIntentService {
         COALESCE((
           SELECT CASE
             WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'USER' THEN
-              (SELECT profile."defaultProfileRev" FROM "User" profile
+              (SELECT profile."defaultProfileRev" FROM "Account" profile
                 WHERE profile.account = pair."endpointAAccount" AND profile.domain = 'local'
                   AND profile."namespaceId" = 0 LIMIT 1)
             WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'USER' THEN
-              (SELECT profile."defaultProfileRev" FROM "User" profile
+              (SELECT profile."defaultProfileRev" FROM "Account" profile
                 WHERE profile.account = pair."endpointBAccount" AND profile.domain = 'local'
                   AND profile."namespaceId" = 0 LIMIT 1)
             WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'GROUP' THEN
-              (SELECT profile."defaultProfileRev" FROM "Group" profile
-                WHERE profile.account = pair."endpointAAccount" AND profile.domain = 'local'
-                  AND profile."namespaceId" = 0 LIMIT 1)
+              (SELECT profile."defaultProfileRev" FROM "GroupAccount" profile
+                WHERE profile.account = pair."endpointAAccount" LIMIT 1)
             WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'GROUP' THEN
-              (SELECT profile."defaultProfileRev" FROM "Group" profile
-                WHERE profile.account = pair."endpointBAccount" AND profile.domain = 'local'
-                  AND profile."namespaceId" = 0 LIMIT 1)
+              (SELECT profile."defaultProfileRev" FROM "GroupAccount" profile
+                WHERE profile.account = pair."endpointBAccount" LIMIT 1)
           END
           FROM "RelationshipPair" pair WHERE pair.id = ${params.pair.id}
         ), 0), ${(params.note ?? '').slice(0, 255)},
@@ -732,23 +712,18 @@ export class RelationshipIntentService {
 
   private async lockUserPairMutationInTx(
     tx: DatabaseTransaction,
-    firstUserId: number,
-    secondUserId: number,
+    firstUserId: AccountTarget,
+    secondUserId: AccountTarget,
     threadId: number | null,
   ): Promise<LockedPair> {
-    const identities = await tx
-      .select({
-        id: user.id,
-        account: user.account,
-        domain: user.domain,
-        namespaceId: user.namespaceId,
-      })
-      .from(user)
-      .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
-    const first = identities.find((identity) => identity.id === firstUserId);
-    const second = identities.find((identity) => identity.id === secondUserId);
-    if (!first || !second || first.id === second.id)
-      throw new Error('relationship user endpoint does not exist');
+    const first = await accountAddressInTx(tx, firstUserId);
+    const second = await accountAddressInTx(tx, secondUserId);
+    if (
+      first.account === second.account &&
+      first.domain === second.domain &&
+      first.namespaceId === second.namespaceId
+    )
+      throw new Error('relationship endpoints must be distinct');
     const relationshipNamespaceId = this.relationshipNamespaceId(
       first.namespaceId,
       second.namespaceId,
@@ -812,7 +787,7 @@ export class RelationshipIntentService {
     localUserId: number,
     remote: { account: string; domain: string; namespaceId: number },
   ): Promise<PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' }> {
-    const local = await tx.query.user.findFirst({
+    const local = await tx.query.account.findFirst({
       where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
       columns: { account: true, domain: true, namespaceId: true },
     });
@@ -1005,13 +980,9 @@ export class RelationshipIntentService {
   private async userSideInPair(
     tx: DatabaseTransaction,
     pair: LockedPair,
-    userId: number,
+    userId: AccountTarget,
   ): Promise<'A' | 'B'> {
-    const identity = await tx.query.user.findFirst({
-      where: eq(user.id, userId),
-      columns: { account: true, domain: true },
-    });
-    if (!identity) throw new Error('relationship user endpoint does not exist');
+    const identity = await accountAddressInTx(tx, userId);
     if (
       pair.endpointA.type === 'USER' &&
       pair.endpointA.account === identity.account &&

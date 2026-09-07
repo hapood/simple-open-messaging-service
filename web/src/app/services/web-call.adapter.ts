@@ -128,23 +128,17 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   initiate(
-    calleeUserId: number,
+    threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
     peerAvatar: string,
   ): void {
-    void this.startOutgoing(
-      calleeUserId,
-      callSid,
-      callType,
-      peerName,
-      peerAvatar,
-    );
+    void this.startOutgoing(threadId, callSid, callType, peerName, peerAvatar);
   }
 
   private async startOutgoing(
-    calleeUserId: number,
+    threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
@@ -157,7 +151,7 @@ export class WebCallAdapter implements CallAdapter {
       await this.acquireLocalMedia(callType === 'VIDEO');
       const response = await this.post<{ threadId: number }>('calls/initiate', {
         callSid,
-        calleeUserId,
+        threadId,
         callType,
       });
       registered = true;
@@ -166,7 +160,7 @@ export class WebCallAdapter implements CallAdapter {
         phase: 'calling',
         callSid,
         threadId: response?.threadId ?? 0,
-        peerUserId: calleeUserId,
+        peerUserId: 0,
         callType,
         isCaller: true,
         peerName,
@@ -786,12 +780,11 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async signal(kind: string, payload: string): Promise<void> {
-    const { callSid, peerUserId } = this.state;
-    if (!callSid || !peerUserId) return;
+    const { callSid } = this.state;
+    if (!callSid) return;
     await this.post('calls/signal', {
       id: uuid(),
       callSid,
-      toUserId: peerUserId,
       kind,
       payload,
     });

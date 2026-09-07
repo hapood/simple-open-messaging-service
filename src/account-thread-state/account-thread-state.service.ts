@@ -1,3 +1,12 @@
+import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  accountAddressInTx,
+  type AccountTarget,
+} from '../user/account-address.js';
+import {
+  addressRelation,
+  p2pPeerRelation,
+} from '../relationship/relationship-address.js';
 import { Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -6,9 +15,8 @@ import {
 } from '../database/database.service.js';
 import {
   accountThreadState,
-  group,
   messageThread,
-  user,
+  account as user,
 } from '../database/schema.js';
 import { rawBigInt } from '../database/raw-result.js';
 import { MessageThreadType } from '../database/enums.js';
@@ -24,6 +32,7 @@ import {
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
+import { requireP2PThreadContentLockUnderPairInTx } from '../relationship/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
@@ -109,14 +118,14 @@ export class AccountThreadStateService {
         threadType: messageThread.type,
         clearedSeq: messageThread.clearedSeq,
         groupId: group.id,
-        dissolvedAt: group.dissolvedAt,
+        dissolvedAt: groupStateFields.dissolvedAt,
       })
       .from(accountThreadState)
       .innerJoin(
         messageThread,
         eq(messageThread.id, accountThreadState.threadId),
       )
-      .leftJoin(group, eq(group.id, messageThread.groupId))
+      .leftJoin(group, eq(group.id, messageThread.id))
       .where(
         and(
           eq(accountThreadState.accountId, userId),
@@ -220,40 +229,37 @@ export class AccountThreadStateService {
     if (threadIds.length === 0) return [];
     const rows = await this.database.db.execute<{
       threadId: number;
-      userId: number;
       account: string;
       domain: string;
       namespaceId: number;
+      profileRev: number;
+      name: string;
+      avatar: string;
     }>(sql`
-      SELECT pair."threadId", peer.id AS "userId", peer.account,
-        peer.domain, peer."namespaceId"
+      SELECT pair."threadId", peer.account, peer.domain, peer."namespaceId",
+        COALESCE(intent."profileRev", 0) AS "profileRev",
+        COALESCE(snapshot."displayName", peer.account) AS name,
+        COALESCE(snapshot.avatar, '') AS avatar
       FROM "RelationshipPair" pair
-      JOIN "User" self_identity ON self_identity.id = ${notUserId}
-      JOIN "User" peer ON peer.id <> self_identity.id
-      WHERE pair.kind = 'P2P'
-        AND pair."threadId" IN (${sql.join(
-          threadIds.map((threadId) => sql`${threadId}`),
-          sql`, `,
-        )})
-        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`self_identity`, sql`peer`)}
+      JOIN "Account" self_identity ON self_identity.id = ${notUserId}
+      JOIN ${p2pPeerRelation(sql`pair`, sql`self_identity`)} peer ON true
+      LEFT JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id AND intent."authorSide" = peer.side
+      LEFT JOIN "Profile" snapshot ON snapshot.account = peer.account AND snapshot.domain = peer.domain
+        AND snapshot."namespaceId" = peer."namespaceId" AND snapshot."profileRev" = intent."profileRev"
+      WHERE pair.kind = 'P2P' AND pair."threadId" = ANY(${sql.param(threadIds)}::integer[])
     `);
-    return rows.rows.map((row) => ({
-      ...row,
-      user: {
-        id: row.userId,
-        account: row.account,
-        domain: row.domain,
-        namespaceId: row.namespaceId,
-      },
-    }));
+    return rows.rows;
   }
 
-  async findP2PThreadBetween(userX: number, userY: number) {
+  async findP2PThreadBetween(userX: number, userY: AccountTarget) {
+    const second = await this.database.db.transaction((tx) =>
+      accountAddressInTx(tx, userY),
+    );
     const result = await this.database.db.execute<{ threadId: number }>(sql`
       SELECT pair."threadId"
       FROM "RelationshipPair" pair
-      JOIN "User" first_identity ON first_identity.id = ${userX}
-      JOIN "User" second_identity ON second_identity.id = ${userY}
+      JOIN "Account" first_identity ON first_identity.id = ${userX}
+      JOIN ${addressRelation(second)} second_identity ON true
       JOIN "MessageThread" thread ON thread.id = pair."threadId"
       WHERE pair.kind = 'P2P' AND pair.active = true
         AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
@@ -269,33 +275,36 @@ export class AccountThreadStateService {
     address: { account: string; domain: string },
   ) {
     const result = await this.database.db.execute<{
-      userId: number;
+      account: string;
+      domain: string;
+      namespaceId: number;
       threadId: number;
     }>(sql`
-      SELECT friend.id AS "userId", pair."threadId"
-      FROM "User" friend
-      JOIN "User" actor ON actor.id = ${userId}
-      JOIN "RelationshipPair" pair ON pair.kind = 'P2P' AND pair.active = true
-        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`actor`, sql`friend`)}
+      SELECT friend.account, friend.domain, friend."namespaceId", pair."threadId"
+      FROM "RelationshipPair" pair
+      JOIN "Account" actor ON actor.id = ${userId}
+      JOIN ${p2pPeerRelation(sql`pair`, sql`actor`)} friend ON true
       JOIN "MessageThread" thread ON thread.id = pair."threadId" AND thread.type = 'P2P'
-      WHERE friend.account = ${address.account} AND friend.domain = ${address.domain}
-        AND friend.availability = 'AVAILABLE'
-        AND friend."namespaceId" = CASE WHEN ${address.domain} = 'local' THEN 0 ELSE (
-          SELECT ns.id FROM "FederatedPeer" peer
-          JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
-          WHERE peer.domain = ${address.domain} AND ns.domain = peer.domain AND ns."retiredAt" IS NULL
-        ) END
+      WHERE pair.kind = 'P2P' AND pair.active = true
+        AND friend.account = ${address.account} AND friend.domain = ${address.domain}
+        AND (friend.domain = 'local' OR EXISTS (
+          SELECT 1 FROM "FederatedPeer" peer JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
+          WHERE peer.domain = friend.domain AND ns.id = friend."namespaceId" AND ns."retiredAt" IS NULL
+        ))
       LIMIT 1
     `);
     return result.rows[0] ?? null;
   }
 
-  async findLatestP2PThreadBetween(userX: number, userY: number) {
+  async findLatestP2PThreadBetween(userX: number, userY: AccountTarget) {
+    const second = await this.database.db.transaction((tx) =>
+      accountAddressInTx(tx, userY),
+    );
     const result = await this.database.db.execute<{ threadId: number }>(sql`
       SELECT pair."threadId"
       FROM "RelationshipPair" pair
-      JOIN "User" first_identity ON first_identity.id = ${userX}
-      JOIN "User" second_identity ON second_identity.id = ${userY}
+      JOIN "Account" first_identity ON first_identity.id = ${userX}
+      JOIN ${addressRelation(second)} second_identity ON true
       JOIN "MessageThread" thread ON thread.id = pair."threadId"
       WHERE pair.kind = 'P2P'
         AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
@@ -344,8 +353,10 @@ export class AccountThreadStateService {
       )
         throw new Error('P2P relationship pair is missing');
       const wasActive = pair.rows[0].active;
-      await tx.execute(
-        sql`SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
+      const threadLock = await requireP2PThreadContentLockUnderPairInTx(
+        tx,
+        pairId,
+        threadId,
       );
       await tx.execute(sql`
         SELECT id FROM "RelationshipIntent"
@@ -366,7 +377,8 @@ export class AccountThreadStateService {
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
       const localRecipientIds = [mine, peer]
         .filter((identity) => identity.domain === 'local')
-        .map((identity) => identity.userId);
+        .map((identity) => identity.userId)
+        .filter((id): id is number => id !== null);
       let systemMessage: PublicMessage | null = null;
       const statePeers: string[] = [];
       if (!transitioned)
@@ -379,25 +391,24 @@ export class AccountThreadStateService {
 
       if (wasActive && this.messages) {
         systemMessage = (
-          await this.messages.writeSystemMessageInTx(
+          await this.messages.writeDepartureMessageInTx(
             tx,
             threadId,
             SystemMessageType.FRIEND_REMOVED,
-            peer.userId,
+            {
+              account: peer.account,
+              domain: peer.domain,
+              namespaceId: peer.namespaceId,
+            },
             {
               actorUserId: callerUserId,
+              threadLock,
               recipientUserIds: localRecipientIds,
+              visibleThroughUserIds: localRecipientIds,
               markReadUserId: callerUserId,
             },
           )
         ).message;
-        await tx
-          .update(accountThreadState)
-          .set({
-            messageVisibleThroughSeq: systemMessage.seq,
-            updatedAt: now,
-          })
-          .where(eq(accountThreadState.threadId, threadId));
       }
       if (wasActive) {
         await tx.execute(sql`
@@ -474,8 +485,8 @@ export class AccountThreadStateService {
     const result = await this.database.db.execute<{ userId: number }>(sql`
       SELECT DISTINCT peer.id AS "userId"
       FROM "RelationshipPair" pair
-      JOIN "User" self_identity ON self_identity.id = ${userId}
-      JOIN "User" peer ON peer.id <> self_identity.id
+      JOIN "Account" self_identity ON self_identity.id = ${userId}
+      JOIN "Account" peer ON peer.id <> self_identity.id
       JOIN "MessageThread" thread ON thread.id = pair."threadId"
       WHERE pair.kind = 'P2P' AND pair.active = true
         AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`self_identity`, sql`peer`)}
@@ -498,7 +509,7 @@ export class AccountThreadStateService {
       namespaceId: number;
     };
     peer: {
-      userId: number;
+      userId: number | null;
       account: string;
       domain: string;
       namespaceId: number;
@@ -511,7 +522,7 @@ export class AccountThreadStateService {
       mineAccount: string;
       mineDomain: string;
       mineNamespaceId: number;
-      peerUserId: number;
+      peerUserId: number | null;
       peerAccount: string;
       peerDomain: string;
       peerNamespaceId: number;
@@ -523,11 +534,12 @@ export class AccountThreadStateService {
         END AS "callerSide",
         mine.id AS "mineUserId", mine.account AS "mineAccount",
         mine.domain AS "mineDomain", mine."namespaceId" AS "mineNamespaceId",
-        peer.id AS "peerUserId", peer.account AS "peerAccount",
+        local_peer.id AS "peerUserId", peer.account AS "peerAccount",
         peer.domain AS "peerDomain", peer."namespaceId" AS "peerNamespaceId"
       FROM "RelationshipPair" pair
-      JOIN "User" mine ON mine.id = ${callerUserId}
-      JOIN "User" peer ON peer.id <> mine.id
+      JOIN "Account" mine ON mine.id = ${callerUserId}
+      JOIN ${p2pPeerRelation(sql`pair`, sql`mine`)} peer ON true
+      LEFT JOIN "Account" local_peer ON peer.domain = 'local' AND local_peer.account = peer.account
       WHERE pair.kind = 'P2P' AND pair."threadId" = ${threadId}
         AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`mine`, sql`peer`)}
       LIMIT 1

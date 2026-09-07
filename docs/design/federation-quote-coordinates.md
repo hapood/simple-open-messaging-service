@@ -28,8 +28,11 @@ withdrawn targets and retained receipt aliases. The group authority publishes it
 local target sequence. A mirror or P2P endpoint publishes local sequence for its
 own authors and the receiver's origin sequence for other targets. A known
 coordinate is preserved without requiring the target body to exist. Absence is
-normal and does not warn or reject inbound messages. The wire has no null or
-availability variant. An authority's lost peer-to-local coordinate mapping is a
+normal and does not warn or reject inbound messages. The wire has no null variant. Explicit `{ seq: 0 }` denotes a reply without
+a target coordinate and is stored locally as `{ seq: 0, namespaceId: 0 }`.
+This implementation retains known positive coordinates while their bodies are
+missing; publishers MAY instead use zero for absent targets. Once published,
+the wire reference remains immutable. An authority's lost peer-to-local coordinate mapping is a
 local invariant violation, not permission to fabricate or silently omit a quote.
 
 Read projection translates references into client-local navigation coordinates
@@ -39,7 +42,12 @@ history is PENDING; scanned absent or withdrawn targets are NOT_FOUND. The
 existing client mount-triggered resolution dispatcher and SSE delivery remain
 the retry and notification mechanism.
 
-Forward bundles use the read-projected target for bundle-local quote links.
+Forward bundles use the read-projected target for bundle-local `quoteTargetId`
+links. The source `content.quote`, including its namespace, is removed from
+snapshot text. A selected target maps to its new bundle ID; an unselected or
+absent target maps to zero, following the protocol SHOULD. Import also accepts
+positive bundle references without a matching entry. Ordinary text omits `quoteTargetId`. Bundle snapshots
+use the same representation before and after federation.
 The lab oracle compares resolved message identities, never raw numeric references
 across nodes, and reads the reference namespace independently from message origin.
 

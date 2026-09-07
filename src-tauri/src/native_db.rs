@@ -17,7 +17,7 @@ use messages::{
 };
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 16;
+const CACHE_SCHEMA_VERSION: i64 = 17;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -89,8 +89,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for object in [
         "namespaces",
         "threads",
-        "users",
-        "groups",
+        "profiles",
         "members",
         "relationship_requests",
         "relationship_intents",
@@ -115,9 +114,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for index in [
         "namespaces_domain_status",
         "relationship_requests_direction_status",
-        "users_address",
-        "users_id",
-        "groups_id",
+        "profiles_address_revision",
         "members_thread",
         "members_search",
         "messages_user_thread_seq",
@@ -164,36 +161,18 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           FOREIGN KEY (user_id, authority_domain, authority_namespace_id)
             REFERENCES namespaces(user_id, domain, namespace_id)
         );
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS profiles (
           user_id INTEGER NOT NULL,
           account TEXT NOT NULL,
           domain TEXT NOT NULL,
           namespace_id INTEGER NOT NULL,
-          surrogate_id INTEGER,
+          profile_rev INTEGER NOT NULL CHECK(profile_rev > 0),
           payload_json TEXT NOT NULL,
-          profile_rev INTEGER NOT NULL,
-          PRIMARY KEY (user_id, account, domain, namespace_id),
-          FOREIGN KEY (user_id, namespace_id)
-            REFERENCES namespaces(user_id, namespace_id)
+          PRIMARY KEY (user_id, account, domain, namespace_id, profile_rev),
+          FOREIGN KEY (user_id, namespace_id) REFERENCES namespaces(user_id, namespace_id)
         );
-        CREATE INDEX IF NOT EXISTS users_address
-          ON users(user_id, account, domain, namespace_id);
-        CREATE INDEX IF NOT EXISTS users_id
-          ON users(user_id, surrogate_id) WHERE surrogate_id IS NOT NULL;
-        CREATE TABLE IF NOT EXISTS groups (
-          user_id INTEGER NOT NULL,
-          account TEXT NOT NULL,
-          domain TEXT NOT NULL,
-          namespace_id INTEGER NOT NULL,
-          surrogate_id INTEGER,
-          payload_json TEXT NOT NULL,
-          profile_rev INTEGER NOT NULL,
-          PRIMARY KEY (user_id, account, domain, namespace_id),
-          FOREIGN KEY (user_id, domain, namespace_id)
-            REFERENCES namespaces(user_id, domain, namespace_id)
-        );
-        CREATE INDEX IF NOT EXISTS groups_id
-          ON groups(user_id, surrogate_id) WHERE surrogate_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS profiles_address_revision
+          ON profiles(user_id, account, domain, namespace_id, profile_rev);
         CREATE TABLE IF NOT EXISTS members (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,
@@ -204,10 +183,6 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           left_state INTEGER NOT NULL DEFAULT 0,
           profile_rev INTEGER NOT NULL DEFAULT 0,
           profile_message_seq INTEGER,
-          resolved_profile_rev INTEGER,
-          profile_name TEXT,
-          profile_avatar TEXT,
-          profile_bio TEXT NOT NULL,
           PRIMARY KEY (user_id, thread_id, member_account, member_domain, namespace_id),
           FOREIGN KEY (user_id, namespace_id)
             REFERENCES namespaces(user_id, namespace_id)
@@ -243,18 +218,6 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
                 )
               THEN 'ACTIVE' ELSE 'ARCHIVED' END
           );
-        END;
-        CREATE TRIGGER IF NOT EXISTS groups_namespace_before_insert
-        BEFORE INSERT ON groups BEGIN
-          UPDATE namespaces SET status='ARCHIVED'
-          WHERE user_id=NEW.user_id AND domain=NEW.domain
-            AND namespace_id<NEW.namespace_id;
-          INSERT OR IGNORE INTO namespaces(user_id,namespace_id,domain,status)
-          VALUES(NEW.user_id,NEW.namespace_id,NEW.domain,
-            CASE WHEN NEW.namespace_id=0 OR NOT EXISTS(
-              SELECT 1 FROM namespaces WHERE user_id=NEW.user_id
-                AND domain=NEW.domain AND namespace_id>NEW.namespace_id
-            ) THEN 'ACTIVE' ELSE 'ARCHIVED' END);
         END;
         CREATE TABLE IF NOT EXISTS relationship_requests (
           user_id INTEGER NOT NULL,
@@ -515,8 +478,7 @@ pub(crate) async fn native_db_clear_user(
             .map_err(|e| format!("begin user clear: {e}"))?;
         for table in [
             "threads",
-            "users",
-            "groups",
+            "profiles",
             "members",
             "relationship_requests",
             "relationship_intents",
@@ -545,8 +507,7 @@ pub(crate) async fn native_db_clear_all(app: tauri::AppHandle) -> Result<(), Str
             let conn = open(&app)?;
             conn.execute_batch(
                 "DELETE FROM threads;
-                 DELETE FROM users;
-                 DELETE FROM groups;
+                 DELETE FROM profiles;
                  DELETE FROM members;
                  DELETE FROM relationship_requests;
                  DELETE FROM relationship_intents;
