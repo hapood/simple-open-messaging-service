@@ -81,6 +81,7 @@
     "answer-sent": "应答已发送",
     "answer-received": "收到应答",
     "record": {
+      "waiting": "等待 {{duration}}",
       "incoming": "呼入通话",
       "outgoing": "呼出通话",
       "missed": "未接来电",
@@ -533,6 +534,8 @@
   "chat": {
     "linkCardAction": "生成链接卡片",
     "messageNotFound": "消息不存在",
+    "messageRetracted": "消息已撤回",
+    "messageRemovedByAdmin": "消息已被管理员删除",
     "quoteNotFetched": "引用消息尚未拉取",
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
@@ -905,6 +908,7 @@
     "notifGroupingDesc": "选择显示最近消息，或仅提示有新消息。",
     "notifGroupingThread": "显示消息",
     "notifGroupingAll": "隐私模式",
+    "notifNewMessage": "新消息",
     "notifAlertFrequency": "提醒频率",
     "notifAlertFrequencyDesc": "连续收到消息时，限制声音和震动的频率。",
     "notifAlert2s": "2 秒",

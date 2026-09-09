@@ -42,17 +42,7 @@ interface FederatedMessageBase extends EncodedMessageContent {
   assets: BlobDescriptor[];
 }
 
-type FederatedMessageContent =
-  | (FederatedMessageBase & {
-      contentType: 'CALL';
-      clientMessageId: CanonicalUuid;
-    })
-  | (FederatedMessageBase & {
-      contentType: Exclude<ContentType, 'CALL'>;
-      clientMessageId?: never;
-    });
-
-type FederatedMessage = FederatedMessageContent &
+type FederatedMessage = FederatedMessageBase &
   (
     | {
         thread: { account: UserAccount; peerAccount: UserAccount };
@@ -121,15 +111,12 @@ nor substitutes for the current publisher's `seq` in message query cursors.
 The outer `originSeq` associates this message copy; `quoteTarget.originSeq`
 selects the quoted target in the current receiver's timeline (section 7).
 
-An application time inside content, such as CALL `startedAt/endedAt`, cannot replace the outer `createdAt`.
+An application time inside content cannot replace the outer `createdAt`.
 
 ## 4. Identity and immutability
 
-Only a CALL record carries `clientMessageId`. It MUST be the same
-`CanonicalUuid` as the real-time call's `callId`, allowing the persisted record
-to retain the call's idempotency identity without repeating it inside content.
-Every other message type MUST omit `clientMessageId`; its federation identity
-and idempotency coordinate is the direct-origin coordinate below, not a
+Every message MUST omit `clientMessageId`. Its federation identity and
+idempotency coordinate is the direct-origin coordinate below, not a
 publisher-internal client key.
 
 The direct-origin identity of an incoming message is:
@@ -148,7 +135,6 @@ All of the following fields are immutable at a given origin coordinate:
 - `profileRev`
 - `originSeq/originCreatedAt`
 - `createdAt`
-- `clientMessageId` for CALL
 - `contentType`
 - parsed `content`
 - `quoteTarget`
@@ -162,7 +148,6 @@ A conflict in any field makes the item invalid. It MUST NOT be overwritten using
 
 | Field             | Required value when                       | Other valid value                                                 |
 | ----------------- | ----------------------------------------- | ----------------------------------------------------------------- |
-| `clientMessageId` | A CALL record: the corresponding `callId` | Omitted for every other message type                              |
 | `quoteTarget`     | A `PURE_TEXT` message is a quoted reply   | Omitted when the message is not a quoted reply or not `PURE_TEXT` |
 
 The corresponding content document defines type-specific conditional fields.
@@ -173,7 +158,7 @@ The corresponding content document defines type-specific conditional fields.
 
 | `contentType`                     | Digests and `assets`                                |
 | --------------------------------- | --------------------------------------------------- |
-| `PURE_TEXT`, `CALL`, `FORWARD`    | Reference no digest directly; MUST be empty         |
+| `PURE_TEXT`, `FORWARD`    | Reference no digest directly; MUST be empty         |
 | `LINK`                            | The optional `icon` and `favicon` digests           |
 | `CONTACT_CARD`                    | The optional `avatarDigest`                         |
 | `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |

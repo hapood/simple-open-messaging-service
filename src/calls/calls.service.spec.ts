@@ -1,47 +1,27 @@
 // Unit tests for CallsService — the in-memory live state machine, bilateral lifecycle fan-out,
-// terminal CALL-bubble persistence, signaling relay, and the ringing-timeout backstop. The deps
-// (store, SSE, push, participants, MessageService, MessageFanoutService) are mocked; the service is
+// terminal system-notice persistence, signaling relay, and the ringing-timeout backstop. The deps
+// (store, SSE, push, participants, CallHistoryService) are mocked; the service is
 // instantiated directly (the codebase's unit-spec convention).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { CallsService } from './calls.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ContentType } from '../database/enums.js';
-import { parseCallContent } from './call-content.js';
-import type { CallOutcome } from './call-content.js';
+import { parseCallEndedContent } from '../../shared/call-ended-content.js';
+import type { CallOutcome } from '../../shared/call-ended-content.js';
 import type {
   S2SCallFrame,
   S2SAddress,
 } from '../federation/federation.service.js';
 
+vi.mock('../federation/federation.config.js', () => ({
+  loadFederationConfig: () => ({ domain: 'local.test' }),
+}));
+
 vi.mock('../relationship/relationship-authorization.js', () => ({
   isThreadMutuallyAuthorized: async (db: { authorized: boolean }) =>
     db.authorized,
 }));
-
-/** Build a minimal Message-like object writeMsgToThread resolves with (Omit<Message,'id'>). */
-function mkMsg(
-  p: Partial<{
-    seq: number;
-    threadId: number;
-    creator: number;
-    contentType: ContentType;
-  }> = {},
-) {
-  return {
-    seq: p.seq ?? 1,
-    threadId: p.threadId ?? 10,
-    creator: p.creator ?? 1,
-    contentType: p.contentType ?? ContentType.CALL,
-    content: '{}',
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
-    isDeleted: false,
-    clientMessageId: null,
-    originSeq: 1,
-  };
-}
 
 function mkMocks() {
   return {
@@ -95,8 +75,10 @@ function mkMocks() {
         },
       ]),
     },
-    messages: { writeMsgToThread: vi.fn().mockResolvedValue(mkMsg()) },
-    fanout: { dispatch: vi.fn().mockResolvedValue(undefined) },
+    history: {
+      observe: vi.fn().mockResolvedValue(undefined),
+      finish: vi.fn().mockResolvedValue(undefined),
+    },
     federation: { sendCallFrame: vi.fn().mockResolvedValue(undefined) },
     quota: {
       tick: vi.fn().mockResolvedValue(undefined),
@@ -113,11 +95,10 @@ function mkService(m = mkMocks()) {
       m.sse as never,
       m.push as never,
       m.participants as never,
-      m.messages as never,
-      m.fanout as never,
       m.federation as never,
       m.quota as never,
       callState,
+      m.history as never,
     ),
     m,
     callState,
@@ -134,12 +115,13 @@ function bizCode(e: unknown): number {
   return (e as { bizCode?: number }).bizCode ?? -1;
 }
 
-/** The parsed CALL content of the LAST terminal bubble write (null if none / unparseable). */
+/** The parsed terminal system content of the LAST terminal bubble write (null if none / unparseable). */
 function lastBubbleContent(m: ReturnType<typeof mkMocks>) {
-  const call = m.messages.writeMsgToThread.mock.calls.at(-1);
+  const call = m.history.finish.mock.calls.at(-1);
   if (!call) return null;
-  // writeMsgToThread(userId, threadId, content, type, clientMessageId)
-  return parseCallContent(call[2] as string);
+  return parseCallEndedContent(
+    JSON.stringify((call[0] as { content: unknown }).content),
+  );
 }
 
 describe('CallsService.initiate', () => {
@@ -170,7 +152,36 @@ describe('CallsService.initiate', () => {
       }),
     );
     // No terminal bubble yet — the call is live.
-    expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    expect(m.history.finish).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge a retry before local admission is durable', async () => {
+    const { svc, m } = mkService();
+    let commit!: () => void;
+    m.history.observe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          commit = resolve;
+        }),
+    );
+    const first = svc.initiate(1, {
+      callSid: 'cs1',
+      threadId: 10,
+      callType: 'AUDIO',
+    });
+    await vi.waitFor(() => expect(m.history.observe).toHaveBeenCalledOnce());
+    let replied = false;
+    const retry = svc
+      .initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' })
+      .then(() => {
+        replied = true;
+      });
+    await Promise.resolve();
+    expect(replied).toBe(false);
+    expect(m.sse.onCallEvent).not.toHaveBeenCalled();
+    commit();
+    await Promise.all([first, retry]);
+    expect(m.history.observe).toHaveBeenCalledOnce();
   });
 
   it('refuses calling yourself', async () => {
@@ -375,7 +386,7 @@ describe('CallsService bilateral lifecycle fan-out', () => {
 });
 
 describe('CallsService terminal bubble persistence', () => {
-  it('decline writes a `declined` CALL bubble authored by the caller, clientMessageId = callSid', async () => {
+  it('decline writes a local CALL_ENDED system notice keyed by the call binding', async () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
@@ -383,26 +394,23 @@ describe('CallsService terminal bubble persistence', () => {
       callType: 'AUDIO',
     });
     await svc.decline(2, 'cs1');
-    expect(m.messages.writeMsgToThread).toHaveBeenCalledWith(
-      1, // creator = callerId
-      10,
-      expect.any(String),
-      ContentType.CALL,
-      'cs1', // clientMessageId = callSid (idempotent terminal write)
+    expect(m.history.finish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 10,
+        content: expect.objectContaining({ callId: 'cs1' }),
+      }),
     );
     expect(lastBubbleContent(m)).toMatchObject({
-      type: 'CALL',
-      callType: 'AUDIO',
+      type: 'CALL_ENDED',
+      mediaType: 'AUDIO',
       outcome: 'declined',
-      callerId: 1,
-      calleeId: 2,
     });
     // An unanswered call never connected → no startedAt/duration.
     const c = lastBubbleContent(m)!;
-    expect(c.startedAt).toBeUndefined();
-    expect(c.durationMs).toBeUndefined();
-    void m.fanout.dispatch; // dispatched (fire-and-forget) — exercised below
-    expect(m.fanout.dispatch).toHaveBeenCalledOnce();
+    expect(c.connectedAt).toBeUndefined();
+    expect(
+      c.connectedAt === undefined ? undefined : c.endedAt - c.connectedAt,
+    ).toBeUndefined();
   });
 
   it('cancel writes a `cancelled` bubble', async () => {
@@ -429,12 +437,12 @@ describe('CallsService terminal bubble persistence', () => {
     const c = lastBubbleContent(m)!;
     expect(c).toMatchObject({
       outcome: 'completed',
-      callType: 'VIDEO',
-      callerId: 1,
-      calleeId: 2,
+      mediaType: 'VIDEO',
     });
-    expect(c.startedAt).toBeTypeOf('number');
-    expect(c.durationMs).toBeTypeOf('number');
+    expect(c.connectedAt).toBeTypeOf('number');
+    expect(
+      c.connectedAt === undefined ? undefined : c.endedAt - c.connectedAt,
+    ).toBeTypeOf('number');
     expect(c.endedAt).toBeTypeOf('number');
   });
 
@@ -449,8 +457,10 @@ describe('CallsService terminal bubble persistence', () => {
     await svc.end(2, 'cs1');
     const c = lastBubbleContent(m)!;
     expect(c.outcome).toBe('failed'); // a connection failure
-    expect(c.startedAt).toBeUndefined(); // never really connected
-    expect(c.durationMs).toBeUndefined();
+    expect(c.connectedAt).toBeUndefined(); // never really connected
+    expect(
+      c.connectedAt === undefined ? undefined : c.endedAt - c.connectedAt,
+    ).toBeUndefined();
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ type: 'ended', endReason: 'failed' }),
@@ -469,7 +479,7 @@ describe('CallsService terminal bubble persistence', () => {
     await svc.end(2, 'cs1', 'failed');
     const c = lastBubbleContent(m)!;
     expect(c.outcome).toBe('failed');
-    expect(c.startedAt).toBeTypeOf('number'); // it HAD connected
+    expect(c.connectedAt).toBeTypeOf('number'); // it HAD connected
   });
 
   it('a terminal transition releases both busy slots (the users can place a new call)', async () => {
@@ -613,7 +623,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
     await svc.end(1, 'cs1');
     expect(lastBubbleContent(m)).toMatchObject({
-      callType: 'VIDEO',
+      mediaType: 'VIDEO',
       outcome: 'completed',
     });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
@@ -648,7 +658,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     });
     await svc.decline(2, 'cs1');
     await svc.decline(2, 'cs1'); // already terminal → no-op
-    expect(m.messages.writeMsgToThread).toHaveBeenCalledTimes(1);
+    expect(m.history.finish).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -772,12 +782,12 @@ describe('CallsService ringing timeout', () => {
     });
     await svc.accept(2, 'cs1'); // answered — the timer is STILL armed (media not yet up)
     await svc.connected(2, 'cs1'); // media up → timer disarmed
-    m.messages.writeMsgToThread.mockClear();
+    m.history.finish.mockClear();
 
     await vi.advanceTimersByTimeAsync(45_000);
 
     // Connected → no timeout terminal write fired.
-    expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    expect(m.history.finish).not.toHaveBeenCalled();
   });
 
   it('maps an accepted connect timeout to ended(timeout) for both local participants', async () => {
@@ -807,7 +817,7 @@ describe('CallsService ringing timeout', () => {
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // answered, media never comes up
-    m.messages.writeMsgToThread.mockClear();
+    m.history.finish.mockClear();
 
     await vi.advanceTimersByTimeAsync(45_000);
 
@@ -962,6 +972,30 @@ describe('CallsService federated initiate (outbound)', () => {
     ).resolves.toBeDefined();
   });
 
+  it('records confirmed non-delivery locally without sending cancellation', async () => {
+    const { svc, m } = mkService();
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
+    m.federation.sendCallFrame.mockRejectedValue(
+      new Error('connect failed', { cause: { code: 'ECONNREFUSED' } }),
+    );
+    await expect(
+      svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
+    );
+    expect(m.federation.sendCallFrame).toHaveBeenCalledOnce();
+    expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
+    expect(m.sse.onCallEvent).not.toHaveBeenCalled();
+  });
+
   it('sends cancelled when the caller ring safety timeout fires', async () => {
     vi.useFakeTimers();
     try {
@@ -1015,7 +1049,7 @@ describe('CallsService federated initiate (outbound)', () => {
         }),
         'bbb.local',
       );
-      expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+      expect(m.history.finish).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -1069,7 +1103,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     expect(m.quota.tick).toHaveBeenCalledWith('bbb.local', 'requests');
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
     // The callee server never authors the terminal bubble.
-    expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    expect(m.history.finish).not.toHaveBeenCalled();
   });
 
   it('incoming on a busy local user returns CALL_BUSY as a business result + burns no quota', async () => {
@@ -1201,7 +1235,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
         localUserId: 2,
         frame: mkFrame({
           op: 'connected',
-          payload: { startedAt: Date.now() },
         }),
       }),
     ).rejects.toSatisfy(
@@ -1220,7 +1253,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('accepted + connected transition the caller-side call and author the completed bubble', async () => {
     // Seed a caller-side live call via a federated initiate, then drive the inbound
     // accepted + connected + ended frames the peer sends back — the caller server authors the `completed`
-    // bubble, stamping startedAt from the `connected` frame (NOT `accepted`).
+    // bubble, stamping the local processing time of `connected` (not `accepted`).
     const { svc, m } = mkService();
     m.participants.findP2PPeers.mockResolvedValue([
       {
@@ -1245,16 +1278,19 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       1,
       expect.objectContaining({ type: 'accepted' }),
     );
+    await vi.advanceTimersByTimeAsync(1000);
     await inbound(svc, {
       localUserId: 1,
-      frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
+      frame: mkFrame({ op: 'connected' }),
     });
     await inbound(svc, {
       localUserId: 1,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
     expect(lastBubbleContent(m)?.outcome).toBe('completed');
-    expect(lastBubbleContent(m)?.startedAt).toBe(1000); // from the `connected` frame, not `accepted`
+    expect(lastBubbleContent(m)?.connectedAt).toBe(
+      lastBubbleContent(m)!.initiatedAt + 1000,
+    ); // first local processing time, not peer time
   });
 
   it('absorbs a connected replay and preserves the first accepted startedAt', async () => {
@@ -1277,21 +1313,25 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       localUserId: 1,
       frame: mkFrame({ op: 'accepted' }),
     });
+    await vi.advanceTimersByTimeAsync(1000);
     await inbound(svc, {
       localUserId: 1,
-      frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
+      frame: mkFrame({ op: 'connected' }),
     });
 
+    await vi.advanceTimersByTimeAsync(1000);
     await inbound(svc, {
       localUserId: 1,
-      frame: mkFrame({ op: 'connected', payload: { startedAt: 1001 } }),
+      frame: mkFrame({ op: 'connected' }),
     });
 
     await inbound(svc, {
       localUserId: 1,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
-    expect(lastBubbleContent(m)?.startedAt).toBe(1000);
+    expect(lastBubbleContent(m)?.connectedAt).toBe(
+      lastBubbleContent(m)!.initiatedAt + 1000,
+    );
   });
 
   it('applies a federated video upgrade on the callee server and notifies its local participant', async () => {
@@ -1452,6 +1492,32 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       expect.objectContaining({ type: 'cancelled', callSid: 'cs1' }),
     );
     expect(() => svc.signaling(2, 'cs1')).toThrow();
+  });
+
+  it('persists local history and releases busy slots when terminal protection fails', async () => {
+    const { svc, m, callState } = mkService();
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
+    await svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' });
+    m.database.db.delete.mockReturnValueOnce({
+      where: vi.fn().mockRejectedValue(new Error('protection write failed')),
+    });
+    await expect(svc.cancel(1, 'cs1')).rejects.toThrow(
+      'terminal call persistence failed',
+    );
+    expect(lastBubbleContent(m)).toMatchObject({ outcome: 'cancelled' });
+    expect(callState.get(1)).toBeNull();
+    await expect(
+      svc.initiate(1, { callSid: 'cs2', threadId: 10, callType: 'AUDIO' }),
+    ).resolves.toMatchObject({ callSid: 'cs2' });
+    svc.onModuleDestroy();
   });
 
   it('rejects accepted during the tombstone-write window after local cancellation starts', async () => {
@@ -1629,7 +1695,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       (e: unknown) =>
         (e as { bizCode?: number }).bizCode === BusinessCode.CALL_NOT_ALLOWED,
     );
-    expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    expect(m.history.finish).not.toHaveBeenCalled();
   });
 
   it('allows completed to end an accepted call before media connects', async () => {
@@ -1668,7 +1734,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
   });
 
-  it("the callee server does not author a bubble; it pulls the caller server's", async () => {
+  it('the callee server writes its own terminal system notice', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.accept(2, 'cs1');
@@ -1682,7 +1748,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       2,
       expect.objectContaining({ type: 'ended' }),
     );
-    expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    expect(m.history.finish).toHaveBeenCalledOnce();
   });
 });
 

@@ -14,6 +14,8 @@ and client behavior.
 
 ## Design
 
+- [Local call history](./design/local-call-history.md)
+
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)

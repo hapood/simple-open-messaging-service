@@ -38,7 +38,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
  * `adapter.setVideoElements`. Both use the same visual slots, so the UI remains platform-neutral.
  *
  * Terminal phases are folded to 'idle' by CallEventService, so the overlay dismisses on hang-up / decline /
- * peer-end; the terminal CALL bubble in the thread is the user-visible record.
+ * peer-end; the terminal system notice in the thread is the user-visible record.
  *
  * Rendered at z-index 1200 (above the lightbox tier at 1100 — a call is the topmost surface). The status label
  * is bilingual via the `call` i18n namespace; the remaining template labels (buttons) are still English pending

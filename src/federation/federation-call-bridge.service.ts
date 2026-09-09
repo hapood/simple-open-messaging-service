@@ -102,12 +102,6 @@ export class FederationCallBridgeService {
         data: params.data,
       };
       frame = { ...base, op: 'signal', payload };
-    } else if (params.op === 'connected') {
-      frame = {
-        ...base,
-        op: 'connected',
-        payload: { startedAt: params.startedAt },
-      };
     } else if (params.op === 'ended') {
       frame = {
         ...base,

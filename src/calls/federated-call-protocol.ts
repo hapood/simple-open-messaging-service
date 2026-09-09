@@ -32,7 +32,6 @@ export type CallEndReason = 'completed' | 'timeout' | 'failed';
 export type SdpText = string;
 export type SerializedIceCandidate = string;
 export type SerializedVideoState = string;
-export type UnixEpochMilliseconds = number;
 export type CallSignalPayload =
   | {
       signalId: string;
@@ -59,7 +58,8 @@ type PayloadlessCallOperation =
   | 'ringing'
   | 'declined'
   | 'cancelled'
-  | 'missed';
+  | 'missed'
+  | 'connected';
 
 type PayloadlessCallFrame = {
   [Operation in PayloadlessCallOperation]: S2SCallFrameBase & {
@@ -77,10 +77,6 @@ export type S2SCallFrame =
   | (S2SCallFrameBase & {
       op: 'signal';
       payload: CallSignalPayload;
-    })
-  | (S2SCallFrameBase & {
-      op: 'connected';
-      payload: { startedAt: UnixEpochMilliseconds };
     })
   | (S2SCallFrameBase & {
       op: 'video-upgraded';
@@ -107,8 +103,12 @@ type WithWireNames<Frame> = Frame extends {
   ? Omit<Frame, 'callSid' | 'op' | 'callType' | 'payload'> & {
       callId: CallId;
       operation: Operation;
-    } & (Frame extends { callType: infer MediaType } ? { mediaType: MediaType } : unknown)
-      & (Frame extends { payload: infer Payload } ? { payload: WithWirePayload<Payload> } : unknown)
+    } & (Frame extends { callType: infer MediaType }
+        ? { mediaType: MediaType }
+        : unknown) &
+      (Frame extends { payload: infer Payload }
+        ? { payload: WithWirePayload<Payload> }
+        : unknown)
   : never;
 
 /** Closed Federation v1 wire representation of an internal call frame. */
@@ -135,10 +135,6 @@ function hasExactlyKeys(
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function isEpochMs(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
 /** Validate the complete, closed internal call-frame shape. */
 export function assertS2SCallFrame(
   value: unknown,
@@ -153,19 +149,20 @@ export function assertS2SCallFrame(
     malformed('unknown call operation');
   }
 
-  const conditionalKeys = ['incoming', 'signal', 'connected', 'ended'].includes(
-    op,
-  )
+  const conditionalKeys = ['incoming', 'signal', 'ended'].includes(op)
     ? ['payload']
     : [];
-  if (!hasExactlyKeys(value, [...COMMON_KEYS, ...conditionalKeys, ...(op === 'incoming' ? ['callType'] : [])])) {
+  if (
+    !hasExactlyKeys(value, [
+      ...COMMON_KEYS,
+      ...conditionalKeys,
+      ...(op === 'incoming' ? ['callType'] : []),
+    ])
+  ) {
     malformed('call frame contains fields not allowed for its operation');
   }
 
-  if (
-    typeof value.callSid !== 'string' ||
-    !CALL_SID_RE.test(value.callSid)
-  ) {
+  if (typeof value.callSid !== 'string' || !CALL_SID_RE.test(value.callSid)) {
     malformed('malformed call frame scalar');
   }
 
@@ -202,14 +199,6 @@ export function assertS2SCallFrame(
     ) {
       malformed('malformed call signal');
     }
-  } else if (op === 'connected') {
-    if (
-      !isRecord(value.payload) ||
-      !hasExactlyKeys(value.payload, ['startedAt']) ||
-      !isEpochMs(value.payload.startedAt)
-    ) {
-      malformed('connected requires payload.startedAt');
-    }
   } else if (op === 'ended') {
     if (
       !isRecord(value.payload) ||
@@ -220,7 +209,6 @@ export function assertS2SCallFrame(
       malformed('ended requires a valid payload.endReason');
     }
   }
-
 }
 
 /** Parse the complete, closed POST /s2s/v1/call wire shape. */

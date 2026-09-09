@@ -11,7 +11,7 @@ import {
   ForwardBundleService,
   type ForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
-import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
+import { enqueueMessageFanoutsInTx } from '../message/thread-fanout-task.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import type { Message } from '../message/message.service.js';
 import { QuotaService } from '../quota/quota.service.js';
@@ -56,7 +56,6 @@ export interface FederationInboundMessageStoreParams {
   message: {
     originSeq: number;
     profileRev: number;
-    clientMessageId: string | null;
     contentType: string;
     content: string;
     ts: number;
@@ -84,7 +83,7 @@ export type FederationInboundMessageStoreResult =
       storedContent: string;
       localForwardBundleId?: string;
     }
-  | { kind: 'pending'; batchId: string };
+  | { kind: 'pending'; batchId: string; seq: number };
 
 /** Persists one validated inbound message while preserving its transactional identity invariants. */
 @Injectable()
@@ -151,7 +150,12 @@ export class FederationInboundMessageStoreService {
           where: eq(tables.pendingMedia.messageId, racedMessage.id),
           columns: { batchId: true },
         });
-        if (pending) return { kind: 'pending', batchId: pending.batchId };
+        if (pending)
+          return {
+            kind: 'pending',
+            batchId: pending.batchId,
+            seq: racedMessage.seq,
+          };
       }
       return {
         kind: 'message',
@@ -205,16 +209,15 @@ export class FederationInboundMessageStoreService {
           seq,
           originSeq: incoming.originSeq,
           profileRev: incoming.profileRev,
-          clientMessageId: incoming.clientMessageId,
           originServerTime: originTime,
           sourceNamespaceId: namespaceId,
           localState: 'STUB',
           updatedAt: new Date(),
         })
         .returning({ id: tables.message.id });
-      if (!sequencePolicy) {
-        await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
-      }
+      // Mapped reverse history occupies reserved slots below the read boundary.
+      // It is not a new unread interval, including when media arrives as a stub.
+      if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
       await tx.insert(tables.pendingMedia).values({
         messageId: stub.id,
         direction: 'INBOUND',
@@ -242,7 +245,7 @@ export class FederationInboundMessageStoreService {
           })
           .onConflictDoNothing();
       }
-      return { kind: 'pending', batchId };
+      return { kind: 'pending', batchId, seq };
     }
 
     let storedContent = incoming.content;
@@ -282,7 +285,6 @@ export class FederationInboundMessageStoreService {
         seq,
         originSeq: incoming.originSeq,
         profileRev: incoming.profileRev,
-        clientMessageId: incoming.clientMessageId,
         originServerTime: originTime,
         sourceNamespaceId: namespaceId,
         isDeleted: tombstone !== undefined,
@@ -290,9 +292,8 @@ export class FederationInboundMessageStoreService {
         updatedAt: new Date(),
       })
       .returning();
-    let localDeletionSeq: number | null = null;
-    if (tombstone && !sequencePolicy) {
-      const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+    if (tombstone) {
+      await DeletedMessageService.ensureFactInTx(tx, {
         threadLock,
         threadId,
         messageSeq: seq,
@@ -300,7 +301,6 @@ export class FederationInboundMessageStoreService {
         sourceNamespaceId: namespaceId,
         updatedAt: new Date(),
       });
-      localDeletionSeq = deletion.created ? deletion.deletionSeq : null;
       await tx
         .delete(tables.federatedMessageTombstone)
         .where(
@@ -311,16 +311,7 @@ export class FederationInboundMessageStoreService {
           ),
         );
     }
-    if (!sequencePolicy) {
-      await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
-    }
-    if (localDeletionSeq !== null) {
-      await ClientThreadContentHeadWriter.publishTombstone(
-        tx,
-        threadId,
-        localDeletionSeq,
-      );
-    }
+    if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
     if (localForwardBundleId) {
       await tx.insert(tables.forwardMessage).values({
         messageId: message.id,
@@ -337,6 +328,23 @@ export class FederationInboundMessageStoreService {
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
+  }
+
+  private async enqueueFanout(
+    tx: DatabaseTransaction,
+    lock: ThreadContentLock,
+    threadId: number,
+  ): Promise<void> {
+    const head = await tx.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+      columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+    });
+    if (!head) throw new Error('Inbound message thread disappeared');
+    await enqueueMessageFanoutsInTx(tx, lock, {
+      threadId,
+      messageEndSeq: head.curSeq,
+      tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+    });
   }
 
   private async allocateMessageSeq(

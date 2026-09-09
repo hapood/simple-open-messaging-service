@@ -36,7 +36,6 @@ import { TextRowComponent } from '../message-cards/text-row/text-row.component';
 import { MediaRowComponent } from '../message-cards/media-row/media-row.component';
 import { FileRowComponent } from '../message-cards/file-row/file-row.component';
 import { LinkRowComponent } from '../message-cards/link-row/link-row.component';
-import { CallRowComponent } from '../message-cards/call-row/call-row.component';
 import { ForwardRowComponent } from '../message-cards/forward-row/forward-row.component';
 import { ContactCardRowComponent } from '../message-cards/contact-card-row/contact-card-row.component';
 import { LinkCardService } from '../../services/link-card.service';
@@ -75,7 +74,6 @@ export interface ForwardDialogResult {
     MediaRowComponent,
     FileRowComponent,
     LinkRowComponent,
-    CallRowComponent,
     ForwardRowComponent,
     ContactCardRowComponent,
     IconComponent,

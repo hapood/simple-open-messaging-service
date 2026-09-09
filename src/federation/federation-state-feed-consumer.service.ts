@@ -8,10 +8,9 @@ import {
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../user/account-address.js';
-import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from '../group-meta/current-group-roster.js';
 import { Injectable, Logger } from '@nestjs/common';
 
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -29,7 +28,6 @@ import {
 import { readCurrentGroupRosterInTx } from '../group-meta/current-group-roster.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { acquireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import {
   MessageService,
@@ -73,10 +71,9 @@ export interface StatePageEffect {
   localSystemMessages: Array<{
     actorUserId: AccountTarget;
     threadId: number;
-    type: SystemMessageType;
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>;
     subjectUserId?: AccountTarget;
     message?: PublicMessage;
-    recipientUserIds?: number[];
   }>;
   threadRoundWakes: Array<{
     threadId: number;
@@ -695,11 +692,6 @@ export class FederationStateFeedConsumerService {
                 'group relationship placeholder thread is missing',
               );
             if (membership.wasActive) {
-              const authorized =
-                await readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
-                  groupId: groupState.id,
-                  threadId: thread.id,
-                });
               const boundary = await this.message.writeDepartureMessageInTx(
                 tx,
                 thread.id,
@@ -707,17 +699,26 @@ export class FederationStateFeedConsumerService {
                 localMember.id,
                 {
                   threadLock: membership.threadLock,
-                  recipientUserIds: authorized,
-                  visibleThroughUserIds: [localMember.id],
                 },
               );
+              await tx
+                .update(tables.accountThreadState)
+                .set({
+                  messageVisibleThroughSeq: boundary.message.seq,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(tables.accountThreadState.threadId, thread.id),
+                    eq(tables.accountThreadState.accountId, localMember.id),
+                  ),
+                );
               localSystemMessages.push({
                 actorUserId: localMember.id,
                 threadId: thread.id,
                 type: SystemMessageType.GROUP_LEFT,
                 subjectUserId: localMember.id,
                 message: boundary.message,
-                recipientUserIds: authorized,
               });
             }
             await this.groupRelationships.syncActiveInTx(tx, {
@@ -896,11 +897,6 @@ export class FederationStateFeedConsumerService {
                 memberUserId: member.id,
                 hostedLocally: true,
                 afterPairDeactivated: async () => {
-                  const recipientUserIds =
-                    await readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
-                      groupId: groupState.id,
-                      threadId: originThread.id,
-                    });
                   const boundary = await this.message.writeDepartureMessageInTx(
                     tx,
                     originThread.id,
@@ -909,22 +905,19 @@ export class FederationStateFeedConsumerService {
                     {
                       threadLock: membership.threadLock,
                       actorUserId: member.id,
-                      recipientUserIds,
-                      visibleThroughUserIds: [],
                     },
                   );
-                  return { boundary, recipientUserIds };
+                  return { boundary };
                 },
               });
             if (!deactivation.pairChanged || !deactivation.effect) continue;
-            const { boundary, recipientUserIds } = deactivation.effect;
+            const { boundary } = deactivation.effect;
             localSystemMessages.push({
               actorUserId: member.id,
               threadId: originThread.id,
               type: SystemMessageType.GROUP_LEFT,
               subjectUserId: member.id,
               message: boundary.message,
-              recipientUserIds,
             });
             await tx
               .update(tables.messageThread)
@@ -1077,6 +1070,7 @@ export class FederationStateFeedConsumerService {
           ON message_thread.id = pair."threadId"
         WHERE pair.kind = 'P2P'
           AND pair.active = true
+          AND message_thread."federationRoundsEnabled" = true
           AND pair."threadId" IS NOT NULL
           AND (pair."endpointANamespaceId" = ${namespaceId}
             OR pair."endpointBNamespaceId" = ${namespaceId})
@@ -1102,6 +1096,7 @@ export class FederationStateFeedConsumerService {
       FROM "MessageThread" message_thread
       JOIN ${groupStateSql} group_user ON group_user.id = message_thread.id
       WHERE message_thread.type = 'GROUP'
+        AND message_thread."federationRoundsEnabled" = true
         AND group_user.account = ${normalizeAccount(thread.account)}
         AND (
           (group_user.domain = 'local'

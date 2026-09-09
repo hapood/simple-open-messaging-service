@@ -91,7 +91,6 @@ describe('Federation v1 call frame validation', () => {
       assertS2SCallFrame(
         validFrame({
           op: 'connected',
-          payload: { startedAt: 1_700_000_000_001 },
         }),
       ),
     ).not.toThrow();
@@ -116,7 +115,12 @@ describe('Federation v1 call frame validation', () => {
         }),
       ),
     ).toThrow();
-    expect(() => assertS2SCallFrame(validFrame({ op: 'connected' }))).toThrow();
+    expect(() =>
+      assertS2SCallFrame({
+        ...(validFrame({ op: 'connected' }) as object),
+        payload: { startedAt: 1_700_000_000_001 },
+      }),
+    ).toThrow();
     expect(() => assertS2SCallFrame(validFrame({ op: 'ended' }))).toThrow();
     expect(() =>
       assertS2SCallFrame(
@@ -131,6 +135,7 @@ describe('Federation v1 call frame validation', () => {
     'declined',
     'cancelled',
     'missed',
+    'connected',
     'video-upgraded',
   ] as const)(
     'round-trips payloadless %s and rejects misplaced fields',
@@ -144,6 +149,8 @@ describe('Federation v1 call frame validation', () => {
         { mediaType: 'VIDEO' },
         { createUntil },
         { payload: {} },
+        { payload: { startedAt: 1_700_000_000_001 } },
+        { startedAt: 1_700_000_000_001 },
       ]) {
         expect(() => parseS2SCallWireFrame({ ...wire, ...fields })).toThrow();
       }

@@ -1180,44 +1180,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
   });
 
-  it('logs and skips invalid CALL content while exposing parsed content for valid rows', async () => {
-    const invalid = {
-      ...row(101, 2),
-      contentType: 'CALL' as const,
-      content: '{invalid',
-    };
-    const valid = {
-      ...row(102, 2),
-      contentType: 'CALL' as const,
-      content: JSON.stringify({
-        type: 'CALL',
-        callType: 'AUDIO',
-        outcome: 'missed',
-        callerId: 2,
-        calleeId: 1,
-        endedAt: 1_700_000_000_000,
-      }),
-    };
-    const error = vi.spyOn(console, 'error').mockReturnValue(undefined);
-    const { src } = setup({
-      code: 0,
-      message: 'ok',
-      data: [invalid, valid] as Message[],
-      hasMore: false,
-    });
-
-    const items = await src.init(-1, 50, 0);
-
-    expect(items).toHaveLength(1);
-    expect(items[0].data.callContent).toMatchObject({
-      outcome: 'missed',
-      endedAt: 1_700_000_000_000,
-    });
-    expect(error).toHaveBeenCalledWith(
-      '[message-content] skipped invalid CALL content (threadId=42, seq=101)',
-    );
-    error.mockRestore();
-  });
 
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
     const quoted = {

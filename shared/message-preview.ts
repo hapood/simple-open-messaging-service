@@ -1,3 +1,4 @@
+import { parseCallEndedContent } from './call-ended-content.js';
 import { parseTextMessageContent } from './text-message-content.js';
 
 export const MESSAGE_PREVIEW_MAX_LENGTH = 200;
@@ -27,7 +28,7 @@ export function deriveMessagePreview(
     case 'IMAGE':
       return '[Photo]';
     case 'SYSTEM':
-      return '[System message]';
+      return parseCallEndedContent(content) ? callPreview(content) : '[System message]';
     case 'VIDEO':
       return '[Video]';
     case 'FILE':
@@ -38,8 +39,6 @@ export function deriveMessagePreview(
       return fileSetPreview(content);
     case 'FORWARD':
       return forwardPreview(content);
-    case 'CALL':
-      return callPreview(content);
     default:
       return content.slice(0, MESSAGE_PREVIEW_MAX_LENGTH);
   }

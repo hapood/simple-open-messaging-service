@@ -25,7 +25,7 @@ RelationshipPair 1─N RelationshipIntent
         ├────────────── optional MessageThread
         └────────────── two source-correct endpoints
 
-DurableTask (self-reference through parentTaskId and supersededByTaskId)
+DurableTask (independent tasks with resumable checkpoints)
 ```
 
 ## Model Details
@@ -103,7 +103,6 @@ operational registration set.
 | `curSeq`                                                  | Int                     | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
 | `clearedSeq`                                              | Int?                    | inclusive history boundary shared by every viewer; messages at or below it are unavailable              |
 | `pullUntil`                                               | Int                     | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
-| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                         | denormalized "last message" cache for the conversation list (hot read)                                  |
 | `groupId`                                                 | Int? (unique, FK→Group) | independent group profile for GROUP; null for P2P                                                       |
 | `createdAt` / `updatedAt`                                 |                         |                                                                                                         |
 
@@ -120,7 +119,8 @@ its own immutable author Address and `profileRev`.
 
 This is an independent fact keyed by `(accountId, threadId)`. It references a
 local `Account` and a `MessageThread`. It stores the
-local role fact, `lastReadSeq`, `readRevision`, mute/block/pin state,
+local role fact, `lastReadSeq`, `unreadCount`, `lastMentionSeq`, bounded `previewSeqs`,
+the published `messageEndSeq` / `tombstoneEndSeq`, `threadFeedId`, mute/block/pin state,
 inclusive `messageVisibleThroughSeq`, and alias. The thread-wide `clearedSeq` history boundary lives
 on `MessageThread`. A thread may therefore have
 zero, one, or several participants: a cross-server P2P usually has one, a
@@ -173,9 +173,10 @@ and `scopeKey` identify the ordering boundary. At most one row for a
 `payload` is immutable after claim. An eligible pending group-member intent
 slot may be rewritten in place to its latest desired value before execution.
 Required JSON object `checkpoint` stores type-specific resumable progress.
-`parentTaskId` links fan-out work. `coalescingKey` identifies both in-place
-mutation slots and replace-by-successor projections; `SUPERSEDED` and
-`supersededByTaskId` retain the latter's replacement history. See
+Fan-out producers finish after admitting their follow-up tasks, without waiting
+for their completion or storing task-to-task links. `coalescingKey` identifies
+both in-place mutation slots and replace-by-successor projections; `SUPERSEDED`
+marks obsolete unstarted work without retaining a replacement pointer. See
 [Durable Task Scheduling](../design/durable-task-scheduling.md) for execution
 and failure semantics.
 
@@ -228,12 +229,12 @@ target, and no Group Meta network read occurs inside that item transaction.
 
 ### ClientStateFeed — Client state feed
 
-Thread, profile, member-profile, request, and client-state entries use one
-compacted per-user feed. `THREAD_CONTENT_HEAD` stores required message and
-tombstone ends together. The client reads
-`GET /user/state-feed` after its sole device-feed cursor and applies each page
-and cursor atomically. There are no separate device message or tombstone feed
-tables.
+Relationship, profile, member-profile, request, and client-state entries use the
+compacted state feed. Clients apply each page and its state cursor atomically.
+Content heads, unread state, mentions, and preview references instead share the
+compacted account-thread feed (`AccountThreadState.threadFeedId`), consumed through
+`POST /thread/feed-delta` with an independent `threadFeedCursor`. There are no
+separate device message or tombstone feed tables.
 
 ### UserBlock — One-way block
 
@@ -245,7 +246,7 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 | --------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                    |
 | `seq`                                   | Int                  | positive per-thread monotonic seq, allocated atomically from `curSeq`; the external ordering key and frontend identity |
-| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL \| FORWARD \| GALLERY \| SYSTEM`               |
+| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| FORWARD \| GALLERY \| SYSTEM`               |
 | `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                  |
 | `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                          |
 | `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `sourceNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
@@ -327,11 +328,10 @@ CREATE TYPE "MessageThreadType"       AS ENUM ('P2P', 'GROUP');
 CREATE TYPE "GroupRole"               AS ENUM ('OWNER', 'ADMIN', 'MEMBER');   -- GROUP only; null for P2P
 CREATE TYPE "InviteKind"              AS ENUM ('FRIEND', 'GROUP');
 CREATE TYPE "InviteStatus"            AS ENUM ('PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED');
-CREATE TYPE "ThreadRevisionDirection" AS ENUM ('ADD', 'DELETE');
 
 CREATE TYPE "ContentType" AS ENUM (
   'PURE_TEXT', 'INVITE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'LINK',
-  'CALL', 'FORWARD', 'GALLERY', 'SYSTEM'
+  'FORWARD', 'GALLERY', 'SYSTEM'
 );
 
 CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
@@ -349,12 +349,24 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
-5. **Client state versioning**: thread membership, profile cache entries, requests, and compacted
-   `THREAD_CONTENT_HEAD` rows share the account's `stateFeedAllocatedThrough` coordinate. Clients persist
-   one Client State Feed cursor and delta-replay through the `stateFeedEndId` advertised by `HELLO` or
-   `STATE_FEED_UPDATED` rather than re-fetching the whole list.
+5. **Client state versioning**: metadata and relationship updates use the account's
+   state-feed coordinate. Content/unread snapshots use `threadFeedEndId` and the
+   independent thread-feed cursor. `HELLO` advertises both heads; subsequent
+   `STATE_FEED_UPDATED` and `THREAD_FEED_UPDATED` wakes drain their respective feeds.
 6. **Lifecycle is model-specific**: the origin appends bodyless Group Meta
    `DEPART`; mirrors and clients physically delete current member projections.
    Historical messages retain their own author Address and profile reference.
    Media-CAS blobs are reclaimed only after reachability checks.
-7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).
+7. **BigInt serialization**: internal BigInt identifiers are uniformly serialized to strings by the global `SerializeInterceptor`. Client thread-feed IDs and message/tombstone sequences are int32 coordinates.
+
+### MessageReport
+
+`MessageReport` stores `threadId`, `seq`, `isDeleted`, `createdAt`, and `updatedAt`. Its composite primary key and message foreign key both use `(threadId, seq)`. There is no separate report ID, message ID, reporter ID, review status, reviewer, or review timestamp. `isDeleted` dismisses a report independently of `Message.isDeleted`; reporting an available message again reactivates the same row and updates `updatedAt`. Active duplicates do not change either timestamp.
+
+Migration `0010_message_reports.sql` merges existing per-reporter rows into one row per message before dropping obsolete columns and the review-status enum. An undeleted message with any pending report stays active; resolved reports and deleted messages become dismissed entries.
+
+### Local call history
+
+`CallHistory` journals local call observations by thread, namespace, caller, and
+call identifier. Its first terminal observation is projected into one SYSTEM
+message with device-only fanout; `messageSeq` marks completed projection.

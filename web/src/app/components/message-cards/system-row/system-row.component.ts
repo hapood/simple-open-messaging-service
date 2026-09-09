@@ -1,3 +1,4 @@
+import { parseCallEndedContent } from '../../../../../../shared/call-ended-content';
 import {
   Component,
   computed,
@@ -80,6 +81,34 @@ export class SystemRowComponent {
         count?: number;
         domain?: string;
       };
+      if (body.type === 'CALL_ENDED') {
+        const call = parseCallEndedContent(this.data().text);
+        if (!call) return this.fallback('invalid call-ended system message');
+        const media = this.transloco.translate(
+          call.mediaType === 'VIDEO' ? 'call.videoCall' : 'call.audioCall',
+        );
+        const direction = this.transloco.translate(
+          this.data().isSelf ? 'call.record.outgoing' : 'call.record.incoming',
+        );
+        const result = this.transloco.translate(
+          call.outcome === 'completed'
+            ? 'call.ended'
+            : `call.record.${call.outcome}`,
+        );
+        const duration =
+          call.connectedAt === undefined
+            ? ''
+            : ` · ${Math.floor((call.endedAt - call.connectedAt) / 60000)}:${String(Math.floor((call.endedAt - call.connectedAt) / 1000) % 60).padStart(2, '0')}`;
+        const waitMs = (call.connectedAt ?? call.endedAt) - call.initiatedAt;
+        const waiting = this.transloco.translate('call.record.waiting', {
+          duration: `${Math.floor(waitMs / 60000)}:${String(Math.floor(waitMs / 1000) % 60).padStart(2, '0')}`,
+        });
+        const started = new Date(call.initiatedAt).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
+      }
       const labelKey = LABEL_KEYS[body.type ?? ''];
       if (!labelKey) return this.fallback('unknown system message type');
 

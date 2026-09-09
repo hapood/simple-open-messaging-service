@@ -1129,20 +1129,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           galleryFileDigest,
         ],
       },
-      {
-        contentType: ContentType.CALL,
-        content: JSON.stringify({
-          type: 'CALL',
-          callType: 'VIDEO',
-          outcome: 'completed',
-          callerId: aliceLocalIdA,
-          calleeId: sourcePeer.id,
-          startedAt: now,
-          endedAt: now + 1_000,
-          durationMs: 1_000,
-        }),
-        digests: [],
-      },
+
     ];
 
     const sourceRows = await appA.database.transaction(async (tx) => {
@@ -1179,9 +1166,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .update(messageThread)
         .set({
           curSeq: sourceSpecs.length,
-          lastMessageSeq: sourceSpecs.length,
-          lastMessagePreview: '[File set]',
-          lastMessageAt: new Date(now + sourceSpecs.length - 1),
           updatedAt: new Date(now + sourceSpecs.length - 1),
         })
         .where(eq(messageThread.id, sourceThread.id));
@@ -1285,16 +1269,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Exercise DIRECT through the real local API for every allowed type, including FORWARD. A quoted
     // text reply is also directly forwarded to prove that reply context is intentionally stripped.
     const directSources = [
-      ...sourceRows.flatMap((row, index) =>
-        sourceSpecs[index].contentType === ContentType.CALL
-          ? []
-          : [
-              {
-                seq: row.seq,
-                contentType: sourceSpecs[index].contentType,
-              },
-            ],
-      ),
+      ...sourceRows.map((row, index) => ({
+        seq: row.seq, contentType: sourceSpecs[index].contentType,
+      })),
       { seq: innerSeq, contentType: ContentType.FORWARD },
       {
         seq: quotedById.get(replyIds[0])!.seq as number,

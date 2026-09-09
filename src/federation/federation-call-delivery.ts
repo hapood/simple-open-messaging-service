@@ -17,7 +17,7 @@ type OutboundCallFrameBase = {
 
 type PayloadlessOutboundCallOperation = Exclude<
   S2SCallOperation,
-  'incoming' | 'signal' | 'connected' | 'ended'
+  'incoming' | 'signal' | 'ended'
 >;
 
 export type OutboundCallFrameParams = OutboundCallFrameBase &
@@ -29,7 +29,6 @@ export type OutboundCallFrameParams = OutboundCallFrameBase &
         signalType: CallSignalType;
         data: string;
       }
-    | { op: 'connected'; startedAt: number }
     | { op: 'ended'; endReason: CallEndReason }
     | { op: PayloadlessOutboundCallOperation }
   );

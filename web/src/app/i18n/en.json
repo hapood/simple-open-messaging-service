@@ -81,6 +81,7 @@
     "answer-sent": "Answer sent",
     "answer-received": "Answer received",
     "record": {
+      "waiting": "Waited {{duration}}",
       "incoming": "Incoming call",
       "outgoing": "Outgoing call",
       "missed": "Missed call",
@@ -533,6 +534,8 @@
   "chat": {
     "linkCardAction": "Create link card",
     "messageNotFound": "Message not found",
+    "messageRetracted": "Message retracted",
+    "messageRemovedByAdmin": "Message removed by administrator",
     "quoteNotFetched": "Quoted message not fetched yet",
     "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
@@ -905,6 +908,7 @@
     "notifGroupingDesc": "Show recent messages, or only indicate that new messages arrived.",
     "notifGroupingThread": "Show messages",
     "notifGroupingAll": "Private",
+    "notifNewMessage": "New message",
     "notifAlertFrequency": "Alert frequency",
     "notifAlertFrequencyDesc": "Limit sound and vibration when messages arrive continuously.",
     "notifAlert2s": "2 seconds",

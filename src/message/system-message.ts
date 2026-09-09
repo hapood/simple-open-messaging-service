@@ -1,4 +1,10 @@
+import {
+  parseCallEndedContent,
+  type CallEndedContent,
+} from '../../shared/call-ended-content.js';
+
 export const SystemMessageType = {
+  CALL_ENDED: 'CALL_ENDED',
   FRIEND_ADDED: 'FRIEND_ADDED',
   FRIEND_REMOVED: 'FRIEND_REMOVED',
   GROUP_JOINED: 'GROUP_JOINED',
@@ -14,13 +20,17 @@ export const SystemMessageType = {
 export type SystemMessageType =
   (typeof SystemMessageType)[keyof typeof SystemMessageType];
 
-export interface SystemMessageContent {
-  type: SystemMessageType;
+export interface OrdinarySystemMessageContent {
+  type: Exclude<SystemMessageType, 'CALL_ENDED'>;
   subject?: { account: string; domain: string };
   actor?: { account: string; domain: string };
   count?: number;
   domain?: string;
 }
+
+export type SystemMessageContent =
+  | OrdinarySystemMessageContent
+  | CallEndedContent;
 
 const TYPES = new Set<string>(Object.values(SystemMessageType));
 
@@ -33,6 +43,7 @@ export function parseSystemMessageContent(
     const subject = body['subject'] as Record<string, unknown> | undefined;
     const actor = body['actor'] as Record<string, unknown> | undefined;
     const type = String(body['type']);
+    if (type === 'CALL_ENDED') return parseCallEndedContent(value);
     const subjectRequired =
       type !== SystemMessageType.FRIEND_ADDED &&
       type !== SystemMessageType.MESSAGES_MODERATED &&

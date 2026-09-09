@@ -141,7 +141,7 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
   declare derivable counts on the wire, and the protocol does not prescribe
   their storage or local use.
 
-Inner CALL entries are immutable historical displays and grant no real-time call state. The enclosing `ForwardBundleMessage.author` identifies the inner caller; the bundle does not represent the CALL callee.
+The same federation content-type set applies to inner and outer messages.
 
 An unknown inner content type makes the bundle malformed. The consumer MUST discard the entire bundle, persist no partial closure, and download none of its assets.
 

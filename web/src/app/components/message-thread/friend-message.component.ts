@@ -526,7 +526,6 @@ export class MessageThreadComponent implements OnDestroy {
     const threadId = this.threadId();
     if (threadId !== undefined) {
       this.convList.markReadStable(threadId, seq);
-      this.convList.flushRead(threadId);
     }
   });
 
@@ -1531,7 +1530,6 @@ export class MessageThreadComponent implements OnDestroy {
       message.msgId >= 0 &&
       message.status !== 'sending' &&
       message.status !== 'failed' &&
-      message.contentType !== 'CALL' &&
       message.contentType !== 'SYSTEM'
     );
   }
@@ -1590,7 +1588,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private reportMessage(threadId: number, seq: number): void {
-    this.threadAdapter.reportMessages({ threadId, seqs: [seq] }).subscribe({
+    this.threadAdapter.reportMessage({ threadId, seq }).subscribe({
       next: (res) => {
         if (res.code !== BusinessCode.OK) {
           this.toast.warn(translateBizResult(res, this.transloco));

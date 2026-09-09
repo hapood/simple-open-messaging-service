@@ -18,7 +18,7 @@ All routes are under the `/api/v1` prefix. Every response is the `ApiResult` env
 | POST   | `/calls/initiate`           | `{ callSid, calleeUserId, callType }`      | Caller starts a call. Returns `{ callSid, threadId }`.                                                                                                                                                                                |
 | POST   | `/calls/accept`             | `{ callSid }`                              | Callee answered (negotiating — NOT connected yet).                                                                                                                                                                                    |
 | POST   | `/calls/ringing`            | `{ callSid }`                              | Callee reports that incoming alerting started. Advisory and idempotent.                                                                                                                                                               |
-| POST   | `/calls/connected`          | `{ callSid }`                              | Callee: **the media leg is actually up** (DTLS-SRTP connected). This is the authoritative connect marker and duration timestamp. A caller report after acceptance and a repeated callee report are no-ops.                            |
+| POST   | `/calls/connected`          | `{ callSid }`                              | Callee: **the media leg is actually up** (DTLS-SRTP connected). This supplies the connection fact; each server records its local processing time. A caller report after acceptance and a repeated callee report are no-ops.                            |
 | POST   | `/calls/upgrade-video`      | `{ callSid }`                              | Caller commits a successfully renegotiated AUDIO call as VIDEO. Idempotent; there is no VIDEO→AUDIO transition.                                                                                                                       |
 | POST   | `/calls/decline`            | `{ callSid }`                              | Callee rejects (ringing only).                                                                                                                                                                                                        |
 | POST   | `/calls/cancel`             | `{ callSid }`                              | Caller cancels (ringing only).                                                                                                                                                                                                        |
@@ -44,7 +44,7 @@ Two event names, pushed per-user to ALL of that user's live SSE connections:
   `incoming | ringing | accepted | connected | video-upgraded | declined | cancelled | ended | missed`.
   - `incoming` (callee only): `+ { threadId, callerUserId, callerName, callerAvatar, callType }` → render the incoming-call UI without a fetch.
   - `accepted`: callee answered / negotiating. `+ { threadId }`.
-  - `connected`: the media leg is up. `+ { startedAt }`.
+  - `connected`: the media leg is up. `+ { startedAt }`, the local server's first connection processing time. Federation connected frames carry no timestamp.
   - `declined | cancelled | ended`: terminal (the other side acted).
   - `missed`: ringing timed out; both sides and sibling devices dismiss their live UI.
 - **`CALL_SIGNAL`** — WebRTC relay.
@@ -78,27 +78,18 @@ signal: ringing, accepted or connected inside a call; it does not change lifecyc
 - `/calls/cancel` is for a caller whose home server is still `ringing`. After `accepted`, use `/calls/end`.
 - `/calls/end` with `endReason=failed` = the media failed after connecting.
 
-### The persisted call record = a chat bubble (`ContentType.CALL`)
+### Terminal call history
 
-A finished call is one `Message` of `contentType: 'CALL'` in the P2P thread, rendered as a special
-bubble. Its `content` JSON (`src/calls/call-content.ts`):
+Finished calls use locally generated `SYSTEM / CALL_ENDED` notices, as defined
+in the [local call-history design](../../design/local-call-history.md). Deploy
+matching clients and servers together.
 
-```jsonc
-{
-  "type": "CALL",
-  "callType": "AUDIO", // AUDIO | VIDEO
-  "status": "completed", // completed | cancelled | declined | missed | failed | unreachable
-  "callerId": 7,
-  "calleeId": 4,
-  "startedAt": 1234567890, // present iff the call actually connected
-  "endedAt": 1234567990,
-  "durationMs": 100000, // present iff connected
-}
-```
-
-Direction is derived: `creator === me` → outgoing, else incoming. `failed` with no `startedAt` =
-answered-but-never-connected; `failed` with `startedAt` = connected-then-dropped. The conversation-list
-preview is a status-aware label (`[Missed call]`, `[Call]`, …) computed server-side in `derivePreview`.
+The client renders one notice only after termination, with audio/video,
+outcome, direction from caller identity, locally observed call time, and connected
+duration when available. Ringing and connection UI continues to use live call
+events. A system notice does not trigger native ringing or revive call state.
+Each server creates its own history; notices are not pulled from the peer.
+See the design for timestamp provenance, legacy data, and failure handling.
 
 ## 2. WebRTC essentials
 

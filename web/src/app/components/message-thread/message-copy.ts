@@ -61,8 +61,6 @@ export function messageCopyBody(
     }
     case 'GALLERY':
       return `${labels.photo} × ${message.images?.length ?? 0}`;
-    case 'CALL':
-      return labels.call;
     case 'SYSTEM':
       return '[System message]';
     case 'FORWARD': {

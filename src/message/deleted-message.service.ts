@@ -12,17 +12,12 @@ import {
   fileSyncProgress,
   message,
   messageThread,
+  messageReport,
   pendingMedia,
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
-import {
-  MessageService,
-  type Message,
-  type PublicMessage,
-} from './message.service.js';
-import { SystemMessageType } from './system-message.js';
+import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
 import {
   acquireThreadContentLockInTx,
   requireThreadContentLockInTx,
@@ -31,10 +26,7 @@ import {
 
 @Injectable()
 export class DeletedMessageService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly messages: MessageService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /** Thread locks precede message rows and federated identity locks on every content path. */
   static async lockThreadInTx(tx: DatabaseTransaction, threadId: number) {
@@ -232,8 +224,7 @@ export class DeletedMessageService {
         | undefined;
       if (
         !target ||
-        target.contentType === 'SYSTEM' ||
-        target.contentType === 'CALL'
+        target.contentType === 'SYSTEM'
       ) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
@@ -241,55 +232,37 @@ export class DeletedMessageService {
         );
       }
 
-      const now = new Date();
-      await tx
-        .update(message)
-        .set({ isDeleted: true, updatedAt: now })
-        .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
-      const deletion = await DeletedMessageService.ensureFactInTx(tx, {
-        threadLock,
-        threadId,
-        messageSeq: seq,
-        type: MessageDeleteType.USER_RETRACTION,
-        updatedAt: now,
-      });
-      // A withdrawal is a message-quota event, but retries are idempotent: only the transaction that
-      // creates the durable deletion fact may charge it. Keeping the callback in this transaction also
-      // rolls the deletion back if its quota gate rejects the operation.
-      if (deletion.created && onFirstWithdraw) await onFirstWithdraw(tx);
-      const systemMessage = deletion.created
-        ? (
-            await this.messages.writeSystemMessageInTx(
-              tx,
-              threadId,
-              SystemMessageType.MESSAGE_WITHDRAWN,
-              userId,
-              { actorUserId: userId, threadLock },
-            )
-          ).message
-        : null;
-      await ClientThreadContentHeadWriter.publishTombstone(
+      const deletionSeq = await this.removeInTx(
         tx,
-        threadId,
-        deletion.deletionSeq,
+        threadLock,
+        seq,
+        MessageDeleteType.USER_RETRACTION,
+        onFirstWithdraw,
       );
 
       return {
-        deletionSeq: deletion.deletionSeq,
+        deletionSeq,
         threadId,
         messageSeq: seq,
         creator: {
           account: target.creatorAccount,
           domain: target.creatorDomain,
         },
-        systemMessage,
       };
     });
   }
 
-  /** Admin moderation path. The caller owns the surrounding transaction so report status and the
-   * deletion fact commit atomically. Idempotency is inherited from DeletedMessage(threadId, seq). */
-  async deleteByReportInTx(
+  /** The durable worker uses the same transactional deletion writer as withdrawals. */
+  async deleteByModeration(threadId: number, seq: number) {
+    return this.database.db.transaction(async (tx) => ({
+      threadId,
+      messageSeq: seq,
+      deletionSeq: await this.deleteByModerationInTx(tx, threadId, seq),
+    }));
+  }
+
+  /** Callers own the transaction; the source write admits durable content projection. */
+  async deleteByModerationInTx(
     tx: DatabaseTransaction,
     threadId: number,
     seq: number,
@@ -297,37 +270,70 @@ export class DeletedMessageService {
     const threadLock = await DeletedMessageService.lockThreadInTx(tx, threadId);
     if (!threadLock)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'message not found');
-    const locked = await tx.execute(sql`
-      SELECT id, "isDeleted"
-      FROM "Message"
-      WHERE "threadId" = ${threadId} AND seq = ${seq}
-      FOR UPDATE
-    `);
-    const target = locked.rows[0] as
-      | { id: string; isDeleted: boolean }
-      | undefined;
-    if (!target) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'message not found');
-    }
+    const target = await tx.query.message.findFirst({
+      where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
+      columns: { contentType: true },
+    });
+    if (
+      !target ||
+      target.contentType === 'SYSTEM'
+    )
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'message cannot be deleted',
+      );
+    return this.removeInTx(
+      tx,
+      threadLock,
+      seq,
+      MessageDeleteType.MODERATION_REMOVAL,
+    );
+  }
 
+  private async removeInTx(
+    tx: DatabaseTransaction,
+    threadLock: ThreadContentLock,
+    seq: number,
+    type: MessageDeleteType,
+    onFirstDeletion?: (tx: DatabaseTransaction) => Promise<void>,
+  ): Promise<number> {
+    const { threadId } = threadLock;
     const now = new Date();
-    await tx
-      .update(message)
-      .set({ isDeleted: true, updatedAt: now })
-      .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
     const deletion = await DeletedMessageService.ensureFactInTx(tx, {
       threadLock,
       threadId,
       messageSeq: seq,
-      type: MessageDeleteType.MODERATION_REMOVAL,
+      type,
       updatedAt: now,
     });
-    await ClientThreadContentHeadWriter.publishTombstone(
-      tx,
-      threadId,
-      deletion.deletionSeq,
-    );
-
+    if (deletion.created) {
+      await tx
+        .update(message)
+        .set({ isDeleted: true, updatedAt: now })
+        .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
+      // Charge withdrawal quota only once, in the deletion transaction.
+      if (onFirstDeletion) await onFirstDeletion(tx);
+      const head = await tx.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+        columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+      });
+      if (!head) throw new Error('Deletion thread disappeared');
+      await enqueueMessageFanoutsInTx(tx, threadLock, {
+        threadId,
+        messageEndSeq: head.curSeq,
+        tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+      });
+    }
+    await tx
+      .update(messageReport)
+      .set({ isDeleted: true, updatedAt: now })
+      .where(
+        and(
+          eq(messageReport.threadId, threadId),
+          eq(messageReport.seq, seq),
+          eq(messageReport.isDeleted, false),
+        ),
+      );
     return deletion.deletionSeq;
   }
 
@@ -521,7 +527,6 @@ export class DeletedMessageService {
           .onConflictDoNothing();
     }
     let localDeletionSeq: number | null = null;
-    let systemMessage: PublicMessage | null = null;
     if (target) {
       if (
         target.contentType === ContentType.SYSTEM ||
@@ -554,42 +559,16 @@ export class DeletedMessageService {
         ? localDeletion.deletionSeq
         : null;
       if (localDeletion.created) {
-        systemMessage = (
-          await this.messages.writeSystemMessageInTx(
-            tx,
-            params.threadId,
-            params.type === MessageDeleteType.USER_RETRACTION
-              ? SystemMessageType.MESSAGE_WITHDRAWN
-              : SystemMessageType.MESSAGES_MODERATED,
-            undefined,
-            params.type === MessageDeleteType.MODERATION_REMOVAL
-              ? { count: 1, threadLock }
-              : {
-                  threadLock,
-                  subjectAddress: {
-                    account: target.creatorAccount,
-                    domain: target.creatorDomain,
-                    namespaceId:
-                      target.creatorDomain === 'local'
-                        ? 0
-                        : target.sourceNamespaceId,
-                  },
-                  actorAddress: {
-                    account: target.creatorAccount,
-                    domain: target.creatorDomain,
-                    namespaceId:
-                      target.creatorDomain === 'local'
-                        ? 0
-                        : target.sourceNamespaceId,
-                  },
-                },
-          )
-        ).message;
-        await ClientThreadContentHeadWriter.publishTombstone(
-          tx,
-          params.threadId,
-          localDeletion.deletionSeq,
-        );
+        const head = await tx.query.messageThread.findFirst({
+          where: eq(messageThread.id, params.threadId),
+          columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+        });
+        if (!head) throw new Error('Deletion thread disappeared');
+        await enqueueMessageFanoutsInTx(tx, threadLock, {
+          threadId: params.threadId,
+          messageEndSeq: head.curSeq,
+          tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+        });
       }
       await tx
         .delete(federatedMessageTombstone)
@@ -656,7 +635,6 @@ export class DeletedMessageService {
       ? {
           deletionSeq: localDeletionSeq,
           messageSeq: target.seq,
-          systemMessage: systemMessage!,
         }
       : null;
   }

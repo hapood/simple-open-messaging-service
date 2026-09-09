@@ -202,10 +202,7 @@ type CallFrame =
       operation: 'ringing' | 'accepted' | 'declined' | 'cancelled' | 'missed';
     })
   | (CallFrameBase & { operation: 'signal'; payload: CallSignalPayload })
-  | (CallFrameBase & {
-      operation: 'connected';
-      payload: { startedAt: EpochMilliseconds };
-    })
+  | (CallFrameBase & { operation: 'connected' })
   | (CallFrameBase & { operation: 'video-upgraded' })
   | (CallFrameBase & {
       operation: 'ended';
@@ -223,7 +220,7 @@ nor change its current type. Receivers MUST NOT infer a business-type change
 from SDP, ICE, or `video-state`. v1 does not permit downgrade to AUDIO.
 
 `payload` is an operation-specific closed object. It is required only for
-`incoming`, `signal`, `connected`, and `ended`, and forbidden for every other
+`incoming`, `signal`, and `ended`, and forbidden for every other
 operation. The optional members of `RTCIceCandidateInit` retain the defaults
 and semantics defined by the
 [WebRTC 1.0 `RTCIceCandidateInit` dictionary](https://www.w3.org/TR/webrtc/#dom-rtcicecandidateinit);
@@ -257,7 +254,7 @@ confirmation, not an additional lifecycle stage.
 | `none`      | No accepted `incoming`                                        | No active binding; another op cannot create one.                        |
 | `ringing`   | Accepted `incoming`                                           | Binding exists and awaits acceptance; endpoint alerting is not implied. |
 | `accepted`  | Accepted `accepted`                                           | The callee accepted; SDP/ICE negotiation may continue.                  |
-| `connected` | Accepted callee `connected(startedAt)`                        | The authoritative media connection was established.                     |
+| `connected` | Accepted callee `connected`                        | The authoritative media connection was established.                     |
 | `terminal`  | First valid terminal frame or authoritative local termination | Irreversible; late-frame handling follows Section 10.                  |
 
 The `ringing` operation is an advisory acknowledgement that the callee
@@ -286,7 +283,7 @@ make both servers change stage simultaneously.
 | `incoming`       | caller → callee  | `none`                        | Create `ringing`           | Identical binding in an active stage          |
 | `ringing`        | callee → caller  | `ringing`                     | Record advisory fact       | Already recorded, accepted, or connected      |
 | `accepted`       | callee → caller  | `ringing`                     | Enter `accepted`           | Already accepted or connected                 |
-| `connected`      | callee → caller  | `accepted`                    | Enter `connected`          | Already connected; preserve first `startedAt` |
+| `connected`      | callee → caller  | `accepted`                    | Enter `connected`          | Already connected; no repeated effects |
 | `video-upgraded` | caller → callee  | Connected and currently AUDIO | Change type to VIDEO       | Initially AUDIO and already upgraded          |
 | `declined`       | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
 | `missed`         | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
@@ -314,13 +311,10 @@ cancelled before observing acceptance. After the caller server has accepted
 The callee endpoint subsystem MUST report connection only after its
 `RTCPeerConnection.connectionState` first becomes `connected`; candidate
 discovery, successful SDP application, or the start of ICE or DTLS negotiation
-alone is insufficient. The callee server assigns
-`connected.payload.startedAt` when it first accepts that endpoint indication,
-expressed as an integer in `0..9007199254740991`, and MUST preserve that value
-on every retry. The timestamp is diagnostic and MUST NOT determine frame
-ordering, authorization, expiry, or race resolution. Only the callee server
-sends `connected`; the caller endpoint subsystem does not create a second
-federation timestamp.
+alone is insufficient. Only the callee server sends `connected`. The frame
+asserts the connection fact and carries no payload or event timestamp.
+Ordering, authorization, expiry, and race resolution follow the rules in this
+profile.
 
 | `endReason` | Permitted stage           | Meaning                                                                       |
 | ----------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -392,10 +386,10 @@ Caller endpoint    Caller server          Callee server     Callee endpoint
       |<-- local answer -|-------- 200 ------->|                  |
       |                  |                     |<-- media up -----|
       |                  |                     | [connect pending]|
-      |                  |<-- connected(t) ----|                  |
+      |                  |<-- connected ----|                  |
       |                  | [connected]         |                  |
       |                  |-------- 200 ------->| [connected]      |
-      |<-- connected(t) -|                     |                  |
+      |<-- connected -|                     |                  |
 ```
 
 An initial offer MAY be sent after `incoming` succeeds and before acceptance.
@@ -468,7 +462,7 @@ The following cases use A for the caller server and B for the callee server.
 | B commits its connection timeout before accepting an endpoint connection indication | B is terminal and MUST NOT originate a late `connected`. It sends `ended(timeout)` under the existing ordering rules; no endpoint event revives the call. |
 
 Each order is the relevant server's local processing order, not a comparison of
-`startedAt` values or clocks between servers. A late HTTP success MUST NOT
+clocks between servers. A late HTTP success MUST NOT
 revive a call that has already terminated locally.
 
 ## 7. Lifecycle idempotency
@@ -483,8 +477,8 @@ or `missed` after acceptance.
   `callId`, and initial `mediaType` are identical. Otherwise it is a callId
   collision and returns `FEDERATION_MALFORMED`. Once accepted, an identical
   retry remains successful even if local admission policy later changes.
-- The first accepted `connected.startedAt` is authoritative. A duplicate is a
-  no-op and does not compare or replace the value.
+- The first accepted `connected` applies the connection transition. A duplicate
+  is a no-op and MUST NOT repeat connection effects or reset local timing.
 - A repeated `video-upgraded` is a no-op only for a call initially created as
   AUDIO and already upgraded. It is malformed for a call initially VIDEO.
 - The first terminal event wins. A later terminal frame is a no-op and does not
@@ -596,8 +590,7 @@ The caller's first terminal decision fixes the authoritative result using the
 business type it has confirmed at that point. If upgrade confirmation precedes
 termination, the final type is VIDEO; if termination precedes confirmation of
 an AUDIO call's upgrade, the final type remains AUDIO. A late success response
-MUST NOT revise that result. The callee's earlier observation of VIDEO does not
-authorize a competing terminal record. This is the protocol business type, not
+MUST NOT revise that lifecycle result. This is the protocol business type, not
 an assertion about every media track that may have been negotiated.
 
 Disabling a camera sends only `video-state` and does not downgrade the business
@@ -673,7 +666,7 @@ The post-acceptance connection deadline waits for the following evidence:
 
 | Server | Evidence that completes the connection deadline |
 | --- | --- |
-| Callee server | Its first accepted endpoint connection indication satisfying Section 5, which supplies the observation for `connected.startedAt`. |
+| Callee server | Its first accepted endpoint connection indication satisfying Section 5, which supplies the local connection observation. |
 | Caller server | Its first validation and commit of the callee's `connected` frame. The caller endpoint's own connection indication is not a substitute. |
 
 Each server MUST cease its connection deadline when it accepts that evidence,
@@ -779,7 +772,7 @@ is success. Implementations MUST NOT branch on human-readable `message` text.
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ringing"}
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"accepted"}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"connected","payload":{"startedAt":1700000000100}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"connected"}
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ended","payload":{"endReason":"completed"}}
 ```
 

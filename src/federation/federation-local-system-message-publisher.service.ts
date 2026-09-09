@@ -1,82 +1,32 @@
 import type { AccountTarget } from '../user/account-address.js';
-import { Injectable, Logger } from '@nestjs/common';
-import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { Injectable } from '@nestjs/common';
 import {
   MessageService,
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 
 export interface FederationLocalSystemMessage {
   actorUserId: AccountTarget;
   threadId: number;
-  type: SystemMessageType;
+  type: Exclude<SystemMessageType, 'CALL_ENDED'>;
   subjectUserId?: AccountTarget;
   message?: PublicMessage;
-  recipientUserIds?: number[];
 }
 
-/** Publishes committed federation timeline notices to their local recipients. */
+/** Writes missing local timeline notices. Every system-message write admits its
+ * device fanout in the same transaction; already committed notices need no work. */
 @Injectable()
 export class FederationLocalSystemMessagePublisher {
-  private readonly logger = new Logger(
-    FederationLocalSystemMessagePublisher.name,
-  );
-
-  constructor(
-    private readonly messages: MessageService,
-    private readonly participants: AccountThreadStateService,
-    private readonly clientStateFeed: ClientStateFeedService,
-  ) {}
+  constructor(private readonly messages: MessageService) {}
 
   async publish(status: FederationLocalSystemMessage): Promise<void> {
-    if (status.message && status.recipientUserIds) {
-      this.clientStateFeed.notifyFeedUpdates(
-        await Promise.all(
-          status.recipientUserIds.map(async (userId) => ({
-            userId,
-            feedId: await this.clientStateFeed.readEndId(userId),
-          })),
-        ),
-      );
-      return;
-    }
-    const message = await this.messages.tryWriteSystemMessage(
+    if (status.message) return;
+    await this.messages.tryWriteSystemMessage(
       status.threadId,
       status.type,
       status.subjectUserId,
-      {
-        actorUserId: status.actorUserId,
-        recipientUserIds: status.recipientUserIds,
-      },
+      { actorUserId: status.actorUserId },
     );
-    if (!message) return;
-    try {
-      const recipients = status.recipientUserIds
-        ? status.recipientUserIds.map((userId) => ({ userId, blocked: false }))
-        : await this.participants.getActiveParticipantUserIds(status.threadId);
-      const wakeUserIds = recipients
-        .filter(
-          (recipient) =>
-            !recipient.blocked &&
-            (status.recipientUserIds !== undefined ||
-              recipient.userId !== status.actorUserId),
-        )
-        .map((recipient) => recipient.userId);
-      this.clientStateFeed.notifyFeedUpdates(
-        await Promise.all(
-          wakeUserIds.map(async (userId) => ({
-            userId,
-            feedId: await this.clientStateFeed.readEndId(userId),
-          })),
-        ),
-      );
-    } catch (error) {
-      this.logger.error(
-        `failed to publish local system message ${status.type} for thread ${status.threadId}: ${(error as Error).message}`,
-        (error as Error).stack,
-      );
-    }
   }
 }

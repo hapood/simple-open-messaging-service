@@ -222,7 +222,6 @@ describe('ForwardBundleService', () => {
       JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
       '[File set · 2]',
     ],
-    [ContentType.CALL, JSON.stringify({ outcome: 'missed' }), '[Missed call]'],
   ])(
     'uses the shared %s message preview in forward-card summaries',
     (contentType, content, expected) => {
@@ -457,7 +456,7 @@ describe('ForwardBundleService', () => {
     });
   });
 
-  it.each([ContentType.CALL])(
+  it.each([ContentType.SYSTEM])(
     'rejects direct forwarding of system message type %s',
     async (contentType) => {
       const service = new ForwardBundleService(

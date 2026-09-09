@@ -1,0 +1,92 @@
+export type CallMediaType = 'AUDIO' | 'VIDEO';
+export const CALL_OUTCOMES = [
+  'completed',
+  'cancelled',
+  'declined',
+  'missed',
+  'failed',
+  'unreachable',
+] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+export interface CallEndedContent {
+  type: 'CALL_ENDED';
+  callId: string;
+  caller: { account: string; domain: string };
+  callee: { account: string; domain: string };
+  mediaType: CallMediaType;
+  outcome: CallOutcome;
+  initiatedAt: number;
+  connectedAt?: number;
+  endedAt: number;
+}
+
+/** Closed server-authored terminal system-message content. */
+export function parseCallEndedContent(
+  content: string,
+): CallEndedContent | null {
+  try {
+    const body: unknown = JSON.parse(content);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const v = body as Record<string, unknown>;
+    if (
+      Object.keys(v).some(
+        (k) =>
+          ![
+            'type',
+            'callId',
+            'caller',
+            'callee',
+            'mediaType',
+            'outcome',
+            'initiatedAt',
+            'connectedAt',
+            'endedAt',
+          ].includes(k),
+      )
+    )
+      return null;
+    const time = (x: unknown): x is number =>
+      Number.isSafeInteger(x) && (x as number) >= 0;
+    const address = (x: unknown): boolean => {
+      if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
+      const a = x as Record<string, unknown>;
+      return (
+        Object.keys(a).length === 2 &&
+        typeof a['account'] === 'string' &&
+        a['account'].length > 0 &&
+        typeof a['domain'] === 'string' &&
+        a['domain'].length > 0
+      );
+    };
+    if (
+      v['type'] !== 'CALL_ENDED' ||
+      typeof v['callId'] !== 'string' ||
+      !v['callId'] ||
+      !address(v['caller']) ||
+      !address(v['callee']) ||
+      !['AUDIO', 'VIDEO'].includes(v['mediaType'] as string) ||
+      !CALL_OUTCOMES.includes(v['outcome'] as CallOutcome) ||
+      !time(v['endedAt'])
+    )
+      return null;
+    if (!time(v['initiatedAt']) || v['initiatedAt'] > v['endedAt']) return null;
+    if (
+      v['connectedAt'] !== undefined &&
+      (!time(v['connectedAt']) ||
+        v['connectedAt'] > v['endedAt'] ||
+        (time(v['initiatedAt']) && v['connectedAt'] < v['initiatedAt']))
+    )
+      return null;
+    if (v['outcome'] === 'completed' && v['connectedAt'] === undefined)
+      return null;
+    if (
+      !['completed', 'failed'].includes(v['outcome'] as string) &&
+      v['connectedAt'] !== undefined
+    )
+      return null;
+    return v as unknown as CallEndedContent;
+  } catch {
+    return null;
+  }
+}

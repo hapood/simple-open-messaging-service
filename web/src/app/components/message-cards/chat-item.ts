@@ -86,8 +86,6 @@ interface ChatMessageBase {
   avatarDomain?: string;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
-  /** Parsed CALL content. Present exactly when contentType is CALL. */
-  callContent?: CallMessageContent;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
@@ -147,7 +145,6 @@ export type AuthoredContentType =
   | 'GALLERY'
   | 'LINK'
   | 'CONTACT_CARD'
-  | 'CALL'
   | 'FORWARD';
 
 /** A user-authored message always carries a fully resolved User identity key. */
@@ -180,4 +177,3 @@ export type ChatTextSegment =
  * between adjacent messages (see date-format.ts). The ChatItemData alias is kept for interface stability.
  */
 export type ChatItemData = ChatMsgData;
-import type { CallMessageContent } from '../../../../../shared/call-message-content';

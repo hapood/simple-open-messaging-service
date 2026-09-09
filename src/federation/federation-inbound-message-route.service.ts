@@ -286,7 +286,7 @@ export class FederationInboundMessageRouteService {
           AND m."sourceNamespaceId" = ${namespaceId}
           AND m."originSeq" = ${messageSeq}
           AND m."creatorDomain" = ${sourceDomain}
-          AND m."contentType" NOT IN ('SYSTEM', 'CALL')
+          AND m."contentType" <> 'SYSTEM'
         LIMIT 1
       `);
       const target = targets.rows[0];

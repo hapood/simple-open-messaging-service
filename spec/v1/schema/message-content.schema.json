@@ -188,45 +188,6 @@
       },
       "additionalProperties": false
     },
-    "call": {
-      "type": "object",
-      "required": ["mediaType", "outcome", "endedAt"],
-      "properties": {
-        "mediaType": { "enum": ["AUDIO", "VIDEO"] },
-        "outcome": {
-          "enum": [
-            "completed",
-            "cancelled",
-            "declined",
-            "missed",
-            "failed",
-            "unreachable"
-          ]
-        },
-        "startedAt": {
-          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-        },
-        "endedAt": {
-          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "outcome": {
-                "enum": ["cancelled", "declined", "missed", "unreachable"]
-              }
-            },
-            "required": ["outcome"]
-          },
-          "then": {
-            "not": { "required": ["startedAt"] }
-          }
-        }
-      ],
-      "additionalProperties": false
-    },
     "forward": {
       "type": "object",
       "required": ["bundleId"],
@@ -279,10 +240,6 @@
       "then": {
         "properties": { "content": { "$ref": "#/$defs/contactCard" } }
       }
-    },
-    {
-      "if": { "properties": { "contentType": { "const": "CALL" } } },
-      "then": { "properties": { "content": { "$ref": "#/$defs/call" } } }
     },
     {
       "if": { "properties": { "contentType": { "const": "FORWARD" } } },

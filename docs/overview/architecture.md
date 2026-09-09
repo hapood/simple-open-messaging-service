@@ -50,12 +50,11 @@ feature modules and controllers. Modules marked `@Global()` are shared app-wide.
 | **AuthModule**                       | [src/auth/](../../src/auth/)                                 | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
 | **UserModule**                       | [src/user/](../../src/user/)                                 | `UserService` — profile, registration, and friend/block helpers                                                                                                                                                                                                           |
 | **GatewayModule**                    | [src/gateway/](../../src/gateway/)                           | SSE downlink (`EventsController` + `SseService`): connection registry, heartbeat, `HELLO`, durable-feed/media wake-ups, ephemeral call coordination, and `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for `HELLO`                                        |
-| **MessageModule**                    | [src/message/](../../src/message/)                           | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` publishes compacted client content heads, coalesces their wake-ups, and dispatches offline Push                                                           |
+| **MessageModule**                    | [src/message/](../../src/message/)                           | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; durable thread fanout publishes compacted thread-feed snapshots and dispatches client wakes                                                           |
 | **GroupModule**                      | [src/group/](../../src/group/)                               | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
 | **AccountThreadStateModule**         | [src/account-thread-state/](../../src/account-thread-state/) | `AccountThreadStateService` (local AccountThreadState state and pair-derived P2P endpoints) + `ThreadAccessGuard`                                                                                                                                                         |
 | **RelationshipModule**               | [src/relationship/](../../src/relationship/)                 | `RelationshipService` — directed user/group relationship facts, pair reconciliation and request projections; delegates roster writes to AccountThreadStateService                                                                                                         |
 | **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                     | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
-| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)           | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
 | **UploadModule**                     | [src/upload/](../../src/upload/)                             | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), and validated byte-preserving avatar storage                                                               |
 | **PushModule**                       | [src/push/](../../src/push/)                                 | `PushService` — FCM (Android) / Web Push dispatch; suppresses only the exact device session that owns a live SSE connection                                                                                                                                               |
 | **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                     | Server-to-server protocol: identity/signatures, directional recognition, bounded Health scheduling, durable tasks, compacted per-peer state feed, message feeds, and media/message pull                                                                                   |
@@ -122,7 +121,7 @@ The web client is an Angular (zoneless + Signal-driven) SPA. It runs in three sh
 **Repository layer (3-tier: UI ↔ repositories ↔ backend)** [web/src/app/services/](../../web/src/app/services/)
 
 - `WebdbService` — IndexedDB primitive, per-user DB (`soms-webdb-u<userId>`), object stores for messages / threads / avatars / profiles / meta.
-- `MessageRepository` (`message-repository.service.ts`) — sole issuer of message reads (`query-messages`). It advances each thread's query ceiling from durable `THREAD_CONTENT_HEAD` items and reads/writes through `WebdbService`.
+- `MessageRepository` (`message-repository.service.ts`) — sole issuer of message reads (`query-messages`). It advances each thread's query ceiling from committed thread-feed snapshots and reads/writes through `WebdbService`.
 - `ThreadRepository` (`thread-store.service.ts`) — conversation/thread tier. The web client is **local-first**: on chat open it renders from IndexedDB, then reconciles with SSE + HTTP in the background (the production loading skeleton is only a cold-cache fallback).
 
 **Realtime transport** — `WebsocketService` (filename retained) is now a **facade** over three pluggable `RealtimeTransport` implementations ([realtime-transport.ts](../../web/src/app/services/realtime-transport.ts)): `WorkerSseTransport` (browser — SSE parsed inside `sse.worker.ts`, a Web Worker, off the main thread), `RustChannelSseTransport` (Tauri desktop — Rust-side supervisor), `NativeEventTransport` (Android — Kotlin `/events` bridge).
@@ -190,7 +189,7 @@ Authentication reuses the same credential as HTTP — the global `SessionAuthGua
 
 ### HELLO handshake
 
-On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, the read/attention revision, and `activeCall`. The compacted state feed includes profile, relationship, roster, request, client-state, and paired `THREAD_CONTENT_HEAD` entries. HELLO is load-bearing because the client drains that feed from its one durable local state cursor.
+On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, `threadFeedEndId`, and `activeCall`. Metadata and relationship updates use the state feed; content, unread, mention, and preview snapshots use the thread feed. Each feed advances its own durable local cursor after a complete page commit.
 
 ### Heartbeat and Liveness
 
@@ -220,7 +219,7 @@ until emitted rather than being limited to one fixed timer window.
 
 The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, the client catches up via HTTP
 from its local Client State Feed cursor through `HELLO.stateFeedEndId`, then pulls per-thread message bodies up
-to the ceilings in `THREAD_CONTENT_HEAD`. The native client retains SSE out of process and replays HELLO on wake.
+to the message/tombstone ceilings in thread-feed snapshots. The native client retains SSE out of process and replays HELLO on wake.
 
 ## Core Business Flows
 
@@ -273,46 +272,33 @@ chatbox opens.
 
 ### Message Sending
 
-`POST /send-message` (`{ threadId, content, contentType?, clientMessageId? }`) → `MessageService.writeMsgToThread()`:
+Message writes allocate their thread sequence and admit one durable thread-fanout
+task in the same source transaction. The fanout executor processes the current
+audience, checkpoints progress, and can yield to newer work. Each recipient's
+transaction reuses the shared head writer to publish content ends, unread count,
+mention position, and database preview references. Blocked recipients are skipped.
+Committed thread-feed heads wake clients through SSE or device Push.
 
-1. `ThreadAccessGuard` resolves the retained member/local participant and reads current authorization from `RelationshipPair.active`. The send transaction checks the same fact again under its transaction boundary.
-2. Allocates a per-thread `seq` atomically (`UPDATE curSeq = curSeq + 1 RETURNING`) inside the create tx — gapless, no retry loop.
+The message Push payload is `NEW_MESSAGE` plus `threadFeedEndId`, not a separate
+notification snapshot. Page workers, native Rust, and the Push Service Worker use
+the common thread-feed drain. Ordinary sync requests one preview; notification
+sync requests up to five and stores only the newest preview. A target already
+consumed by ordinary synchronization does not produce a second reminder.
 
-### Read HWM and unread badges
+### Read positions and unread badges
 
-The message viewport records a monotonically increasing local read HWM only after a message is fully visible
-and the viewport has been stable for 500 ms. It does not calculate or optimistically clear unread badges.
-On chat close or thread switch, the client submits that HWM to `POST /thread/mark-read`; one PostgreSQL
-statement takes the maximum with the stored cursor and returns the authoritative capped count and mention set.
+The viewport advances a local optimistic read position and submits explicit read
+requests through the existing throttled path. The backend processes read changes
+through durable tasks and publishes the resulting thread-feed snapshot. Clients
+reconcile its server count using the known message-slot interval between server
+and optimistic read positions, including tomb slots and excluding own messages.
+Server read positions correct the optimistic projection rather than blindly
+replacing it. There is no pending-read barrier or implicit read on message send.
 
-While that request is in flight, the thread-list badge breathes and the client buffers only the newest
-`THREAD_CONTENT_HEAD` for that thread. After the response (or failure), it applies the buffered durable head,
-so the server remains the only unread-count authority.
-
-Two consistency boundaries are deliberate:
-
-- A crash or OS kill before normal chat close may lose the in-memory local HWM; restart uses server state.
-- Read state is not broadcast by a dedicated SSE. Other devices converge on their next existing unread pull,
-  reconnect, or restart rather than clearing immediately.
-
-3. `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, then routes the committed
-   Client State Feed high-water marks through the per-account SSE throttle. A registered device session receives
-   the `NEW_MESSAGE` Push wake only when that exact session has no live SSE connection. An online browser page or
-   native service instead owns notification aggregation from `STATE_FEED_UPDATED`; other devices are unaffected.
-   The message wake is exactly `{ type, messageEndSeq }`; Push remains separate from the SSE protocol and carries
-   no durable state authority. Incoming-call Push uses the same exact-session ownership rule while still ringing
-   every other eligible offline device.
-   Browser pages continuously checkpoint their successfully processed foreground State Feed cursor in a
-   service-worker-visible IndexedDB. When a Push races an SSE reconnect, the worker asks a responsive page with
-   healthy SSE to claim notification aggregation; otherwise it queries from that checkpoint itself. Android
-   applies the same ownership rule using its SQLite notification cursor and native realtime service. Session
-   revocation and automatic expiry remove the session's Push registration in the same database transaction.
-
-   Notification queries are deltas: each returned descriptor adds or replaces one conversation card, while
-   an empty result changes nothing. Clients therefore never erase unrelated conversation cards when
-   processing a repeated or partially overlapping wake-up.
-
-4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
+Notification presentation consumes committed projections. Real login and logout
+clear message notifications and pending navigation; ordinary cold restoration
+preserves notification taps. Task execution checks the account lifetime, but
+notification payloads and pending thread IDs do not carry an epoch.
 
 ### Local System Messages
 
@@ -332,7 +318,7 @@ state-feed synchronization. Client parsing/rendering failures use a generic loca
 
 ### 1:1 Calls
 
-`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` authors a terminal `ContentType.CALL` chat bubble (bilateral). Federated calls relay over signed S2S `/s2s/v1/call`. See the [Android calls client contract](../platform/android/calls.md).
+`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` commits a local `SYSTEM / CALL_ENDED` notice on each participating server. Federated calls relay over signed S2S `/s2s/v1/call`. See the [Android calls client contract](../platform/android/calls.md).
 
 ### Federation
 

@@ -1,6 +1,58 @@
 {
   "vectors": [
     {
+      "name": "forward bundle rejects removed CALL entry",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "value": {
+        "id": 1,
+        "author": {
+          "account": "alice",
+          "domain": "a.example"
+        },
+        "contentType": "CALL",
+        "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1,\"endedAt\":2}",
+        "sentAt": 2
+      }
+    },
+    {
+      "name": "message query rejects removed CALL content type",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
+            "authorRef": "THREAD_ACCOUNT",
+            "seq": 3,
+            "profileRev": 3,
+            "originSeq": null,
+            "contentType": "CALL",
+            "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
+            "createdAt": 1700000001001,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": 3,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "message content rejects removed CALL type",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "mediaType": "AUDIO",
+          "outcome": "completed",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000001000
+        }
+      }
+    },
+    {
       "name": "forward quotes reject invalid coordinates",
       "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
       "values": [
@@ -410,86 +462,6 @@
       }
     },
     {
-      "name": "call content rejects legacy callType field",
-      "schema": "urn:somfp:v1:message-content",
-      "value": {
-        "contentType": "CALL",
-        "content": {
-          "callType": "AUDIO",
-          "outcome": "completed",
-          "endedAt": 1700000001000
-        }
-      }
-    },
-    {
-      "name": "call content rejects retired status field",
-      "schema": "urn:somfp:v1:message-content",
-      "value": {
-        "contentType": "CALL",
-        "content": {
-          "mediaType": "AUDIO",
-          "status": "completed",
-          "endedAt": 1700000001000
-        }
-      }
-    },
-    {
-      "name": "call content rejects a repeated legacy callSid",
-      "schema": "urn:somfp:v1:message-content",
-      "value": {
-        "contentType": "CALL",
-        "content": {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "mediaType": "AUDIO",
-          "outcome": "completed",
-          "endedAt": 1700000001000
-        }
-      }
-    },
-    {
-      "name": "terminal call content requires endedAt",
-      "schema": "urn:somfp:v1:message-content",
-      "value": {
-        "contentType": "CALL",
-        "content": {
-          "type": "CALL",
-          "mediaType": "AUDIO",
-          "outcome": "completed",
-          "caller": {
-            "account": "alice",
-            "domain": "a.example"
-          },
-          "callee": {
-            "account": "bob",
-            "domain": "b.example"
-          }
-        }
-      }
-    },
-    {
-      "name": "unconnected call outcome rejects duration",
-      "schema": "urn:somfp:v1:message-content",
-      "value": {
-        "contentType": "CALL",
-        "content": {
-          "type": "CALL",
-          "mediaType": "AUDIO",
-          "outcome": "cancelled",
-          "caller": {
-            "account": "alice",
-            "domain": "a.example"
-          },
-          "callee": {
-            "account": "bob",
-            "domain": "b.example"
-          },
-          "startedAt": 1,
-          "endedAt": 2,
-          "durationMs": 1
-        }
-      }
-    },
-    {
       "name": "message page rejects retired page fields",
       "schema": "urn:somfp:v1:message-query",
       "value": {
@@ -553,11 +525,12 @@
       }
     },
     {
-      "name": "connected call requires startedAt",
+      "name": "connected rejects removed timestamp payload",
       "schema": "urn:somfp:v1:call",
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
-        "operation": "connected"
+        "operation": "connected",
+        "payload": { "startedAt": 1700000000100 }
       }
     },
     {
@@ -1081,33 +1054,7 @@
       }
     },
     {
-      "name": "CALL message query rejects null clientMessageId",
-      "schema": "urn:somfp:v1:message-query",
-      "value": {
-        "messages": [
-          {
-            "thread": {
-              "account": "alice",
-              "peerAccount": "bob"
-            },
-            "authorRef": "THREAD_ACCOUNT",
-            "seq": 3,
-            "profileRev": 3,
-            "originSeq": null,
-            "contentType": "CALL",
-            "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
-            "createdAt": 1700000001001,
-            "originCreatedAt": null,
-            "clientMessageId": null,
-            "assets": []
-          }
-        ],
-        "scannedThrough": 3,
-        "hasMore": false
-      }
-    },
-    {
-      "name": "non-CALL message query rejects clientMessageId",
+      "name": "message query rejects publisher-local clientMessageId",
       "schema": "urn:somfp:v1:message-query",
       "value": {
         "messages": [
@@ -1385,9 +1332,6 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "connected",
-        "payload": {
-          "startedAt": 1700000000100
-        },
         "mediaType": "AUDIO"
       }
     },
@@ -1397,9 +1341,6 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "connected",
-        "payload": {
-          "startedAt": 1700000000100
-        },
         "mediaType": "VIDEO"
       }
     },

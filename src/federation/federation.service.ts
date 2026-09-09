@@ -105,7 +105,7 @@ import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
 import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
-import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
+import { FederationGroupLeaveHintService } from './federation-group-leave-hint.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { readCurrentGroupMemberInTx } from '../group-meta/current-group-roster.js';
 import {
@@ -174,7 +174,7 @@ export class FederationService {
     private readonly localSystemMessages: FederationLocalSystemMessagePublisher,
     private readonly peerResources: FederationPeerResourceService,
     private readonly inboundMessageCommits: FederationInboundMessageCommitService,
-    private readonly outboundMessageSignals: FederationOutboundMessageSignalService,
+    private readonly groupLeaveHints: FederationGroupLeaveHintService,
     private readonly threadQueryDenials: FederationThreadQueryDenialService,
     private readonly upload: UploadService,
     private readonly participantService: AccountThreadStateService,
@@ -207,46 +207,12 @@ export class FederationService {
 
   // ─── durable discovery wake-up routing ─────────────────────────────────────
 
-  async notifyOnSend(
-    author: S2SAddress,
-    threadId: number,
-    originSeq: number,
-  ): Promise<void> {
-    await this.outboundMessageSignals.signalMessage(
-      threadId,
-      author,
-      originSeq,
-    );
-  }
-
   async notifyGroupLeave(
     threadId: number,
     leaverUserId: number,
   ): Promise<void> {
     void leaverUserId;
-    await this.outboundMessageSignals.notifyGroupLeave(threadId);
-  }
-
-  async signalOutbound(
-    threadId: number,
-    authorAddress: S2SAddress,
-    latestSeq: number,
-    fetchedFromDomain: string | undefined,
-  ): Promise<void> {
-    await this.outboundMessageSignals.signalMessage(
-      threadId,
-      authorAddress,
-      latestSeq,
-      fetchedFromDomain,
-    );
-  }
-
-  async signalDeletionOutbound(
-    threadId: number,
-    messageSeq: number,
-  ): Promise<void> {
-    void messageSeq;
-    await this.outboundMessageSignals.signalDeletion(threadId);
+    await this.groupLeaveHints.notifyGroupLeave(threadId);
   }
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
@@ -1137,8 +1103,7 @@ export class FederationService {
 
   /** POST /s2s/v1/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
    *  to the peer server hosting the call's other participant. Awaitable so the caller's `initiate` can
-   *  detect a ring failure (→ the `unreachable` terminal bubble). The persisted CALL record rides the
-   *  pull-based message sync, NOT this frame. `peerDomain` is the server hosting the foreign participant. */
+   *  detect a ring failure. Terminal history is generated independently on each local server. `peerDomain` is the server hosting the foreign participant. */
   async sendCallFrame(
     params: OutboundCallFrameParams,
     peerDomain: string,
@@ -1297,10 +1262,9 @@ export class FederationService {
   private async publishLocalSystemMessage(status: {
     actorUserId: number;
     threadId: number;
-    type: SystemMessageType;
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>;
     subjectUserId?: number;
     message?: PublicMessage;
-    recipientUserIds?: number[];
   }): Promise<void> {
     await this.localSystemMessages.publish(status);
   }
@@ -1414,16 +1378,13 @@ export class FederationService {
       response: FederationThreadResourceResponse<FederationMessageTombstoneQueryPage>;
       frozenTargetSeq: number;
     },
-  ): Promise<{ publish: () => Promise<void> }> {
+  ): Promise<{
+    publish: () => Promise<void>;
+  }> {
     const effect =
       await this.inboundMessageCommits.applyTombstonesInTransaction(tx, params);
     return {
       publish: async () => {
-        await this.notifyCurrentClientStateFeedHeads(effect.recipientUserIds);
-        if (effect.relayDeletion)
-          await this.outboundMessageSignals.signalDeletion(
-            params.response.threadId,
-          );
         await this.inboundMessageCommits.publishSatisfiedQuoteDependencies(
           effect.quoteDependencies,
         );
@@ -1441,8 +1402,7 @@ export class FederationService {
   ): Promise<MissedPageEffect[]> {
     return this.inboundMessagePages.apply(tx, domain, items, token, options);
   }
-  /** Publish only committed message-query effects. Client wake hints go through the shared per-account
-   * state-feed throttler; pending media waits until promotion commits its READY message. */
+  /** Publish ancillary work only; message and tombstone fanout is admitted in the source transaction. */
   async publishMessageQueryEffects(
     domain: string,
     effects: MissedPageEffect[],
@@ -1462,8 +1422,6 @@ export class FederationService {
         ).catch(() => undefined);
         continue;
       }
-      if (!effect.historical)
-        await this.notifyCurrentClientStateFeedHeads(effect.recipients);
       if (
         this.config.forwardedResourcePolicy === 'rebuild' &&
         effect.localForwardBundleId &&
@@ -1473,23 +1431,6 @@ export class FederationService {
           effect.localForwardBundleId,
           (url) => this.linkPreview.buildCardContent(url),
         );
-      }
-      if (!effect.historical) {
-        void this.signalOutbound(
-          effect.threadId,
-          {
-            account: effect.message.creatorAccount!,
-            domain: effect.message.creatorDomain!,
-          },
-          effect.message.seq,
-          domain,
-        ).catch(() => undefined);
-        if (effect.message.isDeleted) {
-          void this.signalDeletionOutbound(
-            effect.threadId,
-            effect.message.seq,
-          ).catch(() => undefined);
-        }
       }
       if (
         this.profileResolutions &&
@@ -1521,18 +1462,6 @@ export class FederationService {
         );
       }
     }
-  }
-
-  private async notifyCurrentClientStateFeedHeads(
-    userIds: readonly number[],
-  ): Promise<void> {
-    const updates = await Promise.all(
-      [...new Set(userIds)].map(async (userId) => ({
-        userId,
-        feedId: await this.clientStateFeed.readEndId(userId),
-      })),
-    );
-    this.clientStateFeed.notifyFeedUpdates(updates);
   }
 
   private assertMissedAssetDescriptors(

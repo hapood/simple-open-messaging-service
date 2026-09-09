@@ -55,7 +55,6 @@ export const contentType = pgEnum('ContentType', [
   'AUDIO',
   'LINK',
   'CONTACT_CARD',
-  'CALL',
   'FORWARD',
   // Phase 7: multi-asset bundle. Appended last so ALTER TYPE ADD VALUE keeps enum sort order.
   'GALLERY',
@@ -94,8 +93,10 @@ export const durableTaskKind = pgEnum('DurableTaskKind', [
   'PROJECTION',
 ]);
 export const durableTaskScopeType = pgEnum('DurableTaskScopeType', [
+  'THREAD',
   'USER_PAIR',
   'GROUP',
+  'ACCOUNT_THREAD',
 ]);
 export const durableTaskStatus = pgEnum('DurableTaskStatus', [
   'PENDING',
@@ -110,11 +111,6 @@ export const durableTaskStatus = pgEnum('DurableTaskStatus', [
 export const messageDeleteType = pgEnum('MessageDeleteType', [
   'USER_RETRACTION',
   'MODERATION_REMOVAL',
-]);
-export const messageReportStatus = pgEnum('MessageReportStatus', [
-  'PENDING',
-  'UPHELD',
-  'REJECTED',
 ]);
 export const fileSyncDirection = pgEnum('FileSyncDirection', [
   'OUTBOUND',
@@ -321,7 +317,7 @@ export const account = pgTable(
     mustChangePassword: boolean().default(false).notNull(),
     disabledAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     stateFeedAllocatedThrough: integer().default(0).notNull(),
-    readRevision: integer().default(0).notNull(),
+    threadFeedEndId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -334,6 +330,7 @@ export const account = pgTable(
       'Account_local_identity_check',
       sql`${table.domain} = 'local' AND ${table.namespaceId} = 0`,
     ),
+    check('Account_threadFeedEndId_check', sql`${table.threadFeedEndId} >= 0`),
     unique('Account_account_key').on(table.account),
     check('Account_account_check', sql`${table.account} NOT LIKE '!%'`),
     check(
@@ -378,7 +375,6 @@ export const durableTask = pgTable(
   'DurableTask',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    parentTaskId: bigint({ mode: 'bigint' }),
     kind: durableTaskKind().notNull(),
     scopeType: durableTaskScopeType().notNull(),
     scopeKey: varchar({ length: 512 }).notNull(),
@@ -390,7 +386,6 @@ export const durableTask = pgTable(
       .default(sql`'{}'::jsonb`)
       .notNull(),
     coalescingKey: varchar({ length: 512 }),
-    supersededByTaskId: bigint({ mode: 'bigint' }),
     status: durableTaskStatus().default('PENDING').notNull(),
     resultCode: integer(),
     lastError: varchar({ length: 1000 }),
@@ -412,27 +407,11 @@ export const durableTask = pgTable(
     uniqueIndex('DurableTask_one_processing_per_scope')
       .on(table.kind, table.scopeKey)
       .where(sql`${table.status} IN ('PROCESSING', 'ASYNC_PROCESSING')`),
-    index('DurableTask_parentTaskId_idx').on(table.parentTaskId),
     index('DurableTask_pending_coalescing_key_idx')
       .on(table.coalescingKey, table.id)
       .where(
         sql`${table.status} = 'PENDING' AND ${table.coalescingKey} IS NOT NULL`,
       ),
-    index('DurableTask_supersededByTaskId_idx').on(table.supersededByTaskId),
-    foreignKey({
-      columns: [table.parentTaskId],
-      foreignColumns: [table.id],
-      name: 'DurableTask_parentTaskId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.supersededByTaskId],
-      foreignColumns: [table.id],
-      name: 'DurableTask_supersededByTaskId_fkey',
-    }).onDelete('restrict'),
-    check(
-      'DurableTask_parent_order_check',
-      sql`${table.parentTaskId} IS NULL OR ${table.parentTaskId} < ${table.id}`,
-    ),
     check('DurableTask_scope_key_check', sql`length(${table.scopeKey}) > 0`),
     check(
       'DurableTask_task_type_check',
@@ -456,15 +435,7 @@ export const durableTask = pgTable(
     ),
     check(
       'DurableTask_supersession_check',
-      sql`(
-        ${table.status} = 'SUPERSEDED'
-        AND ${table.supersededByTaskId} IS NOT NULL
-        AND ${table.supersededByTaskId} > ${table.id}
-        AND ${table.coalescingKey} IS NOT NULL
-      ) OR (
-        ${table.status} <> 'SUPERSEDED'
-        AND ${table.supersededByTaskId} IS NULL
-      )`,
+      sql`${table.status} <> 'SUPERSEDED' OR ${table.coalescingKey} IS NOT NULL`,
     ),
     check(
       'DurableTask_status_timestamps_check',
@@ -540,8 +511,17 @@ export const accountThreadState = pgTable(
     threadId: integer().notNull(),
     /** Local role fact. Null for P2P conversations. */
     role: groupRole(),
-    lastReadSeq: integer(),
-    readRevision: integer().default(0).notNull(),
+    lastReadSeq: integer().default(0).notNull(),
+    threadFeedId: integer().notNull().default(0),
+    messageEndSeq: integer().notNull().default(0),
+    tombstoneEndSeq: integer().notNull().default(0),
+    unreadCount: integer().default(0).notNull(),
+    /** Latest eligible local message sequences, descending; includes tomb slots. */
+    previewSeqs: integer()
+      .array()
+      .notNull()
+      .default(sql`'{}'::integer[]`),
+    lastMentionSeq: integer(),
     muted: boolean().default(false).notNull(),
     /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
     blocked: boolean().default(false).notNull(),
@@ -571,9 +551,33 @@ export const accountThreadState = pgTable(
       table.accountId,
       table.pinned,
     ),
-    index('AccountThreadState_accountId_readRevision_idx').on(
+    uniqueIndex('AccountThreadState_accountId_threadFeedId_key').on(
       table.accountId,
-      table.readRevision,
+      table.threadFeedId,
+    ),
+    check(
+      'AccountThreadState_threadFeedId_check',
+      sql`${table.threadFeedId} > 0`,
+    ),
+    check(
+      'AccountThreadState_messageEndSeq_check',
+      sql`${table.messageEndSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_tombstoneEndSeq_check',
+      sql`${table.tombstoneEndSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_unreadCount_check',
+      sql`${table.unreadCount} >= 0`,
+    ),
+    check(
+      'AccountThreadState_lastReadSeq_check',
+      sql`${table.lastReadSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_lastMentionSeq_check',
+      sql`${table.lastMentionSeq} IS NULL OR ${table.lastMentionSeq} > 0`,
     ),
     foreignKey({
       columns: [table.accountId],
@@ -609,13 +613,6 @@ export const messageThread = pgTable(
     /** Inclusive lower history boundary shared by every viewer of this thread. */
     clearedSeq: integer(),
     deletionSeqAllocatedThrough: integer().default(0).notNull(),
-    lastMessageSeq: integer(),
-    lastMessagePreview: varchar({ length: 255 }),
-    lastMessageAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
     /** Group subject address; null for a P2P thread. */
     groupAccount: varchar({ length: 31 }),
     groupDomain: varchar({ length: 63 }),
@@ -634,6 +631,8 @@ export const messageThread = pgTable(
     federationVersion: integer().default(0).notNull(),
     /** Invalidates federation work captured before an effective authorization transition. */
     authorizationEpoch: integer().default(0).notNull(),
+    /** Whether this thread can admit federation rounds and incoming content heads. */
+    federationRoundsEnabled: boolean().default(false).notNull(),
   },
   (table) => [
     uniqueIndex('MessageThread_group_address_key').on(
@@ -1171,19 +1170,14 @@ export const admin = pgTable(
   ],
 );
 
-/** One user's moderation request for one durable Message row. Message content is deliberately not
- * copied: Message rows are soft-deleted, so the authoritative evidence remains readable to admins. */
+/** A message has one report regardless of who reported it. Soft-deleted reports
+ * can be reactivated while the underlying message remains available. */
 export const messageReport = pgTable(
   'MessageReport',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    messageId: bigint({ mode: 'bigint' }).notNull(),
     threadId: integer().notNull(),
-    messageSeq: integer().notNull(),
-    reporterId: integer().notNull(),
-    status: messageReportStatus().default('PENDING').notNull(),
-    reviewedByAdminId: integer(),
-    reviewedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    seq: integer().notNull(),
+    isDeleted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1192,45 +1186,18 @@ export const messageReport = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('MessageReport_reporterId_messageId_key').using(
-      'btree',
-      table.reporterId.asc().nullsLast().op('int4_ops'),
-      table.messageId.asc().nullsLast().op('int8_ops'),
-    ),
-    index('MessageReport_status_createdAt_idx').using(
-      'btree',
-      table.status.asc().nullsLast().op('enum_ops'),
-      table.createdAt.desc().nullsLast().op('timestamptz_ops'),
-    ),
-    index('MessageReport_messageId_idx').using(
-      'btree',
-      table.messageId.asc().nullsLast().op('int8_ops'),
+    primaryKey({
+      columns: [table.threadId, table.seq],
+      name: 'MessageReport_pkey',
+    }),
+    index('MessageReport_isDeleted_updatedAt_idx').on(
+      table.isDeleted,
+      table.updatedAt.desc(),
     ),
     foreignKey({
-      columns: [table.messageId],
-      foreignColumns: [message.id],
-      name: 'MessageReport_messageId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'MessageReport_threadId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-    foreignKey({
-      columns: [table.reporterId],
-      foreignColumns: [account.id],
-      name: 'MessageReport_reporterId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-    foreignKey({
-      columns: [table.reviewedByAdminId],
-      foreignColumns: [admin.id],
-      name: 'MessageReport_reviewedByAdminId_fkey',
+      columns: [table.threadId, table.seq],
+      foreignColumns: [message.threadId, message.seq],
+      name: 'MessageReport_threadId_seq_fkey',
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
@@ -2801,7 +2768,7 @@ export const quotaDailyAllowance = pgTable(
 
 /**
  * Bounded Federation v1 call terminal cache. It survives a process restart only long enough to classify
- * signed retries and late frames; it is not a call-history table (the durable CALL message remains the CDR).
+ * signed retries and late frames; it is not a call-history table (local system messages hold terminal history).
  */
 export const callTombstone = pgTable(
   'CallTombstone',
@@ -2892,4 +2859,18 @@ export const forwardBundleAsset = pgTable(
       name: 'ForwardBundleAsset_pkey',
     }),
   ],
+);
+
+/** Local call observations retained until their terminal system notice is committed. */
+export const callHistory = pgTable(
+  'CallHistory',
+  {
+    key: text().primaryKey(),
+    threadId: integer().notNull().references(() => messageThread.id, { onDelete: 'cascade' }),
+    snapshot: jsonb().$type<Record<string, unknown>>().notNull(),
+    revision: integer().notNull(),
+    terminal: boolean().default(false).notNull(),
+    messageSeq: integer(),
+  },
+  (table) => [index('CallHistory_pending_idx').on(table.terminal).where(sql`${table.messageSeq} IS NULL`)],
 );

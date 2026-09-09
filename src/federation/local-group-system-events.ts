@@ -4,7 +4,7 @@ import { SystemMessageType } from '../message/system-message.js';
 export interface LocalGroupSystemEvent {
   actorUserId: number;
   subjectUserId: number;
-  type: SystemMessageType;
+  type: Exclude<SystemMessageType, 'CALL_ENDED'>;
 }
 
 /** Pure roster diff used only to decorate the local timeline after GROUP_META commits. */

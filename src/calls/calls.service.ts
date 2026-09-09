@@ -14,8 +14,6 @@ import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
-import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import {
   FederationService,
   S2sResponseError,
@@ -28,12 +26,16 @@ import type {
 import { QuotaService } from '../quota/quota.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ContentType } from '../database/enums.js';
 import {
-  buildCallContent,
+  CallHistoryService,
+  type CallHistorySnapshot,
+} from './call-history.service.js';
+import { loadFederationConfig } from '../federation/federation.config.js';
+import type { CallEndedContent } from '../../shared/call-ended-content.js';
+import {
   type CallMediaType,
   type CallOutcome,
-} from './call-content.js';
+} from '../../shared/call-ended-content.js';
 import { SIGNATURE_LIFETIME_SEC } from '../federation/signature.service.js';
 import type { CallSignalType } from './federated-call-protocol.js';
 import { CALL_ADMISSION_RETENTION_MS } from './call-timing.js';
@@ -68,12 +70,12 @@ interface StagedCallSignal {
   payload: string;
 }
 
-/** The live (in-memory) state of one in-flight call. Only `ringing` / `accepted` are live; every
- *  terminal transition writes a CALL Message bubble (persisted on the caller server only)
+/** The live (in-memory) state of one in-flight call. `ringing`, `accepted`, and `connected` are live; every
+ *  terminal transition writes a local system notice
  *  and drops this entry. */
 interface LiveCall {
   /** Client-generated canonical lowercase RFC UUID — the call's idempotency key + frame address.
-   *  Becomes the terminal bubble's clientMessageId (idempotent terminal write). */
+   *  Bound with the thread, caller, and namespace for local history idempotency. */
   callSid: string;
   threadId: number;
   /** Local caller Account ID; null on the foreign callee server. */
@@ -89,9 +91,15 @@ interface LiveCall {
     endReason: string | null;
     signatureExpiresAtSec: number;
     protectionExpiresAt: Date;
+    endedAt: number;
   };
   /** Connect epoch-ms (set when the media leg connects — NOT on accept). Null until connected. */
   startedAt: number | null;
+  initiatedAt: number;
+  clockStart: number;
+  historyRevision: number;
+  admission?: Promise<void>;
+  historyIdentity?: Pick<CallEndedContent, 'caller' | 'callee'>;
   /** True once the callee side has acked that it is alerting the user. Set by the LOCAL {@link ringing}
    *  method (a callee device POSTed /calls/ringing) OR by {@link onInboundRinging} (the caller server
    *  received the S2S `ringing` relay from the callee server). Guards the `ringing` fan-out so a multi-device
@@ -145,19 +153,11 @@ export interface InboundCallFramePayload {
  * lifecycle OWNER — it never carries media (P2P DTLS-SRTP; coturn is the TURN relay fallback, OFF in
  * current SOMS).
  *
- * LIVE state is a single-instance in-memory map (one active call per user — the busy-line invariant).
- * The PERSISTED record is a {@link ContentType.CALL} Message bubble, authored at the call's TERMINAL
- * state by the caller server only — so BOTH participants see every call record (the callee's
- * server pulls it via the existing message sync; no separate visibility rule, no Call table). Persisting
- * only at the terminal state (CDR-at-end) is the deliberate trade-off for single-instance simplicity: a
- * process restart mid-call drops the in-flight state and forfeits that one record.
+ * Live media state is single-instance. Local observations are journaled for recovery;
+ * termination commits one SYSTEM notice per local thread with device-only fanout.
+ * Federation transports lifecycle facts and WebRTC signaling, never history messages.
  *
- * FEDERATED calls (callee on a peer server): the realtime lifecycle + WebRTC relay cross servers via
- * signed S2S frames ({@link FederationService.sendCallFrame} outbound; `@OnEvent('call.frame.inbound')`
- * inbound — the event bus breaks the Calls→Fed cycle). The bubble needs no federation code (it is an
- * ordinary message). TURN is off → federated media is STUN/P2P-only; a hard-NAT pair fails → `failed`.
- *
- * Delivery mirrors {@link MessageFanoutService}'s manual composition: an in-band SSE frame (the online
+ * Call signaling uses an in-band SSE frame (the online
  * device) PLUS, for the incoming RING only, a push wake-up to ALL the callee's devices. Lifecycle events
  * (accepted/declined/cancelled/ended) fan to the local participant(s) over SSE so every device of each
  * side stays in sync.
@@ -165,7 +165,7 @@ export interface InboundCallFramePayload {
 @Injectable()
 export class CallsService implements OnModuleDestroy {
   private readonly logger = new Logger(CallsService.name);
-  /** Authoritative live call state, keyed by callSid. Dropped on restart (by design). */
+  /** Live media state, keyed by callSid; the durable journal recovers terminal history. */
   private readonly activeCalls = new Map<string, LiveCall>();
   /** Busy-line index for real local accounts only. The peer server owns its participants' busy slots. */
   private readonly activeByUser = new Map<number, string>();
@@ -178,11 +178,10 @@ export class CallsService implements OnModuleDestroy {
     private readonly sse: SseService,
     private readonly push: PushService,
     private readonly participants: AccountThreadStateService,
-    private readonly messages: MessageService,
-    private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
     private readonly quota: QuotaService,
     private readonly callState: CallStateRegistry,
+    private readonly history: CallHistoryService,
   ) {}
 
   // ── initiate ──────────────────────────────────────────────────────────────────
@@ -232,7 +231,14 @@ export class CallsService implements OnModuleDestroy {
     const existing = this.activeCalls.get(dto.callSid);
     if (existing) {
       if (existing.callerId === callerId && existing.threadId === threadId) {
-        if (existing.state === 'ringing') await this.ring(existing);
+        await existing.admission;
+        if (existing.terminal)
+          throw new BusinessException(
+            BusinessCode.CALL_TERMINATED,
+            'call already ended',
+          );
+        if (existing.state === 'ringing' && !existing.peerDomain)
+          await this.ring(existing);
         return { callSid: existing.callSid, threadId: existing.threadId };
       }
       throw new BusinessException(
@@ -269,6 +275,9 @@ export class CallsService implements OnModuleDestroy {
       initialCallType: dto.callType,
       state: 'ringing',
       startedAt: null,
+      initiatedAt: Date.now(),
+      clockStart: performance.now(),
+      historyRevision: 0,
       localRole: 'caller',
       peerAccount: federated ? callee!.account : null,
       localAccount: null,
@@ -285,6 +294,13 @@ export class CallsService implements OnModuleDestroy {
     );
     this.activeByUser.set(callerId, call.callSid);
     if (calleeId !== null) this.activeByUser.set(calleeId, call.callSid);
+    try {
+      call.admission = this.observeHistory(call);
+      await call.admission;
+    } catch (error) {
+      this.release(call);
+      throw error;
+    }
     this.armRingTimer(call);
     this.syncCallState(call);
 
@@ -292,10 +308,12 @@ export class CallsService implements OnModuleDestroy {
       // Ring the peer server. Await so a ring failure (network/trust/quota/busy) is caught here → the
       // caller learns `unreachable` immediately. No local ring() — the foreign callee is rung by the
       // peer's inbound handler.
+      let deliveryAttempted = false;
       try {
         await this.reserveAdmission(call);
         if (call.terminal || this.activeCalls.get(call.callSid) !== call)
           return { callSid: call.callSid, threadId: call.threadId };
+        deliveryAttempted = true;
         await this.federation.sendCallFrame(
           {
             fromLocalUserId: callerId,
@@ -306,14 +324,16 @@ export class CallsService implements OnModuleDestroy {
           },
           call.peerDomain!,
         );
-      } catch {
+      } catch (error) {
+        // Later authenticated lifecycle facts take precedence over an ambiguous incoming response.
+        if (call.terminal || call.state !== 'ringing')
+          return { callSid: call.callSid, threadId: call.threadId };
         if (!call.terminal) {
           this.markTerminal(call, 'cancelled', null);
-          await this.saveTombstone(call, 'cancelled', null);
-          this.sendFrame(call, 'cancelled', {});
+          if (deliveryAttempted && !this.definiteNonDelivery(error))
+            this.sendFrame(call, 'cancelled', {});
         }
-        this.release(call);
-        await this.persistTerminal(call, 'unreachable');
+        await this.completeTerminal(call, 'unreachable');
         throw new BusinessException(
           BusinessCode.CALL_PEER_UNREACHABLE,
           'could not reach the peer server',
@@ -470,19 +490,20 @@ export class CallsService implements OnModuleDestroy {
         `cannot connect while ${call.state}`,
       );
     }
-    // The callee endpoint is the single connected/startedAt authority for local
+    // The callee endpoint supplies the connection fact for local
     // and federated calls. A caller report is an idempotent advisory no-op.
     if (userId !== call.calleeId) return;
     call.state = 'connected';
-    call.startedAt = Date.now();
+    call.startedAt = this.localTime(call);
     this.clearStaged(call); // media is up — the setup signaling is consumed, drop the staged store
+    await this.observeHistory(call);
     this.syncCallState(call);
     this.clearRingTimer(callSid);
     this.notifyBoth(call, 'connected', { startedAt: call.startedAt });
   }
 
   /** Permanently upgrade a connected AUDIO call to VIDEO. Camera enable/disable remains client-local after
-   *  this transition; the server only owns the durable call type so both live clients and the terminal CALL
+   *  this transition; the server only owns the durable call type so both live clients and the terminal system notice
    *  bubble agree that this became a video call. Idempotent when another device/participant races the same
    *  upgrade. */
   async upgradeVideo(userId: number, callSid: string): Promise<void> {
@@ -521,6 +542,7 @@ export class CallsService implements OnModuleDestroy {
     }
     if (decision === 'noop') return;
     call.callType = 'VIDEO';
+    await this.observeHistory(call);
     this.syncCallState(call);
     this.notifyBoth(call, 'video-upgraded', {
       callType: 'VIDEO',
@@ -528,7 +550,7 @@ export class CallsService implements OnModuleDestroy {
     });
   }
 
-  /** The callee declines a ringing call: fans `declined`, then writes the terminal bubble on the caller server.
+  /** The callee declines a ringing call: fans `declined`, then writes the local terminal system notice.
    *  Idempotent on an already-terminal call (no live entry → no-op). */
   async decline(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
@@ -551,13 +573,11 @@ export class CallsService implements OnModuleDestroy {
     }
     this.markTerminal(call, 'declined', null);
     this.notifyBoth(call, 'declined');
-    await this.saveTombstone(call, 'declined', null);
-    this.release(call);
-    await this.persistTerminal(call, 'declined');
+    await this.completeTerminal(call, 'declined');
   }
 
   /** The caller cancels a ringing call before the callee answers: fans `cancelled`, then writes the
-   *  `cancelled` bubble on the caller server. Idempotent on an already-terminal call. */
+   *  local cancelled system notice. Idempotent on an already-terminal call. */
   async cancel(callerId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
     this.logger.debug(
@@ -579,13 +599,10 @@ export class CallsService implements OnModuleDestroy {
     }
     this.markTerminal(call, 'cancelled', null);
     this.notifyBoth(call, 'cancelled');
-    await this.saveTombstone(call, 'cancelled', null);
-    this.release(call);
-    await this.persistTerminal(call, 'cancelled');
+    await this.completeTerminal(call, 'cancelled');
   }
 
-  /** Either party ends an answered/connected call: fans `ended`, then writes the terminal bubble on
-   *  the caller server. The persisted outcome is `completed` only if the media actually connected; an
+  /** Either party ends an answered/connected call: fans `ended`, then writes the local terminal system notice. The persisted outcome is `completed` only if the media actually connected; an
    *  answered-but-never-connected call is `failed` or `timeout` (no duration). A connected call is
    *  `completed` for a normal hangup or `failed` for an unrecoverable media failure. */
   async end(
@@ -627,9 +644,7 @@ export class CallsService implements OnModuleDestroy {
     const outcome: CallOutcome = CallsService.endOutcome(normalizedEndReason);
     this.markTerminal(call, 'ended', normalizedEndReason);
     this.notifyBoth(call, 'ended', { endReason: normalizedEndReason });
-    await this.saveTombstone(call, 'ended', normalizedEndReason);
-    this.release(call);
-    await this.persistTerminal(call, outcome);
+    await this.completeTerminal(call, outcome);
   }
 
   // ── signaling relay ───────────────────────────────────────────────────────────
@@ -841,7 +856,7 @@ export class CallsService implements OnModuleDestroy {
   }
 
   /** Inbound `incoming`: the caller server is ringing our local user. Register a callee-side live call
-   *  (this server never authors the bubble) + ring the local user, unless the local user is busy
+   *  and ring the local user, unless the local user is busy
    *  (→ return CALL_BUSY in the ordinary envelope) or it is a duplicate ring (→ no-op). Quota `tick` runs HERE, after the
    *  live-state guard, so a busy reject / duplicate burns no quota. */
   private async onInboundIncoming(
@@ -892,6 +907,9 @@ export class CallsService implements OnModuleDestroy {
       initialCallType: frame.callType,
       state: 'ringing',
       startedAt: null,
+      initiatedAt: Date.now(),
+      clockStart: performance.now(),
+      historyRevision: 0,
       localRole: 'callee',
       peerAccount: frame.payload.fromAccount,
       localAccount: frame.payload.toAccount,
@@ -906,6 +924,7 @@ export class CallsService implements OnModuleDestroy {
     this.activeByUser.set(localUserId, calleeCall.callSid);
     try {
       await this.reserveAdmission(calleeCall);
+      await this.observeHistory(calleeCall);
     } catch (error) {
       this.release(calleeCall);
       throw error;
@@ -965,12 +984,12 @@ export class CallsService implements OnModuleDestroy {
     });
   }
 
-  /** Inbound `connected`: the peer reports the media leg is up → stamp startedAt (the real connect marker,
-   *  from the frame so both servers agree) + transition accepted → connected + disarm the timer.
-   *  Idempotent; a frame before the call is `accepted` is a no-op (race — the local client will report). */
-  private onInboundConnected(
+  /** Inbound `connected`: record the first local processing time, enter connected,
+   *  and disarm the connection timer. The peer supplies no timestamp.
+   *  Replays are no-ops; incompatible active phases are rejected. */
+  private async onInboundConnected(
     frame: Extract<S2SCallFrame, { op: 'connected' }>,
-  ): void {
+  ): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return;
     const decision = decideCallTransition(call.state, 'connected');
@@ -983,8 +1002,9 @@ export class CallsService implements OnModuleDestroy {
       );
     }
     call.state = 'connected';
-    call.startedAt = frame.payload.startedAt;
+    call.startedAt = this.localTime(call);
     this.clearStaged(call); // the caller server clears its staged signaling on connect too
+    await this.observeHistory(call);
     this.syncCallState(call);
     this.clearRingTimer(frame.callSid);
     this.emit(this.localUserId(call), 'connected', {
@@ -995,10 +1015,10 @@ export class CallsService implements OnModuleDestroy {
 
   /** Federated peer permanently upgraded the live call to video. The frame is idempotent and carries no
    *  media; clients perform SDP renegotiation separately over the ordinary signaling relay. */
-  private onInboundVideoUpgraded(
+  private async onInboundVideoUpgraded(
     localUserId: number,
     frame: Extract<S2SCallFrame, { op: 'video-upgraded' }>,
-  ): void {
+  ): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return;
     const decision = decideVideoUpgrade(
@@ -1015,6 +1035,7 @@ export class CallsService implements OnModuleDestroy {
     }
     if (decision === 'noop') return;
     call.callType = 'VIDEO';
+    await this.observeHistory(call);
     this.syncCallState(call);
     this.emit(localUserId, 'video-upgraded', {
       callSid: call.callSid,
@@ -1063,7 +1084,7 @@ export class CallsService implements OnModuleDestroy {
   }
 
   /** Inbound terminal (declined/cancelled/ended/missed): release the active call + emit the event to the
-   *  local participant. The caller server authors the bubble; the callee server pulls it. CRITICAL idempotency:
+   *  local participant and commit local history on either role. CRITICAL idempotency:
    *  if the active call is already gone (the local path / a prior frame resolved it) → no-op, avoiding a
    *  double bubble + double fanout. */
   private async onInboundTerminal(
@@ -1098,19 +1119,13 @@ export class CallsService implements OnModuleDestroy {
       frame.op === 'ended' ? frame.payload.endReason : null,
       signatureExpiresAtSec,
     );
-    await this.saveTombstone(
-      call,
-      frame.op,
-      frame.op === 'ended' ? frame.payload.endReason : null,
-    );
     this.emit(this.localUserId(call), frame.op, { callSid: call.callSid });
-    this.release(call);
-    if (call.localRole === 'caller') {
+    {
       const outcome: CallOutcome =
         frame.op === 'ended'
           ? CallsService.endOutcome(frame.payload.endReason)
           : (frame.op as CallOutcome);
-      await this.persistTerminal(call, outcome);
+      await this.completeTerminal(call, outcome);
     }
   }
 
@@ -1276,6 +1291,7 @@ export class CallsService implements OnModuleDestroy {
       op,
       endReason,
       signatureExpiresAtSec: expiresAtSec,
+      endedAt: this.localTime(call),
       protectionExpiresAt: this.terminalProtectionExpiry(
         expiresAtSec,
         acceptedAt,
@@ -1323,54 +1339,97 @@ export class CallsService implements OnModuleDestroy {
 
   // ── terminal persist + bookkeeping ───────────────────────────────────────────
 
-  /** Write the call's terminal record as a CALL Message bubble into the P2P thread and fan it out
-   *  exactly like a normal send. Caller-server only — the callee server never writes (it pulls
-   *  the caller server's bubble via message sync). `callSid` is the message's clientMessageId → the write
-   *  is idempotent. `startedAt`/`durationMs` are included only when the call connected. */
+  private localTime(call: LiveCall): number {
+    return (
+      call.initiatedAt +
+      Math.max(0, Math.floor(performance.now() - call.clockStart))
+    );
+  }
+
+  private async historySnapshot(
+    call: LiveCall,
+    outcome: CallOutcome,
+  ): Promise<CallHistorySnapshot> {
+    const revision = ++call.historyRevision;
+    const endedAt = call.terminal?.endedAt ?? this.localTime(call);
+    if (!call.historyIdentity) {
+      const address = async (id: number | null) => {
+        if (id === null)
+          return { account: call.peerAccount!, domain: call.peerDomain! };
+        const local = await this.database.db.query.account.findFirst({
+          where: eq(user.id, id),
+          columns: { account: true },
+        });
+        if (!local) throw new Error('call participant no longer exists');
+        return {
+          account: local.account,
+          domain: loadFederationConfig().domain,
+        };
+      };
+      call.historyIdentity = {
+        caller: await address(call.callerId),
+        callee: await address(call.calleeId),
+      };
+    }
+    return {
+      key: JSON.stringify([
+        call.threadId,
+        call.peerNamespaceId ?? 0,
+        call.historyIdentity.caller,
+        call.callSid,
+      ]),
+      threadId: call.threadId,
+      revision,
+      content: {
+        type: 'CALL_ENDED',
+        callId: call.callSid,
+        ...call.historyIdentity,
+        mediaType: call.callType,
+        outcome,
+        initiatedAt: call.initiatedAt,
+        ...(call.startedAt === null ? {} : { connectedAt: call.startedAt }),
+        endedAt,
+      },
+    };
+  }
+
+  private async observeHistory(call: LiveCall): Promise<void> {
+    await this.history.observe(await this.historySnapshot(call, 'failed'));
+  }
+
+  /** A protection-write failure must not prevent history persistence or retain busy slots. */
+  private async completeTerminal(
+    call: LiveCall,
+    outcome: CallOutcome,
+  ): Promise<void> {
+    if (!call.terminal) throw new Error('call has no terminal decision');
+    try {
+      const results = await Promise.allSettled([
+        this.saveTombstone(call, call.terminal.op, call.terminal.endReason),
+        this.persistTerminal(call, outcome),
+      ]);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length)
+        throw new AggregateError(
+          failures.map((failure) => failure.reason),
+          'terminal call persistence failed',
+        );
+    } finally {
+      this.release(call);
+    }
+  }
+
+  /** Both roles commit a local terminal notice with device-only fanout. */
   private async persistTerminal(
     call: LiveCall,
     outcome: CallOutcome,
   ): Promise<void> {
-    if (call.localRole !== 'caller') return;
-    const endedAt = Date.now();
-    const content = buildCallContent(
-      call.startedAt !== null
-        ? {
-            callType: call.callType,
-            outcome,
-            callerId: call.callerId,
-            calleeId: call.calleeId,
-            startedAt: call.startedAt,
-            endedAt,
-            durationMs: endedAt - call.startedAt,
-          }
-        : {
-            callType: call.callType,
-            outcome,
-            callerId: call.callerId,
-            calleeId: call.calleeId,
-            endedAt,
-          },
+    await this.history.finish(
+      await this.historySnapshot(
+        call,
+        outcome === 'completed' && call.startedAt === null ? 'failed' : outcome,
+      ),
     );
-    try {
-      const msg = await this.messages.writeMsgToThread(
-        this.requireLocalId(call.callerId),
-        call.threadId,
-        content,
-        ContentType.CALL,
-        call.callSid,
-      );
-      // Fire-and-forget: the bubble is committed; a fan-out failure degrades to the normal chat-open /
-      // missed-message pull backstop, never a lost record. (For a federated caller server, dispatch's
-      // notifyOnSend marks the conversation dirty so the peer pulls the bubble.)
-      void this.fanout.dispatch(msg);
-    } catch (e) {
-      // The in-memory call is already released; a persist failure forfeits this one record (the
-      // CDR-at-end trade-off). Log and swallow — never leave an unhandled rejection.
-      this.logger.error(
-        `failed to persist terminal call record (callSid=${call.callSid}, outcome=${outcome}): ${(e as Error).message}`,
-      );
-    }
   }
 
   /** Free a call's live state: drop it from activeCalls, release both users' busy slots (only if they
@@ -1537,12 +1596,7 @@ export class CallsService implements OnModuleDestroy {
         : {}),
     };
     let params: Parameters<FederationService['sendCallFrame']>[0];
-    if (op === 'connected') {
-      if (typeof extra.startedAt !== 'number') {
-        throw new Error('connected call frame requires startedAt');
-      }
-      params = { ...common, op, startedAt: extra.startedAt };
-    } else if (op === 'ended') {
+    if (op === 'ended') {
       const endReason = extra.endReason;
       if (
         endReason !== 'completed' &&
@@ -1573,6 +1627,18 @@ export class CallsService implements OnModuleDestroy {
       return false;
     }
     if (this.activeCalls.get(call.callSid) === call) {
+      const cancelled = error.code === BusinessCode.CALL_CANCELLED;
+      this.markTerminal(
+        call,
+        cancelled ? 'cancelled' : 'ended',
+        cancelled ? null : 'failed',
+      );
+      void this.persistTerminal(
+        call,
+        cancelled && call.startedAt === null ? 'cancelled' : 'failed',
+      ).catch((failure) =>
+        this.logger.error('Peer termination history remains pending', failure),
+      );
       this.emit(
         this.localUserId(call),
         error.code === BusinessCode.CALL_CANCELLED ? 'cancelled' : 'ended',
@@ -1581,6 +1647,35 @@ export class CallsService implements OnModuleDestroy {
       this.release(call);
     }
     return true;
+  }
+
+  private definiteNonDelivery(error: unknown): boolean {
+    if (
+      error instanceof S2sResponseError &&
+      (error.code === BusinessCode.CALL_BUSY ||
+        error.code === BusinessCode.CALL_NOT_ALLOWED)
+    )
+      return true;
+    let current = error;
+    for (
+      let depth = 0;
+      depth < 8 && current && typeof current === 'object';
+      depth++
+    ) {
+      const cause = current as { code?: unknown; cause?: unknown };
+      if (
+        [
+          'ECONNREFUSED',
+          'ENOTFOUND',
+          'EAI_AGAIN',
+          'ENETUNREACH',
+          'EHOSTUNREACH',
+        ].includes(String(cause.code))
+      )
+        return true;
+      current = cause.cause;
+    }
+    return false;
   }
 
   private requireLocalId(id: number | null): number {
@@ -1615,7 +1710,12 @@ export class CallsService implements OnModuleDestroy {
         ? FED_SAFETY_NET_MS
         : RING_TIMEOUT_MS;
     const timer = setTimeout(() => {
-      void this.timeoutMissed(call.callSid);
+      void this.timeoutMissed(call.callSid).catch((error) =>
+        this.logger.error(
+          'Call timeout persistence failed; history retry remains pending',
+          error,
+        ),
+      );
     }, ms);
     this.ringTimers.set(call.callSid, timer);
   }
@@ -1627,7 +1727,12 @@ export class CallsService implements OnModuleDestroy {
         ? FED_CONNECT_SAFETY_NET_MS
         : CONNECT_TIMEOUT_MS;
     const timer = setTimeout(() => {
-      void this.timeoutMissed(call.callSid);
+      void this.timeoutMissed(call.callSid).catch((error) =>
+        this.logger.error(
+          'Call timeout persistence failed; history retry remains pending',
+          error,
+        ),
+      );
     }, ms);
     this.ringTimers.set(call.callSid, timer);
   }
@@ -1660,11 +1765,8 @@ export class CallsService implements OnModuleDestroy {
         callSid,
         ...eventExtra,
       });
-      await this.saveTombstone(call, terminalOp, endReason);
-      this.release(call);
       this.sendFrame(call, terminalOp, endReason ? { endReason } : {});
-      if (call.localRole === 'caller')
-        await this.persistTerminal(call, outcome);
+      await this.completeTerminal(call, outcome);
     } else {
       this.markTerminal(call, timeout.operation, timeout.endReason);
       this.notifyBoth(call, timeout.operation, eventExtra);

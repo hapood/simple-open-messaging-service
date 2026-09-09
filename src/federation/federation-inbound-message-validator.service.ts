@@ -104,7 +104,6 @@ export class FederationInboundMessageValidatorService {
         'content',
         'createdAt',
         'originCreatedAt',
-        ...(item.contentType === ContentType.CALL ? ['clientMessageId'] : []),
         'assets',
       ],
       ['quoteTarget'],

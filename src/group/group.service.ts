@@ -10,14 +10,7 @@ import {
   type AccountTarget,
 } from '../user/account-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import {
-  forwardRef,
-  HttpStatus,
-  Inject,
-  Injectable,
-  Logger,
-  Optional,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import {
@@ -31,7 +24,6 @@ import {
   messageThread,
   profileTable,
   accountThreadState,
-  account as user,
 } from '../database/schema.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -42,15 +34,12 @@ import { FederationService } from '../federation/federation.service.js';
 import { FederationRelationshipMutationService } from '../federation/federation-relationship-mutation.service.js';
 import { AuthoritativeGroupMetaMutationService } from '../federation/authoritative-group-meta-mutation.service.js';
 import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
-import { mutuallyAuthorizedSql } from '../relationship/relationship-authorization.js';
 import {
   readCurrentGroupMemberByAddressInTx,
   readCurrentGroupMemberInTx,
   readCurrentGroupOwnersInTx,
-  readCurrentLocalAuthorizedGroupMemberIdsInTx,
 } from '../group-meta/current-group-roster.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
@@ -95,12 +84,6 @@ export class GroupService {
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly authoritativeGroupMeta: AuthoritativeGroupMetaMutationService,
     @Optional() private readonly messages?: MessageService,
-    @Optional()
-    @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<
-      MessageFanoutService,
-      'dispatch' | 'dispatchToUsers'
-    >,
   ) {}
 
   /** Resolve one active roster member by its exact wire-level address. */
@@ -694,6 +677,7 @@ export class GroupService {
               groupAccount: account,
               groupDomain: 'local',
               groupAccountId: ownerAccount.id,
+              federationRoundsEnabled: true,
               authorityNamespaceId: 0,
               updatedAt: new Date(),
             })
@@ -827,7 +811,6 @@ export class GroupService {
       if (!currentMember && outgoing.rows.length === 0)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
-      const fanoutMember = params.dissolvedFanout ? identity : null;
       if (
         transitioned &&
         !params.dissolvedFanout &&
@@ -838,20 +821,6 @@ export class GroupService {
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
         );
-      }
-      let localRecipientIds: number[] = [];
-      if (transitioned) {
-        if (params.dissolvedFanout) {
-          if (localMember) {
-            localRecipientIds = [localMember.id];
-          }
-        } else {
-          localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
-            tx,
-            thread.groupId,
-            params.threadId,
-          );
-        }
       }
       if (transitioned && localMember && thread.groupDomain !== 'local') {
         await this.relationshipMutations.lockMemberRelationshipFeedInTx(tx, {
@@ -870,13 +839,21 @@ export class GroupService {
                 {
                   threadLock: mutationLock.threadLock,
                   actorUserId: params.userId,
-                  recipientUserIds: localRecipientIds,
-                  visibleThroughUserIds: localMember ? [localMember.id] : [],
-                  markReadUserId: localMember?.id,
                 },
               )
             ).message
           : null;
+
+      if (systemMessage && localMember)
+        await tx
+          .update(accountThreadState)
+          .set({ messageVisibleThroughSeq: systemMessage.seq, updatedAt: now })
+          .where(
+            and(
+              eq(accountThreadState.threadId, params.threadId),
+              eq(accountThreadState.accountId, localMember.id),
+            ),
+          );
 
       if (transitioned) {
         await tx
@@ -929,7 +906,6 @@ export class GroupService {
         statePeers: [...requestState.keys(), ...groupRequestState.keys()],
         clientFeedUpdates,
         systemMessage,
-        localRecipientIds,
       };
     });
     try {
@@ -953,12 +929,6 @@ export class GroupService {
           this.logger.warn('group leave notification failed', error),
         );
     }
-    if (result.systemMessage && this.messageFanout)
-      void this.messageFanout
-        .dispatchToUsers(result.systemMessage, result.localRecipientIds)
-        .catch((error: unknown) =>
-          this.logger.warn('group leave message wake failed', error),
-        );
     return {
       transitioned: result.transitioned,
     };
@@ -1185,7 +1155,6 @@ export class GroupService {
           clientFeedUpdates: [],
           statePeers: [],
           systemMessage: null,
-          localRecipientIds: [],
         };
       }
       const operatorAuthorized = await isThreadMutuallyAuthorized(
@@ -1204,7 +1173,6 @@ export class GroupService {
           clientFeedUpdates: [],
           statePeers: [],
           systemMessage: null,
-          localRecipientIds: [],
         };
       if (
         !operator ||
@@ -1218,11 +1186,6 @@ export class GroupService {
         );
       }
       const now = new Date();
-      const localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
-        tx,
-        thread.groupId,
-        params.threadId,
-      );
       const [localTarget] = await localAccountsForTargetsInTx(tx, [target]);
       const systemMessage = this.messages
         ? (
@@ -1234,13 +1197,21 @@ export class GroupService {
               {
                 threadLock: mutationLock.threadLock,
                 actorUserId: params.operatorUserId,
-                recipientUserIds: localRecipientIds,
-                visibleThroughUserIds: localTarget ? [localTarget.id] : [],
-                markReadUserId: params.operatorUserId,
               },
             )
           ).message
         : null;
+
+      if (systemMessage && localTarget)
+        await tx
+          .update(accountThreadState)
+          .set({ messageVisibleThroughSeq: systemMessage.seq, updatedAt: now })
+          .where(
+            and(
+              eq(accountThreadState.threadId, params.threadId),
+              eq(accountThreadState.accountId, localTarget.id),
+            ),
+          );
 
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const requestState =
@@ -1269,16 +1240,10 @@ export class GroupService {
         clientFeedUpdates,
         statePeers: [...requestState.keys()],
         systemMessage,
-        localRecipientIds,
       };
     });
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
-    if (result.systemMessage && this.messageFanout)
-      void this.messageFanout.dispatchToUsers(
-        result.systemMessage,
-        result.localRecipientIds,
-      );
     return { transitioned: result.transitioned };
   }
 
@@ -1558,28 +1523,12 @@ export class GroupService {
   private async emitSystemMessage(
     actorUserId: number,
     threadId: number,
-    type: SystemMessageType,
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
     subjectUserId?: AccountTarget,
   ): Promise<void> {
     if (!this.messages) return;
-    const message = await this.messages.tryWriteSystemMessage(
-      threadId,
-      type,
-      subjectUserId,
-      { actorUserId },
-    );
-    if (message && this.messageFanout)
-      void this.messageFanout.dispatch(message);
-  }
-
-  private async localAuthorizedRecipientIdsInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-    threadId: number,
-  ): Promise<number[]> {
-    return readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
-      groupId,
-      threadId,
+    await this.messages.tryWriteSystemMessage(threadId, type, subjectUserId, {
+      actorUserId,
     });
   }
 

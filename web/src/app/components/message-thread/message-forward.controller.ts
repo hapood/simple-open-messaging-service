@@ -65,7 +65,6 @@ export class MessageForwardController {
       VIDEO: 'chat.preview.video',
       AUDIO: 'chat.preview.voice',
       GALLERY: 'chat.fileGroup',
-      CALL: 'forward.call',
     };
     return this.transloco.translate(
       keys[message.contentType] ?? 'forward.message',

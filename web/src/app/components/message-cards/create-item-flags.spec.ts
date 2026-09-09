@@ -63,8 +63,7 @@ describe('computeRowFlags', () => {
     'GALLERY',
     'LINK',
     'CONTACT_CARD',
-    'CALL',
-    'FORWARD',
+      'FORWARD',
   ] as const)(
     'keeps a %s message and the following text message out of compact grouping',
     (contentType) => {

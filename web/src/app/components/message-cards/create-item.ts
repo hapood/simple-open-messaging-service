@@ -15,7 +15,6 @@ import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
 import { ContactCardRowComponent } from './contact-card-row/contact-card-row.component';
-import { CallRowComponent } from './call-row/call-row.component';
 import { ForwardRowComponent } from './forward-row/forward-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
@@ -200,11 +199,9 @@ export function createMsgCbElement(
             ? ContactCardRowComponent
             : data.contentType === 'FILE'
               ? FileRowComponent
-              : data.contentType === 'CALL'
-                ? CallRowComponent
-                : data.contentType === 'FORWARD'
-                  ? ForwardRowComponent
-                  : TextRowComponent;
+              : data.contentType === 'FORWARD'
+                ? ForwardRowComponent
+                : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view

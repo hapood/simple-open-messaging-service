@@ -88,7 +88,7 @@ describe('Federation v1 protocol documentation', () => {
         op: 'signal',
         payload: { signalId: callSid, signalType: 'offer', data: 'v=0' },
       },
-      { callSid, op: 'connected', payload: { startedAt: 1_700_000_000_000 } },
+      { callSid, op: 'connected' },
       { callSid, op: 'ended', payload: { endReason: 'completed' } },
     ];
     expect(frames.map((frame) => frame.op).sort()).toEqual(

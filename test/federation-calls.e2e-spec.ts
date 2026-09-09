@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   bootFederationPair,
   FED_DOMAIN_A,
@@ -27,7 +27,7 @@ import { findP2PRelationship } from './seed.js';
  * peer + sever edges, which would make `initiate` return CALL_NOT_ALLOWED).
  *
  * Validates the full cross-server relay: initiate → S2S `incoming` → appB mirror + ring → accept →
- * S2S `accepted` → appA → end/decline → the ORIGIN (appA) authors the CALL bubble → appB PULLS it via
+ * S2S `accepted` → appA → end/decline → each server authors its own terminal system notice via
  * the message sync. Timer-based outcomes (missed / safety-net) are slow + flaky in e2e and are covered
  * by the unit spec's fake timers.
  */
@@ -176,7 +176,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           : null;
       });
 
-      // The callee endpoint confirms media-up; its server is the sole connected/startedAt authority.
+      // The callee endpoint confirms media-up; each server records its local connection time.
       const connectedP = waitCallEvent(erinSse, 'connected', callSid);
       const connRes = await request(appB.baseUrl)
         .post('/api/v1/calls/connected')
@@ -204,14 +204,14 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
 
       const onA = await pollFor(() =>
         appA.database.query.message.findFirst({
-          where: eq(message.clientMessageId, callSid),
+          where: sql`${message.content}->>'callId' = ${callSid}`,
         }),
       );
-      expect(onA.contentType).toBe('CALL');
+      expect(onA.contentType).toBe('SYSTEM');
       const content = JSON.parse(onA.content);
       expect(content.outcome).toBe('completed');
-      expect(content.callType).toBe('VIDEO');
-      expect(content.startedAt).toBeTypeOf('number'); // connected stamped a real connect time
+      expect(content.mediaType).toBe('VIDEO');
+      expect(content.connectedAt).toBeTypeOf('number'); // connected stamped a real connect time
     } finally {
       await frankSse.cancel();
       await erinSse.cancel();
@@ -251,7 +251,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .send({ callSid });
       await pollFor(() =>
         appA.database.query.message.findFirst({
-          where: eq(message.clientMessageId, callSid),
+          where: sql`${message.content}->>'callId' = ${callSid}`,
         }),
       );
     } finally {
@@ -260,7 +260,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     }
   }, 30_000);
 
-  it('callee declines cross-server → declined bubble authored on appA (origin) + pulled to appB', async () => {
+  it('callee declines cross-server → each server commits its own local system notice', async () => {
     const callSid = randomUUID();
     const frankSse = await openSse(appB.baseUrl, tokenFrank);
     try {
@@ -281,30 +281,27 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
 
       const onA = await pollFor(() =>
         appA.database.query.message.findFirst({
-          where: eq(message.clientMessageId, callSid),
+          where: sql`${message.content}->>'callId' = ${callSid}`,
         }),
       );
-      expect(onA.contentType).toBe('CALL');
+      expect(onA.contentType).toBe('SYSTEM');
       expect(JSON.parse(onA.content).outcome).toBe('declined');
 
-      // The bubble pulls to Frank's thread using the originating server's local sequence.
+      // Frank's server commits its own notice from the terminal fact.
       const onB = await pollFor(() =>
         appB.database.query.message.findFirst({
           where: and(
             eq(message.threadId, frankThreadId),
-            eq(message.creatorAccount, 'erin'),
-            eq(message.creatorDomain, DOM_A),
-            // The wire source coordinate is the original local seq even if a later delivery receipt
-            // replaces the source row's provisional originSeq.
-            eq(message.originSeq, onA.seq),
-            eq(message.contentType, 'CALL'),
+            sql`${message.content}->>'callId' = ${callSid}`,
+            eq(message.contentType, 'SYSTEM'),
           ),
         }),
       );
       expect(JSON.parse(onB.content)).toMatchObject({
         outcome: 'declined',
-        callerId: null,
-        calleeId: frankId,
+        type: 'CALL_ENDED',
+        caller: { account: 'erin', domain: DOM_A },
+        callee: { account: 'frank', domain: DOM_B },
       });
     } finally {
       await frankSse.cancel();

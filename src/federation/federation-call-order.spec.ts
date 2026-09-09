@@ -19,7 +19,6 @@ const params = (op: 'ringing' | 'accepted' | 'connected') => ({
   callSid: '550e8400-e29b-41d4-a716-446655440000',
   op,
   callType: 'AUDIO' as const,
-  ...(op === 'connected' ? { startedAt: 1_700_000_000_000 } : {}),
 });
 
 const answerParams = () => ({

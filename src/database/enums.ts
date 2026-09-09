@@ -20,7 +20,6 @@ export const ContentType = {
   AUDIO: 'AUDIO',
   LINK: 'LINK',
   CONTACT_CARD: 'CONTACT_CARD',
-  CALL: 'CALL',
   FORWARD: 'FORWARD',
   // Phase 7: multi-asset bundle (N files share one batchId).
   GALLERY: 'GALLERY',
@@ -45,14 +44,6 @@ export const MessageDeleteType = {
 } as const;
 export type MessageDeleteType =
   (typeof MessageDeleteType)[keyof typeof MessageDeleteType];
-
-export const MessageReportStatus = {
-  PENDING: 'PENDING',
-  UPHELD: 'UPHELD',
-  REJECTED: 'REJECTED',
-} as const;
-export type MessageReportStatus =
-  (typeof MessageReportStatus)[keyof typeof MessageReportStatus];
 
 export const FileSyncDirection = {
   OUTBOUND: 'OUTBOUND',

@@ -4,7 +4,7 @@ import {
 } from '../group/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { isValidSomfpDomain } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -13,11 +13,7 @@ import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import type { ForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import { derivePreview, type Message } from '../message/message.service.js';
-import {
-  buildCallContent,
-  parseFederatedCallContent,
-} from '../calls/call-content.js';
+import { type Message } from '../message/message.service.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -53,7 +49,7 @@ interface FederationMessagePageEffectContext {
 
 export type FederationMessagePageEffect = FederationMessagePageEffectContext &
   (
-    | { kind: 'pending'; batchId: string }
+    | { kind: 'pending'; batchId: string; seq: number }
     | {
         kind: 'message';
         message: Message;
@@ -191,16 +187,11 @@ export class FederationInboundMessagePageService {
         if (
           !Number.isSafeInteger(item.createdAt) ||
           item.createdAt < 0 ||
-          Number.isNaN(sourceTime.getTime()) ||
-          (item.contentType === ContentType.CALL &&
-            (typeof item.clientMessageId !== 'string' ||
-              !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-                item.clientMessageId,
-              )))
+          Number.isNaN(sourceTime.getTime())
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
-            'missed message has invalid timestamps or clientMessageId',
+            'missed message has invalid timestamps',
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -386,44 +377,6 @@ export class FederationInboundMessagePageService {
           );
           continue;
         }
-        if (item.contentType === ContentType.CALL) {
-          const caller =
-            route.creatorDomain === 'local'
-              ? await tx.query.account.findFirst({
-                  where: and(
-                    eq(tables.account.account, route.creatorAccount),
-                    eq(tables.account.namespaceId, 0),
-                  ),
-                  columns: { id: true },
-                })
-              : undefined;
-          const call = parseFederatedCallContent(item.content);
-          if (
-            !call ||
-            !('peerAccount' in item.thread) ||
-            route.recipients.length !== 1
-          ) {
-            throw new BusinessException(
-              BusinessCode.FEDERATION_MALFORMED,
-              'invalid federated CALL content',
-              HttpStatus.BAD_REQUEST,
-            );
-          }
-          storedContent = buildCallContent({
-            callType: call.mediaType,
-            outcome: call.outcome,
-            callerId: caller?.id ?? null,
-            calleeId: route.recipients[0],
-            ...(call.startedAt === undefined
-              ? {}
-              : { startedAt: call.startedAt }),
-            endedAt: call.endedAt,
-            ...(call.startedAt === undefined
-              ? {}
-              : { durationMs: call.endedAt - call.startedAt }),
-          });
-        }
-
         const existingMessage = await tx.query.message.findFirst({
           where: and(
             eq(tables.message.threadId, route.threadId),
@@ -494,7 +447,6 @@ export class FederationInboundMessagePageService {
           message: {
             originSeq: item.seq,
             profileRev: item.profileRev,
-            clientMessageId: item.clientMessageId ?? null,
             contentType: item.contentType,
             content: storedContent,
             ts: item.createdAt,
@@ -526,33 +478,11 @@ export class FederationInboundMessagePageService {
             toAccount: route.toAccount,
             author,
             batchId: stored.batchId,
+            seq: stored.seq,
           });
           continue;
         }
 
-        if (!historical) {
-          const arrival = stored.message.createdAt;
-          await tx
-            .update(tables.messageThread)
-            .set({
-              lastMessageSeq: stored.message.seq,
-              lastMessagePreview: derivePreview(
-                item.contentType as ContentType,
-                stored.storedContent,
-              ),
-              lastMessageAt: arrival,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(tables.messageThread.id, route.threadId),
-                or(
-                  isNull(tables.messageThread.lastMessageAt),
-                  lt(tables.messageThread.lastMessageAt, arrival),
-                ),
-              ),
-            );
-        }
         let deletionSeq: number | undefined;
         if (stored.message.isDeleted) {
           const deletion = await tx.query.deletedMessage.findFirst({

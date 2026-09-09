@@ -36,11 +36,6 @@ import {
   type FederationQuoteTarget,
 } from './federation-quote-target.js';
 import {
-  buildFederatedCallContent,
-  parseCallContent,
-} from '../calls/call-content.js';
-import { CALL_SID_RE } from '../calls/federated-call-protocol.js';
-import {
   federatedContentDigests,
   toFederatedMessageContent,
 } from './federated-message-content.js';
@@ -76,7 +71,6 @@ interface FederationMessageFeedMessageBase
   originSeq: number | null;
   originCreatedAt: number | null;
   createdAt: number;
-  clientMessageId?: string;
   quoteTarget?: FederationQuoteTarget;
   assets: FederationMessageFeedAsset[];
 }
@@ -298,6 +292,8 @@ export class FederationMessageFeedService {
             )
             .orderBy(forward ? asc(message.seq) : desc(message.seq))
             .limit(take + 1);
+      // Look ahead within the filtered wire-visible rows. A tail containing only
+      // local system messages must exhaust the range, not produce another page.
       const selected = rows.slice(0, take);
       const messages = await this.serializeMessagesInTx(
         tx,
@@ -428,28 +424,12 @@ export class FederationMessageFeedService {
         : undefined;
       let content: string;
       let contentDigests: Set<string>;
-      let callClientMessageId: string | undefined;
       try {
         content = toFederatedMessageContent(
           row.contentType,
           row.content,
           this.localDomain,
         );
-        if (row.contentType === ContentType.CALL) {
-          const local = parseCallContent(row.content);
-          if (!local || row.threadType !== 'P2P')
-            throw new Error('invalid federated CALL projection');
-          if (
-            row.clientMessageId === null ||
-            !CALL_SID_RE.test(row.clientMessageId)
-          ) {
-            throw new Error(
-              'federated CALL is missing a valid clientMessageId',
-            );
-          }
-          callClientMessageId = row.clientMessageId;
-          content = buildFederatedCallContent(local);
-        }
         contentDigests = new Set(
           federatedContentDigests(row.contentType, content),
         );
@@ -485,9 +465,6 @@ export class FederationMessageFeedService {
         contentType: row.contentType,
         content,
         createdAt: row.createdAt.getTime(),
-        ...(callClientMessageId
-          ? { clientMessageId: callClientMessageId }
-          : {}),
         ...(quoteTarget !== undefined ? { quoteTarget } : {}),
         // MessageAsset also authorizes receiver-local presentation assets, notably LINK artwork.
         // Only descriptors referenced by the URL-free wire content belong in the federation payload.

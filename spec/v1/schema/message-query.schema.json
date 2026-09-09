@@ -79,9 +79,6 @@
         "createdAt": {
           "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
-        "clientMessageId": {
-          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
-        },
         "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
         "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
       },
@@ -126,23 +123,6 @@
         {
           "if": { "required": ["quoteTarget"] },
           "then": { "properties": { "contentType": { "const": "PURE_TEXT" } } }
-        },
-        {
-          "if": {
-            "properties": { "contentType": { "const": "CALL" } },
-            "required": ["contentType"]
-          },
-          "then": {
-            "required": ["clientMessageId"],
-            "properties": {
-              "clientMessageId": {
-                "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
-              }
-            }
-          },
-          "else": {
-            "not": { "required": ["clientMessageId"] }
-          }
         }
       ],
       "additionalProperties": false

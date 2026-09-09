@@ -252,6 +252,13 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/query-messages` — Paginated history
 
+- **Messages**: a union of ordinary messages and query-only tombs. A tomb has
+  `contentType: 'TOMB'`, `isDeleted: true`, and `deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL'`,
+  retaining `threadId`, `seq`, `creator`, `profileRev`, `createdAt`, and `updatedAt`.
+  It contains no original body, quote, media metadata, or internal ID. Tombs occupy
+  their original sequence slot and count toward page size in both directions.
+  `TOMB` is not accepted as a sendable content type. Client/federation consumption
+  cutover remains pending; this intermediate contract is not compatible with old clients.
 - **Body**: `{ threadId, after?, before?, through?, take? }`. `after` and `before` are mutually exclusive
   non-negative integer cursors. Forward pages cover `(after, through]` in ascending order; reverse pages cover
   `[through, before)` in descending order. `through` is an inclusive fixed boundary.
@@ -283,19 +290,38 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 - Per-`AccountThreadState` mutations: the P2P thread lookup, read watermark advance, mute, pin, and per-thread alias. `search-messages` does in-chat search.
 
-`mark-read` commits a viewport-dwelled HWM on chat close/switch:
+`mark-read` accepts a durable viewport read mutation:
 
-- **Body**: `{ threadId, localReadHwm }`.
-- The server stores `max(AccountThreadState.lastReadSeq, localReadHwm)` and returns
-  `{ threadId, lastReadSeq, unreadCount, mentionUnread }`.
-- `unreadCount` is capped at `1000`; `1000` means 1000 or more and clients render it as `999+`.
-- `mentionUnread` is an unordered, duplicate-free set encoded as an array containing zero or more of
-  `"all"` and `"me"`. Empty means no mention; the legacy `"none"` value is not valid. Clients must not
-  attach meaning to array order.
-- Both count and mentions are derived from the same first 1000 unread, non-self-authored messages after the
-  committed HWM.
-- This contract is intentionally incompatible with the retired `lastReadSeq` request and scalar mention
-  response; callers and servers must be deployed together.
+- **Body**: `{ threadId, localReadHwm, force?: boolean }`; position is a nonnegative int32.
+- **Data**: `{ taskId: string, status: 'PENDING' }`. Acceptance is not read confirmation.
+- Ordinary pending requests merge by maximum position. `force: true` permits rollback
+  and forms an ordering barrier; ordinary clients omit it.
+- Execution atomically adjusts the exact persisted unread count and read position.
+  No count cap applies; `999+` is a client presentation choice.
+- Committed state arrives through the thread feed. Task failures and
+  supersession follow the durable-task lifecycle.
+
+### POST `/thread/feed-delta`
+
+- **Body**: `{ after: number, through?: number, take?: number, previewCount?: number }`; feed cursors are
+  nonnegative int32, take defaults to 100 and is limited to 1..200.
+- **Data**: `{ threadFeedEndId, through, scannedThrough, hasMore, items }`.
+- Each item is `{ threadId, threadFeedId, messageEndSeq, tombstoneEndSeq, lastReadSeq, unreadCount, lastMentionSeq, previews? }`.
+  `lastMentionSeq` is nullable; clients compare it with their local read position.
+- `previewCount` defaults to zero and cannot exceed the configured preview limit.
+  Previews include sequence, sender, timestamp, and live/retracted/removed status;
+  deleted entries contain no original message text.
+- Initial consumption uses `after: 0`; omitted through captures the current head.
+  Subsequent pages reuse through. Persist items and scannedThrough atomically.
+- Rows are compacted by account/thread and ordered by threadFeedId. An empty
+  final page still advances scannedThrough to through. Drain a newer head next.
+- An invalid/ahead range returns `THREAD_FEED_CURSOR_INVALID` (30007).
+- HELLO carries `threadFeedEndId`; `THREAD_FEED_UPDATED` carries
+  `{ threadFeedEndId }` as a wake hint. Content and unread state share each snapshot.
+- Backend and clients require coordinated cutover; there are no old delta aliases.
+
+See [unified thread feed](../design/thread-feed.md) for transaction,
+task coalescing, and optimistic client correction semantics.
 
 ---
 
@@ -354,7 +380,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 > Controller: [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts) · Service: [src/calls/calls.service.ts](../../src/calls/calls.service.ts)
 
-1:1 audio/video calls. The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On a terminal state `CallsService` authors a `ContentType.CALL` chat bubble (bilateral).
+1:1 audio/video calls. The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On a terminal state `CallsService` commits a local `SYSTEM / CALL_ENDED` notice on each participating server.
 
 - `POST /calls/initiate` `{ callSid, calleeUserId, callType }` → `{ callSid, threadId }` (`70001` not friends · `70004` busy).
 - `POST /calls/{accept, ringing, connected, decline, cancel, end, signal}` drive the FSM (`70002` not found · `70003` not a participant · `70005` invalid transition).
@@ -372,10 +398,10 @@ See the [Android calls client contract](../platform/android/calls.md).
 - `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB). Registration binds the token to the current authenticated session; re-registering re-owns it to that session.
 - `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
-- `GET /user/state-feed` — the single device-facing state feed, including paired thread content heads.
-- `POST /notification-feed/query` — build an away-notification delta from changed threads. Each descriptor
-  adds or replaces the notification for its thread; an empty result is a no-op.
-- `POST /notifications/action` — dispatch a notification action such as mark-read or inline reply.
+- `GET /user/state-feed` — account and relationship metadata.
+- `POST /thread/feed-delta` — unified thread heads, read positions, unread counts and bounded previews.
+  Clients reconcile local optimistic reads and compose notifications from this feed.
+  Message notifications have no action buttons. Body taps open the thread; dismissal is local.
 
 ---
 
@@ -461,3 +487,13 @@ user's other offline devices.
 ### Client → Server
 
 SSE is unidirectional; **clients do not send business messages over SSE**. All writes (sending messages, invites, calls, future typing) go through HTTP `POST`.
+
+## Message reports and administrative deletion
+
+- `POST /api/v1/message-reports` accepts one `{ threadId, seq }`. It requires an authorized participant and rejects own, system, call, missing, or newly reported deleted messages. Success returns only the standard success envelope with empty data; no report identity or moderation outcome is returned to the reporter.
+- Reports are unique by `(threadId, seq)`. An active duplicate succeeds without changing the row. Reporting an available message again reactivates its dismissed report. Retrying an existing report for a deleted message succeeds without reactivation.
+- `POST /api/v1/admin/message-reports` accepts `{ skip?, take?, isDeleted? }`, defaulting to active reports. Content is returned unchanged. The admin UI renders raw content, or “This message has been deleted” when the message is deleted.
+- `POST /api/v1/admin/message-reports/delete` accepts one `{ threadId, seq }` and soft-deletes the report without changing the message.
+- `POST /api/v1/admin/messages/delete` accepts one `{ threadId, seq }` and returns `{ taskId, status }` for a `DELETE_MESSAGE` durable task. Repeated submissions reuse the existing task; failed tasks can be retried through durable task administration. Admin multi-selection submits one request per message and preserves failed selections.
+
+The two administrative mutations require ADMIN or SUPER_ADMIN. Report removal and message deletion are distinct: there is no review status or reporter association. A deletion task uses the shared deletion service to write an idempotent tombstone, remove the message from the preview cache, archive its report, and enqueue thread fanout. The worker then signals federation. Interrupted deletion tasks are recovered at startup. No moderation-result notification is sent to the reporter.

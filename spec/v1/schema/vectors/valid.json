@@ -312,32 +312,6 @@
       }
     },
     {
-      "name": "CALL message query carries its callId as clientMessageId",
-      "schema": "urn:somfp:v1:message-query",
-      "value": {
-        "messages": [
-          {
-            "thread": {
-              "account": "alice",
-              "peerAccount": "bob"
-            },
-            "authorRef": "THREAD_ACCOUNT",
-            "seq": 3,
-            "profileRev": 3,
-            "originSeq": null,
-            "contentType": "CALL",
-            "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
-            "createdAt": 1700000001001,
-            "originCreatedAt": null,
-            "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
-            "assets": []
-          }
-        ],
-        "scannedThrough": 3,
-        "hasMore": false
-      }
-    },
-    {
       "name": "all message content discriminators",
       "schema": "urn:somfp:v1:message-content",
       "values": [
@@ -409,15 +383,6 @@
             "domain": "a.example",
             "displayName": "Project Group",
             "bio": ""
-          }
-        },
-        {
-          "contentType": "CALL",
-          "content": {
-            "mediaType": "AUDIO",
-            "outcome": "completed",
-            "startedAt": 1700000000000,
-            "endedAt": 1700000001000
           }
         },
         {
@@ -500,10 +465,7 @@
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",
-          "operation": "connected",
-          "payload": {
-            "startedAt": 1700000000100
-          }
+          "operation": "connected"
         },
         {
           "callId": "550e8400-e29b-41d4-a716-446655440000",

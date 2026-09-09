@@ -13,8 +13,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Report one or more messages in one conversation */
-        post: operations["MessageController_reportMessages"];
+        /** Report one message in a conversation */
+        post: operations["MessageController_reportMessage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1086,40 +1086,6 @@ export interface paths {
         get: operations["NotificationController_vapidKey"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/notification-feed/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Build notifications from changed thread heads in ClientStateFeed */
-        post: operations["NotificationController_queryNotifications"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/notifications/action": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Report a notification action (button tap / inline reply) */
-        post: operations["NotificationController_reportAction"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3193,7 +3159,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/message-reports/resolve": {
+    "/api/v1/admin/message-reports/delete": {
         parameters: {
             query?: never;
             header?: never;
@@ -3202,8 +3168,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Uphold or reject message reports */
-        post: operations["MessageReportAdminController_resolve"];
+        /** Soft-delete one report without deleting its message */
+        post: operations["MessageReportAdminController_dismiss"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/messages/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enqueue durable deletion of one message */
+        post: operations["MessageReportAdminController_deleteMessage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3504,15 +3487,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        CreateMessageReportsDto: {
+        CreateMessageReportDto: {
             /** @example 12 */
             threadId: number;
-            /**
-             * @example [
-             *       31
-             *     ]
-             */
-            seqs: string[];
+            /** @example 31 */
+            seq: number;
         };
         ApiResult: {
             /**
@@ -3632,7 +3611,7 @@ export interface components {
              * @description Content type
              * @enum {string}
              */
-            contentType: "PURE_TEXT" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CONTACT_CARD" | "CALL" | "FORWARD" | "GALLERY" | "SYSTEM";
+            contentType: "PURE_TEXT" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CONTACT_CARD" | "FORWARD" | "GALLERY" | "SYSTEM";
             /**
              * @description Message content
              * @example hello
@@ -4414,33 +4393,6 @@ export interface components {
             /** @description Current Android FCM registration token. */
             token: string;
         };
-        NotificationFeedQueryDto: {
-            /**
-             * @description Exclusive per-user ClientStateFeed cursor.
-             * @default 0
-             */
-            after: number;
-            /**
-             * @description "message" returns a bounded recent-message sample for MessagingStyle. "private" returns counts and routing only; message content never leaves the server.
-             * @default message
-             * @enum {string}
-             */
-            previewMode: "message" | "private";
-            /** @description The client's per-thread dismiss HWM map { threadId: seq }. A thread's notification starts after the greater of this value and its server read watermark. */
-            threadHwms?: Record<string, never>;
-        };
-        ReportActionDto: {
-            /** @description The notification's tag (which notification's action fired). */
-            tag: string;
-            /** @description The action id ('reply' | 'open' | …; 'dismiss' is handled client-side). */
-            actionId: string;
-            /** @description reply: the target thread. */
-            threadId?: number;
-            /** @description reply: the target message seq (routing). */
-            seq?: number;
-            /** @description reply: the inline-typed reply text. */
-            replyText?: string;
-        };
         OtpLoginDto: {
             /**
              * @description Account the one-time code was issued for.
@@ -5055,21 +5007,17 @@ export interface components {
         };
         AdminListMessageReportsDto: {
             /** @default 0 */
-            skip: Record<string, never>;
+            skip?: number;
             /** @default 20 */
-            take: Record<string, never>;
-            /** @enum {string} */
-            status?: "PENDING" | "UPHELD" | "REJECTED";
+            take?: number;
+            /** @default false */
+            isDeleted?: boolean;
         };
-        ResolveMessageReportsDto: {
-            /**
-             * @example [
-             *       "1"
-             *     ]
-             */
-            reportIds: string[];
-            /** @enum {string} */
-            status: "UPHELD" | "REJECTED";
+        MessageTargetDto: {
+            /** @example 12 */
+            threadId: number;
+            /** @example 31 */
+            seq: number;
         };
         AdminDurableTaskQueryDto: {
             /** @default 0 */
@@ -5090,7 +5038,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    MessageController_reportMessages: {
+    MessageController_reportMessage: {
         parameters: {
             query?: never;
             header?: never;
@@ -5099,7 +5047,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateMessageReportsDto"];
+                "application/json": components["schemas"]["CreateMessageReportDto"];
             };
         };
         responses: {
@@ -6510,48 +6458,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    NotificationController_queryNotifications: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NotificationFeedQueryDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    NotificationController_reportAction: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReportActionDto"];
-            };
-        };
         responses: {
             200: {
                 headers: {
@@ -8998,7 +8904,7 @@ export interface operations {
             };
         };
     };
-    MessageReportAdminController_resolve: {
+    MessageReportAdminController_dismiss: {
         parameters: {
             query?: never;
             header?: never;
@@ -9007,7 +8913,28 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ResolveMessageReportsDto"];
+                "application/json": components["schemas"]["MessageTargetDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageReportAdminController_deleteMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageTargetDto"];
             };
         };
         responses: {

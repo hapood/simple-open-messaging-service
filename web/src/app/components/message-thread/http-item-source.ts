@@ -72,10 +72,6 @@ import {
   toRenderMessageEntities,
 } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
-import {
-  parseCallMessageContent,
-  type CallMessageContent,
-} from '../../../../../shared/call-message-content';
 import { isTauri } from '../../services/runtime';
 
 /**
@@ -583,14 +579,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     for (const m of msgs) {
       const id = m.seq;
       if (id > this.loadedSeq) this.loadedSeq = id;
-      const callContent =
-        m.contentType === 'CALL' ? parseCallMessageContent(m.content) : null;
-      if (m.contentType === 'CALL' && !callContent) {
-        console.error(
-          `[message-content] skipped invalid CALL content (threadId=${this.conv.threadId}, seq=${m.seq})`,
-        );
-        continue;
-      }
       const creatorKey = this.creatorKey(m.creator);
       if (creatorKey !== null) {
         let creatorSeqs = this.seqsByCreator.get(creatorKey);
@@ -629,7 +617,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
       const item: CbItem<ChatMsgData> = {
         id,
-        data: this.toMsgData(m, images, file, callContent),
+        data: this.toMsgData(m, images, file),
       };
       if (
         item.data.quote?.seq !== undefined &&
@@ -745,7 +733,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     m: Message,
     images: AlbumImage[] | null,
     file: FileInfo | null,
-    callContent: CallMessageContent | null,
   ): ChatMsgData {
     if (m.contentType === 'SYSTEM') {
       let systemActorIsSelf = false;
@@ -753,14 +740,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const actor = (
           JSON.parse(m.content) as {
             actor?: { account?: string; domain?: string };
+            caller?: { account?: string; domain?: string };
           }
-        ).actor;
+        );
+        const identity = actor.actor ?? actor.caller;
         const self = this.userService.sessionProfile();
         systemActorIsSelf =
-          !!actor &&
+          !!identity &&
           !!self &&
-          actor.account === self.account &&
-          actor.domain === self.domain;
+          identity.account === self.account &&
+          identity.domain === self.domain;
       } catch {
         // The system row owns malformed-content fallback rendering.
       }
@@ -810,7 +799,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
       text: textContent ? toDisplayText(textContent.text) : m.content,
-      ...(callContent ? { callContent } : {}),
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),

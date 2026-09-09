@@ -13,19 +13,18 @@ import { SystemRowComponent } from './system-row.component';
 describe('SystemRowComponent', () => {
   let language: LanguageService;
 
-  const message = (text: string, name = 'Alice'): ChatMsgData =>
-    ({
-      type: 'system',
-      msgId: 1,
-      isSelf: false,
-      name,
-      text,
-      time: '09:30',
-      contentType: 'SYSTEM',
-      images: null,
-      file: null,
-      createdAtMs: Date.now(),
-    });
+  const message = (text: string, name = 'Alice'): ChatMsgData => ({
+    type: 'system',
+    msgId: 1,
+    isSelf: false,
+    name,
+    text,
+    time: '09:30',
+    contentType: 'SYSTEM',
+    images: null,
+    file: null,
+    createdAtMs: Date.now(),
+  });
 
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -182,5 +181,30 @@ describe('SystemRowComponent', () => {
       '对方服务器已更新 peer.test 的身份绑定',
     );
     expect(fixture.nativeElement.textContent).toContain('无法继续发送消息');
+  });
+  it('renders local call type, outcome, direction, and connected duration', () => {
+    const fixture = TestBed.createComponent(SystemRowComponent);
+    fixture.componentRef.setInput(
+      'data',
+      message(
+        JSON.stringify({
+          type: 'CALL_ENDED',
+          callId: '550e8400-e29b-41d4-a716-446655440000',
+          caller: { account: 'Alice', domain: 'a.test' },
+          callee: { account: 'Bob', domain: 'b.test' },
+          mediaType: 'VIDEO',
+          outcome: 'completed',
+          initiatedAt: 1000,
+          connectedAt: 2000,
+          endedAt: 67000,
+        }),
+      ),
+    );
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Incoming call');
+    expect(fixture.nativeElement.textContent).toContain('Video call');
+    expect(fixture.nativeElement.textContent).toContain('Call ended');
+    expect(fixture.nativeElement.textContent).toContain('1:05');
+    expect(fixture.nativeElement.textContent).toContain('Waited 0:01');
   });
 });

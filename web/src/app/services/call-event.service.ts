@@ -41,7 +41,7 @@ const CALL_END_REASON: Record<string, CallTerminalReason> = {
 };
 
 /** Maps a CALL_EVENT `type` to the UI {@link CallPhase}. Terminal types (declined/cancelled/missed/ended)
- *  map to `'ended'`, which {@link commit} normalizes back to `'idle'` — the terminal CALL bubble in the
+ *  map to `'ended'`, which {@link commit} normalizes back to `'idle'` — the terminal system notice in the
  *  thread is the user-visible record, so the call overlay simply dismisses on terminal. `incoming` is
  *  handled specially (it seeds the whole snapshot); the caller's `ringing` only applies to the caller. */
 const PHASE_BY_EVENT: Record<string, CallPhase> = {
@@ -70,7 +70,7 @@ const PHASE_BY_EVENT: Record<string, CallPhase> = {
  * service consumes CALL_EVENT only.
  *
  * `callState` is normalized to be either an ACTIVE phase or `'idle'`: a terminal ('ended') is folded to
- * `'idle'` (the call overlay dismisses; the terminal record is the CALL bubble). So the overlay gates on
+ * `'idle'` (the call overlay dismisses; the terminal record is a system notice). So the overlay gates on
  * `phase !== 'idle'`.
  *
  * Root singleton, subscribes in its constructor. Injected for the app's lifetime so an incoming ring is
@@ -136,7 +136,7 @@ export class CallEventService implements OnDestroy {
   }
 
   /** Set the call state, folding a terminal ('ended') to 'idle' so the overlay dismisses and the state is
-   *  clean for the next call. The terminal CALL bubble in the thread is the user-visible record. */
+   *  clean for the next call. The terminal system notice in the thread is the user-visible record. */
   private commit(next: CallSnapshot): void {
     this.rememberOwnedCall(next);
     this.callState.set(next);

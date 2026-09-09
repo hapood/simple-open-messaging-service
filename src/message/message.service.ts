@@ -4,11 +4,11 @@ import {
   type AccountTarget,
 } from '../user/account-address.js';
 import {
-  account,
   forwardMessage,
   mediaAsset,
   messageAsset,
   message,
+  deletedMessage,
   messageThread,
   pendingMedia,
   fileSyncProgress,
@@ -19,7 +19,6 @@ import {
 } from '../database/schema.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
-  lockThreadContentInTx,
   requireThreadContentLockInTx,
   type ThreadContentLock,
 } from '../relationship/thread-content-lock.js';
@@ -42,7 +41,11 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { ContentType, MessageThreadType } from '../database/enums.js';
+import {
+  ContentType,
+  MessageThreadType,
+  type MessageDeleteType,
+} from '../database/enums.js';
 
 import { rawDate } from '../database/raw-result.js';
 import { isUniqueViolation } from '../database/database-error.js';
@@ -77,9 +80,10 @@ import {
   SystemMessageType,
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
-import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
+import { enqueueThreadFanoutInTx } from './thread-fanout-task.js';
 import { requireOutboundPendingMedia } from './pending-media-row.js';
 import { resolveStoredQuotes } from './quote-reference.js';
+import { ThreadPreviewService } from './thread-preview.service.js';
 
 interface ReplyPreview {
   author: string;
@@ -113,6 +117,12 @@ export interface MessageQueryParams {
   truncateSeq?: number;
 }
 
+/** Query-only immutable slot; deleted bodies and media metadata never leave the server. */
+export type ClientMessageTomb = Pick<
+  PublicMessage,
+  'threadId' | 'seq' | 'creator' | 'profileRev' | 'createdAt' | 'updatedAt'
+> & { contentType: 'TOMB'; isDeleted: true; deletionType: MessageDeleteType };
+
 export interface ClientMessagePageQuery {
   threadId: number;
   after?: number;
@@ -125,31 +135,6 @@ export interface ClientMessageHistoryGap {
   startSeq: number;
   endSeq: number;
   recoverable: boolean;
-}
-
-export interface ThreadAttentionState {
-  count: number;
-  mention: UnreadMentionState;
-}
-
-export interface CommittedThreadReadState extends ThreadAttentionState {
-  lastReadSeq: number;
-  readRevision: number;
-}
-
-export interface AwayThreadAttentionState extends ThreadAttentionState {
-  latestSeq: number;
-}
-
-export interface AwayNotificationMessage {
-  threadId: number;
-  seq: number;
-  creatorAccount: string;
-  creatorDomain: string;
-  senderName: string;
-  contentType: ContentType;
-  content: string;
-  createdAt: Date;
 }
 
 function authorNamespaceId(message: { creatorNamespaceId: number }): number {
@@ -204,8 +189,8 @@ export function derivePreview(type: ContentType, content: string): string {
  * Message read/write data layer.
  *
  * Friendship state-machine logic formerly lived here; it has moved to FriendshipService (on the new
- * Friendship model). This service now deals only with Message rows + the MessageThread last-message
- * denormalization. Membership authorization (is the caller an active AccountThreadState of this thread?)
+ * Friendship model). This service now deals with Message rows and thread content heads.
+ * Membership authorization (is the caller an active AccountThreadState of this thread?)
  * is handled by AccountThreadStateService in the controllers before write/query is called.
  */
 @Injectable()
@@ -215,6 +200,7 @@ export class MessageService {
   constructor(
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
+    private readonly previews: ThreadPreviewService,
   ) {}
 
   private async queryRaw<T extends object[]>(
@@ -268,13 +254,8 @@ export class MessageService {
   }
 
   /**
-   * Append a message AND update the thread's denormalized last-message cache AND advance the sender's
-   * own read cursor — all in one transaction, so:
-   *  - the conversation list (which reads MessageThread.lastMessage*) can never observe a message
-   *    whose preview hasn't been written;
-   *  - the sender's own message never counts as unread to themselves (their lastReadSeq jumps to
-   *    what they just sent), removing the need for a client post-send mark-read round-trip and keeping
-   *    multi-device badge counts correct.
+   * Append a message and admit its delivery work atomically. Sending does not advance read;
+   * the unread eligibility predicate excludes the sender's own message independently.
    * Returns the Message MINUS its internal `id`: the BigInt global PK is a cross-conversation throughput
    * side-channel and must never leave the server — only the per-thread `seq` is public.
    *
@@ -309,8 +290,7 @@ export class MessageService {
       if (existing !== null) return existing; // retry → return the original message (already dispatched)
     }
     try {
-      return await this.database.db.transaction(async (tx) => {
-        await lockThreadContentInTx(tx, threadId);
+      return await this.previews.commitMessage(threadId, async (tx) => {
         if (beforeMessageCreate) await beforeMessageCreate(tx);
         // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
         // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
@@ -481,24 +461,9 @@ export class MessageService {
         await tx
           .update(messageThread)
           .set({
-            lastMessageSeq: seq,
-            lastMessagePreview: derivePreview(type, storedContent),
-            lastMessageAt: msg.createdAt,
             updatedAt: new Date(),
           })
           .where(eq(messageThread.id, threadId));
-        // Sender has implicitly "read" what they just sent; seq is freshly allocated so it is always
-        // strictly greater than the prior watermark — a forward move, never a regression.
-        await tx
-          .update(accountThreadState)
-          .set({ lastReadSeq: seq, updatedAt: new Date() })
-          .where(
-            and(
-              eq(accountThreadState.accountId, userId),
-              eq(accountThreadState.threadId, threadId),
-            ),
-          );
-        await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
@@ -540,8 +505,7 @@ export class MessageService {
     }
   }
 
-  /** One transactional path for actual relationship departures and their retained-history boundary.
-   * Call only for an active-to-inactive transition while holding its relationship locks. */
+  /** Write a departure notice. The relationship transaction owns history boundaries. */
   async writeDepartureMessageInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -552,34 +516,15 @@ export class MessageService {
     options: {
       threadLock?: ThreadContentLock;
       actorUserId?: AccountTarget;
-      recipientUserIds: readonly number[];
-      visibleThroughUserIds: readonly number[];
-      markReadUserId?: number;
     },
   ): Promise<{ message: PublicMessage; messageId: bigint }> {
-    const result = await this.writeSystemMessageInTx(
+    return this.writeSystemMessageInTx(
       tx,
       threadId,
       type,
       subjectUserId,
       options,
     );
-    if (options.visibleThroughUserIds.length > 0)
-      await tx
-        .update(accountThreadState)
-        .set({
-          messageVisibleThroughSeq: result.message.seq,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(accountThreadState.threadId, threadId),
-            inArray(accountThreadState.accountId, [
-              ...options.visibleThroughUserIds,
-            ]),
-          ),
-        );
-    return result;
   }
 
   /** Server-only structured timeline notice. It is persisted for this server's clients only and is
@@ -587,7 +532,7 @@ export class MessageService {
   async writeSystemMessageInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    type: SystemMessageType,
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
     subjectUserId?: AccountTarget,
     options?: {
       threadLock?: ThreadContentLock;
@@ -595,12 +540,14 @@ export class MessageService {
       actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
-      recipientUserIds?: readonly number[];
-      markReadUserId?: number;
       domain?: string;
     },
   ): Promise<{ message: PublicMessage; messageId: bigint }> {
-    await requireThreadContentLockInTx(tx, threadId, options?.threadLock);
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      threadId,
+      options?.threadLock,
+    );
     const subjectRequired =
       type !== SystemMessageType.FRIEND_ADDED &&
       type !== SystemMessageType.MESSAGES_MODERATED &&
@@ -644,11 +591,14 @@ export class MessageService {
       ...(options?.count === undefined ? {} : { count: options.count }),
       ...(options?.domain === undefined ? {} : { domain: options.domain }),
     });
-    const [{ curSeq: seq }] = await tx
+    const [{ curSeq: seq, deletionSeqAllocatedThrough }] = await tx
       .update(messageThread)
       .set({ curSeq: sql`${messageThread.curSeq} + 1` })
       .where(eq(messageThread.id, threadId))
-      .returning({ curSeq: messageThread.curSeq });
+      .returning({
+        curSeq: messageThread.curSeq,
+        deletionSeqAllocatedThrough: messageThread.deletionSeqAllocatedThrough,
+      });
     const [stored] = await tx
       .insert(message)
       .values({
@@ -662,47 +612,28 @@ export class MessageService {
     await tx
       .update(messageThread)
       .set({
-        lastMessageSeq: seq,
-        lastMessagePreview: derivePreview(ContentType.SYSTEM, content),
-        lastMessageAt: stored.createdAt,
         updatedAt: new Date(),
       })
       .where(eq(messageThread.id, threadId));
-    if (options?.markReadUserId !== undefined) {
-      await tx
-        .update(accountThreadState)
-        .set({ lastReadSeq: seq, updatedAt: new Date() })
-        .where(
-          and(
-            eq(accountThreadState.accountId, options.markReadUserId),
-            eq(accountThreadState.threadId, threadId),
-          ),
-        );
-    }
-    if (options?.recipientUserIds) {
-      await ClientThreadContentHeadWriter.publishMessageToUsers(
-        tx,
-        threadId,
-        seq,
-        options.recipientUserIds,
-      );
-    } else {
-      await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
-    }
+    // System rows have no author and share the regular account preview window.
+    // Admission remains atomic with the relationship mutation and its boundaries.
+    await enqueueThreadFanoutInTx(tx, threadLock, {
+      threadId,
+      messageEndSeq: seq,
+      tombstoneEndSeq: deletionSeqAllocatedThrough,
+    });
     return { message: stripMessageId(stored), messageId: stored.id };
   }
 
   async writeSystemMessage(
     threadId: number,
-    type: SystemMessageType,
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
     subjectUserId?: AccountTarget,
     options?: {
       count?: number;
       actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
-      recipientUserIds?: readonly number[];
-      markReadUserId?: number;
       domain?: string;
     },
   ): Promise<PublicMessage> {
@@ -716,15 +647,13 @@ export class MessageService {
    * transaction commits; a bad payload, missing subject or storage failure must never roll state back. */
   async tryWriteSystemMessage(
     threadId: number,
-    type: SystemMessageType,
+    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
     subjectUserId?: AccountTarget,
     options?: {
       count?: number;
       actorUserId?: AccountTarget;
       subjectAddress?: MessageAuthorAddress;
       actorAddress?: MessageAuthorAddress;
-      recipientUserIds?: readonly number[];
-      markReadUserId?: number;
       domain?: string;
     },
   ): Promise<PublicMessage | null> {
@@ -1036,9 +965,9 @@ export class MessageService {
 
   /**
    * Promote a staged outbound batch to a real Message once every expected file has landed (Phase 7
-   * barrier model). Runs the SAME commit core as promoteStaged/writeMsgToThread (atomic seq
-   * allocation, membership check, Message + N messageAsset rows, last-message cache, sender read
-   * cursor), then deletes the PendingMedia row and the batch's FileSyncProgress rows.
+   * barrier model). Atomically allocates the seq, checks membership, and stores the Message
+   * with its messageAsset rows, then deletes the PendingMedia row and the batch's
+   * FileSyncProgress rows. Materializing an outbound message does not advance read.
    *
    * Concurrency: the win-guard is `DELETE FROM pendingMedia WHERE id = stage.id AND status = 'pending'
    * RETURNING` inside the transaction — only one of N racing uploads wins (returns a row); losers get
@@ -1102,146 +1031,140 @@ export class MessageService {
     const unboundContent = assembleOutboundContent(stage.contentType, payloads);
     let created: PublicMessage | null = null;
     try {
-      created = await this.database.db.transaction(async (tx) => {
-        await lockThreadContentInTx(tx, stage.threadId);
-        // Win-guard: only the caller that deletes the still-pending stage promotes. A concurrent winner
-        // already deleted it → RETURNING is empty → this caller returns null (no-op, no double insert).
-        const [winner] = await tx
-          .delete(pendingMedia)
-          .where(
-            and(
-              eq(pendingMedia.id, stage.id),
-              eq(pendingMedia.status, 'pending'),
+      created = await this.previews.commitMessage(
+        stage.threadId,
+        async (tx) => {
+          // Win-guard: only the caller that deletes the still-pending stage promotes. A concurrent winner
+          // already deleted it → RETURNING is empty → this caller returns null (no-op, no double insert).
+          const [winner] = await tx
+            .delete(pendingMedia)
+            .where(
+              and(
+                eq(pendingMedia.id, stage.id),
+                eq(pendingMedia.status, 'pending'),
+              ),
+            )
+            .returning({ id: pendingMedia.id });
+          if (!winner) return null;
+          const creator = await tx.query.account.findFirst({
+            where: and(
+              eq(user.account, stage.creatorAccount),
+              eq(user.domain, stage.creatorDomain),
+              eq(user.namespaceId, stage.namespaceId),
             ),
-          )
-          .returning({ id: pendingMedia.id });
-        if (!winner) return null;
-        const creator = await tx.query.account.findFirst({
-          where: and(
-            eq(user.account, stage.creatorAccount),
-            eq(user.domain, stage.creatorDomain),
-            eq(user.namespaceId, stage.namespaceId),
-          ),
-          columns: { id: true },
-        });
-        if (!creator) throw new Error('local staged message author is missing');
-        const creatorUserId = creator.id;
-        const [participant] = await tx
-          .select({
-            type: messageThread.type,
-            dissolvedAt: groupStateFields.dissolvedAt,
-          })
-          .from(accountThreadState)
-          .innerJoin(
-            messageThread,
-            eq(messageThread.id, accountThreadState.threadId),
-          )
-          .leftJoin(group, eq(group.id, messageThread.id))
-          .where(
-            and(
-              eq(accountThreadState.accountId, creatorUserId),
-              eq(accountThreadState.threadId, stage.threadId),
-            ),
-          )
-          .limit(1);
-        if (
-          !participant ||
-          !(await isThreadMutuallyAuthorized(tx, creatorUserId, stage.threadId))
-        ) {
-          throw new BusinessException(
-            participant?.type === MessageThreadType.P2P
-              ? BusinessCode.FRIEND_NOT_FOUND
-              : BusinessCode.GROUP_FORBIDDEN,
-            'conversation is read-only',
+            columns: { id: true },
+          });
+          if (!creator)
+            throw new Error('local staged message author is missing');
+          const creatorUserId = creator.id;
+          const [participant] = await tx
+            .select({
+              type: messageThread.type,
+              dissolvedAt: groupStateFields.dissolvedAt,
+            })
+            .from(accountThreadState)
+            .innerJoin(
+              messageThread,
+              eq(messageThread.id, accountThreadState.threadId),
+            )
+            .leftJoin(group, eq(group.id, messageThread.id))
+            .where(
+              and(
+                eq(accountThreadState.accountId, creatorUserId),
+                eq(accountThreadState.threadId, stage.threadId),
+              ),
+            )
+            .limit(1);
+          if (
+            !participant ||
+            !(await isThreadMutuallyAuthorized(
+              tx,
+              creatorUserId,
+              stage.threadId,
+            ))
+          ) {
+            throw new BusinessException(
+              participant?.type === MessageThreadType.P2P
+                ? BusinessCode.FRIEND_NOT_FOUND
+                : BusinessCode.GROUP_FORBIDDEN,
+              'conversation is read-only',
+            );
+          }
+          if (participant.dissolvedAt != null) {
+            throw new BusinessException(
+              BusinessCode.GROUP_DISSOLVED,
+              'group has been dissolved',
+            );
+          }
+          const [{ curSeq: seq }] = await tx
+            .update(messageThread)
+            .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+            .where(eq(messageThread.id, stage.threadId))
+            .returning({ curSeq: messageThread.curSeq });
+          if (
+            !(await isThreadMutuallyAuthorized(
+              tx,
+              creatorUserId,
+              stage.threadId,
+            ))
+          ) {
+            throw new BusinessException(
+              participant.type === MessageThreadType.P2P
+                ? BusinessCode.FRIEND_NOT_FOUND
+                : BusinessCode.GROUP_FORBIDDEN,
+              'conversation is read-only',
+            );
+          }
+          const content = contextualizeCasUrls(
+            unboundContent,
+            stage.threadId,
+            seq,
           );
-        }
-        if (participant.dissolvedAt != null) {
-          throw new BusinessException(
-            BusinessCode.GROUP_DISSOLVED,
-            'group has been dissolved',
-          );
-        }
-        const [{ curSeq: seq }] = await tx
-          .update(messageThread)
-          .set({ curSeq: sql`${messageThread.curSeq} + 1` })
-          .where(eq(messageThread.id, stage.threadId))
-          .returning({ curSeq: messageThread.curSeq });
-        if (
-          !(await isThreadMutuallyAuthorized(tx, creatorUserId, stage.threadId))
-        ) {
-          throw new BusinessException(
-            participant.type === MessageThreadType.P2P
-              ? BusinessCode.FRIEND_NOT_FOUND
-              : BusinessCode.GROUP_FORBIDDEN,
-            'conversation is read-only',
-          );
-        }
-        const content = contextualizeCasUrls(
-          unboundContent,
-          stage.threadId,
-          seq,
-        );
-        const [msg] = await tx
-          .insert(message)
-          .values({
-            content,
-            contentType: stage.contentType,
-            threadId: stage.threadId,
-            creatorAccount: stage.creatorAccount,
-            creatorDomain: stage.creatorDomain,
-            profileRev: sql`(
+          const [msg] = await tx
+            .insert(message)
+            .values({
+              content,
+              contentType: stage.contentType,
+              threadId: stage.threadId,
+              creatorAccount: stage.creatorAccount,
+              creatorDomain: stage.creatorDomain,
+              profileRev: sql`(
               SELECT profile."defaultProfileRev" FROM "Account" profile
               WHERE profile.account = ${stage.creatorAccount}
                 AND profile.domain = ${stage.creatorDomain}
                 AND profile."namespaceId" = ${stage.namespaceId}
               LIMIT 1
             )`,
-            clientMessageId,
-            seq,
-            originSeq: seq,
-            updatedAt: new Date(),
-          })
-          .returning();
-        await tx
-          .update(messageThread)
-          .set({
-            lastMessageSeq: seq,
-            lastMessagePreview: derivePreview(stage.contentType, content),
-            lastMessageAt: msg.createdAt,
-            updatedAt: new Date(),
-          })
-          .where(eq(messageThread.id, stage.threadId));
-        await tx
-          .update(accountThreadState)
-          .set({ lastReadSeq: seq, updatedAt: new Date() })
-          .where(
-            and(
-              eq(accountThreadState.accountId, creatorUserId),
-              eq(accountThreadState.threadId, stage.threadId),
-            ),
-          );
-        await ClientThreadContentHeadWriter.publishMessage(
-          tx,
-          stage.threadId,
-          seq,
-        );
-        // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
-        // path only inserted the first, which silently dropped authz rows for multi-digest content.
-        const digests = extractDigests(content);
-        if (digests.length) {
-          await tx.insert(messageAsset).values(
-            digests.map((digest) => ({
-              messageId: msg.id,
-              threadId: stage.threadId,
-              digest,
-            })),
-          );
-        }
-        await tx
-          .delete(fileSyncProgress)
-          .where(eq(fileSyncProgress.batchId, stage.batchId));
-        return stripMessageId(msg);
-      });
+              clientMessageId,
+              seq,
+              originSeq: seq,
+              updatedAt: new Date(),
+            })
+            .returning();
+          await tx
+            .update(messageThread)
+            .set({
+              updatedAt: new Date(),
+            })
+            .where(eq(messageThread.id, stage.threadId));
+          // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
+          // path only inserted the first, which silently dropped authz rows for multi-digest content.
+          const digests = extractDigests(content);
+          if (digests.length) {
+            await tx.insert(messageAsset).values(
+              digests.map((digest) => ({
+                messageId: msg.id,
+                threadId: stage.threadId,
+                digest,
+              })),
+            );
+          }
+          await tx
+            .delete(fileSyncProgress)
+            .where(eq(fileSyncProgress.batchId, stage.batchId));
+          return stripMessageId(msg);
+        },
+      );
     } catch (e) {
       // Concurrent retry race (P2002 on clientMessageId) → return the winner rather than surfacing.
       if (isUniqueViolation(e)) {
@@ -1252,26 +1175,6 @@ export class MessageService {
     }
     if (created === null) return null; // lost the promote race
     return { message: created, newlyPromoted: true };
-  }
-
-  async queryMessages(
-    threadId: number,
-    params: MessageQueryParams,
-    filters?: {
-      clearedThroughSeq?: number | null;
-      visibleThroughSeq?: number | null;
-      hideCreators?: MessageAuthorAddress[];
-    },
-  ) {
-    const rows = await this.queryMessageRows(
-      this.database.db,
-      threadId,
-      params,
-      filters,
-    );
-    return this.attachMediaStatus(
-      await this.attachQuotePreviews(rows, filters),
-    );
   }
 
   /** Builds one client history page from one PostgreSQL snapshot. Message presentation enrichment
@@ -1389,8 +1292,45 @@ export class MessageService {
               `message ${query.threadId}:${selected.seq} overlaps a history gap`,
             );
         }
+        const deletedSeqs = messages
+          .filter((row) => row.isDeleted)
+          .map((row) => row.seq);
+        const deletionFacts =
+          deletedSeqs.length === 0
+            ? []
+            : await tx.query.deletedMessage.findMany({
+                where: and(
+                  eq(deletedMessage.threadId, query.threadId),
+                  inArray(deletedMessage.messageSeq, deletedSeqs),
+                ),
+                columns: { messageSeq: true, type: true },
+              });
+        const types = new Map(
+          deletionFacts.map((fact) => [fact.messageSeq, fact.type]),
+        );
+        const tombs = new Map<number, ClientMessageTomb>();
+        for (const row of messages) {
+          if (!row.isDeleted) continue;
+          const deletionType = types.get(row.seq);
+          if (!deletionType)
+            throw new Error(
+              `Deleted message ${query.threadId}:${row.seq} has no deletion fact`,
+            );
+          tombs.set(row.seq, {
+            threadId: row.threadId,
+            seq: row.seq,
+            profileRev: row.profileRev,
+            creator: stripMessageId(row).creator,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            contentType: 'TOMB',
+            isDeleted: true,
+            deletionType,
+          });
+        }
         return {
           messages,
+          tombs,
           gaps,
           scannedThrough,
           hasMore,
@@ -1403,8 +1343,15 @@ export class MessageService {
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
 
-    const messages = await this.attachMediaStatus(
-      await this.attachQuotePreviews(page.messages, page.filters),
+    const live = await this.attachMediaStatus(
+      await this.attachQuotePreviews(
+        page.messages.filter((row) => !row.isDeleted),
+        page.filters,
+      ),
+    );
+    const bySeq = new Map(live.map((row) => [row.seq, row]));
+    const messages = page.messages.map((row) =>
+      row.isDeleted ? page.tombs.get(row.seq)! : bySeq.get(row.seq)!,
     );
     return {
       messages,
@@ -1421,41 +1368,17 @@ export class MessageService {
     filters?: {
       clearedThroughSeq?: number | null;
       visibleThroughSeq?: number | null;
-      hideCreators?: MessageAuthorAddress[];
     },
   ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId. The
     // thread-wide clearedThroughSeq is validated before this query and is retained only for quote
     // preview filtering; it is deliberately not repeated as a SQL row predicate here.
-    //  - hideCreators: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
-    //    by the controller (group threads leave blocked members visible).
-    const conditions: SQL[] = [
-      eq(message.threadId, threadId),
-      eq(message.isDeleted, false),
-    ];
+    const conditions: SQL[] = [eq(message.threadId, threadId)];
     if (
       filters?.visibleThroughSeq !== null &&
       filters?.visibleThroughSeq !== undefined
     )
       conditions.push(lte(message.seq, filters.visibleThroughSeq));
-    if (filters?.hideCreators?.length)
-      conditions.push(
-        sql`NOT (${or(
-          ...filters.hideCreators.map((creator) =>
-            and(
-              eq(message.creatorAccount, creator.account),
-              eq(message.creatorDomain, creator.domain),
-              eq(
-                sql<number>`CASE
-                  WHEN ${message.creatorDomain} = 'local' THEN 0
-                  ELSE ${message.sourceNamespaceId}
-                END`,
-                creator.namespaceId,
-              ),
-            ),
-          ),
-        )})`,
-      );
     const cursorSeq = params.cursor?.threadId_seq.seq;
     if (cursorSeq !== undefined) {
       conditions.push(
@@ -1956,571 +1879,11 @@ export class MessageService {
       .then((row) => (row ? stripMessageId(row) : null));
   }
 
-  /** Resolve public per-thread identities to their durable Message rows, including tombstones. Used only
-   *  for cursor ordering; callers that render message bodies must use findMessagesBySeqPairs instead. */
-  async findMessageIdentitiesBySeqPairs(
-    pairs: Array<{ threadId: number; seq: number }>,
-  ): Promise<Message[]> {
-    if (pairs.length === 0) return [];
-    return this.database.db.query.message.findMany({
-      where: or(
-        ...pairs.map((pair) =>
-          and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
-        ),
-      ),
-    });
-  }
-
-  /** Batched lookup of messages by their per-thread (threadId, seq) identity — catch-up fetches
-   *  each thread's newest message body in ONE query (seq = thread.lastMessageSeq). Returns FULL Message
-   *  rows (BigInt id intact) so the caller can funnel them through {@link attachMediaStatus}, which strips
-   *  id before it reaches a client. Empty input → empty output (no empty-OR SQL). The composite
-   *  `@@unique([threadId, seq])` index backs every branch. */
-  async findMessagesBySeqPairs(
-    pairs: Array<{ threadId: number; seq: number }>,
-  ): Promise<Message[]> {
-    if (pairs.length === 0) return [];
-    return this.database.db.query.message.findMany({
-      where: and(
-        eq(message.isDeleted, false),
-        eq(message.localState, 'READY'),
-        or(
-          ...pairs.map((pair) =>
-            and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
-          ),
-        ),
-      ),
-    });
-  }
-
   /** Single thread lookup (used by mark-read to resolve "mark all current messages read"). */
   findThread(id: number) {
     return this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, id),
     });
-  }
-
-  /**
-   * One read model for the ThreadList unread range. Count and mention are derived from exactly the same
-   * joined rows and therefore cannot disagree about membership, creator exclusion, or the read watermark.
-   * PostgreSQL aggregates the count and only returns mention-looking text bodies for semantic parsing.
-   */
-  async unreadAttentionByThread(
-    userId: number,
-    selfAccount: string,
-    threadIds: number[],
-  ): Promise<Map<number, ThreadAttentionState>> {
-    if (threadIds.length === 0) return new Map();
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; unread: number; mentionContents: string[] }>
-    >`
-      SELECT
-        tp."threadId" AS "threadId",
-        COUNT(m.seq)::int AS "unread",
-        COALESCE(
-          ARRAY_AGG(m.content::text) FILTER (
-            WHERE m."contentType" = 'PURE_TEXT'
-              AND (
-                strpos(m.content ->> 'text', '](somfp://user/') > 0
-                OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
-              )
-          ),
-          ARRAY[]::text[]
-        ) AS "mentionContents"
-      FROM "AccountThreadState" tp
-      LEFT JOIN LATERAL (
-        SELECT msg.seq, msg.content, msg."contentType"
-        FROM "Message" msg
-        WHERE msg."threadId" = tp."threadId"
-          AND msg.seq > COALESCE(tp."lastReadSeq", 0)
-          AND NOT EXISTS (
-            SELECT 1 FROM "Account" self
-            WHERE self.id = ${userId}
-              AND self.account = msg."creatorAccount"
-              AND self.domain = msg."creatorDomain"
-              AND self."namespaceId" = CASE
-                WHEN msg."creatorDomain" = 'local' THEN 0
-                ELSE msg."sourceNamespaceId"
-              END
-          )
-          AND msg."isDeleted" = false
-          AND msg."localState" = 'READY'
-        ORDER BY msg.seq ASC
-        LIMIT 1000
-      ) m ON TRUE
-      WHERE tp."accountId" = ${userId}
-        AND tp."threadId" IN (${this.joinSql(threadIds)})
-      GROUP BY tp."threadId"
-    `;
-    return new Map(
-      rows.map((row) => [
-        row.threadId,
-        {
-          count: row.unread,
-          mention: this.mentionState(row.mentionContents ?? [], selfAccount),
-        },
-      ]),
-    );
-  }
-
-  /** Monotonically merge a viewport HWM and derive its capped badge from the same PostgreSQL statement. */
-  async commitReadState(
-    userId: number,
-    threadId: number,
-    localReadHwm: number,
-  ): Promise<CommittedThreadReadState | null> {
-    const rows = await this.queryRaw<
-      Array<{
-        lastReadSeq: number;
-        readRevision: number;
-        unread: number;
-        mentionContents: string[];
-        account: string;
-      }>
-    >`
-      WITH bumped AS (
-        UPDATE "Account"
-        SET "readRevision" = "readRevision" + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-        WHERE id = ${userId}
-        RETURNING "readRevision"
-      ), advanced AS (
-        UPDATE "AccountThreadState" AS participant
-        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", 0), ${localReadHwm}),
-            "readRevision" = bumped."readRevision",
-            "updatedAt" = CURRENT_TIMESTAMP
-        FROM bumped
-        WHERE participant."accountId" = ${userId}
-          AND participant."threadId" = ${threadId}
-        RETURNING participant."lastReadSeq", participant."readRevision"
-      ), sample AS (
-        SELECT m.seq, m.content, m."contentType"
-        FROM "Message" m, advanced a
-        WHERE m."threadId" = ${threadId}
-          AND m.seq > a."lastReadSeq"
-          AND NOT EXISTS (
-            SELECT 1 FROM "Account" self
-            WHERE self.id = ${userId}
-              AND self.account = m."creatorAccount"
-              AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = m."creatorNamespaceId"
-          )
-          AND m."isDeleted" = false
-          AND m."localState" = 'READY'
-        ORDER BY m.seq ASC
-        LIMIT 1000
-      )
-      SELECT
-        a."lastReadSeq" AS "lastReadSeq",
-        a."readRevision" AS "readRevision",
-        COUNT(s.seq)::int AS unread,
-        COALESCE(
-          ARRAY_AGG(s.content::text) FILTER (
-            WHERE s."contentType" = 'PURE_TEXT'
-              AND (
-                strpos(s.content ->> 'text', '](somfp://user/') > 0
-                OR strpos(s.content ->> 'text', '](somfp://audience/all)') > 0
-              )
-          ),
-          ARRAY[]::text[]
-        ) AS "mentionContents",
-        u.account
-      FROM advanced a
-      JOIN "Account" u ON u.id = ${userId}
-      LEFT JOIN sample s ON TRUE
-      GROUP BY a."lastReadSeq", a."readRevision", u.account
-    `;
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      lastReadSeq: row.lastReadSeq,
-      readRevision: row.readRevision,
-      count: row.unread,
-      mention: this.mentionState(row.mentionContents ?? [], row.account),
-    };
-  }
-
-  /** Current last-write-wins read states changed in `(fromRevision, toRevision]`. */
-  async queryReadDelta(
-    userId: number,
-    fromRevision: number,
-    toRevision: number,
-  ) {
-    const participants = await this.database.db
-      .select({
-        threadId: accountThreadState.threadId,
-        lastReadSeq: accountThreadState.lastReadSeq,
-        readRevision: accountThreadState.readRevision,
-      })
-      .from(accountThreadState)
-      .where(
-        and(
-          eq(accountThreadState.accountId, userId),
-          gt(accountThreadState.readRevision, fromRevision),
-          lte(accountThreadState.readRevision, toRevision),
-        ),
-      )
-      .orderBy(asc(accountThreadState.readRevision));
-    if (participants.length === 0) return [];
-    const self = await this.database.db.query.account.findFirst({
-      where: eq(user.id, userId),
-      columns: { account: true },
-    });
-    const attention = self
-      ? await this.unreadAttentionByThread(
-          userId,
-          self.account,
-          participants.map((p) => p.threadId),
-        )
-      : new Map();
-    return participants.map((p) => ({
-      threadId: p.threadId,
-      lastReadSeq: p.lastReadSeq ?? 0,
-      readRevision: p.readRevision,
-      unreadCount: attention.get(p.threadId)?.count ?? 0,
-      mentionUnread: attention.get(p.threadId)?.mention ?? [],
-    }));
-  }
-
-  async currentReadRevision(userId: number): Promise<number> {
-    const row = await this.database.db.query.account.findFirst({
-      where: eq(account.id, userId),
-      columns: { readRevision: true },
-    });
-    return row?.readRevision ?? 0;
-  }
-
-  /**
-   * One read model for per-conversation away notifications. The global HWM and optional per-thread dismiss
-   * HWM are applied before sampling; count, latest seq and mention are then derived from that same sample.
-   */
-  async awayAttentionByThread(
-    userId: number,
-    selfAccount: string,
-    threadLimit: number,
-    threadHwms: Record<number, number> = {},
-    hideCreatorIds: number[] = [],
-    sampleLimit = 1000,
-    threadIds?: number[],
-    globalSinceId?: bigint,
-  ): Promise<Map<number, AwayThreadAttentionState>> {
-    const hiddenClause = hideCreatorIds.length
-      ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "Account" hidden_author
-          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
-            AND hidden_author.account = m."creatorAccount"
-            AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = m."creatorNamespaceId"
-        )`
-      : sql.empty();
-    const globalClause =
-      globalSinceId === undefined
-        ? sql.empty()
-        : sql`AND m.id > ${globalSinceId}`;
-    const threadClause =
-      threadIds && threadIds.length > 0
-        ? sql`AND m."threadId" IN (${this.joinSql(threadIds)})`
-        : sql.empty();
-    const hwmEntries = Object.entries(threadHwms)
-      .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
-      .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
-    const tids = hwmEntries.map((p) => p.threadId);
-    const seqs = hwmEntries.map((p) => p.seq);
-    const hwmCte =
-      hwmEntries.length > 0
-        ? sql`SELECT * FROM UNNEST(ARRAY[${this.joinSql(tids)}]::int[], ARRAY[${this.joinSql(seqs)}]::int[]) AS x(tid, since_seq)`
-        : sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
-    const rows = await this.queryRaw<
-      Array<{
-        threadId: number;
-        cnt: bigint;
-        latest: number;
-        mentionContents: string[];
-      }>
-    >`
-      WITH thread_hwm AS (${hwmCte}),
-      sample AS (
-        SELECT m."threadId" AS tid, m.seq, m.id, m.content, m."contentType"
-        FROM "Message" m
-        JOIN "AccountThreadState" tp
-          ON tp."threadId" = m."threadId"
-         AND tp."accountId" = ${userId}
-         AND tp.muted = false
-        LEFT JOIN thread_hwm h ON h.tid = m."threadId"
-        WHERE m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
-          ${globalClause}
-          ${threadClause}
-          AND NOT EXISTS (
-            SELECT 1 FROM "Account" self
-            WHERE self.id = ${userId}
-              AND self.account = m."creatorAccount"
-              AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = m."creatorNamespaceId"
-          )
-          AND m."isDeleted" = false
-          AND m."localState" = 'READY'
-          ${hiddenClause}
-        ORDER BY m.id DESC
-        LIMIT ${sampleLimit}
-      )
-      SELECT
-        tid AS "threadId",
-        COUNT(*) AS cnt,
-        MAX(seq) AS latest,
-        COALESCE(
-          ARRAY_AGG(content::text) FILTER (
-            WHERE "contentType" = 'PURE_TEXT'
-              AND (
-                strpos(content ->> 'text', '](somfp://user/') > 0
-                OR strpos(content ->> 'text', '](somfp://audience/all)') > 0
-              )
-          ),
-          ARRAY[]::text[]
-        ) AS "mentionContents"
-      FROM sample
-      GROUP BY tid
-      ORDER BY MAX(id) DESC
-      LIMIT ${threadLimit}
-    `;
-    return new Map(
-      rows.map((row) => [
-        row.threadId,
-        {
-          count: Number(row.cnt),
-          latestSeq: row.latest,
-          mention: this.mentionState(row.mentionContents ?? [], selfAccount),
-        },
-      ]),
-    );
-  }
-
-  /** Recent messages for MessagingStyle, bounded independently per conversation. */
-  async awayNotificationMessages(
-    userId: number,
-    threadIds: number[],
-    threadHwms: Record<number, number> = {},
-    hideCreatorIds: number[] = [],
-    perThreadLimit = 5,
-    globalSinceId?: bigint,
-  ): Promise<Map<number, AwayNotificationMessage[]>> {
-    if (threadIds.length === 0) return new Map();
-    const hiddenClause = hideCreatorIds.length
-      ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "Account" hidden_author
-          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
-            AND hidden_author.account = m."creatorAccount"
-            AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = m."creatorNamespaceId"
-        )`
-      : sql.empty();
-    const globalClause =
-      globalSinceId === undefined
-        ? sql.empty()
-        : sql`AND m.id > ${globalSinceId}`;
-    const hwmEntries = Object.entries(threadHwms)
-      .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
-      .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
-    const hwmCte =
-      hwmEntries.length > 0
-        ? sql`SELECT * FROM UNNEST(
-            ARRAY[${this.joinSql(hwmEntries.map((p) => p.threadId))}]::int[],
-            ARRAY[${this.joinSql(hwmEntries.map((p) => p.seq))}]::int[]
-          ) AS x(tid, since_seq)`
-        : sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
-    const rows = await this.queryRaw<
-      Array<
-        Omit<AwayNotificationMessage, 'createdAt'> & {
-          createdAt: string;
-          rn: string;
-        }
-      >
-    >`
-      WITH thread_hwm AS (${hwmCte}),
-      ranked AS (
-        SELECT m."threadId", m.seq,
-               m."creatorAccount", m."creatorDomain",
-               COALESCE(u."displayName", m."creatorAccount") AS "senderName",
-               m."contentType", m.content, m."createdAt",
-               ROW_NUMBER() OVER (PARTITION BY m."threadId" ORDER BY m.seq DESC) AS rn
-        FROM "Message" m
-        LEFT JOIN "Profile" u
-          ON u.account = m."creatorAccount"
-         AND u.domain = m."creatorDomain"
-         AND u."namespaceId" = m."creatorNamespaceId"
-         AND u."profileRev" = m."profileRev"
-        JOIN "AccountThreadState" tp
-          ON tp."threadId" = m."threadId"
-         AND tp."accountId" = ${userId}
-         AND tp.muted = false
-        LEFT JOIN thread_hwm h ON h.tid = m."threadId"
-        WHERE m."threadId" IN (${this.joinSql(threadIds)})
-          ${globalClause}
-          AND m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
-          AND NOT EXISTS (
-            SELECT 1 FROM "Account" self
-            WHERE self.id = ${userId}
-              AND self.account = m."creatorAccount"
-              AND self.domain = m."creatorDomain"
-              AND self."namespaceId" = m."creatorNamespaceId"
-          )
-          AND m."isDeleted" = false
-          AND m."localState" = 'READY'
-          ${hiddenClause}
-      )
-      SELECT * FROM ranked WHERE rn <= ${perThreadLimit}
-      ORDER BY "threadId", seq ASC
-    `;
-    const result = new Map<number, AwayNotificationMessage[]>();
-    for (const row of rows) {
-      const list = result.get(row.threadId) ?? [];
-      list.push({
-        ...row,
-        content:
-          typeof row.content === 'string'
-            ? row.content
-            : JSON.stringify(row.content),
-        createdAt: rawDate(row.createdAt, 'Message.createdAt'),
-      });
-      result.set(row.threadId, list);
-    }
-    return result;
-  }
-
-  private mentionState(
-    contents: string[],
-    selfAccount: string,
-  ): UnreadMentionState {
-    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
-    if (!normalizedSelf) return [];
-    let all = false;
-    let me = false;
-    for (const content of contents) {
-      const text = parseTextMessageContent(content)?.text ?? '';
-      for (const segment of parseMessageEntities(text)) {
-        if (segment.kind !== 'entity') continue;
-        if (
-          segment.entityType === 'user' &&
-          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
-        ) {
-          me = true;
-        }
-        if (segment.entityType === 'audience' && segment.entityId === 'all')
-          all = true;
-      }
-    }
-    return [...(all ? ['all' as const] : []), ...(me ? ['me' as const] : [])];
-  }
-
-  /**
-   * Whether each requested thread's unread range contains a semantic mention of the viewer. SQL narrows the
-   * scan to text rows that resemble a SOMFP mention, then the canonical parser is the authority (so escaped
-   * protocol-looking plain text cannot create a false mention). `me` outranks `all`.
-   */
-  async unreadMentionStates(
-    userId: number,
-    selfAccount: string,
-    threadIds: number[],
-  ): Promise<Map<number, UnreadMentionState>> {
-    if (threadIds.length === 0 || !selfAccount.trim()) return new Map();
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; content: string }>
-    >`
-      SELECT m."threadId" AS "threadId", m.content::text AS content
-      FROM "AccountThreadState" tp
-      JOIN "Message" m
-        ON m."threadId" = tp."threadId"
-       AND m.seq > COALESCE(tp."lastReadSeq", 0)
-       AND NOT EXISTS (
-         SELECT 1 FROM "Account" self
-         WHERE self.id = ${userId}
-           AND self.account = m."creatorAccount"
-           AND self.domain = m."creatorDomain"
-           AND self."namespaceId" = m."creatorNamespaceId"
-       )
-      WHERE tp."accountId" = ${userId}
-        AND tp."threadId" IN (${this.joinSql(threadIds)})
-        AND m."isDeleted" = false
-        AND m."localState" = 'READY'
-        AND m."contentType" = 'PURE_TEXT'
-        AND (
-          strpos(m.content ->> 'text', '](somfp://user/') > 0
-          OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
-        )
-    `;
-    const contents = new Map<number, string[]>();
-    for (const row of rows) {
-      const list = contents.get(row.threadId) ?? [];
-      list.push(row.content);
-      contents.set(row.threadId, list);
-    }
-    return new Map(
-      [...contents].map(([threadId, values]) => [
-        threadId,
-        this.mentionState(values, selfAccount),
-      ]),
-    );
-  }
-
-  /** Mention state among messages newer than an internal away-notification HWM. */
-  async mentionStatesSinceId(
-    userId: number,
-    selfAccount: string,
-    sinceId: bigint,
-    threadIds?: number[],
-    hideCreatorIds: number[] = [],
-  ): Promise<Map<number, UnreadMentionState>> {
-    if (!selfAccount.trim() || threadIds?.length === 0) return new Map();
-    const threadClause = threadIds
-      ? sql`AND m."threadId" IN (${this.joinSql(threadIds)})`
-      : sql.empty();
-    const hiddenClause = hideCreatorIds.length
-      ? sql`AND NOT EXISTS (
-          SELECT 1 FROM "Account" hidden_author
-          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
-            AND hidden_author.account = m."creatorAccount"
-            AND hidden_author.domain = m."creatorDomain"
-            AND hidden_author."namespaceId" = m."creatorNamespaceId"
-        )`
-      : sql.empty();
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; content: string }>
-    >`
-      SELECT m."threadId" AS "threadId", m.content::text AS content
-      FROM "Message" m
-      JOIN "AccountThreadState" tp
-        ON tp."threadId" = m."threadId"
-       AND tp."accountId" = ${userId}
-       AND tp.muted = false
-      WHERE m.id > ${sinceId}
-        AND m."isDeleted" = false
-        AND m."localState" = 'READY'
-        AND NOT EXISTS (
-          SELECT 1 FROM "Account" self
-          WHERE self.id = ${userId}
-            AND self.account = m."creatorAccount"
-            AND self.domain = m."creatorDomain"
-            AND self."namespaceId" = m."creatorNamespaceId"
-        )
-        ${hiddenClause}
-        AND m."contentType" = 'PURE_TEXT'
-        ${threadClause}
-        AND (
-          strpos(m.content ->> 'text', '](somfp://user/') > 0
-          OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
-        )
-    `;
-    const contents = new Map<number, string[]>();
-    for (const row of rows) {
-      const list = contents.get(row.threadId) ?? [];
-      list.push(row.content);
-      contents.set(row.threadId, list);
-    }
-    return new Map(
-      [...contents].map(([threadId, values]) => [
-        threadId,
-        this.mentionState(values, selfAccount),
-      ]),
-    );
   }
 }
 

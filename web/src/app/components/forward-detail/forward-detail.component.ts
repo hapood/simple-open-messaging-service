@@ -68,7 +68,6 @@ const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   'GALLERY',
   'LINK',
   'CONTACT_CARD',
-  'CALL',
   'FORWARD',
 ]);
 

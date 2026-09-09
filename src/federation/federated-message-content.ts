@@ -7,11 +7,6 @@ import {
   parseSomfpUserAddress,
 } from '../common/account.js';
 import {
-  buildFederatedCallContent,
-  parseCallContent,
-  parseFederatedCallContent,
-} from '../calls/call-content.js';
-import {
   parseMessageEntities,
   serializeUserMention,
   transformMessageEntities,
@@ -225,6 +220,8 @@ export function toFederatedMessageContent(
   content: string,
   localDomain: string,
 ): string {
+  if (!Object.values(ContentType).includes(contentType))
+    throw new Error('unknown federated content type');
   const value = parseObject(content);
   switch (contentType) {
     case ContentType.PURE_TEXT:
@@ -354,12 +351,6 @@ export function toFederatedMessageContent(
         throw new Error('invalid forward card');
       validateForwardCard({ bundleId: value['bundleId'] });
       return JSON.stringify({ bundleId: value['bundleId'] });
-    case ContentType.CALL: {
-      if (parseFederatedCallContent(content)) return content;
-      const local = parseCallContent(content);
-      if (!local) throw new Error('invalid local call content');
-      return buildFederatedCallContent(local);
-    }
     case ContentType.SYSTEM:
       throw new Error('SYSTEM is not a federated content type');
     default:
@@ -374,6 +365,8 @@ export function fromFederatedMessageContent(
   localDomain: string,
   assetBytes: ReadonlyMap<string, number> = new Map(),
 ): string {
+  if (!Object.values(ContentType).includes(contentType))
+    throw new Error('unknown federated content type');
   const value = parseObject(content);
   const single = (extra: string[]): string => {
     assertKeys(value, ['digest', ...extra]);
@@ -504,11 +497,6 @@ export function fromFederatedMessageContent(
           ? {}
           : { avatar: localCasUrl(value['avatarDigest']) }),
       });
-    case ContentType.CALL:
-      if (!parseFederatedCallContent(content)) {
-        throw new Error('invalid federated call content');
-      }
-      return content;
     case ContentType.FORWARD:
       validateForwardCard(value);
       return content;

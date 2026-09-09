@@ -81,7 +81,7 @@
         {
           "properties": {
             "operation": {
-              "enum": ["accepted", "ringing", "declined", "cancelled", "missed"]
+              "enum": ["accepted", "ringing", "declined", "cancelled", "missed", "connected"]
             }
           }
         }
@@ -101,32 +101,6 @@
             },
             "payload": {
               "$ref": "#/$defs/signalPayload"
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false
-    },
-    {
-      "allOf": [
-        {
-          "$ref": "#/$defs/base"
-        },
-        {
-          "required": ["payload"],
-          "properties": {
-            "operation": {
-              "const": "connected"
-            },
-            "payload": {
-              "type": "object",
-              "required": ["startedAt"],
-              "properties": {
-                "startedAt": {
-                  "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-                }
-              },
-              "additionalProperties": false
             }
           }
         }
