@@ -124,6 +124,12 @@ export class DurableTaskStoreService {
   }
 
   async markSucceeded(taskId: bigint): Promise<void> {
+    // Atomic handlers may have committed their domain effect and terminal task state together.
+    const current = await this.database.db.query.durableTask.findFirst({
+      where: eq(durableTask.id, taskId),
+      columns: { status: true },
+    });
+    if (current?.status === 'SUCCEEDED') return;
     await this.markTerminal(taskId, {
       status: 'SUCCEEDED',
       completedAt: new Date(),

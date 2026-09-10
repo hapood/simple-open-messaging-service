@@ -40,6 +40,7 @@ contains 'handle /.well-known/*'
 contains 'root * /app/public/web'
 contains 'redir /admin /admin/ 308'
 contains 'header Cache-Control "no-cache"'
+contains 'handle /push/*.js {'
 contains 'header @web_immutable Cache-Control "public, max-age=31536000, immutable"'
 contains 'header @admin_immutable Cache-Control "public, max-age=31536000, immutable"'
 test "$(stat -c %a "$SANDBOX/run/Caddyfile")" = 600

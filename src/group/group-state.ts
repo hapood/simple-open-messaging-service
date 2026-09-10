@@ -7,6 +7,7 @@ import {
   profileTable,
 } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
+import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
 
 /** Read-only group presentation. Group coordinates are thread IDs, including mirrored groups. */
 const revision = sql<number>`COALESCE(${groupAccount.defaultProfileRev}, ${groupMetaProfileFeed.profileRev}, 0)`;
@@ -78,4 +79,15 @@ export async function readGroupState(
     .where(where)
     .limit(1);
   return row;
+}
+
+/** Serialize the terminal-state check with group mutations before any intent or projection writes. */
+export async function isGroupDissolvedInTx(
+  tx: DatabaseTransaction,
+  threadId: number,
+): Promise<boolean> {
+  await requireThreadContentLockInTx(tx, threadId);
+  const state = await readGroupState(tx, eq(groupStateFields.id, threadId));
+  if (!state) throw new Error('group interaction target is missing');
+  return state.dissolvedAt !== null;
 }

@@ -26,6 +26,10 @@ import { waitForFederationConvergence } from './final-audit.mjs';
 import { resolveWorkloadProfiles } from './profile-resolution.mjs';
 import { summarizeCoverage } from './coverage.mjs';
 import { assertVerificationMode } from './verification-mode.mjs';
+import {
+  executeForwardRelayScenario,
+  provisionForwardRelayUsers,
+} from './forward-relay-scenario.mjs';
 
 const p2pDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(p2pDir, '..', 'runtime', 'p2p-runs');
@@ -346,6 +350,7 @@ async function main() {
   await assertLabReady();
   const actors = await FederationLabActors.connect({ adminPassword });
   const originalRateLimits = new Map();
+  let forwardRelayUsers;
   try {
     await Promise.all(
       [...actors.nodes.values()].map(async ({ topology, admin }) => {
@@ -390,6 +395,8 @@ async function main() {
         `in-memory actor count ${actors.userCount} does not match plan ${plan.length}`,
       );
     }
+    forwardRelayUsers = await provisionForwardRelayUsers(actors);
+    report.forwardRelayUsers = forwardRelayUsers.map((user) => user.address);
     let groupsCompleted = 0;
     const createdGroups = await mapConcurrent(
       groupPlan,
@@ -545,6 +552,14 @@ async function main() {
       '[p2p] connecting read-only fact observer to three lab databases',
     );
     workloadConnections = await connectP2pAuditDatabases(baseDatabaseUrl);
+    await executeForwardRelayScenario({
+      users: forwardRelayUsers,
+      connections: workloadConnections,
+      log: operationLog,
+      timeoutMs: taskTimeoutMs,
+      onLog: persistOperationLog,
+      onProgress: logProgress,
+    });
     await executeRandomP2pWorkload({
       log: operationLog,
       actors,
@@ -599,7 +614,7 @@ async function main() {
   if (execution.status !== 'SUCCEEDED') process.exitCode = 1;
   else
     logProgress(
-      `[p2p] ${execution.operationCount} logical operations completed with expected outcomes`,
+      `[p2p] ${execution.operationCount} logical operations completed; proceeding to final consistency audit`,
     );
 
   if (execution.status !== 'SUCCEEDED') return;

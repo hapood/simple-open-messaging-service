@@ -90,7 +90,13 @@ function createReplaceableMutationHarness(
   const set = vi.fn(() => ({ where: whereUpdated }));
   const update = vi.fn(() => ({ set }));
   const execute = vi.fn(async () => undefined);
-  const tx = { select, insert, update, execute };
+  const tx = {
+    select,
+    insert,
+    update,
+    execute,
+    query: { account: { findFirst: vi.fn().mockResolvedValue({ id: 7 }) } },
+  };
   const database = {
     db: {
       transaction: vi.fn(
@@ -109,6 +115,59 @@ function createReplaceableMutationHarness(
 }
 
 describe('DurableTaskQueueService', () => {
+  it.each([
+    'ACCEPT_GROUP_JOIN_REQUEST',
+    'INVITE_GROUP_MEMBER',
+    'FORCE_REVOKE_GROUP_MEMBER',
+  ])(
+    'retains a pending forced revocation when admitting %s',
+    async (taskType) => {
+      const harness = createReplaceableMutationHarness([
+        [
+          {
+            id: 5n,
+            taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+            actorUserId: 3,
+            payload: { threadId: 10, memberUserId: 7 },
+          },
+        ],
+      ]);
+      await expect(
+        harness.service.enqueueTask({
+          scope: {
+            type: 'GROUP',
+            address: { account: '!group', domain: 'local' },
+          },
+          taskType,
+          actorUserId: 7,
+          payload: { threadId: 10, memberUserId: 7, targetUserId: 7 },
+        }),
+      ).resolves.toEqual({ taskId: 5n });
+      expect(harness.update).not.toHaveBeenCalled();
+      expect(harness.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('canonicalizes a local addressed forced-revoke member to the account-ID slot', async () => {
+    const harness = createReplaceableMutationHarness([[]], {
+      insertedTaskId: 9n,
+    });
+    await harness.service.enqueueTask({
+      scope: { type: 'GROUP', address: { account: '!group', domain: 'local' } },
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      payload: {
+        threadId: 10,
+        memberUserId: { account: 'alice', domain: 'local', namespaceId: 0 },
+      },
+    });
+    expect(harness.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { threadId: 10, memberUserId: 7 },
+        coalescingKey: JSON.stringify(['GROUP_MEMBER_INTENT', 'GROUP', 7]),
+      }),
+    );
+  });
+
   it('returns the existing task for an identical pending leave', async () => {
     const harness = createReplaceableMutationHarness([
       [
@@ -173,7 +232,7 @@ describe('DurableTaskQueueService', () => {
     expect(harness.insert).not.toHaveBeenCalled();
   });
 
-  it('appends instead of moving a newer intent ahead of intervening work', async () => {
+  it('rewrites a pending intent without consulting intervening work', async () => {
     const harness = createReplaceableMutationHarness(
       [
         [
@@ -184,11 +243,9 @@ describe('DurableTaskQueueService', () => {
             payload: { threadId: 10 },
           },
         ],
-        [{ id: 6n }],
       ],
-      { insertedTaskId: 9n },
+      { updatedTaskId: 5n },
     );
-
     await expect(
       harness.service.enqueueTask({
         scope: {
@@ -199,15 +256,44 @@ describe('DurableTaskQueueService', () => {
         actorUserId: 7,
         payload: { threadId: 10 },
       }),
-    ).resolves.toEqual({ taskId: 9n });
-
-    expect(harness.update).not.toHaveBeenCalled();
-    expect(harness.values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        coalescingKey: JSON.stringify(['GROUP_MEMBER_INTENT', 'MEMBER', 7]),
-      }),
-    );
+    ).resolves.toEqual({ taskId: 5n });
+    expect(harness.insert).not.toHaveBeenCalled();
   });
+
+  it.each(['PROCESSING', 'ASYNC_PROCESSING'])(
+    'reuses an identical %s intent without appending work',
+    async (status) => {
+      const harness = createReplaceableMutationHarness([
+        [],
+        [
+          {
+            id: 5n,
+            status,
+            taskType: 'REVOKE_USER_RELATIONSHIP',
+            actorUserId: 7,
+            payload: { threadId: 10 },
+            coalescingKey: JSON.stringify(['P2P_INTENT', 7]),
+          },
+        ],
+      ]);
+      await expect(
+        harness.service.enqueueTask({
+          scope: {
+            type: 'USER_PAIR',
+            endpoints: [
+              { account: 'alice', domain: 'local' },
+              { account: 'bob', domain: 'local' },
+            ],
+          },
+          taskType: 'REVOKE_USER_RELATIONSHIP',
+          actorUserId: 7,
+          payload: { threadId: 10 },
+        }),
+      ).resolves.toEqual({ taskId: 5n });
+      expect(harness.insert).not.toHaveBeenCalled();
+      expect(harness.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('uses a separate group-authored slot for kick and invitation decisions', async () => {
     const harness = createReplaceableMutationHarness([[]], {
@@ -401,7 +487,6 @@ describe('DurableTaskQueueService', () => {
     expect(harness.set).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'SUPERSEDED',
-        supersededByTaskId: 100n,
       }),
     );
   });

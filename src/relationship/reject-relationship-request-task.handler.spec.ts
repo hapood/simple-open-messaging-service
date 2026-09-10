@@ -6,7 +6,6 @@ import { RejectRelationshipRequestTaskHandler } from './reject-relationship-requ
 function task(payload: Record<string, unknown> = {}): DurableTask {
   return {
     id: 2n,
-    parentTaskId: null,
     kind: 'MUTATION',
     scopeType: 'USER_PAIR',
     scopeKey: 'pair-key',
@@ -15,7 +14,6 @@ function task(payload: Record<string, unknown> = {}): DurableTask {
     payload: { peerUserId: 9, ...payload },
     checkpoint: {},
     coalescingKey: null,
-    supersededByTaskId: null,
     status: 'PROCESSING',
     resultCode: null,
     lastError: null,

@@ -16,7 +16,7 @@ import {
   tap,
   type Observable,
 } from 'rxjs';
-import { Message, StandardResponse } from './model';
+import { Message, MessageQueryRow, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import { REPLAY_SAFE } from '../request-context';
@@ -49,7 +49,7 @@ export interface MessageHistoryGap {
 }
 
 export interface MessageQueryPage {
-  messages: Message[];
+  messages: MessageQueryRow[];
   gaps: MessageHistoryGap[];
   scannedThrough: number;
   hasMore: boolean;
@@ -432,17 +432,11 @@ export class MsgService {
     >(`${apiPrefix()}/withdraw-message`, params);
   }
 
-  reportMessages(params: { threadId: number; seqs: number[] }) {
-    return this.http.post<
-      StandardResponse<{
-        reports: {
-          id: string;
-          threadId: number;
-          messageSeq: number;
-          status: 'PENDING' | 'UPHELD' | 'REJECTED';
-        }[];
-      }>
-    >(`${apiPrefix()}/message-reports`, params);
+  reportMessage(params: { threadId: number; seq: number }) {
+    return this.http.post<StandardResponse<Record<string, never>>>(
+      `${apiPrefix()}/message-reports`,
+      params,
+    );
   }
 
   /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */

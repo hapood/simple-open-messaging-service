@@ -55,6 +55,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       setSessionToken: Mock;
       getSessionToken: Mock;
       pickActiveOrigin: Mock;
+      clearMessageNotifications: Mock;
     };
   };
 
@@ -114,9 +115,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     set: Mock;
     get: Mock;
     pick: Mock;
+    clear: Mock;
   } {
     invokeSpy = makeInvokeSpy();
     const set = vi.fn().mockName('setSessionToken');
+    const clear = vi.fn().mockName('clearMessageNotifications');
     const get = vi
       .fn()
       .mockName('getSessionToken')
@@ -136,8 +139,9 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       setSessionToken: set,
       getSessionToken: get,
       pickActiveOrigin: pick,
+      clearMessageNotifications: clear,
     };
-    return { set, get, pick };
+    return { set, get, pick, clear };
   }
 
   /** Restore the process-wide globals/UA so the browser-path spec keeps seeing isTauri()=false. The test
@@ -245,6 +249,23 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   }
 
   describe('desktop (Tauri) keyring path', () => {
+    it('clears message notifications on login but not on cold session restoration', async () => {
+      desktopGlobals({ keyringToken: 'st-restored' });
+      await svc.restoreSession();
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'desktop_notifications_clear',
+        ),
+      ).toBe(false);
+      await passwordLogin('st-new');
+      expect(invokeSpy).toHaveBeenCalledWith('desktop_notifications_clear', {
+        resetNavigation: true,
+      });
+      const commands = invokeSpy.mock.calls.map(([command]) => command);
+      expect(commands.indexOf('native_db_recreate_cache')).toBeLessThan(
+        commands.indexOf('desktop_notifications_clear'),
+      );
+    });
     it('a trusted login pushes the token to ProxyState and the keyring', async () => {
       desktopGlobals({ secureSetOk: true });
       await passwordLogin('st-trusted');
@@ -379,10 +400,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
   describe('Android EncryptedSharedPreferences path', () => {
     it('a login pushes the token to SomsFcm and ProxyState', async () => {
-      const { set } = androidGlobals(null);
+      const { set, clear } = androidGlobals(null);
       await passwordLogin('st-android');
       expect(svc.loggedIn()).toBe(true);
       expect(set).toHaveBeenCalledWith('st-android');
+      expect(clear).toHaveBeenCalledExactlyOnceWith();
       // Android now ALSO reaches set_session_token (ProxyState.token) — api_request runs on Android too.
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-android',
@@ -390,9 +412,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     });
 
     it('restoreSession reads SomsFcm.getSessionToken → session restored + canTrust true', async () => {
-      const { get } = androidGlobals('st-cold');
+      const { get, clear } = androidGlobals('st-cold');
       await svc.restoreSession();
       expect(get).toHaveBeenCalledTimes(1);
+      expect(clear).not.toHaveBeenCalled();
       expect(svc.loggedIn()).toBe(true);
       expect(svc.isLoggedIn()).toBe(true);
     });

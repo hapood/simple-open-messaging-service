@@ -16,23 +16,23 @@ describe('local message delivery plan', () => {
     ).toEqual([1, 2]);
   });
 
-  it('wakes the creator devices but suppresses their notification Push', () => {
-    expect(
-      planLiveDelivery(
-        [
-          { userId: 1, muted: false, blocked: false },
-          { userId: 2, muted: false, blocked: false },
-          { userId: 3, muted: true, blocked: false },
-          { userId: 4, muted: false, blocked: true },
-        ],
-        1,
-      ),
-    ).toEqual({ wakeUserIds: [1, 2, 3], pushUserIds: [2] });
+  it('wakes the same audience through State Feed and Push regardless of sender or mute', () => {
+    const candidates = [
+      { userId: 1, muted: false, blocked: false },
+      { userId: 2, muted: false, blocked: false },
+      { userId: 3, muted: true, blocked: false },
+      { userId: 4, muted: false, blocked: true },
+    ];
+    expect(planLiveDelivery(candidates)).toEqual({
+      wakeUserIds: [1, 2, 3],
+      pushUserIds: [1, 2, 3],
+    });
   });
 
   it('does not exclude any recipient when a SYSTEM message has no creator', () => {
-    expect(
-      planLiveDelivery([{ userId: 1, muted: false, blocked: false }], null),
-    ).toEqual({ wakeUserIds: [1], pushUserIds: [1] });
+    expect(planLiveDelivery([{ userId: 1, blocked: false }])).toEqual({
+      wakeUserIds: [1],
+      pushUserIds: [1],
+    });
   });
 });

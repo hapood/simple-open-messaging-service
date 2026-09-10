@@ -7,7 +7,6 @@ import type { DurableTask } from './durable-task.types.js';
 
 const recoveredTask = {
   id: 9n,
-  parentTaskId: null,
   kind: 'PROJECTION',
   scopeType: 'GROUP',
   scopeKey: 'group-key',
@@ -16,7 +15,6 @@ const recoveredTask = {
   payload: {},
   checkpoint: {},
   coalescingKey: null,
-  supersededByTaskId: null,
   status: 'ASYNC_PROCESSING',
   resultCode: null,
   lastError: null,

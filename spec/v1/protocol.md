@@ -240,7 +240,7 @@ An accepted cursor position represents every accepted item through that position
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries one account-generic `RELATIONSHIP_INTENT`, `GROUP_META_FEED_HEAD` hints, and combined `THREAD_CONTENT_HEAD` message/deletion query bounds. It carries no profile bytes; a relationship intent carries only its exact `profileRev` reference. The group origin's one canonical group-meta feed is the sole source of the current group roster, roles, member-profile references, and compacted group-profile reference. An `UPSERT` member body contains `role` and `profileRev` but no display bytes; `DEPART` has no body. Group Member Profile resolves an exact current member reference from that feed. Every message carries its author's exact `profileRev`. For any queryable message coordinate, Message Author Profile returns that referenced immutable version after exact-message authorization. Group Meta's first read is `full`; later reads use `delta` above the peer's authorization-segment visibility floor. An effective source-authored `REQUESTED` or `ACCEPTED` direction grants passive query access to the source's P2P data. At a group origin, an effective group-to-member direction grants that member's peer passive query access to authoritative group messages, tombstones, and Group Meta. In the reverse direction, the mirrored group's immutable authority binding lets the origin query member-authored message submissions, author-enacted tombstones, and direct-origin processing receipts without a member-to-group intent grant. These facts are transported through their respective feeds, not modeled as requests. Content and Group Meta heads are published only after the applicable relationship is confirmed; for GROUP, at least one member hosted by that peer must remain confirmed. Group/group relationships are invalid.
+`state-feed` carries one account-generic `RELATIONSHIP_INTENT`, `GROUP_META_FEED_HEAD` hints, and combined `THREAD_CONTENT_HEAD` message/deletion query bounds. It carries no profile bytes; a relationship intent carries its exact `profileRev` reference and, for a positive direction, simultaneous message/tombstone bounds. The group origin's one canonical group-meta feed is the sole source of the current group roster, roles, member-profile references, and compacted group-profile reference. An `UPSERT` member body contains `role` and `profileRev` but no display bytes; `DEPART` has no body. Group Member Profile resolves an exact current member reference from that feed. Every message carries its author's exact `profileRev`. For any queryable message coordinate, Message Author Profile returns that referenced immutable version after exact-message authorization. Group Meta's first read is `full`; later reads use `delta` above the peer's authorization-segment visibility floor. An effective source-authored `REQUESTED` or `ACCEPTED` direction grants passive query access to the source's P2P data. At a group origin, an effective group-to-member direction grants that member's peer passive query access to authoritative group messages, tombstones, and Group Meta. In the reverse direction, the mirrored group's immutable authority binding lets the origin query member-authored message submissions, author-enacted tombstones, and direct-origin processing receipts without a member-to-group intent grant. These facts are transported through their respective feeds, not modeled as requests. Content and Group Meta heads are published only after the applicable relationship is confirmed; for GROUP, at least one member hosted by that peer must remain confirmed. Group/group relationships are invalid.
 
 [Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, compacted thread-content heads, and merge semantics. [Group Meta Feed](./group-meta.md) defines the group-origin canonical role/profile-reference roster and group profile revision. [Authorized Profile](./authorized-profile.md) defines policy-controlled account/revision lookup. [Group Member Profile](./group-member-profile.md) defines the asymmetric lookup of an exact complete current-member profile from the group origin. [Message Author Profile](./message-author-profile.md) defines lazy complete-profile lookup bound to an exact authorized message. [Federation v1 Message Query](./message-feed.md) defines `/messages`. [Message](./message.md) defines the nine core message contents and their media and forward bodies. [Federation v1 Message Tombstone Query](./message-tombstone-feed.md) defines authoritative deletion facts and `/message-tombstones`. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
@@ -318,7 +318,7 @@ This specification uses the following feed-coordinate terms consistently. An unq
 - `scannedThrough`: the direction-relative boundary through which a page has scanned continuously. It becomes the next `after` for a forward query or the next `before` for a reverse thread query after successful commit.
 - `resumeAfter` and `resumeBefore`: the source's exclusive lower and upper serviceable boundaries for feed and thread-query recovery. A forward query adopts `resumeAfter`, while a reverse thread query adopts `resumeBefore`. Group Meta delta recovery changes to Full mode as defined by [Group Meta Feed](./group-meta.md).
 - `stateFeedEndId`: the sole inclusive State Feed drain bound published by `feed-heads`. It is a drain target, not a consumer cursor, business revision, thread-authorization boundary, or relationship-terminal position.
-- `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds carried together by `THREAD_CONTENT_HEAD`. They belong to two thread-local coordinate spaces and are not feed IDs. `messageEndSeq` is a JSON `PositiveThreadSequence`; `tombstoneEndSeq` is a JSON `ThreadSequence` and may be zero when no deletion exists.
+- `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds carried together by `THREAD_CONTENT_HEAD`. They belong to two thread-local coordinate spaces and are not feed IDs. `messageEndSeq` is a JSON `ThreadSequence` and may be zero; `tombstoneEndSeq` is a JSON `ThreadSequence` and may be zero when no deletion exists.
 - A message's `seq` is its publisher-local thread coordinate. The
   Message Author Profile request names the same value `messageSeq` to prevent
   confusion with a feed coordinate.
@@ -415,15 +415,17 @@ committed State Feed page or thread-query page. After recovery, a consumer
 derives bounded work from committed coordinates and newly observed heads.
 
 After the State Feed barrier is committed, the consumer selects nondecreasing
-per-thread targets from each `THREAD_CONTENT_HEAD` item's `messageEndSeq` and
+per-thread targets from positive relationship authorization snapshots and later
+`THREAD_CONTENT_HEAD` items' `messageEndSeq` and
 `tombstoneEndSeq`. It freezes the targets it will process before issuing content
 queries. Required `/messages` and `/message-tombstones` drains MAY execute
 concurrently and commit independently.
 
 When a consumer first initializes a thread with no previous replica in that
 publisher's message-coordinate space, it does not query the deletion history
-covered by the first head. It initializes its committed deletion cursor to the
-head's `tombstoneEndSeq`; source-side message queries already omit messages
+covered by its retained remote authorization snapshot. The relationship
+initialization uses the authorization's `tombstoneEndSeq` as the initial
+committed deletion cursor; source-side message queries already omit messages
 terminated by those earlier facts. When an existing relationship is later
 reauthorized, the first bounded deletion drain starts at the previously
 committed deletion cursor and ends at a frozen `tombstoneEndSeq`. It MUST carry
@@ -436,11 +438,14 @@ by deletion sequence. A later head never enlarges an active bounded drain and
 belongs to later work. No wire-level round ID or source-side round state exists;
 the fixed boundaries and consumer's durable cursors define the round.
 
-A **reverse reconstruction round** is consumer-local history recovery. It is
-initialized when the consumer first commits an authoritative thread-content
-head and is not created by `feed-heads` alone. Its initial exclusive `before` is one
-greater than the inclusive `messageEndSeq` from the committed `THREAD_CONTENT_HEAD`
-that selected the thread tail. It retains an inclusive lower `through` target.
+A **reverse reconstruction round** is optional consumer-local history recovery.
+The latest simultaneous message/tombstone snapshot in a positive intent is a
+starting point, not a requirement to backfill history. A receiver chooses whether
+and how much available history to reconstruct; this selection, shared-thread
+initialization, and local transaction design are implementation choices. Initial
+access and reauthorization do not require an additional thread-content head.
+For a selected inclusive history upper bound, the initial exclusive `before` is
+one greater than that bound. It retains an inclusive lower `through` target.
 Each reverse page moves its direction-relative `scannedThrough` downward, and
 the next page uses that value as `before` while retaining the original
 `through`. `hasMore=true` continues that bounded page sequence;

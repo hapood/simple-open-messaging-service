@@ -16,7 +16,11 @@ describe('transactional friendship activation', () => {
     const tx = {
       execute: vi.fn(async (query) => {
         queries.push(new PgDialect().sqlToQuery(query).sql);
-        return { rows: [{ id: 15 }] };
+        return {
+          rows: queries.at(-1)!.includes('SELECT DISTINCT ON')
+            ? []
+            : [{ id: 15 }],
+        };
       }),
       select: vi.fn(() => ({
         from: () => ({
@@ -35,7 +39,9 @@ describe('transactional friendship activation', () => {
       },
     );
     const setPairActiveInTx = vi.fn();
+    const initializeReadWindowsInTx = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
+      previews: { initializeReadWindowsInTx },
       relationshipIntents: {
         readP2PRelationshipInTx: vi
           .fn()
@@ -46,7 +52,14 @@ describe('transactional friendship activation', () => {
       reactivateP2PFriendshipInTx: vi.fn().mockResolvedValue(15),
       messages: { writeSystemMessageInTx },
     });
-    return { service, tx, queries, writeSystemMessageInTx, setPairActiveInTx };
+    return {
+      service,
+      tx,
+      queries,
+      writeSystemMessageInTx,
+      setPairActiveInTx,
+      initializeReadWindowsInTx,
+    };
   }
 
   it.each([null, 15])(
@@ -54,6 +67,14 @@ describe('transactional friendship activation', () => {
     async (threadId) => {
       const h = harness(false, threadId);
       const result = await h.service.reconcileFriendPairInTx(h.tx, 2, 3, true);
+      expect(h.initializeReadWindowsInTx).toHaveBeenCalledExactlyOnceWith(
+        h.tx,
+        15,
+        [2],
+      );
+      expect(
+        h.initializeReadWindowsInTx.mock.invocationCallOrder[0],
+      ).toBeLessThan(h.writeSystemMessageInTx.mock.invocationCallOrder[0]);
       expect(h.writeSystemMessageInTx).toHaveBeenCalledExactlyOnceWith(
         h.tx,
         15,
@@ -61,11 +82,11 @@ describe('transactional friendship activation', () => {
         undefined,
         expect.objectContaining({
           actorUserId: 2,
-          recipientUserIds: [2],
           threadLock: expect.objectContaining({ tx: h.tx, threadId: 15 }),
         }),
       );
-      expect(h.queries).toHaveLength(1);
+      expect(h.queries).toHaveLength(2);
+      expect(h.queries[1]).toContain('"RelationshipIntent"');
       expect(h.queries[0]).toContain('FOR UPDATE OF thread');
       expect(h.queries[0]).not.toContain('pg_advisory_xact_lock');
       expect(result.clientFeedUpdates).toEqual([{ userId: 2, feedId: 85 }]);
@@ -77,6 +98,7 @@ describe('transactional friendship activation', () => {
     await h.service.reconcileFriendPairInTx(h.tx, 2, 3, true);
     expect(h.tx.execute).not.toHaveBeenCalled();
     expect(h.writeSystemMessageInTx).not.toHaveBeenCalled();
+    expect(h.initializeReadWindowsInTx).not.toHaveBeenCalled();
   });
 
   it('propagates message storage failure to the transaction owner', async () => {

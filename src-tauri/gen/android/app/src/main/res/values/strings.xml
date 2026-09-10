@@ -1,4 +1,6 @@
 <resources>
+    <string name="notif_message_retracted">[Message retracted]</string>
+    <string name="notif_message_removed">[Deleted by administrator]</string>
     <string name="notif_private_body">You have new messages</string>
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>

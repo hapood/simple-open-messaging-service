@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadHistoryService } from './thread-history.service.js';
+vi.mock('../relationship/thread-content-lock.js', () => ({
+  requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 9 }),
+}));
 
 describe('ThreadHistoryService.clear', () => {
   function setup(curSeq: number) {
@@ -7,6 +10,10 @@ describe('ThreadHistoryService.clear', () => {
     const set = vi.fn(() => ({ where }));
     const database = {
       db: {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({ rows: [{ id: 9 }] })
+          .mockResolvedValue({ rows: [] }),
         query: {
           messageThread: {
             findFirst: vi.fn().mockResolvedValue({ curSeq }),
@@ -16,7 +23,12 @@ describe('ThreadHistoryService.clear', () => {
       },
     };
     return {
-      service: new ThreadHistoryService(database as never),
+      service: new ThreadHistoryService({
+        db: {
+          transaction: (run: (tx: unknown) => Promise<unknown>) =>
+            run(database.db),
+        },
+      } as never),
       database,
       set,
     };

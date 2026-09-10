@@ -420,7 +420,8 @@ export function unsubmittedGroupRequests(requests, group, operations) {
 }
 
 // Request cancellation can win either before admission or during task execution.
-// INVITE_EXPIRED also denotes an intent that is no longer REQUESTED.
+// Federated acceptance and rejection also return INVITE_EXPIRED when the
+// incoming intent is no longer REQUESTED, including after a remote revocation.
 function isUnavailableIncomingRequest(operation, code) {
   return Boolean(
     !operation.scenario &&
@@ -428,7 +429,8 @@ function isUnavailableIncomingRequest(operation, code) {
       operation.pair &&
       operation.observedFacts?.state === 'INCOMING_PENDING' &&
       ((operation.type === 'ACCEPT_REQUEST' && code === 20011) ||
-        (operation.type === 'REJECT_REQUEST' && code === 20013)),
+        (operation.type === 'REJECT_REQUEST' &&
+          (code === 20011 || code === 20013))),
   );
 }
 
@@ -482,6 +484,22 @@ export async function finalizeTasks(operations, actors) {
   return finalized.sort((left, right) => left.id.localeCompare(right.id));
 }
 
+export function observeGroupMessageAvailability(snapshot, decision) {
+  const actor = userRef(decision.actor);
+  const node = snapshot[actor.nodeName];
+  const group = node?.groups.get(decision.group);
+  return {
+    observedOn: actor.nodeName,
+    observedAt: new Date().toISOString(),
+    group: decision.group,
+    actor: decision.actor,
+    threadId: group?.threadId ?? null,
+    groupDissolved: group?.dissolved ?? null,
+    // Missing projections are not evidence that membership was revoked.
+    membershipActive: group?.relationships.get(actor.address)?.active ?? null,
+  };
+}
+
 export async function executeBatch({
   label,
   decisions,
@@ -496,8 +514,10 @@ export async function executeBatch({
   operationsPerSecond,
   pace = createAdmissionPacer(operationsPerSecond),
   settle = true,
+  verifyMode = 'round',
   admit = admitOperation,
   confirmUnavailable = async () => false,
+  confirmGroupUnavailable = async () => null,
 }) {
   const admissionStarted = Date.now();
   let completed = 0;
@@ -516,10 +536,27 @@ export async function executeBatch({
       try {
         result = await admit(decision, actors, timeoutMs);
       } catch (error) {
+        let unavailableConfirmation;
+        if (
+          decision.group &&
+          !decision.scenario &&
+          messageOperationTypes.has(decision.type) &&
+          decision.observedFacts?.membershipActive === true &&
+          error instanceof LabApiError &&
+          error.details?.code === 40005
+        ) {
+          try {
+            unavailableConfirmation = await confirmGroupUnavailable(decision);
+          } catch (confirmationError) {
+            unavailableConfirmation = { error: journalError(confirmationError) };
+          }
+        }
         const unavailableGroup =
           decision.group &&
           error instanceof LabApiError &&
-          (error.details?.code === 40007 ||
+          (unavailableConfirmation?.groupDissolved === true ||
+            unavailableConfirmation?.membershipActive === false ||
+            error.details?.code === 40007 ||
             (decision.type === 'REQUEST_GROUP_JOIN' &&
               error.details?.reason === 'NOT_FOUND'));
         const unavailableP2p =
@@ -535,6 +572,7 @@ export async function executeBatch({
               ? 'OBSERVED_UNAVAILABLE'
               : 'ADMISSION_FAILED',
           error: journalError(error),
+          ...(unavailableConfirmation ? { unavailableConfirmation } : {}),
           ...(error.attempts ? { attempts: error.attempts } : {}),
           finishedAt: new Date().toISOString(),
         };
@@ -560,6 +598,7 @@ export async function executeBatch({
   if (!settle) return;
   await settleWorkloadOperations({
     operations: admissionResults,
+    verifyMode,
     log,
     actors,
     label,
@@ -579,6 +618,7 @@ export async function settleWorkloadOperations(
     onProgress,
     onLog,
     drain = false,
+    verifyMode = 'round',
   },
   { waitForIdle = waitForTaskQueueIdle, finalize = finalizeTasks } = {},
 ) {
@@ -616,7 +656,9 @@ export async function settleWorkloadOperations(
   const unsuccessful = operations
     .map((operation) => replacements.get(operation.id) ?? operation)
     .filter(
-      ({ status }) => !['SUCCEEDED', 'OBSERVED_UNAVAILABLE'].includes(status),
+      ({ status }) =>
+        !['SUCCEEDED', 'OBSERVED_UNAVAILABLE'].includes(status) &&
+        !(verifyMode === 'final' && status === 'REJECTED'),
     );
   if (unsuccessful.length > 0) {
     throw new Error(
@@ -672,6 +714,20 @@ export async function executeRandomP2pWorkload({
       operationsPerSecond,
       pace,
       settle: shouldSettleWorkloadBatch(verifyMode, batch, { randomBatch }),
+      verifyMode,
+      confirmGroupUnavailable: async (decision) => {
+        if (!randomBatch) return null;
+        const actor = userRef(decision.actor);
+        const localConnections = new Map(
+          [...connections].filter(([name]) => name === actor.nodeName),
+        );
+        const current = await readP2pConsistencySnapshot(
+          localConnections,
+          log.users,
+        );
+        const groups = await readGroupWorkloadSnapshot(localConnections, current);
+        return observeGroupMessageAvailability(groups, decision);
+      },
       confirmUnavailable: async (decision) => {
         if (!randomBatch || !decision.pair) return false;
         const current = await readP2pConsistencySnapshot(
@@ -831,6 +887,7 @@ export async function executeRandomP2pWorkload({
       log,
       actors,
       label: 'final workload',
+      verifyMode,
       // Parent commands may already be observed complete while fanout children remain.
       drain: true,
       timeoutMs,

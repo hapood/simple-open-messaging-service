@@ -1,3 +1,4 @@
+import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
 import {
   accountAddressInTx,
@@ -622,6 +623,24 @@ export class MessageService {
       messageEndSeq: seq,
       tombstoneEndSeq: deletionSeqAllocatedThrough,
     });
+    if (
+      type === SystemMessageType.FRIEND_REMOVED ||
+      type === SystemMessageType.GROUP_LEFT
+    ) {
+      if (subjectUserId === undefined)
+        throw new Error('departure subject is missing');
+      await enqueueDepartureFanoutsInTx(
+        tx,
+        threadLock,
+        {
+          threadId,
+          messageEndSeq: seq,
+          tombstoneEndSeq: deletionSeqAllocatedThrough,
+        },
+        type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
+        subjectUserId,
+      );
+    }
     return { message: stripMessageId(stored), messageId: stored.id };
   }
 

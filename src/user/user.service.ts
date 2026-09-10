@@ -154,6 +154,7 @@ export class UserService {
     opts: { skip?: number; take: number },
   ): Promise<{ list: PublicUser[]; total: number }> {
     const where = and(
+      eq(accountTable.kind, 'USER'),
       eq(accountTable.availability, 'AVAILABLE'),
       or(
         ilike(accountTable.account, `%${q}%`),

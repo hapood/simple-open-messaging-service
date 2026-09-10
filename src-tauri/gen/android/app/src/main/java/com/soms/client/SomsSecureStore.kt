@@ -43,9 +43,6 @@ object SomsSecureStore {
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
     private const val KEY_FIREBASE_CONFIG = "firebase_config"
     private const val KEY_NOTIF_PERM_REQUESTED = "notif_perm_requested"
-    /** Persisted per-thread dismiss-HWM map (threadId → seq) as a JSON object string. Survives process death
-     *  so a dismiss holds even when the OS kills + restarts the app mid-background-session; cleared on
-     *  foreground. In-memory cached by SomsMessagingService (the working copy); this is the durable backing. */
 
     @Volatile
     private var cachedOrigin: String? = null
@@ -58,7 +55,7 @@ object SomsSecureStore {
 
     /** The cached encrypted-prefs singleton. EncryptedSharedPreferences.create is expensive (a MasterKey
      *  AES-GCM derivation + an encrypted-file open) — the AndroidX Security README says to cache it. Built
-     *  ONCE per process (first access) + reused by every get/set, so a single fetchDescriptors
+     *  ONCE per process (first access) + reused by every get/set, so a single native notification synchronization
      *  (getSessionToken + getApiOrigin + getMissedCursor) pays ONE derivation instead of three on the
      *  FCM-wake critical path. applicationContext so the cache never holds an Activity. @Synchronized so
      *  two threads racing the cold first-access can't each build a (harmless-but-wasteful) duplicate. */
@@ -80,20 +77,23 @@ object SomsSecureStore {
     }
 
     /** The no-expiry session token (POST /auth/login, app client) — the single native credential that
-     *  authenticates the Kotlin-owned /events stream AND the background `/notification-feed/query` fetches
+     *  authenticates the Kotlin-owned /events stream AND the background Rust thread-feed fetches
      *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
      *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
      *  on login and clears it on logout. */
     fun setSessionToken(ctx: Context, token: String?) {
+        RustRuntimeBridge.setSessionToken(token)
         val ed = prefs(ctx).edit()
         if (token.isNullOrEmpty()) {
             ed.remove(KEY_SESSION_TOKEN)
             ed.remove(KEY_CURRENT_USER_ID)
-            ClientStateDb.clearNotificationState(ctx)
         } else {
             ed.putString(KEY_SESSION_TOKEN, token)
         }
         ed.apply()
+        if (token.isNullOrEmpty()) {
+            SomsMessagingService.clearSessionMessageNotifs(ctx)
+        }
     }
 
     fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
@@ -155,6 +155,7 @@ object SomsSecureStore {
         // A primary reconfigure starts the SSE failover fresh on the primary.
         ed.putString(KEY_ORIGIN_MODE, "primary")
         ed.apply()
+        RustRuntimeBridge.updateOrigins(ctx)
     }
 
     fun getApiOrigin(ctx: Context): String? {
@@ -176,6 +177,7 @@ object SomsSecureStore {
         // Reconfiguring the secondary restarts the SSE failover on the primary.
         ed.putString(KEY_ORIGIN_MODE, "primary")
         ed.apply()
+        RustRuntimeBridge.updateOrigins(ctx)
     }
 
     /** Kotlin SSE's active-origin choice — "primary" (default) or "secondary" (the primary failed and the
@@ -190,11 +192,12 @@ object SomsSecureStore {
         prefs(ctx).edit()
             .putString(KEY_ORIGIN_MODE, if (mode == "secondary") "secondary" else "primary")
             .apply()
+        RustRuntimeBridge.updateOrigins(ctx)
     }
 
     /** The ACTIVE origin — the secondary when the mode is "secondary" (RealtimeService flipped to the LAN
      *  origin), else the primary. Use this — NOT [getApiOrigin] — for every native network path that must
-     *  follow Kotlin's origin decision: the background `/notification-feed/query` fetch + the avatar/notif-icon
+     *  follow Kotlin's origin decision: the background Rust thread-feed fetch + the avatar/notif-icon
      *  fetch in SomsMessagingService (FCM / WorkManager / the RealtimeService away-coalesce all route through
      *  those). Without it a device on the LAN secondary would route background traffic at the hairpin-
      *  unreachable primary and silently drop every background notification. The /events stream follows via

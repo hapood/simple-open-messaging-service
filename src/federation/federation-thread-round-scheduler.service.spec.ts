@@ -72,7 +72,7 @@ function harness() {
   const federation = {
     listTrustedPeerDomains: vi.fn().mockResolvedValue([]),
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
-    handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
+    handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKE_QUEUED'),
   };
   const scheduler = new FederationThreadRoundSchedulerService(
     database as never,
@@ -95,6 +95,32 @@ function harness() {
 }
 
 describe('FederationThreadRoundSchedulerService', () => {
+  it('starts initialized work after a local relationship publication without waiting for a content head', async () => {
+    const h = harness();
+    h.databaseState.startupRows = [
+      {
+        threadId: 1,
+        peerDomain: 'a.test',
+        namespaceId: 1,
+        messageTargetSeq: 3,
+        messageProcessedThroughSeq: 2,
+        deletionTargetSeq: 0,
+        deletionProcessedThroughSeq: 0,
+        historyBoundaryReached: false,
+      },
+    ];
+    try {
+      await h.scheduler.onRelationshipStatePublished({ peerDomain: 'a.test' });
+      await vi.waitFor(() => {
+        expect(h.forward.runMessages).toHaveBeenCalled();
+        expect(h.reverse.run).toHaveBeenCalled();
+      });
+      expect(h.forward.runTombstones).not.toHaveBeenCalled();
+    } finally {
+      await h.scheduler.onModuleDestroy();
+    }
+  });
+
   it.each(['message', 'tombstone', 'reverse'] as const)(
     'logs stale %s rounds at debug and preserves retries and other warnings',
     async (direction) => {
@@ -171,7 +197,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         expect(warn).not.toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
         expect(debug).toHaveBeenCalledWith(
-          expect.stringContaining('P2P_REVOKED'),
+          expect.stringContaining('P2P_REVOKE_QUEUED'),
         );
       } finally {
         await scheduler.onModuleDestroy();

@@ -30,7 +30,7 @@ export const FIXED_WINDOW_DEFAULTS = {
   'message.forward': [60, 60],
   'message.media-stage': [60, 60],
   'thread.mark-read': [60, 60],
-  'thread.read-delta': [60, 60],
+  'thread.feed-delta': [60, 60],
   'thread.set-muted': [30, 60],
   'thread.set-blocked': [30, 60],
   'thread.set-pinned': [30, 60],

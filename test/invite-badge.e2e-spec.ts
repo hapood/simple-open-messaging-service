@@ -200,6 +200,8 @@ describe('Friend-request client state e2e', () => {
           ),
         );
       await relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: a.id,
         peerUserId: b,
         status: 'REQUESTED',
@@ -234,6 +236,8 @@ describe('Friend-request client state e2e', () => {
     await database.db.transaction(async (tx) => {
       const now = new Date();
       await relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: a.id,
         peerUserId: b,
         status: 'REQUESTED',
@@ -253,6 +257,8 @@ describe('Friend-request client state e2e', () => {
 
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: a.id,
         peerUserId: b,
         status: 'ACCEPTED',

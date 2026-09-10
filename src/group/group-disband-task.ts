@@ -19,17 +19,37 @@ export function readDisbandGroupTask(task: DurableTask): {
   };
 }
 
-export function readDissolvedMemberRevokeTask(task: DurableTask): {
+export function readForcedMemberRevokeTask(task: DurableTask): {
   threadId: number;
   memberUserId: AccountTarget;
 } {
   assertGroupTask(task);
-  if (task.parentTaskId === null) {
-    throw new Error('dissolved-member revoke has no parent');
-  }
   const threadId = readPositiveInteger(task.payload.threadId, 'thread ID');
   const memberUserId = readAccountTarget(task.payload.memberUserId);
   return { threadId, memberUserId };
+}
+
+export function readForbiddenGroupTask(task: DurableTask): {
+  threadId: number;
+  peerDomain: string;
+  namespaceId: number;
+  expectedAuthorizationEpoch: number;
+} {
+  assertGroupTask(task);
+  const { peerDomain, expectedAuthorizationEpoch } = task.payload;
+  if (typeof peerDomain !== 'string' || !peerDomain || peerDomain === 'local')
+    throw new Error('invalid denied peer domain');
+  if (
+    !Number.isSafeInteger(expectedAuthorizationEpoch) ||
+    (expectedAuthorizationEpoch as number) < 0
+  )
+    throw new Error('invalid denied authorization epoch');
+  return {
+    threadId: readPositiveInteger(task.payload.threadId, 'thread ID'),
+    peerDomain,
+    namespaceId: readPositiveInteger(task.payload.namespaceId, 'namespace ID'),
+    expectedAuthorizationEpoch: expectedAuthorizationEpoch as number,
+  };
 }
 
 function assertGroupTask(task: DurableTask): void {

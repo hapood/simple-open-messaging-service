@@ -1,3 +1,4 @@
+import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { Module } from '@nestjs/common';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 import { ThreadAccessGuard } from './thread-access.guard.js';
@@ -11,6 +12,7 @@ import { EndFriendshipTaskHandler } from './end-friendship-task.handler.js';
   // routes reuse it now that groups are `!`-User threads.
   imports: [MessageModule, DurableTaskModule],
   providers: [
+    RelationshipIntentService,
     AccountThreadStateService,
     ThreadAccessGuard,
     EndFriendshipTaskHandler,

@@ -66,35 +66,46 @@ pub(super) fn write_profile(
     Ok(true)
 }
 
+
+/// Resolve an exact cached profile revision for either UI or background consumers.
+pub(super) fn read_profile(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    account: &str,
+    domain: &str,
+    namespace_id: i64,
+    profile_rev: i64,
+) -> Result<Option<Value>, String> {
+    let value = conn.query_row(
+        "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
+        params![user_id,account,domain,namespace_id,profile_rev], |row| row.get::<_,String>(0))
+        .optional().map_err(|e| e.to_string())?;
+    value.map(parse_json).transpose()
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_get_profile(
-    app: tauri::AppHandle,
     user_id: i64,
     account: String,
     domain: String,
     namespace_id: i64,
     profile_rev: i64,
 ) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?.query_row(
-            "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
-            params![user_id,account,domain,namespace_id,profile_rev], |row| row.get::<_,String>(0))
-            .optional().map_err(|e| e.to_string())?;
-        value.map(parse_json).transpose()
+    super::lifetime::spawn(move || {
+        read_profile(&open()?, user_id, &account, &domain, namespace_id, profile_rev)
     }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub(crate) async fn native_db_get_group_member(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     account: String,
     domain: String,
     namespace_id: i64,
 ) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
+    super::lifetime::spawn(move || {
+        let value = open()?
             .query_row(
                 "SELECT json_object(
                'threadId',member.thread_id,'account',member.member_account,
@@ -129,15 +140,14 @@ pub(crate) async fn native_db_get_group_member(
 
 #[tauri::command]
 pub(crate) async fn native_db_query_group_members(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     after_identity: String,
     take: i64,
     search: String,
 ) -> Result<Vec<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         let cursor: Value = serde_json::from_str(&after_identity)
             .unwrap_or_else(|_| serde_json::json!([0, "", ""]));
         let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);
@@ -193,7 +203,6 @@ pub(crate) async fn native_db_query_group_members(
 
 #[tauri::command]
 pub(crate) async fn native_db_record_group_member_profile_ref(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     account: String,
@@ -202,8 +211,8 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
     profile_rev: i64,
     message_seq: i64,
 ) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let changed = open(&app)?
+    super::lifetime::spawn(move || {
+        let changed = open()?
             .execute(
                 "UPDATE members SET profile_rev=?6,profile_message_seq=?7
                  WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
@@ -228,7 +237,6 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
 
 #[tauri::command]
 pub(crate) async fn native_db_store_group_member_profile(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     account: String,
@@ -239,8 +247,8 @@ pub(crate) async fn native_db_store_group_member_profile(
     avatar: String,
     bio: String,
 ) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let mut conn = open()?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let selected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2 AND member_account=?3 AND member_domain=?4 AND namespace_id=?5 AND profile_rev=?6 AND left_state=0)",
             params![user_id,thread_id,account,domain,namespace_id,profile_rev], |row| row.get(0)).map_err(|e| e.to_string())?;
@@ -253,12 +261,11 @@ pub(crate) async fn native_db_store_group_member_profile(
 
 #[tauri::command]
 pub(crate) async fn native_db_put_profile(
-    app: tauri::AppHandle,
     user_id: i64,
     profile: Value,
 ) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let mut conn = open()?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let namespace = profile.get("namespaceId").and_then(Value::as_i64).ok_or("profile has no namespace")?;
         let source = profile.get("sourceServer").and_then(Value::as_str).ok_or("profile has no source server")?;

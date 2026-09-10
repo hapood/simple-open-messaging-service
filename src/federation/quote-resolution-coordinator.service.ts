@@ -61,7 +61,10 @@ export class QuoteResolutionCoordinatorService implements OnModuleDestroy {
         take: 1,
       });
       const parent = page.messages.find((m) => m.seq === selector.messageSeq);
-      const quote = parent && parseTextMessageContent(parent.content)?.quote;
+      const quote =
+        parent &&
+        parent.contentType !== 'TOMB' &&
+        parseTextMessageContent(parent.content)?.quote;
       if (!quote)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,

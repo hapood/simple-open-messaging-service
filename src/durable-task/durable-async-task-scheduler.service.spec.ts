@@ -8,7 +8,6 @@ import type { DurableTask } from './durable-task.types.js';
 function makeTask(id: bigint): DurableTask {
   return {
     id,
-    parentTaskId: null,
     kind: 'PROJECTION',
     scopeType: 'GROUP',
     scopeKey: `group-${id.toString()}`,
@@ -17,7 +16,6 @@ function makeTask(id: bigint): DurableTask {
     payload: {},
     checkpoint: {},
     coalescingKey: null,
-    supersededByTaskId: null,
     status: 'ASYNC_PROCESSING',
     resultCode: null,
     lastError: null,

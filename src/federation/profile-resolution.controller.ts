@@ -1,3 +1,4 @@
+import type { ProfileSelector } from '../../shared/profile-selector.js';
 import {
   Body,
   Controller,
@@ -20,21 +21,24 @@ export class ProfileResolutionController {
   @HttpCode(HttpStatus.OK)
   @ApiBody({
     schema: {
+      discriminator: { propertyName: 'type' },
       oneOf: [
         {
           type: 'object',
-          required: ['account', 'domain', 'rev'],
+          required: ['type', 'account', 'domain', 'rev'],
           properties: {
+            type: { type: 'string', enum: ['EXACT'] },
             account: { type: 'string' },
             domain: { type: 'string' },
-            rev: { type: 'integer', minimum: 0 },
+            rev: { type: 'integer', minimum: 1 },
           },
           additionalProperties: false,
         },
         {
           type: 'object',
-          required: ['threadId', 'messageSeq'],
+          required: ['type', 'threadId', 'messageSeq'],
           properties: {
+            type: { type: 'string', enum: ['MESSAGE_AUTHOR'] },
             threadId: { type: 'integer', minimum: 1 },
             messageSeq: { type: 'integer', minimum: 1 },
           },
@@ -42,8 +46,9 @@ export class ProfileResolutionController {
         },
         {
           type: 'object',
-          required: ['threadId', 'memberAccount', 'memberDomain'],
+          required: ['type', 'threadId', 'memberAccount', 'memberDomain'],
           properties: {
+            type: { type: 'string', enum: ['GROUP_MEMBER'] },
             threadId: { type: 'integer', minimum: 1 },
             memberAccount: { type: 'string' },
             memberDomain: { type: 'string' },
@@ -64,6 +69,7 @@ export class ProfileResolutionController {
             profile: {
               type: 'object',
               required: [
+                'namespaceId',
                 'account',
                 'domain',
                 'rev',
@@ -72,9 +78,10 @@ export class ProfileResolutionController {
                 'avatarBase64',
               ],
               properties: {
+                namespaceId: { type: 'integer', minimum: 0 },
                 account: { type: 'string' },
                 domain: { type: 'string' },
-                rev: { type: 'integer', minimum: 0 },
+                rev: { type: 'integer', minimum: 1 },
                 name: { type: 'string' },
                 bio: { type: 'string' },
                 avatarBase64: { type: 'string', nullable: true },
@@ -99,10 +106,7 @@ export class ProfileResolutionController {
   start(
     @Req() req: FastifyRequest,
     @Body()
-    body:
-      | { account: string; domain: string; rev: number }
-      | { threadId: number; messageSeq: number }
-      | { threadId: number; memberAccount: string; memberDomain: string },
+    body: ProfileSelector,
   ) {
     return this.coordinator.start(req.user.userId, body);
   }

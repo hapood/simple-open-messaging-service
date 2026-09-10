@@ -1,11 +1,12 @@
 import { Injectable, Optional } from '@angular/core';
-import { Observable, Subject, firstValueFrom, of } from 'rxjs';
+import { Observable, Subject, firstValueFrom } from 'rxjs';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ResolutionDispatcher } from './resolution-dispatcher';
 import { SessionLifecycleService } from './session-lifecycle.service';
 
 export interface ResolvedProfile {
+  namespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -13,10 +14,8 @@ export interface ResolvedProfile {
   bio: string;
   avatarBase64: string | null;
 }
-export type ProfileSelector =
-  | { account: string; domain: string; rev: number }
-  | { threadId: number; messageSeq: number }
-  | { threadId: number; memberAccount: string; memberDomain: string };
+export type { ProfileSelector } from '../../../../shared/profile-selector';
+import type { ProfileSelector } from '../../../../shared/profile-selector';
 
 @Injectable({ providedIn: 'root' })
 export class ProfileResolutionService {
@@ -25,7 +24,6 @@ export class ProfileResolutionService {
     profile: ResolvedProfile;
   }>();
   readonly resolved$ = this.resolved.asObservable();
-  private readonly results = new Map<string, ResolvedProfile>();
   private sessionEpoch = 0;
   private readonly observedRequests = new WeakSet<
     Observable<ResolvedProfile>
@@ -41,7 +39,6 @@ export class ProfileResolutionService {
   ) {
     lifecycle?.ended$.subscribe(() => {
       this.sessionEpoch++;
-      this.results.clear();
       this.dispatcher.reset();
     });
     this.dispatcher = new ResolutionDispatcher<
@@ -88,13 +85,6 @@ export class ProfileResolutionService {
   }
   resolve(selector: ProfileSelector): Observable<ResolvedProfile> {
     const normalized = normalizeSelector(selector);
-    const cached =
-      'rev' in normalized
-        ? this.results.get(
-            profileKey(normalized.account, normalized.domain, normalized.rev),
-          )
-        : undefined;
-    if (cached) return of(cached);
     const request = this.dispatcher.resolve(normalized);
     if (this.observedRequests.has(request)) return request;
     this.observedRequests.add(request);
@@ -102,7 +92,6 @@ export class ProfileResolutionService {
     request.subscribe({
       next: (profile) => {
         if (epoch !== this.sessionEpoch) return;
-        this.remember(profile);
         this.resolved.next({ selector: normalized, profile });
       },
       error: () => {},
@@ -113,28 +102,17 @@ export class ProfileResolutionService {
    * PENDING profiles continue through the shared dispatcher after the caller renders. */
   prepare(selector: ProfileSelector): Promise<void> {
     const normalized = normalizeSelector(selector);
-    if (
-      'rev' in normalized &&
-      this.results.has(
-        profileKey(normalized.account, normalized.domain, normalized.rev),
-      )
-    )
-      return Promise.resolve();
     return this.dispatcher.prepare(normalized);
   }
-  private remember(profile: ResolvedProfile) {
-    const key = profileKey(profile.account, profile.domain, profile.rev);
-    this.results.delete(key);
-    this.results.set(key, profile);
-    while (this.results.size > 1000)
-      this.results.delete(this.results.keys().next().value!);
-  }
 }
+
 function validProfile(
   value: ResolvedProfile | undefined,
 ): value is ResolvedProfile {
   return (
     !!value &&
+    Number.isSafeInteger(value.namespaceId) &&
+    value.namespaceId >= 0 &&
     typeof value.account === 'string' &&
     typeof value.domain === 'string' &&
     Number.isSafeInteger(value.rev) &&
@@ -144,21 +122,20 @@ function validProfile(
   );
 }
 function normalizeSelector(selector: ProfileSelector): ProfileSelector {
-  if ('rev' in selector)
-    return {
-      account: selector.account.trim().toLowerCase(),
-      domain: selector.domain.trim().toLowerCase(),
-      rev: selector.rev,
-    };
-  if ('messageSeq' in selector)
-    return { threadId: selector.threadId, messageSeq: selector.messageSeq };
-  return {
-    threadId: selector.threadId,
-    memberAccount: selector.memberAccount.trim().toLowerCase(),
-    memberDomain: selector.memberDomain.trim().toLowerCase(),
-  };
-}
-
-function profileKey(account: string, domain: string, rev: number): string {
-  return JSON.stringify([domain.toLowerCase(), account.toLowerCase(), rev]);
+  switch (selector.type) {
+    case 'EXACT':
+      return {
+        ...selector,
+        account: selector.account.trim().toLowerCase(),
+        domain: selector.domain.trim().toLowerCase(),
+      };
+    case 'GROUP_MEMBER':
+      return {
+        ...selector,
+        memberAccount: selector.memberAccount.trim().toLowerCase(),
+        memberDomain: selector.memberDomain.trim().toLowerCase(),
+      };
+    case 'MESSAGE_AUTHOR':
+      return { ...selector };
+  }
 }

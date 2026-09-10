@@ -10,7 +10,6 @@ import { AccountThreadStateService } from '../account-thread-state/account-threa
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
-import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
 
 function parseInboundDownloadAuth(
   value: unknown,
@@ -47,7 +46,6 @@ export class FederationInboundMediaBatchService {
     private readonly mediaRanges: FederationMediaRangeClient,
     private readonly participants: AccountThreadStateService,
     private readonly sse: SseService,
-    private readonly outboundSignals: FederationOutboundMessageSignalService,
   ) {}
 
   async runFileSyncBatch(
@@ -82,17 +80,6 @@ export class FederationInboundMediaBatchService {
   async promotePendingMessage(batchId: string): Promise<void> {
     const promoted = await this.promoter.promote(batchId);
     if (!promoted) return;
-    await this.outboundSignals.signalMessage(
-      promoted.threadId,
-      promoted.author,
-      promoted.seq,
-      promoted.sourceDomain,
-    );
-    await this.publishMessageStatus(
-      { threadId: promoted.threadId, seq: promoted.seq },
-      'ready',
-    );
-
     for (const dependentBatchId of promoted.dependentBatchIds) {
       await this.promotePendingMessage(dependentBatchId);
     }
@@ -171,7 +158,7 @@ export class FederationInboundMediaBatchService {
 
   async publishMessageStatus(
     message: { threadId: number; seq: number },
-    status: 'pending' | 'downloading' | 'ready' | 'failed',
+    status: 'pending' | 'downloading' | 'failed',
   ): Promise<void> {
     try {
       const recipients = await this.participants.getActiveParticipantUserIds(

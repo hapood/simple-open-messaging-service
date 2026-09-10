@@ -89,10 +89,11 @@ function harness(localGroupAuthority = false) {
       },
     ),
   };
+  const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 1 }] }) };
   const database = {
     db: {
       transaction: vi.fn((callback: (tx: object) => Promise<void>) =>
-        callback({}),
+        callback(tx),
       ),
     },
   };
@@ -110,9 +111,8 @@ function harness(localGroupAuthority = false) {
     .mockResolvedValue(undefined);
   const epochLock = vi
     .spyOn(FederationThreadSyncStateService, 'lockAuthorizationEpochInTx')
-    .mockResolvedValue({ threadId: 31 } as never);
+    .mockResolvedValue({ threadId: 31, tx } as never);
   const executor = new FederationThreadForwardRoundExecutorService(
-    database as never,
     rounds as never,
     threadResources as never,
     federation as never,
@@ -121,10 +121,12 @@ function harness(localGroupAuthority = false) {
         kind: 'GROUP',
         localGroupAuthority,
         threadId: 31,
+        namespaceId: 7,
         peerDomain: 'origin.test',
         selector: { account: '!group' },
       }),
     } as never,
+    database as never,
   );
   return {
     executor,
@@ -137,10 +139,43 @@ function harness(localGroupAuthority = false) {
     messageAdvance,
     deletionAdvance,
     epochLock,
+    tx,
   };
 }
 
 describe('FederationThreadForwardRoundExecutorService', () => {
+  it.each(['message', 'tombstone'] as const)(
+    'rejects a buffered %s page without writing facts or progress after audience removal',
+    async (kind) => {
+      const h = harness(true);
+      h.tx.execute.mockResolvedValue({ rows: [] });
+      h.threadResources.fetch.mockResolvedValueOnce(
+        response(
+          kind === 'message'
+            ? { messages: [], scannedThrough: 100, hasMore: false }
+            : { tombstones: [], scannedThrough: 9, hasMore: false },
+        ),
+      );
+      const run =
+        kind === 'message'
+          ? h.executor.runMessages(31, 'origin.test', 7, 50)
+          : h.executor.runTombstones(31, 'origin.test', 7, 50);
+      await expect(run).rejects.toThrow('no longer has an audience');
+      expect(h.epochLock.mock.invocationCallOrder[0]).toBeLessThan(
+        h.tx.execute.mock.invocationCallOrder[0],
+      );
+      expect(
+        h.federation.applyForwardMessagePageInTransaction,
+      ).not.toHaveBeenCalled();
+      expect(
+        h.federation.applyForwardTombstonePageInTransaction,
+      ).not.toHaveBeenCalled();
+      expect(h.messageAdvance).not.toHaveBeenCalled();
+      expect(h.deletionAdvance).not.toHaveBeenCalled();
+      expect(h.publishMessage).not.toHaveBeenCalled();
+      expect(h.publishTombstone).not.toHaveBeenCalled();
+    },
+  );
   it('skips an unexpected mirror author before closure fetch and still commits the following message and cursor', async () => {
     const warn = vi
       .spyOn(Logger.prototype, 'warn')
@@ -167,7 +202,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(
       h.federation.applyForwardMessagePageInTransaction,
     ).toHaveBeenCalledWith(
-      {},
+      h.tx,
       expect.objectContaining({
         threadLock: await h.epochLock.mock.results[0].value,
         response: expect.objectContaining({
@@ -175,7 +210,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
         }),
       }),
     );
-    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 100, 100, 7);
+    expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('FEDERATION_MALFORMED'),
     );
@@ -192,7 +227,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       16 * 1024 * 1024,
     );
-    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 100, 100, 7);
+    expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
   });
   it('commits a message page and its cursor independently', async () => {
     const h = harness();
@@ -208,9 +243,9 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       16 * 1024 * 1024,
     );
-    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 60, 100, 7);
+    expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 60, 100, 7);
     expect(h.deletionAdvance).not.toHaveBeenCalled();
-    expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
+    expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
     expect(h.publishMessage).toHaveBeenCalledOnce();
     expect(h.publishTombstone).not.toHaveBeenCalled();
   });
@@ -229,9 +264,9 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       4 * 1024 * 1024,
     );
-    expect(h.deletionAdvance).toHaveBeenCalledWith({}, 31, 9, 9, 7);
+    expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 9, 9, 7);
     expect(h.messageAdvance).not.toHaveBeenCalled();
-    expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
+    expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
     expect(h.publishTombstone).toHaveBeenCalledOnce();
     expect(h.publishMessage).not.toHaveBeenCalled();
   });

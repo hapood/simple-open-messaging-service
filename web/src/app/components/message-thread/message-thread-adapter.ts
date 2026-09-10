@@ -111,9 +111,9 @@ export abstract class MessageThreadAdapter {
     }
   >;
 
-  abstract reportMessages(request: {
+  abstract reportMessage(request: {
     threadId: number;
-    seqs: number[];
+    seq: number;
   }): Observable<StandardResponse<unknown>>;
 
   abstract withdrawMessage(request: {
@@ -225,8 +225,8 @@ export class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     return this.messages.searchMessages(request);
   }
 
-  override reportMessages(request: { threadId: number; seqs: number[] }) {
-    return this.messages.reportMessages(request);
+  override reportMessage(request: { threadId: number; seq: number }) {
+    return this.messages.reportMessage(request);
   }
 
   override withdrawMessage(request: { threadId: number; seq: number }) {

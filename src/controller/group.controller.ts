@@ -354,8 +354,12 @@ export class GroupController {
     return this.enqueueGroupCommand(
       threadId,
       req.user.userId,
-      DurableTaskType.REJECT_GROUP_JOIN_REQUEST,
-      { requestId: requestId.toString(), memberUserId: request.memberUserId },
+      DurableTaskType.REVOKE_GROUP_RELATIONSHIP,
+      {
+        operation: 'REJECT_REQUEST',
+        requestId: requestId.toString(),
+        memberUserId: request.memberUserId,
+      },
     );
   }
 
@@ -383,8 +387,12 @@ export class GroupController {
     return this.enqueueGroupCommand(
       threadId,
       req.user.userId,
-      DurableTaskType.REVOKE_GROUP_INVITATION,
-      { requestId: requestId.toString(), memberUserId: request.memberUserId },
+      DurableTaskType.REVOKE_GROUP_RELATIONSHIP,
+      {
+        operation: 'REVOKE_INVITATION',
+        requestId: requestId.toString(),
+        memberUserId: request.memberUserId,
+      },
     );
   }
 
@@ -438,7 +446,7 @@ export class GroupController {
     return this.enqueueGroupCommand(
       threadId,
       req.user.userId,
-      DurableTaskType.LEAVE_GROUP,
+      DurableTaskType.REVOKE_USER_RELATIONSHIP,
       {},
     );
   }
@@ -493,8 +501,8 @@ export class GroupController {
     return this.enqueueGroupCommand(
       threadId,
       req.user.userId,
-      DurableTaskType.KICK_GROUP_MEMBER,
-      { targetUserId: target },
+      DurableTaskType.REVOKE_GROUP_RELATIONSHIP,
+      { operation: 'KICK', targetUserId: target },
     );
   }
 

@@ -10,8 +10,7 @@ import { MediaMetadataService } from './media-metadata.service.js';
 
 @Module({
   // MessageModule provides MessageService — the media upload routes promote a staged send to a real
-  // Message when the request carries an x-client-message-id header. MessageFanoutService is @Global
-  // (MessageFanoutModule), so no import is needed for it.
+  // Message when the request carries an x-client-message-id header.
   // forwardRef breaks the module cycle Upload -> Message -> LinkPreview -> Upload. The callback also
   // defers the ESM binding read until every module has finished initializing.
   imports: [forwardRef(() => MessageModule), QuotaModule],
@@ -25,8 +24,6 @@ import { MediaMetadataService } from './media-metadata.service.js';
   ],
   // MediaAccessService is exported so bootstrap.ts can resolve it via app.get() for the /uploads/
   // preHandler gate (the gate runs outside DI's request scope, on the Fastify root instance).
-  // AvatarStackService is exported so NotificationQueryService (in MessageFanoutModule, which imports this
-  // module) can inject it to composite the notification icon.
   exports: [
     UploadService,
     MediaAccessService,

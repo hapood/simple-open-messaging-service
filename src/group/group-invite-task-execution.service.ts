@@ -40,7 +40,7 @@ export class GroupInviteTaskExecutionService {
     }
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.relationships.createGroupInvite(
+    const requestId = await this.relationships.createGroupInvite(
       inviterUserId,
       threadId,
       memberUserId,
@@ -58,6 +58,7 @@ export class GroupInviteTaskExecutionService {
           );
       },
     );
+    if (requestId === null) return;
     try {
       this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     } catch (error) {

@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   Optional,
+  type OnModuleDestroy,
 } from '@nestjs/common';
 import {
   applicationDefault,
@@ -37,6 +38,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
 export type FcmProbeStatus = {
   probeId: string;
@@ -67,8 +69,9 @@ type SessionBoundPushToken = {
 /**
  * Multi-platform push delivery — the wake-up channel that complements SSE.
  *
- * Every committed message wakes connected clients through their durable State Feed. PushService separately
- * sends the `NEW_MESSAGE` data-only payload to registered target sessions that do not currently own a live
+ * Committed fanout results wake connected clients through their durable Thread Feed. Count or preview
+ * changes independently enter a five-second account throttle. PushService sends the `NEW_MESSAGE`
+ * data-only payload to registered target sessions that do not currently own a live
  * SSE connection. An online session takes over notification aggregation from its State Feed; other devices
  * remain independently eligible. Duplicate wake delivery is harmless because the pull pipeline is idempotent.
  *
@@ -81,12 +84,31 @@ type SessionBoundPushToken = {
  * → that transport no-ops (the other still works; both missing → SSE-only, the local/dev path).
  */
 @Injectable()
-export class PushService {
+export class PushService implements OnModuleDestroy {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
   private readonly fcmCredentialPath: string;
   private readonly fcmProbes = new Map<string, FcmProbeEntry>();
   private readonly fcmProbeCooldowns = new Map<string, number>();
+  private readonly messageThrottle = new AccountFeedThrottle(
+    5_000,
+    (userId, threadFeedEndId) =>
+      this.dispatchForMessage([{ userId, threadFeedEndId }]),
+    (error) => this.logger.warn(`Thread push hint failed: ${String(error)}`),
+  );
+
+  /** Only notification-relevant projection changes enter this account window.
+   * Session validity and SSE ownership are checked by dispatch at send time. */
+  enqueueForMessage(
+    targets: { userId: number; threadFeedEndId: number }[],
+  ): void {
+    for (const { userId, threadFeedEndId } of targets)
+      this.messageThrottle.enqueue(userId, threadFeedEndId);
+  }
+
+  onModuleDestroy(): void {
+    this.messageThrottle.stop();
+  }
 
   constructor(
     private readonly database: DatabaseService,
@@ -316,23 +338,35 @@ export class PushService {
   }
 
   /**
-   * Fan out an identity-only wake-up for a freshly written message. Fire-and-forget from
-   * MessageFanoutService (never awaited) — push latency must not delay the sender's HTTP response. Never
-   * throws: every step is guarded so a push failure can never break message delivery.
+   * Deliver one admitted round of identity-only wake-ups. The account throttle
+   * invokes this outside durable fanout completion and the HTTP send path.
+   * Provider failures are logged and never propagated to the caller.
    *
-   * Recipient filtering: the caller (fanout) already excluded the sender + muted + blocked recipients.
+   * Recipient filtering: only count or preview changes enter the throttle.
    * A token is suppressed only when its exact authenticated session owns a live SSE connection; that device
    * takes over notification aggregation from `STATE_FEED_UPDATED`. Other devices receive the same payload
-   * `{ type:'NEW_MESSAGE', messageEndSeq }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
+   * `{ type:'NEW_MESSAGE', threadFeedEndId }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
    * WEB → Web Push `sendNotification`. Per-token errors that indicate a definitively-dead subscription
    * (FCM UNREGISTERED / Web Push 404/410) are pruned; transient errors are left alone to self-heal.
    */
   async dispatchForMessage(
-    targets: { userId: number }[],
-    messageEndSeq: number,
+    targets: { userId: number; threadFeedEndId: number }[],
   ): Promise<void> {
     try {
-      const userIds = [...new Set(targets.map((target) => target.userId))];
+      const heads = new Map<number, number>();
+      for (const target of targets) {
+        if (
+          !Number.isInteger(target.threadFeedEndId) ||
+          target.threadFeedEndId < 0 ||
+          target.threadFeedEndId > 2_147_483_647
+        )
+          throw new Error('Invalid thread feed push target');
+        heads.set(
+          target.userId,
+          Math.max(heads.get(target.userId) ?? 0, target.threadFeedEndId),
+        );
+      }
+      const userIds = [...heads.keys()];
       if (userIds.length === 0) return;
 
       const tokens = await this.database.db.query.pushToken.findMany({
@@ -358,14 +392,14 @@ export class PushService {
       );
       if (deliverableTokens.length === 0) return;
 
-      // Identity-only wake-up — {type, messageEndSeq}. No cursor/body/preview/contentType/msgid: the client
+      // Identity-only wake-up — {type, threadFeedEndId}. No body/preview/contentType/msgid: the client
       // pulls the body. FCM requires string values; Web Push carries the JSON-stringified form. No
       // `notification` field for FCM — its presence would make the OS show it itself and bypass
       // onMessageReceived on background.
-      const data: Record<string, string> = {
+      const dataFor = (userId: number): Record<string, string> => ({
         type: 'NEW_MESSAGE',
-        messageEndSeq: String(messageEndSeq),
-      };
+        threadFeedEndId: String(heads.get(userId)!),
+      });
 
       const dead: string[] = [];
       // Branch by SUBSCRIPTION SHAPE, not the platform label: a Web Push subscription is identified by
@@ -384,7 +418,7 @@ export class PushService {
       if (fcmTokens.length > 0 && this.messaging) {
         const messages: Message[] = fcmTokens.map((t) => ({
           token: t.token,
-          data,
+          data: dataFor(t.userId),
           android: { priority: 'high', ttl: 2_419_200 }, // 28 days — the FCM max retention window
         }));
         const res = await this.messaging.sendEach(messages);
@@ -408,7 +442,6 @@ export class PushService {
       // admin-managed), so the gate is whether a keypair is configured. sendWebPush throws on failure →
       // 404/410 = subscription expired/gone (prune), anything else is transient.
       if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
-        const payload = JSON.stringify(data);
         await Promise.all(
           webSubs.map(async (s) => {
             try {
@@ -417,7 +450,7 @@ export class PushService {
                   endpoint: s.token,
                   keys: { p256dh: s.webP256dh!, auth: s.webAuth! },
                 },
-                payload,
+                JSON.stringify(dataFor(s.userId)),
               );
             } catch (e) {
               const code = (e as { statusCode?: number }).statusCode;

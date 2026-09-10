@@ -5,7 +5,6 @@ import { GroupProjectionTaskExecutionService } from './group-projection-task-exe
 
 const task = {
   id: 1n,
-  parentTaskId: null,
   kind: 'PROJECTION',
   scopeType: 'GROUP',
   scopeKey: 'group',
@@ -14,7 +13,6 @@ const task = {
   payload: { threadId: 7 },
   checkpoint: { afterAudienceId: '0' },
   coalescingKey: 'projection',
-  supersededByTaskId: null,
   status: 'PROCESSING',
   resultCode: null,
   lastError: null,

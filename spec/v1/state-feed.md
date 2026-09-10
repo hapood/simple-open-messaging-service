@@ -5,7 +5,7 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 This document is entirely normative. `GET /s2s/v1/state-feed` is the
 per-peer compacted feed for relationship facts, group-meta feed-head hints,
 and per-thread message and deletion query heads. It carries no user or group
-profile display data; Relationship Intent carries only an exact revision
+profile display data; Relationship Intent carries an authorization snapshot and an exact revision
 reference. Message-author display data is resolved only through the exact-message
 [Message Author Profile](./message-author-profile.md) operation.
 
@@ -109,13 +109,25 @@ event types or fields are malformed.
 ## 4. RELATIONSHIP_INTENT
 
 ```ts
-interface RelationshipIntentBody {
-  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+interface RelationshipIntentFields {
   profileRev: SafeInteger;
   note: string;
   requestedAt: EpochMilliseconds | null;
   expiresAt: EpochMilliseconds | null;
 }
+
+type RelationshipIntentBody = RelationshipIntentFields & (
+  | {
+      status: 'REQUESTED' | 'ACCEPTED';
+      messageEndSeq: ThreadSequence;
+      tombstoneEndSeq: ThreadSequence;
+    }
+  | {
+      status: 'REVOKED';
+      messageEndSeq?: ThreadSequence;
+      tombstoneEndSeq?: ThreadSequence;
+    }
+);
 ```
 
 This item is one source-authored user/user or user/group direction.
@@ -124,6 +136,26 @@ hosted by the receiver. Group/group relationships are invalid. Each direction is
 controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
+
+Every positive direction (`REQUESTED` or `ACCEPTED`) MUST carry both
+`messageEndSeq` and `tombstoneEndSeq` as non-null, inclusive, non-negative
+thread coordinates. The publisher MUST obtain the pair from one consistent
+snapshot containing the latest committed queryable coordinates at the time it
+authors the State Feed item. It MUST NOT reuse an older authorization snapshot
+or read the two coordinates from different snapshots. Later commits do not
+invalidate an already authored item; transport retries may retransmit it.
+`0/0` is a valid snapshot of an empty thread, not a fallback for missing values.
+
+The authorization snapshot supplies a synchronization starting point for initial
+access and reauthorization. Neither case requires a separate
+`THREAD_CONTENT_HEAD` publication before the receiver can start synchronization.
+The snapshot does not require the receiver to reconstruct earlier thread history:
+the receiver MAY backfill all, some, or none of the history available under the
+publisher's query and retention policies. Snapshot selection across repeated
+intents or multiple receiver-hosted accounts sharing a thread, local state layout,
+and transaction boundaries are implementation choices. A different `feedId`
+does not by itself create a new thread coordinate space or require another
+history initialization. Feed ordering and current authorization still apply.
 
 `profileRev` is required and non-null. A positive value is the source account's
 immutable profile reference selected when the current request flow was authored;
@@ -256,7 +288,7 @@ Non-member-derived settings are not federated.
 
 ```ts
 interface ThreadContentHeadBody {
-  messageEndSeq: PositiveThreadSequence;
+  messageEndSeq: ThreadSequence;
   tombstoneEndSeq: ThreadSequence;
 }
 ```
@@ -268,7 +300,7 @@ group `account`, and `peerAccount` MUST be absent. The authenticated exchange
 supplies both domains, so neither is repeated in the body.
 
 `messageEndSeq` is the inclusive upper bound currently committed and queryable
-through `/messages`. It is a positive JSON integer no greater than
+through `/messages`. It is a non-negative JSON integer no greater than
 `SafeInteger - 1`. `tombstoneEndSeq` is the inclusive upper bound currently
 queryable through `/message-tombstones`. It is a non-negative JSON integer no
 greater than `SafeInteger - 1`; zero means that no tombstone has yet been
@@ -282,13 +314,16 @@ complete body. The item contains no message or tombstone content, grants no
 authorization, and is not an acknowledgement. The corresponding query
 operations recompute authorization from durable state.
 
-A thread-content projection exists only after at least one message coordinate
-is queryable to that receiver. Because a tombstone targets an earlier message,
-a publisher never creates this item from a tombstone alone. Relationship
+The publisher MUST obtain both coordinates from one consistent snapshot
+containing the latest committed queryable message and tombstone coordinates
+when it authors the item. It MUST NOT read the two coordinates from different
+snapshots or reuse stale coordinates for a newly authored head. An authorized
+empty thread MAY publish `messageEndSeq: 0, tombstoneEndSeq: 0`. Relationship
 closure MAY remove the current projection without allocating a deletion item.
-If access is later restored, the publisher MUST allocate a new, greater
-`feedId`, even when both query coordinates equal values previously exposed for
-the stable key.
+Confirmation or restored access does not require an immediate thread-content
+publication: the positive intent already carries the latest sequence pair.
+If the publisher later recreates a removed thread-content projection, it MUST
+allocate a new, greater `feedId`, even when both coordinates are unchanged.
 
 ## 7. Ordering, recovery, and authorization
 
@@ -305,10 +340,13 @@ confirmed before allocating or publishing `GROUP_META_FEED_HEAD` or
 `THREAD_CONTENT_HEAD` for that peer. For GROUP, at least one member hosted by
 that peer MUST remain confirmed.
 
-State Feed compaction MUST preserve this dependency order for a complete
-rebuild. If a required current projection moves to a greater `feedId`, the
-publisher MUST reindex each dependent thread-content item at a still greater
-`feedId`, even when its two sequence coordinates are unchanged. The consumer
+A relationship change alone does not require creating or reindexing a
+thread-content item: its positive intent already provides the latest sequence
+pair. For a complete rebuild, the consumer applies current relationship facts
+before selecting thread targets; an older head must not replace a newer
+authorization snapshot. If a required Group Meta projection moves to a greater
+`feedId`, the publisher MUST reindex an existing dependent thread-content item
+at a still greater `feedId`, sampling a fresh latest sequence pair. The consumer
 applies relationship and roster dependencies before accepting their
 thread-content targets, regardless of placement within one fetched page.
 

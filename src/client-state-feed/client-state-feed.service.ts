@@ -1,3 +1,4 @@
+import { hasEstablishedThreadRelationship } from '../relationship/relationship-authorization.js';
 import { groupStateSql } from '../group/group-state.js';
 
 import {
@@ -31,8 +32,7 @@ export interface ClientStateFeedWrite {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK'
-    | 'THREAD_CONTENT_HEAD';
+    | 'THREAD_STATE';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;
@@ -121,6 +121,13 @@ export class ClientStateFeedService implements OnModuleDestroy {
     write: ClientStateFeedWrite,
   ): Promise<number | null> {
     const body = serializeBody(write.body) as Record<string, unknown>;
+    if (write.eventType === 'RELATIONSHIP_INTENT') {
+      const threadId = body.localThreadId ?? body.threadId;
+      body.established =
+        typeof threadId === 'number' &&
+        (await hasEstablishedThreadRelationship(tx, write.userId, threadId));
+    }
+
     const compactionKey = this.compactionKey(write);
     const [current] = await tx
       .select({
@@ -592,11 +599,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
           eq(clientStateFeed.userId, userId),
           gt(clientStateFeed.feedId, afterFeedId),
           lte(clientStateFeed.feedId, targetFeedId),
-          mode === 'full'
-            ? sql`NOT (
-                ${clientStateFeed.eventType} = 'THREAD_BLOCK' AND ${clientStateFeed.body}->>'blocked' = 'false'
-              )`
-            : undefined,
         ),
       )
       .orderBy(asc(clientStateFeed.feedId));

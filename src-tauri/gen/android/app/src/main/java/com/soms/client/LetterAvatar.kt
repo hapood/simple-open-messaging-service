@@ -11,8 +11,7 @@ import android.graphics.Typeface
 /**
  * Renders an initial-letter avatar bitmap — a rounded-square (rx 20%, matching the in-app avatar shape) with
  * a name-hashed palette background + a white bold initial. The fallback when a user/group has NO avatar image:
- * used by the call notification ([CallService.loadAvatar]) + the per-thread message notification
- * ([SomsMessagingService.renderDescriptor]), so the icon shows the peer's letter avatar instead of the app logo.
+ * used by call notifications. Message notifications use the app logo when no cached avatar is available.
  *
  * Mirrors the in-app `UserAvatarComponent` letter tile EXACTLY — the same 12-color Material palette, indexed
  * by the same name hash — so a notification's fallback tile is the same color the in-app avatar would render

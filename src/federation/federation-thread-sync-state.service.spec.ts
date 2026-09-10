@@ -180,7 +180,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       const mock = missingStateTransaction(7);
 
       await expect(
-        FederationThreadSyncStateService.reconcileThreadHeadInTx(
+        FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
           mock.tx as never,
           {
             threadId: 31,
@@ -210,7 +210,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
     const mock = missingStateTransaction(7);
 
     await expect(
-      FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
         mock.tx as never,
         {
           threadId: 31,
@@ -246,7 +246,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
   it('places initial history after an existing local system-message tail', async () => {
     const mock = missingStateTransaction(7, 12n, 3);
 
-    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
       mock.tx as never,
       {
         threadId: 31,
@@ -269,7 +269,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
   it('adopts the initial deletion head without scheduling historical tombstones', async () => {
     const mock = missingStateTransaction(7);
 
-    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
       mock.tx as never,
       {
         threadId: 31,
@@ -305,7 +305,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
     });
 
     await expect(
-      FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
         mock.tx as never,
         {
           threadId: 31,
@@ -352,7 +352,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       overlaps: [],
     });
 
-    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
       mock.tx as never,
       {
         threadId: 31,
@@ -383,7 +383,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       overlaps: [],
     });
 
-    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
       mock.tx as never,
       {
         threadId: 31,
@@ -411,7 +411,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       latestGapId: 12n,
     });
 
-    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
       mock.tx as never,
       {
         threadId: 31,
@@ -562,7 +562,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
 
 it('locks MessageThread when reconciling a head', async () => {
   const mock = missingStateTransaction(7);
-  await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+  await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
     mock.tx as never,
     {
       threadId: 31,

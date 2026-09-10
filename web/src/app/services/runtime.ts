@@ -65,26 +65,17 @@ declare global {
           handler: (e: { payload: unknown }) => void,
         ) => Promise<() => void>;
       };
-      /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs), used by the DESKTOP
-       *  NotificationAdapter (pc/mac/linux). `identifier` is the replace-by-id param — posting with the same
-       *  identifier replaces the prior notification. Desktop-only: Android has its own Kotlin `SomsNotify`
-       *  bridge (the Tauri notification plugin is deliberately not used on Android). */
-      notification?: {
-        sendNotification: (n: {
-          title: string;
-          body?: string;
-          identifier?: string;
-        }) => Promise<void> | void;
-      };
     };
     /** FCM bridge injected by the Android shell (SomsMessagingService / MainActivity). `SomsFcm` is a
      *  Kotlin `@JavascriptInterface` exposing the current FCM token + permission request. The two hooks
      *  are how Kotlin pushes the token (rotation) and a notification-tap deep link (warm start) into JS.
-     *  `__SOMS_PENDING_THREAD_ID__` is the cold-start fallback: Kotlin sets it before Angular boots, so
-     *  PushService.init() can recover a deep link that arrived before the live handler was registered.
+     *  Pending notification navigation stays in Kotlin until PushService opens and acknowledges it.
      *  All absent in the browser build — guarded by isTauri() at every use. */
     SomsFcm?: {
       getToken: () => string | null;
+      getPendingThreadId: () => string | null;
+      acknowledgeThreadId: (threadId: string) => void;
+      clearMessageNotifications: () => void;
       requestToken: () => void;
       requestNotificationPermission: () => void;
       /** System notification status as a JSON string `{"enabled":boolean,"canRequest":boolean}`.
@@ -107,11 +98,10 @@ declare global {
       setNotificationAlertPolicy: (policy: string) => void;
       /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
-       *  authenticate /notification-feed/query while the WebView is suspended. Pass null/empty on logout to
+       *  authenticate native thread-feed synchronization while the WebView is suspended. Pass null/empty on logout to
        *  clear (and stop the native stream). Android-only. */
       setSessionToken: (token: string | null) => void;
       /** Mirror the per-user integer message-feed cursor into native notification storage. */
-      setStateFeedCursor: (cursor: number) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when
@@ -170,8 +160,7 @@ declare global {
       getFirebaseConfig: () => string | null;
     };
     __SOMS_FCM_TOKEN__?: (token: string) => void;
-    __SOMS_DEEP_LINK__?: (threadId: string) => void;
-    __SOMS_PENDING_THREAD_ID__?: string;
+    __SOMS_DEEP_LINK__?: () => void;
     /** Android share-sheet notification. Pull from SomsShare so the payload remains recoverable until ack. */
     __SOMS_SHARE_AVAILABLE__?: () => void;
     SomsShare?: {
@@ -200,17 +189,6 @@ declare global {
     /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
      *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
     SomsBack?: { exit: () => void };
-    /** Kotlin `@JavascriptInterface` (MainActivity, registered alongside SomsFcm/SomsShell/SomsBack): exposes the
-     *  Android NATIVE notification method's parameters to JS. `show(text, replace)` posts on CHANNEL_MESSAGES at
-     *  the stable AWAY_NOTIF_ID when `replace` is true (replace-by-id), else a fresh id; `clear` cancels it. The
-     *  AndroidNotificationAdapter wraps this — it maps the unified `merge` param onto `replace` (smoothing the
-     *  platform difference into one JS adapter function). Android-only; guaranteed present after the
-     *  isAndroidNative() gate, so call sites use `!`. */
-    SomsNotify?: {
-      show: (text: string, replace: boolean) => void;
-      showDescriptor: (json: string) => void;
-      clear: () => void;
-    };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
@@ -486,20 +464,6 @@ export function tauriInvoke<T = unknown>(
   const p = invoke(cmd, args) as Promise<T>;
   p.catch((e) => console.error(`[tauri] ${cmd} failed:`, e));
   return p;
-}
-
-/** Post a system notification via the RAW Tauri shell bridge (`window.__TAURI__.notification.sendNotification`,
- *  registered by `tauri-plugin-notification` in `src-tauri/src/lib.rs`). The raw bridge access lives HERE — exposed
- *  as a flat, typed function carrying the plugin's native params (`title`, `body`, `identifier`) — so the JS
- *  adapter layer (`NotificationAdapter`) wraps this instead of reaching into `window.__TAURI__?.notification?.…`
- *  itself. `identifier` is the replace-by-id param (same identifier replaces the prior notification). No-op when
- *  not in a Tauri shell or the plugin global is absent. Desktop-only — Android uses the Kotlin `SomsNotify` bridge. */
-export function tauriSendNotification(options: {
-  title: string;
-  body?: string;
-  identifier?: string;
-}): void {
-  window.__TAURI__?.notification?.sendNotification(options);
 }
 
 /** Emit a Tauri event the Rust side listens for. No-op when not in the shell. */

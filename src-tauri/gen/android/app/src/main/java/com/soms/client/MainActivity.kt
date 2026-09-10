@@ -225,7 +225,7 @@ class MainActivity : TauriActivity() {
         // Capture the cold-start deep link (notification tap that launched the process) before the
         // webview exists; onWebViewCreate will deliver it to JS.
         intent?.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let {
-            SomsBridge.DeepLink.pendingThreadId = it
+            SomsBridge.DeepLink.offer(it)
         }
         // Cold-start answer: the user tapped Answer on the incoming-call notification (the FCM wake-up rang
         // the phone; CallController is already seeded incoming). Accept natively now — the webview boots and
@@ -740,9 +740,6 @@ class MainActivity : TauriActivity() {
         // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
         // native store (not a stale injected global).
         webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
-        // window.SomsNotify.show(text,replace)/clear() — exposes the Android native notification method's params
-        // to JS; the web's AndroidNotificationAdapter wraps it (maps the unified `merge` → `replace`).
-        webView.addJavascriptInterface(SomsNotifyInterface(this), "SomsNotify")
         // window.SomsCall.* — the command direction of the native call bridge (initiate / accept / … /
         // getSnapshot); the Angular CallAdapter facade calls these. The EVENT direction rides the existing
         // window.__SOMS_EVENT__ (CALL_EVENT/CALL_SIGNAL) + CallController's window.__SOMS_CALL_EVENT__
@@ -765,10 +762,7 @@ class MainActivity : TauriActivity() {
         applyCallRendererPolicy()
         // Deliver anything that arrived before the webview was ready.
         SomsBridge.FcmToken.current?.let { emitToken(it) }
-        SomsBridge.DeepLink.pendingThreadId?.let {
-            SomsBridge.DeepLink.pendingThreadId = null
-            openThread(it)
-        }
+        SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__();")
         notifyShareAvailable()
         // This (re)created WebView replaces any prior one — release its orphaned video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
@@ -1354,7 +1348,8 @@ class MainActivity : TauriActivity() {
     /** Navigate the web app to a thread. Calls window.__SOMS_DEEP_LINK__ if registered; the web app
      *  installs that handler at boot (PushService.init), so warm-start routing lands immediately. */
     private fun openThread(threadId: String) {
-        SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__(${SomsBridge.jsonStr(threadId)});")
+        SomsBridge.DeepLink.offer(threadId)
+        SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__();")
     }
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
@@ -1574,8 +1569,20 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread { a.requestNotificationPermission() }
         }
 
+        @JavascriptInterface
+        fun getPendingThreadId(): String? = SomsBridge.DeepLink.peek()
+
+        @JavascriptInterface
+        fun acknowledgeThreadId(threadId: String) = SomsBridge.DeepLink.acknowledge(threadId)
+
+        @JavascriptInterface
+        fun clearMessageNotifications() {
+            val a = activityRef.get() ?: return
+            SomsMessagingService.clearSessionMessageNotifs(a)
+        }
+
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned
-         *  /events stream (RealtimeService) and the background `/notification-feed/query` fetchers
+         *  /events stream (RealtimeService) and the background Rust thread-feed fetchers
          *  (FCM / WorkManager) can authenticate while the WebView is suspended. Called from JS on login;
          *  pass null/empty on logout to clear. */
         @JavascriptInterface
@@ -1593,13 +1600,6 @@ class MainActivity : TauriActivity() {
                     Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND),
                 )
             }
-        }
-
-        /** Mirror the WebView's committed ClientStateFeed cursor for background notification queries. */
-        @JavascriptInterface
-        fun setStateFeedCursor(cursor: Int) {
-            val a = activityRef.get() ?: return
-            if (cursor >= 0) ClientStateDb.setStateFeedCursor(a, cursor)
         }
 
         /** Synchronous read of the persisted session token from encrypted storage — the SAME store
@@ -2015,30 +2015,6 @@ class MainActivity : TauriActivity() {
         fun setApiOriginSecondary(origin: String?) {
             val a = activityRef.get() ?: return
             SomsSecureStore.setApiOriginSecondary(a, origin)
-        }
-    }
-
-    /** JS-callable surface exposed as window.SomsNotify. `showDescriptor(json)` parses the server-authored
-     *  descriptor (the web's AndroidNotificationAdapter forwards it verbatim) and renders it via
-     *  [SomsMessagingService.renderDescriptor]. The native background
-     *  triggers (FCM/WorkManager/RealtimeService → renderAwayNotification) share the same renderer — one
-     *  source of truth. @JavascriptInterface runs on a background JS thread; NotificationManager is
-     *  thread-safe, so no hop. */
-    private class SomsNotifyInterface(activity: MainActivity) {
-        private val activityRef = java.lang.ref.WeakReference(activity)
-
-        @JavascriptInterface
-        fun showDescriptor(json: String) {
-            val a = activityRef.get() ?: return
-            val d = NotifDescriptor.parseOne(org.json.JSONObject(json)) ?: return
-            SomsMessagingService.renderDescriptor(a, d)
-        }
-
-        @JavascriptInterface
-        fun clear() {
-            val a = activityRef.get() ?: return
-            ContextCompat.getSystemService(a, NotificationManager::class.java)
-                ?.cancel(SomsMessagingService.AWAY_NOTIF_ID)
         }
     }
 

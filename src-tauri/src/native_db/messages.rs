@@ -18,17 +18,433 @@ pub(super) fn normalize_message_creator(message: &mut Value) {
     }
 }
 
+enum MessageSlotWrite {
+    Message(Value),
+    Deletion {
+        thread_id: i64,
+        seq: i64,
+        reason: String,
+    },
+}
+
+fn message_tomb(identity: &Value, reason: &str) -> Result<Value, String> {
+    if !matches!(reason, "USER_RETRACTION" | "MODERATION_REMOVAL") {
+        return Err("invalid message deletion type".into());
+    }
+    let mut tomb = serde_json::json!({
+        "threadId": identity["threadId"], "seq": identity["seq"],
+        "contentType": "TOMB", "isDeleted": true, "deletionType": reason,
+    });
+    // A deletion can precede its message. Never invent a sender or retain body fields.
+    if identity.get("creator").is_some() {
+        for field in ["creator", "profileRev", "createdAt", "updatedAt"] {
+            tomb[field] = identity
+                .get(field)
+                .ok_or_else(|| format!("message identity has no {field}"))?
+                .clone();
+        }
+    }
+    Ok(tomb)
+}
+
+/// All message writes share this merge inside the caller's existing transaction.
+fn write_message_slot(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    write: MessageSlotWrite,
+) -> Result<Value, String> {
+    let (thread_id, seq) = match &write {
+        MessageSlotWrite::Message(message) => (
+            message
+                .get("threadId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "message has no numeric threadId".to_string())?,
+            message
+                .get("seq")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "message has no numeric seq".to_string())?,
+        ),
+        MessageSlotWrite::Deletion { thread_id, seq, .. } => (*thread_id, *seq),
+    };
+    if user_id <= 0 || thread_id <= 0 || seq <= 0 {
+        return Err("message has invalid coordinates".into());
+    }
+    let current = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
+            params![user_id, thread_id, seq],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("read message slot: {e}"))?
+        .map(parse_json)
+        .transpose()?;
+    let merged = match write {
+        MessageSlotWrite::Message(mut message) => {
+            normalize_message_creator(&mut message);
+            let is_tomb = message.get("contentType").and_then(Value::as_str) == Some("TOMB");
+            if message.get("isDeleted").and_then(Value::as_bool) == Some(true) && !is_tomb {
+                return Err("deleted messages must use the TOMB contract".into());
+            }
+            let existing_tomb = current
+                .as_ref()
+                .filter(|value| value.get("contentType").and_then(Value::as_str) == Some("TOMB"));
+            if let Some(tomb) = existing_tomb.or(if is_tomb { Some(&message) } else { None }) {
+                let reason = tomb
+                    .get("deletionType")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "tomb has no deletion type".to_string())?;
+                message_tomb(&message, reason)?
+            } else {
+                message
+            }
+        }
+        MessageSlotWrite::Deletion { reason, .. } => {
+            let coordinates = serde_json::json!({ "threadId": thread_id, "seq": seq });
+            message_tomb(current.as_ref().unwrap_or(&coordinates), &reason)?
+        }
+    };
+    let created_at = merged
+        .get("createdAt")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    tx.execute(
+        "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
+         VALUES(?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
+           created_at=excluded.created_at, payload_json=excluded.payload_json",
+        params![user_id, thread_id, seq, created_at, json_text(&merged)?],
+    )
+    .map_err(|e| format!("write message slot: {e}"))?;
+    Ok(merged)
+}
+
+#[cfg(test)]
+mod tomb_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (
+            user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, seq INTEGER NOT NULL,
+            created_at INTEGER NOT NULL, payload_json TEXT NOT NULL,
+            PRIMARY KEY(user_id, thread_id, seq)
+        )",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn message() -> Value {
+        json!({
+            "threadId": 42, "seq": 4,
+            "creator": {"account": "alice", "domain": "example.test", "namespaceId": 1},
+            "profileRev": 3, "createdAt": 100, "updatedAt": 101,
+            "contentType": "IMAGE", "isDeleted": false, "localState": "READY",
+            "content": "private body", "quote": {"content": "private quote"},
+            "mediaStatus": "ready", "clientMessageId": "private-id"
+        })
+    }
+
+    fn deletion(reason: &str) -> MessageSlotWrite {
+        MessageSlotWrite::Deletion {
+            thread_id: 42,
+            seq: 4,
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn arrival_orders_converge_and_duplicates_cannot_restore_bodies() {
+        for reason in ["USER_RETRACTION", "MODERATION_REMOVAL"] {
+            for deletion_first in [false, true] {
+                let mut conn = database();
+                let tx = conn.transaction().unwrap();
+                if deletion_first {
+                    let marker = write_message_slot(&tx, 1, deletion(reason)).unwrap();
+                    assert_eq!(
+                        marker,
+                        json!({
+                            "threadId": 42, "seq": 4, "contentType": "TOMB",
+                            "isDeleted": true, "deletionType": reason,
+                        })
+                    );
+                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
+                } else {
+                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
+                    write_message_slot(&tx, 1, deletion(reason)).unwrap();
+                }
+                let expected = json!({
+                    "threadId": 42, "seq": 4,
+                    "creator": {"account": "alice", "domain": "example.test", "namespaceId": 1},
+                    "profileRev": 3, "createdAt": 100, "updatedAt": 101,
+                    "contentType": "TOMB", "isDeleted": true, "deletionType": reason,
+                });
+                assert_eq!(
+                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    write_message_slot(&tx, 1, MessageSlotWrite::Message(expected.clone()))
+                        .unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    write_message_slot(&tx, 1, deletion(reason)).unwrap(),
+                    expected
+                );
+                tx.commit().unwrap();
+                let (created_at, payload): (i64, String) = conn
+                    .query_row("SELECT created_at, payload_json FROM messages", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                    .unwrap();
+                assert_eq!(created_at, 100);
+                assert_eq!(parse_json(payload).unwrap(), expected);
+                assert_eq!(
+                    load_deleted_message_seqs(&conn, 1, 42, vec![4]).unwrap(),
+                    vec![4]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn query_tombs_preserve_null_creator_and_normalize_local_identity() {
+        let mut conn = database();
+        let tx = conn.transaction().unwrap();
+        let mut source = message();
+        source["creator"] = Value::Null;
+        let tomb = message_tomb(&source, "USER_RETRACTION").unwrap();
+        assert_eq!(
+            write_message_slot(&tx, 1, MessageSlotWrite::Message(tomb.clone())).unwrap(),
+            tomb
+        );
+        source["seq"] = json!(5);
+        source["creator"] = json!({"account": "alice", "domain": "example.test", "namespaceId": 0});
+        let merged = write_message_slot(
+            &tx,
+            1,
+            MessageSlotWrite::Message(message_tomb(&source, "MODERATION_REMOVAL").unwrap()),
+        )
+        .unwrap();
+        assert_eq!(merged["creator"]["domain"], "local");
+    }
+
+    #[test]
+    fn deletion_is_scoped_to_account_and_thread() {
+        let mut conn = database();
+        let tx = conn.transaction().unwrap();
+        write_message_slot(&tx, 1, deletion("USER_RETRACTION")).unwrap();
+        assert_eq!(
+            write_message_slot(&tx, 2, MessageSlotWrite::Message(message())).unwrap(),
+            message()
+        );
+        let mut other = message();
+        other["threadId"] = json!(99);
+        assert_eq!(
+            write_message_slot(&tx, 1, MessageSlotWrite::Message(other.clone())).unwrap(),
+            other
+        );
+    }
+
+    #[test]
+    fn rejects_old_deleted_bodies_and_invalid_reasons_without_committing_batch() {
+        let mut conn = database();
+        {
+            let tx = conn.transaction().unwrap();
+            write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
+            let mut old = message();
+            old["isDeleted"] = json!(true);
+            assert!(write_message_slot(&tx, 1, MessageSlotWrite::Message(old))
+                .unwrap_err()
+                .contains("TOMB contract"));
+            assert!(write_message_slot(&tx, 1, deletion("UNKNOWN")).is_err());
+        }
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn counts_known_slots_including_tombs_with_exact_bounds_and_owner_identity() {
+        let mut conn = database();
+        let owner = MessageCountOwner {
+            account: "me".into(),
+            domain: "example.test".into(),
+            namespace_id: 0,
+        };
+        let tx = conn.transaction().unwrap();
+        for seq in [1, 3, 4, 5, 6, 8, 9, 10] {
+            let mut slot = message();
+            slot["seq"] = json!(seq);
+            if seq == 4 || seq == 5 || seq == 10 {
+                slot["creator"] = json!({"account":"me", "domain":"example.test", "namespaceId": if seq == 10 { 2 } else { 0 }});
+            }
+            if seq == 6 {
+                slot["creator"] = Value::Null;
+                slot["contentType"] = json!("SYSTEM");
+            }
+            if seq == 8 {
+                slot["localState"] = json!("STUB");
+            }
+            if seq == 9 {
+                slot["localState"] = json!("FAILED");
+            }
+            if seq == 3 || seq == 5 {
+                slot = message_tomb(&slot, "USER_RETRACTION").unwrap();
+            }
+            write_message_slot(&tx, 1, MessageSlotWrite::Message(slot)).unwrap();
+        }
+        write_message_slot(
+            &tx,
+            1,
+            MessageSlotWrite::Deletion {
+                thread_id: 42,
+                seq: 7,
+                reason: "USER_RETRACTION".into(),
+            },
+        )
+        .unwrap();
+        write_message_slot(&tx, 2, MessageSlotWrite::Message(message())).unwrap();
+        let mut other = message();
+        other["threadId"] = json!(99);
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 0, 11, &owner).unwrap(),
+            6
+        );
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 1, 3, &owner).unwrap(),
+            1
+        );
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 3, 7, &owner).unwrap(),
+            1
+        );
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 7, 7, &owner).unwrap(),
+            0
+        );
+        let mut late = message();
+        late["seq"] = json!(7);
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(late)).unwrap();
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 0, 11, &owner).unwrap(),
+            7
+        );
+        assert!(count_unread_message_slots(&tx, 1, 42, 5, 4, &owner).is_err());
+    }
+
+    #[test]
+    fn unread_count_is_not_capped_at_100() {
+        let mut conn = database();
+        let tx = conn.transaction().unwrap();
+        for seq in 1..=120 {
+            let mut slot = message();
+            slot["seq"] = json!(seq);
+            write_message_slot(&tx, 1, MessageSlotWrite::Message(slot)).unwrap();
+        }
+        let owner = MessageCountOwner {
+            account: "me".into(),
+            domain: "local".into(),
+            namespace_id: 0,
+        };
+        assert_eq!(
+            count_unread_message_slots(&tx, 1, 42, 0, 120, &owner).unwrap(),
+            120
+        );
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MessageCountOwner {
+    pub(super) account: String,
+    pub(super) domain: String,
+    pub(super) namespace_id: i32,
+}
+
+/// Count actual slots, not sequence distance. Deletion-only markers lack creator identity.
+pub(super) fn count_unread_message_slots(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i32,
+    after_seq: i32,
+    through_seq: i32,
+    owner: &MessageCountOwner,
+) -> Result<i64, String> {
+    if user_id <= 0
+        || thread_id <= 0
+        || after_seq < 0
+        || through_seq < after_seq
+        || owner.account.is_empty()
+        || owner.domain.is_empty()
+        || owner.namespace_id < 0
+    {
+        return Err("invalid unread message count range or identity".into());
+    }
+    let local = owner.namespace_id == 0 || owner.domain == "local";
+    let domain = if local { "local" } else { &owner.domain };
+    let namespace = if local { 0 } else { owner.namespace_id };
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages
+         WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
+           AND json_type(payload_json, '$.creator') IN ('object', 'null')
+           AND NOT COALESCE(
+             json_extract(payload_json, '$.creator.account')=?5
+             AND json_extract(payload_json, '$.creator.domain')=?6
+             AND json_extract(payload_json, '$.creator.namespaceId')=?7, 0)",
+        params![
+            user_id,
+            thread_id,
+            after_seq,
+            through_seq,
+            owner.account,
+            domain,
+            namespace
+        ],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("count unread message slots: {e}"))
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_count_unread_message_slots(
+    user_id: i64,
+    thread_id: i32,
+    after_seq: i32,
+    through_seq: i32,
+    owner: MessageCountOwner,
+) -> Result<i64, String> {
+    super::lifetime::spawn(move || {
+        count_unread_message_slots(
+            &open()?,
+            user_id,
+            thread_id,
+            after_seq,
+            through_seq,
+            &owner,
+        )
+    })
+    .await
+    .map_err(|e| format!("join unread message count: {e}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_query_messages(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     anchor: Option<i64>,
     order_by: String,
     take: i64,
 ) -> Result<Vec<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         let (sql, bound) = match (order_by.as_str(), anchor) {
             ("desc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
@@ -506,13 +922,11 @@ struct DirectionalWalk {
 }
 
 async fn read_native_message_ranges(
-    app: &tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
 ) -> Result<Vec<MessageRange>, String> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         load_message_ranges(&conn, user_id, thread_id)
     })
     .await
@@ -520,13 +934,11 @@ async fn read_native_message_ranges(
 }
 
 async fn read_native_message_head(
-    app: &tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
 ) -> Result<Option<i64>, String> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
+    super::lifetime::spawn(move || {
+        let value = open()?
             .query_row(
                 "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
                 params![user_id, message_head_key(thread_id)],
@@ -551,7 +963,6 @@ async fn read_native_message_head(
 }
 
 async fn query_native_messages(
-    app: &tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     direction: HistoryDirection,
@@ -559,9 +970,8 @@ async fn query_native_messages(
     boundary: i64,
     take: usize,
 ) -> Result<Vec<Value>, String> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         let (sql, params) = match direction {
             HistoryDirection::Older => (
                 "SELECT payload_json FROM messages
@@ -708,6 +1118,7 @@ async fn bootstrap_message_bounds(
 async fn walk_native_history(
     app: &tauri::AppHandle,
     proxy: &ProxyState,
+    account_epoch: u64,
     user_id: i64,
     thread_id: i64,
     direction: HistoryDirection,
@@ -730,11 +1141,12 @@ async fn walk_native_history(
             },
         });
     }
-    let mut ranges = read_native_message_ranges(app, user_id, thread_id).await?;
+    let mut ranges = read_native_message_ranges(user_id, thread_id).await?;
     let mut items = Vec::new();
     let mut remaining = count as usize;
 
     for _ in 0..1024 {
+        drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
         let at_boundary = match direction {
             HistoryDirection::Older => cursor <= lower + 1,
             HistoryDirection::Newer => cursor >= upper,
@@ -758,7 +1170,7 @@ async fn walk_native_history(
                         HistoryDirection::Newer => range.right,
                     };
                     let cached = query_native_messages(
-                        app, user_id, thread_id, direction, cursor, boundary, remaining,
+                        user_id, thread_id, direction, cursor, boundary, remaining,
                     )
                     .await?;
                     for message in cached {
@@ -805,7 +1217,6 @@ async fn walk_native_history(
             HistoryDirection::Newer => upper,
         };
         let optimistic = query_native_messages(
-            app,
             user_id,
             thread_id,
             direction,
@@ -876,7 +1287,7 @@ async fn walk_native_history(
         let scan = scan_for_page(direction, cursor, page.scanned_through)?;
         let gaps = wire_gaps_to_ranges(page.gaps)?;
         let committed = commit_native_message_page(
-            app.clone(),
+            account_epoch,
             user_id,
             thread_id,
             scan,
@@ -916,7 +1327,7 @@ async fn walk_native_history(
 }
 
 pub(crate) async fn commit_native_message_page(
-    app: tauri::AppHandle,
+    account_epoch: u64,
     user_id: i64,
     thread_id: i64,
     scan: Option<MessageInterval>,
@@ -924,7 +1335,7 @@ pub(crate) async fn commit_native_message_page(
     gaps: Vec<ServerMessageRange>,
     known_newest_seq: Option<i64>,
 ) -> Result<CommittedMessagePage, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    super::lifetime::spawn_at(Ok(account_epoch), move || {
         if known_newest_seq.is_some_and(|seq| seq < 0) {
             return Err("known newest message sequence is invalid".to_string());
         }
@@ -945,7 +1356,7 @@ pub(crate) async fn commit_native_message_page(
                 Ok(seq)
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let mut conn = open(&app)?;
+        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin message page commit: {e}"))?;
@@ -953,8 +1364,7 @@ pub(crate) async fn commit_native_message_page(
         let ranges = reduce_message_ranges(thread_id, &current, scan, &gaps, &message_seqs)?;
 
         let mut committed_messages = Vec::with_capacity(messages.len());
-        for mut message in messages {
-            normalize_message_creator(&mut message);
+        for message in messages {
             let message_thread_id = message
                 .get("threadId")
                 .and_then(Value::as_i64)
@@ -966,35 +1376,9 @@ pub(crate) async fn commit_native_message_page(
             if message_thread_id != thread_id || seq <= 0 {
                 return Err("message page contains an invalid message coordinate".to_string());
             }
-            let existing_deleted = tx
-                .query_row(
-                    "SELECT COALESCE(json_extract(payload_json, '$.isDeleted'), 0)
-                     FROM messages WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
-                    params![user_id, thread_id, seq],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(|e| format!("read existing message before page commit: {e}"))?
-                == Some(1);
-            let created_at = message
-                .get("createdAt")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            tx.execute(
-                "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
-                 VALUES(?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
-                   created_at = CASE
-                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
-                     THEN messages.created_at ELSE excluded.created_at END,
-                   payload_json = CASE
-                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
-                     THEN messages.payload_json ELSE excluded.payload_json END",
-                params![user_id, thread_id, seq, created_at, json_text(&message)?],
-            )
-            .map_err(|e| format!("put committed page message: {e}"))?;
-            if !existing_deleted {
-                committed_messages.push(message);
+            let merged = write_message_slot(&tx, user_id, MessageSlotWrite::Message(message))?;
+            if merged.get("isDeleted").and_then(Value::as_bool) != Some(true) {
+                committed_messages.push(merged);
             }
         }
 
@@ -1041,6 +1425,7 @@ pub(crate) async fn native_message_history_get(
     thread_id: i64,
     demand: NativeHistoryDemand,
 ) -> Result<NativeHistoryResult, String> {
+    let account_epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     if user_id <= 0 || thread_id <= 0 {
         return Err("native history demand has an invalid owner or thread".to_string());
     }
@@ -1052,7 +1437,7 @@ pub(crate) async fn native_message_history_get(
             Err("native history demand count is outside 0..200".to_string())
         }
     };
-    match demand {
+    let result = match demand {
         NativeHistoryDemand::Latest { count } => {
             let count = validate_count(count)?;
             let (server_lower, upper) = bootstrap_message_bounds(&app, &proxy, thread_id).await?;
@@ -1060,6 +1445,7 @@ pub(crate) async fn native_message_history_get(
             let mut page = walk_native_history(
                 &app,
                 &proxy,
+                account_epoch,
                 user_id,
                 thread_id,
                 HistoryDirection::Older,
@@ -1093,6 +1479,7 @@ pub(crate) async fn native_message_history_get(
             let mut older = walk_native_history(
                 &app,
                 &proxy,
+                account_epoch,
                 user_id,
                 thread_id,
                 HistoryDirection::Older,
@@ -1106,6 +1493,7 @@ pub(crate) async fn native_message_history_get(
             let newer = walk_native_history(
                 &app,
                 &proxy,
+                account_epoch,
                 user_id,
                 thread_id,
                 HistoryDirection::Newer,
@@ -1130,11 +1518,12 @@ pub(crate) async fn native_message_history_get(
                 return Err("native older demand has an invalid cursor".to_string());
             }
             let count = validate_count(count)?;
-            let known_newest = read_native_message_head(&app, user_id, thread_id).await?;
+            let known_newest = read_native_message_head(user_id, thread_id).await?;
             let upper = known_newest.unwrap_or(before - 1).max(lower);
             let mut page = walk_native_history(
                 &app,
                 &proxy,
+                account_epoch,
                 user_id,
                 thread_id,
                 HistoryDirection::Older,
@@ -1159,7 +1548,7 @@ pub(crate) async fn native_message_history_get(
             }
             let count = validate_count(count)?;
             let (server_lower, upper) =
-                match read_native_message_head(&app, user_id, thread_id).await? {
+                match read_native_message_head(user_id, thread_id).await? {
                     Some(upper) => (lower, upper),
                     None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
                 };
@@ -1167,6 +1556,7 @@ pub(crate) async fn native_message_history_get(
             let page = walk_native_history(
                 &app,
                 &proxy,
+                account_epoch,
                 user_id,
                 thread_id,
                 HistoryDirection::Newer,
@@ -1184,47 +1574,23 @@ pub(crate) async fn native_message_history_get(
                 failed: false,
             })
         }
-    }
+    };
+    drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
+    result
 }
 
 #[tauri::command]
 pub(crate) async fn native_db_put_cached_messages(
-    app: tauri::AppHandle,
     user_id: i64,
     messages: Vec<Value>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin cached message write: {error}"))?;
-        for mut message in messages {
-            normalize_message_creator(&mut message);
-            let thread_id = message
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric threadId".to_string())?;
-            let seq = message
-                .get("seq")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric seq".to_string())?;
-            let created_at = message
-                .get("createdAt")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            tx.execute(
-                "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
-                 VALUES(?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
-                   created_at = CASE
-                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
-                     THEN messages.created_at ELSE excluded.created_at END,
-                   payload_json = CASE
-                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
-                     THEN messages.payload_json ELSE excluded.payload_json END",
-                params![user_id, thread_id, seq, created_at, json_text(&message)?],
-            )
-            .map_err(|error| format!("put cached message: {error}"))?;
+        for message in messages {
+            write_message_slot(&tx, user_id, MessageSlotWrite::Message(message))?;
         }
         tx.commit()
             .map_err(|error| format!("commit cached message write: {error}"))
@@ -1235,7 +1601,6 @@ pub(crate) async fn native_db_put_cached_messages(
 
 #[tauri::command]
 pub(crate) async fn native_db_put_message_head(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     known_newest_seq: i64,
@@ -1243,8 +1608,8 @@ pub(crate) async fn native_db_put_message_head(
     if user_id <= 0 || thread_id <= 0 || known_newest_seq < 0 {
         return Err("invalid native message head".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin message head write: {error}"))?;
@@ -1267,12 +1632,11 @@ pub(crate) fn decode_deleted_hwm(value_json: &str) -> Result<i64, String> {
 
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_hwm(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
 ) -> Result<i64, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         let key = format!("deletedHwm:{thread_id}");
         let value = conn
             .query_row(
@@ -1293,17 +1657,16 @@ pub(crate) async fn native_db_get_deleted_hwm(
 
 #[tauri::command]
 pub(crate) async fn native_db_apply_deleted_messages(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     items: Vec<Value>,
     hwm: i64,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    super::lifetime::spawn(move || {
         if hwm < 0 {
             return Err("deleted hwm must be a non-negative integer".to_string());
         }
-        let mut conn = open(&app)?;
+        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin deleted-message write: {e}"))?;
@@ -1327,24 +1690,19 @@ pub(crate) async fn native_db_apply_deleted_messages(
             {
                 return Err("deleted message has invalid coordinates".to_string());
             }
-            let placeholder = serde_json::json!({
-                "threadId": thread_id,
-                "seq": message_seq,
-                "isDeleted": true,
-                "content": "",
-                "contentType": "PURE_TEXT",
-                "creator": 0,
-                "createdAt": 0,
-                "updatedAt": 0
-            });
-            tx.execute(
-                "INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json)
-                 VALUES(?1,?2,?3,0,?4)
-                 ON CONFLICT(user_id,thread_id,seq) DO UPDATE SET
-                   payload_json=json_set(messages.payload_json,'$.isDeleted',json('true'))",
-                params![user_id, thread_id, message_seq, json_text(&placeholder)?],
-            )
-            .map_err(|e| format!("apply deleted message: {e}"))?;
+            let reason = item
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "deleted message has no deletion type".to_string())?;
+            write_message_slot(
+                &tx,
+                user_id,
+                MessageSlotWrite::Deletion {
+                    thread_id,
+                    seq: message_seq,
+                    reason: reason.to_string(),
+                },
+            )?;
         }
         tx.execute(
             "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
@@ -1425,13 +1783,12 @@ pub(crate) fn load_deleted_message_seqs(
 
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_message_seqs(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     seqs: Vec<i64>,
 ) -> Result<Vec<i64>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        load_deleted_message_seqs(&open(&app)?, user_id, thread_id, seqs)
+    super::lifetime::spawn(move || {
+        load_deleted_message_seqs(&open()?, user_id, thread_id, seqs)
     })
     .await
     .map_err(|e| format!("join tombstone read: {e}"))?
@@ -1439,13 +1796,12 @@ pub(crate) async fn native_db_get_deleted_message_seqs(
 
 #[tauri::command]
 pub(crate) async fn native_db_get_message(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
     seq: i64,
 ) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
+    super::lifetime::spawn(move || {
+        let value = open()?
             .query_row(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3
@@ -1463,12 +1819,11 @@ pub(crate) async fn native_db_get_message(
 
 #[tauri::command]
 pub(crate) async fn native_db_newest_messages(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_ids: Vec<i64>,
 ) -> Result<Vec<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let conn = open()?;
         let mut stmt = conn
             .prepare(
                 "SELECT payload_json FROM messages
@@ -1495,12 +1850,11 @@ pub(crate) async fn native_db_newest_messages(
 
 #[tauri::command]
 pub(crate) async fn native_db_delete_messages_by_thread(
-    app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+    super::lifetime::spawn(move || {
+        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin delete thread messages: {e}"))?;

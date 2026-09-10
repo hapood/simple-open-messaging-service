@@ -53,6 +53,7 @@ google-services.json
 .tmp
 
 .npmrc
+web/public/push/sw-runtime.js
 
 # Web bundle build artifact (scripts/package-web-bundle.mjs output). The bundle served in production is
 # image-bound — baked read-only at /app/shell-bundle by the Dockerfile, never under /app/data. This entry

@@ -1,4 +1,17 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
+import { ThreadFeedService } from '../src/message/thread-feed.service.js';
+import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
+import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
+import { DurableAsyncTaskSchedulerService } from '../src/durable-task/durable-async-task-scheduler.service.js';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
@@ -8,11 +21,17 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  account as accountTable,
   message,
   messageThread,
   accountThreadState,
+  federationThreadHistoryGap,
+  durableTask,
 } from '../src/database/schema';
+import {
+  applyReadPositionInTx,
+  resolveReadPositionInTx,
+} from '../src/message/thread-read-position.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed';
 
@@ -34,13 +53,17 @@ describe('POST /thread/mark-read authoritative state', () => {
     await configureApp(app, adapter);
     await app.listen(0);
     database = app.get(DatabaseService);
+    // This suite claims read tasks explicitly. Background fanout must not race
+    // the next test's TRUNCATE or conceal an accidentally admitted read task.
+    await app.get(DurableTaskSchedulerService).stop();
+    await app.get(DurableAsyncTaskSchedulerService).stop();
   });
 
   afterAll(async () => app.close());
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
     const viewer = await seedUser(app, 'reader', { name: 'Reader' });
     const peer = await seedUser(app, 'peer', { name: 'Peer' });
@@ -53,8 +76,6 @@ describe('POST /thread/mark-read authoritative state', () => {
       .values({
         type: 'P2P',
         curSeq: 1005,
-        lastMessageSeq: 1005,
-        lastMessageAt: now,
         updatedAt: now,
       })
       .returning({ id: messageThread.id });
@@ -95,6 +116,17 @@ describe('POST /thread/mark-read authoritative state', () => {
     );
   });
 
+  beforeEach(async () => {
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      await ThreadFeedHeadWriter.advanceInTx(tx, viewerId, {
+        threadId,
+        messageEndSeq: 1005,
+        tombstoneEndSeq: 0,
+      });
+    });
+  });
+
   function commit(localReadHwm: number) {
     return request(app.getHttpServer())
       .post('/api/v1/thread/mark-read')
@@ -102,63 +134,127 @@ describe('POST /thread/mark-read authoritative state', () => {
       .send({ threadId, localReadHwm });
   }
 
-  function readDelta(fromRevision: number, toRevision: number) {
-    return request(app.getHttpServer())
-      .post('/api/v1/thread/read-delta')
+  it('does not read earlier peer messages or enqueue a read task when sending', async () => {
+    const before = await database.db.query.accountThreadState.findFirst({
+      where: eq(accountThreadState.id, viewerParticipantId),
+    });
+    expect(before).toMatchObject({ lastReadSeq: 0, unreadCount: 1004 });
+    const sent = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${token}`)
-      .send({ fromRevision, toRevision });
-  }
-
-  it('returns ACK-only, advances readRevision, and exposes authoritative state through read delta', async () => {
-    const capped = await commit(1);
-    expect(capped.body.code).toBe(0);
-    expect(capped.body.data).toBeUndefined();
-    const firstDelta = await readDelta(0, 1);
-    expect(firstDelta.body.data.readRevision).toBe(1);
-    expect(firstDelta.body.data.items[0]).toMatchObject({
-      threadId,
-      lastReadSeq: 1,
-      readRevision: 1,
-      unreadCount: 1000,
-    });
-    expect(new Set(firstDelta.body.data.items[0].mentionUnread)).toEqual(
-      new Set(['all', 'me']),
-    );
-
-    // Simulate a newer server cursor from another session; a stale local report cannot move it backwards.
-    await database.db
-      .update(accountThreadState)
-      .set({ lastReadSeq: 3 })
-      .where(eq(accountThreadState.id, viewerParticipantId));
-    const monotonic = await commit(1);
-    expect(monotonic.body.data).toBeUndefined();
-    const secondDelta = await readDelta(1, 2);
-    expect(secondDelta.body.data.items[0]).toMatchObject({
-      lastReadSeq: 3,
-      readRevision: 2,
-      unreadCount: 1000,
-      mentionUnread: [],
-    });
-
-    // Below the cap the response is exact: seq 1001..1005 are five peer-authored unread messages.
-    const exact = await commit(1000);
-    expect(exact.body.data).toBeUndefined();
-    const thirdDelta = await readDelta(2, 3);
-    expect(thirdDelta.body.data.items[0]).toMatchObject({
-      lastReadSeq: 1000,
-      readRevision: 3,
-      unreadCount: 5,
-    });
-
-    const [viewer, participant] = await Promise.all([
-      database.db.query.account.findFirst({
-        where: eq(accountTable.id, viewerId),
-      }),
-      database.db.query.accountThreadState.findFirst({
+      .send({
+        threadId,
+        content: 'reply without marking history read',
+        contentType: 'PURE_TEXT',
+      });
+    expect(sent.body.code).toBe(0);
+    expect(
+      await database.db.query.accountThreadState.findFirst({
         where: eq(accountThreadState.id, viewerParticipantId),
       }),
-    ]);
-    expect(viewer?.readRevision).toBe(3);
-    expect(participant?.readRevision).toBe(3);
+    ).toMatchObject({ lastReadSeq: 0, unreadCount: 1004 });
+    expect(
+      await database.db
+        .select({ id: durableTask.id })
+        .from(durableTask)
+        .where(
+          and(
+            eq(durableTask.actorUserId, viewerId),
+            eq(durableTask.taskType, 'COMMIT_THREAD_READ_POSITION'),
+          ),
+        ),
+    ).toEqual([]);
+  });
+
+  it('validates mapped recoverable gaps, clipped to visible history, using the shared read path', async () => {
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      const [gap] = await tx
+        .insert(federationThreadHistoryGap)
+        .values({
+          threadId,
+          namespaceId: 0,
+          startSeq: 1,
+          endSeq: 20,
+          messageSeqOffset: 500,
+        })
+        .returning();
+      const validate = (seq: number) =>
+        resolveReadPositionInTx(tx, viewerId, {
+          threadId,
+          localReadHwm: seq,
+          force: true,
+        });
+      // Existing rows do not prove that the declared missing interval is complete.
+      await expect(validate(519)).resolves.toBe(520);
+      await expect(validate(520)).resolves.toBe(520);
+      await expect(
+        applyReadPositionInTx(tx, viewerId, {
+          threadId,
+          localReadHwm: 519,
+          force: true,
+        }),
+      ).resolves.toBe(520);
+      await tx
+        .update(accountThreadState)
+        .set({ messageVisibleThroughSeq: 510 })
+        .where(eq(accountThreadState.id, viewerParticipantId));
+      await expect(validate(509)).resolves.toBe(510);
+      await expect(validate(510)).resolves.toBe(510);
+      await expect(validate(1006)).resolves.toBe(510);
+      await expect(
+        applyReadPositionInTx(tx, viewerId, {
+          threadId,
+          localReadHwm: 1006,
+          force: true,
+        }),
+      ).resolves.toBe(510);
+      await tx
+        .update(federationThreadHistoryGap)
+        .set({ recoverable: false })
+        .where(eq(federationThreadHistoryGap.id, gap.id));
+      await expect(validate(0)).resolves.toBe(0);
+    });
+  });
+
+  it('accepts a durable read and exposes exact committed state through attention-delta', async () => {
+    const accepted = await commit(1000);
+    expect(accepted.body.code).toBe(0);
+    expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
+    expect(accepted.body.data.taskId).toMatch(/^\d+$/);
+    const taskId = BigInt(accepted.body.data.taskId);
+    const store = app.get(DurableTaskStoreService);
+    const claimed = await store.claim(taskId);
+    if (claimed) await app.get(ThreadFeedService).executeTask(claimed);
+    await vi.waitFor(
+      async () => {
+        const current = await database.db.query.accountThreadState.findFirst({
+          where: eq(accountThreadState.id, viewerParticipantId),
+        });
+        expect(current?.lastReadSeq).toBe(1000);
+      },
+      { timeout: 10000 },
+    );
+    const page = await request(app.getHttpServer())
+      .post('/api/v1/thread/feed-delta')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ after: 0, take: 100 });
+    expect(page.body.code).toBe(0);
+    expect(
+      page.body.data.items.find(
+        (item: { threadId: number }) => item.threadId === threadId,
+      ),
+    ).toMatchObject({ lastReadSeq: 1000, unreadCount: 5 });
+    expect(page.body.data.threadFeedEndId).toBeGreaterThan(0);
+    expect(page.body.data).not.toHaveProperty('readRevision');
+  });
+
+  it('rejects negative positions and attention cursors above the account head', async () => {
+    expect((await commit(-1)).body.code).not.toBe(0);
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/thread/feed-delta')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ after: 2147483647 });
+    expect(response.body.code).toBe(30007);
   });
 });

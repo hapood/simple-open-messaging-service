@@ -573,7 +573,6 @@ export type DurableTaskStatus =
 
 export interface DurableTaskEntry {
   id: string;
-  parentTaskId: string | null;
   kind: DurableTaskKind;
   scopeType: 'USER_PAIR' | 'GROUP';
   scopeKey: string;
@@ -582,7 +581,6 @@ export interface DurableTaskEntry {
   payload: Record<string, unknown>;
   checkpoint: Record<string, unknown>;
   coalescingKey: string | null;
-  supersededByTaskId: string | null;
   status: DurableTaskStatus;
   resultCode: number | null;
   lastError: string | null;
@@ -631,8 +629,6 @@ export interface AdminListResult {
 export interface GroupRow {
   id: number;
   createdAt: number;
-  lastMessageAt: number | null;
-  lastMessagePreview: string | null;
   originDomain: string | null;
   fedGroupAccount: string | null;
   group: { account: string; name: string } | null;

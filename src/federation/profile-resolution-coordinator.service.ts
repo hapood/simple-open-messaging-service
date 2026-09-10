@@ -1,3 +1,7 @@
+import {
+  isProfileSelector,
+  type ProfileSelector as Selector,
+} from '../../shared/profile-selector.js';
 import { groupStateSql } from '../group/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -18,6 +22,7 @@ import { FederationThreadSourceService } from './federation-thread-source.servic
 import { loadFederationConfig } from './federation.config.js';
 
 export interface ResolvedClientProfile {
+  namespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -29,11 +34,6 @@ export interface ResolvedClientProfile {
 export type ProfileResolutionStart =
   | { status: 'READY'; profile: ResolvedClientProfile }
   | { status: 'PENDING'; requestId: string };
-
-type Selector =
-  | { account: string; domain: string; rev: number }
-  | { threadId: number; messageSeq: number }
-  | { threadId: number; memberAccount: string; memberDomain: string };
 
 interface InFlight {
   requestId: string;
@@ -127,7 +127,7 @@ export class ProfileResolutionCoordinatorService {
   }
 
   private async normalizeAndAuthorize(userId: number, selector: Selector) {
-    if ('threadId' in selector && 'messageSeq' in selector) {
+    if (selector.type === 'MESSAGE_AUTHOR') {
       if (
         !(await isThreadMutuallyAuthorized(
           this.database.db,
@@ -192,7 +192,7 @@ export class ProfileResolutionCoordinatorService {
         publisherMessageSeq: message.originSeq,
       };
     }
-    if ('threadId' in selector) {
+    if (selector.type === 'GROUP_MEMBER') {
       const memberDomain =
         selector.memberDomain.toLowerCase() === 'local'
           ? this.config.domain
@@ -264,7 +264,24 @@ export class ProfileResolutionCoordinatorService {
       };
     }
     const account = selector.account.toLowerCase();
-    const domain = selector.domain.toLowerCase();
+    const domain =
+      selector.domain.toLowerCase() === 'local'
+        ? this.config.domain
+        : selector.domain.toLowerCase();
+    const storageDomain = domain === this.config.domain ? 'local' : domain;
+    const peer =
+      storageDomain === 'local'
+        ? undefined
+        : await this.database.db.query.federatedPeer.findFirst({
+            where: eq(tables.federatedPeer.domain, domain),
+            columns: { activeNamespaceId: true },
+          });
+    const namespaceId = storageDomain === 'local' ? 0 : peer?.activeNamespaceId;
+    if (namespaceId === undefined || namespaceId === null)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile namespace is unavailable',
+      );
     const allowed = await this.database.db.execute(sql`
       SELECT 1
       FROM "Account" self
@@ -272,20 +289,32 @@ export class ProfileResolutionCoordinatorService {
         AND (
           (self.account = ${account} AND ${domain} = ${this.config.domain})
           OR EXISTS (
+            SELECT 1 FROM "ClientStateFeed" state
+            WHERE state."userId" = self.id AND state."eventType" = 'THREAD_STATE'
+              AND state.body->'profile'->>'account' = ${account}
+              AND state.body->'profile'->>'domain' = ${storageDomain}
+              AND (state.body->'profile'->>'namespaceId')::integer = ${namespaceId}
+              AND (state.body->'profile'->>'profileRev')::integer = ${selector.rev}
+          )
+          OR EXISTS (
             SELECT 1 FROM "RelationshipIntent" intent
             JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
             WHERE intent."profileRev" = ${selector.rev}
+              AND pair."endpointANamespaceId" = ${namespaceId}
+              AND pair."endpointBNamespaceId" = ${namespaceId}
               AND (intent.status = 'ACCEPTED'
                 OR (intent.status = 'REQUESTED'
                   AND intent."expiresAt" > CURRENT_TIMESTAMP))
               AND ((intent."authorSide" = 'A'
                 AND pair."endpointAAccount" = ${account}
-                AND pair."endpointADomain" = ${domain}
-                AND pair."endpointBAccount" = self.account)
+                AND pair."endpointADomain" = ${storageDomain}
+                AND pair."endpointBAccount" = self.account
+                AND pair."endpointBType" = 'USER' AND pair."endpointBDomain" = 'local')
               OR (intent."authorSide" = 'B'
                 AND pair."endpointBAccount" = ${account}
-                AND pair."endpointBDomain" = ${domain}
-                AND pair."endpointAAccount" = self.account))
+                AND pair."endpointBDomain" = ${storageDomain}
+                AND pair."endpointAAccount" = self.account
+                AND pair."endpointAType" = 'USER' AND pair."endpointADomain" = 'local'))
           )
           OR EXISTS (
             SELECT 1
@@ -294,12 +323,12 @@ export class ProfileResolutionCoordinatorService {
             JOIN ${groupStateSql} local_group ON (
               (intent."authorSide" = 'A'
                 AND pair."endpointAAccount" = ${account}
-                AND pair."endpointADomain" = ${domain}
+                AND pair."endpointADomain" = ${storageDomain}
                 AND pair."endpointBType" = 'GROUP'
                 AND local_group.account = pair."endpointBAccount")
               OR (intent."authorSide" = 'B'
                 AND pair."endpointBAccount" = ${account}
-                AND pair."endpointBDomain" = ${domain}
+                AND pair."endpointBDomain" = ${storageDomain}
                 AND pair."endpointAType" = 'GROUP'
                 AND local_group.account = pair."endpointAAccount")
             )
@@ -314,6 +343,8 @@ export class ProfileResolutionCoordinatorService {
               LIMIT 1
             ) manager ON true
             WHERE intent."profileRev" = ${selector.rev}
+              AND pair."endpointANamespaceId" = ${namespaceId}
+              AND pair."endpointBNamespaceId" = ${namespaceId}
               AND (intent.status = 'ACCEPTED'
                 OR (intent.status = 'REQUESTED'
                   AND intent."expiresAt" > CURRENT_TIMESTAMP))
@@ -328,8 +359,15 @@ export class ProfileResolutionCoordinatorService {
             JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
             WHERE participant."accountId" = self.id
               AND group_profile.account = ${account}
-              AND group_profile.domain = ${domain}
+              AND group_profile.domain = ${storageDomain}
+              AND group_profile."namespaceId" = ${namespaceId}
               AND group_profile."profileRev" = ${selector.rev}
+              AND EXISTS (
+                SELECT 1 FROM "RelationshipPair" membership
+                WHERE membership."threadId" = thread.id AND membership.kind = 'GROUP_MEMBER' AND membership.active
+                  AND ((membership."endpointAType" = 'USER' AND membership."endpointAAccount" = self.account AND membership."endpointADomain" = 'local')
+                    OR (membership."endpointBType" = 'USER' AND membership."endpointBAccount" = self.account AND membership."endpointBDomain" = 'local'))
+              )
           )
         )
       LIMIT 1
@@ -340,17 +378,12 @@ export class ProfileResolutionCoordinatorService {
         'profile is not available',
       );
     }
-    const namespace = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
-      columns: { activeNamespaceId: true },
-    });
     return {
       kind: 'account' as const,
       account,
       domain,
       rev: selector.rev,
-      namespaceId:
-        domain === this.config.domain ? 0 : (namespace?.activeNamespaceId ?? 0),
+      namespaceId,
     };
   }
 
@@ -363,7 +396,7 @@ export class ProfileResolutionCoordinatorService {
       selector.namespaceId,
       selector.rev,
     );
-    return profile ? this.clientProfile(profile) : null;
+    return profile ? this.clientProfile(profile, selector.namespaceId) : null;
   }
 
   private async resolve(
@@ -420,6 +453,15 @@ export class ProfileResolutionCoordinatorService {
         selector.publisherDomain,
       );
     } else {
+      const peer = await this.database.db.query.federatedPeer.findFirst({
+        where: eq(tables.federatedPeer.domain, selector.domain),
+        columns: { activeNamespaceId: true },
+      });
+      if (peer?.activeNamespaceId !== selector.namespaceId)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'profile namespace is no longer available remotely',
+        );
       profile = await this.peerHttp.get<S2SProfile>(
         `/s2s/v1/profiles/${encodeFederationResourceComponent(selector.account)}?rev=${selector.rev}`,
         selector.domain,
@@ -451,8 +493,12 @@ export class ProfileResolutionCoordinatorService {
     return materialized;
   }
 
-  private clientProfile(profile: S2SProfile): ResolvedClientProfile {
+  private clientProfile(
+    profile: S2SProfile,
+    namespaceId: number,
+  ): ResolvedClientProfile {
     return {
+      namespaceId,
       account: profile.account,
       domain: profile.domain,
       rev: profile.profileRev,
@@ -470,60 +516,10 @@ export class ProfileResolutionCoordinatorService {
   }
 
   private assertSelector(selector: Selector): void {
-    if (
-      selector === null ||
-      typeof selector !== 'object' ||
-      Array.isArray(selector)
-    )
+    if (!isProfileSelector(selector)) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'invalid profile selector',
-      );
-    if ('threadId' in selector && 'messageSeq' in selector) {
-      if (
-        Object.keys(selector).some(
-          (key) => key !== 'threadId' && key !== 'messageSeq',
-        ) ||
-        !Number.isSafeInteger(selector.threadId) ||
-        selector.threadId < 1 ||
-        !Number.isSafeInteger(selector.messageSeq) ||
-        selector.messageSeq < 1
-      ) {
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'invalid message profile selector',
-        );
-      }
-    } else if ('threadId' in selector) {
-      if (
-        Object.keys(selector).some(
-          (key) =>
-            key !== 'threadId' &&
-            key !== 'memberAccount' &&
-            key !== 'memberDomain',
-        ) ||
-        !Number.isSafeInteger(selector.threadId) ||
-        selector.threadId < 1 ||
-        !selector.memberAccount ||
-        !selector.memberDomain
-      ) {
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'invalid group member profile selector',
-        );
-      }
-    } else if (
-      Object.keys(selector).some(
-        (key) => key !== 'account' && key !== 'domain' && key !== 'rev',
-      ) ||
-      !selector.account ||
-      !selector.domain ||
-      !Number.isSafeInteger(selector.rev) ||
-      selector.rev < 1
-    ) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid exact profile selector',
       );
     }
   }

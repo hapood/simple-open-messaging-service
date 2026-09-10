@@ -113,7 +113,7 @@ executor slot and task ownership until enumeration completes.
 
 Group dissolution follows this policy. The parent scans active
 `GROUP_MEMBER` relationships by `RelationshipPair.id`; each transaction inserts
-exactly one `REVOKE_DISSOLVED_GROUP_MEMBER` child and advances `afterPairId`.
+exactly one `FORCE_REVOKE_GROUP_MEMBER` child and advances `afterPairId`.
 The parent cannot yield to a replacement because every active relationship must
 receive a child task. It succeeds after admission completes and does not wait
 for those children to execute.

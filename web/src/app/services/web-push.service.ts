@@ -162,8 +162,9 @@ export class WebPushService {
     // 1. Register the push SW (scope '/push/' — ngsw owns '/').
     let reg: ServiceWorkerRegistration;
     try {
-      reg = await navigator.serviceWorker.register('./push/sw-push.js', {
-        scope: './push/',
+      reg = await navigator.serviceWorker.register('/push/sw-push.js', {
+        scope: '/push/',
+        updateViaCache: 'none',
       });
     } catch {
       return; // SW registration failed — local notifications still work without Web Push.

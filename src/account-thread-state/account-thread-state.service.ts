@@ -1,3 +1,5 @@
+import { writeP2PClientRelationshipInTx } from '../relationship/p2p-client-relationship.js';
+import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
 import {
   accountAddressInTx,
@@ -7,7 +9,7 @@ import {
   addressRelation,
   p2pPeerRelation,
 } from '../relationship/relationship-address.js';
-import { Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -32,12 +34,21 @@ import {
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { requireP2PThreadContentLockUnderPairInTx } from '../relationship/thread-content-lock.js';
+import {
+  requireP2PThreadContentLockUnderPairInTx,
+  requireThreadContentLockInTx,
+} from '../relationship/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+import { setLockedP2PPairActiveInTx } from '../relationship/p2p-pair-state.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { ThreadPreviewService } from '../message/thread-preview.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
 export class AccountThreadStateService {
+  @Inject(RelationshipIntentService)
+  private readonly relationshipIntents!: RelationshipIntentService;
+  @Inject(ThreadPreviewService)
+  private readonly previews!: ThreadPreviewService;
   constructor(
     private database: DatabaseService,
     private readonly stateFeed: PeerStateFeedService,
@@ -88,29 +99,6 @@ export class AccountThreadStateService {
     return rows.filter((_, index) => authorized[index]);
   }
 
-  async getParticipantDeliverySettings(
-    threadId: number,
-    userIds: readonly number[],
-  ) {
-    if (userIds.length === 0) return [];
-    return this.database.db
-      .select({
-        userId: accountThreadState.accountId,
-        muted: accountThreadState.muted,
-        blocked: accountThreadState.blocked,
-        account: user.account,
-        domain: user.domain,
-      })
-      .from(accountThreadState)
-      .innerJoin(user, eq(user.id, accountThreadState.accountId))
-      .where(
-        and(
-          eq(accountThreadState.threadId, threadId),
-          inArray(accountThreadState.accountId, [...userIds]),
-        ),
-      );
-  }
-
   async findActiveParticipantWithThread(userId: number, threadId: number) {
     const [row] = await this.database.db
       .select({
@@ -152,6 +140,12 @@ export class AccountThreadStateService {
 
   async setBlocked(userId: number, threadId: number, blocked: boolean) {
     const pending = await this.database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      const current = await tx.execute<{ blocked: boolean }>(sql`
+          SELECT blocked FROM "AccountThreadState"
+          WHERE "accountId" = ${userId} AND "threadId" = ${threadId} FOR UPDATE`);
+      if (!current.rows[0]) throw new Error('thread participant is missing');
+      if (current.rows[0].blocked === blocked) return null;
       const [participant] = await tx
         .update(accountThreadState)
         .set({ blocked, updatedAt: new Date() })
@@ -163,19 +157,18 @@ export class AccountThreadStateService {
         )
         .returning({ id: accountThreadState.id });
       if (!participant) throw new Error('thread participant is missing');
-      const feedId = await this.clientStateFeed.writeInTx(tx, {
-        userId,
-        account: '',
-        domain: 'local',
-        namespaceId: 0,
-        eventType: 'THREAD_BLOCK',
-        subjectAccount: threadId.toString(),
-        subjectDomain: 'local',
-        body: { threadId, blocked },
-      });
-      return feedId === null ? null : { userId, feedId };
+      if (!blocked)
+        await this.previews.initializeReadWindowsInTx(tx, threadId, [userId]);
+      const head = await tx.execute<{ feedId: number }>(sql`
+        SELECT "stateFeedAllocatedThrough" AS "feedId" FROM "Account" WHERE id = ${userId}
+      `);
+      const feedId = head.rows[0]?.feedId ?? null;
+      return {
+        notification: feedId === null ? null : { userId, feedId },
+      };
     });
-    if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
+    if (pending?.notification)
+      this.clientStateFeed.notifyFeedUpdated(pending.notification);
   }
 
   setPinned(userId: number, threadId: number, pinned: boolean) {
@@ -237,15 +230,16 @@ export class AccountThreadStateService {
       avatar: string;
     }>(sql`
       SELECT pair."threadId", peer.account, peer.domain, peer."namespaceId",
-        COALESCE(intent."profileRev", 0) AS "profileRev",
+        COALESCE((state.body->'profile'->>'profileRev')::integer, 0) AS "profileRev",
         COALESCE(snapshot."displayName", peer.account) AS name,
         COALESCE(snapshot.avatar, '') AS avatar
       FROM "RelationshipPair" pair
       JOIN "Account" self_identity ON self_identity.id = ${notUserId}
       JOIN ${p2pPeerRelation(sql`pair`, sql`self_identity`)} peer ON true
-      LEFT JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id AND intent."authorSide" = peer.side
+      LEFT JOIN "ClientStateFeed" state ON state."userId" = self_identity.id
+        AND state."eventType" = 'THREAD_STATE' AND state."subjectAccount" = pair."threadId"::text
       LEFT JOIN "Profile" snapshot ON snapshot.account = peer.account AND snapshot.domain = peer.domain
-        AND snapshot."namespaceId" = peer."namespaceId" AND snapshot."profileRev" = intent."profileRev"
+        AND snapshot."namespaceId" = peer."namespaceId" AND snapshot."profileRev" = (state.body->'profile'->>'profileRev')::integer
       WHERE pair.kind = 'P2P' AND pair."threadId" = ANY(${sql.param(threadIds)}::integer[])
     `);
     return rows.rows;
@@ -321,14 +315,15 @@ export class AccountThreadStateService {
   async endP2P(
     threadId: number,
     callerUserId: number,
+    expectedAuthorizationEpoch?: number,
   ): Promise<{
     transitioned: boolean;
     statePeers: string[];
     systemMessage: PublicMessage | null;
-    localRecipientIds: number[];
   }> {
+    const pendingClientUpdates: Array<{ userId: number; feedId: number }> = [];
     const now = new Date();
-    return this.database.db.transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       let endpoints = await this.readP2PEndpointsInTx(
         tx,
         threadId,
@@ -358,6 +353,14 @@ export class AccountThreadStateService {
         pairId,
         threadId,
       );
+      if (expectedAuthorizationEpoch !== undefined) {
+        const thread = await tx.query.messageThread.findFirst({
+          where: eq(messageThread.id, threadId),
+          columns: { authorizationEpoch: true },
+        });
+        if (thread?.authorizationEpoch !== expectedAuthorizationEpoch)
+          return { transitioned: false, statePeers: [], systemMessage: null };
+      }
       await tx.execute(sql`
         SELECT id FROM "RelationshipIntent"
         WHERE "pairId" = ${pairId}
@@ -375,14 +378,13 @@ export class AccountThreadStateService {
         WHERE "pairId" = ${pairId} AND "authorSide" = ${callerSide}
       `);
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
-      const localRecipientIds = [mine, peer]
+      const localHistoryUserIds = [mine, peer]
         .filter((identity) => identity.domain === 'local')
         .map((identity) => identity.userId)
         .filter((id): id is number => id !== null);
       let systemMessage: PublicMessage | null = null;
       const statePeers: string[] = [];
-      if (!transitioned)
-        return { transitioned, statePeers, systemMessage, localRecipientIds };
+      if (!transitioned) return { transitioned, statePeers, systemMessage };
 
       if (peer.domain !== 'local')
         await this.stateFeed.lockTargetsInTx(tx, [
@@ -403,12 +405,22 @@ export class AccountThreadStateService {
             {
               actorUserId: callerUserId,
               threadLock,
-              recipientUserIds: localRecipientIds,
-              visibleThroughUserIds: localRecipientIds,
-              markReadUserId: callerUserId,
             },
           )
         ).message;
+        if (localHistoryUserIds.length > 0)
+          await tx
+            .update(accountThreadState)
+            .set({
+              messageVisibleThroughSeq: systemMessage.seq,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(accountThreadState.threadId, threadId),
+                inArray(accountThreadState.accountId, localHistoryUserIds),
+              ),
+            );
       }
       if (wasActive) {
         await tx.execute(sql`
@@ -421,9 +433,9 @@ export class AccountThreadStateService {
 
       const request = await tx.execute<{ profileRev: number }>(sql`
         INSERT INTO "RelationshipIntent" (
-          "pairId", "authorSide", status, note,
+          "pairId", "authorSide", status, note, "messageEndSeq", "tombstoneEndSeq",
           "requestedAt", "expiresAt", "updatedAt"
-        ) VALUES (${pairId}, ${callerSide}, 'REVOKED', '', NULL, NULL, CURRENT_TIMESTAMP)
+        ) VALUES (${pairId}, ${callerSide}, 'REVOKED', '', 0, 0, NULL, NULL, CURRENT_TIMESTAMP)
         ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
           status = 'REVOKED', note = '', "requestedAt" = NULL,
           "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
@@ -433,19 +445,24 @@ export class AccountThreadStateService {
       if (wasActive && peer.domain === 'local')
         await tx.execute(sql`
           INSERT INTO "RelationshipIntent" (
-            "pairId", "authorSide", status, note,
+            "pairId", "authorSide", status, note, "messageEndSeq", "tombstoneEndSeq",
             "requestedAt", "expiresAt", "updatedAt"
-          ) VALUES (${pairId}, ${peerSide}, 'REVOKED', '', NULL, NULL, CURRENT_TIMESTAMP)
+          ) VALUES (${pairId}, ${peerSide}, 'REVOKED', '', 0, 0, NULL, NULL, CURRENT_TIMESTAMP)
           ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
             status = 'REVOKED', note = '', "requestedAt" = NULL,
             "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
           WHERE "RelationshipIntent".status <> 'REVOKED'
         `);
-      await tx.execute(sql`
-        UPDATE "RelationshipPair"
-        SET active = false, "updatedAt" = CURRENT_TIMESTAMP
-        WHERE id = ${pairId} AND active = true
-      `);
+      await setLockedP2PPairActiveInTx(tx, pairId, false);
+      pendingClientUpdates.push(
+        ...(await writeP2PClientRelationshipInTx(
+          tx,
+          mine,
+          peer,
+          this.relationshipIntents,
+          this.clientStateFeed,
+        )),
+      );
       if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {
         const profileRev = request.rows[0]?.profileRev;
         if (profileRev === undefined)
@@ -473,8 +490,11 @@ export class AccountThreadStateService {
         ]);
         statePeers.push(peer.domain);
       }
-      return { transitioned, statePeers, systemMessage, localRecipientIds };
+      return { transitioned, statePeers, systemMessage };
     });
+    if (pendingClientUpdates.length)
+      this.clientStateFeed.notifyFeedUpdates(pendingClientUpdates);
+    return result;
   }
 
   async areFriends(userX: number, userY: number) {

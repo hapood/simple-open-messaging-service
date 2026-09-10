@@ -18,6 +18,11 @@ describe('incoming group relationship allocator ordering', () => {
         FederationStateFeedConsumerService.prototype,
       ) as FederationStateFeedConsumerService;
       Object.assign(service, {
+        reverseRevokes: {
+          enqueueGroupInTx: vi.fn(async () => {
+            order.push('task');
+          }),
+        },
         config: { domain: 'local.test' },
         relationshipIntents: {
           applyRemoteGroupIntentInTx: vi.fn(async () => {
@@ -55,6 +60,8 @@ describe('incoming group relationship allocator ordering', () => {
             body: {
               status,
               profileRev: 0,
+              messageEndSeq: 0,
+              tombstoneEndSeq: 0,
               note: '',
               requestedAt: status === 'REVOKED' ? null : now,
               expiresAt: status === 'REQUESTED' ? now + 60_000 : null,
@@ -68,7 +75,11 @@ describe('incoming group relationship allocator ordering', () => {
       await expect(
         service.applyPageInTx(tx, 'peer.test', 3, page),
       ).rejects.toBe(projectionBoundary);
-      expect(order).toEqual(['group', 'peer', 'client']);
+      expect(order).toEqual(
+        status === 'REVOKED'
+          ? ['group', 'task', 'peer', 'client']
+          : ['group', 'peer', 'client'],
+      );
       expect(lockTargetsInTx).toHaveBeenCalledWith(tx, [
         { peerDomain: 'peer.test', namespaceId: 3 },
       ]);

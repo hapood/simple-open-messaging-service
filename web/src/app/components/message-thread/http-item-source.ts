@@ -737,12 +737,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (m.contentType === 'SYSTEM') {
       let systemActorIsSelf = false;
       try {
-        const actor = (
-          JSON.parse(m.content) as {
-            actor?: { account?: string; domain?: string };
-            caller?: { account?: string; domain?: string };
-          }
-        );
+        const actor = JSON.parse(m.content) as {
+          actor?: { account?: string; domain?: string };
+          caller?: { account?: string; domain?: string };
+        };
         const identity = actor.actor ?? actor.caller;
         const self = this.userService.sessionProfile();
         systemActorIsSelf =
@@ -909,7 +907,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const creatorKey = this.creatorKey(message.creator)!;
       let subscription!: Subscription;
       subscription = this.profileResolver
-        .resolve({ threadId: this.conv.threadId, messageSeq: message.seq })
+        .resolve({
+          type: 'MESSAGE_AUTHOR',
+          threadId: this.conv.threadId,
+          messageSeq: message.seq,
+        })
         .subscribe({
           next: (resolved) => {
             const profile = {
@@ -983,6 +985,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       if (subscription.closed) this.profileSubscriptions.delete(subscription);
       preparations.push(
         this.profileResolver.prepare({
+          type: 'MESSAGE_AUTHOR',
           threadId: this.conv.threadId,
           messageSeq: message.seq,
         }),

@@ -7,7 +7,6 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { pendingMedia, uploadSession } from '../database/schema.js';
 import type { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { MessageService } from '../message/message.service.js';
 import { requireOutboundPendingMedia } from '../message/pending-media-row.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
@@ -45,7 +44,6 @@ export class ResumableUploadService {
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
     private readonly messages: MessageService,
-    private readonly fanout: MessageFanoutService,
     private readonly quota: UserQuotaService,
   ) {}
 
@@ -56,9 +54,7 @@ export class ResumableUploadService {
     const stageRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.clientMessageId, dto.clientMessageId),
     });
-    const stage = stageRow
-      ? requireOutboundPendingMedia(stageRow)
-      : undefined;
+    const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
     if (
       !stage ||
       stage.status !== 'pending' ||
@@ -297,7 +293,7 @@ export class ResumableUploadService {
       // Phase 7 barrier promote: upsert the file's FileSyncProgress(SUCCEEDED) row + attempt the batch
       // promote. markOutboundFileSucceeded returns the committed Message iff THIS call newly committed
       // it (the win-guard makes a concurrent/race re-complete a no-op) — only then fire the fan-out.
-      const result = await this.messages.markOutboundFileSucceeded(
+      await this.messages.markOutboundFileSucceeded(
         session.clientMessageId,
         session.partId,
         session.position,
@@ -306,7 +302,6 @@ export class ResumableUploadService {
         userId,
         stored.overrideContentType,
       );
-      if (result?.newlyPromoted) void this.fanout.dispatch(result.message);
       const [completed] = await this.database.db
         .update(uploadSession)
         .set({

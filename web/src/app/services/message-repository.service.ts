@@ -9,6 +9,7 @@ import {
   type MessageQueryPage,
 } from './message.service';
 import { UserService } from './user.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { Message, MediaStatus } from './model';
 import { isTauri, tauriInvoke } from './runtime';
 
@@ -70,11 +71,12 @@ interface DeletedMessageStream {
  * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
  * thread leaves the user's roster (see {@link deleteByThread}).
  *
- * A committed `THREAD_CONTENT_HEAD` advances the bounded newer walk and emits {@link liveSignal$}; the
+ * A committed unified thread snapshot advances the bounded newer walk and emits {@link liveSignal$}; the
  * mounted source then pulls the body through the canonical message query.
  */
 @Injectable({ providedIn: 'root' })
 export class MessageRepository {
+  private readonly sessionLifecycle = inject(SessionLifecycleService);
   private readonly webdb = inject(WebdbService);
   private readonly ws = inject(WebsocketService);
   private readonly msg = inject(MsgService);
@@ -92,6 +94,8 @@ export class MessageRepository {
     seqs: number[];
   }>();
   readonly deletedLive$ = this.deletedSignal$.asObservable();
+  private readonly slotsChanged = new Subject<number>();
+  readonly slotsChanged$ = this.slotsChanged.asObservable();
   private readonly deletedStreams = new Map<number, DeletedMessageStream>();
 
   /** Successful transport reconnect. The repository clears the finite HTTP cutoff before waking views. */
@@ -128,12 +132,13 @@ export class MessageRepository {
     threadId: number,
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
+    const epoch = this.sessionLifecycle.accountEpoch;
     if (!isTauri())
       throw new Error('native message history requested outside Tauri');
     const userId = this.userService.sessionUserId();
     if (userId === null)
       throw new Error('native message history requested without a session');
-    return tauriInvoke<NativeMessageHistoryResult>(
+    const result = await tauriInvoke<NativeMessageHistoryResult>(
       'native_message_history_get',
       {
         userId,
@@ -141,6 +146,11 @@ export class MessageRepository {
         demand,
       },
     );
+    if (!this.sessionLifecycle.isCurrent(epoch))
+      throw new Error('account session expired during native history query');
+    if (this.userService.sessionUserId() === userId)
+      this.slotsChanged.next(threadId);
+    return result;
   }
 
   /** Browser equivalent of the native source walker. It owns every IDB read, HTTP fill, transactional
@@ -443,6 +453,7 @@ export class MessageRepository {
         lifetime,
       );
       ranges = committed.ranges;
+      this.slotsChanged.next(threadId);
       if (!scan) return { items, hasMore: false };
       const direct = this.projectCommittedHistoryPage(
         direction,
@@ -707,6 +718,7 @@ export class MessageRepository {
       )
         throw new Error('deleted-message query returned an invalid boundary');
       await this.webdb.applyDeletedMessages(threadId, items, next);
+      this.slotsChanged.next(threadId);
       if (items.length) {
         this.deletedSignal$.next({
           threadId,
@@ -750,26 +762,11 @@ export class MessageRepository {
     return true;
   }
 
-  /** The newest cached message (highest seq) for EACH threadId, fetched in ONE read transaction: one reverse
-   *  cursor per thread on a shared transaction (the first entry in `[threadId, *]` desc is that thread's
-   *  highest seq). The local-first source {@link ThreadRepository.hydratePreviews} derives every list preview
-   *  from in a single pass — O(threadIds) first-entry reads on one transaction, never N independent lookups
-   *  and never a full-table scan. Threads with no cached message are simply absent from the map. */
-  async getNewestMessages(threadIds: number[]): Promise<Map<number, Message>> {
-    const out = new Map<number, Message>();
-    if (threadIds.length === 0) return out;
-    try {
-      const messages = await this.webdb.getNewestMessages(threadIds);
-      for (const message of messages) out.set(message.threadId, message);
-      return out;
-    } catch {
-      return out;
-    }
-  }
   /** Idempotent put by `[threadId, seq]` (the keyPath) — writing the same key twice just overwrites. */
   private async put(m: Message): Promise<void> {
     try {
       await this.webdb.putCachedMessages([m]);
+      this.slotsChanged.next(m.threadId);
     } catch {
       /* IDB unavailable / closed — cache is best-effort */
     }

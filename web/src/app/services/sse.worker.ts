@@ -72,6 +72,10 @@ let pingObserved = false;
 let watchdog: ReturnType<typeof setInterval> | undefined;
 /** Resolver for the current `sleep`, so an `online` event can wake the backoff loop to retry at once. */
 let sleepResolver: (() => void) | undefined;
+let threadFeedPort: MessagePort | undefined;
+let threadFeedUserId: number | undefined;
+let helloUserId: number | undefined;
+let threadFeedTarget = 0;
 
 /** Post a message to the main thread. */
 function post(msg: ToMain): void {
@@ -222,7 +226,30 @@ function dispatch(event: string, rawData: string | undefined): void {
     post({ type: 'force-logout' });
     return;
   }
-  post({ type: 'event', payload: { event, status: 0, message: 'new message', data } });
+  if (event === 'HELLO' || event === 'THREAD_FEED_UPDATED') {
+    const head = data as
+      | { userId?: number; threadFeedEndId?: number }
+      | undefined;
+    if (event === 'HELLO') helloUserId = head?.userId;
+    if (
+      Number.isInteger(head?.threadFeedEndId) &&
+      Number(head?.threadFeedEndId) >= 0 &&
+      Number(head?.threadFeedEndId) <= 2147483647
+    ) {
+      threadFeedTarget = Math.max(
+        threadFeedTarget,
+        Number(head!.threadFeedEndId),
+      );
+      if (threadFeedPort && threadFeedUserId === helloUserId) {
+        threadFeedPort.postMessage({ target: threadFeedTarget });
+        if (event === 'THREAD_FEED_UPDATED') return;
+      }
+    }
+  }
+  post({
+    type: 'event',
+    payload: { event, status: 0, message: 'new message', data },
+  });
 }
 
 /** Exponential backoff + full jitter: delay = random(0, min(1000·2^attempt, 30000)). Base 1s, cap 30s. */
@@ -253,7 +280,10 @@ function startWatchdog(): void {
     if (!pingObserved) return;
     if (lastFrameAt === 0) return;
     if (Date.now() - lastFrameAt > STALE_MS) {
-      console.warn('[sse] liveness watchdog: no frame in %sms — aborting stalled stream', STALE_MS);
+      console.warn(
+        '[sse] liveness watchdog: no frame in %sms — aborting stalled stream',
+        STALE_MS,
+      );
       aborter?.abort();
     }
   }, WATCHDOG_CHECK_MS);
@@ -288,6 +318,33 @@ sw.addEventListener('online', () => {
 sw.addEventListener('message', (e: MessageEvent) => {
   const m = e.data as ToWorker;
   switch (m.type) {
+    case 'thread-feed-port': {
+      threadFeedPort?.close();
+      const port = m.port;
+      threadFeedPort = port;
+      threadFeedUserId = m.userId;
+      port.onmessage = (event) => {
+        if (
+          manualClose ||
+          threadFeedPort !== port ||
+          event.data?.userId !== helloUserId
+        )
+          return;
+        post({
+          type: 'event',
+          payload: {
+            event: 'LOCAL_THREAD_FEED_COMMITTED',
+            status: 0,
+            message: 'local data committed',
+            data: event.data,
+          },
+        });
+      };
+      port.start();
+      if (!manualClose && threadFeedUserId === helloUserId)
+        port.postMessage({ target: threadFeedTarget });
+      break;
+    }
     case 'start':
       if (running) return;
       url = m.url;
@@ -299,6 +356,8 @@ sw.addEventListener('message', (e: MessageEvent) => {
       void run();
       break;
     case 'stop':
+      threadFeedPort?.close();
+      threadFeedPort = undefined;
       manualClose = true;
       running = false;
       aborter?.abort();

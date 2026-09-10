@@ -71,21 +71,24 @@ execution time and sends `/feed-heads`. The transport acquires the shared
 global/per-domain HTTP concurrency slot for every attempt. Business producers
 never invoke or await this HTTP client directly.
 
-A `THREAD_CONTENT_HEAD` transaction locks MessageThread, checks that its
-relationship is active, and reconciles `FederationThreadSyncState` against the
-thread authorization epoch. The newest advertised message remains forward
+The relationship activation transaction locks MessageThread and initializes
+`FederationThreadSyncState` against the thread authorization epoch using the
+remote intent's retained, simultaneous message/tombstone snapshot. The newest advertised message remains forward
 work. Older skipped coordinates become a reverse gap.
 
-For the first advertised message tail `E`:
+For the message tail `E` carried by that authorization:
 
 - `E=0`: no message work;
 - `E=1`: forward interval `(0,1]`, no reverse gap;
 - `E>1`: forward interval `(E-1,E]` and reverse gap `[1,E-1]`.
 
-The same first-head transaction initializes
+The same relationship transaction initializes
 `deletionProcessedThroughSeq=deletionTargetSeq`. A new mirror has no older
 publisher-coordinate message replica, so it creates no tombstone work for the
-initial deletion history.
+initial deletion history. Later `THREAD_CONTENT_HEAD` transactions only advance
+existing targets in the current epoch. They never create a state row or reverse
+gap. In particular, `0/0` initialization leaves both committed cursors at zero
+until forward work commits, even if the first head advertises multiple messages.
 
 When a reverse gap is created, the same transaction has already locked
 MessageThread. With publisher gap `[S,E-1]` and locked local tail `L`, it stores

@@ -6,13 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
-import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -24,30 +22,15 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * FCM message handler + the single source of notification rendering for ALL background paths.
- *
- * The backend (`PushService.dispatchForMessage`) sends data-only high-priority messages carrying the
- * identity-only wake-up — `{ type, messageEndSeq }`. There is no `notification` field, so the OS does
- * NOT auto-display anything: this service is always invoked (even when the OS has killed the app) and pulls
- * `POST /notification-feed/query`, whose `data.notifications[]` carry the server-authored descriptor(s) — the
- * localized title/body + composited stacked-avatar icon + tag/renotify/kind semantics. [renderDescriptor]
- * maps each descriptor onto `NotificationCompat` with zero composition logic. The same descriptor is
- * rendered by the Web Push SW and the foreground Angular adapter — one source of truth.
- *
- * Foreground suppression: when the activity is visible (`appInForeground == true`) the live SSE connection
- * already delivered the durable State Feed wake to the in-app UI, so FCM is a no-op. The server sends Push
- * unless this exact authenticated device session has a live SSE connection. In that case the native
- * realtime service takes over background notification aggregation from `STATE_FEED_UPDATED`.
- *
- * All background paths (FCM, live-SSE takeover, and the WorkManager 6h poll)
- * converge on [renderAwayNotification] → one coalesced away-notification at the stable [AWAY_NOTIF_ID]
- * (the descriptor's `tag` maps onto that id — replace-by-id, never stacks).
+ * Data-only push receiver and per-thread Android notification renderer.
+ * FCM supplies threadFeedEndId; background SSE and periodic work share the Rust
+ * thread-feed executor. No notification body is fetched by Kotlin.
  */
 class SomsMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(msg: RemoteMessage) {
         // Data-only: msg.notification is null; everything is in msg.data. Identity-only wake-up — the
-        // push carries { type, messageEndSeq } (no body or notification cursor); route on `type`.
+        // push carries { type, threadFeedEndId } (no body); route on `type`.
         val data = msg.data
         when (data["type"]) {
             "FCM_HEALTH_PROBE" -> {
@@ -62,9 +45,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
             "NEW_MESSAGE" -> {
                 if (appInForeground) return // SSE handled it; suppress the system notification.
-                // Wake → pull the missed-summary → render the server-authored descriptor(s). The push carries
-                // no body; the missed-summary is the single data source.
-                renderAwayNotification(this, allowAlert = true)
+                val target = data["threadFeedEndId"]?.toIntOrNull()?.takeIf { it >= 0 } ?: return
+                renderAwayNotification(this, allowAlert = true, threadFeedEndId = target)
             }
             "CALL_INCOMING" -> {
                 // The phone must ring even when the app is backgrounded / killed. The high-priority FCM grant
@@ -121,19 +103,6 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  + the JS seq range 0x100+). threadId is a small DB id → no Int overflow. */
         const val THREAD_NOTIF_BASE = 0x10000
 
-        /** Per-thread DISMISS HWM (the count cursor): threadId → the seq the user dismissed up to. Advances
-         *  ONLY on dismiss (→ the thread's latestSeq); the server counts a dismissed thread FROM this (sent as
-         *  `threadHwms`), so dismiss resets its cumulative count. This is the in-memory cache over the
-         *  persisted SQLite copy (so a dismiss survives a
-         *  process kill + restart mid-background-session); loaded once per process ([ensureHwmsLoaded]) and
-         *  cleared on foreground. Process-static so FCM/FGS/WorkManager share it. ConcurrentHashMap. */
-        private val dismissedThreadSeq = java.util.concurrent.ConcurrentHashMap<Int, Int>()
-
-        /** Whether [dismissedThreadSeq] has been loaded from disk this process. Loaded lazily on first access
-         *  (fetchDescriptors / recordThreadDismiss) so the durable dismiss HWM survives a kill + restart.
-         *  [clearThreadDismiss] sets it true (treats a cleared state as already-loaded). */
-        @Volatile
-        private var hwmsLoaded = false
 
         /** Process-local sound/vibration throttle. It does not participate in message visibility or cursors. */
         private val alertThrottle2s = AlertThrottle(2_000L, SystemClock::elapsedRealtime)
@@ -142,35 +111,6 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Derive the stable notification id for a per-thread card from its threadId. */
         private fun threadNotifId(threadId: Int): Int = NotifThreadLogic.notifId(THREAD_NOTIF_BASE, threadId)
 
-        /** Load the persisted dismiss HWMs into the cache once per process (no-op after the first load). */
-        private fun ensureHwmsLoaded(ctx: Context) {
-            if (hwmsLoaded) return
-            dismissedThreadSeq.putAll(ClientStateDb.dismissedThreadSeqs(ctx))
-            hwmsLoaded = true
-        }
-
-        /** Dismiss cursor: advances ONLY on dismiss → the thread's latestSeq, AND persists (survives process
-         *  death). Called by [SomsActionReceiver]. */
-        fun recordThreadDismiss(ctx: Context, threadId: Int, seq: Int) {
-            ensureHwmsLoaded(ctx)
-            dismissedThreadSeq[threadId] = seq
-            ClientStateDb.setDismissedThreadSeq(ctx, threadId, seq)
-        }
-
-        /** A snapshot of the dismiss-HWM map, serialized as `threadHwms` in the /missed body. Loads the
-         *  persisted copy first (once per process). */
-        fun threadHwmsSnapshot(ctx: Context): Map<Int, Int> {
-            ensureHwmsLoaded(ctx)
-            return dismissedThreadSeq.toMap()
-        }
-
-        /** Clear all per-thread in-memory state + the persisted dismiss HWMs (foreground — the in-app UI takes
-         *  over, cards reset). */
-        fun clearThreadDismiss(ctx: Context) {
-            dismissedThreadSeq.clear()
-            hwmsLoaded = true
-            ClientStateDb.clearDismissedThreads(ctx)
-        }
 
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
          *  Android-native ground truth for "is the user looking at the app right now." */
@@ -202,89 +142,31 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Fetch a server-authored notification delta from `/notification-feed/query`, starting after the
-         * persisted notification cursor and using the session token + device locale. Shared by all three
-         * background paths (FCM, WorkManager, RealtimeService). Null on auth/network/parse failure. */
-        fun fetchDescriptors(ctx: Context): List<NotifDescriptor>? {
-            val token = SomsSecureStore.getSessionToken(ctx)
-            val origin = SomsSecureStore.getActiveOrigin(ctx)
-            SomsLog.d("Notif") { "fetchDescriptors tokenPresent=${token != null} originPresent=${origin != null}" }
-            if (token == null || origin == null) {
-                SomsLog.w("Notif") { "fetchDescriptors abort: missing creds (token=${token != null} origin=${origin != null})" }
-                return null
-            }
-            val body = JSONObject().apply {
-                put("after", ClientStateDb.getStateFeedCursor(ctx))
-                // Privacy is server-enforced: private mode prevents message bodies from entering the response.
-                put("previewMode", ClientStateDb.getNotificationPreviewMode(ctx))
-                // Per-thread dismiss HWMs suppress an already-dismissed unread range until a newer message.
-                val hwms = threadHwmsSnapshot(ctx)
-                if (hwms.isNotEmpty()) {
-                    val obj = JSONObject()
-                    for ((tid, seq) in hwms) obj.put(tid.toString(), seq)
-                    put("threadHwms", obj)
-                }
-            }.toString()
-            val locale = java.util.Locale.getDefault().toLanguageTag()
-            val request = Request.Builder()
-                .url("$origin${SomsSecureStore.API_PREFIX}/notification-feed/query")
-                .post(body.toRequestBody("application/json".toMediaType()))
-                .addHeader("Authorization", "Bearer $token")
-                .addHeader("Accept-Language", locale)
-                .build()
-            return try {
-                HTTP.newCall(request).execute().use { resp ->
-                    val raw = resp.body?.string()
-                    SomsLog.d("Notif") { "fetchDescriptors code=${resp.code} bodyLen=${raw?.length ?: -1}" }
-                    if (!resp.isSuccessful) {
-                        SomsLog.w("Notif") { "fetchDescriptors non-2xx code=${resp.code} → null" }
-                        return null
-                    }
-                    val payload = raw ?: return null
-                    val envelope = JSONObject(payload)
-                    val data = envelope.optJSONObject("data")
-                    val end = data?.optInt("stateFeedEndId", -1) ?: -1
-                    if (end >= 0) ClientStateDb.setStateFeedCursor(ctx, end)
-                    val list = NotifDescriptor.parseList(payload)
-                    SomsLog.d("Notif") { "fetchDescriptors parsed=${list.size} kinds=${list.map { it.kind }}" }
-                    list
-                }
-            } catch (e: Exception) {
-                SomsLog.w("Notif", e) { "fetchDescriptors exception ${e.javaClass.simpleName}: ${e.message}" }
-                null
+        /** All background sources use one cursor-owning Rust executor. A target of -1 is a scheduled poll. */
+        fun renderAwayNotification(ctx: Context, allowAlert: Boolean, threadFeedEndId: Int = -1) {
+            if (!notificationProjectionGate.tryStart(allowAlert, threadFeedEndId)) return
+            var next: NotificationProjectionGate.Wake? = NotificationProjectionGate.Wake(allowAlert, threadFeedEndId)
+            while (next != null) {
+                val wake = next
+                runCatching { renderAwayNotificationOnce(ctx, wake.allowAlert, wake.target) }
+                    .onFailure { e -> SomsLog.w("Notif", e) { "native notification synchronization failed" } }
+                next = notificationProjectionGate.nextOrFinish()
             }
         }
 
-        /** Fetch the descriptors then render them — the single entry point for all three background paths
-         *  (FCM / WorkManager / RealtimeService-background). Does a SYNCHRONOUS network fetch
-         *  ([fetchDescriptors] → OkHttp `execute`), so the caller MUST be off the main thread: FCM's
-         *  onMessageReceived and WorkManager's doWork already are; RealtimeService hops via its ioExecutor. */
-        fun renderAwayNotification(ctx: Context, allowAlert: Boolean) {
-            if (!notificationProjectionGate.tryStart(allowAlert)) return
-            var nextAllowAlert: Boolean? = allowAlert
-            while (nextAllowAlert != null) {
-                val currentAllowAlert = nextAllowAlert
-                runCatching { renderAwayNotificationOnce(ctx, currentAllowAlert) }
-                    .onFailure { e ->
-                        SomsLog.w("Notif", e) {
-                            "renderAwayNotification failed ${e.javaClass.simpleName}: ${e.message}"
-                        }
-                    }
-                nextAllowAlert = notificationProjectionGate.nextOrFinish()
+        private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
+            val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
+            val token = SomsSecureStore.getSessionToken(ctx) ?: return
+            val batch = RustRuntimeBridge.synchronizeNotifications(userId, target)
+            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(ctx),
+                ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
+                ctx.getString(R.string.notif_message_removed))
+            RustRuntimeBridge.withCurrentSession(batch.accountEpoch) {
+                if (!appInForeground && SomsSecureStore.getCurrentUserId(ctx) == userId &&
+                    SomsSecureStore.getSessionToken(ctx) == token) {
+                    renderDescriptors(ctx, descriptors, allowAlert)
+                }
             }
-        }
-
-        private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean) {
-            val descriptors = fetchDescriptors(ctx)
-            if (descriptors == null) {
-                SomsLog.w("Notif") { "renderAwayNotification: fetchDescriptors=null → skip" }
-                return
-            }
-            if (descriptors.isEmpty()) {
-                SomsLog.d("Notif") { "renderAwayNotification: descriptors empty → no-op" }
-                return
-            }
-            renderDescriptors(ctx, descriptors, allowAlert)
         }
 
         /** Apply a notification delta. Every background entry point uses the same process-wide alert
@@ -312,9 +194,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             descriptors: List<NotifDescriptor>,
             allowAlert: Boolean,
         ) {
-            // The server already dropped dismissed-0 threads (it counted each from the client's threadHwms), so
-            // stable notification ids replace each named conversation in place. This is a delta: notifications
-            // for threads absent from this response remain untouched.
+            // Stable IDs replace named conversations; absent threads remain untouched.
             val policy = ClientStateDb.getNotificationAlertPolicy(ctx)
             var alertSlot = allowAlert && when (policy) {
                 "cooldown_2s" -> alertThrottle2s.tryClaim()
@@ -325,6 +205,10 @@ class SomsMessagingService : FirebaseMessagingService() {
                 val tid = d.data.optInt("threadId", -1)
                 if (tid < 0) continue
                 val id = threadNotifId(tid)
+                if (d.count == 0) {
+                    nm.cancel(id)
+                    continue
+                }
                 val alertThisCard = if (policy == "once_per_thread") allowAlert else alertSlot
                 postThreadNotification(
                     ctx,
@@ -340,7 +224,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             SomsLog.i("Notif") { "renderDescriptors: ${descriptors.size} conversation cards appInFg=$appInForeground" }
         }
 
-        /** Post one conversation card. Tap deep-links into the thread; dismiss persists its latest seq. */
+        /** Post one conversation card. Tap deep-links into the thread. */
         private fun postThreadNotification(
             ctx: Context,
             nm: NotificationManager,
@@ -349,8 +233,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             allowAlert: Boolean,
             onlyAlertOnce: Boolean,
         ) {
+            val avatarImages = NotificationAvatars.resolve(ctx, d.messages)
             val tid = d.data.optInt("threadId", -1)
-            val seq = d.data.optInt("seq", -1)
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
@@ -374,27 +258,6 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setContentIntent(pendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(buildPublicVersion(ctx, pendingIntent))
-            // A shade swipe is semantically identical to the descriptor's Dismiss button: persist this
-            // thread's latest covered seq so a later wake-up counts only messages newer than the dismissal.
-            // Without a deleteIntent the badge drops briefly, then the next FCM/SSE wake reposts the old count.
-            builder.setDeleteIntent(
-                PendingIntent.getBroadcast(
-                    ctx,
-                    id,
-                    Intent(ctx, SomsActionReceiver::class.java).apply {
-                        // PendingIntent identity ignores extras. Include the notification id in the action so
-                        // this delete callback cannot alias an adjacent card's action-button PendingIntent.
-                        action = "${ctx.packageName}.NOTIFICATION_DELETE.$id"
-                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, "dismiss")
-                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
-                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
-                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true)
-                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
-                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
-                    },
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                ),
-            )
             if (d.previewMode == "private") {
                 builder.setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
             } else {
@@ -404,32 +267,19 @@ class SomsMessagingService : FirebaseMessagingService() {
                     .setGroupConversation(true)
                 for (message in d.messages) {
                     val sender = Person.Builder()
-                        .setKey(message.senderId.toString())
+                        .setKey(message.senderKey)
                         .setName(message.senderName)
+                        .apply {
+                            avatarImages[message.senderKey]?.let { bitmap ->
+                                setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
+                            }
+                        }
                         .build()
                     style.addMessage(message.text, message.timestamp, sender)
                 }
                 builder.setStyle(style)
             }
             if (!allowAlert || d.silent == true) builder.setSilent(true)
-            for ((idx, a) in d.actions.withIndex()) {
-                val pi = PendingIntent.getBroadcast(
-                    ctx,
-                    id + 1 + idx, // unique requestCode per (card, action slot)
-                    Intent(ctx, SomsActionReceiver::class.java).apply {
-                        // Extras do not participate in PendingIntent identity; encode card + slot here too.
-                        action = "${ctx.packageName}.NOTIFICATION_ACTION.$id.$idx.${a.id}"
-                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
-                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
-                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
-                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true) // #5: dismiss routes per-thread (in-memory), not tag-prefix
-                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
-                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
-                    },
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                )
-                builder.addAction(NotificationCompat.Action.Builder(R.drawable.ic_notification, a.title, pi).build())
-            }
             nm.notify(id, builder.build())
         }
 
@@ -455,9 +305,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Clear EVERY message notification (the away card + the whole per-thread group) + the in-memory
-         *  per-thread dismiss map. Called on foreground (onResume — the in-app UI owns display again) and on
-         *  an empty descriptor list (nothing new to show). */
+        /** Close message notifications when the foreground UI takes over. */
         private fun cancelMessageNotifications(ctx: Context) {
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
             nm.cancel(AWAY_NOTIF_ID)
@@ -467,112 +315,16 @@ class SomsMessagingService : FirebaseMessagingService() {
 
         fun clearAllMessageNotifs(ctx: Context) {
             cancelMessageNotifications(ctx)
-            clearThreadDismiss(ctx)
         }
 
-        /**
-         * Render one server-authored descriptor onto `NotificationCompat`:
-         *  - `body` → `BigTextStyle` (the coalesced "X sent you N messages" — a count summary, not a
-         *    per-person conversation, so BigTextStyle, not MessagingStyle);
-         *  - `icon` → `setLargeIcon` (the fetched stacked-avatar PNG; null on fetch failure → omitted);
-         *  - `renotify` → `setOnlyAlertOnce(!renotify)` (the server opts to re-alert); `silent` → `setSilent`.
-         *
-         * The count is in `body` (the server folds names + total) — fixes the prior Kotlin path that omitted
-         * the count. Public so MainActivity's JS bridge can render a descriptor the WebView forwarded.
-         */
-        fun renderDescriptor(ctx: Context, d: NotifDescriptor) {
-            ensureChannel(ctx)
-            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
-            val largeIcon = d.icon?.let { fetchBitmap(ctx, it) }
-                ?: LetterAvatar.render(ctx, d.title) // no/failed composite → letter tile (in-app palette + name hash)
-            SomsLog.d("Notif") { "renderDescriptor iconUrl='${d.icon}' → ${if (d.icon != null) "composite" else "letter-fallback"}" }
-            val intent = Intent(ctx, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                ctx,
-                AWAY_NOTIF_ID,
-                intent,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
-                .setContentText(d.body)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
-                .setNumber(NotifThreadLogic.badgeNumber(d.count))
-                .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
-                .setAutoCancel(true)
-                .setOnlyAlertOnce(!d.renotify)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setContentIntent(pendingIntent)
-            if (d.silent == true) builder.setSilent(true)
-            if (largeIcon != null) builder.setLargeIcon(largeIcon)
-            // Action buttons (the summary carries a pure-frontend `dismiss`; a future single-message kind adds
-            // `reply`). Each fires SomsActionReceiver with the action id + the descriptor's routing data + the
-            // notification id this action lives on (so dismiss cancels ITS OWN notification, not a hardcoded
-            // one). For `dismiss` the routing data is the new HWM cursor `{threadId, seq}` — the receiver
-            // advances the away-HWM to it + cancels the shade, pure frontend (no POST, no read-watermark
-            // change). A type:"text" action also collects an inline reply via RemoteInput. Here seq is a
-            // cursor, so 0 means "before the first message"; it is never a message entity with seq 0.
-            for ((idx, a) in d.actions.withIndex()) {
-                val pi = PendingIntent.getBroadcast(
-                    ctx,
-                    AWAY_NOTIF_ID + 1 + idx, // unique requestCode per action slot
-                    Intent(ctx, SomsActionReceiver::class.java).apply {
-                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
-                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
-                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, AWAY_NOTIF_ID)
-                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, false) // all-mode: dismiss advances the global HWM
-                        val tid = d.data.optInt("threadId", -1)
-                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
-                        val seq = d.data.optInt("seq", -1)
-                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
-                    },
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                )
-                val actionBuilder = NotificationCompat.Action.Builder(R.drawable.ic_notification, a.title, pi)
-                if (a.type == "text") {
-                    actionBuilder.addRemoteInput(
-                        RemoteInput.Builder(SomsActionReceiver.KEY_REPLY_TEXT).setLabel(a.title).build(),
-                    )
-                }
-                builder.addAction(actionBuilder.build())
-            }
-            nm.notify(AWAY_NOTIF_ID, builder.build())
-            SomsLog.i("Notif") { "notify AWAY posted id=$AWAY_NOTIF_ID" }
-        }
-
-        /** Fetch the composited stacked-avatar PNG at `iconUrl` as a Bitmap for `setLargeIcon`. The icon is
-         *  server-composited (AvatarStackService) and ALWAYS relative to the API origin — resolved here and
-         *  NEVER honored as an absolute URL, so the session Bearer below cannot leak to an arbitrary
-         *  (federated / attacker-controlled) host the server might emit. Auth-N only (any logged-in user can
-         *  fetch any avatar / notif-icon), so the Bearer authorizes. Null on any failure (the notification
-         *  renders without an icon — graceful, never blocks the away-summary). */
-        internal fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
-            val token = SomsSecureStore.getSessionToken(ctx) ?: return null
-            val origin = SomsSecureStore.getActiveOrigin(ctx) ?: return null
-            val fullUrl = "$origin$iconUrl"
-            val request = Request.Builder()
-                .url(fullUrl)
-                .get()
-                .addHeader("Authorization", "Bearer $token")
-                .build()
-            return try {
-                HTTP.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) return null
-                    val bytes = resp.body?.bytes() ?: return null
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                }
-            } catch (e: Exception) {
-                null
-            }
+        fun clearSessionMessageNotifs(ctx: Context) {
+            SomsBridge.DeepLink.clear()
+            clearAllMessageNotifs(ctx)
         }
 
         /** Build the foreground-service persistent notification (minimal, IMPORTANCE_LOW, ongoing) — the
          *  FGS-required "a notification must exist" surface, deliberately NOT a message surface (messages
-         *  go to [renderDescriptor]). Tap → opens the app. */
+         *  go to [renderDescriptors]). Tap → opens the app. */
         fun buildForegroundNotification(ctx: Context): Notification {
             ensureChannel(ctx)
             val intent = Intent(ctx, MainActivity::class.java).apply {

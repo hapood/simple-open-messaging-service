@@ -395,6 +395,19 @@ pub(crate) async fn perform_api_request(
     body: Option<Vec<u8>>,
     replay_safe: bool,
 ) -> Result<ApiRequestResult, String> {
+    perform_api_request_with_events(Some(app), proxy, method, path, headers, body, replay_safe).await
+}
+
+/// Background consumers use the same HTTP policy without a shell event sink.
+pub(crate) async fn perform_api_request_with_events(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ProxyState,
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<Vec<u8>>,
+    replay_safe: bool,
+) -> Result<ApiRequestResult, String> {
     let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut attempt = 0u8;
     let upstream = loop {
@@ -440,7 +453,7 @@ pub(crate) async fn perform_api_request(
                 // requests are issued again; unsafe writes still benefit from the switch but surface their
                 // original ambiguous failure to the caller.
                 let selected = pick_origin_race(&proxy).await;
-                if let Some(origin) = selected.as_ref() {
+                if let (Some(app), Some(origin)) = (app, selected.as_ref()) {
                     let _ = app.emit("active-origin-changed", origin);
                 }
                 if replay_safe && attempt == 0 && selected.is_some() {

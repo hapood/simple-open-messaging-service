@@ -23,7 +23,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { MAX_VIDEO_BYTES } from './file-content.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
@@ -56,7 +55,6 @@ export class UploadController {
   constructor(
     private readonly uploadService: UploadService,
     private readonly messageService: MessageService,
-    private readonly fanout: MessageFanoutService,
     private readonly userQuota: UserQuotaService,
     private readonly resumable: ResumableUploadService,
   ) {}
@@ -187,7 +185,7 @@ export class UploadController {
           declaredMime: file.mimetype,
         }),
       );
-      const result = await this.withStageFailure(req, () =>
+      await this.withStageFailure(req, () =>
         this.messageService.markOutboundFileSucceeded(
           clientMessageId,
           part.partId,
@@ -198,9 +196,6 @@ export class UploadController {
           saved.overrideContentType,
         ),
       );
-      // Only the request that newly commits the Message fires the fan-out (win-guard makes the rest
-      // no-ops). Promote may be null while the barrier is not yet met (more files still to come).
-      if (result?.newlyPromoted) void this.fanout.dispatch(result.message);
       payloads.push(saved.payload);
     }
     return payloads.length === 1 ? payloads[0] : { items: payloads };

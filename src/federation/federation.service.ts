@@ -1,3 +1,4 @@
+import { isGroupDissolvedInTx } from '../group/group-state.js';
 import {
   groupState as groupStateTable,
   readGroupState,
@@ -230,7 +231,7 @@ export class FederationService {
     return this.users.findLocalUserIdByAddress(address);
   }
 
-  /** Accept an incoming Address-based request and promote it into the id-based friendship state machine. */
+  /** Accept a retained remote request by authoring only the local direction. */
   async acceptAddressedFriendRequest(
     localUserId: number,
     remote: { account: string; domain: string },
@@ -270,16 +271,6 @@ export class FederationService {
         domain: remoteDomain,
         namespaceId: context.namespaceId,
       };
-      await this.relationshipIntents.applyRemoteP2PIntentInTx(tx, {
-        authorUserId: remoteUserId,
-        subjectUserId: localUserId,
-        threadId: null,
-        status: 'REQUESTED',
-        profileRev: request.profileRev,
-        note: request.note,
-        requestedAt: request.requestedAt,
-        expiresAt: request.expiresAt,
-      });
       const state = await this.relationshipMutations.writeP2PIntentInTx(
         tx,
         localUserId,
@@ -321,6 +312,7 @@ export class FederationService {
           address.domain,
           context.namespaceId,
         );
+      if (await isGroupDissolvedInTx(tx, shell.threadId)) return null;
       if (beforeWrite) await beforeWrite(tx);
       return this.relationshipMutations.writeMemberRelationshipIntentInTx(
         tx,
@@ -332,6 +324,7 @@ export class FederationService {
         snapshot,
       );
     });
+    if (state === null) return;
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.pushStateFeedDomains(state.keys());
   }
@@ -662,6 +655,7 @@ export class FederationService {
     memberUserId: number,
   ): Promise<void> {
     const result = await this.database.db.transaction(async (tx) => {
+      if (await isGroupDissolvedInTx(tx, threadId)) return null;
       const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
       const [thread] = await tx
         .select({
@@ -680,11 +674,6 @@ export class FederationService {
         throw new BusinessException(
           BusinessCode.INVITE_NOT_FOUND,
           'group request not found',
-        );
-      if (thread.dissolvedAt !== null)
-        throw new BusinessException(
-          BusinessCode.GROUP_DISSOLVED,
-          'group dissolved',
         );
       if (
         !(await this.relationshipIntents.hasValidGroupInviteInTx(tx, {
@@ -722,6 +711,7 @@ export class FederationService {
         shouldWriteStatus: !alreadyVisible,
       };
     });
+    if (result === null) return;
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     if (result.shouldWriteStatus)
       await this.publishLocalSystemMessage({
@@ -1440,6 +1430,7 @@ export class FederationService {
         for (const userId of effect.recipients) {
           void this.profileResolutions
             .start(userId, {
+              type: 'MESSAGE_AUTHOR',
               threadId: effect.threadId,
               messageSeq: effect.message.seq,
             })

@@ -13,21 +13,17 @@ import {
 } from '../../shared/text-message-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { extractDigests } from '../upload/file-content.js';
-import type { S2SAddress } from './federation-address.js';
 
 export interface PendingMediaMaterializationEffect {
-  threadId: number;
-  seq: number;
-  author: S2SAddress;
-  sourceDomain: string;
   dependentBatchIds: string[];
 }
 
 /**
  * Completes the local dependencies of an inbound Message STUB.
  *
- * Synchronization progress already committed when the STUB was inserted. Download completion makes
- * the Message READY and publishes READY-only local projections without touching federation cursors.
+ * The STUB already participates in unread and previews. Download completion only
+ * materializes its content and assets, without advancing federation cursors or
+ * publishing another device notification.
  */
 @Injectable()
 export class FederationPendingMediaPromoter {
@@ -194,12 +190,6 @@ export class FederationPendingMediaPromoter {
 
       return {
         threadId: stagedMessage.threadId,
-        seq: stagedMessage.seq,
-        author: {
-          account: stagedMessage.creatorAccount,
-          domain: stagedMessage.creatorDomain,
-        },
-        sourceDomain: batch.originDomain,
         sourceNamespaceId: batch.namespaceId,
         originSeq: stagedMessage.originSeq,
       };
@@ -223,10 +213,6 @@ export class FederationPendingMediaPromoter {
         ),
       );
     return {
-      threadId: effect.threadId,
-      seq: effect.seq,
-      author: effect.author,
-      sourceDomain: effect.sourceDomain,
       dependentBatchIds: dependents.map(({ batchId: id }) => id),
     };
   }

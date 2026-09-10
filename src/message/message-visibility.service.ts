@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { and, eq, isNull, lte, or } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type Database,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import {
   message,
   messageThread,
@@ -16,8 +20,13 @@ import { MessageThreadType } from '../database/enums.js';
 export class MessageVisibilityService {
   constructor(private readonly database: DatabaseService) {}
 
-  async findVisibleByThreadSeq(userId: number, threadId: number, seq: number) {
-    const [row] = await this.database.db
+  async findVisibleByThreadSeq(
+    userId: number,
+    threadId: number,
+    seq: number,
+    db: Database | DatabaseTransaction = this.database.db,
+  ) {
+    const [row] = await db
       .select({
         message,
         threadType: messageThread.type,

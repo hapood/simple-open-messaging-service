@@ -344,9 +344,11 @@ describe('MessageRepository', () => {
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
-    expect(raw && 'content' in raw ? raw.content : undefined).toBe(
-      'already-cached',
-    );
+    expect(raw && 'content' in raw).toBe(false);
+    expect(raw).toMatchObject({
+      contentType: 'TOMB',
+      deletionType: 'MODERATION_REMOVAL',
+    });
   });
 
   it('pins the first tombstone walk to the open-time head and local message cutoff', async () => {

@@ -6,6 +6,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
+  accountThreadState,
   federatedMessageTombstone,
   federatedPeer,
   federationDeletedCursor,
@@ -19,7 +20,12 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
+import { ThreadPreviewModule } from '../src/message/thread-preview.module.js';
+import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
+import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 import { MessageService } from '../src/message/message.service.js';
+import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
 
 describe('federated message deletion transaction ordering', () => {
@@ -39,7 +45,7 @@ describe('federated message deletion transaction ordering', () => {
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [DatabaseModule, ThreadPreviewModule],
       providers: [
         DeletedMessageService,
         {
@@ -58,7 +64,7 @@ describe('federated message deletion transaction ordering', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE',
     );
     const now = new Date();
     const [existingNamespace] = await database.db
@@ -112,6 +118,143 @@ describe('federated message deletion transaction ordering', () => {
       expectedFederationVersion: 0,
     });
   }
+
+  it.each(['forward', 'reverse', 'media'])(
+    'materializes a pending tomb with its message before fanout (%s)',
+    async (mode) => {
+      const reverse = mode === 'reverse';
+      if (reverse)
+        await database.db
+          .update(messageThread)
+          .set({ curSeq: 8 })
+          .where(eq(messageThread.id, threadId));
+      const [reader] = await database.db
+        .insert(user)
+        .values({ account: 'page-reader' })
+        .returning();
+      await database.db.insert(accountThreadState).values({
+        accountId: reader.id,
+        threadId,
+        lastReadSeq: reverse ? 8 : 0,
+        updatedAt: new Date(),
+      });
+      const previews = mod.get(ThreadPreviewService);
+      await apply(9);
+      expect(
+        await database.db.query.durableTask.findMany({
+          where: (task, { eq }) => eq(task.taskType, 'FAN_OUT_THREAD_CONTENT'),
+        }),
+      ).toHaveLength(0);
+      const store = new FederationInboundMessageStoreService(
+        { assertResponseWritable: async () => undefined } as never,
+        {} as never,
+        { tickLax: async () => undefined } as never,
+      );
+      await database.db.transaction(async (tx) => {
+        const results = [];
+        for (const originSeq of [7, 8]) {
+          const media = mode === 'media' && originSeq === 8;
+          const result = await store.store(tx, {
+            threadId,
+            creator: { account: 'bob', domain: peerDomain },
+            fetchedFromDomain: peerDomain,
+            namespaceId,
+            message: {
+              originSeq,
+              profileRev: 0,
+              clientMessageId: null,
+              contentType: media ? 'FILE' : 'PURE_TEXT',
+              content: media
+                ? JSON.stringify({
+                    url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+                    name: 'file.txt',
+                    size: 1,
+                    mimeType: 'text/plain',
+                  })
+                : '{"text":"incoming"}',
+              ts: Date.now(),
+            },
+            incomingText: { text: 'incoming' },
+            expectedFederationVersion: 0,
+            originTime: new Date(),
+            ...(reverse
+              ? {
+                  sequencePolicy: {
+                    kind: 'MAP_ORIGIN' as const,
+                    beforeSeq: 9,
+                    throughSeq: 7,
+                    messageSeqOffset: 0,
+                  },
+                }
+              : {}),
+          });
+          expect(result.kind).toBe(media ? 'pending' : 'message');
+          results.push(
+            result.kind === 'message' ? result.message.seq : result.seq,
+          );
+        }
+        return results;
+      });
+      if (!reverse)
+        await database.db.transaction(async (tx) => {
+          await requireThreadContentLockInTx(tx, threadId);
+          const head = await tx.query.messageThread.findFirst({
+            where: eq(messageThread.id, threadId),
+          });
+          await ThreadFeedHeadWriter.advanceInTx(tx, reader.id, {
+            threadId,
+            messageEndSeq: head!.curSeq,
+            tombstoneEndSeq: head!.deletionSeqAllocatedThrough,
+          });
+        });
+      const stored = await database.db.transaction((tx) =>
+        previews.readInTx(tx, reader.id, threadId, 5),
+      );
+      expect(stored.map((item) => item.seq)).toEqual(reverse ? [] : [1, 2]);
+      if (!reverse) {
+        expect(stored[0].deletionType).toBe('USER_RETRACTION');
+        expect(stored[0].content).toBeNull();
+      }
+      expect(
+        await database.db.query.federatedMessageTombstone.findMany(),
+      ).toHaveLength(0);
+      expect(
+        (await database.db.query.accountThreadState.findFirst())?.unreadCount,
+      ).toBe(reverse ? 0 : 2);
+      const queued = await database.db.query.durableTask.findMany({
+        where: (task, { eq }) => eq(task.taskType, 'FAN_OUT_THREAD_CONTENT'),
+      });
+      expect(queued).toHaveLength(reverse ? 0 : 1);
+      if (!reverse)
+        expect(queued[0].payload).toEqual({
+          threadId,
+          messageEndSeq: reverse ? 8 : 2,
+          tombstoneEndSeq: 1,
+        });
+    },
+  );
+
+  it('applies a federated tomb using local message coordinates and persists fanout with its cursor', async () => {
+    await insertIncoming();
+    const stored = (await database.db.query.message.findMany())[0];
+    expect(stored.seq).not.toBe(7);
+    const result = await apply(9);
+    expect(result?.messageSeq).toBe(stored.seq);
+    expect((await database.db.query.deletedMessage.findFirst())?.type).toBe(
+      'USER_RETRACTION',
+    );
+    const tasks = await database.db.query.durableTask.findMany();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].payload).toEqual({
+      threadId,
+      messageEndSeq: stored.seq,
+      tombstoneEndSeq: result!.deletionSeq,
+    });
+    const cursors = await database.db.query.federationDeletedCursor.findMany();
+    expect(cursors[0].committedThrough).toBe(9);
+    expect(await apply(9)).toBeNull();
+    expect(await database.db.query.durableTask.findMany()).toHaveLength(1);
+  });
 
   /** The transaction core used by FederationService.storePulledMessage for the stable identity race.
    * Optional gates let the test prove lock ordering without timing assumptions. */
@@ -300,6 +443,52 @@ describe('federated message deletion transaction ordering', () => {
     ).resolves.toBeDefined();
   });
 
+  it('commits withdrawal facts and fanout atomically, including rollback', async () => {
+    const [author] = await database.db
+      .insert(user)
+      .values({ account: 'withdraw-author' })
+      .returning();
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 1 })
+      .where(eq(messageThread.id, threadId));
+    await database.db.insert(message).values({
+      threadId,
+      seq: 1,
+      creatorAccount: author.account,
+      creatorDomain: 'local',
+      contentType: 'PURE_TEXT',
+      content: '{"text":"withdraw"}',
+      updatedAt: new Date(),
+    });
+    await expect(
+      deletions.withdraw(author.id, threadId, 1, async () => {
+        throw new Error('quota rollback');
+      }),
+    ).rejects.toThrow('quota rollback');
+    expect((await database.db.query.message.findFirst())?.isDeleted).toBe(
+      false,
+    );
+    expect(await database.db.query.durableTask.findMany()).toHaveLength(0);
+    expect(await database.db.query.deletedMessage.findMany()).toHaveLength(0);
+
+    await deletions.withdraw(author.id, threadId, 1);
+    expect((await database.db.query.message.findFirst())?.isDeleted).toBe(true);
+    expect((await database.db.query.deletedMessage.findFirst())?.type).toBe(
+      'USER_RETRACTION',
+    );
+    const tasks = await database.db.query.durableTask.findMany();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].payload).toEqual({
+      threadId,
+      messageEndSeq: 1,
+      tombstoneEndSeq: 1,
+    });
+    await deletions.withdraw(author.id, threadId, 1);
+    expect(await database.db.query.durableTask.findMany()).toHaveLength(1);
+    expect(await database.db.query.deletedMessage.findMany()).toHaveLength(1);
+  });
+
   it.each(['GROUP', 'P2P'] as const)(
     '%s withdrawal waits for the business scope before locking content',
     async (kind) => {
@@ -397,6 +586,10 @@ describe('federated message deletion transaction ordering', () => {
   it.each(['withdrawal', 'moderation'] as const)(
     'orders %s behind a receipt transaction without locking its message first',
     async (mode) => {
+      await database.db
+        .update(messageThread)
+        .set({ curSeq: 1 })
+        .where(eq(messageThread.id, threadId));
       const [author] = await database.db
         .insert(user)
         .values({
@@ -436,7 +629,7 @@ describe('federated message deletion transaction ordering', () => {
           mode === 'withdrawal'
             ? deletions.withdraw(author.id, threadId, 1)
             : database.db.transaction(async (tx) => ({
-                deletionSeq: await deletions.deleteByReportInTx(
+                deletionSeq: await deletions.deleteByModerationInTx(
                   tx,
                   threadId,
                   1,
@@ -466,6 +659,15 @@ describe('federated message deletion transaction ordering', () => {
         expect(await withdrawing).toMatchObject({
           value: { deletionSeq: 1, messageSeq: 1 },
         });
+        const threadAfterDeletion =
+          await database.db.query.messageThread.findFirst({
+            where: eq(messageThread.id, threadId),
+          });
+        expect(threadAfterDeletion?.curSeq).toBe(1);
+        const remainingRows = await database.db.query.message.findMany({
+          where: eq(message.threadId, threadId),
+        });
+        expect(remainingRows).toHaveLength(1);
         expect(
           await database.db.query.message.findFirst({
             where: eq(message.id, sent.id),
@@ -480,7 +682,7 @@ describe('federated message deletion transaction ordering', () => {
         if (mode === 'withdrawal')
           expect(
             await deletions.withdraw(author.id, threadId, 1),
-          ).toMatchObject({ deletionSeq: 1, systemMessage: null });
+          ).toMatchObject({ deletionSeq: 1 });
       } finally {
         await receipt.query('ROLLBACK');
         receipt.release();

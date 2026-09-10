@@ -20,7 +20,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ContentType } from '../src/database/enums.js';
 import {
-  clientStateFeed,
+  accountThreadState,
   deletedMessage,
   federationThreadHistoryGap,
   federationThreadSyncState,
@@ -569,23 +569,20 @@ describe('federation reverse thread rounds (two nodes)', () => {
             ),
           }),
         ).toMatchObject({ isDeleted: true });
-        const head = await appB.database.query.clientStateFeed.findFirst({
+        const head = await appB.database.query.accountThreadState.findFirst({
           where: and(
-            eq(clientStateFeed.userId, bobLocalIdB),
-            eq(
-              clientStateFeed.compactionKey,
-              JSON.stringify(['THREAD_CONTENT_HEAD', mirrorThreadId]),
-            ),
+            eq(accountThreadState.accountId, bobLocalIdB),
+            eq(accountThreadState.threadId, mirrorThreadId),
           ),
         });
-        expect(head?.body).toEqual({
+        expect(head).toMatchObject({
           threadId: mirrorThreadId,
           messageEndSeq: expect.any(Number),
           tombstoneEndSeq: expect.any(Number),
         });
-        expect(
-          (head!.body as { messageEndSeq: number }).messageEndSeq,
-        ).toBeGreaterThanOrEqual(mirrored.seq);
+        expect(head!.messageEndSeq).toBeGreaterThanOrEqual(mirrored.seq);
+        expect(head!.tombstoneEndSeq).toBeGreaterThan(0);
+        expect(head!.threadFeedId).toBeGreaterThan(0);
       },
       { timeout: 20_000, interval: 100 },
     );
@@ -607,6 +604,37 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .where(eq(messageThread.id, originThreadId))
       .limit(1);
     expect(originGroup).toBeDefined();
+
+    // Seed history before the authorization snapshot initializes the mirror.
+    const historicalTexts = [
+      'reverse-history-one',
+      'reverse-history-two',
+      'reverse-history-three',
+    ];
+    for (const text of historicalTexts) {
+      const sent = await request(appA.baseUrl)
+        .post('/api/v1/send-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          threadId: originThreadId,
+          content: text,
+          contentType: ContentType.PURE_TEXT,
+          clientMessageId: randomUUID(),
+        });
+      expect(sent.body.code).toBe(BusinessCode.OK);
+    }
+    const sourceMessages = await appA.database.query.message.findMany({
+      where: and(
+        eq(message.threadId, originThreadId),
+        inArray(
+          message.content,
+          historicalTexts.map((text) => JSON.stringify({ text })),
+        ),
+      ),
+    });
+    expect(sourceMessages).toHaveLength(historicalTexts.length);
+
+    proxy.blockReverseMessages(true);
 
     const invited = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
@@ -686,38 +714,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
       { timeout: 15_000, interval: 100 },
     );
 
-    await appB.stop();
-    const historicalTexts = [
-      'reverse-history-one',
-      'reverse-history-two',
-      'reverse-history-three',
-    ];
-    for (const text of historicalTexts) {
-      const sent = await request(appA.baseUrl)
-        .post('/api/v1/send-message')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({
-          threadId: originThreadId,
-          content: text,
-          contentType: ContentType.PURE_TEXT,
-          clientMessageId: randomUUID(),
-        });
-      expect(sent.body.code).toBe(BusinessCode.OK);
-    }
-    const sourceMessages = await appA.database.query.message.findMany({
-      where: and(
-        eq(message.threadId, originThreadId),
-        inArray(
-          message.content,
-          historicalTexts.map((text) => JSON.stringify({ text })),
-        ),
-      ),
-    });
-    expect(sourceMessages).toHaveLength(historicalTexts.length);
-
-    proxy.blockReverseMessages(true);
-    await appB.start();
-
     const beforeRestart = await vi.waitFor(
       async () => {
         expect(proxy.blockedReverseMessageCount()).toBeGreaterThan(0);
@@ -740,20 +736,31 @@ describe('federation reverse thread rounds (two nodes)', () => {
           ),
         });
         expect(newest?.localState).toBe('READY');
-        return { state: state!, gap: gap! };
+        return { state: state!, gap: gap!, latestLocalSeq: newest!.seq };
       },
       { timeout: 15_000, interval: 100 },
     );
-    const clientFeedBefore =
-      await appB.database.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bobLocalIdB),
-          eq(
-            clientStateFeed.compactionKey,
-            JSON.stringify(['THREAD_CONTENT_HEAD', mirror.id]),
+    const clientFeedBefore = await vi.waitFor(
+      async () => {
+        const head = await appB.database.query.accountThreadState.findFirst({
+          where: and(
+            eq(accountThreadState.accountId, bobLocalIdB),
+            eq(accountThreadState.threadId, mirror.id),
           ),
-        ),
-      });
+          columns: {
+            threadFeedId: true,
+            messageEndSeq: true,
+            tombstoneEndSeq: true,
+            unreadCount: true,
+            previewSeqs: true,
+            lastMentionSeq: true,
+          },
+        });
+        expect(head?.messageEndSeq).toBe(beforeRestart.latestLocalSeq);
+        return head!;
+      },
+      { timeout: 15_000, interval: 100 },
+    );
 
     await appB.stop();
     const durableWhileStopped =
@@ -828,14 +835,19 @@ describe('federation reverse thread rounds (two nodes)', () => {
         expect(restored.localState).toBe('READY');
     }
     expect(
-      await appB.database.query.clientStateFeed.findFirst({
+      await appB.database.query.accountThreadState.findFirst({
         where: and(
-          eq(clientStateFeed.userId, bobLocalIdB),
-          eq(
-            clientStateFeed.compactionKey,
-            JSON.stringify(['THREAD_CONTENT_HEAD', mirror.id]),
-          ),
+          eq(accountThreadState.accountId, bobLocalIdB),
+          eq(accountThreadState.threadId, mirror.id),
         ),
+        columns: {
+          threadFeedId: true,
+          messageEndSeq: true,
+          tombstoneEndSeq: true,
+          unreadCount: true,
+          previewSeqs: true,
+          lastMentionSeq: true,
+        },
       }),
     ).toEqual(clientFeedBefore);
   }, 120_000);
@@ -1027,6 +1039,11 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .send({ groupId: mirror.id });
       expect(left.body.code).toBe(BusinessCode.OK);
       await waitForAcceptedDurableTask(appB.database, left.body);
+      expect(
+        await appB.database.query.messageThread.findFirst({
+          where: eq(messageThread.id, mirror.id),
+        }),
+      ).toMatchObject({ federationRoundsEnabled: false });
       await vi.waitFor(
         async () => {
           expect(
@@ -1081,9 +1098,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
-        expect(state!.authorizationEpoch).toBeGreaterThan(
-          stateBeforeReauthorization!.authorizationEpoch,
-        );
+        const thread = await appB.database.query.messageThread.findFirst({
+          where: eq(messageThread.id, mirror.id),
+          columns: { authorizationEpoch: true, federationRoundsEnabled: true },
+        });
+        expect(thread?.federationRoundsEnabled).toBe(true);
+        expect(
+          state!.authorizationEpoch,
+          JSON.stringify({
+            threadEpoch: thread?.authorizationEpoch,
+            previousStateEpoch: stateBeforeReauthorization!.authorizationEpoch,
+            currentStateEpoch: state!.authorizationEpoch,
+            messageTargetSeq: state!.messageTargetSeq,
+            deletionTargetSeq: state!.deletionTargetSeq,
+            deletionRecoveryThroughSeq: state!.deletionRecoveryThroughSeq,
+          }),
+        ).toBeGreaterThan(stateBeforeReauthorization!.authorizationEpoch);
         expect(state!.deletionRecoveryThroughSeq).not.toBeNull();
         expect(state!.deletionRecoveryMaxMessageSeq).toBe(
           stateBeforeReauthorization!.messageProcessedThroughSeq,
@@ -1121,7 +1151,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
           }),
         ]);
         expect(origin).toBeDefined();
-        expect(mirrored).toMatchObject({ isDeleted: false });
+        const progress = mirrored
+          ? undefined
+          : {
+              thread: await appB.database.query.messageThread.findFirst({
+                where: eq(messageThread.id, mirror.id),
+              }),
+              sync: await appB.database.query.federationThreadSyncState.findFirst(
+                { where: eq(federationThreadSyncState.threadId, mirror.id) },
+              ),
+            };
+        expect(
+          mirrored,
+          JSON.stringify(progress, (_, value) =>
+            typeof value === 'bigint' ? value.toString() : value,
+          ),
+        ).toMatchObject({ isDeleted: false });
         return origin!;
       },
       { timeout: 20_000, interval: 100 },
@@ -1305,31 +1350,31 @@ describe('federation reverse thread rounds (two nodes)', () => {
   }, 180_000);
 
   it('marks only an unavailable reverse gap terminal and keeps forward delivery live', async () => {
-    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
-      'unavailable-reverse-gap',
-    );
-
-    await appB.stop();
     const historicalTexts = [
       'unavailable-history-one',
       'unavailable-history-two',
       'unavailable-history-three',
     ];
-    for (const text of historicalTexts) {
-      const sent = await request(appA.baseUrl)
-        .post('/api/v1/send-message')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({
-          threadId: originThreadId,
-          content: text,
-          contentType: ContentType.PURE_TEXT,
-          clientMessageId: randomUUID(),
-        });
-      expect(sent.body.code).toBe(BusinessCode.OK);
-    }
-
     proxy.blockReverseMessages(true);
-    await appB.start();
+    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
+      'unavailable-reverse-gap',
+      async (threadId) => {
+        // The authorization snapshot must include the history to backfill.
+        for (const text of historicalTexts) {
+          const sent = await request(appA.baseUrl)
+            .post('/api/v1/send-message')
+            .set('Authorization', `Bearer ${tokenA}`)
+            .send({
+              threadId,
+              content: text,
+              contentType: ContentType.PURE_TEXT,
+              clientMessageId: randomUUID(),
+            });
+          expect(sent.body.code).toBe(BusinessCode.OK);
+        }
+      },
+    );
+
     const active = await vi.waitFor(
       async () => {
         expect(proxy.blockedReverseMessageCount()).toBeGreaterThan(0);
@@ -1343,6 +1388,18 @@ describe('federation reverse thread rounds (two nodes)', () => {
             where: eq(federationThreadHistoryGap.id, state!.activeGapId!),
           });
         expect(gap?.recoverable).toBe(true);
+        // Forward and reverse rounds are independent; wait for the authorized tail.
+        expect(
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, mirrorThreadId),
+              eq(
+                message.content,
+                JSON.stringify({ text: historicalTexts.at(-1)! }),
+              ),
+            ),
+          }),
+        ).toMatchObject({ localState: 'READY' });
         return { state: state!, gap: gap! };
       },
       { timeout: 20_000, interval: 100 },

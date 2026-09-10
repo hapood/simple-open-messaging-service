@@ -186,22 +186,6 @@
   }
 }
 
-.thread-item.unread-syncing .unread-badge,
-.thread-item.unread-syncing .mention-unread-badge {
-  animation: unread-badge-breathe 900ms ease-in-out infinite alternate;
-}
-
-@keyframes unread-badge-breathe {
-  from {
-    opacity: 0.45;
-    transform: scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
 .thread-item.muted .unread-badge {
   background: var(--app-bg-muted);
   color: var(--app-text-muted);
@@ -249,10 +233,6 @@
 @media (prefers-reduced-motion: reduce) {
   .thread-item.tl-flip-move,
   .thread-item.tl-flip-enter {
-    animation: none;
-  }
-  .thread-item.unread-syncing .unread-badge,
-  .thread-item.unread-syncing .mention-unread-badge {
     animation: none;
   }
 }

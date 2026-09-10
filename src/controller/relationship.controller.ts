@@ -86,7 +86,7 @@ export class RelationshipController {
         });
       const { taskId } = await this.durableTasks.enqueueTask({
         scope: { type: 'GROUP', address },
-        taskType: DurableTaskType.REVOKE_FEDERATED_GROUP_JOIN,
+        taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
         actorUserId: me,
         payload: address,
       });
@@ -133,10 +133,7 @@ export class RelationshipController {
               { account: localTarget.account, domain: localTarget.domain },
             ],
           },
-          taskType:
-            relationship.status === 'OUTGOING_PENDING'
-              ? DurableTaskType.REVOKE_RELATIONSHIP_REQUEST
-              : DurableTaskType.REJECT_RELATIONSHIP_REQUEST,
+          taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
           actorUserId: me,
           payload: { peerUserId: localTarget.id },
         });
@@ -163,7 +160,7 @@ export class RelationshipController {
               { account, domain },
             ],
           },
-          taskType: DurableTaskType.REVOKE_ADDRESSED_RELATIONSHIP_REQUEST,
+          taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
           actorUserId: me,
           payload: { account, domain },
         });
@@ -205,7 +202,7 @@ export class RelationshipController {
           { account: target.account, domain: target.domain },
         ],
       },
-      taskType: DurableTaskType.END_FRIENDSHIP,
+      taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
       actorUserId: me,
       payload: { threadId },
     });

@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 
@@ -23,41 +24,24 @@ function transaction(options?: {
         {
           threadType: options?.threadType ?? 'P2P',
           groupAccount: options?.threadType === 'GROUP' ? '!group' : null,
-          groupDomain:
-            options?.threadType === 'GROUP' ? 'peer.test' : null,
+          groupDomain: options?.threadType === 'GROUP' ? 'peer.test' : null,
           groupNamespaceId: options?.threadType === 'GROUP' ? 7 : null,
         },
       ],
     })
     .mockResolvedValueOnce({ rows: [route] });
-  let selectIndex = 0;
-  const select = vi.fn(() => {
-    selectIndex += 1;
-    if (selectIndex === 1) {
-      return {
-        from: vi.fn(() => ({
-          where: vi.fn().mockResolvedValue([
-            {
-              value:
-                options && 'messageEndSeq' in options
-                  ? options.messageEndSeq
-                  : 12,
-            },
-          ]),
-        })),
-      };
-    }
-    return {
-      from: vi.fn(() => ({
-        innerJoin: vi.fn(() => ({
-          where: vi
-            .fn()
-            .mockResolvedValue([{ value: options?.tombstoneEndSeq ?? 4 }]),
-        })),
-      })),
-    };
+  execute.mockResolvedValueOnce({
+    rows: [
+      {
+        messageEndSeq:
+          options && 'messageEndSeq' in options
+            ? (options.messageEndSeq ?? route.messageAccessAfterSeq)
+            : 12,
+        tombstoneEndSeq: options?.tombstoneEndSeq ?? 4,
+      },
+    ],
   });
-  return { execute, select };
+  return { execute };
 }
 
 describe('FederationThreadContentHeadService', () => {
@@ -72,6 +56,12 @@ describe('FederationThreadContentHeadService', () => {
 
     await service.refreshInTx(tx as never, 'peer.test', 7, 31);
 
+    expect(tx.execute).toHaveBeenCalledTimes(3);
+    const snapshotSql = new PgDialect().sqlToQuery(
+      tx.execute.mock.calls[2][0],
+    ).sql;
+    expect(snapshotSql).toContain('MAX(m.seq)');
+    expect(snapshotSql).toContain('MAX(d."deletionSeq")');
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
         peerDomain: 'peer.test',
@@ -124,17 +114,25 @@ describe('FederationThreadContentHeadService', () => {
     ]);
   });
 
-  it('does not create a projection when both the message end and floor are zero', async () => {
+  it('publishes an empty authorized thread', async () => {
     const stateFeed = { writeManyInTx: vi.fn() };
     const service = new FederationThreadContentHeadService(
       {} as never,
       stateFeed as never,
       {} as never,
     );
-    const tx = transaction({ messageEndSeq: null, messageAccessAfterSeq: 0 });
+    const tx = transaction({
+      messageEndSeq: null,
+      messageAccessAfterSeq: 0,
+      tombstoneEndSeq: 0,
+    });
 
     await service.refreshInTx(tx as never, 'peer.test', 7, 31);
 
-    expect(stateFeed.writeManyInTx).not.toHaveBeenCalled();
+    expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
+      expect.objectContaining({
+        body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+      }),
+    ]);
   });
 });

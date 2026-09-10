@@ -8,7 +8,6 @@ import { SendLocalRelationshipRequestTaskHandler } from './send-local-relationsh
 function task(payload: Record<string, unknown> = {}): DurableTask {
   return {
     id: 1n,
-    parentTaskId: null,
     kind: 'MUTATION',
     scopeType: 'USER_PAIR',
     scopeKey: 'pair-key',
@@ -17,7 +16,6 @@ function task(payload: Record<string, unknown> = {}): DurableTask {
     payload: { targetUserId: 9, note: 'hello', ...payload },
     checkpoint: {},
     coalescingKey: null,
-    supersededByTaskId: null,
     status: 'PROCESSING',
     resultCode: null,
     lastError: null,

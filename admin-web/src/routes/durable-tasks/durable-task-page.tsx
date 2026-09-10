@@ -132,9 +132,6 @@ export function DurableTaskPage() {
                     <div className="font-mono text-xs">{task.taskType}</div>
                     <div className="text-xs text-muted-foreground">
                       #{task.id}
-                      {task.parentTaskId
-                        ? ` · parent #${task.parentTaskId}`
-                        : ''}
                     </div>
                   </TableCell>
                   <TableCell className="max-w-80 align-top">

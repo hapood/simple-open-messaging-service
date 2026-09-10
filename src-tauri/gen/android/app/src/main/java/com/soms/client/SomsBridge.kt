@@ -58,13 +58,7 @@ object SomsBridge {
         var lastError: String? = null
     }
 
-    /** A thread id captured from a notification tap before the webview exists (cold start), consumed by
-     *  MainActivity.onWebViewCreate once the webview is ready. Warm-start taps go straight to
-     *  UiBridge.eval(window.__SOMS_DEEP_LINK__) and never touch this. */
-    object DeepLink {
-        @Volatile
-        var pendingThreadId: String? = null
-    }
+    val DeepLink = PendingThreadNavigation()
 
     data class SharedText(val id: String, val text: String)
 

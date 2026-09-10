@@ -1,6 +1,5 @@
 import { Injectable, inject } from '@angular/core';
 import { UserService } from './user.service';
-import { GroupService } from './group.service';
 import { ThreadRepository } from './thread-store.service';
 import { User } from './model';
 
@@ -32,11 +31,7 @@ export interface UnreadEntryBoundary {
 export class ConversationListService {
   private readonly repo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
-  private readonly groupService = inject(GroupService);
 
-  /** Viewport-dwelled HWM pending until the conversation closes; later positions fold to MAX. */
-  private readonly pendingMarkRead = new Map<number, number>();
-  private readonly markReadInFlight = new Set<number>();
   private readonly unreadEntryBoundaries = new Map<
     number,
     UnreadEntryBoundary
@@ -44,61 +39,20 @@ export class ConversationListService {
 
   constructor() {}
 
-  /** Send the pending maximum for one thread. A later stable read while this request is in flight only raises
-   *  pending; completion drains that newest maximum. Failure keeps it queued for the next stable read/open. */
-  private flushMarkRead(threadId: number): void {
-    if (this.markReadInFlight.has(threadId)) return;
-    const seq = this.pendingMarkRead.get(threadId);
-    if (seq === undefined) return;
-    this.pendingMarkRead.delete(threadId);
-    this.markReadInFlight.add(threadId);
-    this.repo.beginReadCommit(threadId);
-    this.userService.markRead({ threadId, localReadHwm: seq }).subscribe({
-      error: () => {
-        this.markReadInFlight.delete(threadId);
-        this.pendingMarkRead.set(
-          threadId,
-          Math.max(this.pendingMarkRead.get(threadId) ?? -1, seq),
-        );
-        this.repo.finishReadCommit(threadId);
-      },
-      complete: () => {
-        this.markReadInFlight.delete(threadId);
-        if (this.pendingMarkRead.has(threadId)) this.flushMarkRead(threadId);
-      },
-    });
-  }
-
   // ── delegated data signals (the same references the repo owns) ──
   readonly items = this.repo.items;
   readonly threadSeq$ = this.repo.threadSeq$;
+  readonly threadNotifications$ = this.repo.threadNotifications$;
+  refreshBackgroundThreadFeed(userId: number): Promise<void> {
+    return this.repo.refreshBackgroundThreadFeed(userId);
+  }
   latestSeq(threadId: number): number | undefined {
     return this.repo.latestSeq(threadId);
   }
   readonly status = this.repo.status;
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
-  readonly readCommitPending = this.repo.readCommitPending;
   readonly topInserted = this.repo.topInserted;
-  /** The one persisted ClientStateFeed cursor used by foreground and away consumers. */
-  stateFeedCursor(): number {
-    return this.userService.stateFeedCursor() ?? 0;
-  }
-
-  /** The per-thread dismiss-HWM map (sent as `threadHwms` on the away fetch). Delegates to the repo. */
-  threadHwms(): Record<number, number> {
-    return this.repo.threadHwms();
-  }
-
-  /** Record a per-thread dismiss (advance that thread's HWM to `seq`). Delegates to the repo. */
-  recordThreadDismiss(c: { threadId: number; seq: number }): void {
-    this.repo.recordThreadDismiss(c);
-  }
-
-  /** Clear every per-thread dismiss-HWM (focus-regain reset). Delegates to the repo. */
-  clearThreadDismiss(): void {
-    this.repo.clearThreadDismiss();
-  }
 
   /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */
   load(opts?: { force?: boolean }) {
@@ -113,7 +67,6 @@ export class ConversationListService {
     const prev = this.repo.openThreadId();
     if (threadId === prev) return;
     if (prev !== undefined) {
-      this.flushMarkRead(prev);
       this.unreadEntryBoundaries.delete(prev);
     }
     const item = this.repo.items().find((t) => t.threadId === threadId);
@@ -123,7 +76,7 @@ export class ConversationListService {
       const cursor = this.repo.readCursorState(threadId);
       const effectiveLastReadSeq =
         cursor.effectiveLastReadSeq ?? item?.lastReadSeq ?? null;
-      // unreadCount is capped and excludes the caller's own messages, so it cannot locate the boundary.
+      // unreadCount excludes the caller's own messages, so it cannot locate the boundary.
       // The read HWM is the sole boundary authority; the scroller repairs a cleared-history miss.
       const firstUnreadSeq =
         effectiveLastReadSeq === null ? 0 : effectiveLastReadSeq + 1;
@@ -148,7 +101,6 @@ export class ConversationListService {
    *  candidate lives only in MessageThread and is deliberately not flushed by navigation. */
   close() {
     const threadId = this.repo.openThreadId();
-    if (threadId !== undefined) this.flushMarkRead(threadId);
     void this.repo.setOpenThread(undefined);
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
@@ -158,19 +110,13 @@ export class ConversationListService {
     return this.unreadEntryBoundaries.get(threadId);
   }
 
-  /** Record a stable viewport HWM locally. It is sent only when this conversation closes/switches. */
+  /** Viewport dwell supplies throttled progress; submission has no pending-read barrier. */
   markReadStable(threadId: number, seq: number): void {
-    if (this.repo.commitLocalRead(threadId, seq)) {
-      this.pendingMarkRead.set(
-        threadId,
-        Math.max(this.pendingMarkRead.get(threadId) ?? -1, seq),
-      );
-    }
-  }
-
-  /** Send the highest locally committed fully-visible cursor now. In-flight requests still coalesce by MAX. */
-  flushRead(threadId: number): void {
-    this.flushMarkRead(threadId);
+    if (!this.repo.commitLocalRead(threadId, seq)) return;
+    this.userService.markRead({ threadId, localReadHwm: seq }).subscribe({
+      error: (error) =>
+        console.warn('[thread-feed] read submission failed', error),
+    });
   }
 
   // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──

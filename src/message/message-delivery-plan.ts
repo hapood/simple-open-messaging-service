@@ -7,7 +7,6 @@ export interface FeedRecipientCandidate {
 
 export interface LiveRecipientCandidate {
   userId: number;
-  muted: boolean;
   blocked: boolean;
 }
 
@@ -23,17 +22,14 @@ export function planFeedRecipientIds(
     .map((candidate) => candidate.userId);
 }
 
-/** Pure local delivery policy. State Feed wake-ups cover every unblocked recipient; notification Push
- * additionally respects mute settings and suppresses delivery back to a message's creator. */
+/** Thread Feed and Push wake every unblocked audience member, including the
+ * sender. Mute is a client presentation preference, not a delivery filter. */
 export function planLiveDelivery(
   candidates: readonly LiveRecipientCandidate[],
-  creatorId: number | null,
 ): { wakeUserIds: number[]; pushUserIds: number[] } {
   const live = candidates.filter((candidate) => !candidate.blocked);
   return {
     wakeUserIds: live.map((candidate) => candidate.userId),
-    pushUserIds: live
-      .filter((candidate) => !candidate.muted && candidate.userId !== creatorId)
-      .map((candidate) => candidate.userId),
+    pushUserIds: live.map((candidate) => candidate.userId),
   };
 }

@@ -3,6 +3,11 @@
 }
 
 (hmr_edge) {
+	handle /push/*.js {
+		header Cache-Control "no-cache"
+		reverse_proxy 127.0.0.1:4200
+	}
+
 	@backend path /api/* /uploads/* /s2s/* /.well-known/*
 	handle @backend {
 		reverse_proxy 127.0.0.1:{args.0}

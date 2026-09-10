@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { assetUrl } from './runtime';
+import { cachedAvatarDataUrl } from './cached-avatar';
 
 /**
  * The DB-layer repository for avatar blobs — the read half of the strict 3-tier (UI ↔ repos ↔ backend)
@@ -62,26 +63,7 @@ export class AvatarRepository {
     identity: string,
     path: string,
   ): Promise<string | undefined> {
-    if (!path) return undefined;
-    if (path.startsWith('data:')) return path;
-    let blob: Blob | undefined;
-    try {
-      const record = await this.webdb.getAvatar(identity);
-      if (record?.path === path) blob = record.blob;
-    } catch {
-      return undefined;
-    }
-    if (!blob) return undefined;
-    try {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = '';
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-      }
-      return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
-    } catch {
-      return undefined;
-    }
+    return cachedAvatarDataUrl(this.webdb, identity, path);
   }
 
   /**

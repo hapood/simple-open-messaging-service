@@ -16,6 +16,8 @@ import {
 } from '../database/schema.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundAuthorizationEpochChangedError } from './federation-thread-round-error.js';
+import { applyReadPositionInTx } from '../message/thread-read-position.js';
+import { eligiblePreviewOwnerSql } from '../message/thread-preview-eligibility.js';
 
 export interface FederationReverseWindow {
   authorizationEpoch: number;
@@ -48,7 +50,36 @@ export class FederationThreadSyncStateService {
     return threadLock;
   }
 
-  static async reconcileThreadHeadInTx(
+  /** Content advertisements advance an existing authorization, never initialize it. */
+  static async updateThreadHeadInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      namespaceId: number;
+      messageTargetSeq: number;
+      deletionTargetSeq: number;
+      threadLock: ThreadContentLock;
+    },
+  ): Promise<boolean> {
+    this.assertCoordinate(params.messageTargetSeq, 'message target seq');
+    this.assertCoordinate(params.deletionTargetSeq, 'deletion target seq');
+    await requireThreadContentLockInTx(tx, params.threadId, params.threadLock);
+    const result = await tx.execute(sql`
+      UPDATE "FederationThreadSyncState" state
+      SET "messageTargetSeq" = GREATEST(state."messageTargetSeq", ${params.messageTargetSeq}),
+        "deletionTargetSeq" = GREATEST(state."deletionTargetSeq", ${params.deletionTargetSeq}),
+        "updatedAt" = CURRENT_TIMESTAMP
+      FROM "MessageThread" thread
+      WHERE state."threadId" = ${params.threadId}
+        AND state."namespaceId" = ${params.namespaceId}
+        AND thread.id = state."threadId"
+        AND state."authorizationEpoch" = thread."authorizationEpoch"
+      RETURNING state."threadId"
+    `);
+    return result.rows.length > 0;
+  }
+
+  static async reconcileRelationshipAuthorizationInTx(
     tx: DatabaseTransaction,
     params: {
       threadId: number;
@@ -122,6 +153,11 @@ export class FederationThreadSyncStateService {
           reverseEndSeq,
           messageSeqOffset,
         );
+        await this.initializeHistoryReadPositionsInTx(
+          tx,
+          params.threadId,
+          reverseEndSeq + messageSeqOffset,
+        );
       }
       await tx.insert(federationThreadSyncState).values({
         threadId: params.threadId,
@@ -187,6 +223,7 @@ export class FederationThreadSyncStateService {
       nextDeletionTargetSeq > state.deletionProcessedThroughSeq;
     let activeGapId: bigint | null = null;
     const obsoleteGapIds: bigint[] = [];
+    let historyReadBoundary: number | null = null;
     if (params.reverseEnabled) {
       const newGapStartSeq = state.messageProcessedThroughSeq + 1;
       const newGapEndSeq = nextMessageProcessedThroughSeq;
@@ -230,6 +267,7 @@ export class FederationThreadSyncStateService {
           newGapEndSeq,
           ...mergeable.map((gap) => gap.endSeq),
         );
+        historyReadBoundary = mergedEndSeq + messageSeqOffset;
         const exact = mergeable.find(
           (gap) =>
             gap.startSeq === mergedStartSeq && gap.endSeq === mergedEndSeq,
@@ -336,11 +374,47 @@ export class FederationThreadSyncStateService {
           )})
       `);
     }
+    if (historyReadBoundary !== null) {
+      await this.initializeHistoryReadPositionsInTx(
+        tx,
+        params.threadId,
+        historyReadBoundary,
+      );
+    }
     return {
       created: false,
       epochChanged: true,
       reverseRequired: activeGapId !== null,
     };
+  }
+
+  /** The caller has reserved this window's local starting position under the
+   * content lock. Do not derive initialization from whichever gap is rightmost. */
+  private static async initializeHistoryReadPositionsInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    initialReadSeq: number,
+  ): Promise<void> {
+    this.assertCoordinate(initialReadSeq, 'initial local read seq');
+    const owners = await tx.execute<{
+      accountId: number;
+      initialReadSeq: number;
+    }>(sql`
+      SELECT s."accountId",
+        LEAST(${initialReadSeq}, COALESCE(s."messageVisibleThroughSeq", ${initialReadSeq}))::integer AS "initialReadSeq"
+      FROM "AccountThreadState" s
+      JOIN "Account" a ON a.id = s."accountId"
+      JOIN "MessageThread" t ON t.id = s."threadId"
+      WHERE t.id = ${threadId}
+        AND ${eligiblePreviewOwnerSql(sql`s`, sql`t`, sql`a`)}
+      ORDER BY s."accountId"
+      FOR UPDATE OF s`);
+    for (const owner of owners.rows) {
+      await applyReadPositionInTx(tx, owner.accountId, {
+        threadId,
+        localReadHwm: owner.initialReadSeq,
+      });
+    }
   }
 
   static async advanceMessageProcessedThroughInTx(

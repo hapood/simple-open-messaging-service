@@ -309,6 +309,7 @@ export const account = pgTable(
   {
     id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
+    kind: varchar({ length: 16 }).default('USER').notNull(),
     domain: varchar({ length: 63 }).default('local').notNull(),
     namespaceId: integer().default(0).notNull(),
     defaultProfileRev: integer().default(0).notNull(),
@@ -329,6 +330,10 @@ export const account = pgTable(
     check(
       'Account_local_identity_check',
       sql`${table.domain} = 'local' AND ${table.namespaceId} = 0`,
+    ),
+    check(
+      'Account_kind_check',
+      sql`(${table.kind} = 'USER' AND ${table.account} <> '$system') OR (${table.kind} = 'SYSTEM' AND ${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
     ),
     check('Account_threadFeedEndId_check', sql`${table.threadFeedEndId} >= 0`),
     unique('Account_account_key').on(table.account),
@@ -2011,6 +2016,8 @@ export const relationshipIntent = pgTable(
     status: relationshipIntentStatus().notNull(),
     /** Immutable author profile reference retained for the current request flow. */
     profileRev: integer().default(0).notNull(),
+    messageEndSeq: integer().notNull(),
+    tombstoneEndSeq: integer().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -2032,6 +2039,10 @@ export const relationshipIntent = pgTable(
     check(
       'RelationshipIntent_authorSide_check',
       sql`${table.authorSide} IN ('A', 'B')`,
+    ),
+    check(
+      'RelationshipIntent_head_check',
+      sql`${table.messageEndSeq} >= 0 AND ${table.tombstoneEndSeq} >= 0`,
     ),
     check('RelationshipIntent_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
@@ -2058,6 +2069,7 @@ export const relationshipPair = pgTable(
     endpointBNamespaceId: integer().default(0).notNull(),
     threadId: integer(),
     active: boolean().default(false).notNull(),
+    established: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2866,11 +2878,17 @@ export const callHistory = pgTable(
   'CallHistory',
   {
     key: text().primaryKey(),
-    threadId: integer().notNull().references(() => messageThread.id, { onDelete: 'cascade' }),
+    threadId: integer()
+      .notNull()
+      .references(() => messageThread.id, { onDelete: 'cascade' }),
     snapshot: jsonb().$type<Record<string, unknown>>().notNull(),
     revision: integer().notNull(),
     terminal: boolean().default(false).notNull(),
     messageSeq: integer(),
   },
-  (table) => [index('CallHistory_pending_idx').on(table.terminal).where(sql`${table.messageSeq} IS NULL`)],
+  (table) => [
+    index('CallHistory_pending_idx')
+      .on(table.terminal)
+      .where(sql`${table.messageSeq} IS NULL`),
+  ],
 );

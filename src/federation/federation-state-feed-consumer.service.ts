@@ -1,3 +1,4 @@
+import { FederationReverseRevokeService } from './federation-reverse-revoke.service.js';
 import { groupStateSql } from '../group/group-state.js';
 import {
   groupState as groupStateTable,
@@ -8,7 +9,7 @@ import {
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../user/account-address.js';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -94,6 +95,9 @@ export type StatePageApplyResult = StatePageEffect;
 /** Applies validated peer State Feed pages inside the pull worker's transaction. */
 @Injectable()
 export class FederationStateFeedConsumerService {
+  @Inject(FederationReverseRevokeService)
+  private readonly reverseRevokes!: FederationReverseRevokeService;
+
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationStateFeedConsumerService.name);
 
@@ -209,6 +213,8 @@ export class FederationStateFeedConsumerService {
         ) {
           const body = item.body as {
             status?: unknown;
+            messageEndSeq?: unknown;
+            tombstoneEndSeq?: unknown;
             profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
@@ -219,6 +225,14 @@ export class FederationStateFeedConsumerService {
             !['REQUESTED', 'ACCEPTED', 'REVOKED'].includes(
               String(body.status),
             ) ||
+            (body.status !== 'REVOKED' &&
+              (!Number.isSafeInteger(body.messageEndSeq) ||
+                Number(body.messageEndSeq) < 0 ||
+                Number(body.messageEndSeq) > FEDERATION_THREAD_SEQUENCE_MAX ||
+                !Number.isSafeInteger(body.tombstoneEndSeq) ||
+                Number(body.tombstoneEndSeq) < 0 ||
+                Number(body.tombstoneEndSeq) >
+                  FEDERATION_THREAD_SEQUENCE_MAX)) ||
             !Number.isSafeInteger(body.profileRev) ||
             Number(body.profileRev) < 0 ||
             Number(body.profileRev) > 2_147_483_647 ||
@@ -241,6 +255,8 @@ export class FederationStateFeedConsumerService {
                 ![
                   'status',
                   'profileRev',
+                  'messageEndSeq',
+                  'tombstoneEndSeq',
                   'note',
                   'requestedAt',
                   'expiresAt',
@@ -327,12 +343,34 @@ export class FederationStateFeedConsumerService {
                 : body.status === 'REVOKED'
                   ? 'REVOKED'
                   : 'REQUESTED',
+            messageEndSeq:
+              body.status === 'REVOKED'
+                ? undefined
+                : Number(body.messageEndSeq),
+            tombstoneEndSeq:
+              body.status === 'REVOKED'
+                ? undefined
+                : Number(body.tombstoneEndSeq),
             profileRev: Number(body.profileRev),
             note: body.note,
             requestedAt,
             expiresAt,
             origin: peerDomain,
           });
+          if (body.status === 'REVOKED' && effect.changed)
+            await this.reverseRevokes.enqueueP2PInTx(
+              tx,
+              localUser,
+              remoteIdentity,
+            );
+          if (effect.threadId !== undefined && body.status !== 'REVOKED') {
+            threadRoundWakes.push({
+              threadId: effect.threadId,
+              peerDomain,
+              namespaceId,
+              direction: 'both',
+            });
+          }
           if (effect.localStateRevision !== undefined) {
             const localDirection = (
               await this.relationshipIntents.readP2PRelationshipInTx(
@@ -380,6 +418,8 @@ export class FederationStateFeedConsumerService {
             );
           const body = item.body as {
             status?: unknown;
+            messageEndSeq?: unknown;
+            tombstoneEndSeq?: unknown;
             profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
@@ -389,6 +429,14 @@ export class FederationStateFeedConsumerService {
             !['REQUESTED', 'ACCEPTED', 'REVOKED'].includes(
               String(body.status),
             ) ||
+            (body.status !== 'REVOKED' &&
+              (!Number.isSafeInteger(body.messageEndSeq) ||
+                Number(body.messageEndSeq) < 0 ||
+                Number(body.messageEndSeq) > FEDERATION_THREAD_SEQUENCE_MAX ||
+                !Number.isSafeInteger(body.tombstoneEndSeq) ||
+                Number(body.tombstoneEndSeq) < 0 ||
+                Number(body.tombstoneEndSeq) >
+                  FEDERATION_THREAD_SEQUENCE_MAX)) ||
             !Number.isSafeInteger(body.profileRev) ||
             Number(body.profileRev) < 0 ||
             Number(body.profileRev) > 2_147_483_647 ||
@@ -405,6 +453,8 @@ export class FederationStateFeedConsumerService {
                 ![
                   'status',
                   'profileRev',
+                  'messageEndSeq',
+                  'tombstoneEndSeq',
                   'note',
                   'requestedAt',
                   'expiresAt',
@@ -478,17 +528,55 @@ export class FederationStateFeedConsumerService {
               peerDomain,
               namespaceId,
             );
-            await this.relationshipIntents.applyRemoteGroupIntentInTx(tx, {
-              groupId: shell.groupId,
-              memberUserId: localMember.id,
-              threadId: shell.threadId,
-              author: 'GROUP',
-              status: storageStatus,
-              profileRev: Number(body.profileRev),
-              note: body.note,
-              requestedAt,
-              expiresAt,
-            });
+            const membership =
+              await this.relationshipIntents.applyRemoteGroupIntentInTx(tx, {
+                groupId: shell.groupId,
+                memberUserId: localMember.id,
+                threadId: shell.threadId,
+                author: 'GROUP',
+                status: storageStatus,
+                messageEndSeq:
+                  body.status === 'REVOKED'
+                    ? undefined
+                    : Number(body.messageEndSeq),
+                tombstoneEndSeq:
+                  body.status === 'REVOKED'
+                    ? undefined
+                    : Number(body.tombstoneEndSeq),
+                profileRev: Number(body.profileRev),
+                note: body.note,
+                requestedAt,
+                expiresAt,
+              });
+            await this.stateFeed.lockTargetsInTx(tx, [
+              { peerDomain, namespaceId },
+            ]);
+            if (membership.shouldBeActive) {
+              await this.groupRelationships.syncActiveInTx(tx, {
+                threadId: shell.threadId,
+                groupId: shell.groupId,
+                memberUserId: localMember.id,
+                active: true,
+                hostedLocally: false,
+              });
+              if (membership.publishAccepted) {
+                const confirmation =
+                  await this.relationshipMutations.writeMemberRelationshipIntentInTx(
+                    tx,
+                    shell.threadId,
+                    localMember.id,
+                    'ACCEPTED',
+                    clientFeedUpdates,
+                  );
+                statePushDomains.push(...confirmation.keys());
+              }
+              threadRoundWakes.push({
+                threadId: shell.threadId,
+                peerDomain,
+                namespaceId,
+                direction: 'both',
+              });
+            }
             if (Number(body.profileRev) > 0) {
               profileResolutions.push({
                 userId: localMember.id,
@@ -590,10 +678,28 @@ export class FederationStateFeedConsumerService {
               threadId: relationshipThread.id,
               author: inviteDirection ? 'GROUP' : 'MEMBER',
               status: storageStatus,
+              messageEndSeq:
+                body.status === 'REVOKED'
+                  ? undefined
+                  : Number(body.messageEndSeq),
+              tombstoneEndSeq:
+                body.status === 'REVOKED'
+                  ? undefined
+                  : Number(body.tombstoneEndSeq),
               profileRev: Number(body.profileRev),
               note: body.note,
               requestedAt,
               expiresAt,
+            });
+          if (storageStatus === 'REVOKED' && membership.changed)
+            await this.reverseRevokes.enqueueGroupInTx(tx, {
+              threadId: relationshipThread.id,
+              group: {
+                account: groupState.account,
+                domain: inviteDirection ? peerDomain : 'local',
+              },
+              memberUserId: member.id,
+              author: inviteDirection ? 'MEMBER' : 'GROUP',
             });
           // The group mutation has acquired its business scope. Reserve the peer
           // allocator before request projections or system messages touch Account;
@@ -663,6 +769,12 @@ export class FederationStateFeedConsumerService {
               memberUserId: localMember.id,
               active: true,
               hostedLocally: false,
+            });
+            threadRoundWakes.push({
+              threadId: thread.id,
+              peerDomain,
+              namespaceId,
+              direction: 'both',
             });
             if (membership.publishAccepted) {
               const confirmation =
@@ -967,7 +1079,7 @@ export class FederationStateFeedConsumerService {
           };
           if (
             !Number.isSafeInteger(body.messageEndSeq) ||
-            Number(body.messageEndSeq) < 1 ||
+            Number(body.messageEndSeq) < 0 ||
             Number(body.messageEndSeq) > FEDERATION_THREAD_SEQUENCE_MAX ||
             !Number.isSafeInteger(body.tombstoneEndSeq) ||
             Number(body.tombstoneEndSeq) < 0 ||
@@ -1013,20 +1125,24 @@ export class FederationStateFeedConsumerService {
           );
           if (target === null || target.threadId !== threadLock.threadId)
             continue;
-          const merged =
-            await FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
+          const updated =
+            await FederationThreadSyncStateService.updateThreadHeadInTx(tx, {
               threadId: target.threadId,
               namespaceId,
               messageTargetSeq: Number(body.messageEndSeq),
               deletionTargetSeq: Number(body.tombstoneEndSeq),
-              reverseEnabled: target.reverseEnabled,
               threadLock,
             });
+          if (!updated) {
+            throw new Error(
+              'authorized thread has no initialized current-epoch synchronization state',
+            );
+          }
           threadRoundWakes.push({
             threadId: target.threadId,
             peerDomain,
             namespaceId,
-            direction: merged.reverseRequired ? 'both' : 'forward',
+            direction: 'forward',
           });
         } else
           throw new PermanentFederationItemError(

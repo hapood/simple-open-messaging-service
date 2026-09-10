@@ -1,9 +1,6 @@
+import { relationshipTaskAuthorUserId } from '../relationship/relationship-task-author.js';
 import {
-  forwardRef,
-  Inject,
   Injectable,
-  Logger,
-  Optional,
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
@@ -15,7 +12,6 @@ import type {
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
 import { FEDERATION_STATE_FEED_PUSH } from '../federation/federation-state-feed.events.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 
 @Injectable()
@@ -23,19 +19,12 @@ export class EndFriendshipTaskHandler
   implements DurableTaskHandler, OnModuleInit, OnModuleDestroy
 {
   readonly taskType = DurableTaskType.END_FRIENDSHIP;
-  private readonly logger = new Logger(EndFriendshipTaskHandler.name);
   private unregister?: () => void;
 
   constructor(
     private readonly dispatcher: DurableTaskDispatcherService,
     private readonly participants: AccountThreadStateService,
     private readonly events: EventEmitter2,
-    @Optional()
-    @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<
-      MessageFanoutService,
-      'dispatchToUsers'
-    >,
   ) {}
 
   onModuleInit(): void {
@@ -47,18 +36,16 @@ export class EndFriendshipTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
-    const { actorUserId, threadId } = readTask(task);
-    const ended = await this.participants.endP2P(threadId, actorUserId);
+    const { actorUserId, threadId, expectedAuthorizationEpoch } =
+      readTask(task);
+    const ended = await this.participants.endP2P(
+      threadId,
+      actorUserId,
+      expectedAuthorizationEpoch,
+    );
 
     for (const domain of ended.statePeers) {
       this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain: domain });
-    }
-    if (ended.systemMessage && this.messageFanout) {
-      void this.messageFanout
-        .dispatchToUsers(ended.systemMessage, ended.localRecipientIds)
-        .catch((error: unknown) =>
-          this.logger.warn('friendship-end message wake failed', error),
-        );
     }
   }
 }
@@ -66,6 +53,7 @@ export class EndFriendshipTaskHandler
 function readTask(task: DurableTask): {
   actorUserId: number;
   threadId: number;
+  expectedAuthorizationEpoch?: number;
 } {
   if (task.scopeType !== 'USER_PAIR') {
     throw new Error('end-friendship task has the wrong scope type');
@@ -74,11 +62,21 @@ function readTask(task: DurableTask): {
     throw new Error('end-friendship task has no actor');
   }
   const { threadId } = task.payload;
+  const expectedAuthorizationEpoch = task.payload.expectedAuthorizationEpoch;
+  if (
+    expectedAuthorizationEpoch !== undefined &&
+    (!Number.isSafeInteger(expectedAuthorizationEpoch) ||
+      (expectedAuthorizationEpoch as number) < 0)
+  )
+    throw new Error('end-friendship task has an invalid authorization epoch');
   if (!Number.isSafeInteger(threadId) || (threadId as number) < 1) {
     throw new Error('end-friendship task has an invalid thread ID');
   }
   return {
-    actorUserId: task.actorUserId,
+    actorUserId: relationshipTaskAuthorUserId(task),
     threadId: threadId as number,
+    expectedAuthorizationEpoch: expectedAuthorizationEpoch as
+      | number
+      | undefined,
   };
 }

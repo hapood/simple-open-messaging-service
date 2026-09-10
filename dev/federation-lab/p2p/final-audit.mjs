@@ -634,7 +634,22 @@ export function compareFederationSnapshot({
               row.originSeq === operation.result.originSeq &&
               messageSignature(node, row).creator === operation.actor,
           );
-          if (!message || Boolean(message.isDeleted) !== withdrawn)
+          const absentWithdrawal =
+            !message &&
+            withdrawn &&
+            thread &&
+            permitsAbsentWithdrawal({
+              nodeName,
+              thread,
+              messages: p2pMessages,
+              key: pair,
+              actor: operation.actor,
+              authorSeq: operation.result.seq,
+            });
+          if (
+            (!message && !absentWithdrawal) ||
+            (message && Boolean(message.isDeleted) !== withdrawn)
+          )
             failures.push({
               kind: 'P2P_MESSAGE_EFFECT',
               pair,

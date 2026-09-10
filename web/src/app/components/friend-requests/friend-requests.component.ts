@@ -806,6 +806,7 @@ export class FriendRequestsComponent implements OnDestroy {
       let subscription!: Subscription;
       subscription = this.profileResolutions
         .resolve({
+          type: 'EXACT',
           account: request.account,
           domain: request.domain,
           rev: request.profileRev,

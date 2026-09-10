@@ -112,7 +112,6 @@ function createService(
   tx: ReturnType<typeof createTx>,
   federationOverrides: object,
   messages?: object,
-  messageFanout?: object,
   authoritativeGroupMetaOverrides: object = {},
 ) {
   const database = {
@@ -142,15 +141,15 @@ function createService(
     finalizeInTx: vi.fn().mockResolvedValue(undefined),
     ...authoritativeGroupMetaOverrides,
   };
-  return new GroupService(
+  const service = new GroupService(
     database as never,
     federation as never,
     federation as never,
     clientStateFeed as never,
     authoritativeGroupMeta as never,
     messages as never,
-    messageFanout as never,
   );
+  return service;
 }
 
 describe('GroupService membership lifecycle', () => {
@@ -249,7 +248,6 @@ describe('GroupService membership lifecycle', () => {
       tx,
       { reconcileGroupJoinRequestManagerInTx },
       undefined,
-      undefined,
       { applyRoleFactsInTx, finalizeInTx },
     );
 
@@ -321,7 +319,7 @@ describe('GroupService membership lifecycle', () => {
     });
     const applyProfileFactInTx = vi.fn().mockResolvedValue(undefined);
     const finalizeInTx = vi.fn().mockResolvedValue(undefined);
-    const service = createService(tx, {}, undefined, undefined, {
+    const service = createService(tx, {}, undefined, {
       applyProfileFactInTx,
       finalizeInTx,
     });
@@ -392,7 +390,7 @@ describe('GroupService membership lifecycle', () => {
     });
     const applyProfileFactInTx = vi.fn().mockResolvedValue(undefined);
     const finalizeInTx = vi.fn().mockResolvedValue(undefined);
-    const service = createService(tx, {}, undefined, undefined, {
+    const service = createService(tx, {}, undefined, {
       applyProfileFactInTx,
       finalizeInTx,
     });
@@ -841,7 +839,6 @@ describe('GroupService membership lifecycle', () => {
         },
         { rows: [{ authorized: true }] },
         { rows: [{ authorized: true }] },
-        { rows: [{ userId: 1 }, { userId: 2 }] },
         {
           rows: [
             {
@@ -869,8 +866,7 @@ describe('GroupService membership lifecycle', () => {
         .fn()
         .mockResolvedValue({ message: systemMessage }),
     };
-    const messageFanout = { dispatchToUsers: vi.fn() };
-    const service = createService(tx, {}, messages, messageFanout);
+    const service = createService(tx, {}, messages);
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
@@ -882,21 +878,8 @@ describe('GroupService membership lifecycle', () => {
       2,
       {
         actorUserId: 1,
-        markReadUserId: 1,
-        recipientUserIds: [1, 2],
-        visibleThroughUserIds: [
-          expect.objectContaining({
-            account: 'member',
-            domain: 'local',
-            namespaceId: 0,
-          }),
-        ],
         threadLock: { threadId: 10 },
       },
-    );
-    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
-      systemMessage,
-      [1, 2],
     );
 
     await expect(
@@ -958,17 +941,14 @@ describe('GroupService membership lifecycle', () => {
         message: { threadId: 10, seq: 9, creator: null, createdAt: new Date() },
       }),
     };
-    const messageFanout = { dispatchToUsers: vi.fn() };
     const service = createService(
       tx,
       { writeGroupRelationshipIntentInTx },
       messages,
-      messageFanout,
     );
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).rejects.toBe(rollback);
-    expect(messageFanout.dispatchToUsers).not.toHaveBeenCalled();
   });
 });

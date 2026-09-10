@@ -73,6 +73,7 @@ export function summarizeCoverage(log) {
       log.friendshipCoverage ?? {},
     ).reduce((sum, entry) => sum + Math.max(0, entry.activations - 1), 0),
     referenceWithdrawal: log.referenceScenario ?? { status: 'NOT_COVERED' },
+    forwardRelay: log.forwardRelayScenario ?? { status: 'NOT_COVERED' },
     observedUnavailable: log.operations.filter(
       ({ status }) => status === 'OBSERVED_UNAVAILABLE',
     ).length,

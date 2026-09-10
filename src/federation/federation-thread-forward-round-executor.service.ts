@@ -1,8 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   type ForwardWireBundle,
@@ -46,11 +46,11 @@ interface BufferedForwardTombstonePage {
 @Injectable()
 export class FederationThreadForwardRoundExecutorService {
   constructor(
-    private readonly database: DatabaseService,
     private readonly rounds: FederationThreadForwardRoundService,
     private readonly threadResources: FederationThreadResourceClient,
     private readonly federation: FederationService,
     private readonly sources: FederationThreadSourceService,
+    private readonly database: DatabaseService,
   ) {}
 
   async runMessages(
@@ -88,6 +88,10 @@ export class FederationThreadForwardRoundExecutorService {
                 threadId,
                 authorizationEpoch,
               );
+            await FederationThreadSourceService.assertAudienceInTx(
+              threadLock,
+              source,
+            );
             if (messageBatch) {
               const publication =
                 await this.federation.applyForwardMessagePageInTransaction(tx, {
@@ -147,6 +151,10 @@ export class FederationThreadForwardRoundExecutorService {
                 threadId,
                 authorizationEpoch,
               );
+            await FederationThreadSourceService.assertAudienceInTx(
+              threadLock,
+              source,
+            );
             if (tombstoneBatch) {
               const publication =
                 await this.federation.applyForwardTombstonePageInTransaction(

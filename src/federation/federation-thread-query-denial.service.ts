@@ -1,3 +1,4 @@
+import { systemAccountIdInTx } from '../user/system-account.js';
 import { groupStateSql } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -11,6 +12,15 @@ import * as tables from '../database/schema.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
+import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import type { DurableTask } from '../durable-task/durable-task.types.js';
+import {
+  readForbiddenGroupTask,
+  readForcedMemberRevokeTask,
+} from '../group/group-disband-task.js';
+import { businessAccountScopeKey } from '../relationship/business-scope-lock.js';
+import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
 
 /** Converges locally authored relationship directions after authenticated query denial. */
 @Injectable()
@@ -21,6 +31,7 @@ export class FederationThreadQueryDenialService {
     private readonly relationshipMutations: FederationRelationshipMutationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly tasks: DurableTaskQueueService,
   ) {}
 
   async handleThreadQueryForbidden(
@@ -29,14 +40,13 @@ export class FederationThreadQueryDenialService {
     namespaceId: number,
     expectedAuthorizationEpoch: number,
   ): Promise<
-    | 'P2P_REVOKED'
+    | 'P2P_REVOKE_QUEUED'
     | 'P2P_ALREADY_CLOSED'
-    | 'GROUP_REVOKED'
+    | 'GROUP_REVOKE_QUEUED'
     | 'GROUP_ALREADY_CLOSED'
     | 'STALE'
   > {
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    const result = await this.database.db.transaction(async (tx) => {
+    return this.database.db.transaction(async (tx) => {
       const endpoints = await tx.execute<{
         localUserId: number;
         remoteAccount: string;
@@ -81,13 +91,9 @@ export class FederationThreadQueryDenialService {
             where: eq(tables.messageThread.id, threadId),
             columns: { authorizationEpoch: true },
           });
-          return {
-            outcome:
-              thread?.authorizationEpoch === expectedAuthorizationEpoch
-                ? ('P2P_ALREADY_CLOSED' as const)
-                : ('STALE' as const),
-            allocated: new Map<string, bigint>(),
-          };
+          return thread?.authorizationEpoch === expectedAuthorizationEpoch
+            ? ('P2P_ALREADY_CLOSED' as const)
+            : ('STALE' as const);
         }
 
         await this.relationshipIntents.lockGroupBusinessScopeInTx(tx, {
@@ -111,10 +117,7 @@ export class FederationThreadQueryDenialService {
           !lockedGroup ||
           lockedGroup.authorizationEpoch !== expectedAuthorizationEpoch
         ) {
-          return {
-            outcome: 'STALE' as const,
-            allocated: new Map<string, bigint>(),
-          };
+          return 'STALE' as const;
         }
 
         const groupMembers = await tx.execute<{
@@ -152,53 +155,40 @@ export class FederationThreadQueryDenialService {
             AND pair."endpointANamespaceId" = ${namespaceId}
             AND pair."endpointBNamespaceId" = ${namespaceId}
           ORDER BY member.domain, member.account
+          LIMIT 1
         `);
-        const members = groupMembers.rows.map((member) => ({
-          ...member,
-          target: member.memberUserId ?? {
-            account: member.memberAccount,
-            domain: member.memberDomain,
-            namespaceId,
+        if (groupMembers.rows.length === 0)
+          return 'GROUP_ALREADY_CLOSED' as const;
+
+        const mirror = groupLocation.groupDomain !== 'local';
+        if (mirror) {
+          await tx.execute(sql`
+            UPDATE "MessageThread"
+            SET "authorizationEpoch" = "authorizationEpoch" + 1,
+              "federationRoundsEnabled" = false,
+              "updatedAt" = CURRENT_TIMESTAMP
+            WHERE id = ${threadId}
+          `);
+        }
+        await this.tasks.enqueueTaskInTx(tx, {
+          scope: {
+            type: 'GROUP',
+            address: {
+              account: groupLocation.groupAccount,
+              domain: groupLocation.groupDomain,
+            },
           },
-        }));
-        if (members.length === 0) {
-          return {
-            outcome: 'GROUP_ALREADY_CLOSED' as const,
-            allocated: new Map<string, bigint>(),
-          };
-        }
-
-        await this.relationshipMutations.lockGroupMutationInTx(
-          tx,
-          threadId,
-          members[0]!.target,
-          members.flatMap((member) =>
-            member.memberUserId === null ? [] : [member.memberUserId],
-          ),
-        );
-
-        const allocated = new Map<string, bigint>();
-        for (const member of members) {
-          const written =
-            member.groupDomain === 'local'
-              ? await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-                  tx,
-                  threadId,
-                  member.target,
-                  '',
-                  'REVOKED',
-                  clientFeedUpdates,
-                )
-              : await this.relationshipMutations.writeMemberRelationshipIntentInTx(
-                  tx,
-                  threadId,
-                  member.memberUserId!,
-                  'REVOKED',
-                  clientFeedUpdates,
-                );
-          for (const [domain, feedId] of written) allocated.set(domain, feedId);
-        }
-        return { outcome: 'GROUP_REVOKED' as const, allocated };
+          taskType: DurableTaskType.REVOKE_FORBIDDEN_GROUP,
+          actorUserId: await systemAccountIdInTx(tx),
+          payload: {
+            threadId,
+            peerDomain,
+            namespaceId,
+            expectedAuthorizationEpoch:
+              expectedAuthorizationEpoch + (mirror ? 1 : 0),
+          },
+        });
+        return 'GROUP_REVOKE_QUEUED' as const;
       }
 
       const relationship =
@@ -215,10 +205,7 @@ export class FederationThreadQueryDenialService {
         relationship.pair.threadId !== threadId ||
         thread?.authorizationEpoch !== expectedAuthorizationEpoch
       ) {
-        return {
-          outcome: 'STALE' as const,
-          allocated: new Map<string, bigint>(),
-        };
+        return 'STALE' as const;
       }
       const positive = (status: string | undefined) =>
         status === 'REQUESTED' || status === 'ACCEPTED';
@@ -227,28 +214,88 @@ export class FederationThreadQueryDenialService {
         !positive(relationship.firstIntent?.status) ||
         !positive(relationship.secondIntent?.status)
       ) {
-        return {
-          outcome: 'P2P_ALREADY_CLOSED' as const,
-          allocated: new Map<string, bigint>(),
-        };
+        return 'P2P_ALREADY_CLOSED' as const;
       }
-      const allocated = await this.relationshipMutations.writeP2PIntentInTx(
-        tx,
-        endpoint.localUserId,
-        { account: endpoint.remoteAccount, domain: peerDomain, namespaceId },
-        false,
-        '',
-        clientFeedUpdates,
-      );
-      return { outcome: 'P2P_REVOKED' as const, allocated };
+      await this.tasks.enqueueTaskInTx(tx, {
+        scope: {
+          type: 'USER_PAIR',
+          endpoints: [relationship.pair.endpointA, relationship.pair.endpointB],
+        },
+        taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
+        actorUserId: await systemAccountIdInTx(tx),
+        payload: {
+          threadId,
+          expectedAuthorizationEpoch,
+          intentAuthorUserId: endpoint.localUserId,
+        },
+      });
+      return 'P2P_REVOKE_QUEUED' as const;
     });
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-    for (const peerDomain of new Set(result.allocated.keys()))
-      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
-    return result.outcome;
   }
 
-  /** Materialize expired directions authored by this server as durable revocations. The expiry
-   * boundary itself remains authoritative; this sweep only makes the already-effective negative
-   * state explicit so clients and peers converge without retaining stale REQUESTED snapshots. */
+  async revokeForbiddenMember(task: DurableTask): Promise<void> {
+    const denial = readForbiddenGroupTask(task);
+    const { memberUserId } = readForcedMemberRevokeTask(task);
+    const updates: PendingClientStateFeedUpdate[] = [];
+    const allocated = await this.database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, denial.threadId);
+      const state = await tx.execute<{
+        authorizationEpoch: number;
+        account: string;
+        domain: string;
+        namespaceId: number;
+      }>(sql`
+        SELECT thread."authorizationEpoch", group_profile.account,
+          group_profile.domain, group_profile."namespaceId"
+        FROM "MessageThread" thread
+        JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
+        WHERE thread.id = ${denial.threadId}
+      `);
+      const group = state.rows[0];
+      if (
+        !group ||
+        group.authorizationEpoch !== denial.expectedAuthorizationEpoch
+      )
+        return new Map<string, bigint>();
+      if (businessAccountScopeKey(group) !== task.scopeKey)
+        throw new Error('forced revoke belongs to another group');
+      if (group.domain === 'local') {
+        if (
+          task.payload.direction !== 'GROUP' ||
+          typeof memberUserId === 'number' ||
+          memberUserId.domain !== denial.peerDomain ||
+          memberUserId.namespaceId !== denial.namespaceId
+        )
+          throw new Error('invalid denied group direction');
+        return this.relationshipMutations.writeGroupRelationshipIntentInTx(
+          tx,
+          denial.threadId,
+          memberUserId,
+          '',
+          'REVOKED',
+          updates,
+        );
+      }
+      if (
+        group.domain !== denial.peerDomain ||
+        group.namespaceId !== denial.namespaceId
+      )
+        return new Map<string, bigint>();
+      if (
+        task.payload.direction !== 'MEMBER' ||
+        typeof memberUserId !== 'number'
+      )
+        throw new Error('invalid denied member direction');
+      return this.relationshipMutations.writeMemberRelationshipIntentInTx(
+        tx,
+        denial.threadId,
+        memberUserId,
+        'REVOKED',
+        updates,
+      );
+    });
+    this.clientStateFeed.notifyFeedUpdates(updates);
+    for (const peerDomain of allocated.keys())
+      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+  }
 }

@@ -281,8 +281,8 @@ export class UserQuotaService implements OnModuleInit {
       throw new Error('quota amount must be a positive safe integer');
     }
     const limits = this.effectiveBreakerLimits(
-      normalizeOverrides(await this.getPolicy(userId)),
-      await this.getAllowance(userId),
+      normalizeOverrides(await this.getPolicy(userId, tx)),
+      await this.getAllowance(userId, tx),
     );
     const limit = category === 'messages' ? limits.msg : limits.file;
     const today = utcToday();
@@ -317,8 +317,8 @@ export class UserQuotaService implements OnModuleInit {
     tx?: DatabaseTransaction,
   ): Promise<{ bytes: bigint; limit: number; over: boolean }> {
     const limits = this.effectiveBreakerLimits(
-      normalizeOverrides(await this.getPolicy(userId)),
-      await this.getAllowance(userId),
+      normalizeOverrides(await this.getPolicy(userId, tx)),
+      await this.getAllowance(userId, tx),
     );
     const limit = BigInt(limits.fileBytes);
     const today = utcToday();
@@ -367,8 +367,8 @@ export class UserQuotaService implements OnModuleInit {
     tx?: DatabaseTransaction,
   ): Promise<void> {
     const limits = this.effectiveBreakerLimits(
-      normalizeOverrides(await this.getPolicy(userId)),
-      await this.getAllowance(userId),
+      normalizeOverrides(await this.getPolicy(userId, tx)),
+      await this.getAllowance(userId, tx),
     );
     const today = utcToday();
     const runner = tx ?? this.database.db;
@@ -536,8 +536,13 @@ export class UserQuotaService implements OnModuleInit {
 
   // ── internals ───────────────────────────────────────────────────────────────────────────────────────
 
-  private async getPolicy(userId: number): Promise<QuotaOverrides> {
-    const policy = await this.database.db.query.userQuotaPolicy.findFirst({
+  private async getPolicy(
+    userId: number,
+    tx?: DatabaseTransaction,
+  ): Promise<QuotaOverrides> {
+    const policy = await (
+      tx ?? this.database.db
+    ).query.userQuotaPolicy.findFirst({
       where: eq(userQuotaPolicy.userId, userId),
     });
     return normalizeOverrides(policy ?? {});
@@ -545,8 +550,11 @@ export class UserQuotaService implements OnModuleInit {
 
   private async getAllowance(
     userId: number,
+    tx?: DatabaseTransaction,
   ): Promise<{ extraMsg: number; extraFile: number; extraFileBytes: bigint }> {
-    const row = await this.database.db.query.userQuotaDailyAllowance.findFirst({
+    const row = await (
+      tx ?? this.database.db
+    ).query.userQuotaDailyAllowance.findFirst({
       where: and(
         eq(userQuotaDailyAllowance.userId, userId),
         eq(userQuotaDailyAllowance.date, utcToday()),

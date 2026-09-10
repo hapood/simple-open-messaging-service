@@ -120,6 +120,7 @@ describe('ClientStateFeedService', () => {
         body: {
           status: 'REQUESTED',
           requestedAt: requestedAt.getTime(),
+          established: false,
         },
       }),
     );

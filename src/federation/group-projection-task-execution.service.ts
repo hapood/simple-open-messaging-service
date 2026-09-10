@@ -14,6 +14,7 @@ import {
   threadAudience,
 } from '../database/schema.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
+import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import type { GroupMetaHeadFanoutPayload } from './group-projection-task.js';
@@ -227,15 +228,9 @@ export class GroupProjectionTaskExecutionService {
             peerDomain: audience.targetDomain,
           });
       }
-      await tx
-        .update(durableTask)
-        .set({ checkpoint: { afterAudienceId: page.at(-1)!.id.toString() } })
-        .where(
-          and(
-            eq(durableTask.id, task.id),
-            eq(durableTask.status, 'PROCESSING'),
-          ),
-        );
+      await saveTaskCheckpointInTx(tx, task.id, {
+        afterAudienceId: page.at(-1)!.id.toString(),
+      });
       return { processed: true, clientUpdates, peerTargets };
     });
   }

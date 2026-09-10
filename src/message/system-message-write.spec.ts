@@ -1,3 +1,4 @@
+import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
 process.env.SOMS_DOMAIN ??= 'chat.example';
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../relationship/thread-content-lock.js', () => ({
@@ -9,14 +10,17 @@ vi.mock('../relationship/thread-content-lock.js', () => ({
 import { ContentType } from '../database/enums.js';
 import { MessageService } from './message.service.js';
 import { SystemMessageType } from './system-message.js';
-import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
+import { enqueueThreadFanoutInTx } from './thread-fanout-task.js';
+vi.mock('./thread-fanout-task.js', () => ({
+  enqueueThreadFanoutInTx: vi.fn().mockResolvedValue(1n),
+}));
+
+vi.mock('./account-thread-fanout-task.js', () => ({
+  enqueueDepartureFanoutsInTx: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('MessageService local system messages', () => {
   it('persists a local SYSTEM row', async () => {
-    vi.spyOn(
-      ClientThreadContentHeadWriter,
-      'publishMessage',
-    ).mockResolvedValue();
     const stored = {
       id: 10n,
       threadId: 7,
@@ -39,7 +43,9 @@ describe('MessageService local system messages', () => {
         where: vi.fn(() => query),
         returning: vi.fn(() => {
           threadUpdate += 1;
-          return Promise.resolve([{ curSeq: 4 }]);
+          return Promise.resolve([
+            { curSeq: 4, deletionSeqAllocatedThrough: 0 },
+          ]);
         }),
         then: (resolve: (value: unknown) => unknown) =>
           Promise.resolve(undefined).then(resolve),
@@ -58,7 +64,7 @@ describe('MessageService local system messages', () => {
       };
       return query;
     });
-    const service = new MessageService({} as never, {} as never);
+    const service = new MessageService({} as never, {} as never, {} as never);
     const tx = {
       query: {
         account: {
@@ -90,7 +96,7 @@ describe('MessageService local system messages', () => {
   });
 
   it('logs and returns null when best-effort generation fails', async () => {
-    const service = new MessageService({} as never, {} as never);
+    const service = new MessageService({} as never, {} as never, {} as never);
     vi.spyOn(service, 'writeSystemMessage').mockRejectedValue(
       new Error('storage unavailable'),
     );
@@ -106,11 +112,8 @@ describe('MessageService local system messages', () => {
     );
   });
 
-  it('publishes a boundary SYSTEM message to explicit local recipients', async () => {
+  it('admits ordinary and directed boundary fanout in the system transaction', async () => {
     vi.stubEnv('SOMS_DOMAIN', 'local.test');
-    const publish = vi
-      .spyOn(ClientThreadContentHeadWriter, 'publishMessageToUsers')
-      .mockResolvedValue();
     const stored = {
       id: 11n,
       threadId: 7,
@@ -129,7 +132,9 @@ describe('MessageService local system messages', () => {
     const query = {
       set: vi.fn(() => query),
       where: vi.fn(() => query),
-      returning: vi.fn().mockResolvedValue([{ curSeq: 5 }]),
+      returning: vi
+        .fn()
+        .mockResolvedValue([{ curSeq: 5, deletionSeqAllocatedThrough: 2 }]),
       then: (resolve: (value: unknown) => unknown) =>
         Promise.resolve(undefined).then(resolve),
     };
@@ -148,16 +153,26 @@ describe('MessageService local system messages', () => {
       update: vi.fn(() => query),
       insert: vi.fn(() => insertQuery),
     };
-    const service = new MessageService({} as never, {} as never);
+    const service = new MessageService({} as never, {} as never, {} as never);
 
     await service.writeSystemMessageInTx(
       tx as never,
       7,
       SystemMessageType.FRIEND_REMOVED,
       2,
-      { recipientUserIds: [4, 2, 4] },
     );
 
-    expect(publish).toHaveBeenCalledWith(tx, 7, 5, [4, 2, 4]);
+    expect(enqueueDepartureFanoutsInTx).toHaveBeenLastCalledWith(
+      tx,
+      { tx, threadId: 7 },
+      { threadId: 7, messageEndSeq: 5, tombstoneEndSeq: 2 },
+      'P2P',
+      2,
+    );
+    expect(enqueueThreadFanoutInTx).toHaveBeenLastCalledWith(
+      tx,
+      { tx, threadId: 7 },
+      { threadId: 7, messageEndSeq: 5, tombstoneEndSeq: 2 },
+    );
   });
 });

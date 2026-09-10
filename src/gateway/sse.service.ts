@@ -2,10 +2,12 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
+import { Interval } from '@nestjs/schedule';
 import { DatabaseService } from '../database/database.service.js';
 import { account, account as userTable } from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
+import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
 /** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
  *  session-token row id — so a single revoked session can be targeted for FORCE_LOGOUT without kicking the
@@ -34,6 +36,21 @@ interface SseClient {
 export class SseService implements OnModuleDestroy {
   private readonly logger = new Logger(SseService.name);
   private readonly clients: Record<number, SseClient[]> = {};
+  private readonly stateHeads = new Map<number, number>();
+  private readonly threadHeads = new Map<number, number>();
+  private pollingAttention = false;
+  private readonly stateThrottle = new AccountFeedThrottle(
+    1000,
+    (userId, feedId) =>
+      this.pushToUser(userId, 'STATE_FEED_UPDATED', { feedId }),
+    (error) => this.logger.warn(`State SSE hint failed: ${String(error)}`),
+  );
+  private readonly threadThrottle = new AccountFeedThrottle(
+    1000,
+    (userId, threadFeedEndId) =>
+      this.pushToUser(userId, 'THREAD_FEED_UPDATED', { threadFeedEndId }),
+    (error) => this.logger.warn(`Thread SSE hint failed: ${String(error)}`),
+  );
 
   constructor(
     private readonly database: DatabaseService,
@@ -87,7 +104,7 @@ export class SseService implements OnModuleDestroy {
       const [user] = await this.database.db
         .select({
           stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
-          readRevision: account.readRevision,
+          threadFeedEndId: account.threadFeedEndId,
           profileRev: userTable.defaultProfileRev,
         })
         .from(account)
@@ -103,7 +120,7 @@ export class SseService implements OnModuleDestroy {
         // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
         // The client pulls (cursor, stateFeedEndId] after this handshake and later feed signals.
         stateFeedEndId: user?.stateFeedAllocatedThrough ?? 0,
-        readRevision: user?.readRevision ?? 0,
+        threadFeedEndId: user?.threadFeedEndId ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
         // cache) or a changed rev still fetches. PROFILE deltas advance the same state revision.
@@ -236,19 +253,59 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'PROFILE_FAILED', data);
   }
 
-  /** Signal that the durable client state feed has advanced. */
+  /** Coalesce durable state feed hints per account, independently of thread hints. */
   onStateFeedUpdated(userId: number, data: { feedId: number }) {
-    this.pushToUser(userId, 'STATE_FEED_UPDATED', {
-      feedId: data.feedId,
-    });
+    this.stateThrottle.enqueue(userId, data.feedId);
   }
 
-  /** Attention projection cursor only. The durable, compacted feed owns the item body. */
-  onThreadAttentionRevisionUpdated(
-    userId: number,
-    data: { attentionRevision: number },
-  ) {
-    this.pushToUser(userId, 'ATTENTION_REV_UPDATED', data);
+  /** Thread projection cursor only. The durable, compacted feed owns the item body. */
+  onThreadFeedUpdated(userId: number, data: { threadFeedEndId: number }) {
+    this.threadThrottle.enqueue(userId, data.threadFeedEndId);
+  }
+
+  /** Poll committed allocator heads for connected accounts only. This coalesces all
+   * transactional writers and recovers a wake lost between commit and process failure. */
+  @Interval(1000)
+  async pollThreadHeads(): Promise<void> {
+    if (this.pollingAttention) return;
+    const ids = Object.keys(this.clients).map(Number);
+    for (const id of this.threadHeads.keys())
+      if (!this.clients[id]) {
+        this.threadHeads.delete(id);
+        this.stateHeads.delete(id);
+      }
+    if (!ids.length) return;
+    this.pollingAttention = true;
+    try {
+      const heads = await this.database.db
+        .select({
+          id: account.id,
+          head: account.threadFeedEndId,
+          stateHead: account.stateFeedAllocatedThrough,
+        })
+        .from(account)
+        .where(inArray(account.id, ids));
+      for (const { id, head, stateHead } of heads) {
+        if (
+          Number.isInteger(stateHead) &&
+          this.stateHeads.get(id) !== stateHead
+        ) {
+          this.onStateFeedUpdated(id, { feedId: stateHead });
+          this.stateHeads.set(id, stateHead);
+        }
+        if (this.threadHeads.get(id) !== head) {
+          this.onThreadFeedUpdated(id, { threadFeedEndId: head });
+          this.threadHeads.set(id, head);
+        }
+      }
+    } catch (error) {
+      this.logger.warn({
+        msg: 'thread feed wake polling failed; next poll retries',
+        err: error,
+      });
+    } finally {
+      this.pollingAttention = false;
+    }
   }
 
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
@@ -301,6 +358,8 @@ export class SseService implements OnModuleDestroy {
 
   /** End held responses so HTTP shutdown does not wait indefinitely for SSE clients. */
   onModuleDestroy() {
+    this.stateThrottle.stop();
+    this.threadThrottle.stop();
     for (const uid of Object.keys(this.clients)) {
       const id = Number(uid);
       const clients = this.clients[id];

@@ -138,6 +138,8 @@ emit_static_files() {
 
 emit_handlers() {
   printf '\tencode zstd gzip\n'
+  # Fixed-name worker scripts must revalidate and must never fall back to SPA HTML.
+  printf '\thandle /push/*.js {\n\t\troot * /app/public/web\n\t\theader Cache-Control "no-cache"\n\t\tfile_server\n\t}\n'
   printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'
   printf '\thandle /.well-known/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
   if [ "${SOMS_ADMIN_ACCESS:-public}" = "lan" ]; then

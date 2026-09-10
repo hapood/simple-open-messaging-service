@@ -430,6 +430,25 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(svc.friendReqBadge()).toBe(true);
   });
 
+  it('does not rebuild the database for an invalidated HELLO after an open failure', async () => {
+    let rejectOpen!: (error: Error) => void;
+    webdb.openExistingForUser.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectOpen = reject;
+        }),
+    );
+    const opening = svc.establishSession(1, 0);
+    const rejected = expect(opening).rejects.toThrow(
+      'account session expired during HELLO',
+    );
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    rejectOpen(new Error('closed during logout'));
+    await rejected;
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(svc.sessionUserId()).toBeNull();
+  });
+
   it('fresh login drops and initializes the cache before strictly opening it', async () => {
     svc.prepareFreshCache();
 
@@ -509,6 +528,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     );
 
     const clearing = svc.clearSession();
+    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(1);
     expect(ended).not.toHaveBeenCalled();
     finishDeletion();
     await clearing;
@@ -530,6 +550,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     webdb.closeAndDelete.mockRejectedValue(new Error('cache busy'));
 
     await expect(svc.clearSession()).rejects.toThrowError('cache busy');
+    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(1);
     expect(svc.sessionUserId()).toBe(1);
     expect(ended).not.toHaveBeenCalled();
     expect(
@@ -539,6 +560,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     webdb.closeAndDelete.mockResolvedValue(undefined);
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
+    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(2);
     expect(svc.sessionUserId()).toBeNull();
     expect(ended).toHaveBeenCalledTimes(1);
     subscription.unsubscribe();

@@ -123,20 +123,12 @@ pub(crate) fn set_active_origin(
 
 #[tauri::command]
 pub(crate) fn set_session_token(token: String, state: tauri::State<'_, ProxyState>) {
-    if let Ok(mut g) = state.token.lock() {
-        *g = Some(token);
-        // Wake a desktop SSE supervisor blocked in its pre-login token wait (mobile SSE is Kotlin-owned
-        // and never waits on this; the extra notify is a harmless no-permit-consumer wakeup).
-        drop(g);
-        state.token_notify.notify_one();
-    }
+    state.replace_session_token(Some(token));
 }
 
 #[tauri::command]
 pub(crate) fn clear_session_token(state: tauri::State<'_, ProxyState>) {
-    if let Ok(mut g) = state.token.lock() {
-        *g = None;
-    }
+    state.replace_session_token(None);
 }
 
 /// End the currently attached native session without tying UI progress to the old backend.
@@ -150,7 +142,7 @@ pub(crate) fn begin_logout(
     origin: String,
     state: tauri::State<'_, ProxyState>,
 ) -> Result<(), String> {
-    let token = state.token.lock().ok().and_then(|mut token| token.take());
+    let token = state.replace_session_token(None);
 
     #[cfg(desktop)]
     secure_storage::secure_clear_token()?;

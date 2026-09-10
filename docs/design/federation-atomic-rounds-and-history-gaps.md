@@ -30,10 +30,27 @@ The value is a non-negative integer initialized to zero. It belongs to
 MessageThread rather than Group because both P2P and GROUP threads use the same
 federation round machinery.
 
-Every effective `active -> inactive` relationship transition increments the
+P2P deactivation and a mirror group's last local member leaving increment the
 epoch in the caller-owned relationship transaction. Repeated inactive writes do
 not increment it. The transaction acquires the canonical USER_PAIR or GROUP
 business lock first and then locks MessageThread before changing the epoch.
+
+`MessageThread.federationRoundsEnabled` is the admission switch for rounds and
+incoming content heads. Unauthorized P2P and mirrored-group shells start false.
+The same transaction which invalidates their authorization epoch sets it false;
+P2P activation or a local member activating a mirrored-group relationship sets
+it true. Authoritative local groups start true and use per-peer audience checks
+instead of disabling the whole thread. Retained AccountThreadState rows alone
+cannot admit a mirror head while its round switch is false.
+
+An authoritative group removing an audience does not advance the thread epoch.
+Its round commit rechecks the source peer's audience, including its namespace,
+after acquiring the group business and thread locks and before applying message
+or tombstone facts and progress. The audience row is held with `FOR SHARE` until
+commit. Removal uses the same parent-lock order: if removal commits first, the
+round fails locally without writing facts or advancing progress; if the round
+commits first, removal follows it. Other peers' rounds remain valid. This local
+source-inactive outcome does not initiate remote-forbidden relationship cleanup.
 
 A State Feed target application or content round captures the current epoch.
 Its commit transaction performs an atomic compare-and-set against MessageThread.
@@ -46,7 +63,7 @@ synchronization state.
 `FederationThreadSyncState` also stores the authorization epoch for which its
 current targets and committed progress were initialized. A process scheduler
 must not run a state row whose epoch differs from MessageThread. A later valid
-`THREAD_CONTENT_HEAD` reconciles the old segment and reinitializes that row for
+The relationship activation transaction reconciles the old segment and reinitializes that row for
 the active thread epoch.
 
 The process-local State Feed single-flight and the pull worker's peer-level
@@ -230,10 +247,24 @@ client heads; only after that commit are their hints published.
 RELATIONSHIP_INTENT application invokes the canonical relationship transaction
 and advances the item cursor only when that transaction succeeds.
 
-THREAD_CONTENT_HEAD application resolves the local thread, verifies that its
-relationship is active, and acquires the business scope and parent row before
-locking MessageThread. It revalidates the target under those locks. The same transaction loads
-FederationThreadSyncState and branches on its stored epoch:
+Migration 0021 requires both stored coordinates to be non-null and non-negative,
+without a default for missing positive grants. Local snapshots are read from
+local content in one statement. A remote positive grant missing its source
+snapshot is rejected before storage. Migration refuses unknown remote positive
+snapshots rather than inventing `0/0`; existing valid synchronization coordinates
+remain unchanged. Revocation retains the previous grant coordinates when present.
+
+Our implementation initializes shared state for `(threadId, namespaceId)` from
+the first effective authorization used to activate that source. Additional local
+group members and repeated grants in the same authorization epoch do not reset
+its initial boundary. Relationship transactions reconcile reauthorization from
+the new req/ack snapshot without waiting for a separate thread-content head.
+The protocol leaves history selection and shared-state layout to receivers.
+
+Positive relationship intents retain message and tombstone coordinates read from
+one publisher statement snapshot. Relationship activation acquires the content
+lock and initializes FederationThreadSyncState from that retained pair in the
+same transaction. It branches on the stored epoch:
 
 - a missing row leaves the newest advertised message to the forward query and,
   when at least one older coordinate exists, creates `[1, messageTargetSeq - 1]`
@@ -247,6 +278,11 @@ FederationThreadSyncState and branches on its stored epoch:
   new deletion work exists, it also freezes the old committed message
   coordinate and the new deletion target as the recovery tombstone drain.
 
+A `0/0` authorization initializes all targets and cursors to zero, without a
+reverse gap. Subsequent heads only advance targets, so the first forward round
+starts at zero even when the head advertises several messages and deletions.
+THREAD_CONTENT_HEAD application validates the active relationship under the
+content lock and updates only an existing state with the current epoch.
 The transaction then advances the State Feed cursor through the current item.
 
 The synchronization-state key is `(threadId, namespaceId)`, where the namespace

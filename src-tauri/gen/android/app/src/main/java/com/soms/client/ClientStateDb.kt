@@ -3,29 +3,20 @@ package com.soms.client
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.util.Base64
-import java.io.File
 
 /** WebView-independent notification state in the same local SQLite file used by the Tauri data layer. */
 object ClientStateDb {
-    private const val ACTIVE_ACCOUNT = 0
 
     private fun open(ctx: Context): SQLiteDatabase {
-        val dbFile = File(ctx.filesDir, "soms-local.sqlite3")
+        val dbPath = RustRuntimeBridge.getDatabasePath()
         // Configure WAL through SQLiteDatabase so Android applies it consistently to every connection in
         // its pool. PRAGMA journal_mode returns a row and therefore must not be sent through execSQL().
         val db = SQLiteDatabase.openDatabase(
-            dbFile.absolutePath,
+            dbPath,
             null,
             SQLiteDatabase.OPEN_READWRITE or
                 SQLiteDatabase.CREATE_IF_NECESSARY or
                 SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
-        )
-        db.execSQL(
-            """CREATE TABLE IF NOT EXISTS notification_feed_state (
-                account_id INTEGER PRIMARY KEY,
-                feed_id INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )""".trimIndent(),
         )
         db.execSQL(
             """CREATE TABLE IF NOT EXISTS client_preferences (
@@ -34,15 +25,6 @@ object ClientStateDb {
                 value_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (scope, key)
-            )""".trimIndent(),
-        )
-        db.execSQL(
-            """CREATE TABLE IF NOT EXISTS notification_thread_state (
-                account_id INTEGER NOT NULL,
-                thread_id INTEGER NOT NULL,
-                dismissed_seq INTEGER,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (account_id, thread_id)
             )""".trimIndent(),
         )
         return db
@@ -105,58 +87,6 @@ object ClientStateDb {
             SomsLog.w("SomsCall") { "local call peer lookup failed: ${e.javaClass.simpleName}: ${e.message}" }
             null
         }
-    }
-
-    fun getStateFeedCursor(ctx: Context): Int = open(ctx).use { db ->
-        db.rawQuery(
-            "SELECT feed_id FROM notification_feed_state WHERE account_id = ?",
-            arrayOf(ACTIVE_ACCOUNT.toString()),
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
-    }
-
-    fun setStateFeedCursor(ctx: Context, feedId: Int) = open(ctx).use { db ->
-        require(feedId >= 0)
-        db.execSQL(
-            """INSERT INTO notification_feed_state(account_id, feed_id, updated_at) VALUES(?, ?, ?)
-               ON CONFLICT(account_id) DO UPDATE SET feed_id=excluded.feed_id, updated_at=excluded.updated_at""",
-            arrayOf(ACTIVE_ACCOUNT, feedId, System.currentTimeMillis()),
-        )
-    }
-
-    fun dismissedThreadSeqs(ctx: Context): Map<Int, Int> = open(ctx).use { db ->
-        val result = HashMap<Int, Int>()
-        db.rawQuery(
-            "SELECT thread_id, dismissed_seq FROM notification_thread_state WHERE account_id = ? AND dismissed_seq IS NOT NULL",
-            arrayOf(ACTIVE_ACCOUNT.toString()),
-        ).use { cursor ->
-            while (cursor.moveToNext()) result[cursor.getInt(0)] = cursor.getInt(1)
-        }
-        result
-    }
-
-    fun setDismissedThreadSeq(ctx: Context, threadId: Int, seq: Int) = open(ctx).use { db ->
-        db.execSQL(
-            """INSERT INTO notification_thread_state(account_id, thread_id, dismissed_seq, updated_at)
-               VALUES(?, ?, ?, ?)
-               ON CONFLICT(account_id, thread_id) DO UPDATE SET
-                 dismissed_seq=excluded.dismissed_seq, updated_at=excluded.updated_at""",
-            arrayOf(ACTIVE_ACCOUNT, threadId, seq, System.currentTimeMillis()),
-        )
-    }
-
-    fun clearNotificationState(ctx: Context) = open(ctx).use { db ->
-        db.beginTransaction()
-        try {
-            db.delete("notification_feed_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
-            db.delete("notification_thread_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-    }
-
-    fun clearDismissedThreads(ctx: Context) = open(ctx).use { db ->
-        db.delete("notification_thread_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
     }
 
     fun getNotificationPreviewMode(ctx: Context): String = open(ctx).use { db ->

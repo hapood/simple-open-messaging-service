@@ -3,8 +3,8 @@ package com.soms.client
 /**
  * Pure (Android-free) decisions for the per-thread notification path — extracted from
  * [SomsMessagingService]'s companion so they're JUnit-testable WITHOUT loading the
- * `FirebaseMessagingService` subclass (which needs Android). Notification state is represented by the
- * global HWM and per-thread dismiss HWM; this helper only derives stable notification ids.
+ * `FirebaseMessagingService` subclass (which needs Android). This helper derives stable notification IDs
+ * and preserves the count supplied by the notification projection.
  */
 object NotifThreadLogic {
 

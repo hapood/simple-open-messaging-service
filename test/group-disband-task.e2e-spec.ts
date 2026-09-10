@@ -14,7 +14,6 @@ import {
   groupMetaMemberFeed,
   messageThread,
   relationshipPair,
-  accountThreadState,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
 import {
@@ -130,30 +129,27 @@ describe('group disband task fan-out', () => {
     const children = await database.db
       .select()
       .from(durableTask)
-      .where(eq(durableTask.parentTaskId, BigInt(parentId)))
+      .where(
+        and(
+          eq(durableTask.scopeKey, parent!.scopeKey),
+          eq(durableTask.taskType, 'FORCE_REVOKE_GROUP_MEMBER'),
+        ),
+      )
       .orderBy(asc(durableTask.id));
     expect(children).toHaveLength(2);
     expect(children.map(({ taskType }) => taskType)).toEqual([
-      'REVOKE_DISSOLVED_GROUP_MEMBER',
-      'REVOKE_DISSOLVED_GROUP_MEMBER',
+      'FORCE_REVOKE_GROUP_MEMBER',
+      'FORCE_REVOKE_GROUP_MEMBER',
     ]);
     expect(children.map(({ payload }) => payload)).toEqual(
       expect.arrayContaining([
         {
           threadId,
-          memberUserId: {
-            account: owner.account,
-            domain: 'local',
-            namespaceId: 0,
-          },
+          memberUserId: owner.id,
         },
         {
           threadId,
-          memberUserId: {
-            account: member.account,
-            domain: 'local',
-            namespaceId: 0,
-          },
+          memberUserId: member.id,
         },
       ]),
     );

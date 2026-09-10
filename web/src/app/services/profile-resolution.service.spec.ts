@@ -33,7 +33,11 @@ describe('ProfileResolutionService', () => {
     );
     const notice = vi.fn();
     service.resolved$.subscribe(notice);
-    const selector = { threadId: 9, messageSeq: 2 };
+    const selector = {
+      type: 'MESSAGE_AUTHOR' as const,
+      threadId: 9,
+      messageSeq: 2,
+    };
     const old = firstValueFrom(service.resolve(selector)).catch(
       (error: Error) => error.message,
     );
@@ -46,6 +50,7 @@ describe('ProfileResolutionService', () => {
       expect(startProfileResolution).toHaveBeenCalledTimes(2),
     );
     const profile = {
+      namespaceId: 0,
       account: 'peer',
       domain: 'bravo.test',
       rev: 3,
@@ -71,6 +76,7 @@ describe('ProfileResolutionService', () => {
         data: {
           status: 'READY',
           profile: {
+            namespaceId: 0,
             account: 'alice',
             domain: 'remote.test',
             rev: 3,
@@ -92,6 +98,7 @@ describe('ProfileResolutionService', () => {
     );
 
     const selector = {
+      type: 'GROUP_MEMBER' as const,
       threadId: 7,
       memberAccount: ' Alice ',
       memberDomain: ' REMOTE.TEST ',
@@ -106,6 +113,7 @@ describe('ProfileResolutionService', () => {
     expect(startProfileResolution).toHaveBeenCalledTimes(1);
     expect(resolved).toHaveBeenCalledOnce();
     expect(startProfileResolution).toHaveBeenCalledWith({
+      type: 'GROUP_MEMBER',
       threadId: 7,
       memberAccount: 'alice',
       memberDomain: 'remote.test',

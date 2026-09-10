@@ -145,6 +145,8 @@ describe('canonical Group Meta feed', () => {
       .returning({ id: relationshipPair.id });
     await database.db.insert(relationshipIntent).values({
       pairId: pair.id,
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
       authorSide: 'A',
       status: 'ACCEPTED',
       profileRev: 1,

@@ -70,7 +70,7 @@ the same revision.
 For a P2P thread:
 
 - before any peer-authored message is available, the thread list uses the
-  revision referenced by the current relationship request flow;
+  default revision retained by the account-owned `THREAD_STATE` snapshot;
 - after messages are loaded, the profile bound to the greatest `seq` authored
   by the peer becomes the thread display profile;
 - a locally authored message never replaces the peer's thread avatar; and
@@ -125,6 +125,15 @@ Group Meta `GROUP_PROFILE` reference. These are local authorization-index choice
 additional federation wire requirements.
 
 ## 4. Backend resolution coordinator
+
+The client API uses the shared discriminated `ProfileSelector` union: `EXACT`,
+`MESSAGE_AUTHOR`, or `GROUP_MEMBER`. Thread defaults use `EXACT`; there is no
+thread-default selector. A matching account-owned `THREAD_STATE` grants access
+to its retained exact version, including after revocation. Re-establishment
+can replace that reference; ordinary profile changes cannot. See
+[account-owned thread state](thread-state.md) for the publication and recovery
+contract. Every resolved client profile also carries its captured `namespaceId`.
+
 
 One application-wide singleton owns remote profile work. It has three entry
 paths:

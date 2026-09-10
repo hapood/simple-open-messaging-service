@@ -170,6 +170,76 @@ describe('FederationMessageFeedService thread query', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'trailing system rows after a full page',
+      systemSeqs: [2, 3, 4, 5],
+      expected: [1],
+    },
+    {
+      name: 'leading system rows in reverse traversal',
+      systemSeqs: [1, 2, 3, 4],
+      expected: [5],
+    },
+    {
+      name: 'interleaved system rows',
+      systemSeqs: [1, 3, 5],
+      expected: [2, 4],
+    },
+    { name: 'only system rows', systemSeqs: [1, 2, 3, 4, 5], expected: [] },
+  ])(
+    'paginates $name without false hasMore in either direction',
+    async ({ systemSeqs, expected }) => {
+      const { alice, namespaceId, thread } = await seed();
+      for (let seq = 1; seq <= 5; seq++) {
+        await append(thread.id, alice, seq, namespaceId);
+        if (systemSeqs.includes(seq))
+          await database.db
+            .update(message)
+            .set({
+              contentType: 'SYSTEM',
+              content: JSON.stringify({ type: 'FRIEND_ADDED' }),
+              creatorAccount: null,
+              creatorDomain: null,
+            })
+            .where(and(eq(message.threadId, thread.id), eq(message.seq, seq)));
+      }
+      const selector = {
+        type: 'P2P' as const,
+        account: 'alice',
+        peerAccount: 'bob',
+      };
+      for (const forward of [true, false]) {
+        const ordered = forward ? expected : [...expected].reverse();
+        let cursor = forward ? 0 : 6;
+        for (let index = 0; index < Math.max(1, ordered.length); index++) {
+          const page = await service.query(
+            peerDomain,
+            namespaceId,
+            selector,
+            forward ? cursor : undefined,
+            1,
+            forward ? 5 : 1,
+            true,
+            forward ? undefined : cursor,
+          );
+          expect(page.messages.map((row) => row.seq)).toEqual(
+            ordered.length ? [ordered[index]] : [],
+          );
+          expect(
+            page.messages.every((row) => row.contentType !== 'SYSTEM'),
+          ).toBe(true);
+          const more = index + 1 < ordered.length;
+          expect(page.hasMore).toBe(more);
+          expect(page.scannedThrough).toBe(
+            more ? ordered[index] : forward ? 5 : 1,
+          );
+          cursor = page.scannedThrough;
+        }
+      }
+    },
+  );
+
   it('queries the thread sequence advertised by State Feed', async () => {
     const { alice, namespaceId, thread } = await seed();
     await append(thread.id, alice, 1, namespaceId);

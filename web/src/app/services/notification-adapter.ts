@@ -7,22 +7,20 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * branching beyond that one-time selection. This mirrors the {@link RealtimeTransport} strategy used for
  * the realtime downlink (`websocket.service.ts` selects one transport by platform in its constructor).
  *
- * The server-authored {@link NotificationDescriptor} carries BOTH the content AND the presentation
+ * The client-authored {@link NotificationDescriptor} carries BOTH the content AND the presentation
  * semantics (`tag` = replace-in-place vs new, `kind` = template, `icon`, `body`,
- * `actions`). Each adapter maps it onto its platform's NATIVE notification bridge:
+ * routing data). Each adapter maps it onto its platform's NATIVE notification bridge:
  *  - {@link BrowserNotificationAdapter} — the Web Notifications API (`new Notification`); `tag` → replace,
- *    `icon` → the composited stacked avatar, `actions` → buttons.
- *  - {@link TauriNotificationAdapter} — desktop Tauri bridge (`tauriSendNotification`); `tag` → `identifier`.
- *  - {@link AndroidNotificationAdapter} — Kotlin `SomsNotify` `@JavascriptInterface`; forwards the whole
- *    descriptor as JSON for Kotlin to render natively (the WebView is never unfocused on Android, so this
- *    path is dormant — Android notifications come from the native FCM/WorkManager paths).
+ *    `icon` → the client-selected icon.
+ *  - {@link TauriNotificationAdapter} — Rust desktop commands, keyed by thread ID where OS handles are supported.
+ * Android notification presentation is owned entirely by the native runtime.
  *
  * `showDescriptor(d)` is the single display call every adapter implements; `clear()` is a lifecycle method
  * (dismiss on focus regain). Both are async — the browser adapter awaits its SW registration's
  * `showNotification` / `getNotifications`.
  */
 export abstract class NotificationAdapter {
-  /** Show or update a notification per the server-authored descriptor. `tag` is the replace-by-id primitive
+  /** Show or update a notification per the client-authored descriptor. `tag` is the replace-by-id primitive
    * (same tag replaces; unique tags stack). */
   abstract showDescriptor(d: NotificationDescriptor): Promise<void>;
 

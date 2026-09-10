@@ -13,6 +13,7 @@ import { RelationshipService } from '../src/relationship/relationship.service.js
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../src/message/message.service.js';
+import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 
 describe('FRIEND_ADDED activation transaction', () => {
@@ -36,6 +37,9 @@ describe('FRIEND_ADDED activation transaction', () => {
       {} as never,
       messages,
     );
+    Object.assign(relationships, {
+      previews: new ThreadPreviewService(database),
+    });
   });
   afterAll(async () => mod.close());
 
@@ -192,6 +196,8 @@ describe('FRIEND_ADDED activation transaction', () => {
       const remote = (status: 'REQUESTED' | 'ACCEPTED') =>
         database.db.transaction((tx) =>
           relationships.applyRemoteP2PIntentInTx(tx, {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
             localUserId: local.id,
             peerUserId: 'id' in peer ? peer.id : peer,
             status,

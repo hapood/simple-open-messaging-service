@@ -13,14 +13,24 @@ import {
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
+  account,
+  accountThreadState,
   federatedPeer,
+  groupAccount,
   federationThreadHistoryGap,
   federationThreadSyncState,
   identityNamespace,
   message,
   messageThread,
+  relationshipPair,
+  threadAudience,
 } from '../src/database/schema.js';
+import { setLockedP2PPairActiveInTx } from '../src/relationship/p2p-pair-state.js';
+import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
+import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
+import { FederationRelationshipMutationService } from '../src/federation/federation-relationship-mutation.service.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 
 describe('federation thread synchronization state', () => {
   let mod: TestingModule;
@@ -43,7 +53,7 @@ describe('federation thread synchronization state', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     const [existingNamespace] = await database.db
       .select({ id: identityNamespace.id })
@@ -84,17 +94,275 @@ describe('federation thread synchronization state', () => {
     threadId = thread.id;
   });
 
+  it('does not create synchronization state from an unsolicited content head', async () => {
+    await database.db.transaction(async (tx) => {
+      const threadLock = await requireThreadContentLockInTx(tx, threadId);
+      expect(
+        await FederationThreadSyncStateService.updateThreadHeadInTx(tx, {
+          threadId,
+          namespaceId,
+          messageTargetSeq: 3,
+          deletionTargetSeq: 1,
+          threadLock,
+        }),
+      ).toBe(false);
+    });
+    expect(
+      await database.db.select().from(federationThreadSyncState),
+    ).toHaveLength(0);
+    expect(
+      await database.db.select().from(federationThreadHistoryGap),
+    ).toHaveLength(0);
+  });
+
+  it.each([true, false])(
+    'serializes authority audience removal with round commits (removal first: %s)',
+    async (removalFirst) => {
+      const [group] = await database.db
+        .insert(groupAccount)
+        .values({ account: '!authority' })
+        .onConflictDoUpdate({
+          target: groupAccount.account,
+          set: { updatedAt: new Date() },
+        })
+        .returning({ id: groupAccount.id });
+      await database.db
+        .update(messageThread)
+        .set({
+          type: 'GROUP',
+          groupAccount: '!authority',
+          groupDomain: 'local',
+          groupAccountId: group.id,
+          authorityNamespaceId: 0,
+        })
+        .where(eq(messageThread.id, threadId));
+      await database.db.insert(threadAudience).values({
+        threadId,
+        targetDomain: peerDomain,
+        targetNamespaceId: namespaceId,
+        localUserId: null,
+      });
+      const source = {
+        kind: 'GROUP' as const,
+        localGroupAuthority: true,
+        threadId,
+        peerDomain,
+        namespaceId,
+        selector: { account: '!authority' },
+      };
+      let ready!: () => void;
+      let release!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const run = (remove: boolean, first: boolean) =>
+        database.db.transaction(async (tx) => {
+          const lock = await requireThreadContentLockInTx(tx, threadId);
+          if (first) {
+            ready();
+            await released;
+          }
+          if (remove) {
+            await tx
+              .delete(threadAudience)
+              .where(eq(threadAudience.threadId, threadId));
+          } else {
+            await FederationThreadSourceService.assertAudienceInTx(
+              lock,
+              source,
+            );
+            await tx
+              .update(messageThread)
+              .set({ curSeq: 1 })
+              .where(eq(messageThread.id, threadId));
+          }
+        });
+      const first = run(removalFirst, true);
+      await locked;
+      const second = run(!removalFirst, false);
+      const result = Promise.allSettled([first, second]);
+      release();
+      const outcomes = await result;
+      expect(outcomes[0].status).toBe('fulfilled');
+      expect(outcomes[1].status).toBe(removalFirst ? 'rejected' : 'fulfilled');
+      if (outcomes[1].status === 'rejected')
+        expect(outcomes[1].reason.message).toContain(
+          'no longer has an audience',
+        );
+      const thread = await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      });
+      expect(thread?.curSeq).toBe(removalFirst ? 0 : 1);
+      expect(thread?.authorizationEpoch).toBe(0);
+    },
+  );
+
+  it.each(['REQUESTED', 'ACCEPTED'] as const)(
+    'does not create relationships or projections for a dissolved mirror (%s)',
+    async (status) => {
+      await database.db
+        .update(messageThread)
+        .set({
+          type: 'GROUP',
+          groupAccount: '!dissolved',
+          groupDomain: peerDomain,
+          groupDissolvedAt: new Date(),
+        })
+        .where(eq(messageThread.id, threadId));
+      const mutations = new FederationRelationshipMutationService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+      const updates: Array<{ userId: number; feedId: number }> = [];
+      await database.db.transaction(async (tx) => {
+        expect(
+          await mutations.writeMemberRelationshipIntentInTx(
+            tx,
+            threadId,
+            99,
+            status,
+            updates,
+          ),
+        ).toEqual(new Map());
+        expect(
+          await mutations.writeGroupRelationshipIntentInTx(
+            tx,
+            threadId,
+            99,
+            '',
+            status,
+            updates,
+          ),
+        ).toEqual(new Map());
+      });
+      expect(updates).toEqual([]);
+      expect(
+        await database.db.query.relationshipPair.findMany({
+          where: eq(relationshipPair.threadId, threadId),
+        }),
+      ).toEqual([]);
+      expect(
+        await database.db.query.accountThreadState.findMany({
+          where: eq(accountThreadState.threadId, threadId),
+        }),
+      ).toEqual([]);
+    },
+  );
+
   async function initializeTail(messageTargetSeq: number): Promise<void> {
     await database.db.transaction((tx) =>
-      FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
-        threadId,
-        namespaceId,
-        messageTargetSeq,
-        deletionTargetSeq: 0,
-        reverseEnabled: true,
-      }),
+      FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
+        tx,
+        {
+          threadId,
+          namespaceId,
+          messageTargetSeq,
+          deletionTargetSeq: 0,
+          reverseEnabled: true,
+        },
+      ),
     );
   }
+
+  async function createReader() {
+    const [reader] = await database.db
+      .insert(account)
+      .values({ account: 'window-reader' })
+      .returning();
+    await database.db.insert(relationshipPair).values({
+      kind: 'P2P',
+      active: true,
+      threadId,
+      endpointAType: 'USER',
+      endpointAAccount: 'window-reader',
+      endpointADomain: 'local',
+      endpointANamespaceId: 0,
+      endpointBType: 'USER',
+      endpointBAccount: 'remote',
+      endpointBDomain: peerDomain,
+      endpointBNamespaceId: namespaceId,
+      updatedAt: new Date(),
+    });
+    const [state] = await database.db
+      .insert(accountThreadState)
+      .values({ accountId: reader.id, threadId })
+      .returning();
+    return state;
+  }
+
+  it('sets read from the reserved local window start, not subsequent forward targets', async () => {
+    const reader = await createReader();
+    expect(reader).toMatchObject({
+      lastReadSeq: 0,
+      unreadCount: 0,
+      previewSeqs: [],
+    });
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 10 })
+      .where(eq(messageThread.id, threadId));
+    await initializeTail(100);
+    const read = () =>
+      database.db.query.accountThreadState.findFirst({
+        where: eq(accountThreadState.id, reader.id),
+      });
+    expect(await read()).toMatchObject({ lastReadSeq: 109, unreadCount: 0 });
+    await initializeTail(200);
+    expect(await read()).toMatchObject({ lastReadSeq: 109 });
+    await database.db
+      .update(messageThread)
+      .set({ authorizationEpoch: 1, curSeq: 110 })
+      .where(eq(messageThread.id, threadId));
+    await initializeTail(200);
+    expect(await read()).toMatchObject({ lastReadSeq: 210 });
+  });
+
+  it('rolls back read initialization with gap reservation and the source cursor', async () => {
+    const reader = await createReader();
+    const rollback = new Error('rollback window');
+    await expect(
+      database.db.transaction(async (tx) => {
+        await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
+          tx,
+          {
+            threadId,
+            namespaceId,
+            messageTargetSeq: 100,
+            deletionTargetSeq: 0,
+            reverseEnabled: true,
+          },
+        );
+        expect(
+          await tx.query.accountThreadState.findFirst({
+            where: eq(accountThreadState.id, reader.id),
+          }),
+        ).toMatchObject({ lastReadSeq: 99 });
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
+    expect(
+      await database.db.query.accountThreadState.findFirst({
+        where: eq(accountThreadState.id, reader.id),
+      }),
+    ).toMatchObject({ lastReadSeq: 0, unreadCount: 0, previewSeqs: [] });
+    expect(
+      await database.db.query.federationThreadSyncState.findFirst({
+        where: eq(federationThreadSyncState.threadId, threadId),
+      }),
+    ).toBeUndefined();
+    expect(
+      await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      }),
+    ).toMatchObject({ curSeq: 0 });
+  });
 
   it('keeps the newest advertised message forward and creates an inclusive older gap', async () => {
     await initializeTail(100);
@@ -161,13 +429,63 @@ describe('federation thread synchronization state', () => {
     expect(applyDependencies).toHaveBeenCalledOnce();
   });
 
-  it('rolls back an old-epoch reverse commit before applying its buffered facts', async () => {
+  it('invalidates buffered facts on P2P deactivation without advancing the epoch on retries', async () => {
     await initializeTail(100);
     const state = await states.require(threadId, namespaceId);
-    await database.db
-      .update(messageThread)
-      .set({ authorizationEpoch: 1 })
-      .where(eq(messageThread.id, threadId));
+    const [pair] = await database.db
+      .insert(relationshipPair)
+      .values({
+        kind: 'P2P',
+        endpointAType: 'USER',
+        endpointAAccount: 'alice',
+        endpointADomain: 'local',
+        endpointANamespaceId: namespaceId,
+        endpointBType: 'USER',
+        endpointBAccount: 'bob',
+        endpointBDomain: peerDomain,
+        endpointBNamespaceId: namespaceId,
+        threadId,
+        active: true,
+      })
+      .returning();
+    const change = (active: boolean, rollback = false) =>
+      database.db.transaction(async (tx) => {
+        await lockBusinessAccountsInTx(tx, [
+          { account: 'alice', domain: 'local' },
+          { account: 'bob', domain: peerDomain },
+        ]);
+        await tx.execute(
+          sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} FOR UPDATE`,
+        );
+        const changed = await setLockedP2PPairActiveInTx(tx, pair.id, active);
+        if (rollback) throw new Error('abort deactivation');
+        return changed;
+      });
+    await expect(change(false, true)).rejects.toThrow('abort deactivation');
+    expect(
+      (
+        await database.db.query.messageThread.findFirst({
+          where: eq(messageThread.id, threadId),
+        })
+      )?.authorizationEpoch,
+    ).toBe(0);
+    expect(
+      (
+        await database.db.query.relationshipPair.findFirst({
+          where: eq(relationshipPair.id, pair.id),
+        })
+      )?.active,
+    ).toBe(true);
+    expect(await change(true)).toBe(false);
+    expect(await change(false)).toBe(true);
+    expect(await change(false)).toBe(false);
+    expect(
+      (
+        await database.db.query.messageThread.findFirst({
+          where: eq(messageThread.id, threadId),
+        })
+      )?.authorizationEpoch,
+    ).toBe(1);
     const applyDependencies = vi.fn();
 
     await expect(
@@ -192,6 +510,23 @@ describe('federation thread synchronization state', () => {
       .from(federationThreadHistoryGap)
       .where(eq(federationThreadHistoryGap.id, state.activeGapId!));
     expect(gap).toMatchObject({ startSeq: 1, endSeq: 99 });
+    expect(
+      await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      }),
+    ).toMatchObject({ federationRoundsEnabled: false, authorizationEpoch: 1 });
+    expect(await change(true)).toBe(true);
+    expect(
+      await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      }),
+    ).toMatchObject({ federationRoundsEnabled: true, authorizationEpoch: 1 });
+    await expect(change(false, true)).rejects.toThrow('abort deactivation');
+    expect(
+      await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      }),
+    ).toMatchObject({ federationRoundsEnabled: true, authorizationEpoch: 1 });
   });
 
   it('deletes the final gap only after switching synchronization state to terminal', async () => {
@@ -240,13 +575,16 @@ describe('federation thread synchronization state', () => {
       .returning({ id: identityNamespace.id });
     for (const sourceNamespaceId of [namespaceId, other.id]) {
       await database.db.transaction((tx) =>
-        FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
-          threadId,
-          namespaceId: sourceNamespaceId,
-          messageTargetSeq: 10,
-          deletionTargetSeq: 2,
-          reverseEnabled: false,
-        }),
+        FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
+          tx,
+          {
+            threadId,
+            namespaceId: sourceNamespaceId,
+            messageTargetSeq: 10,
+            deletionTargetSeq: 2,
+            reverseEnabled: false,
+          },
+        ),
       );
       if (sourceNamespaceId === namespaceId)
         await database.db.transaction((tx) =>
@@ -303,13 +641,16 @@ describe('federation thread synchronization state', () => {
         .returning({ id: identityNamespace.id });
       for (const sourceNamespaceId of [namespaceId, other.id])
         await database.db.transaction((tx) =>
-          FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
-            threadId,
-            namespaceId: sourceNamespaceId,
-            messageTargetSeq: 10,
-            deletionTargetSeq: 0,
-            reverseEnabled: true,
-          }),
+          FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
+            tx,
+            {
+              threadId,
+              namespaceId: sourceNamespaceId,
+              messageTargetSeq: 10,
+              deletionTargetSeq: 0,
+              reverseEnabled: true,
+            },
+          ),
         );
       const first = await states.require(threadId, namespaceId);
       const second = await states.require(threadId, other.id);

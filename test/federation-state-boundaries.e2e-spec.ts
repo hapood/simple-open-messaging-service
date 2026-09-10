@@ -1,13 +1,23 @@
+import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
+import { FederationReverseRevokeService } from '../src/federation/federation-reverse-revoke.service.js';
+import { FederationRelationshipMutationService } from '../src/federation/federation-relationship-mutation.service.js';
+import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
+import { durableTask } from '../src/database/schema.js';
+import { systemAccountIdInTx } from '../src/user/system-account.js';
+import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
   account,
   relationshipIntent,
+  federationThreadSyncState,
+  federationThreadHistoryGap,
   groupAccount as group,
   messageThread,
   accountThreadState,
@@ -15,6 +25,7 @@ import {
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { MessageService } from '../src/message/message.service.js';
+import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 
@@ -40,6 +51,9 @@ describe('federation directed-state boundaries', () => {
       {} as never,
       Object.create(MessageService.prototype) as MessageService,
     );
+    Object.assign(relationships, {
+      previews: new ThreadPreviewService(database),
+    });
   });
 
   afterAll(async () => mod.close());
@@ -92,6 +106,8 @@ describe('federation directed-state boundaries', () => {
             ? relationship.firstSide
             : relationship.secondSide,
         status: row.status,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         note: row.note ?? '',
         requestedAt: row.requestedAt,
         expiresAt: row.expiresAt,
@@ -100,6 +116,144 @@ describe('federation directed-state boundaries', () => {
     );
     return relationship;
   }
+
+  it.each([0, 12])(
+    'initializes the retained remote grant (%i messages) atomically on local acceptance',
+    async (end) => {
+      const { local, peer } = await createPair(`grant-${end}`);
+      await database.db.transaction((tx) =>
+        relationships.applyRemoteP2PIntentInTx(tx, {
+          localUserId: local.id,
+          peerUserId: peer,
+          status: 'REQUESTED',
+          profileRev: 0,
+          note: '',
+          requestedAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+          origin: peer.domain,
+          messageEndSeq: end,
+          tombstoneEndSeq: end === 0 ? 0 : 4,
+        }),
+      );
+      // Scope assertions to the new pair, since this suite preserves other cases.
+      let activatedThreadId = 0;
+      const activate = async (
+        tx: Parameters<Parameters<typeof database.db.transaction>[0]>[0],
+      ) => {
+        await relationships.writeLocalP2PIntentInTx(tx, local.id, peer, true);
+        const pair = await findP2PRelationship(tx, local.id, peer);
+        activatedThreadId = pair.pair!.threadId!;
+        const state = await tx.query.federationThreadSyncState.findFirst({
+          where: eq(federationThreadSyncState.threadId, activatedThreadId),
+        });
+        expect(state).toMatchObject({
+          messageTargetSeq: end,
+          messageProcessedThroughSeq: Math.max(0, end - 1),
+          deletionTargetSeq: end === 0 ? 0 : 4,
+          deletionProcessedThroughSeq: end === 0 ? 0 : 4,
+          historyBoundaryReached: end === 0,
+        });
+      };
+      await expect(
+        database.db.transaction(async (tx) => {
+          await activate(tx);
+          throw new Error('rollback grant');
+        }),
+      ).rejects.toThrow('rollback grant');
+      expect(
+        await database.db.query.federationThreadSyncState.findFirst({
+          where: eq(federationThreadSyncState.threadId, activatedThreadId),
+        }),
+      ).toBeUndefined();
+      await database.db.transaction(activate);
+      if (end !== 0) return;
+      await database.db.transaction(async (tx) => {
+        const threadLock = await requireThreadContentLockInTx(
+          tx,
+          activatedThreadId,
+        );
+        // Multiple messages and a deletion may arrive before the first head is drained.
+        expect(
+          await FederationThreadSyncStateService.updateThreadHeadInTx(tx, {
+            threadId: activatedThreadId,
+            namespaceId: peer.namespaceId,
+            messageTargetSeq: 3,
+            deletionTargetSeq: 1,
+            threadLock,
+          }),
+        ).toBe(true);
+        const state = await tx.query.federationThreadSyncState.findFirst({
+          where: eq(federationThreadSyncState.threadId, activatedThreadId),
+        });
+        expect(state).toMatchObject({
+          messageTargetSeq: 3,
+          deletionTargetSeq: 1,
+          messageProcessedThroughSeq: 0,
+          deletionProcessedThroughSeq: 0,
+          activeGapId: null,
+          historyBoundaryReached: true,
+        });
+        await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
+          tx,
+          activatedThreadId,
+          3,
+          3,
+          peer.namespaceId,
+        );
+        await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
+          tx,
+          activatedThreadId,
+          1,
+          1,
+          peer.namespaceId,
+        );
+      });
+      const state = await database.db.query.federationThreadSyncState.findFirst(
+        {
+          where: eq(federationThreadSyncState.threadId, activatedThreadId),
+        },
+      );
+      expect(state).toMatchObject({
+        messageProcessedThroughSeq: 3,
+        deletionProcessedThroughSeq: 1,
+        activeGapId: null,
+      });
+      expect(
+        await database.db
+          .select()
+          .from(federationThreadHistoryGap)
+          .where(eq(federationThreadHistoryGap.threadId, activatedThreadId)),
+      ).toHaveLength(0);
+    },
+  );
+
+  it('rejects NULL snapshots in the database and preserves the existing zero grant', async () => {
+    const { local, peer } = await createPair('nonnull-head');
+    const relationship = await seedIntents(local.id, peer, [
+      {
+        author: 'peer',
+        status: 'REQUESTED',
+        requestedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+    await expect(
+      database.db.execute(sql`
+      UPDATE "RelationshipIntent" SET "messageEndSeq" = NULL, "tombstoneEndSeq" = NULL
+      WHERE "pairId" = ${relationship.pair!.id}
+    `),
+    ).rejects.toThrow();
+    const stored = await database.db.query.relationshipIntent.findFirst({
+      where: eq(relationshipIntent.pairId, relationship.pair!.id),
+    });
+    expect(stored).toMatchObject({ messageEndSeq: 0, tombstoneEndSeq: 0 });
+    await database.db.transaction((tx) =>
+      relationships.writeLocalP2PIntentInTx(tx, local.id, peer, true),
+    );
+    expect(
+      (await findP2PRelationship(database.db, local.id, peer)).pair?.active,
+    ).toBe(true);
+  });
 
   it('ignores a peer FRIEND snapshot outside an effective request flow', async () => {
     const { local, peer } = await createPair(Date.now().toString(36));
@@ -120,6 +274,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'ACCEPTED',
@@ -193,6 +349,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'REQUESTED',
@@ -228,7 +386,7 @@ describe('federation directed-state boundaries', () => {
     expect(localParticipants).toHaveLength(1);
   });
 
-  it('closes stale addressed requests when a remote revoke closes the pair', async () => {
+  it('applies a remote revoke without directly changing the local intent', async () => {
     const { local, peer } = await createPair(
       `ar-${Date.now().toString(36).slice(-6)}`,
     );
@@ -248,34 +406,98 @@ describe('federation directed-state boundaries', () => {
         expiresAt,
       },
     ]);
+    const feed = new ClientStateFeedService(database, {
+      onStateFeedUpdated: () => undefined,
+    } as never);
+    const stateFeed = {
+      lockTargetsInTx: async () => undefined,
+      writeManyInTx: async () => new Map(),
+    };
+    const mutations = Object.create(
+      FederationRelationshipMutationService.prototype,
+    ) as FederationRelationshipMutationService;
+    Object.assign(mutations, {
+      relationships,
+      relationshipIntents,
+      stateFeed,
+      config: { domain: 'local.test' },
+    });
+    const reverse = new FederationReverseRevokeService(
+      database,
+      new DurableTaskQueueService(database),
+      mutations,
+      feed,
+      { emit: () => undefined } as never,
+    );
+    const consumer = Object.create(
+      FederationStateFeedConsumerService.prototype,
+    ) as FederationStateFeedConsumerService;
+    Object.assign(consumer, {
+      relationships,
+      relationshipIntents,
+      reverseRevokes: reverse,
+      stateFeed,
+      config: { domain: 'local.test' },
+    });
     await database.db.transaction((tx) =>
-      relationships.applyRemoteP2PIntentInTx(tx, {
-        localUserId: local.id,
-        peerUserId: peer,
-        status: 'REVOKED',
-        profileRev: 1,
-        note: '',
-        requestedAt: null,
-        expiresAt: null,
-        origin: 'peer.test',
+      consumer.applyPageInTx(tx, peer.domain, peer.namespaceId, {
+        items: [
+          {
+            eventType: 'RELATIONSHIP_INTENT',
+            account: peer.account,
+            peerAccount: local.account,
+            feedId: '1',
+            body: {
+              status: 'REVOKED',
+              profileRev: 1,
+              note: '',
+              requestedAt: null,
+              expiresAt: null,
+            },
+          },
+        ],
+        scannedThrough: '1',
+        stateFeedEndId: '1',
+        hasMore: false,
       }),
     );
 
     const relationship = await findP2PRelationship(database.db, local.id, peer);
-    await expect(
-      database.db.query.relationshipIntent.findMany({
-        where: eq(relationshipIntent.pairId, relationship.pair!.id),
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        status: 'REVOKED',
-        expiresAt: null,
-      }),
-      expect.objectContaining({
-        status: 'REVOKED',
-        expiresAt: null,
-      }),
+    const intents = await database.db.query.relationshipIntent.findMany({
+      where: eq(relationshipIntent.pairId, relationship.pair!.id),
+    });
+    expect(intents.map((intent) => intent.status).sort()).toEqual([
+      'REQUESTED',
+      'REVOKED',
     ]);
+    expect(
+      intents.find((intent) => intent.status === 'REQUESTED')?.expiresAt,
+    ).toEqual(expiresAt);
+    const task = (await database.db.query.durableTask.findMany()).find(
+      (row) =>
+        row.payload.operation === 'RESPOND_TO_REVOKE' &&
+        row.payload.intentAuthorUserId === local.id,
+    )!;
+    expect(task).toMatchObject({
+      taskType: 'REVOKE_USER_RELATIONSHIP',
+      actorUserId: await database.db.transaction(systemAccountIdInTx),
+    });
+    await database.db
+      .update(durableTask)
+      .set({ status: 'PROCESSING', startedAt: new Date() })
+      .where(eq(durableTask.id, task.id));
+    await reverse.execute({ ...task, status: 'PROCESSING' });
+    const closed = await database.db.query.relationshipIntent.findMany({
+      where: eq(relationshipIntent.pairId, relationship.pair!.id),
+    });
+    expect(closed.every((intent) => intent.status === 'REVOKED')).toBe(true);
+    expect(
+      (
+        await database.db.query.durableTask.findFirst({
+          where: eq(durableTask.id, task.id),
+        })
+      )?.checkpoint,
+    ).toEqual({ reverseRevokeDone: true });
   });
 
   it('confirms ACCEPTED + REQUESTED without waiting for a second acknowledgement', async () => {
@@ -295,6 +517,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'REQUESTED',
@@ -335,6 +559,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'REQUESTED',
@@ -367,6 +593,8 @@ describe('federation directed-state boundaries', () => {
     await expect(
       database.db.insert(relationshipIntent).values({
         pairId: relationship.pair!.id,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         authorSide: relationship.firstSide,
         status: 'ACCEPTED',
         requestedAt: null,
@@ -392,6 +620,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'ACCEPTED',
@@ -441,6 +671,8 @@ describe('federation directed-state boundaries', () => {
 
     const effect = await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: local.id,
         peerUserId: peer,
         status: 'ACCEPTED',

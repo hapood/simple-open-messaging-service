@@ -106,7 +106,6 @@ export class ThreadListComponent implements OnInit {
   readonly status = this.convList.status;
   readonly errorMsg = this.convList.error;
   readonly openThreadId = this.convList.openThreadId;
-  readonly readCommitPending = this.convList.readCommitPending;
   /** exposes the enum to the template's @switch */
   readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus;
 
@@ -144,6 +143,8 @@ export class ThreadListComponent implements OnInit {
    *  `creator`, not the sender's display name, so incoming messages show bare — no "Alice:" prefix). */
   private static readonly PREVIEW_MARKERS: Readonly<Record<string, string>> = {
     '[Photo]': 'chat.preview.photo',
+    '[Message retracted]': 'chat.messageRetracted',
+    '[Message removed by administrator]': 'chat.messageRemovedByAdmin',
     '[Group invite]': 'chat.preview.invite',
     '[Video]': 'chat.preview.video',
     '[File]': 'chat.preview.file',
@@ -260,7 +261,7 @@ export class ThreadListComponent implements OnInit {
       this.fmtTime(t.lastMessageAt),
     ];
     if (t.unreadCount > 0) {
-      const count = t.unreadCount >= 1000 ? '999+' : t.unreadCount;
+      const count = t.unreadCount >= 100 ? '99+' : t.unreadCount;
       parts.push(this.transloco.translate('threadList.unreadCount', { count }));
     }
     if ((t.mentionUnread?.length ?? 0) > 0) {

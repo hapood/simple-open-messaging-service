@@ -164,6 +164,7 @@ export class MemberProfileRepository {
     this.resolutionsInFlight.add(key);
     this.profileResolutions
       .resolve({
+          type: 'GROUP_MEMBER',
         threadId,
         memberAccount: member.account,
         memberDomain: member.domain,

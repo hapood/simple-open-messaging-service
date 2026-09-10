@@ -1,11 +1,15 @@
 import {
+  FEDERATION_STATE_FEED_PUSH,
+  type FederationStateFeedPush,
+} from './federation-state-feed.events.js';
+import {
   Injectable,
   Logger,
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gt, or, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -115,6 +119,26 @@ export class FederationThreadRoundSchedulerService
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    await this.recoverPendingRounds();
+    for (const peerDomain of await this.federation.listTrustedPeerDomains())
+      this.wakeStateFeed(peerDomain, 0n);
+  }
+
+  /** Authored confirmations are published after commit, when initialized sources are visible. */
+  @OnEvent(FEDERATION_STATE_FEED_PUSH)
+  async onRelationshipStatePublished(
+    event: FederationStateFeedPush,
+  ): Promise<void> {
+    try {
+      await this.recoverPendingRounds(event.peerDomain);
+    } catch (error) {
+      this.logger.warn(
+        `relationship round recovery failed: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  private async recoverPendingRounds(peerDomain?: string): Promise<void> {
     const rows = await this.database.db
       .select({
         threadId: federationThreadSyncState.threadId,
@@ -147,6 +171,26 @@ export class FederationThreadRoundSchedulerService
             federationThreadSyncState.namespaceId,
           ),
         ),
+      )
+      .where(
+        and(
+          peerDomain === undefined
+            ? undefined
+            : eq(identityNamespace.domain, peerDomain),
+          eq(messageThread.federationRoundsEnabled, true),
+          sql`${federationThreadSyncState.authorizationEpoch} = ${messageThread.authorizationEpoch}`,
+          or(
+            gt(
+              federationThreadSyncState.messageTargetSeq,
+              federationThreadSyncState.messageProcessedThroughSeq,
+            ),
+            gt(
+              federationThreadSyncState.deletionTargetSeq,
+              federationThreadSyncState.deletionProcessedThroughSeq,
+            ),
+            eq(federationThreadSyncState.historyBoundaryReached, false),
+          ),
+        ),
       );
     for (const state of rows) {
       try {
@@ -164,6 +208,9 @@ export class FederationThreadRoundSchedulerService
         }
         throw error;
       }
+      this.blockedThreads.delete(
+        this.workKey(state.threadId, state.peerDomain, state.namespaceId),
+      );
       if (state.messageProcessedThroughSeq < state.messageTargetSeq)
         void this.wakeCaptured(
           state.threadId,
@@ -187,8 +234,6 @@ export class FederationThreadRoundSchedulerService
           'reverse',
         );
     }
-    for (const peerDomain of await this.federation.listTrustedPeerDomains())
-      this.wakeStateFeed(peerDomain, 0n);
   }
 
   @OnEvent(FEDERATION_THREAD_ROUND_WAKE)

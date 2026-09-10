@@ -308,6 +308,10 @@ export class FederationThreadReverseRoundExecutorService {
         throughSeq: context.throughSeq,
         closesGap,
         applyDependencies: async (threadLock) => {
+          await FederationThreadSourceService.assertAudienceInTx(
+            threadLock,
+            source,
+          );
           const applied =
             await this.federation.applyReverseMessagePageInTransaction(tx, {
               ...batch,

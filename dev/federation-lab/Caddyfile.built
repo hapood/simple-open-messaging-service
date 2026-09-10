@@ -3,6 +3,12 @@
 }
 
 (built_edge) {
+	handle /push/*.js {
+		root * ./web/dist/web/browser
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	@backend path /api/* /uploads/* /s2s/* /.well-known/*
 	handle @backend {
 		reverse_proxy 127.0.0.1:{args.0}

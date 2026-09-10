@@ -2,6 +2,7 @@ import {
   groupState as group,
   groupStateFields,
   readGroupState,
+  isGroupDissolvedInTx,
 } from './group-state.js';
 import { p2pPeerRelation } from '../relationship/relationship-address.js';
 import {
@@ -392,7 +393,12 @@ export class GroupService {
   }): Promise<void> {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-    await this.database.db.transaction(async (tx) => {
+    const applied = await this.database.db.transaction(async (tx) => {
+      if (
+        params.decision === 'ACCEPTED' &&
+        (await isGroupDissolvedInTx(tx, params.threadId))
+      )
+        return false;
       const readRequest = () =>
         tx
           .execute<{
@@ -450,7 +456,9 @@ export class GroupService {
           clientFeedUpdates,
           'APPLICATION',
         );
+      return true;
     });
+    if (!applied) return;
     this.notifyCommandEffects(
       clientFeedUpdates,
       statePeers.keys(),

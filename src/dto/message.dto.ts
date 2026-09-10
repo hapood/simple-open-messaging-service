@@ -12,7 +12,6 @@ import {
   IsUUID,
   Max,
   MaxLength,
-  Matches,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -361,20 +360,54 @@ export class MarkReadDto {
   })
   @Type(() => Number)
   @IsInt()
+  @Min(0)
+  @Max(2147483647)
   localReadHwm!: number;
+
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Explicitly allow the read position to move backwards.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
 }
 
-/** Pull per-thread read states changed in a bounded per-user revision range. */
-export class ReadDeltaDto {
+/** Pull complete thread snapshots in a bounded account feed range. */
+export class ThreadFeedDeltaDto {
+  @ApiPropertyOptional({
+    default: 0,
+    minimum: 0,
+    description: 'Number of memory previews, up to THREAD_PREVIEW_LIMIT.',
+  })
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  fromRevision!: number;
+  previewCount?: number;
 
+  @ApiProperty({ example: 0 })
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  toRevision!: number;
+  @Max(2147483647)
+  after!: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  through?: number;
+
+  @ApiPropertyOptional({ default: 100, minimum: 1, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take?: number;
 }
 
 /** Toggle mute for a conversation (the caller's AccountThreadState row). */

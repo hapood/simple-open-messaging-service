@@ -1,11 +1,15 @@
+import { writeP2PClientRelationshipInTx } from './p2p-client-relationship.js';
+import { initializeRelationshipThreadStateInTx } from '../federation/federation-relationship-thread-state.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
+import { isGroupDissolvedInTx } from '../group/group-state.js';
 import {
   accountAddressInTx,
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../user/account-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { ThreadPreviewService } from '../message/thread-preview.service.js';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -81,6 +85,8 @@ export function applyFederatedPendingProfileSnapshot(
  */
 @Injectable()
 export class RelationshipService {
+  @Inject(ThreadPreviewService)
+  private readonly previews!: ThreadPreviewService;
   constructor(
     private readonly database: DatabaseService,
     private readonly participantService: AccountThreadStateService,
@@ -99,7 +105,7 @@ export class RelationshipService {
         SELECT pair."threadId"
         FROM "RelationshipPair" pair
         JOIN "MessageThread" thread ON thread.id = pair."threadId"
-        WHERE pair.active = false
+        WHERE pair.active = false AND pair.established = false
           AND pair.kind = 'P2P'
           AND pair."threadId" IS NOT NULL
           AND thread.type = 'P2P'
@@ -443,84 +449,13 @@ export class RelationshipService {
     secondTarget: AccountTarget,
     _secondUserSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Array<{ userId: number; feedId: number }>> {
-    const first = await accountAddressInTx(tx, firstTarget);
-    const second = await accountAddressInTx(tx, secondTarget);
-    const relationship = await this.relationshipIntents.readP2PRelationshipInTx(
+    return writeP2PClientRelationshipInTx(
       tx,
-      first,
-      second,
+      firstTarget,
+      secondTarget,
+      this.relationshipIntents,
+      this.clientStateFeed,
     );
-    const recipients = await localAccountsForTargetsInTx(tx, [first, second]);
-    const pending: Array<{ userId: number; feedId: number }> = [];
-    const directions = [
-      { actor: first, subject: second, intent: relationship.firstIntent },
-      { actor: second, subject: first, intent: relationship.secondIntent },
-    ];
-    const namespaceId = Math.max(first.namespaceId, second.namespaceId);
-    for (const { actor, subject, intent } of directions) {
-      if (!intent) continue;
-      for (const owner of recipients) {
-        if (owner.availability !== 'AVAILABLE') continue;
-        const outgoing =
-          actor.domain === 'local' && actor.account === owner.account;
-        const peer = outgoing ? subject : actor;
-        const peerIntent = directions.find(
-          (direction) =>
-            direction.actor.account === peer.account &&
-            direction.actor.domain === peer.domain,
-        )?.intent;
-        const feedId = await this.clientStateFeed.writeInTx(tx, {
-          userId: owner.id,
-          account: actor.account,
-          domain: actor.domain,
-          subjectAccount: subject.account,
-          subjectDomain: subject.domain,
-          namespaceId,
-          eventType: 'RELATIONSHIP_INTENT',
-          body: {
-            status: intent.status,
-            note: intent.note,
-            requestedAt: intent.requestedAt?.getTime() ?? null,
-            expiresAt: intent.expiresAt?.getTime() ?? null,
-            direction: outgoing ? 'OUTGOING' : 'INCOMING',
-            localThreadId: relationship.pair.threadId,
-            peer: await this.clientInviteUser(
-              tx,
-              peer,
-              peerIntent?.profileRev ?? 0,
-            ),
-          },
-        });
-        if (feedId !== null) pending.push({ userId: owner.id, feedId });
-      }
-    }
-    return pending;
-  }
-
-  private async clientInviteUser(
-    tx: DatabaseTransaction,
-    value: NamespacedAddress,
-    rev: number,
-  ) {
-    const profile =
-      rev > 0
-        ? await tx.query.profileTable.findFirst({
-            where: and(
-              eq(profileTable.account, value.account),
-              eq(profileTable.domain, value.domain),
-              eq(profileTable.namespaceId, value.namespaceId),
-              eq(profileTable.profileRev, rev),
-            ),
-          })
-        : undefined;
-    return {
-      account: value.account,
-      name: profile?.displayName ?? value.account,
-      avatar: profile?.avatar ?? '',
-      bio: profile?.bio ?? '',
-      domain: value.domain,
-      profileRev: rev,
-    };
   }
 
   /** Rejection/deletion closes only the actor's direction. The opposite request remains valid and may
@@ -671,9 +606,10 @@ export class RelationshipService {
     toUserId: AccountTarget,
     note = '',
     afterWrite?: (tx: DatabaseTransaction) => Promise<void>,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const trimmed = (note ?? '').slice(0, 255);
     return this.database.db.transaction(async (tx) => {
+      if (await isGroupDissolvedInTx(tx, threadId)) return null;
       const memberIdentity = await accountAddressInTx(tx, toUserId);
       const target = await tx.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
@@ -876,6 +812,8 @@ export class RelationshipService {
       localUserId: number;
       peerUserId: AccountTarget;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      messageEndSeq?: number;
+      tombstoneEndSeq?: number;
       profileRev: number;
       note: string;
       requestedAt: Date | null;
@@ -904,6 +842,8 @@ export class RelationshipService {
         subjectUserId: params.localUserId,
         threadId: before.pair.threadId,
         status: params.status,
+        messageEndSeq: params.messageEndSeq,
+        tombstoneEndSeq: params.tombstoneEndSeq,
         profileRev: params.profileRev,
         note: params.note,
         requestedAt: params.status === 'REVOKED' ? null : params.requestedAt,
@@ -913,7 +853,7 @@ export class RelationshipService {
     if (!applied.changed)
       return { changed: false, requestCreated: false, clientFeedUpdates: [] };
     const localStateRevision =
-      applied.publishAccepted || applied.reverseChanged ? 1 : undefined;
+      applied.publishAccepted ? 1 : undefined;
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
       params.localUserId,
@@ -1035,6 +975,17 @@ export class RelationshipService {
       const recipients = (
         await localAccountsForTargetsInTx(tx, [userAId, userBId])
       ).map((row) => ({ userId: row.id }));
+      await this.previews.initializeReadWindowsInTx(
+        tx,
+        threadId,
+        recipients.map((row) => row.userId),
+      );
+      await initializeRelationshipThreadStateInTx(
+        tx,
+        threadId,
+        current.id,
+        threadLock,
+      );
       await this.messages.writeSystemMessageInTx(
         tx,
         threadId,
@@ -1043,7 +994,6 @@ export class RelationshipService {
         {
           threadLock,
           actorUserId: userAId,
-          recipientUserIds: recipients.map((row) => row.userId),
         },
       );
       const clientFeedUpdates = await tx
@@ -1073,7 +1023,7 @@ export class RelationshipService {
           await localAccountsForTargetsInTx(tx, [userAId, userBId])
         ).map((row) => ({ userId: row.id }));
         const recipientUserIds = recipients.map((row) => row.userId);
-        await this.messages.writeDepartureMessageInTx(
+        const boundary = await this.messages.writeDepartureMessageInTx(
           tx,
           current.threadId,
           SystemMessageType.FRIEND_REMOVED,
@@ -1081,10 +1031,21 @@ export class RelationshipService {
           {
             threadLock,
             actorUserId: departure.actorUserId,
-            recipientUserIds,
-            visibleThroughUserIds: recipientUserIds,
           },
         );
+        if (recipientUserIds.length > 0)
+          await tx
+            .update(accountThreadState)
+            .set({
+              messageVisibleThroughSeq: boundary.message.seq,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(accountThreadState.threadId, current.threadId),
+                inArray(accountThreadState.accountId, recipientUserIds),
+              ),
+            );
         clientFeedUpdates = await tx
           .select({
             userId: accountTable.id,

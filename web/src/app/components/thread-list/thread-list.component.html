@@ -49,7 +49,6 @@
             [attr.data-flip-key]="thread.threadId"
             [class.active]="thread.threadId === openThreadId()"
             [class.unread]="thread.unreadCount > 0"
-            [class.unread-syncing]="readCommitPending().has(thread.threadId)"
             [class.muted]="thread.muted"
             [attr.aria-current]="
               thread.threadId === openThreadId() ? 'true' : null
@@ -135,7 +134,7 @@
                 @if (thread.unreadCount > 0) {
                   <span class="unread-badge" aria-hidden="true">
                     {{
-                      thread.unreadCount >= 1000 ? '999+' : thread.unreadCount
+                      thread.unreadCount >= 100 ? '99+' : thread.unreadCount
                     }}
                   </span>
                 }

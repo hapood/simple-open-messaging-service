@@ -6,10 +6,8 @@ import {
   groupRequestKey,
   markProjectionAccepted,
   projectionDirectionForFact,
-  relationshipFactsAreActive,
   type FriendIntentProjectionInput,
   type GroupInviteProjectionInput,
-  type RelationshipIntentFact,
 } from './friend-request-state';
 
 const friendInput: FriendIntentProjectionInput = {
@@ -154,33 +152,5 @@ describe('request projection effects', () => {
         3_000,
       ).record?.status,
     ).toBe('REVOKED');
-  });
-});
-
-describe('authoritative fact folding', () => {
-  it('requires two effective facts and one ACK', () => {
-    const first: RelationshipIntentFact = {
-      key: 'a->b',
-      reverseKey: 'b->a',
-      status: 'REQUESTED',
-      expiresAt: 10_000,
-      localThreadId: 1,
-      updatedAt: 1,
-    };
-    const second: RelationshipIntentFact = {
-      ...first,
-      key: 'b->a',
-      reverseKey: 'a->b',
-      status: 'ACCEPTED',
-      expiresAt: null,
-    };
-    expect(relationshipFactsAreActive(first, second, 2_000)).toBe(true);
-    expect(
-      relationshipFactsAreActive(
-        first,
-        { ...second, status: 'REQUESTED' },
-        2_000,
-      ),
-    ).toBe(false);
   });
 });

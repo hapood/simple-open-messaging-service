@@ -11,7 +11,6 @@ import type { DurableTask } from './durable-task.types.js';
 function makeTask(id: bigint, scopeKey = `aggregate-${id.toString()}`) {
   return {
     id,
-    parentTaskId: null,
     kind: 'MUTATION',
     scopeType: 'GROUP',
     scopeKey,
@@ -20,7 +19,6 @@ function makeTask(id: bigint, scopeKey = `aggregate-${id.toString()}`) {
     payload: {},
     checkpoint: {},
     coalescingKey: null,
-    supersededByTaskId: null,
     status: 'PENDING',
     resultCode: null,
     lastError: null,
@@ -148,6 +146,35 @@ describe('DurableTaskSchedulerService', () => {
     await scheduler.onApplicationShutdown();
   });
 
+  it.each(['FAN_OUT_THREAD_CONTENT', 'FAN_OUT_FEDERATION_THREAD_CONTENT'])(
+    'recovers interrupted %s at startup',
+    async (taskType) => {
+      const task = {
+        ...makeTask(1n),
+        taskType,
+        status: 'PROCESSING' as const,
+      };
+      const harness = createStore([task]);
+      const dispatcher = new DurableTaskDispatcherService();
+      const execute = vi.fn(async () => {});
+      dispatcher.register({ taskType: task.taskType, execute });
+      const scheduler = new DurableTaskSchedulerService(
+        harness.store,
+        dispatcher,
+        createAsyncScheduler(harness.store),
+      );
+      await scheduler.wake();
+      await vi.waitFor(() =>
+        expect(harness.markSucceeded).toHaveBeenCalledOnce(),
+      );
+      expect(harness.store.findCheckpointedProcessing).toHaveBeenCalledWith(
+        expect.arrayContaining([taskType]),
+      );
+      expect(execute).toHaveBeenCalledOnce();
+      await scheduler.onApplicationShutdown();
+    },
+  );
+
   it('does not scan locally executing tasks for recovery during polling', async () => {
     const task = { ...makeTask(1n), taskType: 'FAN_OUT_GROUP_META_HEAD' };
     const harness = createStore([task]);
@@ -204,39 +231,46 @@ describe('DurableTaskSchedulerService', () => {
     expect(stopped).toBe(true);
   });
 
-  it('resumes checkpointed disband and projection tasks already in processing', async () => {
-    const disband = {
-      ...makeTask(1n, 'group-key'),
-      taskType: 'DISBAND_GROUP',
-      status: 'PROCESSING',
-      startedAt: new Date(),
-    } satisfies DurableTask;
-    const projection = {
-      ...makeTask(2n, 'other-group-key'),
-      kind: 'PROJECTION',
-      taskType: 'FAN_OUT_GROUP_META_HEAD',
-      status: 'PROCESSING',
-      startedAt: new Date(),
-    } satisfies DurableTask;
-    const harness = createStore([disband, projection]);
-    const dispatcher = new DurableTaskDispatcherService();
-    const execute = vi.fn().mockResolvedValue(undefined);
-    dispatcher.register({ taskType: 'DISBAND_GROUP', execute });
-    dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
-    const scheduler = new DurableTaskSchedulerService(
-      harness.store,
-      dispatcher,
-      createAsyncScheduler(harness.store),
-    );
+  it.each([
+    'DISBAND_GROUP',
+    'REVOKE_FORBIDDEN_GROUP',
+    'FORCE_REVOKE_GROUP_MEMBER',
+  ])(
+    'resumes interrupted %s and projection tasks already in processing',
+    async (taskType) => {
+      const disband = {
+        ...makeTask(1n, 'group-key'),
+        taskType,
+        status: 'PROCESSING',
+        startedAt: new Date(),
+      } satisfies DurableTask;
+      const projection = {
+        ...makeTask(2n, 'other-group-key'),
+        kind: 'PROJECTION',
+        taskType: 'FAN_OUT_GROUP_META_HEAD',
+        status: 'PROCESSING',
+        startedAt: new Date(),
+      } satisfies DurableTask;
+      const harness = createStore([disband, projection]);
+      const dispatcher = new DurableTaskDispatcherService();
+      const execute = vi.fn().mockResolvedValue(undefined);
+      dispatcher.register({ taskType, execute });
+      dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
+      const scheduler = new DurableTaskSchedulerService(
+        harness.store,
+        dispatcher,
+        createAsyncScheduler(harness.store),
+      );
 
-    await scheduler.wake();
-    await vi.waitFor(() =>
-      expect(harness.markSucceeded).toHaveBeenCalledTimes(2),
-    );
+      await scheduler.wake();
+      await vi.waitFor(() =>
+        expect(harness.markSucceeded).toHaveBeenCalledTimes(2),
+      );
 
-    expect(execute).toHaveBeenCalledWith(disband);
-    expect(execute).toHaveBeenCalledWith(projection);
-  });
+      expect(execute).toHaveBeenCalledWith(disband);
+      expect(execute).toHaveBeenCalledWith(projection);
+    },
+  );
 
   it('bounds unrelated task execution and refills released slots', async () => {
     process.env.DURABLE_TASK_MAX_CONCURRENCY = '2';

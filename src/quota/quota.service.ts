@@ -89,8 +89,11 @@ export class QuotaService implements OnModuleInit {
   // ── limit / cap resolution ───────────────────────────────────────────────
 
   /** Per-node override set (null/absent = use the global default for that field). */
-  async getOverrides(domain: string): Promise<QuotaOverrides> {
-    const peer = await this.database.db.query.federatedPeer.findFirst({
+  async getOverrides(
+    domain: string,
+    tx?: DatabaseTransaction,
+  ): Promise<QuotaOverrides> {
+    const peer = await (tx ?? this.database.db).query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, domain),
       columns: {
         dailyMsgLimit: true,
@@ -160,36 +163,24 @@ export class QuotaService implements OnModuleInit {
   async tick(
     domain: string,
     category: QuotaCategory,
-    tx?: DatabaseTransaction | LegacyRawTransaction,
+    tx?: DatabaseTransaction,
     amount = 1,
   ): Promise<void> {
     if (!Number.isSafeInteger(amount) || amount < 1) {
       throw new Error('quota amount must be a positive safe integer');
     }
-    const overrides = await this.getOverrides(domain);
-    const limit = this.effectiveLimit(overrides, category);
-    this.assertCapabilityEnabled(category, limit);
     const today = this.utcToday();
-    const run = async (
-      runner: DatabaseTransaction | LegacyRawTransaction,
-    ): Promise<void> => {
-      const rows =
-        'execute' in runner
-          ? (
-              await runner.execute<{ count: number }>(sql`
-                INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
-                VALUES (${domain}, ${today}, ${category}, ${amount})
-                ON CONFLICT ("domain", "date", "category")
-                DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount}
-                RETURNING "count"`)
-            ).rows
-          : await runner.$queryRawUnsafe<{ count: number }[]>(
-              'INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count") VALUES ($1, $2, $3, $4) ON CONFLICT ("domain", "date", "category") DO UPDATE SET "count" = "QuotaDailyUsage"."count" + $4 RETURNING "count"',
-              domain,
-              today,
-              category,
-              amount,
-            );
+    const run = async (runner: DatabaseTransaction): Promise<void> => {
+      const overrides = await this.getOverrides(domain, runner);
+      const limit = this.effectiveLimit(overrides, category);
+      this.assertCapabilityEnabled(category, limit);
+      const { rows } = await runner.execute<{ count: number }>(sql`
+        INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
+        VALUES (${domain}, ${today}, ${category}, ${amount})
+        ON CONFLICT ("domain", "date", "category")
+        DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount}
+        RETURNING "count"
+      `);
       const count = rows[0]?.count ?? amount;
       if (count > limit) {
         const retryAfter = this.retryAfterSeconds();
@@ -229,8 +220,11 @@ export class QuotaService implements OnModuleInit {
   /** Today's additive admin allowance for `domain` (zeros if none granted today). */
   private async getAllowance(
     domain: string,
+    tx?: DatabaseTransaction,
   ): Promise<{ extraMsg: number; extraFile: number; extraFileBytes: bigint }> {
-    const row = await this.database.db.query.quotaDailyAllowance.findFirst({
+    const row = await (
+      tx ?? this.database.db
+    ).query.quotaDailyAllowance.findFirst({
       where: and(
         eq(quotaDailyAllowance.domain, domain),
         eq(quotaDailyAllowance.date, this.utcToday()),
@@ -278,8 +272,8 @@ export class QuotaService implements OnModuleInit {
       throw new Error('quota amount must be a positive safe integer');
     }
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain),
-      await this.getAllowance(domain),
+      await this.getOverrides(domain, tx),
+      await this.getAllowance(domain, tx),
     );
     const limit = category === 'messages' ? limits.msg : limits.file;
     const today = this.utcToday();
@@ -319,8 +313,8 @@ export class QuotaService implements OnModuleInit {
     tx?: DatabaseTransaction,
   ): Promise<{ bytes: bigint; limit: number; over: boolean }> {
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain),
-      await this.getAllowance(domain),
+      await this.getOverrides(domain, tx),
+      await this.getAllowance(domain, tx),
     );
     const limit = BigInt(limits.fileBytes);
     const today = this.utcToday();
@@ -755,10 +749,6 @@ export interface BreakerStatus {
 function zeroCounts(): Record<QuotaCategory, number> {
   return { messages: 0, files: 0, requests: 0, signals: 0 };
 }
-
-type LegacyRawTransaction = {
-  $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
-};
 
 /** Coerce a loose/partial override object into a clean QuotaOverrides (numbers/bigint-or-null, no junk). */
 function normalizeOverrides(

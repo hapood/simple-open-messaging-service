@@ -10,19 +10,17 @@ afterEach(() => vi.restoreAllMocks());
 describe('quote resolution coordinator', () => {
   function setup() {
     vi.mocked(isThreadMutuallyAuthorized).mockResolvedValue(true);
-    const queryClientMessagePage = vi
-      .fn()
-      .mockResolvedValue({
-        messages: [
-          {
-            seq: 9,
-            content: JSON.stringify({
-              text: 'reply',
-              quote: { seq: 0, status: 'PENDING' },
-            }),
-          },
-        ],
-      });
+    const queryClientMessagePage = vi.fn().mockResolvedValue({
+      messages: [
+        {
+          seq: 9,
+          content: JSON.stringify({
+            text: 'reply',
+            quote: { seq: 0, status: 'PENDING' },
+          }),
+        },
+      ],
+    });
     let observer: ((threadId: number) => void) | undefined;
     const cancel = vi.fn();
     const requestSourceRefresh = vi.fn().mockResolvedValue(undefined);
@@ -100,5 +98,16 @@ describe('quote resolution coordinator', () => {
       s.service.start(1, { threadId: 7, messageSeq: 9 }),
     ).rejects.toThrow('thread is unavailable');
     expect(s.queryClientMessagePage).not.toHaveBeenCalled();
+  });
+
+  it('does not parse or schedule a quote for a tomb parent', async () => {
+    const s = setup();
+    s.queryClientMessagePage.mockResolvedValue({
+      messages: [{ seq: 9, contentType: 'TOMB', isDeleted: true }],
+    } as never);
+    await expect(
+      s.service.start(1, { threadId: 7, messageSeq: 9 }),
+    ).rejects.toThrow('quoted message is unavailable');
+    expect(s.scheduler.requestSourceRefresh).not.toHaveBeenCalled();
   });
 });

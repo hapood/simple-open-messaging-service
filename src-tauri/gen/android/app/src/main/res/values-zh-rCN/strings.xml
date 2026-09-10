@@ -4,6 +4,8 @@
      with no explicit language branching. The away-notification body is server-authored (the backend
      localizes it from Accept-Language), so there is no per-locale away string here anymore. -->
 <resources>
+    <string name="notif_message_retracted">[消息已撤回]</string>
+    <string name="notif_message_removed">[管理员已删除]</string>
     <string name="notif_private_body">你有新消息</string>
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>

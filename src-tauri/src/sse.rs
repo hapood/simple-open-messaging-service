@@ -343,11 +343,16 @@ fn merge_cached_hello(
         return;
     };
     match event {
-        "STATE_FEED_UPDATED" => {
-            if let Some(inc) = data.get("feedId").and_then(|v| v.as_i64()) {
-                let cur = obj.get("stateFeedEndId").and_then(|v| v.as_i64());
+        "STATE_FEED_UPDATED" | "THREAD_FEED_UPDATED" => {
+            let (input, output) = if event == "STATE_FEED_UPDATED" {
+                ("feedId", "stateFeedEndId")
+            } else {
+                ("threadFeedEndId", "threadFeedEndId")
+            };
+            if let Some(inc) = data.get(input).and_then(|v| v.as_i64()) {
+                let cur = obj.get(output).and_then(|v| v.as_i64());
                 if cur.is_none_or(|c| inc >= c) {
-                    obj.insert("stateFeedEndId".to_string(), serde_json::Value::from(inc));
+                    obj.insert(output.to_string(), serde_json::Value::from(inc));
                 }
             }
         }
@@ -358,6 +363,35 @@ fn merge_cached_hello(
 #[cfg(all(test, desktop))]
 #[path = "tests/cached_hello_merge_tests.rs"]
 mod cached_hello_merge_tests;
+
+#[cfg(desktop)]
+#[derive(Default)]
+struct ThreadFeedHead {
+    user_id: Option<i64>,
+    target: i32,
+}
+
+#[cfg(desktop)]
+impl ThreadFeedHead {
+    fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i32)> {
+        if event != "HELLO" && event != "THREAD_FEED_UPDATED" {
+            return None;
+        }
+        if event == "HELLO" {
+            self.user_id = data
+                .get("userId")
+                .and_then(|value| value.as_i64())
+                .filter(|id| *id > 0);
+        }
+        let target = data
+            .get("threadFeedEndId")
+            .and_then(|value| value.as_i64())
+            .and_then(|value| i32::try_from(value).ok())
+            .filter(|value| *value >= 0)?;
+        self.target = self.target.max(target);
+        self.user_id.map(|user_id| (user_id, self.target))
+    }
+}
 
 /// Open + consume one SSE stream until it ends (clean close / error / stale / cancel / force-logout).
 #[cfg(desktop)]
@@ -377,6 +411,53 @@ async fn open_one_stream(
         Some(t) => t,
         None => return StreamOutcome::Cancelled, // logout raced past the outer gate
     };
+    let feed_cancel = cancel.child_token();
+    let _feed_guard = feed_cancel.clone().drop_guard();
+    let (feed_wakes, mut feed_receiver) = tokio::sync::watch::channel::<Option<(i64, i32)>>(None);
+    let feed_app = app.clone();
+    let feed_proxy = proxy.clone();
+    let feed_token = token.clone();
+    // The stream owns one coalescing consumer. Never wait for HTTP/database work in the SSE reader.
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = feed_cancel.cancelled() => break,
+                changed = feed_receiver.changed() => if changed.is_err() { break; },
+            }
+            let Some((user_id, target)) = *feed_receiver.borrow_and_update() else {
+                continue;
+            };
+            if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
+                break;
+            }
+            let result = tokio::select! {
+                _ = feed_cancel.cancelled() => break,
+                result = crate::native_db::attention::sync_thread_feed(Some(&feed_app), &feed_proxy, user_id, target, 1) => result,
+            };
+            if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
+                break;
+            }
+            match result {
+                Ok(result) => {
+                    if let Some(error) = &result.error {
+                        warn!("thread feed wake failed; next wake retries: {error}");
+                    }
+                    // Local completion, not a server SSE event. A renderer only reads committed DB changes.
+                    let _ = feed_app.emit(
+                        "soms-sse-event",
+                        SseEventPayload {
+                            event: "LOCAL_THREAD_FEED_COMMITTED".into(),
+                            status: 0,
+                            message: "local data committed".into(),
+                            data: serde_json::json!({ "userId": user_id, "cursor": result.cursor }),
+                        },
+                    );
+                }
+                Err(error) => warn!("thread feed wake unavailable; next wake retries: {error}"),
+            }
+        }
+    });
+    let mut feed_head = ThreadFeedHead::default();
     let url = format!("{}/api/v1/events", origin.trim_end_matches('/'));
     // Bound the CONNECT/headers phase. The in-stream watchdog only arms after a `ping`, so without this
     // a server that accepts the connection but never sends headers would hang the connect forever.
@@ -470,6 +551,10 @@ async fn open_one_stream(
                                 // — the borrows (as_str / &data) end at the call's `)`, so the move into the
                                 // payload below is unaffected (same scoping rule the FORCE_LOGOUT branch uses).
                                 merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
+                                if let Some(head) = feed_head.accept(&parsed.event, &parsed.data) {
+                                    feed_wakes.send_replace(Some(head));
+                                }
+                                if parsed.event == "THREAD_FEED_UPDATED" { continue; }
                                 let _ = app.emit(
                                     "soms-sse-event",
                                     SseEventPayload {

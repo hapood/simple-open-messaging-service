@@ -10,6 +10,7 @@ import {
   createAdmissionPacer,
   executeBatch,
   finalizeTasks,
+  observeGroupMessageAvailability,
   settleWorkloadOperations,
   unsubmittedGroupRequests,
 } from './random-execute.mjs';
@@ -19,7 +20,7 @@ const bob = 'bob@bravo.test';
 const groupAddress = '!group@bravo.test';
 const pair = `${alice}|${bob}`;
 
-test('classifies a random acceptance of an expired or revoked incoming request as unavailable', async () => {
+test('classifies random acceptance or rejection of an expired or revoked incoming request as unavailable', async () => {
   const base = {
     id: 'op-000244',
     type: 'ACCEPT_REQUEST',
@@ -31,6 +32,33 @@ test('classifies a random acceptance of an expired or revoked incoming request a
   for (const [changes, status, resultCode, expected] of [
     [{}, 'REJECTED', 20011, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20013, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20011, 'OBSERVED_UNAVAILABLE'],
+    [
+      { type: 'REJECT_REQUEST', scenario: 'FIXED' },
+      'REJECTED',
+      20011,
+      'REJECTED',
+    ],
+    [
+      { type: 'REJECT_REQUEST', group: groupAddress },
+      'REJECTED',
+      20011,
+      'REJECTED',
+    ],
+    [
+      { type: 'REJECT_REQUEST', pair: undefined },
+      'REJECTED',
+      20011,
+      'REJECTED',
+    ],
+    [
+      { type: 'REJECT_REQUEST', observedFacts: { state: 'FRIEND' } },
+      'REJECTED',
+      20011,
+      'REJECTED',
+    ],
+    [{ type: 'REJECT_REQUEST' }, 'FAILED', 20011, 'FAILED'],
+    [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20002, 'REJECTED'],
     [
       { type: 'REJECT_REQUEST', scenario: 'FIXED' },
       'REJECTED',
@@ -201,6 +229,62 @@ test('final-mode submission journals failures without draining between batches',
   );
   assert.equal(drained, true);
   assert.equal(journal.operations[0].status, 'SUCCEEDED');
+});
+
+test('final consistency permits business rejections while preserving results and draining tasks', async () => {
+  const rejected = {
+    id: 'op-000336',
+    status: 'REJECTED',
+    resultCode: 20010,
+    lastError: null,
+  };
+  for (const initial of [rejected, { ...rejected, status: 'ADMITTED' }]) {
+    const journal = { operations: [initial] };
+    let drained = false;
+    await settleWorkloadOperations(
+      {
+        operations: journal.operations,
+        log: journal,
+        actors: { nodes: new Map([['alpha', {}]]) },
+        label: 'final workload',
+        verifyMode: 'final',
+        drain: true,
+        onProgress() {},
+        onLog: async () => {},
+      },
+      {
+        waitForIdle: async () => {
+          drained = true;
+        },
+        finalize: async () => [rejected],
+      },
+    );
+    assert.equal(drained, true);
+    assert.deepEqual(journal.operations, [rejected]);
+  }
+});
+
+test('settlement retains strict round outcomes and final execution failure checks', async () => {
+  for (const [verifyMode, status] of [
+    ['round', 'REJECTED'],
+    ['final', 'FAILED'],
+    ['final', 'PROCESSING'],
+    ['final', 'ADMISSION_FAILED'],
+  ]) {
+    const journal = { operations: [{ id: 'op-1', status }] };
+    await assert.rejects(
+      settleWorkloadOperations({
+        operations: journal.operations,
+        log: journal,
+        actors: {},
+        label: 'validation',
+        verifyMode,
+        onProgress() {},
+        onLog: async () => {},
+      }),
+      /op-1/,
+    );
+  }
 });
 
 test('final validation rejects earlier observed task failures, not just pending tasks', async () => {
@@ -423,6 +507,145 @@ test('only confirmed unavailable relationships suppress FRIEND_NOT_FOUND', async
   }
 });
 
+test('confirms group message availability from the sender node and explicit relationship facts', () => {
+  const decision = { actor: alice, group: groupAddress };
+  for (const [localGroup, dissolved, active] of [
+    [undefined, null, null],
+    [{ dissolved: false, relationships: new Map() }, false, null],
+    [{ dissolved: true, relationships: new Map() }, true, null],
+    [
+      {
+        dissolved: false,
+        relationships: new Map([[alice, { active: false }]]),
+      },
+      false,
+      false,
+    ],
+    [
+      { dissolved: false, relationships: new Map([[alice, { active: true }]]) },
+      false,
+      true,
+    ],
+  ]) {
+    const facts = observeGroupMessageAvailability(
+      {
+        alpha: {
+          groups: new Map(
+            localGroup ? [[groupAddress, { threadId: 7, ...localGroup }]] : [],
+          ),
+        },
+        bravo: { groups: new Map([[groupAddress, { dissolved: true }]]) },
+      },
+      decision,
+    );
+    assert.equal(facts.observedOn, 'alpha');
+    assert.equal(facts.groupDissolved, dissolved);
+    assert.equal(facts.membershipActive, active);
+    assert.equal(facts.threadId, localGroup ? 7 : null);
+    assert.ok(Number.isFinite(Date.parse(facts.observedAt)));
+  }
+});
+
+test('only confirmed random group message races suppress GROUP_FORBIDDEN and preserve evidence', async () => {
+  const base = {
+    id: 'op-000329',
+    actor: alice,
+    group: groupAddress,
+    type: 'SEND_GROUP_MESSAGE',
+    observedFacts: { membershipActive: true },
+  };
+  const dissolved = { groupDissolved: true, membershipActive: true };
+  const departed = { groupDissolved: false, membershipActive: false };
+  for (const [changes, code, confirmation, expected, calls] of [
+    [{}, 40005, dissolved, 'OBSERVED_UNAVAILABLE', 1],
+    [{}, 40005, departed, 'OBSERVED_UNAVAILABLE', 1],
+    ...[
+      'SEND_FILE',
+      'SEND_GALLERY',
+      'SEND_QUOTE',
+      'FORWARD_DIRECT',
+      'FORWARD_HISTORY',
+    ].map((type) => [{ type }, 40005, departed, 'OBSERVED_UNAVAILABLE', 1]),
+    [
+      {},
+      40005,
+      { groupDissolved: false, membershipActive: true },
+      'ADMISSION_FAILED',
+      1,
+    ],
+    [
+      {},
+      40005,
+      { groupDissolved: null, membershipActive: null },
+      'ADMISSION_FAILED',
+      1,
+    ],
+    [{}, 40005, null, 'ADMISSION_FAILED', 1],
+    [{}, 40005, new Error('snapshot unavailable'), 'ADMISSION_FAILED', 1],
+    [{ scenario: 'FIXED' }, 40005, dissolved, 'ADMISSION_FAILED', 0],
+    [{ type: 'KICK_GROUP_MEMBER' }, 40005, departed, 'ADMISSION_FAILED', 0],
+    [
+      { type: 'WITHDRAW_GROUP_MESSAGE' },
+      40005,
+      departed,
+      'ADMISSION_FAILED',
+      0,
+    ],
+    [{ observedFacts: undefined }, 40005, departed, 'ADMISSION_FAILED', 0],
+    [{ group: undefined }, 40005, departed, 'ADMISSION_FAILED', 0],
+    [{}, 50000, departed, 'ADMISSION_FAILED', 0],
+  ]) {
+    const journal = { operations: [] };
+    const details = {
+      code,
+      message: 'conversation is read-only',
+      requestId: 'request-id',
+    };
+    const attempts = [{ index: 0, status: 'FAILED' }];
+    let confirmationCalls = 0;
+    await executeBatch({
+      label: 'round',
+      decisions: [{ ...base, ...changes }],
+      log: journal,
+      actors: {},
+      concurrency: 1,
+      timeoutMs: 10,
+      progressEvery: 1,
+      onProgress() {},
+      onLog: async () => {},
+      totalLabel: '',
+      pace: async () => {},
+      settle: false,
+      admit: async () => {
+        const error = new LabApiError('rejected', details);
+        error.attempts = attempts;
+        throw error;
+      },
+      confirmGroupUnavailable: async () => {
+        confirmationCalls += 1;
+        if (confirmation instanceof Error) throw confirmation;
+        return confirmation;
+      },
+    });
+    const operation = journal.operations[0];
+    assert.equal(operation.status, expected);
+    assert.equal(confirmationCalls, calls);
+    assert.deepEqual(operation.error.details, details);
+    assert.deepEqual(operation.attempts, attempts);
+    if (calls && confirmation instanceof Error) {
+      assert.equal(
+        operation.unavailableConfirmation.error.message,
+        confirmation.message,
+      );
+    } else {
+      assert.deepEqual(
+        operation.unavailableConfirmation,
+        calls && confirmation ? confirmation : undefined,
+      );
+    }
+  }
+});
+
 test('handles a revoked incoming request before admission with the same policy as task rejection', async () => {
   const base = {
     id: 'op-000152',
@@ -435,6 +658,20 @@ test('handles a revoked incoming request before admission with the same policy a
   for (const [changes, code, expected] of [
     [{}, 20011, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 20013, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST' }, 20011, 'OBSERVED_UNAVAILABLE'],
+    [{ type: 'REJECT_REQUEST', scenario: 'FIXED' }, 20011, 'ADMISSION_FAILED'],
+    [
+      { type: 'REJECT_REQUEST', group: groupAddress },
+      20011,
+      'ADMISSION_FAILED',
+    ],
+    [{ type: 'REJECT_REQUEST', pair: undefined }, 20011, 'ADMISSION_FAILED'],
+    [
+      { type: 'REJECT_REQUEST', observedFacts: { state: 'FRIEND' } },
+      20011,
+      'ADMISSION_FAILED',
+    ],
+    [{ type: 'REJECT_REQUEST' }, 20002, 'ADMISSION_FAILED'],
     [{ type: 'REJECT_REQUEST', scenario: 'FIXED' }, 20013, 'ADMISSION_FAILED'],
     [{ type: 'REJECT_REQUEST' }, 10001, 'ADMISSION_FAILED'],
     [{ scenario: 'FIXED' }, 20011, 'ADMISSION_FAILED'],

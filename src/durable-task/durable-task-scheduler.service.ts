@@ -92,7 +92,13 @@ export class DurableTaskSchedulerService
         this.startupRecovery = await this.store.findCheckpointedProcessing([
           ...new Set([
             DurableTaskType.DISBAND_GROUP,
+            DurableTaskType.REVOKE_FORBIDDEN_GROUP,
+            DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
+            DurableTaskType.COMMIT_THREAD_READ_POSITION,
             DurableTaskType.FAN_OUT_GROUP_META_HEAD,
+            DurableTaskType.FAN_OUT_THREAD_CONTENT,
+            DurableTaskType.FAN_OUT_ACCOUNT_THREAD_CONTENT,
+            DurableTaskType.FAN_OUT_FEDERATION_THREAD_CONTENT,
             ...this.asyncScheduler.supportedTaskTypes,
           ]),
         ]);

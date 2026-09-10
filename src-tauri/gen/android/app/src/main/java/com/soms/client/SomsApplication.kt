@@ -25,6 +25,7 @@ class SomsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         appContext = this
+        RustRuntimeBridge.initialize(this)
         SomsFirebase.ensureInitialized(this)
         // Eagerly create the notification channels at process start. Channel creation is idempotent and
         // free, and Android only registers an app as notification-capable (so it shows up in the per-app

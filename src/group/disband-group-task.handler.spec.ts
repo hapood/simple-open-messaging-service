@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispatcher.service.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { DisbandGroupTaskHandler } from './disband-group-task.handler.js';
-import { RevokeDissolvedGroupMemberTaskHandler } from './revoke-dissolved-group-member-task.handler.js';
+import { ForceRevokeGroupMemberTaskHandler } from './force-revoke-group-member-task.handler.js';
+import { RevokeForbiddenGroupTaskHandler } from './revoke-forbidden-group-task.handler.js';
 
 const parent = {
   id: 10n,
-  parentTaskId: null,
   kind: 'MUTATION',
   scopeType: 'GROUP',
   scopeKey: 'group-key',
@@ -15,7 +15,6 @@ const parent = {
   payload: { threadId: 12 },
   checkpoint: {},
   coalescingKey: null,
-  supersededByTaskId: null,
   status: 'PROCESSING',
   resultCode: null,
   lastError: null,
@@ -25,6 +24,59 @@ const parent = {
 } satisfies DurableTask;
 
 describe('group disband task handlers', () => {
+  it('drains forbidden cleanup admissions without waiting for children', async () => {
+    const dispatcher = new DurableTaskDispatcherService();
+    const insertNextMember = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const handler = new RevokeForbiddenGroupTaskHandler(dispatcher, {
+      insertNextMember,
+    } as never);
+    handler.onModuleInit();
+    const task = {
+      ...parent,
+      taskType: 'REVOKE_FORBIDDEN_GROUP',
+      payload: {
+        threadId: 12,
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    };
+    await expect(dispatcher.execute(task)).resolves.toBeUndefined();
+    expect(insertNextMember).toHaveBeenCalledTimes(3);
+    expect(insertNextMember).toHaveBeenCalledWith(task, 12);
+    handler.onModuleDestroy();
+    expect(dispatcher.supportedTaskTypes).toHaveLength(0);
+  });
+
+  it('routes denial children to the existing intent writers rather than dissolution', async () => {
+    const revokeForbiddenMember = vi.fn().mockResolvedValue(undefined);
+    const revokeDissolvedGroupMember = vi.fn();
+    const handler = new ForceRevokeGroupMemberTaskHandler(
+      new DurableTaskDispatcherService(),
+      { revokeDissolvedGroupMember } as never,
+      { revokeForbiddenMember } as never,
+    );
+    const task = {
+      ...parent,
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      payload: {
+        threadId: 12,
+        memberUserId: 7,
+        direction: 'MEMBER',
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    };
+    await handler.execute(task);
+    expect(revokeForbiddenMember).toHaveBeenCalledWith(task);
+    expect(revokeDissolvedGroupMember).not.toHaveBeenCalled();
+  });
+
   it('marks the group terminal and admits members until enumeration is complete', async () => {
     const dispatcher = new DurableTaskDispatcherService();
     const markGroupDissolved = vi
@@ -52,18 +104,21 @@ describe('group disband task handlers', () => {
     expect(insertNextMember).toHaveBeenCalledWith(parent, 12);
   });
 
-  it('routes a parent-linked child to one member revoke transaction', async () => {
+  it('routes a forced child to one member revoke transaction', async () => {
     const dispatcher = new DurableTaskDispatcherService();
     const revokeDissolvedGroupMember = vi.fn().mockResolvedValue(undefined);
-    const handler = new RevokeDissolvedGroupMemberTaskHandler(dispatcher, {
-      revokeDissolvedGroupMember,
-    } as never);
+    const handler = new ForceRevokeGroupMemberTaskHandler(
+      dispatcher,
+      {
+        revokeDissolvedGroupMember,
+      } as never,
+      {} as never,
+    );
     handler.onModuleInit();
     const child = {
       ...parent,
       id: 11n,
-      parentTaskId: 10n,
-      taskType: 'REVOKE_DISSOLVED_GROUP_MEMBER',
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       payload: { threadId: 12, memberUserId: 9 },
     } satisfies DurableTask;
 

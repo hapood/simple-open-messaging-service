@@ -41,7 +41,10 @@
             [loading]="!sessionProfile()"
             [name]="name() || sessionProfile()?.account"
             [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
-            [src]="$safeNavigationMigration(sessionProfile()?.avatar)"
+            [src]="
+              avatarPreviewUrl() ||
+              $safeNavigationMigration(sessionProfile()?.avatar)
+            "
           />
           <button
             class="avatar-edit"

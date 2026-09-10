@@ -150,8 +150,9 @@ drain.
 
 A consumer initializing a thread for which it has no previous replica in the
 publisher's message-coordinate space MUST NOT query the tombstone history that
-precedes its first committed `THREAD_CONTENT_HEAD`. It initializes its deletion
-cursor directly to that item's `tombstoneEndSeq`. This is safe because the
+precedes its retained remote authorization snapshot. The relationship activation
+transaction initializes its deletion cursor directly to that authorization's
+`tombstoneEndSeq`, including zero. This is safe because the
 source message query does not return messages already terminated by an
 authoritative tombstone, and the consumer has no older local replica to remove.
 This initial cursor adoption is not relationship reauthorization and MUST NOT

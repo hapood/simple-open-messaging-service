@@ -36,7 +36,7 @@ private const val NOTIFICATION_COALESCE_MS = 500L
  * consumes the frames this service forwards via `window.__SOMS_EVENT__`. (Web/desktop still run their own
  * `sse.worker.ts`.) Supersedes `MessageSyncService`, which held a *parallel* `/notifications/stream`
  * alongside the WebView's `/events` — two connections swapping on fg/bg, neither handing data to the
- * other. One session token now authenticates both this stream and the background `/notification-feed/query`
+ * other. One session token now authenticates both this stream and the background Rust thread-feed
  * fetchers (FCM / WorkManager).
  *
  * **Lifecycle (the service must run while foregrounded — the WebView's only event source is this stream):**
@@ -321,7 +321,7 @@ class RealtimeService : Service() {
             // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
             // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
             // no notification) — that's the bug. If appInFg=false + branch=background but no notification
-            // appears, the failure is downstream in fetchDescriptors/renderDescriptors (see Soms/Notif).
+            // appears, the failure is downstream in native notification synchronization/renderDescriptors (see Soms/Notif).
             SomsLog.i("Rt") {
                 "onEvent type=$type id=$id dataLen=${data.length} appInFg=${SomsMessagingService.appInForeground}"
             }
@@ -353,11 +353,11 @@ class RealtimeService : Service() {
                 // unchanged. `data` is the server-serialized JSON, valid as a JS expression.
                 SomsLog.d("Rt") { "branch=foreground → forwardToJs (WebView is suspended if appInFg lags reality)" }
                 forwardToJs(type, data)
-            } else if (type == "STATE_FEED_UPDATED") {
+            } else if (type == "THREAD_FEED_UPDATED" || type == "HELLO") {
                 // The WebView is suspended, so native code takes over notification aggregation for this
                 // live device session. The query remains cursor-based; this SSE frame is only a wake.
-                SomsLog.d("Rt") { "branch=background STATE_FEED_UPDATED → schedule notification projection" }
-                scheduleNotificationProjection()
+                val target = runCatching { JSONObject(data).getInt("threadFeedEndId") }.getOrNull()
+                if (target != null && target >= 0) scheduleNotificationProjection(target)
             } else {
                 // Background durable events are recovered by cursor on resume. Message notification wakes
                 // arrive independently through FCM, so the SSE stream does not own notification rendering.
@@ -481,15 +481,22 @@ class RealtimeService : Service() {
         SomsBridge.eval("window.__SOMS_CONN_STATE__ && window.__SOMS_CONN_STATE__(${SomsBridge.jsonStr(state)});")
     }
 
-    private fun scheduleNotificationProjection() {
+    private var notificationTarget = 0
+
+    @Synchronized
+    private fun scheduleNotificationProjection(target: Int) {
+        notificationTarget = maxOf(notificationTarget, target)
         handler.removeCallbacks(notificationProjectionTask)
         handler.postDelayed(notificationProjectionTask, NOTIFICATION_COALESCE_MS)
     }
 
     private val notificationProjectionTask = Runnable {
         if (SomsMessagingService.appInForeground) return@Runnable
+        val target = synchronized(this@RealtimeService) {
+            notificationTarget.also { notificationTarget = 0 }
+        }
         ioExecutor.execute {
-            SomsMessagingService.renderAwayNotification(this@RealtimeService, allowAlert = true)
+            SomsMessagingService.renderAwayNotification(this@RealtimeService, allowAlert = true, threadFeedEndId = target)
         }
     }
 

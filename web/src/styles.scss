@@ -534,6 +534,13 @@ body {
 // parse before Angular boots — so a freshly-created / reloading main window never flashes a blank frame
 // during the two-window handoff. Replaced when Angular replaces <app-root>'s content. Integer-px metrics
 // per the CSS rule (this is a fixed splash, not a measured-list item, but kept consistent).
+.active-page-message {
+  margin: 0;
+  padding: 32px;
+  line-height: 24px;
+  text-align: center;
+}
+
 .app-splash {
   display: flex;
   flex-direction: column;

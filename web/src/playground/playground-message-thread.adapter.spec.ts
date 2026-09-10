@@ -46,7 +46,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
       }),
     );
     const report = await firstValueFrom(
-      adapter.reportMessages({ threadId: 1, seqs: [1] }),
+      adapter.reportMessage({ threadId: 1, seq: 1 }),
     );
     const blocked = await firstValueFrom(
       adapter.setBlocked({ threadId: 1, blocked: true }),

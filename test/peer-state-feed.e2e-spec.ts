@@ -5,6 +5,10 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
+  deletedMessage,
+  groupAccount,
+  message,
+  threadAudience,
   federatedPeer,
   identityNamespace,
   messageThread,
@@ -72,6 +76,106 @@ describe('per-peer state feed', () => {
       .delete(federatedPeer)
       .where(eq(federatedPeer.domain, DOMAINS[1]));
     await mod.close();
+  });
+
+  it('refreshes a dependent thread snapshot when group metadata reindexes it', async () => {
+    const peerDomain = 'fresh-snapshot.test';
+    await seedPeer(peerDomain);
+    const account = '!fresh-snapshot';
+    const [group] = await database.db
+      .insert(groupAccount)
+      .values({ account })
+      .returning();
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: MessageThreadType.GROUP,
+        groupAccount: account,
+        groupAccountId: group.id,
+        updatedAt: new Date(),
+        groupDomain: 'local',
+        authorityNamespaceId: 0,
+      })
+      .returning();
+    await database.db.insert(threadAudience).values({
+      threadId: thread.id,
+      targetDomain: peerDomain,
+      targetNamespaceId: namespaceId(peerDomain),
+    });
+    const key = {
+      peerDomain: peerDomain,
+      namespaceId: namespaceId(peerDomain),
+      account,
+      domain: 'local.test',
+      subjectAccount: '',
+      subjectDomain: 'local',
+    };
+    await database.db.transaction(async (tx) => {
+      await feed.writeManyInTx(tx, [
+        {
+          ...key,
+          eventType: 'THREAD_CONTENT_HEAD',
+          body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+        },
+      ]);
+      await tx.insert(message).values({
+        threadId: thread.id,
+        seq: 1,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'snapshot' }),
+        creatorAccount: 'snapshot-author',
+        creatorDomain: 'local',
+        updatedAt: new Date(),
+      });
+      await tx.insert(deletedMessage).values({
+        threadId: thread.id,
+        messageSeq: 1,
+        deletionSeq: 1,
+        type: 'USER_RETRACTION',
+      });
+      await feed.writeManyInTx(tx, [
+        {
+          ...key,
+          eventType: 'GROUP_META_FEED_HEAD',
+          body: { groupMetaFeedEndId: '1' },
+        },
+      ]);
+    });
+    const rows = await database.db
+      .select()
+      .from(peerStateFeed)
+      .where(
+        and(
+          eq(peerStateFeed.account, account),
+          eq(peerStateFeed.namespaceId, namespaceId(peerDomain)),
+        ),
+      );
+    const head = rows.find((row) => row.eventType === 'THREAD_CONTENT_HEAD')!;
+    const meta = rows.find((row) => row.eventType === 'GROUP_META_FEED_HEAD')!;
+    expect(head.body).toMatchObject({ messageEndSeq: 1, tombstoneEndSeq: 1 });
+    expect(head.feedId > meta.feedId).toBe(true);
+    await database.db.transaction((tx) =>
+      feed.writeManyInTx(tx, [
+        {
+          ...key,
+          eventType: 'RELATIONSHIP_INTENT',
+          subjectAccount: 'remote-member',
+          subjectDomain: peerDomain,
+          body: { status: 'REQUESTED', profileRev: 0 },
+        },
+      ]),
+    );
+    const unchanged = await database.db.query.peerStateFeed.findFirst({
+      where: and(
+        eq(peerStateFeed.account, account),
+        eq(peerStateFeed.namespaceId, namespaceId(peerDomain)),
+        eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+      ),
+    });
+    expect(unchanged?.feedId).toBe(head.feedId);
+    await database.db
+      .delete(federatedPeer)
+      .where(eq(federatedPeer.domain, peerDomain));
   });
 
   it('compacts a key and does not allocate a feed ID for identical writes', async () => {
@@ -176,6 +280,8 @@ describe('per-peer state feed', () => {
           feedId: '2',
           body: {
             status: 'ACCEPTED',
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
             profileRev: 3,
             note: '',
             requestedAt: wireTime.getTime(),
@@ -203,6 +309,8 @@ describe('per-peer state feed', () => {
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'ACCEPTED',
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
             profileRev: 3,
             note: '',
             requestedAt: wireTime,
@@ -330,6 +438,8 @@ describe('per-peer state feed', () => {
     try {
       await database.db.transaction((tx) =>
         membership.applyRemoteGroupIntentInTx(tx, {
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
           groupId: thread.id,
           memberUserId: memberUser.id,
           threadId: thread.id,
@@ -353,6 +463,8 @@ describe('per-peer state feed', () => {
 
       const replay = await database.db.transaction((tx) =>
         membership.applyRemoteGroupIntentInTx(tx, {
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
           groupId: thread.id,
           memberUserId: memberUser.id,
           threadId: thread.id,

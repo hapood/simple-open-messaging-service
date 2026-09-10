@@ -1,3 +1,6 @@
+import { threadStateEvent } from './thread-state.test-helper';
+import { firstValueFrom } from 'rxjs';
+import { syncThreadFeed } from './thread-feed-sync';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
@@ -5,7 +8,7 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
-import { rawPreview, ThreadRepository } from './thread-store.service';
+import { ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
 import {
   ProfileResolutionService,
@@ -25,6 +28,7 @@ import {
 } from './model';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
+import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 
 /** Flush the microtask + macrotask queue so the async boot (IDB reads + Observable awaits + the 200ms
  *  debounce) settles. A 0ms flush advances the task queue enough for IDB + Observable microtasks; the
@@ -57,7 +61,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
   let establishSessionSpy: Mock;
   let queryStateFeedSpy: Mock;
-  let queryReadDeltaSpy: Mock;
+  let queryThreadFeedSpy: Mock;
   let queryUserInfoSpy: Mock;
   let advanceCursorSpy: Mock;
   let applyRelationshipRequestStateRevisionSpy: Mock;
@@ -77,6 +81,18 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       domain: 'local',
     } as User);
     cursorSignal = signal<number | undefined>(undefined);
+    queryThreadFeedSpy = vi.fn().mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          threadFeedEndId: 0,
+          through: 0,
+          scannedThrough: 0,
+          hasMore: false,
+          items: [],
+        },
+      }),
+    );
 
     TestBed.configureTestingModule({
       providers: [
@@ -162,12 +178,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             clearGroupJoinRequestHead: (clearGroupJoinRequestHeadSpy = vi
               .fn()
               .mockName('clearGroupJoinRequestHead')),
-            queryReadDelta: (queryReadDeltaSpy = vi
-              .fn()
-              .mockName('queryReadDelta')
-              .mockReturnValue(
-                of({ code: 0, data: { readRevision: 0, items: [] } }),
-              )),
             queryUserInfo: (queryUserInfoSpy = vi
               .fn()
               .mockName('queryUserInfo')
@@ -204,6 +214,17 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     repo = TestBed.inject(ThreadRepository);
     webdb = TestBed.inject(WebdbService);
+    vi.spyOn(webdb, 'syncThreadFeed').mockImplementation(
+      async (target, after) => {
+        const result = await syncThreadFeed(webdb, target, (body) =>
+          firstValueFrom(queryThreadFeedSpy(body)),
+        );
+        return {
+          ...(await webdb.readThreadFeedChanges(after)),
+          ...(result.error ? { error: result.error } : {}),
+        };
+      },
+    );
     putProfileSpy = TestBed.inject(ProfileRepository).putProfile as Mock;
     await webdb.openForUser('1');
     TestBed.flushEffects();
@@ -254,13 +275,273 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     userId?: number;
     stateFeedEndId: number;
     profileRev?: number;
-    readRevision?: number;
+    threadFeedEndId?: number;
   }): void {
     eventSubject.next({
       event: 'HELLO',
-      data,
+      data: { threadFeedEndId: 0, ...data },
     });
   }
+
+  async function publishThreadState(state: ThreadFeedSnapshot, hello = false) {
+    queryThreadFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          items: [state],
+          through: state.threadFeedId,
+          scannedThrough: state.threadFeedId,
+          threadFeedEndId: state.threadFeedId,
+          hasMore: false,
+        },
+      }),
+    );
+    if (hello)
+      emitHello({
+        userId: 1,
+        stateFeedEndId: 0,
+        threadFeedEndId: state.threadFeedId,
+      });
+    else
+      eventSubject.next({
+        event: 'THREAD_FEED_UPDATED',
+        data: { threadFeedEndId: state.threadFeedId },
+      });
+    await flush(40);
+  }
+
+  const threadSnapshot = (): ThreadFeedSnapshot => ({
+    threadId: 1,
+    threadFeedId: 1,
+    messageEndSeq: 8,
+    tombstoneEndSeq: 0,
+    lastReadSeq: 0,
+    unreadCount: 3,
+    lastMentionSeq: 5,
+    previews: [
+      {
+        seq: 5,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        sender: { account: 'u11', domain: 'local' },
+        status: 'LIVE',
+        text: 'latest preview',
+      },
+    ],
+  });
+
+  it('consumes unified snapshots and rebases optimistic counts without replacing the local read position', async () => {
+    const notified = vi.fn();
+    const subscription = repo.threadNotifications$.subscribe(notified);
+    await populate([p2p(1, 11)]);
+    for (const seq of [1, 3, 5]) await seedMessage(1, seq);
+    await seedMessage(1, 7, 'own', {
+      account: 'me',
+      domain: 'local',
+      namespaceId: 0,
+    });
+    await publishThreadState(threadSnapshot(), true);
+    expect(queryThreadFeedSpy).toHaveBeenCalledWith({
+      after: 0,
+      through: 1,
+      take: 100,
+      previewCount: 1,
+    });
+    expect(repo.items()[0]).toMatchObject({
+      unreadCount: 3,
+      lastMessagePreview: 'latest preview',
+      lastMessageSeq: 8,
+    });
+    expect(repo.commitLocalRead(1, 3)).toBe(true);
+    await flush(30);
+    expect(repo.items()[0]).toMatchObject({ lastReadSeq: 3, unreadCount: 1 });
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadFeedId: 2,
+      lastReadSeq: 1,
+      unreadCount: 2,
+    });
+    expect(repo.items()[0]).toMatchObject({ lastReadSeq: 3, unreadCount: 1 });
+    await publishThreadState({ ...threadSnapshot(), threadFeedId: 3 });
+    expect(repo.items()[0]).toMatchObject({ lastReadSeq: 3, unreadCount: 1 });
+    expect(notified.mock.lastCall?.[0][0]).toMatchObject({
+      item: { lastReadSeq: 3, unreadCount: 1 },
+      state: { threadFeedId: 3, unreadCount: 3 },
+    });
+    subscription.unsubscribe();
+    expect(await webdb.getMeta('threadFeedCursor')).toBe(3);
+    expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
+    expect((await webdb.getThreadStates())[0]).toMatchObject({
+      localReadSeq: 3,
+      server: { threadFeedId: 3, lastReadSeq: 0 },
+    });
+  });
+
+  it('handles message and tomb heads together and masks deleted preview content without decrementing count', async () => {
+    await populate([p2p(1, 11)]);
+    await publishThreadState(threadSnapshot(), true);
+    const tomb = {
+      ...threadSnapshot(),
+      threadFeedId: 2,
+      messageEndSeq: 9,
+      tombstoneEndSeq: 3,
+      lastMentionSeq: null,
+      previews: [
+        {
+          ...threadSnapshot().previews![0],
+          status: 'MODERATION_REMOVAL' as const,
+          text: undefined,
+        },
+      ],
+    };
+    await publishThreadState(tomb);
+    expect(repo.items()[0]).toMatchObject({
+      unreadCount: 3,
+      mentionUnread: [],
+      lastMessageSeq: 9,
+      tombstoneEndSeq: 3,
+      lastMessagePreview: '[Message removed by administrator]',
+    });
+    await publishThreadState({
+      ...tomb,
+      threadFeedId: 3,
+      previews: [{ ...tomb.previews[0], status: 'USER_RETRACTION' }],
+    });
+    expect(repo.items()[0].lastMessagePreview).toBe('[Message retracted]');
+  });
+
+  it('reprojects when a missing local message slot becomes available, including tombs', async () => {
+    await populate([p2p(1, 11)]);
+    await publishThreadState(threadSnapshot(), true);
+    repo.commitLocalRead(1, 3);
+    await flush(20);
+    expect(repo.items()[0].unreadCount).toBe(3);
+    await seedMessage(1, 3);
+    await webdb.applyDeletedMessages(
+      1,
+      [
+        {
+          threadId: 1,
+          messageSeq: 3,
+          deletionSeq: 1,
+          type: 'USER_RETRACTION',
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      1,
+    );
+    (
+      TestBed.inject(MessageRepository) as unknown as {
+        slotsChanged: Subject<number>;
+      }
+    ).slotsChanged.next(1);
+    await flush(20);
+    expect(repo.items()[0]).toMatchObject({ lastReadSeq: 3, unreadCount: 2 });
+  });
+
+  it('renders snapshots already committed by a background executor without another HTTP request', async () => {
+    await populate([p2p(1, 11)]);
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    await webdb.mergeThreadStates([{ ...threadSnapshot(), unreadCount: 7 }], 1);
+    queryThreadFeedSpy.mockClear();
+    eventSubject.next({
+      event: 'THREAD_FEED_UPDATED',
+      data: { threadFeedEndId: 1 },
+    });
+    await flush(30);
+    expect(queryThreadFeedSpy).not.toHaveBeenCalled();
+    expect(repo.items()[0].unreadCount).toBe(7);
+    expect(repo.items()[0].lastMessagePreview).toBe('latest preview');
+  });
+
+  it('applies local completion wakes without starting a network drain', async () => {
+    await populate([p2p(1, 11)]);
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    await webdb.mergeThreadStates([{ ...threadSnapshot(), unreadCount: 8 }], 1);
+    queryThreadFeedSpy.mockClear();
+    vi.mocked(webdb.syncThreadFeed).mockClear();
+    eventSubject.next({
+      event: 'LOCAL_THREAD_FEED_COMMITTED',
+      data: { userId: 1, cursor: 1 },
+    });
+    await flush(30);
+    expect(repo.items()[0].unreadCount).toBe(8);
+    expect(webdb.syncThreadFeed).not.toHaveBeenCalled();
+    expect(queryThreadFeedSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores a local completion for another account', async () => {
+    await populate([p2p(1, 11)]);
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    const read = vi.spyOn(webdb, 'readThreadFeedChanges');
+    eventSubject.next({
+      event: 'LOCAL_THREAD_FEED_COMMITTED',
+      data: { userId: 2, cursor: 1 },
+    });
+    await flush(10);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('advances empty compacted pages and does not repeat a consumed wake', async () => {
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    queryThreadFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          items: [],
+          through: 4,
+          scannedThrough: 4,
+          threadFeedEndId: 4,
+          hasMore: false,
+        },
+      }),
+    );
+    eventSubject.next({
+      event: 'THREAD_FEED_UPDATED',
+      data: { threadFeedEndId: 4 },
+    });
+    await flush(20);
+    expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
+    const calls = queryThreadFeedSpy.mock.calls.length;
+    eventSubject.next({
+      event: 'THREAD_FEED_UPDATED',
+      data: { threadFeedEndId: 4 },
+    });
+    await flush(10);
+    expect(queryThreadFeedSpy).toHaveBeenCalledTimes(calls);
+  });
+
+  it('does not commit an invalid feed page and retries on the next wake', async () => {
+    await populate([p2p(1, 11)]);
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    queryThreadFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          items: [threadSnapshot()],
+          through: 1,
+          scannedThrough: 0,
+          threadFeedEndId: 1,
+          hasMore: true,
+        },
+      }),
+    );
+    eventSubject.next({
+      event: 'THREAD_FEED_UPDATED',
+      data: { threadFeedEndId: 1 },
+    });
+    await flush(20);
+    expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
+    await publishThreadState(threadSnapshot());
+    expect(await webdb.getMeta('threadFeedCursor')).toBe(1);
+    warn.mockRestore();
+  });
 
   it('rebuilds from a code 30006 recovery window', async () => {
     cursorSignal.set(9);
@@ -300,7 +581,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   async function populate(items: ConversationItem[]): Promise<void> {
     const db = await webdb.db();
     const tx = db.transaction('threads', 'readwrite');
-    for (const it of items) await tx.store.put(it);
+    for (const it of items) {
+      if (it.type === 'P2P')
+        it.defaultProfile ??= {
+          account: it.peerUser.account,
+          domain: it.peerUser.domain,
+          namespaceId: it.peerUser.namespaceId,
+          profileRev: it.peerUser.profileRev,
+        };
+      await tx.store.put(it);
+    }
     await tx.done;
     await repo.load();
   }
@@ -380,6 +670,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populate([item]);
     const resolved = TestBed.inject(ProfileResolutionService)['resolved'];
     const profile = {
+      namespaceId: 0,
       account: 'peer',
       domain: 'bravo.test',
       rev: 3,
@@ -387,13 +678,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       bio: '',
       avatarBase64: 'aW1hZ2U=',
     };
-    resolved.next({ selector: { threadId: 9, messageSeq: 2 }, profile });
     resolved.next({
-      selector: { threadId: 9, messageSeq: 3 },
+      selector: { type: 'MESSAGE_AUTHOR', threadId: 9, messageSeq: 2 },
+      profile,
+    });
+    resolved.next({
+      selector: { type: 'MESSAGE_AUTHOR', threadId: 9, messageSeq: 3 },
       profile: { ...profile, account: 'me', name: 'Self' },
     });
     resolved.next({
-      selector: { threadId: 9, messageSeq: 1 },
+      selector: { type: 'MESSAGE_AUTHOR', threadId: 9, messageSeq: 1 },
       profile: { ...profile, rev: 99, name: 'Old' },
     });
     expect(repo.items()[0]).toMatchObject({
@@ -409,7 +703,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       }),
     );
     resolved.next({
-      selector: { threadId: 9, messageSeq: 4 },
+      selector: { type: 'MESSAGE_AUTHOR', threadId: 9, messageSeq: 4 },
       profile: { ...profile, rev: 1, name: 'Later message' },
     });
     expect(repo.items()[0]).toMatchObject({
@@ -437,6 +731,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await populate([item]);
     const profile = {
+      namespaceId: 0,
       account: 'peer',
       domain: 'bravo.test',
       rev: 1,
@@ -445,7 +740,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatarBase64: null,
     };
     TestBed.inject(ProfileResolutionService)['resolved'].next({
-      selector: { threadId: 9, messageSeq: 4 },
+      selector: { type: 'MESSAGE_AUTHOR', threadId: 9, messageSeq: 4 },
       profile,
     });
     relationship.next({ ...profile, rev: 9, name: 'Relationship' });
@@ -471,11 +766,13 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await populate([item]);
     expect(resolve).toHaveBeenCalledWith({
+      type: 'EXACT',
       account: 'check03-b-001',
       domain: 'bravo.test',
       rev: 3,
     });
     resolved.next({
+      namespaceId: 1,
       account: 'check03-b-001',
       domain: 'bravo.test',
       rev: 3,
@@ -516,8 +813,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     repo['upsertThread']({
       ...item,
       peerUser: { ...item.peerUser, profileRev: 4 },
+      defaultProfile: { ...item.defaultProfile!, profileRev: 4 },
     });
     current.next({
+      namespaceId: 1,
       account: 'u0',
       domain: 'bravo.test',
       rev: 4,
@@ -526,6 +825,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatarBase64: null,
     });
     old.next({
+      namespaceId: 1,
       account: 'u0',
       domain: 'bravo.test',
       rev: 3,
@@ -551,6 +851,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populate([item]);
     TestBed.inject(SessionLifecycleService).endSession();
     resolved.next({
+      namespaceId: 0,
       account: 'u0',
       domain: 'local',
       rev: 3,
@@ -567,44 +868,43 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     seq: number,
     tombstoneEndSeq = 0,
   ): Promise<void> {
-    const after = cursorSignal() ?? 1;
-    if (cursorSignal() === undefined) cursorSignal.set(after);
-    const feedId = after + 1;
-    queryStateFeedSpy.mockReturnValueOnce(
+    if (
+      (repo as unknown as { threadFeedCursor?: number }).threadFeedCursor ===
+      undefined
+    ) {
+      emitHello({ userId: 1, stateFeedEndId: cursorSignal() ?? 0 });
+      await flush(20);
+    }
+    const feedId = Number((await webdb.getMeta('threadFeedCursor')) ?? 0) + 1;
+    queryThreadFeedSpy.mockReturnValueOnce(
       of({
         code: 0,
         data: {
-          mode: 'delta',
+          through: feedId,
+          scannedThrough: feedId,
+          threadFeedEndId: feedId,
+          hasMore: false,
           items: [
             {
-              feedId,
-              account: '',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'THREAD_CONTENT_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                threadId,
-                messageEndSeq: seq,
-                tombstoneEndSeq,
-              },
+              threadId,
+              threadFeedId: feedId,
+              messageEndSeq: seq,
+              tombstoneEndSeq,
+              lastReadSeq: 0,
+              unreadCount: 0,
+              lastMentionSeq: null,
+              previews: [],
             },
           ],
-          hasMore: false,
-          scannedThrough: feedId,
-          stateFeedEndId: feedId,
         },
       }),
     );
     eventSubject.next({
-      event: 'STATE_FEED_UPDATED',
-      data: { feedId },
+      event: 'THREAD_FEED_UPDATED',
+      data: { threadFeedEndId: feedId },
     });
-    await flush(20);
+    await flush(30);
   }
-
-  // ── eager cache-paint (load — the instant pre-HELLO boot path) ─────────────────────────────────
 
   it('load() eager-paints the IDB cache INSTANTLY (pre-HELLO) + flips READY', async () => {
     await seedCachedThread(p2p(1, 11));
@@ -660,28 +960,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     },
   );
 
-  it('handles a detached preview read failure and requests recovery', async () => {
-    await seedCachedThread(p2p(1, 11));
-    const failure = new Error('message cache unreadable');
-    vi.spyOn(
-      TestBed.inject(MessageRepository),
-      'getNewestMessages',
-    ).mockRejectedValueOnce(failure);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await repo.load();
-    await vi.waitFor(() =>
-      expect(
-        TestBed.inject(UserService).requestCacheRebuild,
-      ).toHaveBeenCalledOnce(),
-    );
-    expect(warn).toHaveBeenCalledWith(
-      '[cache-paint] cached message preview read failed',
-      failure,
-    );
-    expect(repo.items()[0].threadId).toBe(1);
-    expect(toastWarn).not.toHaveBeenCalled();
-  });
-
   it('handles failed HELLO cache initialization without an unhandled rejection', async () => {
     const failure = new Error('account cache cannot open');
     establishSessionSpy.mockRejectedValueOnce(failure);
@@ -708,169 +986,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // thread's preview must be derived from its newest CACHED local message (local-first). load()'s paint
   // runs hydratePreviews — seed a local newest message + the cached thread, load, assert the preview +
   // sender are derived from the local message.
-  it('load() re-derives the list preview from the newest cached local message (local-first)', async () => {
-    await seedCachedThread(p2p(1, 77));
-    await seedMessage(1, 5, 'hello world', {
-      account: 'u77',
-      domain: 'local',
-      namespaceId: 0,
-    });
-    repo.load();
-    await flush(20);
-    const items = repo.items();
-    expect(items[0].lastMessagePreview).toBe('hello world');
-    expect(items[0].lastMessageSenderId).toBe('[0,"local","u77"]');
-  });
-
-  it('fetches a preview body for a content head without any local messages', async () => {
-    await populate([p2p(1, 77)]);
-    const history = vi
-      .spyOn(TestBed.inject(MessageRepository), 'queryBrowserMessageHistory')
-      .mockResolvedValue({
-        failed: false,
-        hasOlder: false,
-        hasNewer: false,
-        items: [
-          {
-            kind: 'message',
-            message: {
-              threadId: 1,
-              seq: 5,
-              contentType: 'PURE_TEXT',
-              content: JSON.stringify({ text: 'cold preview' }),
-              creator: { account: 'u77', domain: 'local', namespaceId: 0 },
-              createdAt: 1234,
-              updatedAt: 1234,
-              isDeleted: false,
-            } as Message,
-          },
-        ],
-      });
-    await emitThreadContentHead(1, 5);
-    await flush(20);
-    expect(history).toHaveBeenCalledWith(1, { kind: 'latest', count: 1 });
-    expect(repo.items()[0]).toMatchObject({
-      lastMessagePreview: 'cold preview',
-      lastMessagePreviewSeq: 5,
-      lastMessageAt: 1234,
-    });
-    await emitThreadContentHead(1, 5);
-    expect(history).toHaveBeenCalledTimes(1);
-  });
-
-  it('pulls and commits preview bodies after SSE content updates without opening the chat', async () => {
-    await populate([p2p(1, 77)]);
-    let seq = 1;
-    const page = vi.fn().mockImplementation((query: { before?: number }) =>
-      of(
-        query.before === undefined
-          ? { code: 30006, data: { resumeAfter: 0, resumeBefore: seq + 1 } }
-          : {
-              code: 0,
-              data: {
-                messages: [
-                  {
-                    threadId: 1,
-                    seq,
-                    contentType: 'PURE_TEXT',
-                    content: JSON.stringify({ text: `preview ${seq}` }),
-                    creator: {
-                      account: 'u77',
-                      domain: 'local',
-                      namespaceId: 0,
-                    },
-                    createdAt: seq,
-                    updatedAt: seq,
-                    isDeleted: false,
-                  },
-                ],
-                gaps: [],
-                scannedThrough: seq,
-                hasMore: seq > 1,
-              },
-            },
-      ),
-    );
-    Object.assign(TestBed.inject(MsgService), {
-      queryMessageHistoryPage: page,
-    });
-
-    await emitThreadContentHead(1, seq);
-    await flush(20);
-    expect(repo.items()[0].lastMessagePreview).toBe('preview 1');
-    seq = 2;
-    await emitThreadContentHead(1, seq);
-    await flush(20);
-    expect(repo.items()[0].lastMessagePreview).toBe('preview 2');
-    expect(repo.openThreadId()).toBeUndefined();
-    expect(
-      (await TestBed.inject(MessageRepository).getNewestMessages([1])).get(1)
-        ?.seq,
-    ).toBe(2);
-    expect(
-      (await (await webdb.db()).get('threads', 1))?.lastMessagePreview,
-    ).toBe('preview 2');
-  });
-
-  it('keeps the old preview during a pending pull, failure, and gap, then retries on a content notification', async () => {
-    await populate([
-      p2p(1, 77, {
-        lastMessagePreview: 'old preview',
-        lastMessagePreviewSeq: 1,
-      }),
-    ]);
-    type Result = Awaited<
-      ReturnType<MessageRepository['queryBrowserMessageHistory']>
-    >;
-    let finish!: (result: Result) => void;
-    const history = vi
-      .spyOn(TestBed.inject(MessageRepository), 'queryBrowserMessageHistory')
-      .mockReturnValueOnce(
-        new Promise<Result>((resolve) => {
-          finish = resolve;
-        }),
-      );
-    await emitThreadContentHead(1, 2);
-    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
-    finish({ items: [], hasOlder: true, hasNewer: true, failed: true });
-    await flush(20);
-    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
-
-    history.mockResolvedValueOnce({
-      items: [
-        { kind: 'serverGap', left: 1, right: 2, state: 'SERVER_PENDING' },
-      ],
-      hasOlder: true,
-      hasNewer: false,
-      failed: false,
-    });
-    await emitThreadContentHead(1, 2);
-    expect(repo.items()[0].lastMessagePreview).toBe('old preview');
-
-    history.mockResolvedValueOnce({
-      items: [
-        {
-          kind: 'message',
-          message: {
-            threadId: 1,
-            seq: 2,
-            contentType: 'PURE_TEXT',
-            content: JSON.stringify({ text: 'new preview' }),
-            creator: { account: 'u77', domain: 'local', namespaceId: 0 },
-            createdAt: 2,
-            updatedAt: 2,
-            isDeleted: false,
-          } as Message,
-        },
-      ],
-      hasOlder: true,
-      hasNewer: false,
-      failed: false,
-    });
-    await emitThreadContentHead(1, 2);
-    expect(history).toHaveBeenCalledTimes(3);
-    expect(repo.items()[0].lastMessagePreview).toBe('new preview');
-  });
 
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
 
@@ -912,24 +1027,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await webdb.recreateForUser('1');
     expect(await webdb.getThreads()).toEqual([]);
     const peer = stale.peerUser;
-    const items = [false, true].map((reverse, index) => ({
-      feedId: index + 1,
-      eventType: 'RELATIONSHIP_INTENT',
-      namespaceId: 0,
-      account: reverse ? peer.account : 'me',
-      domain: 'local',
-      subjectAccount: reverse ? 'me' : peer.account,
-      subjectDomain: 'local',
-      body: {
-        status: 'ACCEPTED',
-        direction: reverse ? 'INCOMING' : 'OUTGOING',
-        note: '',
-        requestedAt: 1,
-        expiresAt: null,
-        localThreadId: 61,
-        peer,
-      },
-    }));
+    const items = [threadStateEvent(2, 61)];
     queryStateFeedSpy.mockReturnValueOnce(
       of({
         code: 0,
@@ -994,27 +1092,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const rec = await (await webdb.db()).get('threads', 1);
     expect(rec?.unreadCount).toBe(0);
     expect(rec?.lastMessageSeq).toBe(100);
-  });
-
-  it('buffers only the newest content head while a read commit is pending', async () => {
-    await populate([p2p(1, 11, { lastMessageSeq: 4, lastMessageAt: 100 })]);
-    repo.beginReadCommit(1);
-
-    await emitThreadContentHead(1, 5);
-    await emitThreadContentHead(1, 7);
-    await emitThreadContentHead(1, 6);
-    expect(repo.items()[0].lastMessageSeq).toBe(4);
-    expect(repo.readCommitPending().has(1)).toBe(true);
-
-    repo.finishReadCommit(1);
-
-    expect(repo.readCommitPending().has(1)).toBe(false);
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({
-        lastMessageSeq: 7,
-        lastMessageAt: 100,
-      }),
-    );
   });
 
   it('a content head does not badge the open thread', async () => {
@@ -1213,7 +1290,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].joinRequestAt).toBe(300);
   });
 
-  it('hydrates a newly activated zero-message friendship thread from relationship state', async () => {
+  it('hydrates a newly activated zero-message friendship thread from THREAD_STATE', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await flush(20);
     cursorSignal.set(1);
@@ -1232,56 +1309,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         data: {
           mode: 'delta',
           items: [
-            {
-              feedId: 2,
-              account: 'alice',
-              domain: 'local.test',
-              namespaceId: 12,
-              eventType: 'RELATIONSHIP_INTENT',
-              subjectAccount: 'bob',
-              subjectDomain: 'peer.test',
-              body: {
-                status: 'REQUESTED',
-                note: '',
-                requestedAt: Date.now(),
-                expiresAt: Date.now() + 60_000,
-                direction: 'OUTGOING',
-                localThreadId: 9,
-                peer,
+            threadStateEvent(3, 9, {
+              authorityNamespaceId: 12,
+              profile: {
+                account: 'bob',
+                domain: 'peer.test',
+                namespaceId: 12,
+                profileRev: 0,
               },
-            },
-            {
-              feedId: 3,
-              account: 'bob',
-              domain: 'peer.test',
-              namespaceId: 12,
-              eventType: 'RELATIONSHIP_INTENT',
-              subjectAccount: 'alice',
-              subjectDomain: 'local.test',
-              body: {
-                status: 'ACCEPTED',
-                note: '',
-                requestedAt: 1,
-                expiresAt: null,
-                direction: 'INCOMING',
-                localThreadId: 9,
-                peer,
-              },
-            },
-            {
-              feedId: 4,
-              account: '',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'THREAD_CONTENT_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                threadId: 9,
-                messageEndSeq: 7,
-                tombstoneEndSeq: 0,
-              },
-            },
+            }),
           ],
           hasMore: false,
           scannedThrough: 4,
@@ -1300,12 +1336,96 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         threadId: 9,
         friendshipActive: true,
         conversationState: 'ACTIVE',
-        lastMessageSeq: 7,
+        lastMessageSeq: null,
       }),
     ]);
   });
 
-  it('commits group profile and member references before refreshing the same page message preview', async () => {
+  it('retains the group-meta cursor across read-only and re-establishment snapshots', async () => {
+    const group = createGroupConversation(12, {
+      id: 12,
+      account: '!dev',
+      domain: 'local',
+      namespaceId: 0,
+      ownerId: 1,
+      name: 'Dev',
+    });
+    group.group.groupMetaFeedId = '20';
+    group.defaultProfile = {
+      account: '!dev',
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: 0,
+    };
+    group.establishedAt = 1;
+    repo['upsertThread'](group);
+    const query = TestBed.inject(UserService).queryGroupMeta as Mock;
+    query.mockClear();
+    const state = threadStateEvent(5, 12, {
+      type: 'GROUP',
+      establishedAt: 30,
+      profile: group.defaultProfile,
+    });
+    expect(
+      await repo['prefetchGroupMeta']([
+        { ...state, body: { ...state.body, conversationState: 'READ_ONLY' } },
+      ]),
+    ).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+    query.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          account: '!dev',
+          mode: 'delta',
+          items: [],
+          scannedThrough: '21',
+          groupMetaFeedEndId: '21',
+          hasMore: false,
+        },
+      }),
+    );
+    await repo['prefetchGroupMeta']([state]);
+    expect(query).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 12, mode: 'delta', after: '20' }),
+    );
+    query.mockReset();
+    query.mockReturnValueOnce(
+      of({ code: 30006, data: { resumeAfter: '0', resumeBefore: '11' } }),
+    );
+    query.mockImplementationOnce(() => {
+      expect(
+        repo.items().find((thread) => thread.threadId === 12),
+      ).toMatchObject({ group: { memberCount: 0, groupMetaFeedId: '0' } });
+      return of({ code: 1, message: 'pull interrupted' });
+    });
+    await expect(repo['prefetchGroupMeta']([state])).rejects.toThrow(
+      'group-meta pull failed',
+    );
+    expect(
+      (await webdb.getThreads()).find((thread) => thread.threadId === 12),
+    ).toMatchObject({ group: { memberCount: 0, groupMetaFeedId: '0' } });
+    query.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          account: '!dev',
+          mode: 'full',
+          items: [],
+          scannedThrough: '10',
+          groupMetaFeedEndId: '10',
+          hasMore: false,
+        },
+      }),
+    );
+    const rebuilt = await repo['prefetchGroupMeta']([state]);
+    expect(query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'full', after: '0' }),
+    );
+    expect(rebuilt[0].page.mode).toBe('full');
+  });
+
+  it('commits group profile and member references without fetching message previews', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await flush(20);
     cursorSignal.set(1);
@@ -1341,6 +1461,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       'resolve',
     ).mockReturnValue(
       of({
+        namespaceId: 0,
         account: '!dev',
         domain: 'local',
         rev: 2,
@@ -1388,42 +1509,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         data: {
           mode: 'delta',
           items: [
-            {
-              feedId: 2,
-              account: '!dev',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'RELATIONSHIP_INTENT',
-              subjectAccount: 'alice',
-              subjectDomain: 'local',
-              body: {
-                status: 'ACCEPTED',
-                note: '',
-                requestedAt: 1,
-                expiresAt: null,
-                direction: 'INCOMING',
-                threadId: 12,
-                group,
+            threadStateEvent(2, 12, {
+              type: 'GROUP',
+              role: 'OWNER',
+              profile: {
+                account: '!dev',
+                domain: 'local',
+                namespaceId: 0,
+                profileRev: 2,
               },
-            },
-            {
-              feedId: 3,
-              account: 'alice',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'RELATIONSHIP_INTENT',
-              subjectAccount: '!dev',
-              subjectDomain: 'local',
-              body: {
-                status: 'ACCEPTED',
-                note: '',
-                requestedAt: 1,
-                expiresAt: null,
-                direction: 'OUTGOING',
-                threadId: 12,
-                group,
-              },
-            },
+            }),
             {
               feedId: 4,
               account: '!dev',
@@ -1433,16 +1528,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               subjectAccount: '',
               subjectDomain: 'local',
               body: { groupMetaFeedEndId: '2' },
-            },
-            {
-              feedId: 5,
-              account: '',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'THREAD_CONTENT_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: { threadId: 12, messageEndSeq: 1, tombstoneEndSeq: 0 },
             },
           ],
           hasMore: false,
@@ -1460,7 +1545,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       expect.objectContaining({
         threadId: 12,
         type: 'GROUP',
-        lastMessagePreview: 'group preview',
+        lastMessagePreview: null,
         group: expect.objectContaining({
           account: '!dev',
           name: 'Resolved dev',
@@ -1560,258 +1645,5 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledTimes(1);
     expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledWith(3);
-  });
-
-  it('records a local HWM without guessing the unread badge', async () => {
-    await populate([
-      p2p(1, 11, {
-        lastReadSeq: 5,
-        lastMessageSeq: 8,
-        unreadCount: 3,
-        mentionUnread: ['me'],
-      }),
-    ]);
-
-    expect(repo.commitLocalRead(1, 7)).toBe(true);
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({
-        lastReadSeq: 5,
-        unreadCount: 3,
-        mentionUnread: ['me'],
-      }),
-    );
-    expect(repo.commitLocalRead(1, 7)).toBe(false);
-  });
-
-  it('atomically applies the server read state', async () => {
-    await populate([p2p(1, 11, { lastReadSeq: 5, unreadCount: 3 })]);
-    repo.commitLocalRead(1, 7);
-
-    repo.applyReadState({
-      threadId: 1,
-      lastReadSeq: 7,
-      readRevision: 1,
-      unreadCount: 1,
-      mentionUnread: ['all'],
-    });
-
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({
-        lastReadSeq: 7,
-        unreadCount: 1,
-        mentionUnread: ['all'],
-      }),
-    );
-  });
-
-  it('pulls read delta when HELLO exposes a revision gap', async () => {
-    await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
-    await webdb.putMeta('readRevision', 2);
-    queryReadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          readRevision: 5,
-          items: [
-            {
-              threadId: 1,
-              lastReadSeq: 6,
-              readRevision: 5,
-              unreadCount: 0,
-              mentionUnread: [],
-            },
-          ],
-        },
-      }),
-    );
-
-    emitHello({ userId: 1, stateFeedEndId: 0, readRevision: 5 });
-    await flush(20);
-
-    expect(queryReadDeltaSpy).toHaveBeenCalledWith({
-      fromRevision: 2,
-      toRevision: 5,
-    });
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({ lastReadSeq: 6, unreadCount: 0 }),
-    );
-    expect(await webdb.getMeta('readRevision')).toBe(5);
-  });
-
-  it('treats attention SSE as a cursor-only wake-up and pulls its projection', async () => {
-    await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
-    await webdb.putMeta('readRevision', 2);
-    emitHello({ userId: 1, stateFeedEndId: 0, readRevision: 2 });
-    await flush(20);
-    queryReadDeltaSpy.mockClear();
-    queryReadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          readRevision: 3,
-          items: [
-            {
-              threadId: 1,
-              lastReadSeq: 7,
-              readRevision: 3,
-              unreadCount: 0,
-              mentionUnread: [],
-            },
-          ],
-        },
-      }),
-    );
-
-    eventSubject.next({
-      event: 'ATTENTION_REV_UPDATED',
-      data: { attentionRevision: 3 },
-    });
-    await flush(20);
-
-    expect(queryReadDeltaSpy).toHaveBeenCalledWith({
-      fromRevision: 2,
-      toRevision: 3,
-    });
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({ lastReadSeq: 7, unreadCount: 0 }),
-    );
-  });
-
-  // ── per-thread dismiss-HWM (the away-notification per-thread grouping state) ─────────────────
-
-  it('recordThreadDismiss advances a thread HWM + persists the map to IDB', async () => {
-    repo.recordThreadDismiss({ threadId: 7, seq: 3 });
-    await flush();
-    expect(repo.threadHwms()).toEqual({ 7: 3 });
-    expect(await webdb.getMeta('threadHwms')).toEqual({ 7: 3 });
-  });
-
-  it('recordThreadDismiss merges per-thread and never regresses (monotonic)', async () => {
-    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
-    repo.recordThreadDismiss({ threadId: 9, seq: 2 });
-    repo.recordThreadDismiss({ threadId: 7, seq: 3 }); // stale / lower → ignored
-    await flush();
-    expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });
-  });
-
-  it('clearThreadDismiss resets the map to empty + persists {}', async () => {
-    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
-    await flush();
-    repo.clearThreadDismiss();
-    await flush();
-    expect(repo.threadHwms()).toEqual({});
-    expect(await webdb.getMeta('threadHwms')).toEqual({});
-  });
-
-  it('clearThreadDismiss is a no-op when already empty', async () => {
-    repo.clearThreadDismiss();
-    await flush();
-    expect(repo.threadHwms()).toEqual({});
-    expect(await webdb.getMeta('threadHwms')).toBeUndefined();
-  });
-
-  it('loadThreadHwms hydrates from IDB on HELLO (boot restore of a persisted map)', async () => {
-    await webdb.putMeta('threadHwms', { 7: 5, 9: 2 });
-    emitHello({ userId: 1, stateFeedEndId: 5 });
-    await flush(20);
-    expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });
-  });
-
-  it('session-end reset (logout) clears the thread HWMs', async () => {
-    sessionUserId.set(1);
-    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
-    await flush();
-    expect(repo.threadHwms()).toEqual({ 7: 5 });
-    sessionUserId.set(null); // logout → reset()
-    await flush(20);
-    expect(repo.threadHwms()).toEqual({});
-  });
-});
-
-describe('rawPreview', () => {
-  it('renders a link card title instead of leaking its JSON envelope', () => {
-    expect(
-      rawPreview(
-        'LINK',
-        JSON.stringify({
-          url: 'https://example.com/article',
-          title: '  An example\narticle  ',
-          description: 'Description',
-        }),
-      ),
-    ).toBe('An example article');
-  });
-
-  it('falls back to the link URL when the card has no title', () => {
-    expect(
-      rawPreview(
-        'LINK',
-        JSON.stringify({ url: 'https://example.com/article', title: '  ' }),
-      ),
-    ).toBe('https://example.com/article');
-  });
-
-  it('uses a link description before the URL when the provider has no title', () => {
-    expect(
-      rawPreview(
-        'LINK',
-        JSON.stringify({
-          url: 'https://v.douyin.com/example',
-          title: '',
-          description: '  Douyin video\ncaption  ',
-        }),
-      ),
-    ).toBe('Douyin video caption');
-  });
-
-  it('renders semantic mentions as readable labels instead of leaking the storage URI', () => {
-    expect(
-      rawPreview(
-        'PURE_TEXT',
-        JSON.stringify({
-          text: '你好 [@张三](somfp://user/zhangsan%40example.com)',
-          quote: {
-            seq: 7,
-            author: '李四',
-            body: '不应进入会话摘要',
-          },
-        }),
-      ),
-    ).toBe('你好 @张三');
-  });
-
-  it('renders a forwarded bundle as a readable summary instead of raw JSON', () => {
-    expect(
-      rawPreview(
-        'FORWARD',
-        JSON.stringify({
-          bundleId: 'bundle-1',
-          summaryLines: ['王涛：[图片]', '李雷：你好'],
-        }),
-      ),
-    ).toBe('[Chat history] 王涛：[图片]');
-  });
-
-  it('falls back to the forward marker for malformed bundle content', () => {
-    expect(rawPreview('FORWARD', '{')).toBe('[Chat history]');
-  });
-
-  it('renders an all-file gallery as a file-set summary instead of raw JSON', () => {
-    expect(
-      rawPreview(
-        'GALLERY',
-        JSON.stringify({ items: [{ kind: 'FILE' }, { kind: 'FILE' }] }),
-      ),
-    ).toBe('[File set · 2]');
-  });
-
-  it('renders a mixed file set with its item count and safely handles malformed content', () => {
-    expect(
-      rawPreview(
-        'GALLERY',
-        JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
-      ),
-    ).toBe('[File set · 2]');
-    expect(rawPreview('GALLERY', '{')).toBe('[File set]');
   });
 });

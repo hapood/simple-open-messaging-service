@@ -33,6 +33,7 @@ import {
   messageThread,
 } from '../database/schema.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
+import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
 import {
   toClientIdentity,
   type NamespacedAddress,
@@ -127,17 +128,17 @@ export class GroupMetaSyncTaskExecutionService {
       const locked = await lockTaskInTx(tx, taskId);
       const current = readGroupMetaSyncTask(locked);
       requireSamePull(current.payload, current.checkpoint, payload, checkpoint);
-      await tx
-        .update(durableTask)
-        .set({
-          checkpoint: {
-            phase: 'PULL',
-            mode: 'full',
-            after: recovery.resumeAfter.toString(),
-            through: through.toString(),
-          },
-        })
-        .where(eq(durableTask.id, taskId));
+      await saveTaskCheckpointInTx(
+        tx,
+        taskId,
+        {
+          phase: 'PULL',
+          mode: 'full',
+          after: recovery.resumeAfter.toString(),
+          through: through.toString(),
+        },
+        'ASYNC_PROCESSING',
+      );
     });
   }
 
@@ -181,10 +182,12 @@ export class GroupMetaSyncTaskExecutionService {
               mode: 'delta',
               through: checkpoint.through,
             };
-      await tx
-        .update(durableTask)
-        .set({ checkpoint: nextCheckpoint })
-        .where(eq(durableTask.id, taskId));
+      await saveTaskCheckpointInTx(
+        tx,
+        taskId,
+        nextCheckpoint,
+        'ASYNC_PROCESSING',
+      );
     });
   }
 
@@ -353,16 +356,16 @@ export class GroupMetaSyncTaskExecutionService {
           ),
         );
       if (stale.length < CLEANUP_PAGE_SIZE)
-        await tx
-          .update(durableTask)
-          .set({
-            checkpoint: {
-              phase: 'FINALIZE',
-              mode: 'full',
-              through: checkpoint.through,
-            },
-          })
-          .where(eq(durableTask.id, taskId));
+        await saveTaskCheckpointInTx(
+          tx,
+          taskId,
+          {
+            phase: 'FINALIZE',
+            mode: 'full',
+            through: checkpoint.through,
+          },
+          'ASYNC_PROCESSING',
+        );
     });
   }
 
@@ -528,7 +531,7 @@ export class GroupMetaSyncTaskExecutionService {
         threadId,
         SystemMessageType.GROUP_LEFT,
         member,
-        { threadLock, recipientUserIds, visibleThroughUserIds: [] },
+        { threadLock },
       );
   }
 

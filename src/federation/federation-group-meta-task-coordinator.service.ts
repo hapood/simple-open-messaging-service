@@ -9,6 +9,11 @@ import {
 import { durableTask } from '../database/schema.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import {
+  insertPendingTaskInTx,
+  updatePendingTaskInTx,
+  supersedePendingTasksInTx,
+} from '../durable-task/task-admission.js';
+import {
   businessAccountScopeKey,
   lockBusinessAccountsInTx,
 } from '../relationship/business-scope-lock.js';
@@ -135,44 +140,31 @@ export class FederationGroupMetaTaskCoordinator {
     } as const;
     const retained = pending[0];
     if (retained) {
-      await tx
-        .update(durableTask)
-        .set({ payload, checkpoint })
-        .where(
-          sql`${durableTask.id} = ${BigInt(retained.id)} AND ${durableTask.status} = 'PENDING'`,
-        );
-      if (pending.length > 1)
-        await tx
-          .update(durableTask)
-          .set({
-            status: 'SUPERSEDED',
-            supersededByTaskId: BigInt(retained.id),
-            completedAt: sql`GREATEST(clock_timestamp(), ${durableTask.createdAt})`,
-          })
-          .where(
-            inArray(
-              durableTask.id,
-              pending.slice(1).map((task) => BigInt(task.id)),
-            ),
-          );
-      return { ready: false, taskId: BigInt(retained.id) };
-    }
-    const [inserted] = await tx
-      .insert(durableTask)
-      .values({
-        kind: 'PROJECTION',
-        scopeType: 'GROUP',
-        scopeKey,
-        taskType: DurableTaskType.SYNC_GROUP_META,
-        actorUserId: null,
+      const updated = await updatePendingTaskInTx(tx, BigInt(retained.id), {
         payload,
         checkpoint,
-        coalescingKey,
-        status: 'PENDING',
-      })
-      .returning({ taskId: durableTask.id });
-    if (!inserted)
-      throw new Error('group-meta sync task insert returned no row');
+      });
+      if (!updated) throw new Error('locked group-meta pending task changed');
+      if (pending.length > 1)
+        await supersedePendingTasksInTx(
+          tx,
+          inArray(
+            durableTask.id,
+            pending.slice(1).map((task) => BigInt(task.id)),
+          ),
+        );
+      return { ready: false, taskId: BigInt(retained.id) };
+    }
+    const inserted = await insertPendingTaskInTx(tx, {
+      kind: 'PROJECTION',
+      scopeType: 'GROUP',
+      scopeKey,
+      taskType: DurableTaskType.SYNC_GROUP_META,
+      actorUserId: null,
+      payload,
+      checkpoint,
+      coalescingKey,
+    });
     return { ready: false, taskId: inserted.taskId };
   }
 }

@@ -169,7 +169,7 @@ describe('RelationshipController.revokeRelationship', () => {
           { account: 'bob', domain: 'local' },
         ],
       },
-      taskType: 'REVOKE_RELATIONSHIP_REQUEST',
+      taskType: 'REVOKE_USER_RELATIONSHIP',
       actorUserId: 7,
       payload: { peerUserId: 9 },
     });
@@ -221,7 +221,7 @@ describe('RelationshipController.revokeRelationship', () => {
           { account: 'bob', domain: 'local' },
         ],
       },
-      taskType: 'REJECT_RELATIONSHIP_REQUEST',
+      taskType: 'REVOKE_USER_RELATIONSHIP',
       actorUserId: 7,
       payload: { peerUserId: 9 },
     });
@@ -274,7 +274,7 @@ describe('RelationshipController.revokeRelationship', () => {
           { account: 'bob', domain: 'local' },
         ],
       },
-      taskType: 'END_FRIENDSHIP',
+      taskType: 'REVOKE_USER_RELATIONSHIP',
       actorUserId: 7,
       payload: { threadId: 12 },
     });
@@ -318,7 +318,7 @@ describe('RelationshipController.revokeRelationship', () => {
     });
     expect(tasks.enqueueTask).toHaveBeenCalledWith(
       expect.objectContaining({
-        taskType: 'END_FRIENDSHIP',
+        taskType: 'REVOKE_USER_RELATIONSHIP',
         payload: { threadId: 42 },
       }),
     );
@@ -370,7 +370,7 @@ describe('RelationshipController.revokeRelationship', () => {
           { account: 'bob', domain: 'peer.test' },
         ],
       },
-      taskType: 'REVOKE_ADDRESSED_RELATIONSHIP_REQUEST',
+      taskType: 'REVOKE_USER_RELATIONSHIP',
       actorUserId: 7,
       payload: { account: 'bob', domain: 'peer.test' },
     });

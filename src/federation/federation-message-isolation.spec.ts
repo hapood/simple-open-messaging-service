@@ -11,7 +11,7 @@ vi.mock('../relationship/thread-content-lock.js', () => ({
     threadId,
   })),
 }));
-import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
+import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import {
   FederationService,
@@ -160,87 +160,116 @@ describe('federation message context isolation', () => {
       ),
     ).rejects.toThrow('database unavailable');
   });
-  it('does not publish THREAD_CONTENT_HEAD when committing reverse history', async () => {
-    const service = Object.create(
-      FederationInboundMessageStoreService.prototype,
-    ) as FederationInboundMessageStoreService & Record<string, unknown>;
-    const insertedValues = vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([
-        {
-          id: 1n,
-          threadId: 9,
-          seq: 70,
+  it.each(
+    [false, true].flatMap((reverse) =>
+      [false, true].map((media) => ({ reverse, media })),
+    ),
+  )(
+    'admits fanout only for forward messages (reverse=$reverse, media=$media)',
+    async ({ reverse, media }) => {
+      const service = Object.create(
+        FederationInboundMessageStoreService.prototype,
+      ) as FederationInboundMessageStoreService & Record<string, unknown>;
+      const insertedValues = vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: 1n,
+            threadId: 9,
+            seq: 70,
+            originSeq: 70,
+            sourceNamespaceId: 4,
+            creatorAccount: 'bob',
+            creatorDomain: 'origin.test',
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({ text: 'history' }),
+            localState: 'STUB',
+            isDeleted: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ]),
+      });
+      const tx = {
+        query: {
+          message: { findFirst: vi.fn().mockResolvedValue(undefined) },
+          federatedMessageTombstone: {
+            findFirst: vi.fn().mockResolvedValue(undefined),
+          },
+        },
+        insert: vi.fn().mockReturnValue({ values: insertedValues }),
+        select: vi.fn().mockReturnValue({
+          from: () => ({
+            where: () => ({ limit: async () => [{ authorizationEpoch: 0 }] }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({ rowCount: 0 }),
+      };
+      Object.assign(service, {
+        config: { domain: 'local.example' },
+        threadAccess: { assertResponseWritable: vi.fn() },
+        assertMappedMessageSeqAvailable: vi.fn(),
+        enqueueFanout: vi.fn(),
+        allocateMessageSeq: vi.fn().mockResolvedValue(78),
+        quota: { tickLax: vi.fn() },
+      });
+      vi.spyOn(
+        DeletedMessageService,
+        'lockFederatedIdentity',
+      ).mockResolvedValue({} as never);
+      const publishMessage = vi
+        .spyOn(ThreadFeedHeadWriter, 'advanceInTx')
+        .mockResolvedValue(undefined);
+
+      await service.store(tx as never, {
+        threadId: 9,
+        creator: { account: 'bob', domain: 'origin.test' },
+        fetchedFromDomain: 'origin.test',
+        namespaceId: 12,
+        message: {
           originSeq: 70,
-          sourceNamespaceId: 4,
-          creatorAccount: 'bob',
-          creatorDomain: 'origin.test',
-          contentType: 'PURE_TEXT',
-          content: JSON.stringify({ text: 'history' }),
-          localState: 'STUB',
-          isDeleted: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          clientMessageId: null,
+          contentType: media ? 'FILE' : 'PURE_TEXT',
+          content: JSON.stringify(
+            media
+              ? {
+                  url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+                  name: 'history.txt',
+                  size: 1,
+                  mimeType: 'text/plain',
+                }
+              : { text: 'history' },
+          ),
+          ts: 1_700_000_000_000,
         },
-      ]),
-    });
-    const tx = {
-      query: {
-        message: { findFirst: vi.fn().mockResolvedValue(undefined) },
-        federatedMessageTombstone: {
-          findFirst: vi.fn().mockResolvedValue(undefined),
-        },
-      },
-      insert: vi.fn().mockReturnValue({ values: insertedValues }),
-      execute: vi.fn().mockResolvedValue({ rowCount: 0 }),
-    };
-    Object.assign(service, {
-      config: { domain: 'local.example' },
-      threadAccess: { assertResponseWritable: vi.fn() },
-      assertMappedMessageSeqAvailable: vi.fn(),
-      quota: { tickLax: vi.fn() },
-    });
-    vi.spyOn(DeletedMessageService, 'lockFederatedIdentity').mockResolvedValue(
-      {} as never,
-    );
-    const publishMessage = vi
-      .spyOn(ClientThreadContentHeadWriter, 'publishMessage')
-      .mockResolvedValue(undefined);
+        expectedFederationVersion: 4,
+        incomingText: null,
+        originTime: new Date(1_700_000_000_000),
+        sequencePolicy: reverse
+          ? {
+              kind: 'MAP_ORIGIN',
+              beforeSeq: 100,
+              throughSeq: 40,
+              messageSeqOffset: 7,
+            }
+          : undefined,
+      });
 
-    await service.store(tx as never, {
-      threadId: 9,
-      creator: { account: 'bob', domain: 'origin.test' },
-      fetchedFromDomain: 'origin.test',
-      namespaceId: 12,
-      message: {
-        originSeq: 70,
-        clientMessageId: null,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'history' }),
-        ts: 1_700_000_000_000,
-      },
-      expectedFederationVersion: 4,
-      incomingText: null,
-      originTime: new Date(1_700_000_000_000),
-      sequencePolicy: {
-        kind: 'MAP_ORIGIN',
-        beforeSeq: 100,
-        throughSeq: 40,
-        messageSeqOffset: 7,
-      },
-    });
-
-    expect(insertedValues).toHaveBeenCalledWith(
-      expect.objectContaining({ seq: 77, localState: 'STUB' }),
-    );
-    expect(publishMessage).not.toHaveBeenCalled();
-  });
+      expect(insertedValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          seq: reverse ? 77 : 78,
+          localState: reverse || media ? 'STUB' : 'READY',
+        }),
+      );
+      expect(publishMessage).not.toHaveBeenCalled();
+      expect(service.enqueueFanout).toHaveBeenCalledTimes(reverse ? 0 : 1);
+    },
+  );
 
   it('does not publish realtime effects for a committed historical message', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
-    const signalOutbound = vi.fn();
-    const signalDeletionOutbound = vi.fn();
     const notifyFeedUpdates = vi.fn();
     Object.assign(service, {
       config: { forwardedResourcePolicy: 'trust' },
@@ -249,8 +278,6 @@ describe('federation message context isolation', () => {
         notifyFeedUpdates,
       },
       forwardBundles: { rebuildUntrustedCards: vi.fn() },
-      signalOutbound,
-      signalDeletionOutbound,
       unblockedRecipients: vi.fn(),
     });
 
@@ -273,8 +300,6 @@ describe('federation message context isolation', () => {
       },
     ] as never);
 
-    expect(signalOutbound).not.toHaveBeenCalled();
-    expect(signalDeletionOutbound).not.toHaveBeenCalled();
     expect(notifyFeedUpdates).not.toHaveBeenCalled();
   });
 
@@ -320,7 +345,7 @@ describe('federation message context isolation', () => {
     },
   );
 
-  it('publishes a committed live message through the client state-feed throttler', async () => {
+  it('leaves live-message device notifications to durable fanout', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
@@ -334,8 +359,6 @@ describe('federation message context isolation', () => {
       clientStateFeed: { readEndId, notifyFeedUpdates },
       forwardBundles: { rebuildUntrustedCards: vi.fn() },
       linkPreview: { buildCardContent: vi.fn() },
-      signalOutbound: vi.fn().mockResolvedValue(undefined),
-      signalDeletionOutbound: vi.fn().mockResolvedValue(undefined),
     });
 
     await service.publishMessageQueryEffects('origin.test', [
@@ -358,14 +381,11 @@ describe('federation message context isolation', () => {
       },
     ] as never);
 
-    expect(readEndId.mock.calls).toEqual([[8], [7]]);
-    expect(notifyFeedUpdates).toHaveBeenCalledWith([
-      { userId: 8, feedId: 11 },
-      { userId: 7, feedId: 17 },
-    ]);
+    expect(readEndId).not.toHaveBeenCalled();
+    expect(notifyFeedUpdates).not.toHaveBeenCalled();
   });
 
-  it('publishes a committed tombstone through the client state-feed throttler', async () => {
+  it('publishes quote dependencies without duplicating durable fanout', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
@@ -382,7 +402,6 @@ describe('federation message context isolation', () => {
       inboundMessageCommits: {
         applyTombstonesInTransaction: vi.fn().mockResolvedValue({
           quoteDependencies: [],
-          recipientUserIds: [4, 6],
         }),
         publishSatisfiedQuoteDependencies,
       },
@@ -390,16 +409,13 @@ describe('federation message context isolation', () => {
 
     const publication = await service.applyForwardTombstonePageInTransaction(
       {} as never,
-      {} as never,
+      { response: { threadId: 9 } } as never,
     );
     expect(notifyFeedUpdates).not.toHaveBeenCalled();
     await publication.publish();
 
-    expect(readEndId.mock.calls).toEqual([[4], [6]]);
-    expect(notifyFeedUpdates).toHaveBeenCalledWith([
-      { userId: 4, feedId: 23 },
-      { userId: 6, feedId: 29 },
-    ]);
+    expect(readEndId).not.toHaveBeenCalled();
+    expect(notifyFeedUpdates).not.toHaveBeenCalled();
     expect(publishSatisfiedQuoteDependencies).toHaveBeenCalledWith([]);
   });
 

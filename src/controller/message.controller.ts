@@ -21,16 +21,17 @@ import {
   MessageQueryPageDto,
   MessageResponseDto,
   MessageTombstoneQueryPageDto,
+  ThreadFeedDeltaPageDto,
 } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
-import { SseService } from '../gateway/sse.service.js';
+import { ThreadFeedService } from '../message/thread-feed.service.js';
+import { DurableTaskAcceptedDto } from '../dto/durable-task.dto.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { parseLinkContent } from '../upload/file-content.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
@@ -39,7 +40,7 @@ import {
   QueryMediaStagesDto,
   QueryMessagesDto,
   MarkReadDto,
-  ReadDeltaDto,
+  ThreadFeedDeltaDto,
   MediaStatusDto,
   RelocalizeMediaDto,
   SetMutedDto,
@@ -62,7 +63,7 @@ import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
-import { CreateMessageReportsDto } from '../message/message-report.dto.js';
+import { CreateMessageReportDto } from '../message/message-report.dto.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -76,9 +77,8 @@ import {
 export class MessageController {
   constructor(
     private readonly messageService: MessageService,
-    private readonly sseService: SseService,
+    private readonly attention: ThreadFeedService,
     private readonly participantService: AccountThreadStateService,
-    private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
@@ -90,15 +90,15 @@ export class MessageController {
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
-  @ResourceId<CreateMessageReportsDto>('threadId')
+  @ResourceId<CreateMessageReportDto>('threadId')
   @Throttle('message.report')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('message-reports')
-  @ApiOperation({ summary: 'Report one or more messages in one conversation' })
-  async reportMessages(
+  @ApiOperation({ summary: 'Report one message in a conversation' })
+  async reportMessage(
     @Request() req: FastifyRequest,
-    @Body() dto: CreateMessageReportsDto,
+    @Body() dto: CreateMessageReportDto,
   ) {
     return this.messageReports.create(req.user.userId, dto);
   }
@@ -171,12 +171,6 @@ export class MessageController {
         await this.userQuota.tickLax(req.user.userId, 'messages', tx);
       },
     );
-    if (deleted.systemMessage) void this.fanout.dispatch(deleted.systemMessage);
-    // The existing federation hint is only a wake-up signal. Receivers always pull both the message
-    // stream and the durable deletion stream, so reusing it keeps delivery lossy-safe without making
-    // the push itself authoritative.
-    void this.federation.notifyOnSend(deleted.creator, dto.threadId, dto.seq);
-    void this.federation.signalDeletionOutbound(dto.threadId, dto.seq);
     return deleted;
   }
 
@@ -345,11 +339,6 @@ export class MessageController {
     if (generationId && !dto.retainLinkGeneration) {
       this.linkPreview.finishGeneration(req.user.userId, generationId);
     }
-    // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient
-    // fan-out (SSE + push + notif + federation hint) runs off the request critical path. The client
-    // reconciles by seq/id, so an SSE frame landing after the 200 is harmless. The staged-media promote
-    // path uses the same dispatch, so text and media fan out identically.
-    void this.fanout.dispatch(data);
     return data;
   }
 
@@ -471,7 +460,6 @@ export class MessageController {
         if (avatar) await this.userQuota.tickLax(req.user.userId, 'files', tx);
       },
     );
-    void this.fanout.dispatch(data);
     return data;
   }
 
@@ -539,7 +527,6 @@ export class MessageController {
           await this.userQuota.tickLax(req.user.userId, 'messages', tx);
         },
       );
-      void this.fanout.dispatch(data);
       return data;
     }
     const bundle = await this.forwardBundles.prepareFromMessages(
@@ -568,7 +555,6 @@ export class MessageController {
         await this.forwardBundles.persistPrepared(tx, bundle);
       },
     );
-    void this.fanout.dispatch(data);
     return data;
   }
 
@@ -833,56 +819,25 @@ export class MessageController {
   @ApiOperation({
     summary: 'Commit a local read HWM',
   })
-  async markRead(
-    @Request() req: FastifyRequest,
-    @Body() dto: MarkReadDto,
-  ): Promise<void> {
-    // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
-    // participant row is on req.threadAccess.participant.
-    const msg = await this.messageService.findMessageBySeq(
-      dto.threadId,
-      dto.localReadHwm,
-    );
-    if (msg === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `no such message in thread [${dto.threadId}]`,
-      );
-    }
-    const state = await this.messageService.commitReadState(
-      req.user.userId,
-      dto.threadId,
-      msg.seq,
-    );
-    if (state)
-      this.sseService.onThreadAttentionRevisionUpdated(req.user.userId, {
-        attentionRevision: state.readRevision,
-      });
+  @ApiResultResponse(DurableTaskAcceptedDto)
+  async markRead(@Request() req: FastifyRequest, @Body() dto: MarkReadDto) {
+    return this.attention.enqueueReadPosition(req.user.userId, dto);
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle('thread.read-delta')
+  @Throttle('thread.feed-delta')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('thread/read-delta')
+  @Post('thread/feed-delta')
+  @ApiResultResponse(ThreadFeedDeltaPageDto)
   @ApiOperation({
-    summary: 'Fetch read-state delta in (fromRevision, toRevision]',
+    summary: 'Fetch unified thread snapshots in a bounded feed range',
   })
-  async readDelta(@Request() req: FastifyRequest, @Body() dto: ReadDeltaDto) {
-    const current = await this.messageService.currentReadRevision(
-      req.user.userId,
-    );
-    const toRevision = Math.min(dto.toRevision, current);
-    if (toRevision <= dto.fromRevision)
-      return { readRevision: toRevision, items: [] };
-    return {
-      readRevision: toRevision,
-      items: await this.messageService.queryReadDelta(
-        req.user.userId,
-        dto.fromRevision,
-        toRevision,
-      ),
-    };
+  async threadFeedDelta(
+    @Request() req: FastifyRequest,
+    @Body() dto: ThreadFeedDeltaDto,
+  ) {
+    return this.attention.queryThreadFeedDelta(req.user.userId, dto);
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

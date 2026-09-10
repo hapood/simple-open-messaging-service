@@ -17,6 +17,7 @@ export interface FriendRequestPeer {
 }
 
 export interface RelationshipIntentFact {
+  established?: boolean;
   key: string;
   reverseKey: string;
   status: FriendRequestIntentStatus;
@@ -25,59 +26,8 @@ export interface RelationshipIntentFact {
   updatedAt: number;
 }
 
-export function relationshipIntentKey(input: {
-  namespaceId: number;
-  account: string;
-  domain: string;
-  subjectAccount: string;
-  subjectDomain: string;
-}): string {
-  return JSON.stringify([
-    'relationship',
-    input.namespaceId,
-    input.domain,
-    input.account,
-    input.subjectDomain,
-    input.subjectAccount,
-  ]);
-}
-
-export function reverseRelationshipIntentKey(input: {
-  namespaceId: number;
-  account: string;
-  domain: string;
-  subjectAccount: string;
-  subjectDomain: string;
-}): string {
-  return JSON.stringify([
-    'relationship',
-    input.namespaceId,
-    input.subjectDomain,
-    input.subjectAccount,
-    input.domain,
-    input.account,
-  ]);
-}
-
-export function relationshipFactsAreActive(
-  first: RelationshipIntentFact | undefined,
-  second: RelationshipIntentFact | undefined,
-  now: number,
-): boolean {
-  const effective = (fact: RelationshipIntentFact | undefined) =>
-    fact?.status === 'ACCEPTED' ||
-    (fact?.status === 'REQUESTED' &&
-      fact.expiresAt !== null &&
-      fact.expiresAt > now);
-  return (
-    effective(first) &&
-    effective(second) &&
-    (first?.status === 'ACCEPTED' || second?.status === 'ACCEPTED')
-  );
-}
-
-/** A disposable UI projection rooted in one authored REQUESTED fact. Relationship authorization
- * is derived from separately persisted intent facts, never from this record. */
+/** A disposable UI projection rooted in one authored REQUESTED fact. Conversation state is supplied by
+ * THREAD_STATE, never derived from this request record. */
 export interface FriendRequestProjection {
   key: string;
   namespaceId: number;

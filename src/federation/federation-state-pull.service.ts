@@ -120,6 +120,7 @@ export class FederationStatePullService {
           if (resolution.rev === 0) continue;
           void this.profileResolutions
             .start(resolution.userId, {
+              type: 'EXACT',
               account: resolution.account,
               domain: resolution.domain,
               rev: resolution.rev,

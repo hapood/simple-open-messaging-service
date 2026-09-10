@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
 import { FederationThreadReverseRoundService } from './federation-thread-reverse-round.service.js';
+import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 
 function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
   const states = {
@@ -59,15 +60,91 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
 }
 
 describe('FederationThreadReverseRoundExecutorService', () => {
+  it.each([false, true])(
+    'commits reverse facts and progress without a preview dependency (rollback=%s)',
+    async (rollback) => {
+      const { source, batch } = harness();
+      const events: string[] = [];
+      const tx = {};
+      const threadLock = { tx, threadId: source.threadId };
+      const publish = vi.fn(async () => {
+        events.push('publish');
+      });
+      const apply = vi.fn(async (actualTx) => {
+        expect(actualTx).toBe(tx);
+        events.push('facts');
+        return { publish };
+      });
+      const finalize = vi.fn(async (actualTx) => {
+        expect(actualTx).toBe(tx);
+        events.push('finalize');
+      });
+      const progress = vi
+        .spyOn(FederationThreadSyncStateService, 'commitReverseBatchInTx')
+        .mockImplementation(async (actualTx, params) => {
+          expect(actualTx).toBe(tx);
+          await params.applyDependencies(threadLock as never);
+          events.push('progress');
+        });
+      const failure = new Error('rollback reverse batch');
+      const executor = Object.create(
+        FederationThreadReverseRoundExecutorService.prototype,
+      );
+      Object.assign(executor, {
+        database: {
+          db: {
+            transaction: async (run: (tx: unknown) => Promise<void>) => {
+              await run(tx);
+              if (rollback) throw failure;
+              events.push('commit');
+            },
+          },
+        },
+        federation: {
+          applyReverseMessagePageInTransaction: apply,
+          finalizeReverseMessageWindowInTransaction: finalize,
+        },
+      });
+      try {
+        const result = executor.commit(
+          source,
+          {
+            authorizationEpoch: 7,
+            gapId: 12n,
+            nextBeforeSeq: 40,
+            throughSeq: 40,
+            messageSeqOffset: 8,
+          },
+          true,
+          batch,
+        );
+        if (rollback) {
+          await expect(result).rejects.toBe(failure);
+          expect(publish).not.toHaveBeenCalled();
+          expect(events).toEqual(['facts', 'finalize', 'progress']);
+        } else {
+          await result;
+          expect(events).toEqual([
+            'facts',
+            'finalize',
+            'progress',
+            'commit',
+            'publish',
+          ]);
+        }
+      } finally {
+        progress.mockRestore();
+      }
+    },
+  );
+
   it('requests only mirror-owned authors during an authoritative reverse scan', async () => {
     const { source } = harness();
     if (source.kind !== 'GROUP') throw new Error('expected group fixture');
     source.localGroupAuthority = true;
-    const fetch = vi
-      .fn()
-      .mockResolvedValue({
-        data: { messages: [], scannedThrough: 40, hasMore: false },
-      });
+    const fetch = vi.fn().mockResolvedValue({
+      data: { messages: [], scannedThrough: 40, hasMore: false },
+    });
     const executor = Object.create(
       FederationThreadReverseRoundExecutorService.prototype,
     );

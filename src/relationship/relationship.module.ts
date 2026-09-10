@@ -25,6 +25,10 @@ import { AcceptRelationshipRequestTaskHandler } from './accept-relationship-requ
     RejectRelationshipRequestTaskHandler,
     RevokeRelationshipRequestTaskHandler,
   ],
-  exports: [RelationshipService, RelationshipIntentService],
+  exports: [
+    RelationshipService,
+    RelationshipIntentService,
+    RelationshipRequestTaskExecutionService,
+  ],
 })
 export class RelationshipModule {}

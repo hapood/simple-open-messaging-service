@@ -82,7 +82,6 @@ describe('ThreadListComponent', () => {
             status,
             error: signal(''),
             openThreadId: signal(undefined),
-            readCommitPending: signal<ReadonlySet<number>>(new Set()),
             topInserted: signal(null),
             load: loadSpy,
             clearTopInserted: () => {
@@ -239,9 +238,9 @@ describe('ThreadListComponent', () => {
     );
     expect(row.getAttribute('aria-label')).toContain('remote.example');
     expect(row.getAttribute('aria-label')).toContain(blockedLabel);
-    expect(row.getAttribute('aria-label')).toContain('999+');
+    expect(row.getAttribute('aria-label')).toContain('99+');
     expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe(
-      '999+',
+      '99+',
     );
     expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(
       blockedLabel,

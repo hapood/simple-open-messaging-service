@@ -135,6 +135,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     async (form) => {
       await expect(
         coordinator().start(viewerId, {
+          type: 'GROUP_MEMBER',
           threadId,
           memberAccount: account,
           memberDomain: form === 'local' ? 'local' : domain,
@@ -151,7 +152,11 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     'resolves message %i locally even with a foreign source namespace',
     async (messageSeq) => {
       await expect(
-        coordinator().start(viewerId, { threadId, messageSeq }),
+        coordinator().start(viewerId, {
+          type: 'MESSAGE_AUTHOR',
+          threadId,
+          messageSeq,
+        }),
       ).resolves.toMatchObject({
         status: 'READY',
         profile: { rev: 1, name: 'Local historical' },
@@ -162,7 +167,11 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
 
   it('does not fall back to S2S or the latest local version for a missing exact revision', async () => {
     await expect(
-      coordinator().start(viewerId, { threadId, messageSeq: 3 }),
+      coordinator().start(viewerId, {
+        type: 'MESSAGE_AUTHOR',
+        threadId,
+        messageSeq: 3,
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     expect(peerHttp.get).not.toHaveBeenCalled();
     expect(sse.onProfileFailed).not.toHaveBeenCalled();
@@ -174,7 +183,11 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       .values({ account: 'profile-outsider', updatedAt: new Date() })
       .returning();
     await expect(
-      coordinator().start(outsider.id, { threadId, messageSeq: 1 }),
+      coordinator().start(outsider.id, {
+        type: 'MESSAGE_AUTHOR',
+        threadId,
+        messageSeq: 1,
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
   });
 });

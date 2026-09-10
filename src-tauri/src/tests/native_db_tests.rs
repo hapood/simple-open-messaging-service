@@ -1,8 +1,7 @@
 use super::client_state::cleanup_relationship_requests;
 use super::messages::load_message_ranges;
 use super::relationship_projection::{
-    apply_group_request_effect, apply_relationship_intent_fact, apply_relationship_request_effect,
-    materialize_group_thread_from_fact, update_live_request_projection,
+    apply_relationship_request_effect, update_live_request_projection,
 };
 use super::{
     decode_deleted_hwm, history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
@@ -205,112 +204,78 @@ fn deleted_hwm_accepts_only_non_negative_integer_json() {
 }
 
 #[test]
-fn native_group_intents_materialize_the_conversation_before_group_meta() {
+fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     let mut conn = request_connection();
-    conn.execute_batch(
-        "CREATE TABLE threads(
-           user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, payload_json TEXT NOT NULL,
-           PRIMARY KEY(user_id, thread_id)
-         );",
-    )
-    .unwrap();
-    let group = serde_json::json!({
-        "account": "!dev", "domain": "", "isLocal": true, "name": "dev",
-        "avatar": "", "description": "", "profileRev": 1
-    });
+    conn.execute_batch("CREATE TABLE threads(user_id INTEGER, thread_id INTEGER, payload_json TEXT, PRIMARY KEY(user_id,thread_id));").unwrap();
     let tx = conn.transaction().unwrap();
-    let active = apply_relationship_intent_fact(
-        &tx,
-        1,
-        0,
-        "!dev",
-        "",
-        "alice",
-        "",
-        &serde_json::json!({
-            "status": "ACCEPTED", "note": "", "requestedAt": 1,
-            "expiresAt": null, "threadId": 12, "group": group
-        }),
-    )
-    .unwrap();
-    apply_group_request_effect(
-        &tx,
-        1,
-        10,
-        0,
-        "!dev",
-        "",
-        "INCOMING",
-        &serde_json::json!({
-            "status": "ACCEPTED", "note": "", "requestedAt": 1,
-            "expiresAt": null, "threadId": 12, "group": group
-        }),
-    )
-    .unwrap();
-    materialize_group_thread_from_fact(
-        &tx,
-        1,
-        "!dev",
-        "",
-        0,
-        &serde_json::json!({
-            "threadId": 12, "group": group
-        }),
-        active,
-    )
-    .unwrap();
-    let active = apply_relationship_intent_fact(
-        &tx,
-        1,
-        0,
-        "alice",
-        "",
-        "!dev",
-        "",
-        &serde_json::json!({
-            "status": "ACCEPTED", "note": "", "requestedAt": 1,
-            "expiresAt": null, "threadId": 12, "group": group
-        }),
-    )
-    .unwrap();
-    apply_group_request_effect(
-        &tx,
-        1,
-        11,
-        0,
-        "!dev",
-        "",
-        "OUTGOING",
-        &serde_json::json!({
-            "status": "ACCEPTED", "note": "", "requestedAt": 1,
-            "expiresAt": null, "threadId": 12, "group": group
-        }),
-    )
-    .unwrap();
-    materialize_group_thread_from_fact(
-        &tx,
-        1,
-        "!dev",
-        "",
-        0,
-        &serde_json::json!({
-            "threadId": 12, "group": group
-        }),
-        active,
-    )
-    .unwrap();
-    tx.commit().unwrap();
-
-    let payload: String = conn
+    let mut state = serde_json::json!({"threadId": 52, "type": "P2P", "authorityNamespaceId": 0,
+        "conversationState": "ACTIVE", "establishedAt": 100, "blocked": false, "role": null,
+        "profile": {"account": "bob", "domain": "local", "namespaceId": 0, "profileRev": 3}});
+    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
+    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.lastMessageAt', 900, '$.unreadCount', 4)", []).unwrap();
+    state["conversationState"] = "READ_ONLY".into();
+    state["blocked"] = true.into();
+    super::client_state::apply_thread_state(&tx, 1, &state, 6).unwrap();
+    state["conversationState"] = "ACTIVE".into();
+    state["profile"]["profileRev"] = 99.into();
+    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
+    let raw: String = tx
         .query_row(
-            "SELECT payload_json FROM threads WHERE user_id=1 AND thread_id=12",
+            "SELECT payload_json FROM threads WHERE user_id=1 AND thread_id=52",
             [],
-            |row| row.get(0),
+            |r| r.get(0),
         )
         .unwrap();
-    let thread: serde_json::Value = serde_json::from_str(&payload).unwrap();
-    assert_eq!(thread["type"], "GROUP");
-    assert_eq!(thread["group"]["account"], "!dev");
+    let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(thread["conversationState"], "READ_ONLY");
+    assert_eq!(thread["defaultProfile"]["profileRev"], 3);
+    assert_eq!(thread["blocked"], true);
+    assert_eq!(thread["visible"], true);
+    assert_eq!(thread["lastMessageAt"], 900);
+    assert_eq!(thread["unreadCount"], 4);
+    assert_eq!(thread["establishedAt"], 100);
+}
+
+#[test]
+fn native_read_only_and_reestablishment_preserve_group_roster() {
+    let mut conn = request_connection();
+    conn.execute_batch("CREATE TABLE threads(user_id INTEGER, thread_id INTEGER, payload_json TEXT, PRIMARY KEY(user_id,thread_id));
+      CREATE TABLE members(user_id INTEGER, thread_id INTEGER, member_account TEXT);
+      INSERT INTO members VALUES(1,52,'bob');").unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut state = serde_json::json!({"threadId": 52, "type": "GROUP", "authorityNamespaceId": 0,
+      "conversationState": "ACTIVE", "establishedAt": 1, "blocked": false, "role": "MEMBER",
+      "profile": {"account": "!dev", "domain": "local", "namespaceId": 0, "profileRev": 3}});
+    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
+    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 1, '$.group.groupMetaFeedId', '20')", []).unwrap();
+    for (feed, lifecycle) in [(6, "READ_ONLY"), (7, "ACTIVE")] {
+        state["conversationState"] = lifecycle.into();
+        state["establishedAt"] = feed.into();
+        super::client_state::apply_thread_state(&tx, 1, &state, feed).unwrap();
+        let raw: String = tx
+            .query_row("SELECT payload_json FROM threads", [], |r| r.get(0))
+            .unwrap();
+        let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(thread["group"]["memberCount"], 1);
+        assert_eq!(thread["group"]["groupMetaFeedId"], "20");
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    tx.commit().unwrap();
+    super::client_state::reset_group_meta(&mut conn, 1, 52).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let raw: String = conn
+        .query_row("SELECT payload_json FROM threads", [], |r| r.get(0))
+        .unwrap();
+    let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(thread["group"]["groupMetaFeedId"], "0");
 }
 
 fn request_connection() -> Connection {
@@ -497,11 +462,11 @@ fn quote_tombstones_are_scoped_to_user_and_thread() {
         user_id INTEGER, thread_id INTEGER, seq INTEGER, payload_json TEXT,
         PRIMARY KEY(user_id, thread_id, seq)
     );
-    INSERT INTO messages VALUES (1, 42, 4, '{"isDeleted":true}');
+    INSERT INTO messages VALUES (1, 42, 4, '{"isDeleted":true,"contentType":"TOMB","deletionType":"USER_RETRACTION"}');
     INSERT INTO messages VALUES (1, 42, 5, '{"isDeleted":false,"content":"body"}');
-    INSERT INTO messages VALUES (1, 42, 6, '{"isDeleted":true,"content":"old"}');
-    INSERT INTO messages VALUES (2, 42, 7, '{"isDeleted":true}');
-    INSERT INTO messages VALUES (1, 99, 8, '{"isDeleted":true}');"#,
+    INSERT INTO messages VALUES (1, 42, 6, '{"isDeleted":true,"contentType":"TOMB","deletionType":"MODERATION_REMOVAL"}');
+    INSERT INTO messages VALUES (2, 42, 7, '{"isDeleted":true,"contentType":"TOMB","deletionType":"USER_RETRACTION"}');
+    INSERT INTO messages VALUES (1, 99, 8, '{"isDeleted":true,"contentType":"TOMB","deletionType":"USER_RETRACTION"}');"#,
     )
     .unwrap();
     assert_eq!(
@@ -517,6 +482,28 @@ fn profile_cache_db() -> Connection {
     super::create_cache_schema(&conn).unwrap();
     super::validate_cache_schema(&conn).unwrap();
     conn
+}
+
+#[test]
+fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
+    let conn = profile_cache_db();
+    conn.execute_batch(
+        "UPDATE client_preferences SET value_json='19' WHERE scope='cache' AND key='schemaVersion';
+         INSERT INTO messages VALUES(1,42,4,100,'{\"isDeleted\":true,\"content\":\"old body\"}');",
+    )
+    .unwrap();
+    assert!(super::validate_cache_schema(&conn)
+        .unwrap_err()
+        .contains("schema version mismatch"));
+    super::drop_cache_schema(&conn).unwrap();
+    super::create_cache_schema(&conn).unwrap();
+    super::validate_cache_schema(&conn).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

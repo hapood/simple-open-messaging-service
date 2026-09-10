@@ -4,7 +4,6 @@ import type { DurableTask } from './durable-task.types.js';
 
 const asyncTask = {
   id: 1n,
-  parentTaskId: null,
   kind: 'PROJECTION',
   scopeType: 'GROUP',
   scopeKey: 'group-key',
@@ -13,7 +12,6 @@ const asyncTask = {
   payload: {},
   checkpoint: {},
   coalescingKey: null,
-  supersededByTaskId: null,
   status: 'ASYNC_PROCESSING',
   resultCode: null,
   lastError: null,

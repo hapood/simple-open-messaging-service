@@ -4,6 +4,7 @@ import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
 import { firstValueFrom } from 'rxjs';
+import { consumePendingThreadNavigation } from './pending-thread-navigation';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -19,8 +20,7 @@ import { firstValueFrom } from 'rxjs';
  * The token handoff is robust to the boot race: Kotlin may emit the token via
  * window.__SOMS_FCM_TOKEN__ before Angular boots, so init() ALSO reads the current token back via
  * SomsFcm.getToken() (the @JavascriptInterface) — whichever fires first wins. The deep-link path uses
- * the same belt-and-braces pattern: a live __SOMS_DEEP_LINK__ handler for warm start, plus a
- * __SOMS_PENDING_THREAD_ID__ boot-fallthrough for cold start.
+ * a native-owned pending target, drained both by the live hook and at boot, then acknowledged.
  */
 /** The Firebase client config payload (folded into /shell/compat). `{configured:false}` when the server has
  *  no google-services.json; otherwise the 4 client fields an Android app needs to init FirebaseApp. */
@@ -68,18 +68,14 @@ export class PushService {
     // Kotlin → JS: token rotation (onNewToken / first fetch). Store + attempt registration.
     window.__SOMS_FCM_TOKEN__ = (t) => this.onToken(t);
     // Kotlin → JS: warm-start deep link (notification tap while the app is already running).
-    window.__SOMS_DEEP_LINK__ = (tid) => this.openThread(tid);
+    window.__SOMS_DEEP_LINK__ = () => this.openPendingThread();
     // Recover anything emitted before Angular booted. getToken() is a synchronous @JavascriptInterface
     // read; if Kotlin already has a token, use it (the live hook may have been missed).
     const token = window.SomsFcm?.getToken() ?? null;
     if (token) this.onToken(token);
     else window.SomsFcm?.requestToken();
-    // Cold-start deep-link fallback (set by Kotlin before this handler could be registered).
-    const pending = window.__SOMS_PENDING_THREAD_ID__;
-    if (pending) {
-      window.__SOMS_PENDING_THREAD_ID__ = undefined;
-      this.openThread(pending);
-    }
+    // Read native pending navigation after registering the live wake handler.
+    this.openPendingThread();
     // The native Firebase client config is NOT synced here at boot — it is applied in the server-config
     // flow (server-config-page.finalize) from the config folded into /shell/compat, and the native
     // SomsApplication.onCreate cold-start reader covers boot from the persisted value. No separate fetch.
@@ -145,7 +141,7 @@ export class PushService {
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so
    *  the register POST will carry the Authorization header. (The Android background fetchers no longer
-   *  need a scoped notification token — they authenticate /notification-feed/query with the session token,
+   *  need a scoped notification token — Rust authenticates thread-feed synchronization with the session token,
    *  which AuthService pushes to Kotlin via SomsFcm.setSessionToken.) */
   onLogin() {
     if (!isTauri()) return;
@@ -255,7 +251,9 @@ export class PushService {
 
   /** Open the tapped thread via the nav state machine (the URL mirror updates `/chat/:id`; ChatPane renders
    *  from ConversationListService.openThreadId which the home shell syncs from the state machine). */
-  private openThread(threadId: string) {
-    this.nav.openChat(Number(threadId));
+  private openPendingThread() {
+    consumePendingThreadNavigation(window.SomsFcm, (threadId) =>
+      this.nav.openChat(threadId),
+    );
   }
 }

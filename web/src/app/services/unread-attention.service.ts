@@ -1,231 +1,249 @@
-import { Injectable, computed, effect, inject, signal } from '@angular/core';
+import {
+  Injectable,
+  computed,
+  effect,
+  inject,
+  signal,
+  DestroyRef,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { TranslocoService } from '@jsverse/transloco';
 import { ConversationListService } from './conversation-list.service';
-import { isAndroidNative, isTauri } from './runtime';
+import { isAndroidNative, isTauri, listenEvent, tauriInvoke } from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
-import { NotificationFeedService } from './notification-feed.service';
 import { NotificationAdapter } from './notification-adapter';
 import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { TauriNotificationAdapter } from './tauri-notification.adapter';
 import { NavStateMachineService } from './nav-state.service';
-import { SOMS_NOTIF_MSG, type SwNotifMessage } from './sw-notif-protocol';
-import { WebsocketService } from './websocket.service';
+import { SOMS_NOTIF_MSG, parseSwNotifMessage } from './sw-notif-protocol';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import {
   advanceNotificationSince,
   readNotificationSince,
 } from './browser-notification-checkpoint';
+import {
+  threadNotificationDescriptor,
+  threadNotificationIcon,
+  type ThreadNotificationUpdate,
+} from './thread-notification';
+import { WebdbService } from './webdb.service';
 
-/**
- * Foreground "you have unread" attention for **PC desktop + browser** — the channels that lack a
- * background push path (mobile Android has FCM/WorkManager; the browser has Web Push for the tab-closed
- * case). When the window/tab loses focus while there are unread messages, this service:
- *
- *  1. Prefixes the document title with the unread count — "(N) SOMS" — while the window is unfocused
- *     (the Slack/Discord/Telegram convention: a static prefix, NOT a blinking toggle). `document.title`
- *     drives BOTH a browser tab's title AND — on Tauri desktop — the OS window title (Tauri syncs it
- *     automatically), so one mechanism covers both surfaces.
- *  2. When a durable thread content head advances while unfocused, debounces `/notification-feed/query`
- *     from the frozen
- *     foreground cursor and renders the server-authored descriptor(s) via the per-platform
- *     {@link NotificationAdapter}. A burst collapses into one trailing pull (the server composes the body +
- *     the stacked-avatar icon, so there is no local tally/composition). The notification is dismissed the
- *     instant the window regains focus.
- *
- * Stops the moment the window regains focus (the user is now looking at the app). Android returns before
- * installing any focus/SSE listeners: Activity lifecycle is the authoritative foreground signal there, and
- * native FCM/WorkManager/RealtimeService own its away notifications.
- */
+/** Desktop/browser presentation consumes committed, reconciled thread-feed updates.
+ * It neither queries a notification endpoint nor owns a second feed drain.
+ * Android presentation belongs to the native runtime. */
 @Injectable({ providedIn: 'root' })
 export class UnreadAttentionService {
   private readonly convList = inject(ConversationListService);
   private readonly prefs = inject(NotificationPrefsService);
-  private readonly notificationFeed = inject(NotificationFeedService);
   private readonly nav = inject(NavStateMachineService);
-  private readonly websocket = inject(WebsocketService);
-
-  /** The page's original title, captured at construction before any prefix is applied. */
+  private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly i18n = inject(TranslocoService);
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly webdb = inject(WebdbService);
   private readonly baseTitle =
     typeof document !== 'undefined' ? document.title : 'SOMS';
-  /** Whether the window/tab currently has focus. Drives the title-prefix + notification gate. */
   private readonly focused = signal(true);
-
-  /** Total unread across ALL conversations — drives the document "(N)" title prefix, shown only while the
-   *  window is unfocused (you aren't viewing any thread, so the global total is the right attention signal).
-   *  This intentionally does NOT exclude the open thread: while a thread is open its unread is held at 0
-   *  (the exit-time read commit refreshes it), so in practice this coincides with the
-   *  exclude-open total used by {@link MessageHeaderComponent.otherUnreadCount}. The two are kept as
-   *  separate, purpose-fit signals rather than unified — the title serves the unfocused window, the badge
-   *  serves the in-conversation back button. */
   private readonly unreadTotal = computed(() =>
-    this.convList.items().reduce((sum, it) => sum + (it.unreadCount ?? 0), 0),
+    this.convList.items().reduce((sum, item) => sum + item.unreadCount, 0),
   );
-
-  /** Coalesce a burst of content-head advances into one trailing notification-feed query + render. The server
-   *  composes the descriptor, so a single debounced fetch (not a per-message post) is enough. */
-  private static readonly DEBOUNCE_MS = 300;
-  private awayFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Frozen message-feed cursor from the foreground→away edge. Reusing it makes replacement cards
-   * cumulative for the whole away period even though thread catch-up continues in parallel. */
-  private awayAfter = 0;
-
-  /** Per-platform notification display adapter (browser / desktop-Tauri / Android), selected once at
-   *  construction — this class delegates every render to it and carries no platform branching. */
+  private readonly pending = new Map<number, ThreadNotificationUpdate>();
+  private readonly suppressed = new Set<number>();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private queue = Promise.resolve();
+  private generation = 0;
+  private desktopSince = 0;
+  private navigationQueue: Promise<void> = Promise.resolve();
   private readonly adapter!: NotificationAdapter;
 
   constructor() {
-    if (typeof document === 'undefined') return;
-    // Android notification visibility is owned by MainActivity.onResume/onStop + the native background
-    // delivery paths. WebView blur/visibility events do not reliably represent Activity foreground state.
-    if (isAndroidNative()) return;
-    // Select the desktop/browser display adapter ONCE (mirrors WebsocketService's transport selection).
+    if (typeof document === 'undefined' || isAndroidNative()) return;
     this.adapter = isTauri()
       ? new TauriNotificationAdapter()
       : new BrowserNotificationAdapter(this.prefs);
-    // Track focus. visibilitychange catches tab-switch; blur/focus catches the window losing focus to
-    // another app without the tab hiding (the desktop case the user specifically wants covered).
-    window.addEventListener('blur', () => this.onFocusChange(false), {
-      passive: true,
+    if (isTauri()) this.installDesktopNavigation();
+    const blur = () => this.onFocusChange(false);
+    const focus = () => this.onFocusChange(true);
+    const visibility = () =>
+      this.onFocusChange(document.visibilityState === 'visible');
+    const message = (event: MessageEvent) => this.onSwMessage(event);
+    window.addEventListener('blur', blur);
+    window.addEventListener('focus', focus);
+    document.addEventListener('visibilitychange', visibility);
+    navigator.serviceWorker?.addEventListener('message', message);
+    this.destroyRef.onDestroy(() => {
+      window.removeEventListener('blur', blur);
+      window.removeEventListener('focus', focus);
+      document.removeEventListener('visibilitychange', visibility);
+      navigator.serviceWorker?.removeEventListener('message', message);
+      this.dismissActive();
     });
-    window.addEventListener('focus', () => this.onFocusChange(true), {
-      passive: true,
-    });
-    document.addEventListener('visibilitychange', () =>
-      this.onFocusChange(document.visibilityState === 'visible'),
-    );
-
-    // Control channel FROM the push service worker: a shade-notification action (per-card dismiss, body-tap
-    // deep-link) fires in the SW's `notificationclick`, which can't reach the Angular layer directly — the
-    // SW postMessages the page (spec-delivered even though ngsw, not sw-push, controls this page). Routed in
-    // {@link onSwMessage} to the per-thread HWM store (dismiss) + thread navigation (open).
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', (e) =>
-        this.onSwMessage(e),
-      );
-    }
-
-    // React to unread/focus changes: apply or clear the "(N)" title prefix.
-    effect(() => this.syncTitle(this.unreadTotal(), this.focused()));
     effect(() => {
-      const cursor = this.convList.stateFeedCursor();
-      if (this.focused() && Number.isSafeInteger(cursor))
-        void advanceNotificationSince(cursor);
+      const count = this.unreadTotal();
+      document.title =
+        count > 0 && !this.focused()
+          ? `(${count}) ${this.baseTitle}`
+          : this.baseTitle;
     });
+    this.lifecycle.invalidated$
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => this.dismissActive());
+    this.convList.threadNotifications$
+      .pipe(takeUntilDestroyed())
+      .subscribe((updates) => {
+        for (const update of updates) {
+          const old = this.pending.get(update.item.threadId);
+          if (!old || old.state.threadFeedId < update.state.threadFeedId) {
+            this.pending.set(update.item.threadId, update);
+            if (this.focused()) this.suppressed.add(update.item.threadId);
+            else this.suppressed.delete(update.item.threadId);
+          }
+        }
+        if (this.timer !== null) clearTimeout(this.timer);
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          const batch = [...this.pending.values()];
+          const suppressed = new Set(this.suppressed);
+          this.suppressed.clear();
+          this.pending.clear();
+          const epoch = this.lifecycle.accountEpoch;
+          const generation = this.generation;
+          this.queue = this.queue
+            .then(() => this.present(batch, epoch, generation, suppressed))
+            .catch(() => {});
+        }, 300);
+      });
+  }
 
-    // A committed incremental content head arriving while unfocused schedules the attention projection.
-    this.convList.threadSeq$.subscribe(() => {
-      if (!this.focused()) this.scheduleRender();
+  private installDesktopNavigation(): void {
+    let destroyed = false;
+    let unlisten: (() => void) | undefined;
+    this.destroyRef.onDestroy(() => {
+      destroyed = true;
+      unlisten?.();
     });
+    const consume = () => {
+      const epoch = this.lifecycle.accountEpoch;
+      this.navigationQueue = this.navigationQueue
+        .then(async () => {
+          if (destroyed || !this.lifecycle.isCurrent(epoch)) return;
+          const tap = await tauriInvoke<{
+            threadId: number;
+          } | null>('desktop_notification_pending');
+          if (!tap || destroyed || !this.lifecycle.isCurrent(epoch)) return;
+          this.nav.openChat(tap.threadId);
+          await tauriInvoke<void>('desktop_notification_acknowledge', tap);
+        })
+        .catch((error) =>
+          console.warn('[notification] desktop navigation failed', error),
+        );
+    };
+    void listenEvent('desktop-notification-open', consume)
+      .then((stop) => {
+        if (destroyed) {
+          stop?.();
+          return;
+        }
+        unlisten = stop;
+        consume();
+      })
+      .catch((error) =>
+        console.warn('[notification] desktop listener failed', error),
+      );
   }
 
   private onFocusChange(focused: boolean): void {
-    if (!focused && this.focused())
-      this.awayAfter = this.convList.stateFeedCursor();
-    // The effect owns document.title; flipping `focused` re-runs it and restores the base title.
     this.focused.set(focused);
-    if (focused) this.dismissActive();
+    if (focused) {
+      // Retain queued feed updates so their presentation checkpoint is consumed silently.
+      this.generation++;
+      for (const id of this.pending.keys()) this.suppressed.add(id);
+      void this.adapter.clear();
+    }
   }
 
-  /** Apply the static "(N)" prefix while there are unreads AND the window is unfocused (the
-   *  Slack/Discord/Telegram convention — no blinking); the base title otherwise. Runs inside an
-   *  effect so it reacts to unread/focus changes. */
-  private syncTitle(unread: number, focused: boolean): void {
-    document.title =
-      unread > 0 && !focused
-        ? `(${this.unreadTotal()}) ${this.baseTitle}`
-        : this.baseTitle;
-  }
-
-  /** Tear down the away notification when the user returns to the tab: cancel any pending pull (so a
-   *  burst's trailing render can't fire AFTER focus returns), dismiss the system notification, and reset
-   *  the per-thread dismiss-HWMs (the Android "foreground → all per-thread HWMs
-   *  reset" model — a dismissed thread re-fires next away period). */
   private dismissActive(): void {
-    if (this.awayFlushTimer !== null) {
-      clearTimeout(this.awayFlushTimer);
-      this.awayFlushTimer = null;
-    }
+    this.generation++;
+    this.desktopSince = 0;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    this.pending.clear();
+    this.suppressed.clear();
     void this.adapter.clear();
-    this.convList.clearThreadDismiss();
   }
 
-  /** Handle a postMessage from a service worker (the push SW's `notificationclick` dispatches here — the SW
-   *  can't reach the Angular `WebdbService`, so it postMessages the page). `soms-notif-dismiss` records the
-   *  per-thread HWM so the next away fetch gates that thread past the dismissed seq; `soms-notif-open`
-   *  deep-links to the tapped thread. Unknown messages are ignored (forward-compat). */
-  private onSwMessage(e: MessageEvent): void {
-    const d = (e.data ?? {}) as Partial<SwNotifMessage>;
-    if (d.type === SOMS_NOTIF_MSG.CLAIM) {
-      const claimed = this.websocket.state() === 'open';
-      e.ports[0]?.postMessage({ claimed });
-      if (claimed && !this.focused()) this.scheduleRender();
-      return;
-    }
-    if (d.type === SOMS_NOTIF_MSG.DISMISS) {
-      if (typeof d.threadId === 'number' && typeof d.seq === 'number') {
-        this.convList.recordThreadDismiss({ threadId: d.threadId, seq: d.seq });
-      }
-      return;
-    }
-    if (d.type === SOMS_NOTIF_MSG.OPEN) {
-      if (typeof d.threadId === 'number') {
-        window.focus();
-        this.nav.openChat(d.threadId);
-      }
+  private onSwMessage(event: MessageEvent): void {
+    const data = parseSwNotifMessage(event.data);
+    if (!data) return;
+    if (
+      data.type === SOMS_NOTIF_MSG.COMMITTED &&
+      typeof data.userId === 'number'
+    ) {
+      void this.convList.refreshBackgroundThreadFeed(data.userId);
+    } else if (
+      data.type === SOMS_NOTIF_MSG.OPEN &&
+      typeof data.threadId === 'number'
+    ) {
+      window.focus();
+      this.nav.openChat(data.threadId);
     }
   }
 
-  /** Arm a single trailing debounced pull + render. Re-arming within the window pushes the fire out (a
-   *  burst collapses to the last message's trailing edge). */
-  private scheduleRender(): void {
-    if (this.awayFlushTimer !== null) clearTimeout(this.awayFlushTimer);
-    this.awayFlushTimer = setTimeout(() => {
-      this.awayFlushTimer = null;
-      void this.pullAndRender();
-    }, UnreadAttentionService.DEBOUNCE_MS);
-  }
-
-  /** Pull the away-notification delta and render each descriptor via the adapter. Sends the per-thread
-   *  dismiss-HWM map (`threadHwms`) so a dismissed thread's count resets server-side. Uses the away path's
-   *  own single-flight, independent of the foreground state-feed pull. Empty notification deltas are a no-op;
-   *  foreground lifecycle transitions own dismissal.
-   *  Fire-and-forget. */
-  private async pullAndRender(): Promise<void> {
-    if (!isTauri() && navigator.locks) {
-      await navigator.locks.request(
-        'soms-notification-projection',
-        { ifAvailable: true },
-        async (lock) => {
-          if (!lock) return;
-          await this.pullAndRenderOwned(true);
-        },
-      );
-      return;
-    }
-    await this.pullAndRenderOwned(false);
-  }
-
-  /** Execute one projection after any cross-tab election. The elected browser page reloads the shared
-   * checkpoint while holding the lock: another tab may have completed the preceding projection after this
-   * tab captured `awayAfter`, and querying that stale cursor would display the same notification twice. */
-  private async pullAndRenderOwned(
-    readSharedCheckpoint: boolean,
+  private async present(
+    batch: ThreadNotificationUpdate[],
+    epoch: number,
+    generation: number,
+    suppressed: Set<number>,
   ): Promise<void> {
-    try {
-      const after = readSharedCheckpoint
-        ? Math.max(this.awayAfter, await readNotificationSince())
-        : this.awayAfter;
-      const result = await this.notificationFeed.query(
+    const run = async () => {
+      if (!this.lifecycle.isCurrent(epoch)) return;
+      const after = isTauri()
+        ? this.desktopSince
+        : await readNotificationSince();
+      if (!this.lifecycle.isCurrent(epoch)) return;
+      const fresh = batch.filter((update) => update.state.threadFeedId > after);
+      const end = Math.max(
         after,
-        this.prefs.previewMode(),
-        this.convList.threadHwms(),
+        ...fresh.map((update) => update.state.threadFeedId),
       );
-      if (!result) return;
-      await Promise.all(
-        result.notifications.map((d) => this.adapter.showDescriptor(d)),
-      );
-      this.awayAfter = Math.max(this.awayAfter, result.stateFeedEndId);
-      await advanceNotificationSince(this.awayAfter);
-    } catch {
-      /* best-effort — a transient fetch failure just means no notification this cycle */
-    }
+      for (const update of fresh) {
+        if (!this.lifecycle.isCurrent(epoch)) return;
+        if (
+          generation !== this.generation ||
+          this.focused() ||
+          !this.prefs.enabled()
+        )
+          break;
+        if (suppressed.has(update.item.threadId)) continue;
+        const descriptor = threadNotificationDescriptor(
+          update,
+          this.prefs.previewMode(),
+          {
+            lang: this.i18n.getActiveLang(),
+            privateBody: this.i18n.translate('settings.notifNewMessage'),
+            retracted: '[' + this.i18n.translate('chat.messageRetracted') + ']',
+            removed:
+              '[' + this.i18n.translate('chat.messageRemovedByAdmin') + ']',
+          },
+        );
+        descriptor.silent = !!descriptor.silent || !this.prefs.sound();
+        if (!isTauri() && descriptor.count > 0)
+          descriptor.icon = await threadNotificationIcon(
+            this.webdb,
+            update.item,
+          );
+        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+          break;
+        await this.adapter.showDescriptor(descriptor);
+        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+          await this.adapter.clear();
+      }
+      if (this.lifecycle.isCurrent(epoch)) {
+        if (isTauri()) this.desktopSince = end;
+        else await advanceNotificationSince(end);
+      }
+    };
+    if (!isTauri() && navigator.locks) {
+      await navigator.locks.request('soms-notification-projection', run);
+    } else await run();
   }
 }

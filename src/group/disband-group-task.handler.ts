@@ -10,7 +10,7 @@ import type {
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
 import { GroupService } from './group.service.js';
-import { GroupDisbandFanoutService } from './group-disband-fanout.service.js';
+import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
 import { readDisbandGroupTask } from './group-disband-task.js';
 
 @Injectable()
@@ -23,7 +23,7 @@ export class DisbandGroupTaskHandler
   constructor(
     private readonly dispatcher: DurableTaskDispatcherService,
     private readonly groups: GroupService,
-    private readonly fanout: GroupDisbandFanoutService,
+    private readonly fanout: GroupRevokeFanoutService,
   ) {}
 
   onModuleInit(): void {

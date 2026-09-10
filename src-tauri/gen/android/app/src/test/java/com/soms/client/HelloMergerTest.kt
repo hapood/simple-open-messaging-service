@@ -14,6 +14,16 @@ import org.junit.Test
 class HelloMergerTest {
 
     @Test
+    fun thread_feed_cursor_is_independent_and_monotonic() {
+        assertNull(HelloMerger.merge(null, "THREAD_FEED_UPDATED", """{"threadFeedEndId":9}"""))
+        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateFeedEndId":5,"threadFeedEndId":2}""")
+        c = HelloMerger.merge(c, "THREAD_FEED_UPDATED", """{"threadFeedEndId":9}""")
+        c = HelloMerger.merge(c, "THREAD_FEED_UPDATED", """{"threadFeedEndId":8}""")
+        assertEquals(9L, c!!.getLong("threadFeedEndId"))
+        assertEquals(5L, c.getLong("stateFeedEndId"))
+    }
+
+    @Test
     fun hello_seeds_then_incremental_frames_patch_their_fields() {
         var c = HelloMerger.merge(
             null, "HELLO",

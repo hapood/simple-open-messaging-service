@@ -12,6 +12,7 @@ describe('group relationship client identities', () => {
       );
       const group = { id: 28, account: '!group', profileRev: 0 };
       Object.assign(service, {
+        reverseRevokes: { enqueueGroupInTx: vi.fn(async () => undefined) },
         config: { domain: 'bravo.test' },
         clientStateFeed: { writeInTx },
         relationshipIntents: {
@@ -58,6 +59,8 @@ describe('group relationship client identities', () => {
             body: {
               status,
               profileRev: 0,
+              messageEndSeq: 0,
+              tombstoneEndSeq: 0,
               note: '',
               requestedAt: now,
               expiresAt: status === 'REQUESTED' ? now + 60_000 : null,

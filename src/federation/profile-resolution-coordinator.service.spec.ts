@@ -47,6 +47,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
 
     await expect(
       subject.start(1, {
+        type: 'EXACT',
         account: 'alice',
         domain: 'peer.example',
         rev: 0,
@@ -111,6 +112,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       9,
     );
     expect(result).toEqual({
+      namespaceId: 7,
       account: 'alice',
       domain: 'member.example',
       rev: 9,
@@ -187,6 +189,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
 
     await expect(
       subject['normalizeAndAuthorize'](3, {
+        type: 'GROUP_MEMBER',
         threadId: 41,
         memberAccount: 'alice',
         memberDomain: 'member.test',

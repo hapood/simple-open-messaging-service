@@ -6,7 +6,6 @@ vi.mock('../relationship/thread-content-lock.js', () => ({
     async (tx, threadId, held) => held ?? { tx, threadId },
   ),
 }));
-import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
 
 const dialect = new PgDialect();
@@ -20,7 +19,9 @@ describe('FederationInboundMessageCommitService', () => {
       const service = Object.create(
         FederationInboundMessageCommitService.prototype,
       ) as FederationInboundMessageCommitService;
-      const apply = vi.fn().mockResolvedValue({ deletionSeq: 1 });
+      const apply = vi
+        .fn()
+        .mockResolvedValue({ messageSeq: 7, deletionSeq: 1 });
       Object.assign(service, {
         threadAccess: { assertResourceResponseWritable: vi.fn() },
         routes: {
@@ -60,7 +61,9 @@ describe('FederationInboundMessageCommitService', () => {
         await expect(result).rejects.toThrow();
         expect(apply).not.toHaveBeenCalled();
       } else {
-        await expect(result).resolves.toMatchObject({ relayDeletion: true });
+        await expect(result).resolves.toMatchObject({
+          deletions: [{ messageSeq: 7, deletionSeq: 1 }],
+        });
         expect(apply).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining({
@@ -74,35 +77,11 @@ describe('FederationInboundMessageCommitService', () => {
     },
   );
 
-  it('matches reverse tombstones by immutable source namespace', async () => {
+  it('finalizes materialization within the immutable source namespace', async () => {
     const service = Object.create(
       FederationInboundMessageCommitService.prototype,
     ) as FederationInboundMessageCommitService;
-    const findTombstone = vi.fn().mockResolvedValue(undefined);
-    const tx = {
-      query: {
-        message: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              seq: 80,
-              originSeq: 70,
-              creatorAccount: 'alice',
-              creatorDomain: 'peer.test',
-              isDeleted: true,
-            },
-          ]),
-        },
-        federatedMessageTombstone: { findFirst: findTombstone },
-        deletedMessage: {
-          findFirst: vi.fn().mockResolvedValue({ deletionSeq: 5 }),
-        },
-      },
-      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
-    };
-    vi.spyOn(
-      ClientThreadContentHeadWriter,
-      'publishTombstone',
-    ).mockResolvedValue(undefined);
+    const tx = { execute: vi.fn().mockResolvedValue({ rowCount: 1 }) };
 
     await service.finalizeReverseWindowInTransaction(tx as never, {
       threadId: 9,
@@ -111,12 +90,8 @@ describe('FederationInboundMessageCommitService', () => {
       throughSeq: 40,
     });
 
-    const query = dialect.sqlToQuery(
-      findTombstone.mock.calls[0]![0].where as SQL,
-    );
-    expect(query.sql).toContain(
-      '"FederatedMessageTombstone"."sourceNamespaceId"',
-    );
+    const query = dialect.sqlToQuery(tx.execute.mock.calls[0]![0] as SQL);
+    expect(query.sql).toContain('staged."sourceNamespaceId"');
     expect(query.params).toContain(22);
   });
 });

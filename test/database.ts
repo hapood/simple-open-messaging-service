@@ -73,6 +73,9 @@ export async function resetE2EWorkerDatabase(
         );
       }
       await client.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
+      await client.query(
+        'INSERT INTO "Account" (account, kind, "disabledAt") VALUES (\'$system\', \'SYSTEM\', CURRENT_TIMESTAMP)',
+      );
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

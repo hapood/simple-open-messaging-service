@@ -81,6 +81,8 @@ describe('origin-server group capacity', () => {
     await database.db.insert(relationshipIntent).values(
       authorizedPairs.map((pair) => ({
         pairId: pair.id,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         authorSide: 'A',
         status: 'ACCEPTED' as const,
         note: '',
@@ -109,11 +111,13 @@ describe('origin-server group capacity', () => {
             endpointBDomain: 'local',
             threadId: thread.id,
             active: true,
-              updatedAt: new Date(),
+            updatedAt: new Date(),
           })
           .returning({ id: relationshipPair.id });
         await tx.insert(relationshipIntent).values({
           pairId: pair.id,
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
           authorSide: 'A',
           status: 'ACCEPTED',
           note: '',

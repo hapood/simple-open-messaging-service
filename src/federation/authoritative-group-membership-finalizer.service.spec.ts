@@ -100,7 +100,7 @@ describe('AuthoritativeGroupMembershipFinalizer', () => {
     );
   });
 
-  it('closes authorization and advances its epoch before admitting departure fan-out', async () => {
+  it('closes local authorization without invalidating in-flight federation rounds', async () => {
     const target = harness(localState);
     const closeLocalAudienceInTx = vi.fn().mockResolvedValue(true);
     Object.assign(target.service, { closeLocalAudienceInTx });
@@ -115,13 +115,35 @@ describe('AuthoritativeGroupMembershipFinalizer', () => {
       }),
     ).resolves.toEqual({ audienceChanged: true, fanoutTaskCreated: true });
 
-    expect(target.set).toHaveBeenCalledWith(
-      expect.objectContaining({ authorizationEpoch: expect.anything() }),
-    );
-    expect(target.set.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(target.tx.update).not.toHaveBeenCalled();
+    expect(closeLocalAudienceInTx.mock.invocationCallOrder[0]).toBeLessThan(
       target.enqueueGroupMetaHeadFanoutInTx.mock.invocationCallOrder[0],
     );
   });
+
+  it.each([false, true])(
+    'preserves the thread epoch when removing a peer member (remaining membership: %s)',
+    async (active) => {
+      const target = harness(localState);
+      const execute = vi.fn().mockResolvedValue({ rows: [{ active }] });
+      Object.assign(target.tx, { execute });
+      audience.close.mockResolvedValueOnce(true);
+
+      await expect(
+        target.service.finalizeInTx(target.tx as never, {
+          threadId: 7,
+          groupId: 5,
+          memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
+          active: false,
+          canonicalRosterChanged: true,
+        }),
+      ).resolves.toEqual({ audienceChanged: !active, fanoutTaskCreated: true });
+
+      if (active) expect(audience.close).not.toHaveBeenCalled();
+      else expect(audience.close).toHaveBeenCalledWith(target.tx, 'peer.test', 7);
+      expect(target.tx.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not author an audience or fan-out task for a mirror', async () => {
     const target = harness({

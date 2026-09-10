@@ -9,10 +9,34 @@ import {
   FederationThreadSourceInactiveError,
 } from './federation-errors.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
+import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
 
 @Injectable()
 export class FederationThreadSourceService {
   constructor(private readonly database: DatabaseService) {}
+
+  /** Recheck authority-side access after the group business and thread locks,
+   * before writing either facts or round progress. Never acquire parent locks here. */
+  static async assertAudienceInTx(
+    lock: ThreadContentLock,
+    source: FederationReverseThreadSource,
+  ): Promise<void> {
+    if (lock.threadId !== source.threadId)
+      throw new Error('round audience check belongs to another thread');
+    if (source.kind !== 'GROUP' || !source.localGroupAuthority) return;
+    const audience = await lock.tx.execute(sql`
+      SELECT id FROM "ThreadAudience"
+      WHERE "threadId" = ${source.threadId}
+        AND "targetDomain" = ${source.peerDomain}
+        AND "targetNamespaceId" = ${source.namespaceId}
+        AND "localUserId" IS NULL
+      FOR SHARE
+    `);
+    if (audience.rows.length === 0)
+      throw new FederationThreadSourceInactiveError(
+        `group thread ${source.threadId} no longer has an audience for ${source.peerDomain}`,
+      );
+  }
 
   async resolve(
     threadId: number,
@@ -24,6 +48,7 @@ export class FederationThreadSourceService {
         account: groupStateFields.account,
         domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
+        federationRoundsEnabled: messageThread.federationRoundsEnabled,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.id))
@@ -35,6 +60,10 @@ export class FederationThreadSourceService {
       )
       .limit(1);
     if (groupThread) {
+      if (!groupThread.federationRoundsEnabled)
+        throw new FederationThreadSourceInactiveError(
+          `group thread ${threadId} has federation rounds disabled`,
+        );
       if (groupThread.domain !== 'local' && groupThread.domain !== peerDomain) {
         throw new FederationMessageContextError(
           `group thread ${threadId} is not sourced by ${peerDomain}`,
@@ -108,6 +137,7 @@ export class FederationThreadSourceService {
         AND pair.kind = 'P2P'
         AND pair.active = true
         AND thread.type = 'P2P'
+        AND thread."federationRoundsEnabled" = true
         AND (pair."endpointADomain" = ${peerDomain}
           OR pair."endpointBDomain" = ${peerDomain})
         AND pair."endpointANamespaceId" = ${namespaceId}

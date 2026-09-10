@@ -5,7 +5,10 @@ import {
   untracked,
   OnDestroy,
   isDevMode,
+  inject,
 } from '@angular/core';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { apiOrigin, isAndroidNative, isTauri } from './runtime';
@@ -29,7 +32,7 @@ export type { StandardMessage, ConnectionState } from './realtime-transport';
 /**
  * Realtime downlink facade — the single public surface every consumer already depends on
  * (`eventSubject`, `reconnect$`, `state`, `connect()`, `disconnect()`, `retryNow()`). The actual
- * transport is a pluggable {@link RealtimeTransport} selected once at construction by platform:
+ * transport is a pluggable {@link RealtimeTransport} selected by platform for each account epoch:
  *  - Android (Tauri shell): {@link NativeEventTransport} — consumes Kotlin's `/events` bridge
  *    (`window.__SOMS_EVENT__`); the native RealtimeService owns the connection.
  *  - Tauri desktop (pc/mac/linux): {@link RustChannelSseTransport} — consumes the Rust-side `sse_*`
@@ -63,7 +66,10 @@ export class WebsocketService implements OnDestroy {
    *  Cleared on any state that leaves `reconnecting` (see the sink's `onState` wiring). */
   readonly reconnectIn = signal<number | null>(null);
 
-  private readonly transport: RealtimeTransport;
+  private transport: RealtimeTransport;
+  private readonly lifecycle = inject(SessionLifecycleService);
+  private transportEpoch = this.lifecycle.accountEpoch;
+  private readonly createTransport: () => RealtimeTransport;
   /** Wall-clock deadline (ms epoch) of the current backoff sleep; 0 when none scheduled. */
   private reconnectDeadline = 0;
   /** The 250ms countdown ticker; undefined when not ticking. */
@@ -87,26 +93,35 @@ export class WebsocketService implements OnDestroy {
       onEvent: (m) => {
         if (m.event === 'HELLO') {
           const hello = m.data as
-            | { userId?: unknown; stateFeedEndId?: unknown }
+            | {
+                userId?: unknown;
+                stateFeedEndId?: unknown;
+                threadFeedEndId?: unknown;
+              }
             | undefined;
           if (
             !Number.isSafeInteger(hello?.userId) ||
             Number(hello?.userId) <= 0 ||
             !Number.isSafeInteger(hello?.stateFeedEndId) ||
-            Number(hello?.stateFeedEndId) < 0
+            Number(hello?.stateFeedEndId) < 0 ||
+            !Number.isSafeInteger(hello?.threadFeedEndId) ||
+            Number(hello?.threadFeedEndId) < 0
           ) {
-            console.error('[sse] invalid HELLO stateFeedEndId — reconnecting');
+            console.error('[sse] invalid HELLO feed cursors — reconnecting');
             this.state.set('reconnecting');
             this.transport.forceReconnect();
             return;
           }
         }
-        if (m.event === 'STATE_FEED_UPDATED') {
-          const feedId = (m.data as { feedId?: unknown } | undefined)?.feedId;
+        if (
+          m.event === 'STATE_FEED_UPDATED' ||
+          m.event === 'THREAD_FEED_UPDATED'
+        ) {
+          const key =
+            m.event === 'STATE_FEED_UPDATED' ? 'feedId' : 'threadFeedEndId';
+          const feedId = (m.data as Record<string, unknown> | undefined)?.[key];
           if (!Number.isSafeInteger(feedId) || Number(feedId) < 0) {
-            console.error(
-              '[sse] invalid STATE_FEED_UPDATED feedId — reconnecting',
-            );
+            console.error(`[sse] invalid ${m.event} cursor — reconnecting`);
             this.state.set('reconnecting');
             this.transport.forceReconnect();
             return;
@@ -142,7 +157,7 @@ export class WebsocketService implements OnDestroy {
       onForceLogout: (reason?: string) => this.onForceLogout(reason),
       onReconnectIn: (ms) => this.onReconnectIn(ms),
     };
-    // Select the transport ONCE, by platform:
+    // Bind callbacks to their originating account epoch, never to the epoch at delivery time:
     //  - Android (Tauri shell): NativeEventTransport — consumes Kotlin's /events bridge; the native
     //    RealtimeService owns the connection.
     //  - Tauri desktop (pc/mac/linux): RustChannelSseTransport — consumes the Rust-side `sse_*`
@@ -150,11 +165,34 @@ export class WebsocketService implements OnDestroy {
     //    Web-Worker path under Tauri (the worker's cross-origin plugin-http fetch was the source of the
     //    "resource id is invalid" churn).
     //  - browser: WorkerSseTransport — spawns sse.worker.ts (same-origin, no plugin-http).
-    this.transport = isAndroidNative()
-      ? new NativeEventTransport(sink)
-      : isTauri()
-        ? new RustChannelSseTransport(sink)
-        : new WorkerSseTransport(sink);
+    this.createTransport = () => {
+      const epoch = this.lifecycle.accountEpoch;
+      const guard =
+        <A extends unknown[]>(callback: (...args: A) => void) =>
+        (...args: A) => {
+          if (this.lifecycle.isCurrent(epoch)) callback(...args);
+        };
+      const guarded: RealtimeSink = {
+        onEvent: guard(sink.onEvent),
+        onState: guard(sink.onState),
+        onReconnect: guard(sink.onReconnect),
+        onForceLogout: guard(sink.onForceLogout),
+        onReconnectIn: guard(sink.onReconnectIn),
+      };
+      return isAndroidNative()
+        ? new NativeEventTransport(guarded)
+        : isTauri()
+          ? new RustChannelSseTransport(guarded)
+          : new WorkerSseTransport(guarded);
+    };
+    this.transport = this.createTransport();
+    this.lifecycle.invalidated$.pipe(takeUntilDestroyed()).subscribe(() => {
+      this.disconnect();
+      this.helloReady$.next(false);
+      this.state.set('closed');
+      this.clearHelloTimeout();
+      this.clearReconnectIn();
+    });
     // Reactive realtime lifecycle: open the stream only while authenticated, tear it down on logout.
     // Replaces the old eager boot connect() — on the browser cookie path that fetched /events with no
     // session → 401 → force-logout → a redirect that aborted in-flight requests (the "Uncaught
@@ -201,7 +239,20 @@ export class WebsocketService implements OnDestroy {
    *  `NativeEventTransport` is driven by Kotlin after login.) */
   public connect() {
     if (!this.authService.isLoggedIn()) return;
+    if (this.transportEpoch !== this.lifecycle.accountEpoch) {
+      this.transport.stop();
+      this.transportEpoch = this.lifecycle.accountEpoch;
+      this.transport = this.createTransport();
+    }
     this.transport.start();
+  }
+
+  attachThreadFeed(port: MessagePort, userId: number): void {
+    if (!(this.transport instanceof WorkerSseTransport)) {
+      port.close();
+      return;
+    }
+    this.transport.attachThreadFeed(port, userId);
   }
 
   /** Logout / force-login / origin swap: stop the transport and let it clear its state. */

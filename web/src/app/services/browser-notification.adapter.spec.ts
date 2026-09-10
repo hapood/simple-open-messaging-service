@@ -1,33 +1,6 @@
+import type { NotificationDescriptor } from './notification-descriptor.model';
 import type { Mock } from 'vitest';
-import {
-  BrowserNotificationAdapter,
-  mapActions,
-} from './browser-notification.adapter';
-import type {
-  NotificationDescriptor,
-  NotifAction,
-} from './notification-descriptor.model';
-
-/** `mapActions` is a pure transform (the only piece of the SW-render path that is cleanly unit-testable in
- *  Karma — the live `registration.showNotification` + `notificationclick` flow is verified manually). Pins
- *  the id→action key rename (the legacy straight-through pass rendered no working buttons). */
-describe('mapActions (NotifAction → NotificationAction)', () => {
-  it('renames id→action, keeps title, drops style', () => {
-    const actions: NotifAction[] = [
-      { id: 'dismiss', title: 'Dismiss', style: 'destructive' },
-      { id: 'reply', title: 'Reply' },
-    ];
-    expect(mapActions(actions)).toEqual([
-      { action: 'dismiss', title: 'Dismiss' },
-      { action: 'reply', title: 'Reply' },
-    ]);
-  });
-
-  it('returns [] for undefined / empty', () => {
-    expect(mapActions(undefined)).toEqual([]);
-    expect(mapActions([])).toEqual([]);
-  });
-});
+import { BrowserNotificationAdapter } from './browser-notification.adapter';
 
 /** The adapter renders through the push-SW registration (`registration.showNotification`) so the SW's
  *  `notificationclick` fires. These tests stub the registration + the `Notification` global (the permission
@@ -101,15 +74,15 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     lang: 'en',
     icon: null,
     renotify: true,
-    actions: [{ id: 'dismiss', title: 'Dismiss' }],
     data: { threadId: 7, seq: 3 },
   };
 
-  it('renders via registration.showNotification with actions mapped (id→action)', async () => {
+  it('renders through the worker registration without action buttons', async () => {
     getRegistration.mockResolvedValue(fakeReg());
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.showDescriptor(threadDescriptor);
     expect(showNotification).toHaveBeenCalledTimes(1);
+    expect(showNotification.mock.calls[0][1]).not.toHaveProperty('actions');
     expect(notificationCreates).toBe(0); // fallback NOT taken
     const [title, options] = vi.mocked(showNotification).mock.lastCall!;
     expect(title).toBe('Alice');
@@ -117,7 +90,6 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
       expect.objectContaining({
         tag: 'soms-thread-7',
         body: 'sent you 3 messages',
-        actions: [{ action: 'dismiss', title: 'Dismiss' }],
         data: { threadId: 7, seq: 3 },
       }),
     );
@@ -134,6 +106,19 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     await adapter.clear();
     expect(soms.close).toHaveBeenCalledTimes(1);
     expect(foreign.close).not.toHaveBeenCalled();
+  });
+
+  it('a zero count closes only its thread card without showing another notification', async () => {
+    const current = { tag: 'soms-thread-7', close: vi.fn() };
+    const other = { tag: 'soms-thread-8', close: vi.fn() };
+    getRegistration.mockResolvedValue(fakeReg([current, other]));
+    await new BrowserNotificationAdapter(prefs).showDescriptor({
+      ...threadDescriptor,
+      count: 0,
+    });
+    expect(current.close).toHaveBeenCalledOnce();
+    expect(other.close).not.toHaveBeenCalled();
+    expect(showNotification).not.toHaveBeenCalled();
   });
 
   it('falls back to in-page new Notification (no actions) when no SW registration is available', async () => {

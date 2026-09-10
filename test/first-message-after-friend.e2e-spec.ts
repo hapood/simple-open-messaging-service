@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
@@ -9,11 +17,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
   message,
+  messageThread,
   account,
-  clientStateFeed,
   accountThreadState,
   threadAudience,
-  account as user,
 } from '../src/database/schema';
 import { RelationshipService } from '../src/relationship/relationship.service';
 import {
@@ -33,7 +40,7 @@ import {
  * The bug itself lives in the frontend kernel (web/src/app/lib/chat-box/chat-box-scroller.ts loadNewer),
  * where it is pinned by a unit test. This spec locks the BACKEND delivery contract the kernel relies on:
  * on a brand-new (empty) P2P thread, the very first send must commit the row, publish the receiver's
- * THREAD_CONTENT_HEAD, and emit the throttled State Feed wake over the real wire. The backend has no
+ * thread-feed snapshot, and emit the throttled thread-feed wake over the real wire. The backend has no
  * empty-thread special-casing, so
  * this also guards against any future regression in the fan-out path (participant lookup, fire-and-forget
  * dispatch, SSE registry) that would break first-message delivery.
@@ -143,9 +150,27 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .where(eq(message.threadId, threadId));
     expect(emptyCount.count).toBeGreaterThanOrEqual(0);
 
+    // Friendship completion does not wait for its separate system-message fanout.
+    // Establish a projected baseline so that its delayed wake cannot satisfy the send assertion.
+    const initialThread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+    });
+    await vi.waitFor(
+      async () => {
+        const state = await database.db.query.accountThreadState.findFirst({
+          where: and(
+            eq(accountThreadState.threadId, threadId),
+            eq(accountThreadState.accountId, bob.id),
+          ),
+        });
+        expect(state?.messageEndSeq).toBe(initialThread!.curSeq);
+      },
+      { timeout: 10_000, interval: 25 },
+    );
+
     const beforeFeed = await database.db.query.account.findFirst({
       where: eq(account.id, bob.id),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { threadFeedEndId: true },
     });
     expect(beforeFeed).toBeDefined();
     // 2. Open Bob's SSE stream before the send so the throttled durable-feed wake is captured.
@@ -159,20 +184,21 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(0);
 
-      // 4. The client wake carries only the latest State Feed high watermark.
+      // 4. The client wake carries only the latest thread-feed high watermark.
       const delivered = (await waitForSseEvent(
         reader,
         (event, data) =>
-          event === 'STATE_FEED_UPDATED' &&
+          event === 'THREAD_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          typeof (data as { feedId?: unknown }).feedId === 'number' &&
-          (data as { feedId: number }).feedId >
-            beforeFeed!.stateFeedAllocatedThrough,
+          typeof (data as { threadFeedEndId?: unknown }).threadFeedEndId ===
+            'number' &&
+          (data as { threadFeedEndId: number }).threadFeedEndId >
+            beforeFeed!.threadFeedEndId,
         10_000,
-      )) as { feedId: number };
-      expect(delivered.feedId).toBeGreaterThan(
-        beforeFeed!.stateFeedAllocatedThrough,
+      )) as { threadFeedEndId: number };
+      expect(delivered.threadFeedEndId).toBeGreaterThan(
+        beforeFeed!.threadFeedEndId,
       );
 
       // 5. The row and Bob's compacted content head identify the same sequence.
@@ -190,20 +216,15 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(JSON.parse(storedMessage.content)).toEqual({ text: 'first!' });
       expect(Number(storedMessage.seq)).toBeGreaterThanOrEqual(0);
       expect(storedMessage.originSeq).toBe(storedMessage.seq);
-      const head = await database.db.query.clientStateFeed.findFirst({
+      const head = await database.db.query.accountThreadState.findFirst({
         where: and(
-          eq(clientStateFeed.userId, bob.id),
-          eq(
-            clientStateFeed.compactionKey,
-            JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
-          ),
+          eq(accountThreadState.accountId, bob.id),
+          eq(accountThreadState.threadId, threadId),
         ),
       });
-      expect(head?.feedId).toBeGreaterThan(
-        beforeFeed!.stateFeedAllocatedThrough,
-      );
-      expect(head!.feedId).toBeLessThanOrEqual(delivered.feedId);
-      expect(head?.body).toMatchObject({
+      expect(head?.threadFeedId).toBeGreaterThan(beforeFeed!.threadFeedEndId);
+      expect(head!.threadFeedId).toBeLessThanOrEqual(delivered.threadFeedEndId);
+      expect(head).toMatchObject({
         threadId,
         messageEndSeq: storedMessage.seq,
       });
@@ -213,7 +234,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     const beforeRevokeFeed = await database.db.query.account.findFirst({
       where: eq(account.id, bob.id),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { threadFeedEndId: true },
     });
     expect(beforeRevokeFeed).toBeDefined();
     const deleteReader = await openSse(baseUrl, bob.token);
@@ -226,32 +247,53 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(removed.body.code).toBe(0);
       expect(removed.body.data).toMatchObject({ status: 'PENDING' });
       await waitForDurableTask(database.db, removed.body.data.taskId);
+      // Visibility changes are published through the unified thread feed.
+      const observed: unknown[] = [];
       const boundaryWake = (await waitForSseEvent(
         deleteReader,
-        (event, data) =>
-          event === 'STATE_FEED_UPDATED' &&
-          typeof data === 'object' &&
-          data !== null &&
-          typeof (data as { feedId?: unknown }).feedId === 'number' &&
-          (data as { feedId: number }).feedId >
-            beforeRevokeFeed!.stateFeedAllocatedThrough,
+        (event, data) => {
+          observed.push({ event, data });
+          return (
+            event === 'THREAD_FEED_UPDATED' &&
+            typeof data === 'object' &&
+            data !== null &&
+            typeof (data as { threadFeedEndId?: unknown }).threadFeedEndId ===
+              'number' &&
+            (data as { threadFeedEndId: number }).threadFeedEndId >
+              beforeRevokeFeed!.threadFeedEndId
+          );
+        },
         10_000,
-      )) as { feedId: number };
-      const boundaryHead = await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bob.id),
-          eq(
-            clientStateFeed.compactionKey,
-            JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
+      ).catch(async (cause) => {
+        const state = await database.db.query.accountThreadState.findFirst({
+          where: and(
+            eq(accountThreadState.accountId, bob.id),
+            eq(accountThreadState.threadId, threadId),
           ),
-        ),
-      });
-      expect(boundaryHead?.feedId).toBeGreaterThan(
-        beforeRevokeFeed!.stateFeedAllocatedThrough,
+        });
+        throw new Error(
+          `Revocation wake failed: ${JSON.stringify({ beforeRevokeFeed, observed, state })}`,
+          { cause },
+        );
+      })) as { threadFeedEndId: number };
+      const boundaryState =
+        await database.db.query.accountThreadState.findFirst({
+          where: and(
+            eq(accountThreadState.accountId, bob.id),
+            eq(accountThreadState.threadId, threadId),
+          ),
+        });
+      expect(boundaryWake.threadFeedEndId).toBeGreaterThan(
+        beforeRevokeFeed!.threadFeedEndId,
       );
-      expect(boundaryHead!.feedId).toBeLessThanOrEqual(boundaryWake.feedId);
-      const boundarySeq = (boundaryHead!.body as { messageEndSeq: number })
-        .messageEndSeq;
+      expect(boundaryState!.threadFeedId).toBeGreaterThan(
+        beforeRevokeFeed!.threadFeedEndId,
+      );
+      expect(boundaryState!.threadFeedId).toBeLessThanOrEqual(
+        boundaryWake.threadFeedEndId,
+      );
+      const boundarySeq = boundaryState!.messageVisibleThroughSeq!;
+      expect(boundarySeq).toBeGreaterThan(0);
       const boundary = await database.db.query.message.findFirst({
         where: and(
           eq(message.threadId, threadId),
@@ -269,22 +311,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(
         participants.map((participant) => participant.messageVisibleThroughSeq),
       ).toEqual([boundarySeq, boundarySeq]);
-      const projections = await database.db.query.clientStateFeed.findMany({
-        where: eq(
-          clientStateFeed.compactionKey,
-          JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
-        ),
-      });
       expect(
-        projections.every(
-          (projection) =>
-            (projection.body as { messageEndSeq?: number }).messageEndSeq ===
-            boundarySeq,
-        ),
-      ).toBe(true);
-      expect(projections.map((projection) => projection.userId).sort()).toEqual(
-        [alice.id, bob.id].sort(),
-      );
+        participants.map((participant) => participant.accountId).sort(),
+      ).toEqual([alice.id, bob.id].sort());
     } finally {
       await deleteReader.cancel();
     }
@@ -313,6 +342,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
         true,
       );
       await relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: alice.id,
         peerUserId: foreignBob,
         status: 'REQUESTED',
@@ -368,6 +399,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
     );
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: alice.id,
         peerUserId: foreignBob,
         status: 'REQUESTED',
@@ -387,6 +420,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     await database.db.transaction((tx) =>
       relationships.applyRemoteP2PIntentInTx(tx, {
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
         localUserId: alice.id,
         peerUserId: foreignBob,
         status: 'ACCEPTED',

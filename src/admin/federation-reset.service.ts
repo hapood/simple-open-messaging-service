@@ -4,11 +4,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
-import {
-  MessageService,
-  type PublicMessage,
-} from '../message/message.service.js';
+import { MessageService } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 
 export interface FederationResetPreview {
@@ -45,7 +41,6 @@ export class FederationResetService {
     private readonly database: DatabaseService,
     private readonly namespaces: FederationNamespaceService,
     private readonly messages: MessageService,
-    private readonly messageFanout: MessageFanoutService,
   ) {}
 
   async preview(domain: string): Promise<FederationResetPreview> {
@@ -119,7 +114,6 @@ export class FederationResetService {
       );
     }
 
-    const systemMessages: PublicMessage[] = [];
     const result = await this.database.db.transaction(async (tx) => {
       const peerResult = await tx.execute<{
         activeNamespaceId: number | null;
@@ -136,10 +130,8 @@ export class FederationResetService {
 
       const affectedThreads = await tx.execute<{
         threadId: number;
-        recipientUserIds: number[];
       }>(sql`
-        SELECT thread.id AS "threadId",
-          array_agg(participant."accountId" ORDER BY participant."accountId") AS "recipientUserIds"
+        SELECT thread.id AS "threadId"
         FROM "MessageThread" thread
         JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
         WHERE thread."authorityNamespaceId" = ${archived.namespaceId}
@@ -147,17 +139,15 @@ export class FederationResetService {
         ORDER BY thread.id
       `);
       for (const thread of affectedThreads.rows) {
-        const notice = await this.messages.writeSystemMessageInTx(
+        await this.messages.writeSystemMessageInTx(
           tx,
           thread.threadId,
           SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
           undefined,
           {
             domain: normalized,
-            recipientUserIds: thread.recipientUserIds,
           },
         );
-        systemMessages.push(notice.message);
       }
 
       await tx.execute(sql`
@@ -193,8 +183,6 @@ export class FederationResetService {
         status: 'reset' as const,
       };
     });
-    for (const message of systemMessages)
-      void this.messageFanout.dispatch(message);
     return result;
   }
 

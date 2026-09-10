@@ -1,3 +1,4 @@
+import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
@@ -84,7 +85,7 @@ const snapshotRevision = (
     const messageEndSeq = body.messageEndSeq;
     const tombstoneEndSeq = body.tombstoneEndSeq;
     return Number.isSafeInteger(messageEndSeq) &&
-      Number(messageEndSeq) > 0 &&
+      Number(messageEndSeq) >= 0 &&
       Number(messageEndSeq) <= FEDERATION_THREAD_SEQUENCE_MAX &&
       Number.isSafeInteger(tombstoneEndSeq) &&
       Number(tombstoneEndSeq) >= 0 &&
@@ -170,6 +171,36 @@ export class PeerStateFeedService {
       );
   }
 
+  private async readRelationshipHeadInTx(
+    tx: DatabaseTransaction,
+    write: PeerStateFeedWrite,
+  ) {
+    const groupAccount = write.account.startsWith('!')
+      ? write.account
+      : write.subjectAccount.startsWith('!')
+        ? write.subjectAccount
+        : null;
+    const result =
+      groupAccount === null
+        ? await tx.execute<{ threadId: number | null }>(sql`
+          SELECT "threadId" FROM "RelationshipPair"
+          WHERE kind = 'P2P'
+            AND "endpointANamespaceId" = ${write.namespaceId}
+            AND "endpointBNamespaceId" = ${write.namespaceId}
+            AND ((("endpointAAccount", "endpointADomain") = (${write.account}, 'local')
+              AND ("endpointBAccount", "endpointBDomain") = (${write.subjectAccount}, ${write.peerDomain}))
+              OR (("endpointBAccount", "endpointBDomain") = (${write.account}, 'local')
+              AND ("endpointAAccount", "endpointADomain") = (${write.subjectAccount}, ${write.peerDomain})))
+        `)
+        : await tx.execute<{ threadId: number | null }>(sql`
+          SELECT id AS "threadId" FROM "MessageThread"
+          WHERE type = 'GROUP' AND "groupAccount" = ${groupAccount}
+            AND "groupDomain" = ${write.account.startsWith('!') ? 'local' : write.peerDomain}
+            AND "authorityNamespaceId" = ${write.account.startsWith('!') ? 0 : write.namespaceId}
+        `);
+    return readThreadHeadSnapshotInTx(tx, result.rows[0]?.threadId ?? null);
+  }
+
   /** Writes are ordered by peer and allocate a rev only when the compacted key advances. */
   async writeManyInTx(
     tx: DatabaseTransaction,
@@ -190,7 +221,17 @@ export class PeerStateFeedService {
     for (const write of ordered) {
       // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
       // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
-      const body = serializeBody(write.body);
+      const snapshot =
+        write.eventType === 'RELATIONSHIP_INTENT' &&
+        write.body.status !== 'REVOKED'
+          ? await this.readRelationshipHeadInTx(tx, write)
+          : {};
+      const body = serializeBody(
+        write.eventType === 'RELATIONSHIP_INTENT' &&
+          write.body.status !== 'REVOKED'
+          ? { ...write.body, ...snapshot }
+          : write.body,
+      );
       if (!body || typeof body !== 'object') {
         throw new Error('invalid peer state feed write');
       }
@@ -289,7 +330,7 @@ export class PeerStateFeedService {
           },
         });
       result.set(write.peerDomain, allocated.feedId);
-      if (write.eventType !== 'THREAD_CONTENT_HEAD') {
+      if (write.eventType === 'GROUP_META_FEED_HEAD') {
         const dependents = await tx
           .select()
           .from(peerStateFeed)
@@ -298,9 +339,32 @@ export class PeerStateFeedService {
               eq(peerStateFeed.peerDomain, write.peerDomain),
               eq(peerStateFeed.namespaceId, write.namespaceId),
               eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+              eq(peerStateFeed.account, write.account),
             ),
           );
         if (dependents.length > 0) {
+          const route = await tx.execute<{
+            threadId: number;
+            messageAccessAfterSeq: number;
+          }>(sql`
+            SELECT thread.id AS "threadId", audience."messageAccessAfterSeq"
+            FROM "MessageThread" thread
+            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
+              AND audience."targetDomain" = ${write.peerDomain}
+              AND audience."targetNamespaceId" = ${write.namespaceId}
+              AND audience."localUserId" IS NULL
+            WHERE thread.type = 'GROUP' AND thread."groupDomain" = 'local'
+              AND thread."groupAccount" = ${write.account}
+              AND thread."authorityNamespaceId" = 0
+          `);
+          const thread = route.rows[0];
+          if (!thread)
+            throw new Error('group content head has no authorized thread');
+          const latestHead = await readThreadHeadSnapshotInTx(
+            tx,
+            thread.threadId,
+            thread.messageAccessAfterSeq,
+          );
           const moved = await this.writeManyInTx(
             tx,
             dependents.map((dependent) => ({
@@ -311,10 +375,7 @@ export class PeerStateFeedService {
               eventType: 'THREAD_CONTENT_HEAD' as const,
               subjectAccount: dependent.subjectAccount,
               subjectDomain: dependent.subjectDomain,
-              body: dependent.body as PeerStateBody & {
-                messageEndSeq: number;
-                tombstoneEndSeq: number;
-              },
+              body: latestHead,
               forceReindex: true,
             })),
           );

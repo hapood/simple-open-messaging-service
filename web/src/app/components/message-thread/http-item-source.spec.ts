@@ -356,6 +356,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     await vi.waitFor(() => expect(resolver.prepare).toHaveBeenCalledOnce());
     expect(painted).toBe(false);
     resolved.next({
+      namespaceId: 0,
       account: 'peer',
       domain: 'local',
       rev: 3,
@@ -390,6 +391,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
     expect(await src.init(-1, 50, 0)).toHaveLength(1);
     pending.get(10)!.next({
+      namespaceId: 0,
       account: 'peer',
       domain: 'local',
       rev: 3,
@@ -408,6 +410,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     await src.getOlder(10, 50);
     expect(resolver.resolve).toHaveBeenCalledWith({
+      type: 'MESSAGE_AUTHOR',
       threadId: 42,
       messageSeq: 9,
     });
@@ -1179,7 +1182,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       'invalid PURE_TEXT message envelope',
     );
   });
-
 
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
     const quoted = {

@@ -9279,13 +9279,19 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @enum {string} */
+                    type: "EXACT";
                     account: string;
                     domain: string;
                     rev: number;
                 } | {
+                    /** @enum {string} */
+                    type: "MESSAGE_AUTHOR";
                     threadId: number;
                     messageSeq: number;
                 } | {
+                    /** @enum {string} */
+                    type: "GROUP_MEMBER";
                     threadId: number;
                     memberAccount: string;
                     memberDomain: string;
@@ -9302,6 +9308,7 @@ export interface operations {
                         /** @enum {string} */
                         status: "READY";
                         profile: {
+                            namespaceId: number;
                             account: string;
                             domain: string;
                             rev: number;

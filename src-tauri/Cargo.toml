@@ -15,13 +15,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [dependencies]
 tauri = { version = "2", features = [] }
-# Desktop system notifications (the UnreadAttentionService foreground "new message while unfocused"
-# popup on Tauri desktop — the webview's Notification API is unreliable in desktop shells, so the
-# plugin is the documented path). Not used on Android (FCM/WorkManager cover it there).
-tauri-plugin-notification = "2"
 # Open external links (a LINK message card's target page) in the system browser. The webview's nav
 # guard (nav_allowed) confines document navigation to the app origin, so an external URL is routed to
 # the OS opener instead of being navigated inside the privileged webview (which would run an arbitrary
@@ -90,6 +90,16 @@ tauri-plugin-barcode-scanner = "2"
 # Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly.
 # `jni` is only the thin command boundary (file bytes never cross JNI).
 jni = "0.21"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Retain desktop notification handles for replacement and dismissal.
+notify-rust = "4.18"
+zbus = "5.16"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # Lean release binary + lower runtime RSS for BOTH desktop and Android release builds — Cargo applies
 # [profile.release] regardless of target, so the NDK cross-build inherits it too. codegen-units = 1 +

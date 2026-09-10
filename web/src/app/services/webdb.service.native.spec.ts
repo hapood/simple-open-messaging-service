@@ -51,6 +51,16 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
+  it('delegates the complete thread feed sync to Rust in one invocation', async () => {
+    const result = { cursor: 12, states: [] };
+    responses.set('native_thread_feed_sync', result);
+    expect(await service.syncThreadFeed(12, 3)).toEqual(result);
+    expect(calls.at(-1)).toEqual({
+      cmd: 'native_thread_feed_sync',
+      args: { userId: 42, target: 12, after: 3 },
+    });
+  });
+
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
     const thread = {
       threadId: 9,

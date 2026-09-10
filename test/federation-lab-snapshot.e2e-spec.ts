@@ -33,8 +33,8 @@ beforeAll(async () => {
     INSERT INTO "RelationshipPair" (id, kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
       "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", "threadId", active)
       VALUES (401, 'P2P', 'USER', 'owner', 'local', 0, 'USER', 'remote', 'bravo.test', 91, 303, true);
-    INSERT INTO "RelationshipIntent" ("pairId", "authorSide", status, "profileRev", "requestedAt")
-      VALUES (401, 'B', 'ACCEPTED', 1, now());
+    INSERT INTO "RelationshipIntent" ("pairId", "authorSide", status, "profileRev", "requestedAt", "messageEndSeq", "tombstoneEndSeq")
+      VALUES (401, 'B', 'ACCEPTED', 1, now(), 0, 0);
     INSERT INTO "GroupRequestProjection" ("managerUserId", "threadId", "memberAccount", "memberDomain", "memberNamespaceId",
       "memberProfileRev", direction, "feedId", "requestId", status, "requestedAt", "expiresAt")
       VALUES (101, 301, 'remote', 'bravo.test', 91, 1, 'APPLICATION', 1, 501, 'REQUESTED', now(), now() + interval '1 day');

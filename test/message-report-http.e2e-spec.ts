@@ -4,17 +4,14 @@ import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
+import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { AdminAuthService } from '../src/admin/admin-auth.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import {
-  AdminRole,
-  MessageDeleteType,
-  MessageReportStatus,
-} from '../src/database/enums.js';
+import { AdminRole, MessageDeleteType } from '../src/database/enums.js';
 import {
   admin,
   adminActionLog,
@@ -38,13 +35,14 @@ describe('message report HTTP workflow', () => {
     app = fixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
+    await app.get(DurableTaskSchedulerService).stop();
     database = app.get(DatabaseService);
     adminAuth = app.get(AdminAuthService);
   });
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -78,9 +76,6 @@ describe('message report HTTP workflow', () => {
       .values({
         type: 'P2P',
         curSeq: 2,
-        lastMessageSeq: 2,
-        lastMessagePreview: 'second',
-        lastMessageAt: now,
         updatedAt: now,
       })
       .returning({ id: messageThread.id });
@@ -127,131 +122,132 @@ describe('message report HTTP workflow', () => {
       .set('Cookie', cookie)
       .send(body);
 
-  it('enforces consumer/admin auth and admin mutation RBAC', async () => {
-    const conversation = await seedConversation();
-    const anonymous = await request(app.getHttpServer())
-      .post('/api/v1/message-reports')
-      .send({ threadId: conversation.threadId, seqs: [0] });
-    expect(anonymous.status).toBe(401);
-
-    const created = await consumerPost(
-      conversation.reporterToken,
-      'message-reports',
-      { threadId: conversation.threadId, seqs: [1] },
-    );
-    expect(created.body.code).toBe(BusinessCode.OK);
-    const reportId = created.body.data.reports[0].id as string;
-
-    const viewer = await seedAdmin('viewer', AdminRole.VIEWER);
-    const list = await adminPost(viewer.cookie, 'message-reports', {
-      status: MessageReportStatus.PENDING,
-      take: 20,
+  it('enforces consumer/admin authentication and mutation roles', async () => {
+    const c = await seedConversation();
+    expect(
+      (
+        await request(app.getHttpServer())
+          .post('/api/v1/message-reports')
+          .send({ threadId: c.threadId, seq: 1 })
+      ).status,
+    ).toBe(401);
+    const created = await consumerPost(c.reporterToken, 'message-reports', {
+      threadId: c.threadId,
+      seq: 1,
     });
+    expect(created.body.code).toBe(BusinessCode.OK);
+    expect(created.body.data).toEqual({});
+    const viewer = await seedAdmin('viewer', AdminRole.VIEWER);
+    const list = await adminPost(viewer.cookie, 'message-reports');
     expect(list.body.code).toBe(BusinessCode.OK);
     expect(list.body.data.list).toHaveLength(1);
-
-    const forbidden = await adminPost(
-      viewer.cookie,
-      'message-reports/resolve',
-      { reportIds: [reportId], status: MessageReportStatus.UPHELD },
-    );
-    expect(forbidden.body.code).toBe(BusinessCode.FORBIDDEN);
-    const stored = await database.db.query.messageReport.findFirst({
-      where: eq(messageReport.id, BigInt(reportId)),
-    });
-    expect(stored?.status).toBe(MessageReportStatus.PENDING);
+    expect(list.body.data.list[0]).not.toHaveProperty('reporter');
+    expect(list.body.data.list[0]).not.toHaveProperty('status');
+    for (const path of ['messages/delete', 'message-reports/delete']) {
+      const forbidden = await adminPost(viewer.cookie, path, {
+        threadId: c.threadId,
+        seq: 1,
+      });
+      expect(forbidden.body.code).toBe(BusinessCode.FORBIDDEN);
+    }
+    expect(await database.db.select().from(deletedMessage)).toHaveLength(0);
   });
 
-  it('supports batch reporting, rejection, reconsideration, and durable deletion reads', async () => {
-    const conversation = await seedConversation();
+  it('accepts only one target and returns no report or processing result to the consumer', async () => {
+    const c = await seedConversation();
+    for (const body of [
+      { threadId: c.threadId, seqs: [1, 2] },
+      { threadId: c.threadId, seq: -1 },
+      { threadId: c.threadId, seq: 1.5 },
+    ]) {
+      const res = await consumerPost(c.reporterToken, 'message-reports', body);
+      expect(res.body.code).not.toBe(BusinessCode.OK);
+    }
+    for (let i = 0; i < 2; i++) {
+      const res = await consumerPost(c.reporterToken, 'message-reports', {
+        threadId: c.threadId,
+        seq: 1,
+      });
+      expect(res.body.code).toBe(BusinessCode.OK);
+      expect(res.body.data).toEqual({});
+    }
+    expect(await database.db.select().from(messageReport)).toHaveLength(1);
+  });
+
+  it('removes and reactivates a report, then commits individual message deletions', async () => {
+    const c = await seedConversation();
     const moderator = await seedAdmin('moderator', AdminRole.ADMIN);
-    const created = await consumerPost(
-      conversation.reporterToken,
-      'message-reports',
-      { threadId: conversation.threadId, seqs: [1, 2] },
+    for (const seq of [1, 2]) {
+      expect(
+        (
+          await consumerPost(c.reporterToken, 'message-reports', {
+            threadId: c.threadId,
+            seq,
+          })
+        ).body.code,
+      ).toBe(BusinessCode.OK);
+    }
+    expect(
+      (
+        await adminPost(moderator.cookie, 'message-reports/delete', {
+          threadId: c.threadId,
+          seq: 1,
+        })
+      ).body.code,
+    ).toBe(BusinessCode.OK);
+    let list = await adminPost(moderator.cookie, 'message-reports');
+    expect(list.body.data.list).toHaveLength(1);
+    await consumerPost(c.reporterToken, 'message-reports', {
+      threadId: c.threadId,
+      seq: 1,
+    });
+    list = await adminPost(moderator.cookie, 'message-reports');
+    expect(list.body.data.list).toHaveLength(2);
+    expect(list.body.data.list[0].message.content).toBe(
+      JSON.stringify({ text: 'first' }),
     );
-    expect(created.body.code).toBe(BusinessCode.OK);
-    expect(created.body.data.reports).toHaveLength(2);
-    const [firstReport, secondReport] = created.body.data.reports as {
-      id: string;
-      messageSeq: number;
-    }[];
-
-    const rejected = await adminPost(
-      moderator.cookie,
-      'message-reports/resolve',
-      {
-        reportIds: [firstReport.id],
-        status: MessageReportStatus.REJECTED,
-      },
-    );
-    expect(rejected.body.code).toBe(BusinessCode.OK);
-
-    const upheld = await adminPost(
-      moderator.cookie,
-      'message-reports/resolve',
-      {
-        reportIds: [firstReport.id, secondReport.id],
-        status: MessageReportStatus.UPHELD,
-      },
-    );
-    expect(upheld.body.code).toBe(BusinessCode.OK);
-    expect(upheld.body.data.deletions).toHaveLength(2);
-
-    const visible = await consumerPost(
-      conversation.reporterToken,
-      'query-messages',
-      {
-        threadId: conversation.threadId,
-        after: '0',
-        take: 20,
-      },
-    );
-    expect(visible.body.code).toBe(BusinessCode.OK);
-    expect(visible.body.data.messages).toEqual([
-      expect.objectContaining({
-        seq: 3,
-        contentType: 'SYSTEM',
-        content: JSON.stringify({ type: 'MESSAGES_MODERATED', count: 2 }),
-      }),
-    ]);
-
+    for (const seq of [1, 2]) {
+      const res = await adminPost(moderator.cookie, 'messages/delete', {
+        threadId: c.threadId,
+        seq,
+      });
+      expect(res.body.code).toBe(BusinessCode.OK);
+      expect(res.body.data).toMatchObject({
+        threadId: c.threadId,
+        messageSeq: seq,
+        deletionSeq: expect.any(Number),
+      });
+      expect(res.body.data).not.toHaveProperty('taskId');
+      const repeated = await adminPost(moderator.cookie, 'messages/delete', {
+        threadId: c.threadId,
+        seq,
+      });
+      expect(repeated.body.data).toEqual(res.body.data);
+    }
     const durable = await consumerPost(
-      conversation.reporterToken,
+      c.reporterToken,
       'deleted-messages/query',
-      { threadId: conversation.threadId, after: 0, take: 20 },
+      { threadId: c.threadId, after: 0, take: 20 },
     );
     expect(durable.body.code).toBe(BusinessCode.OK);
-    expect(durable.body.data.tombstones).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          deletionSeq: 1,
-          messageSeq: 1,
-          type: MessageDeleteType.MODERATION_REMOVAL,
-        }),
-        expect.objectContaining({
-          deletionSeq: 2,
-          messageSeq: 2,
-          type: MessageDeleteType.MODERATION_REMOVAL,
-        }),
-      ]),
+    expect(durable.body.data.tombstones).toHaveLength(2);
+    expect(durable.body.data.tombstones[0].type).toBe(
+      MessageDeleteType.MODERATION_REMOVAL,
     );
-
-    const rows = await database.db
-      .select({ status: messageReport.status })
-      .from(messageReport);
-    expect(rows.every((row) => row.status === MessageReportStatus.UPHELD)).toBe(
-      true,
-    );
-    const tombstones = await database.db
-      .select()
-      .from(deletedMessage)
-      .where(eq(deletedMessage.threadId, conversation.threadId));
-    expect(tombstones).toHaveLength(2);
+    expect(await database.db.select().from(deletedMessage)).toHaveLength(2);
+    const removed = await adminPost(moderator.cookie, 'message-reports', {
+      isDeleted: true,
+    });
+    expect(removed.body.data.list).toHaveLength(2);
+    expect(
+      removed.body.data.list.every(
+        (row: { message: { isDeleted: boolean } }) => row.message.isDeleted,
+      ),
+    ).toBe(true);
     const audit = await database.db.query.adminActionLog.findFirst({
       where: and(
         eq(adminActionLog.adminId, moderator.id),
-        eq(adminActionLog.action, 'message_report.resolve'),
+        eq(adminActionLog.action, 'message.delete'),
       ),
     });
     expect(audit?.status).toBe('SUCCEEDED');

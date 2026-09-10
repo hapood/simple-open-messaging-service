@@ -25,7 +25,7 @@ describe('SseService', () => {
             limit: async () => [
               {
                 stateFeedAllocatedThrough: 4,
-                readRevision: 3,
+                threadFeedEndId: 3,
                 profileRev: 2,
               },
             ],
@@ -164,15 +164,106 @@ describe('SseService', () => {
     const client = mockRes();
     svc.register(7, 11, client.res);
 
-    svc.onThreadAttentionRevisionUpdated(7, { attentionRevision: 9 });
+    svc.onThreadFeedUpdated(7, { threadFeedEndId: 9 });
 
     const frame = client.writes.find((write) =>
-      write.includes('event: ATTENTION_REV_UPDATED'),
+      write.includes('event: THREAD_FEED_UPDATED'),
     );
-    expect(frame).toContain('"attentionRevision":9');
+    expect(frame).toContain('"threadFeedEndId":9');
     expect(frame).not.toContain('threadId');
     expect(frame).not.toContain('unreadCount');
     svc.onModuleDestroy();
+  });
+
+  it('throttles state hints per account independently of thread hints and broadcasts the maximum head', async () => {
+    vi.useFakeTimers();
+    const svc = makeService();
+    const clients = [mockRes(), mockRes(), mockRes()];
+    const stateFrames = (client: ReturnType<typeof mockRes>) =>
+      client.writes.filter((write) =>
+        write.includes('event: STATE_FEED_UPDATED'),
+      );
+    try {
+      svc.register(7, 11, clients[0].res);
+      svc.register(7, 22, clients[1].res);
+      svc.register(8, 33, clients[2].res);
+
+      svc.onStateFeedUpdated(7, { feedId: 5 });
+      for (const client of clients.slice(0, 2)) {
+        expect(stateFrames(client)).toHaveLength(1);
+        expect(stateFrames(client)[0]).toContain('"feedId":5');
+      }
+      await vi.advanceTimersByTimeAsync(400);
+      svc.onStateFeedUpdated(7, { feedId: 9 });
+      svc.onStateFeedUpdated(7, { feedId: 7 });
+      svc.onStateFeedUpdated(8, { feedId: 6 });
+      svc.onThreadFeedUpdated(7, { threadFeedEndId: 3 });
+      expect(stateFrames(clients[2])).toHaveLength(1);
+      expect(stateFrames(clients[2])[0]).toContain('"feedId":6');
+      expect(
+        clients[0].writes.filter((write) =>
+          write.includes('event: THREAD_FEED_UPDATED'),
+        ),
+      ).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(599);
+      expect(stateFrames(clients[0])).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      for (const client of clients.slice(0, 2)) {
+        expect(stateFrames(client)).toHaveLength(2);
+        expect(stateFrames(client)[1]).toContain('"feedId":9');
+      }
+      svc.onStateFeedUpdated(7, { feedId: 9 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(stateFrames(clients[0])).toHaveLength(2);
+
+      svc.onStateFeedUpdated(7, { feedId: 10 });
+      expect(stateFrames(clients[0])).toHaveLength(3);
+      svc.onStateFeedUpdated(7, { feedId: 11 });
+      await Promise.resolve();
+      svc.onModuleDestroy();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(stateFrames(clients[0])).toHaveLength(3);
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces committed attention heads and retries a failed poll', async () => {
+    vi.useFakeTimers();
+    const svc = makeService();
+    const client = mockRes();
+    svc.register(7, 11, client.res);
+    await Promise.resolve();
+    const database = (
+      svc as unknown as {
+        database: { db: { select: ReturnType<typeof vi.fn> } };
+      }
+    ).database;
+    const query = vi.fn().mockResolvedValue([{ id: 7, head: 8 }]);
+    database.db.select.mockImplementation(() => ({
+      from: () => ({ where: query }),
+    }));
+    try {
+      await svc.pollThreadHeads();
+      await svc.pollThreadHeads();
+      expect(
+        client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
+      ).toHaveLength(1);
+      query.mockRejectedValueOnce(new Error('temporary database failure'));
+      await svc.pollThreadHeads();
+      query.mockResolvedValueOnce([{ id: 7, head: 9 }]);
+      await svc.pollThreadHeads();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
+      ).toHaveLength(2);
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
   });
 
   it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {

@@ -4,7 +4,6 @@ import type { DurableTask } from './durable-task.types.js';
 
 const task = {
   id: 1n,
-  parentTaskId: null,
   kind: 'MUTATION',
   scopeType: 'GROUP',
   scopeKey: 'group-key',
@@ -13,7 +12,6 @@ const task = {
   payload: {},
   checkpoint: {},
   coalescingKey: null,
-  supersededByTaskId: null,
   status: 'PROCESSING',
   resultCode: null,
   lastError: null,

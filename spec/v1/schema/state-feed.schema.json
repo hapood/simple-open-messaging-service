@@ -7,29 +7,52 @@
       "type": "object",
       "required": ["status", "profileRev", "note", "requestedAt", "expiresAt"],
       "properties": {
-        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
+        "status": {
+          "enum": ["REQUESTED", "ACCEPTED", "REVOKED"]
+        },
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
-        "note": { "type": "string", "maxLength": 255 },
+        "note": {
+          "type": "string",
+          "maxLength": 255
+        },
         "requestedAt": {
           "oneOf": [
-            { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
-            { "type": "null" }
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "expiresAt": {
           "oneOf": [
-            { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
-            { "type": "null" }
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+            },
+            {
+              "type": "null"
+            }
           ]
+        },
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
         }
       },
       "allOf": [
         {
           "if": {
             "required": ["status"],
-            "properties": { "status": { "const": "REQUESTED" } }
+            "properties": {
+              "status": {
+                "const": "REQUESTED"
+              }
+            }
           },
           "then": {
             "properties": {
@@ -45,23 +68,52 @@
         {
           "if": {
             "required": ["status"],
-            "properties": { "status": { "const": "ACCEPTED" } }
+            "properties": {
+              "status": {
+                "const": "ACCEPTED"
+              }
+            }
           },
           "then": {
             "properties": {
               "requestedAt": {
                 "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
               },
-              "expiresAt": { "type": "null" }
+              "expiresAt": {
+                "type": "null"
+              }
             }
           }
         },
         {
           "if": {
             "required": ["status"],
-            "properties": { "status": { "const": "REVOKED" } }
+            "properties": {
+              "status": {
+                "const": "REVOKED"
+              }
+            }
           },
-          "then": { "properties": { "expiresAt": { "type": "null" } } }
+          "then": {
+            "properties": {
+              "expiresAt": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["REQUESTED", "ACCEPTED"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["messageEndSeq", "tombstoneEndSeq"]
+          }
         }
       ],
       "additionalProperties": false
@@ -81,7 +133,7 @@
       "required": ["messageEndSeq", "tombstoneEndSeq"],
       "properties": {
         "messageEndSeq": {
-          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
         },
         "tombstoneEndSeq": {
           "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
@@ -93,12 +145,18 @@
       "type": "object",
       "required": ["account", "eventType", "feedId", "body"],
       "properties": {
-        "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-        "eventType": { "type": "string" },
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "eventType": {
+          "type": "string"
+        },
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
-        "body": { "type": "object" }
+        "body": {
+          "type": "object"
+        }
       }
     },
     "item": {
@@ -106,9 +164,15 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "eventType": { "const": "RELATIONSHIP_INTENT" },
-            "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-            "body": { "$ref": "#/$defs/relationshipIntentBody" }
+            "eventType": {
+              "const": "RELATIONSHIP_INTENT"
+            },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/account"
+            },
+            "body": {
+              "$ref": "#/$defs/relationshipIntentBody"
+            }
           },
           "required": ["peerAccount"],
           "unevaluatedProperties": false
@@ -116,21 +180,33 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-            "eventType": { "const": "GROUP_META_FEED_HEAD" },
-            "body": { "$ref": "#/$defs/groupMetaFeedHeadBody" }
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+            },
+            "eventType": {
+              "const": "GROUP_META_FEED_HEAD"
+            },
+            "body": {
+              "$ref": "#/$defs/groupMetaFeedHeadBody"
+            }
           },
           "unevaluatedProperties": false
         },
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
-            "eventType": { "const": "THREAD_CONTENT_HEAD" },
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "eventType": {
+              "const": "THREAD_CONTENT_HEAD"
+            },
             "peerAccount": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
-            "body": { "$ref": "#/$defs/threadContentHeadBody" }
+            "body": {
+              "$ref": "#/$defs/threadContentHeadBody"
+            }
           },
           "required": ["peerAccount"],
           "unevaluatedProperties": false
@@ -138,9 +214,15 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-            "eventType": { "const": "THREAD_CONTENT_HEAD" },
-            "body": { "$ref": "#/$defs/threadContentHeadBody" }
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+            },
+            "eventType": {
+              "const": "THREAD_CONTENT_HEAD"
+            },
+            "body": {
+              "$ref": "#/$defs/threadContentHeadBody"
+            }
           },
           "unevaluatedProperties": false
         }
@@ -150,10 +232,21 @@
   "type": "object",
   "required": ["items", "scannedThrough", "stateFeedEndId", "hasMore"],
   "properties": {
-    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
-    "stateFeedEndId": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
-    "hasMore": { "type": "boolean" }
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "scannedThrough": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "stateFeedEndId": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "hasMore": {
+      "type": "boolean"
+    }
   },
   "additionalProperties": false
 }

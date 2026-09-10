@@ -93,7 +93,10 @@ npm run federation:test
 
 `federation:test` resets the three lab databases and runtime state, starts the built
 backends with process and database diagnostics, runs the workload, and stops the owned
-processes. All workload settings are explicit in the `package.json` script: final
+processes. Each backend uses a single database connection (`DATABASE_POOL_MAX=1`)
+to expose transaction code that incorrectly requests another pool connection while
+holding its current one. This is a correctness workload, not a throughput benchmark.
+All workload settings are explicit in the `package.json` script: final
 verification, 600 random decisions, five users and groups per node, 10 admissions per
 second, concurrency 12, round size 10, task timeout 120000 ms, progress every 25 decisions,
 and convergence timeout/interval/samples of 300000 ms / 1000 ms / 3. The account prefix
@@ -144,6 +147,18 @@ also be retried. Attempts remain one logical operation. Scenario operations are 
 random-operation budget. Failure to reach the scenario's membership preconditions is reported as
 missing coverage.
 
+Before random admissions, three mandatory relay cases use four dedicated accounts across all three
+nodes: B sends two originals to A, A combines them with its own message and forwards back to B,
+then B relays the bundle to C using DIRECT, HISTORY, or additional B-to-A-to-B HISTORY nesting.
+These cases run on every workload invocation and do not consume `--operations`.
+Each case uses a fresh avatar, verifies that C has neither its CAS row nor file before delivery,
+changes B's profile after capture, and checks the complete original author/profile/content snapshot,
+descendant closure, deduplicated asset descriptors, local files, and authenticated download bytes.
+C never resolves A's profile. Digest-only requests, an unrelated message coordinate, an unrelated
+authenticated account, and anonymous requests must all fail to download the existing snapshot avatar.
+Evidence and the dedicated operation journal are stored under `forwardRelayScenario` in
+`operations.json` and `forwardRelay` in `coverage.json`; any case failure fails execution.
+
 Admissions are globally paced at 10 operation starts per second by default, with slow requests allowed
 to overlap. The runner polls the administrator task list for `PENDING`, `PROCESSING`, and
 `ASYNC_PROCESSING` activity. After the round barrier is idle, it polls the incremental Oracle until
@@ -160,8 +175,8 @@ an accept/reject on the remote recipient. Accept/reject submits immediately,
 without waiting for an incoming request to reappear. A P2P admission rejection
 with `FRIEND_NOT_FOUND` is recorded as `OBSERVED_UNAVAILABLE` only when a fresh
 local observation confirms that the relationship is no longer available.
-An active relationship, unexpected error code, or fixed-scenario failure remains
-a test failure rather than being hidden as an expected race.
+An active relationship or unexpected error code is not reclassified as an expected
+race. Fixed-scenario coverage checks remain required.
 For random cancellation of an observed outgoing pending request, a task-level
 `REJECTED / INVITE_ALREADY_HANDLED` is also recorded as `OBSERVED_UNAVAILABLE`:
 acceptance may have completed before the queued cancellation runs. The original
@@ -170,14 +185,17 @@ and never suppresses a `FAILED` task.
 For a random rejection based on `INCOMING_PENDING`, `INVITE_ALREADY_HANDLED` is
 also expected unavailability when the request has already been handled or withdrawn.
 This applies at admission and task completion, preserves the original error code, and
-never suppresses fixed-scenario failures, other error codes, or `FAILED` tasks.
+does not reclassify fixed-scenario failures, other error codes, or `FAILED` tasks.
 Group management excludes request generations already submitted or successfully handled
 by this run, even if a lagging projection still says `REQUESTED`. The key includes the
 group, request ID, direction, and expiration so a renewed application remains eligible.
-Unexpected group `NOT_FOUND` results still fail the run.
+Unexpected group `NOT_FOUND` admission failures still fail the run.
 
-After all operations, the harness drains the queue and checks all admission/task
-failures before the final oracle. Observational snapshots do not read/hash media bytes. The final audit
+After all operations, the harness drains the queue. In final mode, task-level
+business rejections (`REJECTED`) retain their status and result code in the report
+but do not prevent the final consistency audit. Round mode still requires expected
+operation outcomes. Admission failures, execution failures (`FAILED`), and unfinished
+tasks still fail validation in either mode. Observational snapshots do not read/hash media bytes. The final audit
 still checks convergence, coverage, profiles, seq/originSeq, message content,
 tombstones, and actual media digests/lengths with the normal stable-sample policy.
 Final mode intentionally does not prove intermediate states that later operations
@@ -352,7 +370,12 @@ still live under `runtime/p2p-runs/` and must be preserved before resetting. Set
 only when a custom output directory is needed.
 
 The [database collector](diagnostics/collect.mjs) samples sessions, blockers, and operating-system
-pressure. The [process preload](diagnostics/preload.mjs) records HTTP durations, event-loop delay,
+pressure. Each database session includes its PostgreSQL backend PID, blocking PIDs, and
+`pg_stat_activity.query`: the current statement for an active session, or the last statement
+for an idle transaction. PostgreSQL may truncate this text according to
+`track_activity_query_size`. The collector does not collect bound parameter values, but
+SQL literals can appear in the statement text; treat these local diagnostic files accordingly.
+The [process preload](diagnostics/preload.mjs) records HTTP durations, event-loop delay,
 CPU usage, and pool acquisition waits for the backends and workload. The unified command enables both;
 there is no need to launch them separately. Backend business/access logging defaults to `info`.
 Database activity is sampled once per second, so absence of a sampled lock wait does not prove

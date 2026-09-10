@@ -38,7 +38,9 @@ try {
     const start = Date.now();
     try {
       const { rows } =
-        await client.query(`SELECT datname, pid, state, wait_event_type, wait_event,
+        // Keep SQL beside its backend PID so lock waiters and the last statement
+        // of an idle transaction can be identified from the same sample.
+        await client.query(`SELECT datname, pid, state, wait_event_type, wait_event, query,
         extract(epoch FROM (clock_timestamp() - xact_start)) * 1000 AS transaction_ms,
         extract(epoch FROM (clock_timestamp() - query_start)) * 1000 AS query_ms,
         pg_blocking_pids(pid) AS blockers

@@ -5,7 +5,6 @@ import { AcceptRelationshipRequestTaskHandler } from './accept-relationship-requ
 
 const task = {
   id: 4n,
-  parentTaskId: null,
   kind: 'MUTATION',
   scopeType: 'USER_PAIR',
   scopeKey: 'pair-key',
@@ -14,7 +13,6 @@ const task = {
   payload: { peerUserId: 9 },
   checkpoint: {},
   coalescingKey: null,
-  supersededByTaskId: null,
   status: 'PROCESSING',
   resultCode: null,
   lastError: null,

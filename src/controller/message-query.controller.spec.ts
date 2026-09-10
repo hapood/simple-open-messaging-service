@@ -38,7 +38,6 @@ function setup(rows: Array<{ seq: number }> = []) {
   const controller = new MessageController(
     { queryClientMessagePage } as never,
     {} as never,
-    {} as never,
     { blockedByMe: vi.fn().mockResolvedValue(new Set<number>()) } as never,
     {} as never,
     {} as never,
@@ -180,7 +179,6 @@ describe('MessageController group mention resolution', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       { resolveActiveMember } as never,
     );
     const req = {
@@ -244,10 +242,6 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
       {} as never,
-      {
-        notifyOnSend: vi.fn(),
-        signalDeletionOutbound: vi.fn(),
-      } as never,
       {} as never,
       {} as never,
       { assertCanSend, tickLax } as never,
@@ -284,7 +278,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       const tick = vi.fn().mockResolvedValue(undefined);
       const controller = new MessageController(
         { stageMedia } as never,
-        {} as never,
         {} as never,
         {} as never,
         {
@@ -332,7 +325,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
     const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
     const controller = new MessageController(
       { stageMedia } as never,
-      {} as never,
       {} as never,
       {} as never,
       {

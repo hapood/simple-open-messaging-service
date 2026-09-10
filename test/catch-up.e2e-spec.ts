@@ -1,20 +1,24 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  afterEach,
+  beforeEach,
+  vi,
+} from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  message,
-  messageThread,
-  accountThreadState,
-  account as user,
-} from '../src/database/schema';
+import { message, messageThread } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
-import { ClientThreadContentHeadWriter } from '../src/message/client-message-feed.service.js';
+import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
 
 /**
@@ -51,6 +55,20 @@ describe('client state feed + notification feed', () => {
     await app.close();
   });
 
+  afterEach(async () => {
+    // Let committed background work finish before the next fixture truncates its tables.
+    await vi.waitFor(
+      async () => {
+        const result = await database.pool.query(`
+        SELECT count(*)::integer AS count FROM "DurableTask"
+        WHERE status IN ('PENDING', 'PROCESSING')
+      `);
+        expect(result.rows[0].count).toBe(0);
+      },
+      { timeout: 15000 },
+    );
+  });
+
   beforeEach(async () => {
     await database.pool.query(
       'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
@@ -74,8 +92,6 @@ describe('client state feed + notification feed', () => {
       .values({
         type: 'P2P',
         curSeq: 3,
-        lastMessageSeq: 3,
-        lastMessageAt: new Date(base + opts.name.length),
         updatedAt: now,
       })
       .returning({ id: messageThread.id });
@@ -99,9 +115,14 @@ describe('client state feed + notification feed', () => {
         updatedAt: now,
       })),
     );
-    await database.db.transaction((tx) =>
-      ClientThreadContentHeadWriter.publishMessage(tx, thread.id, 3),
-    );
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, thread.id);
+      await ThreadFeedHeadWriter.advanceInTx(tx, recipientId, {
+        threadId: thread.id,
+        messageEndSeq: 3,
+        tombstoneEndSeq: 0,
+      });
+    });
     return thread.id;
   }
 
@@ -112,240 +133,80 @@ describe('client state feed + notification feed', () => {
       .query(params);
   }
 
-  function postMissed(
-    body: Record<string, unknown>,
-    headers: Record<string, string> = {},
-  ) {
+  function getThreads(body: Record<string, number> = { after: 0 }) {
     return request(app.getHttpServer())
-      .post('/api/v1/notification-feed/query')
-      .set('Authorization', `Bearer ${sessionToken}`)
-      .set(headers)
+      .post('/api/v1/thread/feed-delta')
+      .set('Authorization', 'Bearer ' + sessionToken)
       .send(body);
   }
 
-  // ── /user/state-feed ───────────────────────────────────────────────────────────────────────
-
-  it('publishes paired message/tombstone high-water marks in the sole state feed', async () => {
-    const res = await getState({ after: 0, take: 200, mode: 'full' });
-    expect(res.body.code).toBe(0);
-    const heads = res.body.data.items.filter(
-      (item: { eventType: string }) => item.eventType === 'THREAD_CONTENT_HEAD',
+  it('returns content heads and unread state together, outside state feed', async () => {
+    const response = await getThreads();
+    expect(response.body.code).toBe(0);
+    const rows = response.body.data.items;
+    expect(rows.map((row: { threadId: number }) => row.threadId)).toEqual(
+      expect.arrayContaining([tAlice, tBob, tCarol]),
     );
     expect(
-      heads.map((item: { body: { threadId: number } }) => item.body.threadId),
-    ).toEqual(expect.arrayContaining([tAlice, tBob, tCarol]));
-    expect(
-      heads.find(
-        (item: { body: { threadId: number } }) => item.body.threadId === tBob,
-      )?.body,
-    ).toEqual({
-      threadId: tBob,
+      rows.find((row: { threadId: number }) => row.threadId === tAlice),
+    ).toMatchObject({
       messageEndSeq: 3,
       tombstoneEndSeq: 0,
+      unreadCount: 3,
+      lastReadSeq: 0,
     });
-  });
-
-  it('compacts a newer message into the same content head with a new state-feed coordinate', async () => {
-    const before = await getState({ after: 0, take: 200, mode: 'full' });
-    const previous = before.body.data.items.find(
-      (item: { eventType: string; body: { threadId: number } }) =>
-        item.eventType === 'THREAD_CONTENT_HEAD' &&
-        item.body.threadId === tAlice,
-    );
-    const now = new Date();
-    await database.db.transaction(async (tx) => {
-      await tx.insert(message).values({
-        threadId: tAlice,
-        seq: 4,
-        originSeq: 4,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: 'self-only' }),
-        creatorAccount: 'recip',
-        creatorDomain: 'local',
-        profileRev: 1,
-        createdAt: now,
-        updatedAt: now,
-      });
-      await tx
-        .update(messageThread)
-        .set({
-          curSeq: 4,
-          lastMessageSeq: 4,
-          lastMessageAt: now,
-          updatedAt: now,
-        })
-        .where(eq(messageThread.id, tAlice));
-      await ClientThreadContentHeadWriter.publishMessage(tx, tAlice, 4);
-    });
-
-    const advanced = await getState({
-      after: previous.feedId,
-      take: 200,
-      mode: 'delta',
-    });
-    const alice = advanced.body.data.items.find(
-      (item: { eventType: string; body: { threadId: number } }) =>
-        item.eventType === 'THREAD_CONTENT_HEAD' &&
-        item.body.threadId === tAlice,
-    );
-    expect(alice.feedId).toBeGreaterThan(previous.feedId);
-    expect(alice.body).toEqual({
-      threadId: tAlice,
-      messageEndSeq: 4,
-      tombstoneEndSeq: 0,
-    });
-
-    const withdrawn = await request(app.getHttpServer())
-      .post('/api/v1/withdraw-message')
-      .set('Authorization', `Bearer ${sessionToken}`)
-      .send({ threadId: tAlice, seq: 4 });
-    expect(withdrawn.body.code).toBe(0);
-    const afterWithdraw = await getState({
-      after: 0,
-      take: 200,
-      mode: 'full',
-    });
-    const withdrawnHead = afterWithdraw.body.data.items.find(
-      (item: { eventType: string; body: { threadId: number } }) =>
-        item.eventType === 'THREAD_CONTENT_HEAD' &&
-        item.body.threadId === tAlice,
-    );
-    expect(withdrawnHead.body).toEqual({
-      threadId: tAlice,
-      messageEndSeq: 5,
-      tombstoneEndSeq: 1,
-    });
-
-    const filteredTombstones = await request(app.getHttpServer())
-      .post('/api/v1/deleted-messages/query')
-      .set('Authorization', `Bearer ${sessionToken}`)
-      .send({
-        threadId: tAlice,
-        after: 0,
-        through: 1,
-        take: 100,
-        maxMessageSeq: 3,
-      });
-    expect(filteredTombstones.body.data).toEqual({
-      tombstones: [],
-      scannedThrough: 1,
-      hasMore: false,
-    });
-  });
-
-  // ── /notification-feed/query ─────────────────────────────────────────────────────────────────
-
-  it('notification feed at the current end is an empty delta', async () => {
     const state = await getState({ after: 0, take: 200, mode: 'full' });
-    const res = await postMissed({ after: state.body.data.stateFeedEndId });
-    expect(res.body.data.notifications).toEqual([]);
-  });
-
-  it('emits no descriptor for changed threads with no remaining notification range', async () => {
-    const res = await postMissed({
-      after: 0,
-      threadHwms: { [tAlice]: 3, [tBob]: 3, [tCarol]: 3 },
-    });
-    expect(res.body.data.notifications).toEqual([]);
-  });
-
-  it('missed: returns one message-preview descriptor per conversation (en)', async () => {
-    // since = Alice's seq 1 (the globally-oldest message) → everything after it: Alice 2,3 + Bob 1,2,3 +
-    // Carol 1,2,3 = 8 messages across 3 senders → manyConv "Alice, Bob +1 sent you 8 messages".
-    const res = await postMissed(
-      { after: 0, threadHwms: { [tAlice]: 1 } },
-      { 'Accept-Language': 'en' },
-    );
-    const descriptors = res.body.data.notifications;
     expect(
-      descriptors.map((d: { data: { threadId: number } }) => d.data.threadId),
-    ).toEqual([tCarol, tBob, tAlice]);
-    const alice = descriptors.find(
-      (d: { data: { threadId: number } }) => d.data.threadId === tAlice,
-    );
-    expect(alice).toMatchObject({
-      kind: 'thread-message',
-      title: 'Alice',
-      body: 'Alice sent you 2 messages',
-      count: 2,
-      lang: 'en',
-      previewMode: 'message',
-      data: { threadId: tAlice, seq: 3 },
-    });
-    expect(alice.messages.map((m: { text: string }) => m.text)).toEqual([
-      'Alice-1',
-      'Alice-2',
-    ]);
-    expect(alice.icon).toBeNull();
+      state.body.data.items.some(
+        (row: { eventType: string }) => row.eventType === 'THREAD_CONTENT_HEAD',
+      ),
+    ).toBe(false);
   });
 
-  it('missed: private mode contains no sender or message content', async () => {
-    const res = await postMissed(
-      { after: 0, threadHwms: { [tAlice]: 1 }, previewMode: 'private' },
-      { 'Accept-Language': 'zh-CN,zh;q=0.9' },
-    );
-    expect(res.body.data.notifications).toHaveLength(3);
-    for (const descriptor of res.body.data.notifications) {
-      expect(descriptor).toMatchObject({
-        title: 'SOMS',
-        body: '你有新消息',
-        lang: 'zh-CN',
-        previewMode: 'private',
-      });
-      expect(descriptor).not.toHaveProperty('messages');
-      expect(JSON.stringify(descriptor)).not.toMatch(/Alice-|Bob-|Carol-/);
+  it('consumes every changed thread in feed order and advances empty ranges', async () => {
+    const first = (await getThreads({ after: 0, take: 1 })).body.data;
+    expect(first.hasMore).toBe(true);
+    let cursor = first.scannedThrough;
+    const ids = [first.items[0].threadId];
+    while (cursor < first.through) {
+      const page = (
+        await getThreads({ after: cursor, through: first.through, take: 1 })
+      ).body.data;
+      expect(page.scannedThrough).toBeGreaterThan(cursor);
+      ids.push(...page.items.map((row: { threadId: number }) => row.threadId));
+      cursor = page.scannedThrough;
     }
+    expect(new Set(ids).size).toBe(3);
+    const empty = (await getThreads({ after: cursor, through: cursor })).body
+      .data;
+    expect(empty).toMatchObject({
+      items: [],
+      hasMore: false,
+      scannedThrough: cursor,
+    });
   });
 
-  it('missed: a blocked sender is excluded from the aggregation', async () => {
-    // Block Carol's peer → her 3 messages drop out: Alice 1,2 + Bob 0,1,2 = 5, 2 senders.
-    const participant = await database.db.query.accountThreadState.findFirst({
-      where: and(
-        eq(accountThreadState.accountId, recipientId),
-        eq(accountThreadState.threadId, tCarol),
-      ),
-      columns: { id: true },
-    });
-    if (!participant)
-      throw new Error('recipient thread participant is missing');
-    await database.db
-      .update(accountThreadState)
-      .set({ blocked: true, updatedAt: new Date() })
-      .where(eq(accountThreadState.id, participant.id));
-    const res = await postMissed(
-      { after: 0, threadHwms: { [tAlice]: 1 } },
-      { 'Accept-Language': 'en' },
-    );
+  it('returns bounded in-memory previews and validates the configured maximum', async () => {
+    const single = await getThreads({ after: 0, previewCount: 1 });
+    expect(single.body.code).toBe(0);
+    expect(single.body.data.items[0].previews).toEqual([
+      expect.objectContaining({ seq: 3, status: 'LIVE' }),
+    ]);
+    const full = await getThreads({ after: 0, previewCount: 5 });
     expect(
-      res.body.data.notifications.map(
-        (d: { data: { threadId: number } }) => d.data.threadId,
-      ),
-    ).toEqual([tBob, tAlice]);
+      full.body.data.items[0].previews.map((item: { seq: number }) => item.seq),
+    ).toEqual([1, 2, 3]);
+    const invalid = await getThreads({ after: 0, previewCount: 6 });
+    expect(invalid.status).toBe(200);
+    expect(invalid.body.code).toBe(10000);
   });
 
-  it('missed: a muted thread is excluded from the aggregation', async () => {
-    // Mute Bob's thread → Bob's 3 messages drop out: Alice 1,2 + Carol 0,1,2 = 5, 2 senders.
-    const participant = await database.db.query.accountThreadState.findFirst({
-      where: and(
-        eq(accountThreadState.accountId, recipientId),
-        eq(accountThreadState.threadId, tBob),
-      ),
-      columns: { id: true },
-    });
-    if (!participant)
-      throw new Error('recipient thread participant is missing');
-    await database.db
-      .update(accountThreadState)
-      .set({ muted: true })
-      .where(eq(accountThreadState.id, participant.id));
-    const res = await postMissed(
-      { after: 0, threadHwms: { [tAlice]: 1 } },
-      { 'Accept-Language': 'en' },
-    );
-    expect(
-      res.body.data.notifications.map(
-        (d: { data: { threadId: number } }) => d.data.threadId,
-      ),
-    ).toEqual([tCarol, tAlice]);
+  it('removes attention-delta without a compatibility route', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/thread/attention-delta')
+      .set('Authorization', 'Bearer ' + sessionToken)
+      .send({ after: 0 });
+    expect(response.body.code).not.toBe(0);
+    expect(response.body.data).toBeFalsy();
   });
 });

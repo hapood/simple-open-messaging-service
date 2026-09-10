@@ -1,4 +1,8 @@
 import { FederationThreadQueryDenialService } from '../src/federation/federation-thread-query-denial.service.js';
+import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
+import { RevokeForbiddenGroupTaskHandler } from '../src/group/revoke-forbidden-group-task.handler.js';
+import { ForceRevokeGroupMemberTaskHandler } from '../src/group/force-revoke-group-member-task.handler.js';
+import { GroupRevokeFanoutService } from '../src/group/group-revoke-fanout.service.js';
 import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import {
@@ -20,14 +24,17 @@ import {
   messageThread,
   message,
   accountThreadState,
-  clientStateFeed,
   durableTask,
 } from '../src/database/schema.js';
 import { GroupService } from '../src/group/group.service.js';
 import { MessageService } from '../src/message/message.service.js';
+import { ThreadFanoutTaskHandler } from '../src/message/thread-fanout-task.handler.js';
+import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
+import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
+import { EndFriendshipTaskHandler } from '../src/account-thread-state/end-friendship-task.handler.js';
 import { FederationGroupRelationshipService } from '../src/federation/federation-group-relationship.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { GroupMetaSyncTaskExecutionService } from '../src/federation/group-meta-sync-task-execution.service.js';
@@ -82,19 +89,43 @@ describe('departure system message paths', () => {
     });
   }
   async function assertHeads(threadId: number, ids: number[], seq: number) {
+    const queued = await database.db.query.durableTask.findFirst({
+      where: and(
+        eq(durableTask.scopeKey, JSON.stringify(['THREAD_FANOUT', threadId])),
+        eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT),
+        eq(durableTask.status, 'PENDING'),
+      ),
+    });
+    expect(queued?.payload).toMatchObject({ threadId, messageEndSeq: seq });
+    const active = new Set(
+      (
+        await app
+          .get(AccountThreadStateService)
+          .getActiveParticipantUserIds(threadId)
+      ).map((row) => row.userId),
+    );
+    const before = new Map(
+      await Promise.all(
+        ids.map(async (id) => [id, await boundary(threadId, id)] as const),
+      ),
+    );
+    // This suite does not start the scheduler. Execute the real persisted task explicitly.
+    const store = app.get(DurableTaskStoreService);
+    const claimed = await store.claim(queued!.id);
+    expect(claimed).toBeDefined();
+    await app.get(ThreadFanoutTaskHandler).execute(claimed!);
+    await store.markSucceeded(claimed!.id);
     for (const id of ids) {
-      const rows = await database.db
-        .select()
-        .from(clientStateFeed)
-        .where(
-          and(
-            eq(clientStateFeed.userId, id),
-            eq(clientStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-          ),
-        );
-      expect(
-        rows.find((row) => (row.body as any).threadId === threadId)?.body,
-      ).toMatchObject({ messageEndSeq: seq });
+      const state = await boundary(threadId, id);
+      expect(state).toBeDefined();
+      if (active.has(id)) {
+        expect(state!.messageEndSeq).toBe(seq);
+        expect(state!.threadFeedId).toBeGreaterThan(0);
+      } else {
+        // Leaving the audience does not retain a final content-fanout recipient.
+        expect(state!.messageEndSeq).toBe(before.get(id)!.messageEndSeq);
+        expect(state!.threadFeedId).toBe(before.get(id)!.threadFeedId);
+      }
     }
   }
   async function activate(
@@ -496,6 +527,8 @@ describe('departure system message paths', () => {
           );
         } else {
           await relationships.applyRemoteP2PIntentInTx(tx, {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
             localUserId: local.id,
             peerUserId: peerTarget,
             status: 'ACCEPTED',
@@ -517,7 +550,7 @@ describe('departure system message paths', () => {
           });
           const namespaceId =
             typeof peerTarget === 'number' ? 0 : peerTarget.namespaceId;
-          return app
+          const outcome = await app
             .get(FederationThreadQueryDenialService)
             .handleThreadQueryForbidden(
               threadId,
@@ -525,11 +558,28 @@ describe('departure system message paths', () => {
               namespaceId,
               state!.authorizationEpoch,
             );
+          if (outcome === 'P2P_REVOKE_QUEUED') {
+            const pending = await database.db.query.durableTask.findFirst({
+              where: and(
+                eq(durableTask.taskType, DurableTaskType.END_FRIENDSHIP),
+                eq(durableTask.actorUserId, local.id),
+                eq(durableTask.status, 'PENDING'),
+              ),
+            });
+            expect(pending?.payload.threadId).toBe(threadId);
+            const store = app.get(DurableTaskStoreService);
+            const claimed = await store.claim(pending!.id);
+            await app.get(EndFriendshipTaskHandler).execute(claimed!);
+            await store.markSucceeded(pending!.id);
+          }
+          return outcome;
         }
         return path === 'local'
           ? app.get(AccountThreadStateService).endP2P(threadId, local.id)
           : database.db.transaction((tx) =>
               relationships.applyRemoteP2PIntentInTx(tx, {
+                messageEndSeq: 0,
+                tombstoneEndSeq: 0,
                 localUserId: local.id,
                 peerUserId: peerTarget,
                 status: 'REVOKED',
@@ -590,7 +640,56 @@ describe('departure system message paths', () => {
             namespaceId,
             state!.authorizationEpoch,
           ),
-      ).toBe('GROUP_REVOKED');
+      ).toBe('GROUP_REVOKE_QUEUED');
+      const admitted = await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, h.threadId),
+      });
+      expect(admitted!.authorizationEpoch).toBe(
+        state!.authorizationEpoch + (path === 'mirror' ? 1 : 0),
+      );
+      expect(admitted!.federationRoundsEnabled).toBe(path === 'hosted');
+      const parent = await database.db.query.durableTask.findFirst({
+        where: and(
+          eq(durableTask.taskType, DurableTaskType.REVOKE_FORBIDDEN_GROUP),
+          eq(durableTask.status, 'PENDING'),
+        ),
+      });
+      expect(parent?.coalescingKey).toBeNull();
+      const store = app.get(DurableTaskStoreService);
+      const claimed = await store.claim(parent!.id);
+      expect(
+        await app
+          .get(GroupRevokeFanoutService)
+          .insertNextMember(claimed!, h.threadId),
+      ).toBe(true);
+      const interrupted = await database.db.query.durableTask.findFirst({
+        where: eq(durableTask.id, parent!.id),
+      });
+      expect(
+        BigInt(interrupted!.checkpoint.afterPairId as string),
+      ).toBeGreaterThan(0n);
+      // Re-enter using the original task snapshot: progress must be read from PostgreSQL.
+      await app.get(RevokeForbiddenGroupTaskHandler).execute(claimed!);
+      await store.markSucceeded(parent!.id);
+      const children = await database.db
+        .select()
+        .from(durableTask)
+        .where(
+          and(
+            eq(durableTask.taskType, DurableTaskType.FORCE_REVOKE_GROUP_MEMBER),
+            eq(durableTask.scopeKey, parent!.scopeKey),
+            eq(durableTask.status, 'PENDING'),
+          ),
+        );
+      expect(children).toHaveLength(path === 'mirror' ? 2 : 1);
+      for (const child of children) {
+        expect(child.payload.direction).toBe(
+          path === 'mirror' ? 'MEMBER' : 'GROUP',
+        );
+        const running = await store.claim(child.id);
+        await app.get(ForceRevokeGroupMemberTaskHandler).execute(running!);
+        await store.markSucceeded(child.id);
+      }
       const targets = 'observer' in h ? [h.member.id, h.observer.id] : [remote];
       for (const target of targets)
         expect(
@@ -601,7 +700,7 @@ describe('departure system message paths', () => {
         app
           .get(FederationThreadSourceService)
           .resolve(h.threadId, peerDomain, namespaceId),
-      ).rejects.toThrow('no active federation source');
+      ).rejects.toThrow(FederationThreadSourceInactiveError);
     },
   );
 });

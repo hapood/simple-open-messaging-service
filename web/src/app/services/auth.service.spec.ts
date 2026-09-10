@@ -32,8 +32,15 @@ import { ToastService } from './toast.service';
 describe('AuthService (session-token contract, browser path)', () => {
   let svc: AuthService;
   let httpMock: HttpTestingController;
+  let closeNotification: Mock;
 
   beforeEach(() => {
+    closeNotification = vi.fn();
+    vi.spyOn(navigator.serviceWorker, 'getRegistration').mockResolvedValue({
+      getNotifications: async () => [
+        { tag: 'soms-thread-7', close: closeNotification },
+      ],
+    } as unknown as ServiceWorkerRegistration);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -93,6 +100,7 @@ describe('AuthService (session-token contract, browser path)', () => {
   });
   afterEach(() => {
     TestBed.resetTestingModule();
+    vi.restoreAllMocks();
     // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
     document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
   });
@@ -116,6 +124,8 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(req.request.body.device.length).toBeGreaterThan(0);
 
     req.flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closeNotification).toHaveBeenCalledTimes(1);
     // Pure-httpOnly browser: the token lives in the (JS-unreadable) httpOnly cookie the backend set — JS
     // NEVER holds it (there is no sessionToken surface at all). Login state rides the non-httpOnly
     // `logged_in` presence cookie, which HttpTestingController doesn't set, so isLoggedIn() stays false
@@ -213,5 +223,20 @@ describe('AuthService (session-token contract, browser path)', () => {
     );
     expect(req.request.body.id).toBe(42);
     req.flush({ code: 0, message: 'ok' });
+  });
+
+  it('preserves notifications and pending taps when restoring an existing session', async () => {
+    document.cookie = 'logged_in=1; Path=/';
+    await svc.restoreSession();
+    expect(TestBed.inject(UserService).restoreWebdb).toHaveBeenCalledTimes(1);
+    expect(closeNotification).not.toHaveBeenCalled();
+    expect(svc.isLoggedIn()).toBe(true);
+  });
+
+  it('clears notifications when explicitly clearing the session', async () => {
+    document.cookie = 'logged_in=1; Path=/';
+    await svc.clearToken();
+    expect(closeNotification).toHaveBeenCalledTimes(1);
+    expect(svc.isLoggedIn()).toBe(false);
   });
 });

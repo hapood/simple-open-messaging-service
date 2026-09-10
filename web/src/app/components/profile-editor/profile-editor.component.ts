@@ -74,6 +74,8 @@ export class ProfileEditorComponent {
   readonly isNameValid = signal(true);
   readonly avatarDraft = signal<File | null>(null);
   readonly pendingAvatar = signal<File | null>(null);
+  /** Local crop preview shown until the refreshed session profile takes over. */
+  readonly avatarPreviewUrl = signal('');
   readonly saving = signal(false);
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
@@ -117,7 +119,10 @@ export class ProfileEditorComponent {
     });
 
     // Clear the "Saved" flash timer if the editor is torn down mid-flash (dialog close, tab switch).
-    this.destroyRef.onDestroy(() => clearTimeout(this.savedTimer));
+    this.destroyRef.onDestroy(() => {
+      clearTimeout(this.savedTimer);
+      this.clearAvatarPreview();
+    });
   }
 
   /** Saveable only when the nickname is valid, no request is in flight, and at least one field changed. */
@@ -149,6 +154,8 @@ export class ProfileEditorComponent {
   finishAvatarEdit(file: File) {
     this.avatarDraft.set(null);
     this.pendingAvatar.set(file);
+    this.clearAvatarPreview();
+    this.avatarPreviewUrl.set(URL.createObjectURL(file));
   }
 
   async save() {
@@ -195,6 +202,13 @@ export class ProfileEditorComponent {
       }
       return btoa(binary);
     });
+  }
+
+  private clearAvatarPreview() {
+    const url = this.avatarPreviewUrl();
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    this.avatarPreviewUrl.set('');
   }
 
   /** Flash the "Saved" confirmation on the Save button for ~1.5s (re-entrant — a rapid second save resets it). */

@@ -1,12 +1,14 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import { readFile } from 'node:fs/promises';
 import { asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { isUniqueViolation } from '../src/database/database-error.js';
-import { durableTask } from '../src/database/schema.js';
+import { account, durableTask } from '../src/database/schema.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
+import { saveTaskCheckpointInTx } from '../src/durable-task/task-checkpoint.js';
 
 describe('durable task enqueue', () => {
   let mod: TestingModule;
@@ -30,6 +32,440 @@ describe('durable task enqueue', () => {
     await database.pool.query(
       'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
     );
+  });
+
+  it('coalesces group-authored revocations across operators but keeps the member direction separate', async () => {
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!author-group', domain: 'local' },
+    };
+    const invite = await queue.enqueueTask({
+      scope,
+      taskType: 'INVITE_GROUP_MEMBER',
+      actorUserId: 3,
+      payload: { threadId: 10, targetUserId: 7 },
+    });
+    const leave = await queue.enqueueTask({
+      scope,
+      taskType: 'REVOKE_USER_RELATIONSHIP',
+      actorUserId: 7,
+      payload: { threadId: 10 },
+    });
+    const revoke = await queue.enqueueTask({
+      scope,
+      taskType: 'REVOKE_GROUP_RELATIONSHIP',
+      actorUserId: 4,
+      payload: {
+        threadId: 10,
+        memberUserId: 7,
+        requestId: '1',
+        operation: 'REVOKE_INVITATION',
+      },
+    });
+    expect(revoke).toEqual(invite);
+    expect(revoke.taskId).not.toBe(leave.taskId);
+    const kick = await queue.enqueueTask({
+      scope,
+      taskType: 'REVOKE_GROUP_RELATIONSHIP',
+      actorUserId: 3,
+      payload: { threadId: 10, targetUserId: 7, operation: 'KICK' },
+    });
+    expect(kick).toEqual(invite);
+    const ack = await queue.enqueueTask({
+      scope,
+      taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
+      actorUserId: 4,
+      payload: { threadId: 10, memberUserId: 7, requestId: '2' },
+    });
+    expect(ack).toEqual(invite);
+    const rows = await database.db.select().from(durableTask);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === leave.taskId)?.taskType).toBe(
+      'REVOKE_USER_RELATIONSHIP',
+    );
+  });
+
+  it('replaces same-direction pending req/ack/revoke across opposite work and suppresses running duplicates', async () => {
+    const scope = {
+      type: 'USER_PAIR' as const,
+      endpoints: [
+        { account: 'alice', domain: 'local' },
+        { account: 'bob', domain: 'local' },
+      ] as const,
+    };
+    const revoke = {
+      scope,
+      taskType: 'REVOKE_USER_RELATIONSHIP',
+      actorUserId: 1,
+      payload: { threadId: 10 },
+    };
+    const first = await queue.enqueueTask(revoke);
+    const reverse = await queue.enqueueTask({ ...revoke, actorUserId: 2 });
+    const ack = await queue.enqueueTask({
+      ...revoke,
+      taskType: 'ACCEPT_RELATIONSHIP_REQUEST',
+      payload: { peerUserId: 2 },
+    });
+    expect(ack.taskId).toBe(first.taskId);
+    expect(reverse.taskId).not.toBe(first.taskId);
+    expect(await queue.enqueueTask(revoke)).toEqual(first);
+    await database.db
+      .update(durableTask)
+      .set({ status: 'PROCESSING', startedAt: new Date() })
+      .where(eq(durableTask.id, first.taskId));
+    expect(await queue.enqueueTask(revoke)).toEqual(first);
+    expect(await database.db.select().from(durableTask)).toHaveLength(2);
+    const next = await queue.enqueueTask({
+      ...revoke,
+      taskType: 'SEND_LOCAL_RELATIONSHIP_REQUEST',
+      payload: { targetUserId: 2, note: '' },
+    });
+    expect(next.taskId).not.toBe(first.taskId);
+    expect(
+      (
+        await database.db.query.durableTask.findFirst({
+          where: eq(durableTask.id, first.taskId),
+        })
+      )?.status,
+    ).toBe('PROCESSING');
+  });
+
+  it.each(['PROCESSING', 'ASYNC_PROCESSING'] as const)(
+    'guards and rolls back checkpoint writes for %s',
+    async (status) => {
+      const startedAt = new Date();
+      const [task] = await database.db
+        .insert(durableTask)
+        .values({
+          kind: 'PROJECTION',
+          scopeType: 'GROUP',
+          scopeKey: 'checkpoint-test',
+          taskType: 'SYNC_GROUP_META',
+          status,
+          payload: {},
+          createdAt: startedAt,
+          startedAt,
+          checkpoint: { after: '0' },
+        })
+        .returning();
+      await database.db.transaction((tx) =>
+        saveTaskCheckpointInTx(tx, task.id, { after: '1' }, status),
+      );
+      const other = status === 'PROCESSING' ? 'ASYNC_PROCESSING' : 'PROCESSING';
+      await expect(
+        database.db.transaction((tx) =>
+          saveTaskCheckpointInTx(tx, task.id, { after: '2' }, other),
+        ),
+      ).rejects.toThrow('Task is not processing');
+      await expect(
+        database.db.transaction(async (tx) => {
+          await saveTaskCheckpointInTx(tx, task.id, { after: '3' }, status);
+          throw new Error('rollback checkpoint');
+        }),
+      ).rejects.toThrow('rollback checkpoint');
+      const persisted = await database.db.query.durableTask.findFirst({
+        where: eq(durableTask.id, task.id),
+      });
+      expect(persisted?.checkpoint).toEqual({ after: '1' });
+      expect(persisted?.status).toBe(status);
+    },
+  );
+
+  it('migrates admitted dissolution cleanup into the canonical forced pending slot', async () => {
+    const [member] = await database.db
+      .insert(account)
+      .values({ account: 'forced-migration-member' })
+      .returning();
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!migration', domain: 'local' },
+    };
+    const seed = await queue.enqueueTask({
+      scope,
+      taskType: 'DISBAND_GROUP',
+      payload: { threadId: 10 },
+    });
+    await database.db
+      .update(durableTask)
+      .set({
+        taskType: 'REVOKE_DISSOLVED_GROUP_MEMBER',
+        payload: {
+          threadId: 10,
+          memberUserId: {
+            account: member.account,
+            domain: 'local',
+            namespaceId: 0,
+          },
+        },
+      })
+      .where(eq(durableTask.id, seed.taskId));
+    await database.pool.query(
+      await readFile(
+        'database/migrations/0020_forced_group_revocations.sql',
+        'utf8',
+      ),
+    );
+    const [migrated] = await database.db.select().from(durableTask);
+    expect(migrated).toMatchObject({
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      payload: { threadId: 10, memberUserId: member.id },
+      coalescingKey: JSON.stringify([
+        'GROUP_MEMBER_INTENT',
+        'GROUP',
+        member.id,
+      ]),
+    });
+    expect(
+      await queue.enqueueTask({
+        scope,
+        taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
+        actorUserId: member.id,
+        payload: { threadId: 10, memberUserId: member.id, requestId: '1' },
+      }),
+    ).toEqual(seed);
+  });
+
+  it('keeps a pending forced revoke only in its own direction and only while pending', async () => {
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!forced', domain: 'local' },
+    };
+    const forced = await database.db.transaction((tx) =>
+      queue.enqueueTaskInTx(tx, {
+        scope,
+        taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+        payload: { threadId: 10, memberUserId: 7 },
+      }),
+    );
+    for (const request of [
+      {
+        taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
+        actorUserId: 7,
+        payload: { threadId: 10, memberUserId: 7, requestId: '1' },
+      },
+      {
+        taskType: 'INVITE_GROUP_MEMBER',
+        actorUserId: 3,
+        payload: { threadId: 10, targetUserId: 7 },
+      },
+    ]) {
+      expect(await queue.enqueueTask({ scope, ...request })).toEqual(forced);
+    }
+    expect(await database.db.select().from(durableTask)).toHaveLength(1);
+    const opposite = await queue.enqueueTask({
+      scope,
+      taskType: 'ACCEPT_GROUP_INVITATION',
+      actorUserId: 7,
+      payload: { threadId: 10 },
+    });
+    expect(opposite.taskId).not.toBe(forced.taskId);
+    await database.db
+      .update(durableTask)
+      .set({ status: 'PROCESSING', startedAt: new Date() })
+      .where(eq(durableTask.id, forced.taskId));
+    const request = await queue.enqueueTask({
+      scope,
+      taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
+      actorUserId: 7,
+      payload: { threadId: 10, memberUserId: 7, requestId: '1' },
+    });
+    expect(request.taskId).not.toBe(forced.taskId);
+    expect(await database.db.select().from(durableTask)).toHaveLength(3);
+  });
+
+  it.each(['INVITE_GROUP_MEMBER', 'ACCEPT_GROUP_JOIN_REQUEST'])(
+    'replaces pending %s with forced revoke in place despite later group work',
+    async (taskType) => {
+      const scope = {
+        type: 'GROUP' as const,
+        address: { account: '!replace', domain: 'local' },
+      };
+      const prior = await queue.enqueueTask({
+        scope,
+        taskType,
+        actorUserId: 3,
+        payload:
+          taskType === 'INVITE_GROUP_MEMBER'
+            ? { threadId: 10, targetUserId: 7 }
+            : { threadId: 10, memberUserId: 7, requestId: '1' },
+      });
+      const later = await queue.enqueueTask({
+        scope,
+        taskType: 'INVITE_GROUP_MEMBER',
+        actorUserId: 3,
+        payload: { threadId: 10, targetUserId: 8 },
+      });
+      const forced = await database.db.transaction((tx) =>
+        queue.enqueueTaskInTx(tx, {
+          scope,
+          taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+          payload: { threadId: 10, memberUserId: 7 },
+        }),
+      );
+      expect(forced).toEqual(prior);
+      const rows = await database.db
+        .select()
+        .from(durableTask)
+        .orderBy(asc(durableTask.id));
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        id: prior.taskId,
+        taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      });
+      expect(rows[1]).toMatchObject({
+        id: later.taskId,
+        taskType: 'INVITE_GROUP_MEMBER',
+      });
+    },
+  );
+
+  it('supersedes every older pending intent in the forced direction atomically', async () => {
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!multiple-pending', domain: 'local' },
+    };
+    const invite = await queue.enqueueTask({
+      scope,
+      taskType: 'INVITE_GROUP_MEMBER',
+      actorUserId: 3,
+      payload: { threadId: 10, targetUserId: 7 },
+    });
+    const opposite = await queue.enqueueTask({
+      scope,
+      taskType: 'ACCEPT_GROUP_INVITATION',
+      actorUserId: 7,
+      payload: { threadId: 10 },
+    });
+    // Seed an older persisted queue shape with two same-direction pending rows.
+    const original = (await database.db.query.durableTask.findFirst({
+      where: eq(durableTask.id, invite.taskId),
+    }))!;
+    const [ack] = await database.db
+      .insert(durableTask)
+      .values({
+        kind: original.kind,
+        scopeType: original.scopeType,
+        scopeKey: original.scopeKey,
+        coalescingKey: original.coalescingKey,
+        taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
+        actorUserId: 3,
+        status: 'PENDING',
+        payload: { threadId: 10, memberUserId: 7, requestId: '1' },
+      })
+      .returning({ taskId: durableTask.id });
+    const force = (tx: Parameters<typeof queue.enqueueTaskInTx>[0]) =>
+      queue.enqueueTaskInTx(tx, {
+        scope,
+        taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+        payload: { threadId: 10, memberUserId: 7 },
+      });
+    await expect(
+      database.db.transaction(async (tx) => {
+        expect(await force(tx)).toEqual(ack);
+        throw new Error('rollback all replacements');
+      }),
+    ).rejects.toThrow('rollback all replacements');
+    const rolledBack = await database.db.select().from(durableTask);
+    expect(rolledBack.every((row) => row.status === 'PENDING')).toBe(true);
+    expect(rolledBack.find((row) => row.id === ack.taskId)?.taskType).toBe(
+      'ACCEPT_GROUP_JOIN_REQUEST',
+    );
+
+    expect(await database.db.transaction(force)).toEqual(ack);
+    const rows = await database.db.select().from(durableTask);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.id === invite.taskId)).toMatchObject({
+      status: 'SUPERSEDED',
+      completedAt: expect.any(Date),
+    });
+    expect(rows.find((row) => row.id === opposite.taskId)).toMatchObject({
+      status: 'PENDING',
+      taskType: 'ACCEPT_GROUP_INVITATION',
+    });
+    expect(rows.find((row) => row.id === ack.taskId)).toMatchObject({
+      status: 'PENDING',
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+    });
+  });
+
+  it('coalesces forced member-side revocation with member req and ack only', async () => {
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!member-force', domain: 'peer.test' },
+    };
+    const request = await queue.enqueueTask({
+      scope,
+      taskType: 'REQUEST_FEDERATED_GROUP_JOIN',
+      actorUserId: 7,
+      payload: {},
+    });
+    const force = await queue.enqueueTask({
+      scope,
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      payload: {
+        threadId: 10,
+        memberUserId: 7,
+        direction: 'MEMBER',
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    });
+    expect(force).toEqual(request);
+    const ack = await queue.enqueueTask({
+      scope,
+      taskType: 'ACCEPT_ADDRESSED_GROUP_INVITATION',
+      actorUserId: 7,
+      payload: {},
+    });
+    expect(ack).toEqual(force);
+    const opposite = await queue.enqueueTask({
+      scope,
+      taskType: 'INVITE_GROUP_MEMBER',
+      actorUserId: 3,
+      payload: { targetUserId: 7 },
+    });
+    expect(opposite.taskId).not.toBe(force.taskId);
+    const parent = {
+      scope,
+      taskType: 'REVOKE_FORBIDDEN_GROUP',
+      payload: {
+        threadId: 10,
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    };
+    const first = await queue.enqueueTask(parent);
+    const second = await queue.enqueueTask(parent);
+    expect(first.taskId).not.toBe(second.taskId);
+  });
+
+  it('rolls back caller-owned admission and its pending replacement together', async () => {
+    const scope = {
+      type: 'GROUP' as const,
+      address: { account: '!atomic', domain: 'local' },
+    };
+    const prior = await queue.enqueueTask({
+      scope,
+      taskType: 'INVITE_GROUP_MEMBER',
+      actorUserId: 3,
+      payload: { threadId: 10, targetUserId: 7 },
+    });
+    await expect(
+      database.db.transaction(async (tx) => {
+        expect(
+          await queue.enqueueTaskInTx(tx, {
+            scope,
+            taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+            payload: { threadId: 10, memberUserId: 7 },
+          }),
+        ).toEqual(prior);
+        throw new Error('rollback replacement');
+      }),
+    ).rejects.toThrow('rollback replacement');
+    const [retained] = await database.db.select().from(durableTask);
+    expect(retained.taskType).toBe('INVITE_GROUP_MEMBER');
   });
 
   it('persists concurrent equivalent requests as distinct ordered tasks', async () => {
@@ -231,7 +667,7 @@ describe('durable task enqueue', () => {
     await expect(store.claim(projection.taskId)).resolves.toBeDefined();
   });
 
-  it('retains a pending task as superseded history linked to its replacement', async () => {
+  it('retains superseded status without blocking the replacement task', async () => {
     const common = {
       kind: 'MUTATION' as const,
       scopeType: 'USER_PAIR' as const,
@@ -253,7 +689,6 @@ describe('durable task enqueue', () => {
       .update(durableTask)
       .set({
         status: 'SUPERSEDED',
-        supersededByTaskId: replacement.id,
         completedAt: new Date(),
       })
       .where(eq(durableTask.id, older.id));
@@ -263,7 +698,6 @@ describe('durable task enqueue', () => {
     });
     expect(row).toMatchObject({
       status: 'SUPERSEDED',
-      supersededByTaskId: replacement.id,
     });
     await expect(eligibleIds('SET_FRIEND_INTENT')).resolves.toEqual([
       replacement.id,
@@ -344,7 +778,6 @@ describe('durable task enqueue', () => {
       kind: 'PROJECTION',
       taskType: 'FAN_OUT_GROUP_META_HEAD',
       status: 'SUPERSEDED',
-      supersededByTaskId: second.taskId,
       payload: { threadId: 42 },
       checkpoint: { afterAudienceId: '0' },
     });
@@ -354,7 +787,6 @@ describe('durable task enqueue', () => {
       kind: 'PROJECTION',
       taskType: 'FAN_OUT_GROUP_META_HEAD',
       status: 'PENDING',
-      supersededByTaskId: null,
       payload: { threadId: 42 },
       checkpoint: { afterAudienceId: '0' },
       coalescingKey: JSON.stringify(['FAN_OUT_GROUP_META_HEAD', 42]),
@@ -385,13 +817,11 @@ describe('durable task enqueue', () => {
     expect(rows[0]).toMatchObject({
       id: processing.taskId,
       status: 'PROCESSING',
-      supersededByTaskId: null,
       payload: { threadId: 42 },
     });
     expect(rows[1]).toMatchObject({
       id: olderSuccessor.taskId,
       status: 'SUPERSEDED',
-      supersededByTaskId: replacement.taskId,
       payload: { threadId: 42 },
     });
     expect(rows[2]).toMatchObject({

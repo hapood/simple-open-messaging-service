@@ -1,11 +1,12 @@
+import { relationshipTaskAuthorUserId } from '../relationship/relationship-task-author.js';
 import {
   readAccountTarget,
   type AccountTarget,
 } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
-import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
-import { durableTask } from '../database/schema.js';
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { account, durableTask } from '../database/schema.js';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -16,6 +17,11 @@ import {
   type BusinessScopeAddress,
 } from '../relationship/business-scope-lock.js';
 import { DurableTaskType } from './durable-task.constants.js';
+import {
+  insertPendingTaskInTx,
+  updatePendingTaskInTx,
+  supersedePendingTasksInTx,
+} from './task-admission.js';
 
 export type DurableTaskScope =
   | {
@@ -50,10 +56,34 @@ export class DurableTaskQueueService {
   async enqueueTask(
     input: EnqueueDurableTaskInput,
   ): Promise<EnqueueDurableTaskResult> {
+    return this.database.db.transaction((tx) =>
+      this.enqueueTaskInTx(tx, input),
+    );
+  }
+
+  async enqueueTaskInTx(
+    tx: DatabaseTransaction,
+    input: EnqueueDurableTaskInput,
+  ): Promise<EnqueueDurableTaskResult> {
     const taskType = validateTaskType(input.taskType);
     const actorUserId = validateActorUserId(input.actorUserId);
     const payload = cloneJsonObject(input.payload);
     const { scopeType, scopeKey, lockAddresses } = resolveScope(input.scope);
+    // Normalize local addressed members to the same identity used by actor-based requests.
+    if (scopeType === 'GROUP') {
+      for (const field of ['targetUserId', 'memberUserId'] as const) {
+        if (payload[field] === undefined) continue;
+        const member = readAccountTarget(payload[field]);
+        if (typeof member !== 'number' && member.domain === 'local') {
+          const local = await tx.query.account.findFirst({
+            where: eq(account.account, member.account),
+            columns: { id: true },
+          });
+          if (!local) throw new Error('local task member does not exist');
+          payload[field] = local.id;
+        }
+      }
+    }
     const coalescingKey = resolveMutationCoalescingKey({
       scopeType,
       taskType,
@@ -61,77 +91,81 @@ export class DurableTaskQueueService {
       payload,
     });
 
-    return this.database.db.transaction(async (tx) => {
-      // This is a short-lived ordering lock only. Task execution takes the same business-scope
-      // lock separately, so enqueueing does not extend the caller's business transaction.
-      await lockBusinessAccountsInTx(tx, lockAddresses);
+    // Enter before child locks, or reuse business locks already held by the caller.
+    // The ordering lock remains held until the caller-owned transaction commits.
+    await lockBusinessAccountsInTx(tx, lockAddresses);
 
-      if (coalescingKey) {
-        const existing = await this.findLatestPendingMutationInTx(
-          tx,
-          scopeKey,
-          coalescingKey,
-        );
-        if (existing) {
-          if (
-            existing.taskType === taskType &&
-            existing.actorUserId === actorUserId &&
-            isDeepStrictEqual(existing.payload, payload)
-          )
-            return { taskId: existing.id };
+    if (coalescingKey) {
+      const existing = await this.findLatestPendingMutationInTx(
+        tx,
+        scopeKey,
+        coalescingKey,
+      );
+      if (existing) {
+        if (existing.taskType === DurableTaskType.FORCE_REVOKE_GROUP_MEMBER)
+          return { taskId: existing.id };
+        if (
+          existing.taskType === taskType &&
+          existing.actorUserId === actorUserId &&
+          isDeepStrictEqual(existing.payload, payload)
+        )
+          return { taskId: existing.id };
 
-          const [laterBlocking] = await tx
-            .select({ id: durableTask.id })
-            .from(durableTask)
-            .where(
-              and(
-                eq(durableTask.kind, 'MUTATION'),
-                eq(durableTask.scopeKey, scopeKey),
-                gt(durableTask.id, existing.id),
-                inArray(durableTask.status, [
-                  'PENDING',
-                  'PROCESSING',
-                  'ASYNC_PROCESSING',
-                  'FAILED',
-                ]),
-              ),
-            )
-            .orderBy(desc(durableTask.id))
-            .limit(1);
-          if (!laterBlocking) {
-            const [updated] = await tx
-              .update(durableTask)
-              .set({ taskType, actorUserId, payload })
-              .where(
-                and(
-                  eq(durableTask.id, existing.id),
-                  eq(durableTask.status, 'PENDING'),
-                ),
-              )
-              .returning({ taskId: durableTask.id });
-            if (updated) return updated;
-          }
-        }
-      }
-
-      const [inserted] = await tx
-        .insert(durableTask)
-        .values({
-          kind: 'MUTATION',
-          scopeType,
-          scopeKey,
+        const updated = await updatePendingTaskInTx(tx, existing.id, {
           taskType,
           actorUserId,
           payload,
-          coalescingKey,
-          status: 'PENDING',
-        })
-        .returning({ taskId: durableTask.id });
-
-      if (!inserted) {
-        throw new Error('durable task insert returned no row');
+        });
+        if (updated) {
+          await supersedePendingTasksInTx(
+            tx,
+            and(
+              eq(durableTask.kind, 'MUTATION'),
+              eq(durableTask.scopeKey, scopeKey),
+              eq(durableTask.coalescingKey, coalescingKey),
+              ne(durableTask.id, updated.taskId),
+            )!,
+          );
+          return updated;
+        }
       }
-      return inserted;
+    }
+
+    if (coalescingKey) {
+      // A duplicate running operation is already represented by its durable task.
+      // Opposite-direction tasks do not affect duplicate suppression.
+      const [latest] = await tx
+        .select()
+        .from(durableTask)
+        .where(
+          and(
+            eq(durableTask.kind, 'MUTATION'),
+            eq(durableTask.scopeKey, scopeKey),
+            eq(durableTask.coalescingKey, coalescingKey),
+            inArray(durableTask.status, ['PROCESSING', 'ASYNC_PROCESSING']),
+          ),
+        )
+        .orderBy(desc(durableTask.id))
+        .limit(1);
+      if (
+        latest &&
+        ['PROCESSING', 'ASYNC_PROCESSING'].includes(latest.status) &&
+        latest.coalescingKey === coalescingKey &&
+        latest.taskType === taskType &&
+        latest.actorUserId === actorUserId &&
+        isDeepStrictEqual(latest.payload, payload)
+      )
+        return { taskId: latest.id };
+    }
+
+    return insertPendingTaskInTx(tx, {
+      kind: 'MUTATION',
+      scopeType,
+      scopeKey,
+      taskType,
+      actorUserId,
+      payload,
+      coalescingKey,
     });
   }
 
@@ -161,7 +195,10 @@ export class DurableTaskQueueService {
           eq(durableTask.status, 'PENDING'),
         ),
       )
-      .orderBy(desc(durableTask.id))
+      .orderBy(
+        sql`CASE WHEN ${durableTask.taskType} = ${DurableTaskType.FORCE_REVOKE_GROUP_MEMBER} THEN 0 ELSE 1 END`,
+        desc(durableTask.id),
+      )
       .for('update')
       .limit(1);
     return task ?? null;
@@ -206,44 +243,25 @@ export class DurableTaskQueueService {
       )
         throw new Error('invalid pending Group Meta head fan-out payload');
     }
-    const [inserted] = await tx
-      .insert(durableTask)
-      .values({
-        kind: 'PROJECTION',
-        scopeType: 'GROUP',
-        scopeKey,
-        taskType: DurableTaskType.FAN_OUT_GROUP_META_HEAD,
-        actorUserId: null,
-        payload: { threadId },
-        checkpoint: { afterAudienceId: '0' },
-        coalescingKey,
-        status: 'PENDING',
-      })
-      .returning({ taskId: durableTask.id });
-    if (!inserted) {
-      throw new Error('durable projection task insert returned no row');
-    }
+    const inserted = await insertPendingTaskInTx(tx, {
+      kind: 'PROJECTION',
+      scopeType: 'GROUP',
+      scopeKey,
+      taskType: DurableTaskType.FAN_OUT_GROUP_META_HEAD,
+      actorUserId: null,
+      payload: { threadId },
+      checkpoint: { afterAudienceId: '0' },
+      coalescingKey,
+    });
 
     if (pending.length > 0) {
-      await tx
-        .update(durableTask)
-        .set({
-          status: 'SUPERSEDED',
-          supersededByTaskId: inserted.taskId,
-          // CURRENT_TIMESTAMP is fixed at transaction start. This transaction may have waited on
-          // the group advisory lock while the pending row was created by a later-committing
-          // transaction, so use the wall clock and retain the timestamp-order invariant.
-          completedAt: sql`GREATEST(clock_timestamp(), ${durableTask.createdAt})`,
-        })
-        .where(
-          and(
-            inArray(
-              durableTask.id,
-              pending.map((task) => task.id),
-            ),
-            eq(durableTask.status, 'PENDING'),
-          ),
-        );
+      await supersedePendingTasksInTx(
+        tx,
+        inArray(
+          durableTask.id,
+          pending.map((task) => task.id),
+        ),
+      );
     }
 
     return inserted;
@@ -339,8 +357,29 @@ function resolveMutationCoalescingKey(input: {
   actorUserId: number | null;
   payload: Record<string, unknown>;
 }): string | null {
-  if (input.scopeType !== 'GROUP') return null;
+  if (input.scopeType === 'USER_PAIR') {
+    switch (input.taskType) {
+      case DurableTaskType.SEND_LOCAL_RELATIONSHIP_REQUEST:
+      case DurableTaskType.ACCEPT_RELATIONSHIP_REQUEST:
+      case DurableTaskType.REJECT_RELATIONSHIP_REQUEST:
+      case DurableTaskType.REVOKE_RELATIONSHIP_REQUEST:
+      case DurableTaskType.SEND_FEDERATED_RELATIONSHIP_REQUEST:
+      case DurableTaskType.ACCEPT_ADDRESSED_RELATIONSHIP_REQUEST:
+      case DurableTaskType.REVOKE_ADDRESSED_RELATIONSHIP_REQUEST:
+      case DurableTaskType.REVOKE_USER_RELATIONSHIP:
+      case DurableTaskType.END_FRIENDSHIP:
+        if (input.actorUserId === null)
+          throw new TypeError('replaceable pair intent task requires an actor');
+        return JSON.stringify([
+          'P2P_INTENT',
+          relationshipTaskAuthorUserId(input),
+        ]);
+      default:
+        return null;
+    }
+  }
   switch (input.taskType) {
+    case DurableTaskType.REVOKE_USER_RELATIONSHIP:
     case DurableTaskType.LEAVE_GROUP:
     case DurableTaskType.ACCEPT_GROUP_INVITATION:
     case DurableTaskType.REQUEST_FEDERATED_GROUP_JOIN:
@@ -348,7 +387,17 @@ function resolveMutationCoalescingKey(input: {
     case DurableTaskType.ACCEPT_ADDRESSED_GROUP_INVITATION:
       if (input.actorUserId === null)
         throw new TypeError('replaceable member intent task requires an actor');
-      return mutationCoalescingKey('MEMBER', input.actorUserId);
+      return mutationCoalescingKey(
+        'MEMBER',
+        relationshipTaskAuthorUserId(input),
+      );
+    case DurableTaskType.REVOKE_GROUP_RELATIONSHIP:
+      return mutationCoalescingKey(
+        'GROUP',
+        readAccountTarget(
+          input.payload.memberUserId ?? input.payload.targetUserId,
+        ),
+      );
     case DurableTaskType.INVITE_GROUP_MEMBER:
     case DurableTaskType.KICK_GROUP_MEMBER:
       return mutationCoalescingKey(
@@ -360,6 +409,11 @@ function resolveMutationCoalescingKey(input: {
     case DurableTaskType.REVOKE_GROUP_INVITATION:
       return mutationCoalescingKey(
         'GROUP',
+        readAccountTarget(input.payload.memberUserId),
+      );
+    case DurableTaskType.FORCE_REVOKE_GROUP_MEMBER:
+      return mutationCoalescingKey(
+        input.payload.direction === 'MEMBER' ? 'MEMBER' : 'GROUP',
         readAccountTarget(input.payload.memberUserId),
       );
     default:

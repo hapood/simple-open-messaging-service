@@ -42,8 +42,6 @@ export class GroupManageService {
       .select({
         id: messageThread.id,
         createdAt: messageThread.createdAt,
-        lastMessageAt: messageThread.lastMessageAt,
-        lastMessagePreview: messageThread.lastMessagePreview,
         groupAccount: groupStateFields.account,
         groupName: groupStateFields.name,
         groupDomain: groupStateFields.domain,
@@ -67,8 +65,6 @@ export class GroupManageService {
     const list = rows.map((row) => ({
       id: row.id,
       createdAt: row.createdAt,
-      lastMessageAt: row.lastMessageAt,
-      lastMessagePreview: row.lastMessagePreview,
       group: {
         account: row.groupAccount,
         name: row.groupName,

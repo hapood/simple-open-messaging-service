@@ -1,24 +1,4 @@
-/**
- * The notification descriptor — the web-side mirror of the backend `NotificationDescriptor`
- * (src/notification/notification-descriptor.ts). The server authors BOTH the content (localized title/body
- * + composited stacked-avatar icon) AND the presentation semantics (`tag` = replace-in-place vs new,
- * `kind` = template, `actions` = buttons); every client renderer (the Web Push SW, the foreground Angular
- * adapter) consumes it verbatim with zero composition logic. Kept hand-mirrored (not generated) because the
- * backend type lives in the NestJS app and the web is a separate Angular build.
- *
- * Mirrors the Web Notifications API `NotificationOptions` shape so `showNotification(title, opts)` maps
- * field-for-field; Android maps to `NotificationCompat.Builder`.
- */
-
-export interface NotifAction {
-  /** The action id the client reports back via `POST /notifications/action` (P2). */
-  id: string;
-  /** Localized button label. */
-  title: string;
-  style?: 'default' | 'suggested' | 'destructive';
-  /** `'text'` = inline reply input; `'button'` = tap. */
-  type?: 'button' | 'text';
-}
+/** Client-owned presentation model assembled from committed thread-feed projections. */
 
 export interface NotificationDescriptor {
   /** Stable per-thread id; posting the same tag replaces that conversation's prior notification. */
@@ -27,11 +7,11 @@ export interface NotificationDescriptor {
   kind: string;
   title: string;
   body: string;
-  /** New messages represented by this card since the frozen foreground/per-thread dismiss HWM. */
+  /** Unread count represented by this notification. Dismissal never changes its query range. */
   count: number;
-  /** The locale the copy was rendered in (echoes the negotiated Accept-Language). */
+  /** The locale used for client-authored notification copy. */
   lang: string;
-  /** URL to the server-composited stacked-avatar PNG; null → use the app icon. */
+  /** Client-selected notification icon; null lets the platform use its default. */
   icon: string | null;
   /** Re-alert on replace (false = silent update after the first post). */
   renotify: boolean;
@@ -39,8 +19,6 @@ export interface NotificationDescriptor {
   attention?: 'mention';
   /** Quiet update (no sound). */
   silent?: boolean;
-  /** Buttons — kind-dependent. P1 ships `[]`. */
-  actions: NotifAction[];
   messages?: Array<{
     seq: number;
     sender: { account: string; domain: string };
@@ -49,6 +27,6 @@ export interface NotificationDescriptor {
     timestamp: number;
   }>;
   previewMode?: 'message' | 'private';
-  /** Routing payload for opening, dismissing or replying to a per-thread notification. */
+  /** Routing payload for opening a per-thread notification. */
   data: { threadId?: number; seq?: number; [k: string]: unknown };
 }

@@ -60,7 +60,6 @@ export function GroupsPage() {
               <TableHead>{t('groups.col.name')}</TableHead>
               <TableHead className="w-24">{t('groups.col.members')}</TableHead>
               <TableHead className="w-44">{t('groups.col.origin')}</TableHead>
-              <TableHead>{t('groups.col.lastMessage')}</TableHead>
               <TableHead className="w-44">{t('groups.col.created')}</TableHead>
             </TableRow>
           </TableHeader>
@@ -69,7 +68,7 @@ export function GroupsPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={5}
+              colSpan={4}
               emptyMessage={t('groups.empty')}
             >
               {data?.list.map((g) => (
@@ -91,18 +90,6 @@ export function GroupsPage() {
                       </span>
                     ) : (
                       <Badge variant="secondary">{t('groups.local')}</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {g.lastMessageAt ? (
-                      <div className="flex flex-col">
-                        <span className="max-w-[280px] truncate text-xs text-muted-foreground">
-                          {g.lastMessagePreview ?? '—'}
-                        </span>
-                        <Timestamp value={g.lastMessageAt} />
-                      </div>
-                    ) : (
-                      '—'
                     )}
                   </TableCell>
                   <TableCell>

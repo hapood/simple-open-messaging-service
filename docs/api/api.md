@@ -130,10 +130,36 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
   catch-up owns list presentation, and exact author profiles are resolved only when the client reads the
   corresponding message. The response carries the current feed end and the next cursor for deterministic
   catch-up.
+- `THREAD_STATE` is the durable, account-owned conversation snapshot. Its body carries
+  `threadId`, `type`, `authorityNamespaceId`, `conversationState`, `establishedAt`, `blocked`,
+  `role`, and `profile: { account, domain, namespaceId, profileRev }`. Establishment, re-establishment,
+  revocation, and block/role changes publish it in the same database transaction. Full mode includes
+  unblocked and retained read-only conversations. `THREAD_BLOCK` is replaced by this snapshot.
+- Clients create visible thread list entries only from `THREAD_STATE`; relationship intents update
+  request projections. An earlier thread-feed entry creates an invisible placeholder. Consuming the
+  snapshot reveals it while retaining its attention/message state. Establishment time controls initial
+  placement; block changes and replay preserve placement.
+- The default profile reference remains fixed until the relationship is established again. Revocation
+  retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
   Member `UPSERT` and `DEPART` items include `account`, `domain`, and the server-local `namespaceId`.
   `UPSERT.body` carries role and profile revision references; clients resolve profile content separately.
   `GROUP_PROFILE` carries only `feedId` and `body.profileRev`, without a member identity.
+
+### POST `/user/profile-resolution` — Resolve a profile
+
+The request is a discriminated union:
+
+- `{ type: 'EXACT', account, domain, rev }`
+- `{ type: 'MESSAGE_AUTHOR', threadId, messageSeq }`
+- `{ type: 'GROUP_MEMBER', threadId, memberAccount, memberDomain }`
+
+There is no thread-default selector or separate endpoint. Clients use the exact identity and revision
+from `THREAD_STATE.profile`. Before any cache lookup, the server verifies the user's matching snapshot
+or another existing disclosure grant. The snapshot grant includes namespace and revision; it does not
+require a surviving intent. A new establishment may replace this grant with another revision.
+`READY.profile` includes `namespaceId`; `PENDING` returns the existing resolution request identifier.
+Federation profile endpoints keep their existing wire format and authorization rules.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -494,6 +520,6 @@ SSE is unidirectional; **clients do not send business messages over SSE**. All w
 - Reports are unique by `(threadId, seq)`. An active duplicate succeeds without changing the row. Reporting an available message again reactivates its dismissed report. Retrying an existing report for a deleted message succeeds without reactivation.
 - `POST /api/v1/admin/message-reports` accepts `{ skip?, take?, isDeleted? }`, defaulting to active reports. Content is returned unchanged. The admin UI renders raw content, or “This message has been deleted” when the message is deleted.
 - `POST /api/v1/admin/message-reports/delete` accepts one `{ threadId, seq }` and soft-deletes the report without changing the message.
-- `POST /api/v1/admin/messages/delete` accepts one `{ threadId, seq }` and returns `{ taskId, status }` for a `DELETE_MESSAGE` durable task. Repeated submissions reuse the existing task; failed tasks can be retried through durable task administration. Admin multi-selection submits one request per message and preserves failed selections.
+- `POST /api/v1/admin/messages/delete` accepts one `{ threadId, seq }` and returns `{ threadId, messageSeq, deletionSeq }` after the deletion transaction commits. Repeated submissions reuse the deletion fact. The same transaction admits client and federation content fanouts. Admin multi-selection submits one request per message and preserves failed selections for retry.
 
 The two administrative mutations require ADMIN or SUPER_ADMIN. Report removal and message deletion are distinct: there is no review status or reporter association. A deletion task uses the shared deletion service to write an idempotent tombstone, remove the message from the preview cache, archive its report, and enqueue thread fanout. The worker then signals federation. Interrupted deletion tasks are recovered at startup. No moderation-result notification is sent to the reporter.

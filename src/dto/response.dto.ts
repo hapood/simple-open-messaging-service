@@ -1,4 +1,9 @@
-import { ApiProperty } from '@nestjs/swagger';
+import {
+  ApiProperty,
+  ApiExtraModels,
+  PickType,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { ContentType, MessageDeleteType } from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
@@ -79,33 +84,62 @@ export class UserResponseDto {
   // device-local and never appears in an API response.
 }
 
-/** Server-authoritative read state returned after committing a viewport read HWM. */
-export class ThreadReadStateDto {
+export class ThreadFeedPreviewDto {
+  @ApiProperty() seq!: number;
+  @ApiProperty({ format: 'date-time' }) createdAt!: string;
+  @ApiProperty({
+    type: 'object',
+    properties: { account: { type: 'string' }, domain: { type: 'string' } },
+    required: ['account', 'domain'],
+  })
+  sender!: { account: string; domain: string };
+  @ApiProperty({ enum: ['LIVE', 'USER_RETRACTION', 'MODERATION_REMOVAL'] })
+  status!: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+  @ApiProperty({ required: false }) text?: string;
+}
+
+/** Complete server thread snapshot; content and attention share one feed coordinate. */
+export class ThreadFeedStateDto {
+  @ApiProperty({ type: [ThreadFeedPreviewDto], required: false })
+  previews?: ThreadFeedPreviewDto[];
+  @ApiProperty({ example: 12, minimum: 1, maximum: 2147483647 })
+  threadFeedId!: number;
   @ApiProperty({ example: 12, description: 'Conversation id' })
   threadId!: number;
 
+  @ApiProperty({ minimum: 0 }) messageEndSeq!: number;
+  @ApiProperty({ minimum: 0 }) tombstoneEndSeq!: number;
+
   @ApiProperty({
     example: 42,
-    description: 'Server-confirmed monotonic read HWM',
+    description:
+      'Server-confirmed read position; explicit force may move it backwards',
   })
   lastReadSeq!: number;
 
   @ApiProperty({
     example: 3,
-    maximum: 1000,
-    description:
-      'Unread count; 1000 means 1000 or more and is rendered as 999+.',
+    minimum: 0,
+    description: 'Exact persisted unread count',
   })
   unreadCount!: number;
 
   @ApiProperty({
-    type: [String],
-    enum: ['all', 'me'],
-    example: ['all', 'me'],
+    type: Number,
+    nullable: true,
     description:
-      'Distinct semantic mention kinds in the same bounded unread sample.',
+      'Latest projected surviving mention seq; clients decide whether to display attention',
   })
-  mentionUnread!: Array<'all' | 'me'>;
+  lastMentionSeq!: number | null;
+}
+
+export class ThreadFeedDeltaPageDto {
+  @ApiProperty() threadFeedEndId!: number;
+  @ApiProperty() through!: number;
+  @ApiProperty() scannedThrough!: number;
+  @ApiProperty() hasMore!: boolean;
+  @ApiProperty({ type: [ThreadFeedStateDto] })
+  items!: ThreadFeedStateDto[];
 }
 
 export class MessageAuthorAddressResponseDto {
@@ -166,7 +200,7 @@ export class MessageResponseDto {
     enum: ['STUB', 'FAILED', 'READY'],
     example: 'READY',
     description:
-      'Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.',
+      'Local materialization state. STUB and FAILED remain client-visible message slots independent of download completion.',
   })
   localState!: 'STUB' | 'FAILED' | 'READY';
 
@@ -195,9 +229,36 @@ export class MessageResponseDto {
   mediaStatus?: MediaStatus;
 }
 
+export class MessageTombResponseDto extends PickType(MessageResponseDto, [
+  'threadId',
+  'seq',
+  'creator',
+  'profileRev',
+  'createdAt',
+  'updatedAt',
+] as const) {
+  @ApiProperty({ enum: ['TOMB'] })
+  contentType!: 'TOMB';
+
+  @ApiProperty({ type: Boolean, enum: [true] })
+  isDeleted!: true;
+
+  @ApiProperty({ enum: MessageDeleteType })
+  deletionType!: MessageDeleteType;
+}
+
+@ApiExtraModels(MessageResponseDto, MessageTombResponseDto)
 export class MessageQueryPageDto {
-  @ApiProperty({ type: [MessageResponseDto] })
-  messages!: MessageResponseDto[];
+  @ApiProperty({
+    type: 'array',
+    items: {
+      oneOf: [
+        { $ref: getSchemaPath(MessageResponseDto) },
+        { $ref: getSchemaPath(MessageTombResponseDto) },
+      ],
+    },
+  })
+  messages!: Array<MessageResponseDto | MessageTombResponseDto>;
 
   @ApiProperty({ type: () => [MessageHistoryGapDto] })
   gaps!: MessageHistoryGapDto[];

@@ -4,6 +4,25 @@ SOMS represents friendship and group membership with the same pair of independen
 directed `RelationshipIntent` facts. Relationship facts are authoritative. Every projection in this
 document is a derived read model and never grants relationship authority by itself.
 
+## Established conversations
+
+`RelationshipPair.established` is a monotonic local fact: the relationship has
+successfully become active at least once. The first activation records it in the
+same transaction; revocation, expiry, and later requests never clear it. A pair,
+thread shell, or `AccountThreadState` can exist before activation and is not an
+establishment marker. Group establishment belongs to each group/member pair.
+
+Client `RELATIONSHIP_INTENT` bodies carry `established`. Both P2P and group clients
+materialize historical conversations from this fact even when a fresh device sees
+only compacted revoked intents. Inactive established conversations remain read-only;
+requests that never became active do not materialize a conversation. This fact does
+not grant current sending or federation access.
+
+Migration 0023 recovers retained establishment evidence from active pairs and local
+history boundaries, retained P2P system notices, and group roster facts, then reindexes client facts.
+Request shells alone are never promoted. Historical evidence already removed before
+this migration cannot be reconstructed from current intent status alone.
+
 ## Notation
 
 ```text

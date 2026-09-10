@@ -2,7 +2,7 @@ import { openDB, type DBSchema } from 'idb';
 
 const DB_NAME = 'soms-notification-checkpoint';
 const STORE_NAME = 'state';
-const CURSOR_KEY = 'state-feed-since';
+const CURSOR_KEY = 'thread-feed-since';
 
 interface NotificationCheckpointDb extends DBSchema {
   state: {
@@ -11,8 +11,10 @@ interface NotificationCheckpointDb extends DBSchema {
   };
 }
 
-const database = openDB<NotificationCheckpointDb>(DB_NAME, 1, {
+const database = openDB<NotificationCheckpointDb>(DB_NAME, 2, {
   upgrade(db) {
+    if (db.objectStoreNames.contains(STORE_NAME))
+      db.deleteObjectStore(STORE_NAME);
     db.createObjectStore(STORE_NAME);
   },
 });

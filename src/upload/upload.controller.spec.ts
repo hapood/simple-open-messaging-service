@@ -50,11 +50,9 @@ function setup({
     tickLax: vi.fn().mockResolvedValue(undefined),
     tickFileBytes: vi.fn().mockResolvedValue(undefined),
   };
-  const fanout = { dispatch: vi.fn() };
   const controller = new UploadController(
     uploadService as never,
     messageService as never,
-    fanout as never,
     userQuota as never,
     {} as never,
   );
@@ -67,7 +65,6 @@ function setup({
     uploadService,
     messageService,
     userQuota,
-    fanout,
     req,
   };
 }
@@ -99,24 +96,22 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
     );
   });
 
-  it('fires fan-out exactly once when this call newly promotes the batch', async () => {
-    const { controller, messageService, fanout, req } = setup();
+  it('uses shared message promotion when the batch completes', async () => {
+    const { controller, messageService, req } = setup();
     messageService.markOutboundFileSucceeded.mockResolvedValue({
       message: { seq: 5 },
       newlyPromoted: true,
     });
 
     await controller.upload(req);
-
-    expect(fanout.dispatch).toHaveBeenCalledOnce();
-    expect(fanout.dispatch).toHaveBeenCalledWith({ seq: 5 });
+    expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledOnce();
   });
 
-  it('does not fan-out when the barrier is not yet met (more files to come)', async () => {
-    const { controller, fanout, req } = setup();
+  it('accepts an uploaded part while the message barrier is not yet met', async () => {
+    const { controller, messageService, req } = setup();
     // markOutboundFileSucceeded resolves null while fileCnt is not yet reached.
     await controller.upload(req);
-    expect(fanout.dispatch).not.toHaveBeenCalled();
+    expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledOnce();
   });
 
   it('rejects without an x-client-message-id header', async () => {

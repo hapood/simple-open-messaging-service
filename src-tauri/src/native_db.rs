@@ -1,14 +1,20 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 use std::path::PathBuf;
-use tauri::Manager;
 
 pub(crate) mod avatars;
+pub(crate) mod attention;
 pub(crate) mod client_state;
 pub(crate) mod contacts;
 pub(crate) mod messages;
 pub(crate) mod preferences;
 mod relationship_projection;
+mod lifetime;
+#[cfg(desktop)]
+pub(crate) mod desktop_notifications;
+pub(crate) mod location;
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod notifications;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]
 use messages::{
@@ -16,16 +22,20 @@ use messages::{
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 17;
+const CACHE_SCHEMA_VERSION: i64 = 22;
 
-fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolve app data: {e}"))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create app data: {e}"))?;
-    Ok(dir.join(DB_FILENAME))
+pub(crate) fn invalidate_account_work() -> Result<(), String> {
+    drop(lifetime::CACHE_LIFETIME.invalidate()?);
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn is_account_epoch_current(epoch: u64) -> bool {
+    lifetime::CACHE_LIFETIME.admit(epoch).is_ok()
+}
+
+fn db_path() -> Result<PathBuf, String> {
+    Ok(location::path()?.to_path_buf())
 }
 
 fn configure(conn: &Connection) -> Result<(), String> {
@@ -37,8 +47,8 @@ fn configure(conn: &Connection) -> Result<(), String> {
 
 /// Device preferences must be available before authentication. This is the only ordinary open path
 /// allowed to create the SQLite file, and it creates only the device-scoped preference table.
-fn open_preferences(app: &tauri::AppHandle) -> Result<Connection, String> {
-    let conn = Connection::open(db_path(app)?).map_err(|e| format!("open preference db: {e}"))?;
+fn open_preferences() -> Result<Connection, String> {
+    let conn = Connection::open(db_path()?).map_err(|e| format!("open preference db: {e}"))?;
     configure(&conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS client_preferences (
@@ -55,9 +65,9 @@ fn open_preferences(app: &tauri::AppHandle) -> Result<Connection, String> {
 
 /// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
 /// database file and never repairs missing tables during a read/write command.
-fn open_cache(app: &tauri::AppHandle) -> Result<Connection, String> {
+fn open_cache() -> Result<Connection, String> {
     let conn = Connection::open_with_flags(
-        db_path(app)?,
+        db_path()?,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("open existing native cache: {e}"))?;
@@ -68,8 +78,8 @@ fn open_cache(app: &tauri::AppHandle) -> Result<Connection, String> {
 
 // Account-cache commands use the strict existing-schema path. Kept as a short local alias so every
 // command below cannot accidentally regain rusqlite's create-on-open behavior.
-fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
-    open_cache(app)
+fn open() -> Result<Connection, String> {
+    open_cache()
 }
 
 fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
@@ -89,13 +99,13 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for object in [
         "namespaces",
         "threads",
+        "thread_states",
         "profiles",
         "members",
         "relationship_requests",
         "relationship_intents",
         "sync_state",
         "notification_global_state",
-        "notification_thread_state",
         "avatars",
         "messages",
         "message_ranges",
@@ -246,18 +256,17 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           value_json TEXT NOT NULL,
           PRIMARY KEY (user_id, key)
         );
+        CREATE TABLE IF NOT EXISTS thread_states (
+          user_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          PRIMARY KEY (user_id, thread_id)
+        );
         CREATE TABLE IF NOT EXISTS notification_global_state (
           account_id INTEGER PRIMARY KEY,
           cursor_thread_id INTEGER,
           cursor_seq INTEGER,
           updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS notification_thread_state (
-          account_id INTEGER NOT NULL,
-          thread_id INTEGER NOT NULL,
-          dismissed_seq INTEGER,
-          updated_at INTEGER NOT NULL,
-          PRIMARY KEY (account_id, thread_id)
         );
         CREATE TABLE IF NOT EXISTS avatars (
           user_id INTEGER NOT NULL,
@@ -307,7 +316,9 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
 
 fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "DROP TABLE IF EXISTS threads;
+        "DROP TABLE IF EXISTS thread_states;
+         DROP TABLE IF EXISTS attention_states;
+         DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
          DROP TABLE IF EXISTS thread_participants;
          DROP TABLE IF EXISTS users;
@@ -320,6 +331,7 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
          DROP TABLE IF EXISTS relationship_intents;
          DROP TABLE IF EXISTS sync_state;
          DROP TABLE IF EXISTS notification_global_state;
+         DROP TABLE IF EXISTS notification_feed_state;
          DROP TABLE IF EXISTS notification_thread_state;
          DROP TABLE IF EXISTS avatars;
          DROP TABLE IF EXISTS messages;
@@ -332,9 +344,10 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 /// Explicit fresh-login initialization. Device preferences survive; all rebuildable account cache tables
 /// are dropped and recreated as one schema operation.
 #[tauri::command]
-pub(crate) async fn native_db_recreate_cache(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open_preferences(&app)?;
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        let mut conn = open_preferences()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(|e| format!("begin native cache recreation: {e}"))?;
@@ -348,18 +361,19 @@ pub(crate) async fn native_db_recreate_cache(app: tauri::AppHandle) -> Result<()
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_validate_cache(app: tauri::AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || open_cache(&app).map(drop))
-        .await
-        .map_err(|e| format!("join native cache validation: {e}"))?
+pub(crate) async fn native_db_validate_cache() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_cache().map(drop))
+    .await
+    .map_err(|e| format!("join native cache validation: {e}"))?
 }
 
 /// Rebuild only chat messages and their derived coverage state. SQLite DDL runs in one exclusive
 /// transaction, so existing statements finish first and new database writers cannot interleave.
 #[tauri::command]
-pub(crate) async fn native_db_recreate_messages(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open_cache(&app)?;
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        let mut conn = open_cache()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(|e| format!("begin message cache recreation: {e}"))?;
@@ -400,11 +414,10 @@ pub(crate) async fn native_db_recreate_messages(app: tauri::AppHandle) -> Result
 
 #[tauri::command]
 pub(crate) async fn native_db_count_messages(
-    app: tauri::AppHandle,
     user_id: i64,
 ) -> Result<i64, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        open_cache(&app)?
+    lifetime::spawn(move || {
+        open_cache()?
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE user_id = ?1",
                 [user_id],
@@ -426,12 +439,11 @@ fn parse_json(value: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub(crate) async fn native_db_get_meta(
-    app: tauri::AppHandle,
     user_id: i64,
     key: String,
 ) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
+    lifetime::spawn(move || {
+        let value = open()?
             .query_row(
                 "SELECT value_json FROM sync_state WHERE user_id = ?1 AND key = ?2",
                 params![user_id, key],
@@ -447,13 +459,12 @@ pub(crate) async fn native_db_get_meta(
 
 #[tauri::command]
 pub(crate) async fn native_db_put_meta(
-    app: tauri::AppHandle,
     user_id: i64,
     key: String,
     value: Value,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        open(&app)?
+    lifetime::spawn(move || {
+        open()?
             .execute(
                 "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, ?2, ?3)
                  ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
@@ -468,16 +479,17 @@ pub(crate) async fn native_db_put_meta(
 
 #[tauri::command]
 pub(crate) async fn native_db_clear_user(
-    app: tauri::AppHandle,
     user_id: i64,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        let mut conn = open()?;
         let tx = conn
             .transaction()
             .map_err(|e| format!("begin user clear: {e}"))?;
         for table in [
             "threads",
+            "thread_states",
             "profiles",
             "members",
             "relationship_requests",
@@ -500,13 +512,15 @@ pub(crate) async fn native_db_clear_user(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_clear_all(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn native_db_clear_all() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = db_path(&app)?;
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        let path = db_path()?;
         if path.exists() {
-            let conn = open(&app)?;
+            let conn = open()?;
             conn.execute_batch(
-                "DELETE FROM threads;
+                "DELETE FROM thread_states;
+                 DELETE FROM threads;
                  DELETE FROM profiles;
                  DELETE FROM members;
                  DELETE FROM relationship_requests;

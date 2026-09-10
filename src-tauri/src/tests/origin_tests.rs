@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn runtime_clone_shares_session_pool_and_shell_resources() {
+    let background = ProxyState::new();
+    background.replace_session_token(Some("test-session".into()));
+    let shell = background.clone();
+    assert!(Arc::ptr_eq(&background.api_http, &shell.api_http));
+    assert!(Arc::ptr_eq(&background.select_lock, &shell.select_lock));
+    assert!(Arc::ptr_eq(&background.ota_active, &shell.ota_active));
+    assert!(Arc::ptr_eq(&background.config_path, &shell.config_path));
+    assert_eq!(shell.token.lock().unwrap().as_deref(), Some("test-session"));
+    shell.replace_session_token(None);
+    assert!(background.token.lock().unwrap().is_none());
+    background.replace_session_token(Some("replacement-session".into()));
+    assert_eq!(
+        shell.token.lock().unwrap().as_deref(),
+        Some("replacement-session")
+    );
+}
+
+#[test]
+fn attaching_shell_preserves_background_selected_origin() {
+    let background = ProxyState::new();
+    activate_origin(
+        &background,
+        "https://secondary.example",
+        OriginMode::Secondary,
+    );
+    let shell = background.clone();
+    assert_eq!(
+        *shell.api_origin.lock().unwrap(),
+        "https://secondary.example"
+    );
+    assert_eq!(*shell.origin_mode.lock().unwrap(), OriginMode::Secondary);
+}
+
+#[test]
 fn tls_posture_https_dns_host_is_strict() {
     assert_eq!(tls_posture_for("https://example.com"), TlsPosture::Strict);
     assert_eq!(

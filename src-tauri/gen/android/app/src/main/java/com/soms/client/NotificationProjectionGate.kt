@@ -8,15 +8,18 @@ package com.soms.client
  * merged with OR: if any collapsed caller requested an alert, the trailing projection may alert.
  */
 class NotificationProjectionGate {
+    data class Wake(val allowAlert: Boolean, val target: Int)
     private var running = false
     private var pending = false
     private var pendingAllowAlert = false
+    private var pendingTarget = 0
 
     @Synchronized
-    fun tryStart(allowAlert: Boolean): Boolean {
+    fun tryStart(allowAlert: Boolean, target: Int = -1): Boolean {
         if (running) {
             pending = true
             pendingAllowAlert = pendingAllowAlert || allowAlert
+            pendingTarget = if (target == -1 || pendingTarget == -1) -1 else maxOf(pendingTarget, target)
             return false
         }
         running = true
@@ -25,14 +28,15 @@ class NotificationProjectionGate {
 
     /** Return the merged alert flag for one trailing execution, or null when the lane is now idle. */
     @Synchronized
-    fun nextOrFinish(): Boolean? {
+    fun nextOrFinish(): Wake? {
         if (!pending) {
             running = false
             return null
         }
-        val allowAlert = pendingAllowAlert
+        val wake = Wake(pendingAllowAlert, pendingTarget)
         pending = false
         pendingAllowAlert = false
-        return allowAlert
+        pendingTarget = 0
+        return wake
     }
 }

@@ -31,6 +31,17 @@ export class WorkerSseTransport extends RealtimeTransport {
     super(sink);
   }
 
+  attachThreadFeed(port: MessagePort, userId: number): void {
+    if (!this.worker) {
+      port.close();
+      return;
+    }
+    this.worker.postMessage(
+      { type: 'thread-feed-port', port, userId } satisfies ToWorker,
+      [port],
+    );
+  }
+
   start(): void {
     if (this.worker) return; // idempotent — the worker owns the single connection
     this.respawnTimer = undefined; // respawn fired (or retryNow spawned directly) — no longer pending
@@ -39,21 +50,27 @@ export class WorkerSseTransport extends RealtimeTransport {
     // worker as its own hashed chunk (auto-bundled; no separate tsConfig needed). `type: 'module'`
     // because the worker is ESM. sseUrl() is read fresh so a backend-origin swap (the facade tears this
     // transport down and restarts it) reconnects against the new host.
-    const worker = new Worker(new URL('./sse.worker', import.meta.url), { type: 'module' });
-    worker.onmessage = ({ data }: MessageEvent<ToMain>) => this.onMessage(data);
-    worker.onerror = () => this.onWorkerError();
-    this.worker = worker
-    worker.postMessage({ type: 'start', url: sseUrl() } satisfies ToWorker)
+    const worker = new Worker(new URL('./sse.worker', import.meta.url), {
+      type: 'module',
+    });
+    worker.onmessage = ({ data }: MessageEvent<ToMain>) => {
+      if (this.worker === worker) this.onMessage(data);
+    };
+    worker.onerror = () => {
+      if (this.worker === worker) this.onWorkerError();
+    };
+    this.worker = worker;
+    worker.postMessage({ type: 'start', url: sseUrl() } satisfies ToWorker);
   }
 
   /** Logout / force-login / origin swap: tell the worker to stop, terminate it. */
   stop(): void {
-    this.worker?.postMessage({ type: 'stop' } satisfies ToWorker)
-    this.worker?.terminate()
-    this.worker = undefined
-    clearTimeout(this.respawnTimer)
-    this.respawnTimer = undefined
-    this.sink.onState('closed')
+    this.worker?.postMessage({ type: 'stop' } satisfies ToWorker);
+    this.worker?.terminate();
+    this.worker = undefined;
+    clearTimeout(this.respawnTimer);
+    this.respawnTimer = undefined;
+    this.sink.onState('closed');
   }
 
   /** User-initiated retry (the disconnected chip clicked while `reconnecting`). Two cases:
@@ -64,22 +81,30 @@ export class WorkerSseTransport extends RealtimeTransport {
     // A manual retry voids the scheduled backoff (the current sleep is resolved, the loop reconnects at
     // once), so drop the countdown immediately — otherwise the chip keeps ticking a stale deadline while
     // the reconnect is in flight. A fresh deadline is posted on the next failure; success clears via state.
-    this.sink.onReconnectIn(null)
+    this.sink.onReconnectIn(null);
     if (this.worker) {
-      this.worker.postMessage({ type: 'retry-now' } satisfies ToWorker)
+      this.worker.postMessage({ type: 'retry-now' } satisfies ToWorker);
     } else if (this.respawnTimer) {
-      clearTimeout(this.respawnTimer)
-      this.respawnTimer = undefined
-      this.start()
+      clearTimeout(this.respawnTimer);
+      this.respawnTimer = undefined;
+      this.start();
     }
   }
 
   private onMessage(m: ToMain): void {
     switch (m.type) {
-      case 'state': this.sink.onState(m.state as ConnectionState); break;
-      case 'event': this.sink.onEvent(m.payload as StandardMessage); break;
-      case 'reconnect': this.sink.onReconnect(); break;
-      case 'reconnect-in': this.sink.onReconnectIn(m.ms); break;
+      case 'state':
+        this.sink.onState(m.state as ConnectionState);
+        break;
+      case 'event':
+        this.sink.onEvent(m.payload as StandardMessage);
+        break;
+      case 'reconnect':
+        this.sink.onReconnect();
+        break;
+      case 'reconnect-in':
+        this.sink.onReconnectIn(m.ms);
+        break;
       case 'force-logout':
         // The session 401'd (cookie revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
         // already stopped itself; the facade clears state + re-logs in (onForceLogout).
@@ -92,12 +117,12 @@ export class WorkerSseTransport extends RealtimeTransport {
    *  so SSE would silently stop forever. Flip to `reconnecting` (so the banner explains the outage) and
    *  respawn the worker after a short delay; the worker's own backoff then paces reconnect attempts. */
   private onWorkerError(): void {
-    this.worker?.terminate()
-    this.worker = undefined
-    this.sink.onState('reconnecting')
+    this.worker?.terminate();
+    this.worker = undefined;
+    this.sink.onState('reconnecting');
     // Announce the respawn delay so the countdown ticks during this main-thread wait too (the worker
     // isn't alive to emit its own deadline; `start()` posts `connecting` on respawn, which clears it).
-    this.sink.onReconnectIn(1000)
-    this.respawnTimer = setTimeout(() => this.start(), 1000)
+    this.sink.onReconnectIn(1000);
+    this.respawnTimer = setTimeout(() => this.start(), 1000);
   }
 }

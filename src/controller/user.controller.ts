@@ -48,8 +48,6 @@ import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
-import { DurableTaskType } from '../durable-task/durable-task.constants.js';
-import { DurableTaskAcceptedDto } from '../dto/durable-task.dto.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
@@ -63,8 +61,7 @@ type ClientStateFeedItem = {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_CONTENT_HEAD'
-    | 'THREAD_BLOCK';
+    | 'THREAD_STATE';
   subjectAccount: string;
   subjectDomain: string;
   body: unknown;

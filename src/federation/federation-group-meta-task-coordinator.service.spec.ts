@@ -29,7 +29,9 @@ function harness(feedEndId: bigint | null, blockers: Blocker[] = []) {
   const returning = vi.fn(async () => [{ taskId: 40n }]);
   const values = vi.fn(() => ({ returning }));
   const insert = vi.fn(() => ({ values }));
-  const where = vi.fn().mockResolvedValue(undefined);
+  const where = vi.fn(() => ({
+    returning: vi.fn().mockResolvedValue([{ taskId: blockers[0]?.id ?? 40n }]),
+  }));
   const set = vi.fn(() => ({ where }));
   const update = vi.fn(() => ({ set }));
   const tx = { execute, insert, update };

@@ -100,6 +100,24 @@ export async function isThreadMutuallyAuthorized(
   userId: AccountTarget,
   threadId: number,
 ): Promise<boolean> {
+  return threadRelationshipExists(db, userId, threadId, true);
+}
+
+/** A retained relationship allows delivery of a committed departure boundary. */
+export async function hasEstablishedThreadRelationship(
+  db: QueryExecutor,
+  userId: AccountTarget,
+  threadId: number,
+): Promise<boolean> {
+  return threadRelationshipExists(db, userId, threadId, false);
+}
+
+async function threadRelationshipExists(
+  db: QueryExecutor,
+  userId: AccountTarget,
+  threadId: number,
+  activeOnly: boolean,
+): Promise<boolean> {
   const identity = await accountAddressInTx(db, userId);
   const result = await db.execute<{ authorized: boolean }>(sql`
     SELECT EXISTS (
@@ -108,7 +126,7 @@ export async function isThreadMutuallyAuthorized(
       JOIN (SELECT ${identity.account}::text AS account, ${identity.domain}::text AS domain,
         ${identity.namespaceId}::integer AS "namespaceId") identity ON true
       WHERE pair."threadId" = ${threadId}
-        AND pair.active = true
+        AND CASE WHEN ${activeOnly} THEN pair.active ELSE pair.established END
         AND (
           (${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`identity`)})
           OR (${relationshipEndpointMatchesUserSql(sql`pair`, 'B', sql`identity`)})

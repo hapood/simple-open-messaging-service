@@ -20,6 +20,8 @@
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
 mod diagnostics;
+#[cfg(target_os = "android")]
+mod android_runtime;
 mod media_cache;
 mod native_db;
 mod native_video;
@@ -211,6 +213,46 @@ pub(crate) struct ProxyState {
 }
 
 impl ProxyState {
+    fn replace_session_token(&self, token: Option<String>) -> Option<String> {
+        if let Ok(mut current) = self.token.lock() {
+            if current.is_some() && *current != token {
+                native_db::invalidate_account_work().expect("invalidate previous session work");
+            }
+            let previous = std::mem::replace(&mut *current, token);
+            drop(current);
+            self.token_notify.notify_one();
+            return previous;
+        }
+        None
+    }
+
+    fn new() -> Self {
+        let initial_origin = std::env::var("SOMS_API_ORIGIN")
+            .ok().and_then(|s| validate_origin(&s))
+            .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
+        ProxyState {
+            api_origin: Arc::new(Mutex::new(initial_origin.clone())),
+            // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
+            // from the persisted files; the secondary starts None until setup reads its file.
+            api_origin_primary: Arc::new(Mutex::new(initial_origin.clone())),
+            api_origin_secondary: Arc::new(Mutex::new(None)),
+            origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
+            origin_notify: Arc::new(Notify::new()),
+            select_lock: Arc::new(tokio::sync::Mutex::new(())),
+            token: Arc::new(Mutex::new(None)),
+            config_path: Arc::new(Mutex::new(PathBuf::new())),
+            token_notify: Arc::new(Notify::new()),
+            // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
+            api_http: Arc::new(Mutex::new((
+                initial_origin.clone(),
+                http_client_for(&initial_origin),
+            ))),
+            ota_active: Arc::new(Mutex::new(None)),
+            upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
     /// Return a reqwest client for API calls to `origin`, rebuilding + caching only when the origin
     /// changes. `reqwest::Client` is `Clone`-cheap (Arc internals), so the cached pool is shared across
     /// concurrent requests and kept warm between them (keepalive). On an origin swap (`set_api_origin`)
@@ -472,37 +514,12 @@ fn read_ota_asset(dir: &Path, key: &str) -> Option<Vec<u8>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Pre-setup best guess (no app handle yet, so no app-data dir): env, else default. setup() overrides
-    // this from the persisted config file once the handle is available.
-    let initial_origin = std::env::var("SOMS_API_ORIGIN")
-        .ok()
-        .and_then(|s| validate_origin(&s))
-        .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
-
-    // The active OTA bundle dir, shared between the `OtaAssets` resolver (installed at `.run` below) and
-    // `ProxyState` (so `init_download_web` + boot `setup()` can swap it via the shared Arc).
-    let ota_active: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
-    let proxy_state = ProxyState {
-        api_origin: Arc::new(Mutex::new(initial_origin.clone())),
-        // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
-        // from the persisted files; the secondary starts None until setup reads its file.
-        api_origin_primary: Arc::new(Mutex::new(initial_origin.clone())),
-        api_origin_secondary: Arc::new(Mutex::new(None)),
-        origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
-        origin_notify: Arc::new(Notify::new()),
-        select_lock: Arc::new(tokio::sync::Mutex::new(())),
-        token: Arc::new(Mutex::new(None)),
-        config_path: Arc::new(Mutex::new(PathBuf::new())),
-        token_notify: Arc::new(Notify::new()),
-        // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
-        api_http: Arc::new(Mutex::new((
-            initial_origin.clone(),
-            http_client_for(&initial_origin),
-        ))),
-        ota_active: ota_active.clone(),
-        upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
-    };
+    #[cfg(target_os = "android")]
+    let proxy_state = android_runtime::proxy_state()
+        .expect("Application must initialize the Rust runtime before Tauri").clone();
+    #[cfg(not(target_os = "android"))]
+    let proxy_state = ProxyState::new();
+    let ota_active = proxy_state.ota_active.clone();
     let proxy_for_media = proxy_state.clone();
 
     let builder = tauri::Builder::default();
@@ -568,8 +585,10 @@ pub fn run() {
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
 
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_deep_link::init());
+
     let builder = builder
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
@@ -596,6 +615,10 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
+                    native_db::desktop_notifications::desktop_notification_update,
+                    native_db::desktop_notifications::desktop_notifications_clear,
+                    native_db::desktop_notifications::desktop_notification_pending,
+                    native_db::desktop_notifications::desktop_notification_acknowledge,
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
@@ -648,6 +671,7 @@ pub fn run() {
                     native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::client_state::native_db_apply_state_feed_page,
+                    native_db::client_state::native_db_reset_group_meta,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
@@ -655,6 +679,11 @@ pub fn run() {
                     native_db::contacts::native_db_store_group_member_profile,
                     native_db::contacts::native_db_put_profile,
                     native_db::native_db_get_meta,
+                    native_db::attention::native_db_thread_states,
+                    native_db::attention::native_thread_feed_sync,
+                    native_db::attention::native_thread_feed_changes,
+                    native_db::attention::native_db_merge_thread_states,
+                    native_db::attention::native_db_advance_thread_read,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
@@ -668,6 +697,7 @@ pub fn run() {
                     native_db::avatars::native_db_get_avatar,
                     native_db::avatars::native_db_put_avatar,
                     native_db::messages::native_db_query_messages,
+                    native_db::messages::native_db_count_unread_message_slots,
                     native_db::messages::native_message_history_get,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -726,6 +756,7 @@ pub fn run() {
                     native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::client_state::native_db_apply_state_feed_page,
+                    native_db::client_state::native_db_reset_group_meta,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
@@ -733,6 +764,11 @@ pub fn run() {
                     native_db::contacts::native_db_store_group_member_profile,
                     native_db::contacts::native_db_put_profile,
                     native_db::native_db_get_meta,
+                    native_db::attention::native_db_thread_states,
+                    native_db::attention::native_thread_feed_sync,
+                    native_db::attention::native_thread_feed_changes,
+                    native_db::attention::native_db_merge_thread_states,
+                    native_db::attention::native_db_advance_thread_read,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
@@ -746,6 +782,7 @@ pub fn run() {
                     native_db::avatars::native_db_get_avatar,
                     native_db::avatars::native_db_put_avatar,
                     native_db::messages::native_db_query_messages,
+                    native_db::messages::native_db_count_unread_message_slots,
                     native_db::messages::native_message_history_get,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -760,6 +797,10 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            native_db::desktop_notifications::initialize_windows_links(app.handle())?;
+            #[cfg(target_os = "macos")]
+            native_db::desktop_notifications::macos_platform::initialize(app.handle().clone());
             // Release stays on the cheapest useful diagnostic tier until the user explicitly unlocks
             // debug tools. Debug builds remain verbose. The web app re-enables Debug after every launch
             // when its persisted debug flag is set.
@@ -781,29 +822,34 @@ pub fn run() {
             }));
 
             let data_dir = app.path().app_data_dir()?;
+            native_db::location::initialize(&data_dir)?;
             fs::create_dir_all(&data_dir)?;
-            let config_path = data_dir.join(CONFIG_FILENAME);
-            if let Some(persisted) = fs::read_to_string(&config_path)
-                .ok()
-                .and_then(|s| validate_origin(&s))
+            // Android resources were restored by Application; do not overwrite live background state.
+            #[cfg(not(target_os = "android"))]
             {
-                // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
-                // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
-                // if the primary is unreachable on this network.
-                *proxy_state.api_origin_primary.lock().expect("primary lock") = persisted.clone();
-                *proxy_state.api_origin.lock().expect("origin lock") = persisted;
+                let config_path = data_dir.join(CONFIG_FILENAME);
+                if let Some(persisted) = fs::read_to_string(&config_path)
+                    .ok()
+                    .and_then(|s| validate_origin(&s))
+                {
+                    // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
+                    // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
+                    // if the primary is unreachable on this network.
+                    *proxy_state.api_origin_primary.lock().expect("primary lock") = persisted.clone();
+                    *proxy_state.api_origin.lock().expect("origin lock") = persisted;
+                }
+                // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).
+                if let Some(sec) = fs::read_to_string(data_dir.join(CONFIG_SECONDARY_FILENAME))
+                    .ok()
+                    .and_then(|s| validate_origin(&s))
+                {
+                    *proxy_state
+                        .api_origin_secondary
+                        .lock()
+                        .expect("secondary lock") = Some(sec);
+                }
+                *proxy_state.config_path.lock().expect("config_path lock") = config_path;
             }
-            // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).
-            if let Some(sec) = fs::read_to_string(data_dir.join(CONFIG_SECONDARY_FILENAME))
-                .ok()
-                .and_then(|s| validate_origin(&s))
-            {
-                *proxy_state
-                    .api_origin_secondary
-                    .lock()
-                    .expect("secondary lock") = Some(sec);
-            }
-            *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
             // Seed the OTA asset resolver from a previously-installed bundle: if `web/active.json` names a
             // version whose extracted dir exists, serve it on this boot. The `OtaAssets` resolver (installed

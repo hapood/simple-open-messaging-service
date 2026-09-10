@@ -78,7 +78,52 @@ describe('RelationshipIntentService remote-group authorization epoch', () => {
       ).toBe(false);
       expect(
         queries.some((query) => query.includes('UPDATE "MessageThread"')),
+      ).toBe(changed);
+      expect(
+        queries.some((query) => query.includes('"authorizationEpoch" + 1')),
       ).toBe(changed && !active);
+      expect(
+        queries.some((query) =>
+          query.includes('"federationRoundsEnabled" = true'),
+        ),
+      ).toBe(changed && active);
+      expect(
+        queries.some((query) =>
+          query.includes('"federationRoundsEnabled" = false'),
+        ),
+      ).toBe(changed && !active);
+    },
+  );
+});
+
+describe('remote authorization snapshots', () => {
+  it.each([
+    {},
+    { messageEndSeq: 0 },
+    { messageEndSeq: -1, tombstoneEndSeq: 0 },
+  ])(
+    'rejects a missing or invalid positive snapshot before writing',
+    async (head) => {
+      const service = new RelationshipIntentService();
+      Object.assign(service, {
+        lockUserPairMutationInTx: vi.fn(async () => ({ id: 1n })),
+        userSideInPair: vi.fn(async () => 'B'),
+      });
+      const execute = vi.fn();
+      await expect(
+        service.applyRemoteP2PIntentInTx({ execute } as never, {
+          authorUserId: 1,
+          subjectUserId: 2,
+          threadId: null,
+          status: 'REQUESTED',
+          profileRev: 0,
+          note: '',
+          requestedAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+          ...head,
+        }),
+      ).rejects.toThrow('requires a message/tombstone snapshot');
+      expect(execute).not.toHaveBeenCalled();
     },
   );
 });

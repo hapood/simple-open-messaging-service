@@ -1,11 +1,11 @@
 import { groupStateSql } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { deletedMessage, message } from '../database/schema.js';
+import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
@@ -26,24 +26,6 @@ export class FederationThreadContentHeadService {
     private readonly stateFeed: PeerStateFeedService,
     private readonly namespaces: FederationNamespaceService,
   ) {}
-
-  async offerCommitted(
-    peerDomain: string,
-    threadId: number,
-    expectedMessageSeq?: number,
-  ): Promise<void> {
-    const context = await this.namespaces.captureActive(peerDomain);
-    await this.database.db.transaction((tx) =>
-      this.refreshInTx(
-        tx,
-        peerDomain,
-        context.namespaceId,
-        threadId,
-        false,
-        expectedMessageSeq,
-      ),
-    );
-  }
 
   async fill(peerDomain: string): Promise<void> {
     const context = await this.namespaces.captureActive(peerDomain);
@@ -79,7 +61,6 @@ export class FederationThreadContentHeadService {
     namespaceId: number,
     threadId: number,
     forceReindex = false,
-    expectedMessageSeq?: number,
   ): Promise<void> {
     const projection = await this.readProjectionInTx(
       tx,
@@ -87,20 +68,7 @@ export class FederationThreadContentHeadService {
       namespaceId,
       threadId,
     );
-    if (!projection) {
-      if (expectedMessageSeq !== undefined)
-        throw new Error(
-          `thread ${threadId} message ${expectedMessageSeq} is not queryable by ${peerDomain}`,
-        );
-      return;
-    }
-    if (
-      expectedMessageSeq !== undefined &&
-      projection.messageEndSeq < expectedMessageSeq
-    )
-      throw new Error(
-        `thread ${threadId} projection ended before committed message ${expectedMessageSeq}`,
-      );
+    if (!projection) return;
     await this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain,
@@ -171,7 +139,8 @@ export class FederationThreadContentHeadService {
       WHERE message_thread.id = ${threadId}
         AND (
           (audience."threadId" IS NOT NULL
-            AND (${thread.threadType} = 'P2P' OR ${thread.groupDomain} = 'local'))
+            AND ((${thread.threadType} = 'P2P' AND pair.id IS NOT NULL)
+              OR (${thread.threadType} = 'GROUP' AND ${thread.groupDomain} = 'local')))
           OR (${thread.threadType} = 'GROUP'
             AND ${thread.groupDomain} = ${peerDomain}
             AND ${thread.groupNamespaceId} = ${namespaceId}
@@ -185,43 +154,18 @@ export class FederationThreadContentHeadService {
     `);
     const route = result.rows[0];
     if (!route) return null;
-    const [messageEnd] = await tx
-      .select({ value: sql<number>`MAX(${message.seq})` })
-      .from(message)
-      .where(
-        and(
-          eq(message.threadId, threadId),
-          sql`${message.seq} > ${route.messageAccessAfterSeq}`,
-          sql`${message.contentType} <> 'SYSTEM'`,
-        ),
-      );
-    const messageEndSeq = messageEnd?.value ?? route.messageAccessAfterSeq;
-    if (messageEndSeq === 0) return null;
-    const [deletionEnd] = await tx
-      .select({
-        value: sql<number>`COALESCE(MAX(${deletedMessage.deletionSeq}), 0)`,
-      })
-      .from(deletedMessage)
-      .innerJoin(
-        message,
-        and(
-          eq(message.threadId, deletedMessage.threadId),
-          eq(message.seq, deletedMessage.messageSeq),
-        ),
-      )
-      .where(
-        and(
-          eq(deletedMessage.threadId, threadId),
-          eq(deletedMessage.sourceNamespaceId, 0),
-        ),
-      );
+    const { messageEndSeq, tombstoneEndSeq } = await readThreadHeadSnapshotInTx(
+      tx,
+      threadId,
+      route.messageAccessAfterSeq,
+    );
     if (thread.threadType === 'GROUP') {
       if (!thread.groupAccount)
         throw new Error(`group thread ${threadId} has no group address`);
       return {
         account: thread.groupAccount,
         messageEndSeq,
-        tombstoneEndSeq: deletionEnd?.value ?? 0,
+        tombstoneEndSeq,
       };
     }
     if (!route.account || !route.peerAccount)
@@ -232,7 +176,7 @@ export class FederationThreadContentHeadService {
       account: route.account,
       peerAccount: route.peerAccount,
       messageEndSeq,
-      tombstoneEndSeq: deletionEnd?.value ?? 0,
+      tombstoneEndSeq,
     };
   }
 }

@@ -1,7 +1,17 @@
+import { threadStateEvent } from './thread-state.test-helper';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
+import { messageTomb } from '../../../../shared/message-tomb';
+import {
+  advanceLocalAttentionRead,
+  attentionCountRange,
+  createLocalThreadAttention,
+  mergeThreadAttention,
+  projectThreadAttention,
+} from '../../../../shared/thread-attention';
 import {
   createGroupConversation,
   createP2PConversation,
@@ -38,6 +48,190 @@ describe('WebdbService', () => {
       } catch {
         /* already closed */
       }
+    });
+
+    it('sends a whole thread sync demand to the DB worker and accepts its committed result', async () => {
+      await webdb.close();
+      const worker = {
+        onmessage: null,
+        onerror: null,
+        postMessage: vi.fn(),
+        terminate: vi.fn(),
+      } as unknown as Worker;
+      const workerStorage = new WebdbService(() => worker);
+      await workerStorage.openForUser('1');
+      try {
+        const pending = workerStorage.syncThreadFeed(12, 3);
+        const request = vi.mocked(worker.postMessage).mock.calls[0][0] as {
+          id: number;
+        };
+        expect(request).toMatchObject({
+          type: 'thread-sync',
+          userId: '1',
+          target: 12,
+          after: 3,
+          url: '/api/v1/thread/feed-delta',
+        });
+        worker.onmessage!.call(worker, {
+          data: {
+            id: request.id,
+            ok: true,
+            result: { cursor: 12, states: [] },
+          },
+        } as MessageEvent);
+        expect(await pending).toEqual({ cursor: 12, states: [] });
+      } finally {
+        await workerStorage.closeAndDelete('1');
+      }
+    });
+
+    it('binds a transferable port only after the database worker acknowledges the account', async () => {
+      await webdb.close();
+      const worker = {
+        onmessage: null,
+        onerror: null,
+        postMessage: vi.fn(),
+        terminate: vi.fn(),
+      } as unknown as Worker;
+      const workerStorage = new WebdbService(() => worker);
+      await workerStorage.openForUser('1');
+      let port: MessagePort | null = null;
+      let workerPort: MessagePort | undefined;
+      try {
+        const binding = workerStorage.createThreadFeedPort();
+        const [request, transfer] = vi.mocked(worker.postMessage).mock
+          .calls[0] as unknown as [
+          { id: number; port: MessagePort },
+          Transferable[],
+        ];
+        workerPort = request.port;
+        expect(request).toMatchObject({
+          type: 'bind-thread-feed',
+          userId: '1',
+        });
+        expect(transfer).toEqual([workerPort]);
+        worker.onmessage!.call(worker, {
+          data: { id: request.id, ok: true },
+        } as MessageEvent);
+        port = await binding;
+        expect(port).not.toBeNull();
+      } finally {
+        port?.close();
+        workerPort?.close();
+        await workerStorage.closeAndDelete('1');
+      }
+    });
+
+    it('persists attention without creating a conversation or advancing the feed cursor', async () => {
+      await webdb.openForUser('1');
+      const snapshot = {
+        threadId: 7,
+        threadFeedId: 10,
+        messageEndSeq: 200,
+        tombstoneEndSeq: 0,
+        lastReadSeq: 100,
+        unreadCount: 8,
+        lastMentionSeq: 104,
+      };
+      await webdb.mergeThreadStates([snapshot]);
+      expect(await webdb.getThreadStates()).toEqual([
+        { threadId: 7, server: snapshot, localReadSeq: 100 },
+      ]);
+      expect(await webdb.getThreads()).toEqual([]);
+      expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
+    });
+
+    it('preserves optimistic progress across snapshots and accepts remote rollback by feed ID', async () => {
+      await webdb.openForUser('1');
+      await webdb.advanceThreadRead(7, 105);
+      const snapshot = {
+        threadId: 7,
+        threadFeedId: 10,
+        messageEndSeq: 200,
+        tombstoneEndSeq: 0,
+        lastReadSeq: 110,
+        unreadCount: 2,
+        lastMentionSeq: null,
+      };
+      await webdb.mergeThreadStates([snapshot], 10);
+      await webdb.mergeThreadStates([
+        { ...snapshot, threadFeedId: 9, lastReadSeq: 120 },
+      ]);
+      await webdb.mergeThreadStates([{ ...snapshot, lastReadSeq: 130 }]);
+      expect((await webdb.getThreadStates())[0]).toEqual({
+        threadId: 7,
+        server: snapshot,
+        localReadSeq: 105,
+      });
+      const rolledBack = { ...snapshot, threadFeedId: 11, lastReadSeq: 95 };
+      await webdb.mergeThreadStates([rolledBack]);
+      expect(await webdb.advanceThreadRead(7, 104)).toEqual({
+        threadId: 7,
+        server: rolledBack,
+        localReadSeq: 105,
+      });
+      expect(await webdb.getMeta('threadFeedCursor')).toBe(10);
+    });
+
+    it('serializes concurrent local progress and snapshots without losing either', async () => {
+      await webdb.openForUser('1');
+      const snapshot = {
+        threadId: 7,
+        threadFeedId: 1,
+        messageEndSeq: 200,
+        tombstoneEndSeq: 0,
+        lastReadSeq: 100,
+        unreadCount: 8,
+        lastMentionSeq: null,
+      };
+      await Promise.all([
+        webdb.advanceThreadRead(7, 105),
+        webdb.mergeThreadStates([snapshot], 1),
+        webdb.advanceThreadRead(7, 110),
+      ]);
+      expect(await webdb.getThreadStates()).toEqual([
+        { threadId: 7, server: snapshot, localReadSeq: 110 },
+      ]);
+    });
+
+    it('keeps attention across message-only resets but clears it on account cache deletion', async () => {
+      await webdb.openForUser('1');
+      await webdb.advanceThreadRead(7, 105);
+      await webdb.recreateMessageCache();
+      expect(await webdb.getThreadStates()).toEqual([
+        { threadId: 7, server: null, localReadSeq: 105 },
+      ]);
+      await webdb.closeAndDelete('1');
+      await webdb.openForUser('1');
+      expect(await webdb.getThreadStates()).toEqual([]);
+    });
+
+    it('advances the cursor on empty pages without regressing it', async () => {
+      await webdb.openForUser('1');
+      await webdb.mergeThreadStates([], 20);
+      await webdb.mergeThreadStates([], 10);
+      expect(await webdb.getMeta('threadFeedCursor')).toBe(20);
+    });
+
+    it('rejects an invalid batch before writing any snapshot or cursor', async () => {
+      await webdb.openForUser('1');
+      const snapshot = {
+        threadId: 7,
+        threadFeedId: 1,
+        messageEndSeq: 200,
+        tombstoneEndSeq: 0,
+        lastReadSeq: 100,
+        unreadCount: 8,
+        lastMentionSeq: null,
+      };
+      await expect(
+        webdb.mergeThreadStates(
+          [snapshot, { ...snapshot, threadId: 8, unreadCount: -1 }],
+          1,
+        ),
+      ).rejects.toThrow('unread count');
+      expect(await webdb.getThreadStates()).toEqual([]);
+      expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
     });
 
     it('normalizes local mirror members without changing the group source and keeps unresolved members', async () => {
@@ -264,13 +458,215 @@ describe('WebdbService', () => {
         threadId: 42,
         seq: 6,
         isDeleted: true,
-        content: 'deleted body',
-      } as Message);
+        contentType: 'TOMB',
+        deletionType: 'MODERATION_REMOVAL',
+      });
       expect(await webdb.getDeletedMessageSeqs(42, [4, 4, 5, 6, 7])).toEqual([
         4, 6,
       ]);
       expect(await webdb.getDeletedMessageSeqs(99, [4, 6])).toEqual([]);
       expect(await webdb.getDeletedMessageSeqs(42, [])).toEqual([]);
+    });
+
+    it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
+      'merges deletion and message arrival orders without retaining bodies: %s',
+      async (type) => {
+        await webdb.openForUser('1');
+        const message: Message = {
+          threadId: 42,
+          seq: 4,
+          creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
+          profileRev: 3,
+          createdAt: 100,
+          updatedAt: 101,
+          contentType: 'PURE_TEXT',
+          content: 'private body',
+          isDeleted: false,
+          localState: 'READY',
+        };
+        const later = { ...message, seq: 5 };
+        await webdb.putCachedMessages([message]);
+        await webdb.applyDeletedMessages(
+          42,
+          [4, 5].map((seq, i) => ({
+            threadId: 42,
+            messageSeq: seq,
+            deletionSeq: i + 1,
+            type,
+            createdAt: 102,
+            updatedAt: 102,
+          })),
+          2,
+        );
+        await webdb.putCachedMessages([message, later]);
+        const db = await webdb.messageDb();
+        expect(await db.get('messages', [42, 4])).toEqual(
+          messageTomb(message, type),
+        );
+        expect(await db.get('messages', [42, 5])).toEqual(
+          messageTomb(later, type),
+        );
+        expect(await webdb.getMessage(42, 4)).toBeUndefined();
+        expect(await webdb.getMessage(42, 5)).toBeUndefined();
+        expect(await webdb.getDeletedMessageSeqs(42, [4, 5])).toEqual([4, 5]);
+      },
+    );
+
+    it('commits query tombs and late message identities without returning deleted rows for mounting', async () => {
+      await webdb.openForUser('1');
+      const message: Message = {
+        threadId: 42,
+        seq: 4,
+        creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
+        profileRev: 3,
+        createdAt: 100,
+        updatedAt: 101,
+        contentType: 'PURE_TEXT',
+        content: 'private body',
+        isDeleted: false,
+        localState: 'READY',
+      };
+      await webdb.applyDeletedMessages(
+        42,
+        [
+          {
+            threadId: 42,
+            messageSeq: 4,
+            deletionSeq: 1,
+            type: 'USER_RETRACTION',
+            createdAt: 102,
+            updatedAt: 102,
+          },
+        ],
+        1,
+      );
+      const tomb = messageTomb({ ...message, seq: 5 }, 'MODERATION_REMOVAL');
+      const live = { ...message, seq: 6 };
+      const committed = await webdb.commitBrowserMessagePage({
+        threadId: 42,
+        scan: { left: 3, right: 6 },
+        messages: [message, tomb, live],
+        gaps: [],
+        knownNewestSeq: 6,
+      });
+      expect(committed.messages).toEqual([live]);
+      const db = await webdb.messageDb();
+      expect(await db.get('messages', [42, 4])).toEqual(
+        messageTomb(message, 'USER_RETRACTION'),
+      );
+      expect(await db.get('messages', [42, 5])).toEqual(tomb);
+      expect(await webdb.getDeletedMessageSeqs(42, [4, 5, 6])).toEqual([4, 5]);
+    });
+
+    it('counts known unread slots including tombs but not own messages, unknown markers, or gaps', async () => {
+      await webdb.openForUser('1');
+      const owner = { account: 'me', domain: 'example.test', namespaceId: 0 };
+      const base: Message = {
+        threadId: 42,
+        seq: 1,
+        creator: { account: 'other', domain: 'peer.test', namespaceId: 2 },
+        profileRev: 1,
+        createdAt: 100,
+        updatedAt: 100,
+        contentType: 'PURE_TEXT',
+        content: 'body',
+        isDeleted: false,
+        localState: 'READY',
+      };
+      await webdb.putCachedMessages([
+        base,
+        messageTomb({ ...base, seq: 3 }, 'USER_RETRACTION'),
+        { ...base, seq: 4, creator: owner },
+        messageTomb({ ...base, seq: 5, creator: owner }, 'MODERATION_REMOVAL'),
+        { ...base, seq: 6, creator: null, contentType: 'SYSTEM' },
+        { ...base, seq: 8, localState: 'STUB' },
+        { ...base, seq: 9, localState: 'FAILED' },
+        { ...base, seq: 10, creator: { ...owner, namespaceId: 2 } },
+        { ...base, seq: 11, threadId: 99 },
+      ]);
+      await webdb.applyDeletedMessages(
+        42,
+        [
+          {
+            threadId: 42,
+            messageSeq: 7,
+            deletionSeq: 1,
+            type: 'USER_RETRACTION',
+            createdAt: 100,
+            updatedAt: 100,
+          },
+        ],
+        1,
+      );
+      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(6);
+      expect(await webdb.countUnreadMessageSlots(42, 1, 3, owner)).toBe(1);
+      expect(await webdb.countUnreadMessageSlots(42, 3, 7, owner)).toBe(1);
+      expect(await webdb.countUnreadMessageSlots(42, 7, 7, owner)).toBe(0);
+      const snapshot = {
+        threadId: 42,
+        threadFeedId: 1,
+        messageEndSeq: 11,
+        tombstoneEndSeq: 1,
+        lastReadSeq: 0,
+        unreadCount: 6,
+        lastMentionSeq: 3,
+      };
+      let state = advanceLocalAttentionRead(
+        mergeThreadAttention(createLocalThreadAttention(42), snapshot),
+        3,
+      );
+      for (const incoming of [
+        snapshot,
+        { ...snapshot, threadFeedId: 2, lastReadSeq: 1, unreadCount: 5 },
+        { ...snapshot, threadFeedId: 3 },
+      ]) {
+        state = mergeThreadAttention(state, incoming);
+        const range = attentionCountRange(state)!;
+        const count = await webdb.countUnreadMessageSlots(
+          range.threadId,
+          range.afterSeq,
+          range.throughSeq,
+          owner,
+        );
+        expect(projectThreadAttention(state, count)).toMatchObject({
+          lastReadSeq: 3,
+          unreadCount: 4,
+          hasUnreadMention: false,
+        });
+      }
+      await webdb.putCachedMessages([{ ...base, seq: 7 }]);
+      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(7);
+      await expect(
+        webdb.countUnreadMessageSlots(42, 5, 4, owner),
+      ).rejects.toThrow('Invalid unread');
+    });
+
+    it('does not cap unread slot counts at 100', async () => {
+      await webdb.openForUser('1');
+      await webdb.putCachedMessages(
+        Array.from(
+          { length: 120 },
+          (_, i): Message => ({
+            threadId: 42,
+            seq: i + 1,
+            creator: null,
+            profileRev: 1,
+            createdAt: 100,
+            updatedAt: 100,
+            contentType: 'SYSTEM',
+            content: '{}',
+            isDeleted: false,
+            localState: 'READY',
+          }),
+        ),
+      );
+      expect(
+        await webdb.countUnreadMessageSlots(42, 0, 120, {
+          account: 'me',
+          domain: 'local',
+          namespaceId: 0,
+        }),
+      ).toBe(120);
     });
 
     it('opens separate per-user core and message DBs and signals ready', async () => {
@@ -285,6 +681,7 @@ describe('WebdbService', () => {
         'relationshipIntents',
         'relationshipRequests',
         'settings',
+        'threadStates',
         'threads',
       ]);
       const messageDb = await webdb.messageDb();
@@ -299,6 +696,21 @@ describe('WebdbService', () => {
       );
       expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
       expect(webdb.ready()).toBe(true);
+    });
+
+    it('rebuilds the old cache version instead of migrating dismissal metadata', async () => {
+      const db = await webdb.openForUser('1');
+      await webdb.putMeta('threadHwms', { 7: 9 });
+      await webdb.putMeta('stateFeedCursor', 42);
+      await db!.put('settings', {
+        key: 'schemaVersion',
+        value: CACHE_SCHEMA_VERSION - 1,
+      });
+      await webdb.close();
+      await webdb.openForUser('1');
+      expect(await webdb.getMeta('threadHwms')).toBeUndefined();
+      expect(await webdb.getMeta('stateFeedCursor')).toBeUndefined();
+      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
     });
 
     it('strict startup open does not create missing databases', async () => {
@@ -544,6 +956,17 @@ describe('WebdbService', () => {
       expect(webdb.ready()).toBe(false);
     });
 
+    it('account invalidation aborts old rounds before durable cleanup begins', async () => {
+      await webdb.openForUser('1');
+      const lifetime = webdb.captureMessageLifetime();
+      TestBed.inject(SessionLifecycleService).invalidateSession();
+      expect(lifetime.aborted).toBe(true);
+      expect(webdb.ready()).toBe(false);
+      await expect(webdb.getThreadStates()).rejects.toThrow(
+        'account cache lifetime expired',
+      );
+    });
+
     it('logout wins a race with full recreation and the stale reset cannot reopen either DB', async () => {
       await webdb.openForUser('1');
       const lifetime = webdb.captureMessageLifetime();
@@ -609,6 +1032,92 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual([]);
     });
 
+    for (const kind of ['P2P', 'GROUP'] as const) {
+      it(`restores an established revoked ${kind} as read-only on an empty device`, async () => {
+        await webdb.openForUser('1');
+        const event = (
+          established: boolean,
+          feedId: number,
+        ): ClientStateFeedItem =>
+          ({
+            feedId,
+            namespaceId: 0,
+            eventType: 'RELATIONSHIP_INTENT',
+            account: kind === 'GROUP' ? '!history' : 'alice',
+            domain: 'local',
+            subjectAccount: 'bob',
+            subjectDomain: 'local',
+            body: {
+              status: 'REVOKED',
+              established,
+              note: '',
+              requestedAt: null,
+              expiresAt: null,
+              ...(kind === 'GROUP'
+                ? {
+                    threadId: 77,
+                    group: {
+                      account: '!history',
+                      domain: 'local',
+                      namespaceId: 0,
+                      isLocal: true,
+                      name: 'History',
+                      avatar: '',
+                      description: '',
+                      profileRev: 0,
+                    },
+                  }
+                : {
+                    localThreadId: 77,
+                    direction: 'INCOMING',
+                    peer: {
+                      account: 'alice',
+                      domain: 'local',
+                      name: 'Alice',
+                      avatar: '',
+                      bio: '',
+                      profileRev: 0,
+                    },
+                  }),
+            },
+          }) as ClientStateFeedItem;
+        await webdb.applyStateFeedPage([event(false, 1)], 1);
+        expect(await webdb.getThreads()).toEqual([]);
+        await webdb.applyStateFeedPage([event(true, 2)], 2);
+        expect(await webdb.getThreads()).toEqual([]);
+        await webdb.applyStateFeedPage(
+          [
+            threadStateEvent(3, 77, {
+              type: kind,
+              conversationState: 'READ_ONLY',
+              profile: {
+                account: kind === 'GROUP' ? '!history' : 'alice',
+                domain: 'local',
+                namespaceId: 0,
+                profileRev: 0,
+              },
+            }),
+          ],
+          3,
+        );
+        expect(await webdb.getThreads()).toEqual([
+          expect.objectContaining({
+            threadId: 77,
+            type: kind,
+            conversationState: 'READ_ONLY',
+          }),
+        ]);
+        // An older opposite-direction fact cannot erase established history.
+        await webdb.applyStateFeedPage([event(false, 4)], 4);
+        expect(await webdb.getThreads()).toEqual([
+          expect.objectContaining({
+            threadId: 77,
+            conversationState: 'READ_ONLY',
+          }),
+        ]);
+      });
+    }
+
     it('atomically advances the state-feed cursor and derives P2P read-only state', async () => {
       await webdb.openForUser('1');
       await webdb.putThread({
@@ -652,9 +1161,18 @@ describe('WebdbService', () => {
         },
       };
 
-      await webdb.applyStateFeedPage([revoked], 12);
+      await webdb.applyStateFeedPage(
+        [
+          revoked,
+          threadStateEvent(13, 7, {
+            conversationState: 'READ_ONLY',
+            blocked: true,
+          }),
+        ],
+        13,
+      );
 
-      expect(await webdb.getMeta('stateFeedId')).toBe(12);
+      expect(await webdb.getMeta('stateFeedId')).toBe(13);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 7),
       ).toMatchObject({
@@ -663,7 +1181,7 @@ describe('WebdbService', () => {
       });
     });
 
-    it('materializes a local P2P conversation from two distinct local intent directions', async () => {
+    it('keeps bilateral intents out of the thread list until THREAD_STATE arrives', async () => {
       await webdb.openForUser('1');
       const peer = {
         namespaceId: 0,
@@ -714,6 +1232,8 @@ describe('WebdbService', () => {
       ];
 
       await webdb.applyStateFeedPage(items, 21);
+      expect(await webdb.getThreads()).toEqual([]);
+      await webdb.applyStateFeedPage([threadStateEvent(22, 7)], 22);
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
@@ -727,7 +1247,7 @@ describe('WebdbService', () => {
           }),
         }),
       ]);
-      expect(await webdb.getMeta('stateFeedId')).toBe(21);
+      expect(await webdb.getMeta('stateFeedId')).toBe(22);
     });
 
     it('keeps accepted sent history and makes accepted received history non-actionable', async () => {
@@ -1195,7 +1715,7 @@ describe('WebdbService', () => {
       ]);
     });
 
-    it('clears state-feed projections only on the first full page', async () => {
+    it('rebuilds state-feed projections without resetting the independent group roster', async () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
@@ -1236,18 +1756,10 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage([], 3, [], true);
 
-      expect(await db!.getAll('members')).toEqual([]);
-      expect(await webdb.getThreads()).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            threadId: 7,
-            friendshipActive: false,
-            conversationState: 'READ_ONLY',
-            blocked: false,
-          }),
-          expect.objectContaining({ threadId: 9, blocked: false }),
-        ]),
-      );
+      expect(await db!.getAll('members')).toEqual([
+        expect.objectContaining({ account: 'alice' }),
+      ]);
+      expect(await webdb.getThreads()).toEqual([]);
 
       await db!.put('members', {
         threadId: 9,
@@ -1260,11 +1772,45 @@ describe('WebdbService', () => {
       });
       await webdb.applyStateFeedPage([], 4);
 
-      expect(await db!.getAll('members')).toHaveLength(1);
+      expect(await db!.getAll('members')).toHaveLength(2);
       expect(await webdb.getMeta('stateFeedId')).toBe(4);
     });
 
-    it('applies THREAD_BLOCK true and false deltas to the cached thread', async () => {
+    it('keeps a message-first item invisible and atomically promotes it from THREAD_STATE', async () => {
+      const db = await webdb.openForUser('1');
+      const head = {
+        threadId: 9,
+        threadFeedId: 4,
+        messageEndSeq: 8,
+        tombstoneEndSeq: 0,
+        lastReadSeq: 3,
+        unreadCount: 5,
+        lastMentionSeq: null,
+      };
+      await webdb.mergeThreadStates([head], 4);
+      expect(await webdb.getThreads()).toEqual([]);
+      expect(await db!.get('threads', 9)).toEqual({
+        threadId: 9,
+        type: 'PENDING',
+        visible: false,
+      });
+      await webdb.applyStateFeedPage([threadStateEvent(6, 9)], 6);
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({ threadId: 9, visible: true }),
+      ]);
+      expect((await webdb.getThreadStates())[0].server).toEqual(head);
+      expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
+      expect(await webdb.getMeta('stateFeedId')).toBe(6);
+      const invalid = threadStateEvent(7, 10);
+      invalid.body.profile.namespaceId = -1;
+      await expect(
+        webdb.applyStateFeedPage([threadStateEvent(7, 11), invalid], 7),
+      ).rejects.toThrow();
+      expect(await db!.get('threads', 11)).toBeUndefined();
+      expect(await webdb.getMeta('stateFeedId')).toBe(6);
+    });
+
+    it('applies THREAD_STATE true and false deltas to the cached thread', async () => {
       await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
@@ -1287,10 +1833,24 @@ describe('WebdbService', () => {
         namespaceId: 0,
         account: '',
         domain: 'local',
-        eventType: 'THREAD_BLOCK',
+        eventType: 'THREAD_STATE',
         subjectAccount: '7',
         subjectDomain: 'local',
-        body: { threadId: 7, blocked },
+        body: {
+          threadId: 7,
+          blocked,
+          type: 'P2P',
+          authorityNamespaceId: 0,
+          establishedAt: 1,
+          conversationState: 'ACTIVE',
+          role: null,
+          profile: {
+            account: 'peer',
+            domain: 'local',
+            namespaceId: 0,
+            profileRev: 1,
+          },
+        },
       });
 
       await webdb.applyStateFeedPage([event(5, true)], 5);
@@ -1299,48 +1859,6 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([event(6, false)], 6);
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: false });
       expect(await webdb.getMeta('stateFeedId')).toBe(6);
-    });
-
-    it('applies the paired message and tombstone high-water marks', async () => {
-      await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-        peerUser: {
-          id: 2,
-          account: 'peer',
-          name: 'Peer',
-          domain: 'local',
-          namespaceId: 0,
-        },
-      } as never);
-
-      await webdb.applyStateFeedPage(
-        [
-          {
-            feedId: 7,
-            namespaceId: 0,
-            account: '',
-            domain: 'local',
-            eventType: 'THREAD_CONTENT_HEAD',
-            subjectAccount: '',
-            subjectDomain: 'local',
-            body: {
-              threadId: 7,
-              messageEndSeq: 12,
-              tombstoneEndSeq: 4,
-            },
-          },
-        ],
-        7,
-      );
-
-      expect((await webdb.getThreads())[0]).toMatchObject({
-        lastMessageSeq: 12,
-        tombstoneEndSeq: 4,
-      });
-      expect(await webdb.getMeta('stateFeedId')).toBe(7);
     });
 
     it('optimistically activates only the greatest newly discovered namespace', async () => {
@@ -1738,7 +2256,7 @@ describe('WebdbService', () => {
       ).toBeDefined();
     });
 
-    it('materializes an active group conversation from bilateral intents before group metadata', async () => {
+    it('materializes a group from THREAD_STATE before applying the same page metadata', async () => {
       await webdb.openForUser('1');
       await webdb.putProfile({
         identity: 'u8',
@@ -1757,7 +2275,7 @@ describe('WebdbService', () => {
         identity: 'g12',
         id: 12,
         kind: 'group',
-        name: 'dev',
+        name: '!dev',
         account: '!dev',
         avatar: '',
         bio: '',
@@ -1771,7 +2289,7 @@ describe('WebdbService', () => {
         domain: 'local',
         namespaceId: 0,
         isLocal: true,
-        name: 'dev',
+        name: '!dev',
         avatar: '',
         description: '',
         profileRev: 1,
@@ -1810,50 +2328,65 @@ describe('WebdbService', () => {
         },
       ];
 
-      await webdb.applyStateFeedPage(items, 3, [
-        {
-          threadId: 12,
-          namespaceId: 0,
-          sourceServer: 'local',
-          page: {
-            account: '!dev',
-            mode: 'full',
-            items: [
-              {
-                feedId: '1',
-                operation: 'UPSERT',
-                account: 'alice',
-                domain: 'local.test',
-                namespaceId: 0,
-                body: {
-                  role: 'OWNER',
-                  profileRev: 1,
-                  displayName: 'Alice',
-                  avatar: null,
-                  bio: '',
+      await webdb.applyStateFeedPage(
+        [
+          ...items,
+          threadStateEvent(3, 12, {
+            type: 'GROUP',
+            profile: {
+              account: '!dev',
+              domain: 'local',
+              namespaceId: 0,
+              profileRev: 1,
+            },
+          }),
+        ],
+        3,
+        [
+          {
+            threadId: 12,
+            namespaceId: 0,
+            sourceServer: 'local',
+            page: {
+              account: '!dev',
+              mode: 'full',
+              items: [
+                {
+                  feedId: '1',
+                  operation: 'UPSERT',
+                  account: 'alice',
+                  domain: 'local.test',
+                  namespaceId: 0,
+                  body: {
+                    role: 'OWNER',
+                    profileRev: 1,
+                    displayName: 'Alice',
+                    avatar: null,
+                    bio: '',
+                  },
                 },
-              },
-              {
-                feedId: '2',
-                operation: 'UPSERT',
-                account: 'bob',
-                domain: 'remote.test',
-                namespaceId: 12,
-                body: {
-                  role: 'MEMBER',
-                  profileRev: 1,
-                  displayName: 'Bob',
-                  avatar: null,
-                  bio: '',
+                {
+                  feedId: '2',
+                  operation: 'UPSERT',
+                  account: 'bob',
+                  domain: 'remote.test',
+                  namespaceId: 12,
+                  body: {
+                    role: 'MEMBER',
+                    profileRev: 1,
+                    displayName: 'Bob',
+                    avatar: null,
+                    bio: '',
+                  },
                 },
-              },
-            ],
-            hasMore: false,
-            scannedThrough: '2',
-            groupMetaFeedEndId: '2',
+              ],
+              hasMore: false,
+              scannedThrough: '2',
+              groupMetaFeedEndId: '2',
+            },
           },
-        },
-      ]);
+        ],
+      );
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
@@ -1861,7 +2394,7 @@ describe('WebdbService', () => {
           type: 'GROUP',
           group: expect.objectContaining({
             account: '!dev',
-            name: 'dev',
+            name: '!dev',
             memberCount: 2,
             groupMetaFeedId: '2',
           }),
@@ -1887,7 +2420,39 @@ describe('WebdbService', () => {
         ],
         4,
       );
-      expect(await webdb.getThreads()).toEqual([]);
+      expect((await webdb.getThreads())[0]).toEqual(
+        expect.objectContaining({ conversationState: 'ACTIVE' }),
+      );
+      await webdb.applyStateFeedPage(
+        [
+          threadStateEvent(5, 12, {
+            type: 'GROUP',
+            conversationState: 'READ_ONLY',
+            role: null,
+            profile: {
+              account: '!dev',
+              domain: 'local',
+              namespaceId: 0,
+              profileRev: 1,
+            },
+          }),
+        ],
+        5,
+      );
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({
+          threadId: 12,
+          type: 'GROUP',
+          conversationState: 'READ_ONLY',
+          role: null,
+        }),
+      ]);
+      expect(
+        await webdb.getGroupMember(12, 'bob', 'remote.test', 12),
+      ).toMatchObject({ role: 'MEMBER', left: false });
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        group: { memberCount: 2, groupMetaFeedId: '2' },
+      });
       expect(
         await webdb.getProfile({
           account: 'bob',
@@ -1904,6 +2469,13 @@ describe('WebdbService', () => {
           profileRev: 1,
         }),
       ).toBeDefined();
+      await webdb.resetGroupMeta(12);
+      expect(
+        await webdb.getGroupMember(12, 'bob', 'remote.test', 12),
+      ).toBeUndefined();
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        group: { memberCount: 0, groupMetaFeedId: '0' },
+      });
     });
 
     it('recreates only the message DB and preserves the core cache', async () => {

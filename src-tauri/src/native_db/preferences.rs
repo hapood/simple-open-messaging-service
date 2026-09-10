@@ -5,12 +5,11 @@ use super::{chrono_millis, json_text, open_preferences, parse_json};
 
 #[tauri::command]
 pub(crate) async fn native_db_get_preference(
-    app: tauri::AppHandle,
     scope: String,
     key: String,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let value = open_preferences(&app)?
+        let value = open_preferences()?
             .query_row(
                 "SELECT value_json FROM client_preferences WHERE scope = ?1 AND key = ?2",
                 params![scope, key],
@@ -25,13 +24,12 @@ pub(crate) async fn native_db_get_preference(
 }
 #[tauri::command]
 pub(crate) async fn native_db_put_preference(
-    app: tauri::AppHandle,
     scope: String,
     key: String,
     value: Value,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open_preferences(&app)?
+        open_preferences()?
             .execute(
                 "INSERT INTO client_preferences(scope, key, value_json, updated_at)
                  VALUES(?1, ?2, ?3, ?4)
@@ -48,13 +46,9 @@ pub(crate) async fn native_db_put_preference(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_delete_preference(
-    app: tauri::AppHandle,
-    scope: String,
-    key: String,
-) -> Result<(), String> {
+pub(crate) async fn native_db_delete_preference(scope: String, key: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open_preferences(&app)?
+        open_preferences()?
             .execute(
                 "DELETE FROM client_preferences WHERE scope = ?1 AND key = ?2",
                 params![scope, key],

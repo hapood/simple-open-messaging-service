@@ -194,6 +194,7 @@ identifier = "allow-native-db"
 description = "Enables the typed native SQLite cache commands used by the bundled SPA."
 commands.allow = [
   "native_db_threads",
+  "native_db_reset_group_meta",
   "native_db_put_thread",
   "native_db_replace_threads",
   "native_db_delete_thread",
@@ -214,9 +215,15 @@ commands.allow = [
   "native_db_delete_messages_by_thread",
 ]
 
+[[permission]]
+identifier = "allow-desktop-notifications"
+description = "Updates or clears desktop message notifications through the native manager."
+commands.allow = ["desktop_notification_update", "desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge"]
+
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
+  "allow-desktop-notifications",
   "allow-set-api-origin",
   "allow-get-api-origin",
   "allow-get-active-api-origin",

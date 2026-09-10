@@ -1,5 +1,7 @@
+import { initializeRelationshipThreadStateInTx } from './federation-relationship-thread-state.js';
 import type { AccountTarget } from '../user/account-address.js';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { ThreadPreviewService } from '../message/thread-preview.service.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import {
@@ -12,6 +14,8 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
 /** Applies an authored group intent and synchronizes every projection derived from pair.active. */
 @Injectable()
 export class FederationGroupRelationshipService {
+  @Inject(ThreadPreviewService)
+  private readonly previews!: ThreadPreviewService;
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
     private readonly groupMembership: FederationGroupMembershipService,
@@ -112,6 +116,21 @@ export class FederationGroupRelationshipService {
         ? { updateCanonicalRoster: false }
         : {}),
     });
+    if (pairChanged && params.active) {
+      await this.previews.initializeReadWindowsInTx(tx, params.threadId, [
+        params.memberUserId,
+      ]);
+      const pair = await this.relationshipIntents.lockGroupMutationInTx(
+        tx,
+        params,
+      );
+      await initializeRelationshipThreadStateInTx(
+        tx,
+        params.threadId,
+        pair.id,
+        pair.threadLock,
+      );
+    }
     const finalized = await this.membershipFinalizer.finalizeInTx(tx, {
       threadId: params.threadId,
       groupId: params.groupId,

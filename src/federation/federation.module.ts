@@ -1,3 +1,4 @@
+import { FederationReverseRevokeService } from './federation-reverse-revoke.service.js';
 import { Global, Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
@@ -49,6 +50,7 @@ import { FederationThreadSourceService } from './federation-thread-source.servic
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
+import { FederationThreadFanoutTaskHandler } from './federation-thread-fanout-task.handler.js';
 import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
@@ -77,7 +79,7 @@ import { FederationPeerResourceService } from './federation-peer-resource.servic
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
 import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
 import { ProfileResolutionController } from './profile-resolution.controller.js';
-import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
+import { FederationGroupLeaveHintService } from './federation-group-leave-hint.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationDownloadAdminService } from './federation-download-admin.service.js';
@@ -131,6 +133,8 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     QuoteResolutionController,
   ],
   providers: [
+    FederationReverseRevokeService,
+    FederationThreadFanoutTaskHandler,
     KeypairService,
     SignatureService,
     DiscoveryService,
@@ -173,7 +177,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationStateFeedPushSchedulerService,
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
-    FederationOutboundMessageSignalService,
+    FederationGroupLeaveHintService,
     FederationThreadQueryDenialService,
     FederationService,
     FederationGroupMembershipService,
@@ -212,6 +216,10 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationStateFeedConsumerService,
   ],
   exports: [
+    FederationReverseRevokeService,
+    FederatedRelationshipRequestTaskExecutionService,
+    FederatedGroupTaskExecutionService,
+    FederationThreadQueryDenialService,
     KeypairService,
     SignatureService,
     DiscoveryService,

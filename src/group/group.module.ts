@@ -5,9 +5,10 @@ import { MessageModule } from '../message/message.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
 import { RelationshipModule } from '../relationship/relationship.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
-import { GroupDisbandFanoutService } from './group-disband-fanout.service.js';
+import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
 import { DisbandGroupTaskHandler } from './disband-group-task.handler.js';
-import { RevokeDissolvedGroupMemberTaskHandler } from './revoke-dissolved-group-member-task.handler.js';
+import { ForceRevokeGroupMemberTaskHandler } from './force-revoke-group-member-task.handler.js';
+import { RevokeForbiddenGroupTaskHandler } from './revoke-forbidden-group-task.handler.js';
 import {
   KickGroupMemberTaskHandler,
   LeaveGroupTaskHandler,
@@ -36,9 +37,10 @@ import {
   providers: [
     GroupService,
     RolesGuard,
-    GroupDisbandFanoutService,
+    GroupRevokeFanoutService,
     DisbandGroupTaskHandler,
-    RevokeDissolvedGroupMemberTaskHandler,
+    ForceRevokeGroupMemberTaskHandler,
+    RevokeForbiddenGroupTaskHandler,
     LeaveGroupTaskHandler,
     KickGroupMemberTaskHandler,
     TransferGroupOwnershipTaskHandler,

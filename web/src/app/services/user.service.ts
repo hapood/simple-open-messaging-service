@@ -1,3 +1,5 @@
+import type { ProfileSelector } from '../../../../shared/profile-selector';
+import type { ThreadStateSnapshot } from '../../../../shared/thread-state';
 import {
   Injectable,
   InjectionToken,
@@ -12,7 +14,6 @@ import {
   User,
   ConversationItem,
   StandardResponse,
-  ThreadReadDelta,
   PersonalQuotaState,
 } from './model';
 import { WebdbService } from './webdb.service';
@@ -75,6 +76,7 @@ export interface ClientIntentUser {
 }
 
 interface ClientFriendIntentBase {
+  established?: boolean;
   key: string;
   account: string;
   domain: string;
@@ -114,6 +116,7 @@ export type ClientFriendIntent = ClientFriendIntentBase &
   );
 
 export interface ClientGroupInviteIntent {
+  established?: boolean;
   key: string;
   kind: 'GROUP_INVITE';
   account: string;
@@ -231,24 +234,10 @@ export type ClientStateFeedItem =
       account: '';
       domain: 'local';
       namespaceId: 0;
-      eventType: 'THREAD_CONTENT_HEAD';
-      subjectAccount: '';
-      subjectDomain: 'local';
-      body: {
-        threadId: number;
-        messageEndSeq: number;
-        tombstoneEndSeq: number;
-      };
-    }
-  | {
-      feedId: number;
-      account: '';
-      domain: 'local';
-      namespaceId: 0;
-      eventType: 'THREAD_BLOCK';
+      eventType: 'THREAD_STATE';
       subjectAccount: string;
       subjectDomain: 'local';
-      body: { threadId: number; blocked: boolean };
+      body: ThreadStateSnapshot;
     };
 
 export interface ClientGroupMetaFeedPage {
@@ -395,6 +384,7 @@ export class UserService {
   /** Delete durable account data, clear identity, then explicitly reset in-memory consumers. The
    * notification also covers pre-HELLO logout, when sessionUserId has never left null. */
   async clearSession(): Promise<void> {
+    this.sessionLifecycle.invalidateSession();
     const prev = this.webdbUserKey;
     const previousUserId = this.sessionProfile()?.id;
     // Keep LAST_USER_ID until the durable cache wipe succeeds. If deletion fails, retaining that key makes
@@ -423,9 +413,16 @@ export class UserService {
    *  the full profile is fetched + cached. Friend-request notification state is restored from this device's
    *  per-account database and subsequently advanced by the unified state delta. */
   async establishSession(userId: number, profileRev: number): Promise<void> {
+    const epoch = this.sessionLifecycle.accountEpoch;
+    const checkSession = () => {
+      if (!this.sessionLifecycle.isCurrent(epoch))
+        throw new Error('account session expired during HELLO');
+    };
     if (this.freshCachePending) {
       await this.webdb.recreateForUser(String(userId));
+      checkSession();
       await this.preferences.remove(`account:${userId}`, CACHE_REBUILD_KEY);
+      checkSession();
       this.freshCachePending = false;
       this.cacheRebuildRequest = undefined;
       this.webdbUserKey = null;
@@ -436,12 +433,14 @@ export class UserService {
     // Account switch without a logout (defensive): tear down the previous user's DB first.
     if (this.webdbUserKey !== null && this.webdbUserKey !== String(userId)) {
       await this.webdb.closeAndDelete(this.webdbUserKey);
+      checkSession();
     }
     this.webdbUserKey = String(userId);
     this.persistLastUserId(userId); // remember for the next boot's eager IDB paint (pre-HELLO)
     try {
       await this.webdb.openExistingForUser(String(userId)); // strict read on the normal path
     } catch (error) {
+      checkSession();
       // Every local-cache validation/open failure is rebuildable state. The Webdb epoch prevents this
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
       console.warn('[cache-recovery] session cache open failed', error);
@@ -450,9 +449,12 @@ export class UserService {
         (await this.preferences.get(scope, CACHE_REBUILD_KEY)) === 'attempted'
       )
         throw error;
+      checkSession();
       await this.preferences.set(scope, CACHE_REBUILD_KEY, 'attempted');
+      checkSession();
       await this.webdb.recreateForUser(String(userId));
     }
+    checkSession();
     const [latest, requestReadHead, groupHeads, groupReads] = await Promise.all(
       [
         this.webdb.getMeta('relationshipRequestStateRevision'),
@@ -461,6 +463,7 @@ export class UserService {
         this.webdb.getMeta('groupJoinRequestReadFeedIds'),
       ],
     );
+    checkSession();
     this.sessionUserId.set(userId);
     this.relationshipRequestStateRevision.set(
       typeof latest === 'number' && latest >= 0 ? latest : 0,
@@ -487,6 +490,7 @@ export class UserService {
     const lastCleanup = await this.webdb.getMeta(
       'relationshipRequestCleanupAt',
     );
+    checkSession();
     if (
       typeof lastCleanup !== 'number' ||
       Date.now() - lastCleanup >= 86_400_000
@@ -865,17 +869,13 @@ export class UserService {
     );
   }
 
-  startProfileResolution(
-    selector:
-      | { account: string; domain: string; rev: number }
-      | { threadId: number; messageSeq: number }
-      | { threadId: number; memberAccount: string; memberDomain: string },
-  ) {
+  startProfileResolution(selector: ProfileSelector) {
     return this.http.post<
       StandardResponse<
         | {
             status: 'READY';
             profile: {
+              namespaceId: number;
               account: string;
               domain: string;
               rev: number;
@@ -1163,13 +1163,6 @@ export class UserService {
   markRead(params: { threadId: number; localReadHwm: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/mark-read`,
-      params,
-    );
-  }
-
-  queryReadDelta(params: { fromRevision: number; toRevision: number }) {
-    return this.http.post<StandardResponse<ThreadReadDelta>>(
-      `${apiPrefix()}/thread/read-delta`,
       params,
     );
   }

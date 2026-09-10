@@ -7,6 +7,7 @@ import {
 import { WebsocketService } from './websocket.service';
 import type { StandardMessage } from './realtime-transport';
 import { AuthService } from './auth.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -85,6 +86,38 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     await flush(0);
     if (realWorker) globalThis.Worker = realWorker;
     liveWorker = undefined;
+  });
+
+  it('ignores callbacks from an invalidated connection after a new connection starts', () => {
+    const oldWorker = liveWorker!;
+    const events = vi.fn();
+    ws.eventSubject.subscribe(events);
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    expect(ws.state()).toBe('closed');
+    ws.connect();
+    expect(liveWorker).not.toBe(oldWorker);
+    oldWorker.emit({ type: 'event', payload: { event: 'OLD' } });
+    oldWorker.emit({ type: 'state', state: 'open' });
+    expect(events).not.toHaveBeenCalled();
+    expect(ws.state()).toBe('connecting');
+    liveWorker!.emit({ type: 'event', payload: { event: 'CURRENT' } });
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it('transfers the DB port to the active SSE worker', () => {
+    const channel = new MessageChannel();
+    const post = vi.spyOn(liveWorker!, 'postMessage');
+    ws.attachThreadFeed(channel.port1, 1);
+    expect(post).toHaveBeenCalledTimes(1);
+    const [message, transfer] = post.mock.calls[0] as unknown as [
+      { type: string; port: MessagePort; userId: number }, MessagePort[],
+    ];
+    expect(message.type).toBe('thread-feed-port');
+    expect(message.userId).toBe(1);
+    expect(message.port).toBe(channel.port1);
+    expect(transfer[0]).toBe(channel.port1);
+    channel.port1.close();
+    channel.port2.close();
   });
 
   it('boots connecting, spawns the SSE worker, and has no countdown scheduled', () => {
@@ -175,6 +208,46 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     // forceReconnect tears down and immediately starts the replacement transport,
     // whose first observable state is `connecting`.
     expect(ws.state()).toBe('connecting');
+    expect(received).toEqual([]);
+  });
+
+  it('requires the thread cursor in HELLO and passes a complete handshake through', () => {
+    const received: StandardMessage[] = [];
+    ws.eventSubject.subscribe((message) => received.push(message));
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'HELLO',
+        status: 0,
+        message: '',
+        data: { userId: 1, stateFeedEndId: 2 },
+      },
+    });
+    expect(received).toEqual([]);
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'HELLO',
+        status: 0,
+        message: '',
+        data: { userId: 1, stateFeedEndId: 2, threadFeedEndId: 3 },
+      },
+    });
+    expect(received).toHaveLength(1);
+  });
+
+  it('rejects THREAD_FEED_UPDATED without a valid thread cursor', () => {
+    const received: StandardMessage[] = [];
+    ws.eventSubject.subscribe((message) => received.push(message));
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'THREAD_FEED_UPDATED',
+        status: 0,
+        message: '',
+        data: { threadFeedEndId: -1 },
+      },
+    });
     expect(received).toEqual([]);
   });
 

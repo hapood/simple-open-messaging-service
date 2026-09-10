@@ -117,14 +117,8 @@ export class AuthoritativeGroupMembershipFinalizer {
         : await closeFederatedAudienceInTx(tx, member.domain, params.threadId);
     }
 
-    if (audienceChanged && !params.active)
-      await tx
-        .update(messageThread)
-        .set({
-          authorizationEpoch: sql`${messageThread.authorizationEpoch} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(eq(messageThread.id, params.threadId));
+    // Removing an authoritative audience does not invalidate thread-wide rounds.
+    // In-flight commits recheck their own peer audience under the same group/thread locks.
 
     const shouldFanOut =
       params.canonicalRosterChanged || (params.active && audienceChanged);

@@ -1,11 +1,10 @@
-import { bootstrapApplication } from '@angular/platform-browser';
-import { appConfig } from './app/app.config';
-import { AppComponent } from './app/app.component';
+import { runAsActivePage } from './app/services/active-page';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
 import { installConsoleBuffer } from './app/services/log-buffer';
 import {
   applySafeInsets,
   installActiveOriginBridge,
+  isTauri,
 } from './app/services/runtime';
 
 /**
@@ -74,6 +73,17 @@ installActiveOriginBridge();
 // so label that otherwise quiet wait before Angular constructs AppComponent. No-op outside Android.
 window.SomsShell?.setSplashStage?.('session');
 
-bootstrapApplication(AppComponent, appConfig).catch((err) =>
-  console.error(err),
+async function startApplication(): Promise<void> {
+  // Do not evaluate account services or open their databases in a waiting page.
+  const [{ bootstrapApplication }, { appConfig }, { AppComponent }] =
+    await Promise.all([
+      import('@angular/platform-browser'),
+      import('./app/app.config'),
+      import('./app/app.component'),
+    ]);
+  await bootstrapApplication(AppComponent, appConfig);
+}
+
+void (isTauri() ? startApplication() : runAsActivePage(startApplication)).catch(
+  (err) => console.error(err),
 );

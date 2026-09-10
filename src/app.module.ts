@@ -1,3 +1,5 @@
+import { RevokeGroupRelationshipTaskHandler } from './relationship/revoke-group-relationship-task.handler.js';
+import { RevokeUserRelationshipTaskHandler } from './relationship/revoke-user-relationship-task.handler.js';
 import { Logger, Module, type OnModuleDestroy } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -37,6 +39,7 @@ import { CallsModule } from './calls/calls.module.js';
 import { CallsController } from './controller/calls.controller.js';
 import { ForwardBundleModule } from './forward/forward-bundle.module.js';
 import { DatabaseModule } from './database/database.module.js';
+import { ThreadPreviewModule } from './message/thread-preview.module.js';
 import { RateLimitModule } from './rate-limit/rate-limit.module.js';
 import { DurableTaskModule } from './durable-task/durable-task.module.js';
 import { DurableTaskSchedulerService } from './durable-task/durable-task-scheduler.service.js';
@@ -67,6 +70,7 @@ import { DurableAsyncTaskSchedulerService } from './durable-task/durable-async-t
     PushModule,
     FederationModule,
     DatabaseModule,
+    ThreadPreviewModule,
     SettingsModule,
     MessageFanoutModule,
     ClientStateFeedModule,
@@ -93,7 +97,10 @@ import { DurableAsyncTaskSchedulerService } from './durable-task/durable-async-t
     ShellController,
     CallsController,
   ],
-  providers: [],
+  providers: [
+    RevokeUserRelationshipTaskHandler,
+    RevokeGroupRelationshipTaskHandler,
+  ],
 })
 export class AppModule implements OnModuleDestroy {
   private readonly logger = new Logger(AppModule.name);

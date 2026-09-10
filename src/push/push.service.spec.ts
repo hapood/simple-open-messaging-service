@@ -72,7 +72,49 @@ describe('PushService — identity-only payloads', () => {
     );
   });
 
-  it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", messageEndSeq }', async () => {
+  it('coalesces for five seconds and rechecks each device session at trailing delivery', async () => {
+    vi.useFakeTimers();
+    const session = {
+      userId: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+    };
+    pushToken.findMany.mockResolvedValue(
+      [10, 20].map((sessionId) => ({
+        userId: 1,
+        sessionId,
+        session,
+        token: `https://push/${sessionId}`,
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+      })),
+    );
+    try {
+      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 1 }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sendNotification).toHaveBeenCalledTimes(2);
+      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 2 }]);
+      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 3 }]);
+      sse.isSessionOnline.mockImplementation(
+        (_userId: number, sessionId: number) => sessionId === 10,
+      );
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(sendNotification).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sendNotification).toHaveBeenCalledTimes(3);
+      expect(sendNotification).toHaveBeenLastCalledWith(
+        expect.objectContaining({ endpoint: 'https://push/20' }),
+        JSON.stringify({ type: 'NEW_MESSAGE', threadFeedEndId: '3' }),
+        expect.anything(),
+      );
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", threadFeedEndId }', async () => {
     pushToken.findMany.mockResolvedValue([
       {
         userId: 1,
@@ -89,20 +131,89 @@ describe('PushService — identity-only payloads', () => {
         },
       },
     ]);
-    await svc.dispatchForMessage([{ userId: 1 }], 7);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
     expect(sendNotification).toHaveBeenCalledTimes(1);
     const data = JSON.parse(sendNotification.mock.calls[0][1]);
-    expect(Object.keys(data).sort()).toEqual(['messageEndSeq', 'type']);
+    expect(Object.keys(data).sort()).toEqual(['threadFeedEndId', 'type']);
     expect(data).toMatchObject({
       type: 'NEW_MESSAGE',
-      messageEndSeq: '7',
+      threadFeedEndId: '7',
     });
   });
 
   it('dispatchForMessage deduplicates users without applying a user-wide online filter', async () => {
     pushToken.findMany.mockResolvedValue([]);
-    await svc.dispatchForMessage([{ userId: 1 }, { userId: 1 }], 7);
+    await svc.dispatchForMessage([
+      { userId: 1, threadFeedEndId: 7 },
+      { userId: 1, threadFeedEndId: 8 },
+    ]);
     expect(pushToken.findMany).toHaveBeenCalledOnce();
+  });
+
+  it('uses each recipient account head and keeps the newest duplicate target', async () => {
+    pushToken.findMany.mockResolvedValue(
+      [1, 2].map((userId) => ({
+        userId,
+        sessionId: userId,
+        token: `https://push/${userId}`,
+        deviceId: `device-${userId}`,
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+        session: {
+          userId,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      })),
+    );
+    await svc.dispatchForMessage([
+      { userId: 1, threadFeedEndId: 9 },
+      { userId: 2, threadFeedEndId: 3 },
+      { userId: 1, threadFeedEndId: 7 },
+    ]);
+    expect(
+      sendNotification.mock.calls.map(([subscription, payload]) => [
+        subscription.endpoint,
+        JSON.parse(payload),
+      ]),
+    ).toEqual([
+      ['https://push/1', { type: 'NEW_MESSAGE', threadFeedEndId: '9' }],
+      ['https://push/2', { type: 'NEW_MESSAGE', threadFeedEndId: '3' }],
+    ]);
+  });
+
+  it('does not propagate notification database errors to callers', async () => {
+    pushToken.findMany.mockRejectedValue(new Error('database unavailable'));
+    await expect(
+      svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]),
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not propagate transient Web Push failures to callers', async () => {
+    pushToken.findMany.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push.invalid/subscription',
+        deviceId: 'browser-a',
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+        session: {
+          userId: 1,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        },
+      },
+    ]);
+    sendNotification.mockRejectedValue({
+      statusCode: 503,
+      message: 'unavailable',
+    });
+    await expect(
+      svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]),
+    ).resolves.toBeUndefined();
   });
 
   it('skips only the online device session and still sends to another device', async () => {
@@ -140,7 +251,7 @@ describe('PushService — identity-only payloads', () => {
       },
     ]);
 
-    await svc.dispatchForMessage([{ userId: 1 }], 7);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
 
     expect(sendNotification).toHaveBeenCalledOnce();
     expect(sendNotification.mock.calls[0][0]).toMatchObject({
@@ -178,7 +289,7 @@ describe('PushService — identity-only payloads', () => {
       },
     ]);
 
-    await svc.dispatchForMessage([{ userId: 1 }], 7);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
 
     expect(sendNotification).not.toHaveBeenCalled();
     expect(sse.isSessionOnline).not.toHaveBeenCalled();

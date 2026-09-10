@@ -154,7 +154,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     return of({ code: 0, message: 'ok', data, hasMore: false });
   }
 
-  override reportMessages(_request: { threadId: number; seqs: number[] }) {
+  override reportMessage(_request: { threadId: number; seq: number }) {
     return of(this.mockResponse());
   }
 

@@ -742,6 +742,113 @@ test('audits retained P2P messages after re-adding a friend, but skips inactive 
   assert.equal(compareFederationSnapshot(value).passed, true);
 });
 
+function p2pWithdrawalFixture() {
+  const value = fixture();
+  const pair = `${alice}|${bob}`;
+  const authority = messageThread(1, 'p2p-message');
+  authority.messages[0].isDeleted = true;
+  authority.deletedSeqs.add(1);
+  const mirror = messageThread();
+  mirror.messages = [];
+  mirror.syncState = {
+    messageTargetSeq: 1,
+    messageProcessedThroughSeq: 1,
+    deletionTargetSeq: 1,
+    deletionProcessedThroughSeq: 1,
+    historyBoundaryReached: true,
+    activeGapId: null,
+  };
+  mirror.historyGaps = [];
+  value.p2pMessages = {
+    alpha: new Map([[pair, authority]]),
+    bravo: new Map([[pair, mirror]]),
+    charlie: new Map(),
+  };
+  for (const node of ['alpha', 'bravo']) value.p2p[node].pairs.active = [pair];
+  value.log.operations.push(
+    {
+      id: 'p2p-send',
+      type: 'SEND_P2P_MESSAGE',
+      status: 'SUCCEEDED',
+      p2pPair: pair,
+      actor: alice,
+      request: { body: { clientMessageId: 'p2p-message' } },
+      result: { seq: 1, originSeq: 1 },
+    },
+    {
+      id: 'p2p-withdraw',
+      type: 'WITHDRAW_P2P_MESSAGE',
+      status: 'SUCCEEDED',
+      withdrawnClientMessageId: 'p2p-message',
+    },
+  );
+  return { value, pair, authority, mirror };
+}
+
+test('accepts a P2P withdrawal before the mirror fetched the message body', () => {
+  const { value } = p2pWithdrawalFixture();
+  assert.deepEqual(compareFederationSnapshot(value).failures, []);
+});
+
+test('accepts a P2P withdrawal after the mirror fetched the message body', () => {
+  const { value, authority, mirror } = p2pWithdrawalFixture();
+  mirror.messages = structuredClone(authority.messages);
+  mirror.deletedSeqs.add(1);
+  assert.deepEqual(compareFederationSnapshot(value).failures, []);
+});
+
+test('rejects P2P withdrawal absence without authoritative deletion and complete synchronization', () => {
+  for (const mutate of [
+    ({ authority }) => {
+      authority.messages[0].isDeleted = false;
+    },
+    ({ authority }) => {
+      authority.deletedSeqs.clear();
+    },
+    ({ mirror }) => {
+      mirror.syncState.messageProcessedThroughSeq = 0;
+    },
+    ({ mirror }) => {
+      mirror.syncState.deletionProcessedThroughSeq = 0;
+    },
+    ({ mirror }) => {
+      mirror.syncState.historyBoundaryReached = false;
+    },
+    ({ mirror }) => {
+      mirror.syncState.activeGapId = 1;
+    },
+    ({ mirror }) => {
+      mirror.historyGaps = [{ startSeq: 1, endSeq: 1 }];
+    },
+    ({ mirror }) => {
+      mirror.syncState.deletionRecoveryThroughSeq = 1;
+    },
+    ({ mirror }) => {
+      mirror.syncState = null;
+    },
+    ({ value }) => {
+      value.log.operations.pop();
+    },
+    ({ authority, mirror }) => {
+      mirror.messages = structuredClone(authority.messages);
+      mirror.messages[0].isDeleted = false;
+    },
+    ({ authority }) => {
+      authority.messages = [];
+    },
+  ]) {
+    const context = p2pWithdrawalFixture();
+    mutate(context);
+    assert.ok(
+      compareFederationSnapshot(context.value).failures.some(
+        ({ kind, operationId }) =>
+          kind === 'P2P_MESSAGE_EFFECT' && operationId === 'p2p-send',
+      ),
+      mutate.toString(),
+    );
+  }
+});
+
 test('requires the referenced publisher namespace even when another copy is cached', () => {
   const value = fixture();
   const member = value.groups.bravo.groups

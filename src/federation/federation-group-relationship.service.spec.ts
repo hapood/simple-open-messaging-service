@@ -1,3 +1,6 @@
+vi.mock('./federation-relationship-thread-state.js', () => ({
+  initializeRelationshipThreadStateInTx: vi.fn(),
+}));
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
@@ -11,6 +14,9 @@ describe('FederationGroupRelationshipService', () => {
       expiresAt: null,
     };
     const relationshipIntents = {
+      lockGroupMutationInTx: vi
+        .fn()
+        .mockResolvedValue({ id: 1n, threadLock: {} }),
       writeGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
         request,
         shouldBeActive: true,
@@ -36,6 +42,10 @@ describe('FederationGroupRelationshipService', () => {
       membershipFinalizer as never,
     );
 
+    const initialize = vi.fn().mockResolvedValue(undefined);
+    Object.assign(service, {
+      previews: { initializeReadWindowsInTx: initialize },
+    });
     const result = await service.writeAuthoredIntentInTx({} as never, {
       threadId: 3,
       groupId: 5,
@@ -71,6 +81,23 @@ describe('FederationGroupRelationshipService', () => {
         fanoutTaskCreated: true,
       }),
     );
+    expect(initialize).toHaveBeenCalledWith(expect.anything(), 3, [7]);
+    expect(
+      groupMembership.syncFromActiveInTx.mock.invocationCallOrder[0],
+    ).toBeLessThan(initialize.mock.invocationCallOrder[0]);
+    expect(initialize.mock.invocationCallOrder[0]).toBeLessThan(
+      membershipFinalizer.finalizeInTx.mock.invocationCallOrder[0],
+    );
+    initialize.mockClear();
+    relationshipIntents.setGroupPairActiveInTx.mockResolvedValue(false);
+    await service.syncActiveInTx({} as never, {
+      threadId: 3,
+      groupId: 5,
+      memberUserId: 7,
+      active: true,
+      hostedLocally: true,
+    });
+    expect(initialize).not.toHaveBeenCalled();
     expect(membershipFinalizer.finalizeInTx).toHaveBeenCalledWith(
       expect.anything(),
       {
@@ -90,6 +117,9 @@ describe('FederationGroupRelationshipService', () => {
 
   it('forces a revoked authored intent inactive before deleting its member projection', async () => {
     const relationshipIntents = {
+      lockGroupMutationInTx: vi
+        .fn()
+        .mockResolvedValue({ id: 1n, threadLock: {} }),
       writeGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
         request: {
           status: 'REVOKED',
@@ -146,6 +176,9 @@ describe('FederationGroupRelationshipService', () => {
 
   it('runs the departure boundary effect after pair deactivation and before member removal', async () => {
     const relationshipIntents = {
+      lockGroupMutationInTx: vi
+        .fn()
+        .mockResolvedValue({ id: 1n, threadLock: {} }),
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = {
@@ -191,6 +224,9 @@ describe('FederationGroupRelationshipService', () => {
 
   it('does not derive a member for a group hosted by another server', async () => {
     const relationshipIntents = {
+      lockGroupMutationInTx: vi
+        .fn()
+        .mockResolvedValue({ id: 1n, threadLock: {} }),
       setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = {
@@ -209,6 +245,11 @@ describe('FederationGroupRelationshipService', () => {
       groupMembership as never,
       membershipFinalizer as never,
     );
+    Object.assign(service, {
+      previews: {
+        initializeReadWindowsInTx: vi.fn().mockResolvedValue(undefined),
+      },
+    });
 
     await service.syncActiveInTx({} as never, {
       threadId: 3,

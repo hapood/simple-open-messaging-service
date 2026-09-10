@@ -12,9 +12,11 @@ import {
   message,
   messageThread,
   accountThreadState,
+  deletedMessage,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
+import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
 
 describe('client message history gaps', () => {
   let app: INestApplication;
@@ -92,6 +94,126 @@ describe('client message history gaps', () => {
       .set('Authorization', `Bearer ${sessionToken}`)
       .send({ threadId, ...body });
   }
+
+  it('documents tombs as query-only responses with no content field', async () => {
+    const response = await request(app.getHttpServer()).get(
+      '/api/v1/docs-json',
+    );
+    const schemas = response.body.components.schemas;
+    expect(schemas.MessageQueryPageDto.properties.messages.items.oneOf).toEqual(
+      [
+        { $ref: '#/components/schemas/MessageResponseDto' },
+        { $ref: '#/components/schemas/MessageTombResponseDto' },
+      ],
+    );
+    expect(schemas.MessageTombResponseDto.properties.contentType.enum).toEqual([
+      'TOMB',
+    ]);
+    expect(schemas.MessageTombResponseDto.properties).not.toHaveProperty(
+      'content',
+    );
+    expect(
+      schemas.MessageResponseDto.properties.contentType.enum,
+    ).not.toContain('TOMB');
+  });
+
+  it('returns body-free tomb slots in both directions with stable pagination and gap coordinates', async () => {
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      await tx.insert(deletedMessage).values([
+        { threadId, messageSeq: 11, deletionSeq: 1, type: 'USER_RETRACTION' },
+        {
+          threadId,
+          messageSeq: 36,
+          deletionSeq: 2,
+          type: 'MODERATION_REMOVAL',
+        },
+      ]);
+      await tx
+        .update(message)
+        .set({ isDeleted: true })
+        .where(eq(message.threadId, threadId));
+    });
+    const first = await queryMessages({ after: 0, through: 50, take: 1 });
+    expect(first.body.data).toMatchObject({
+      scannedThrough: 11,
+      hasMore: true,
+    });
+    const tomb = first.body.data.messages[0];
+    expect(tomb).toMatchObject({
+      threadId,
+      seq: 11,
+      contentType: 'TOMB',
+      isDeleted: true,
+      creator: { account: 'peer', domain: 'local', namespaceId: 0 },
+      deletionType: 'USER_RETRACTION',
+    });
+    expect(Object.keys(tomb).sort()).toEqual(
+      [
+        'threadId',
+        'seq',
+        'profileRev',
+        'creator',
+        'createdAt',
+        'updatedAt',
+        'contentType',
+        'isDeleted',
+        'deletionType',
+      ].sort(),
+    );
+    const second = await queryMessages({ after: 11, through: 50, take: 1 });
+    expect(second.body.data).toMatchObject({
+      scannedThrough: 50,
+      hasMore: false,
+      messages: [
+        { seq: 36, contentType: 'TOMB', deletionType: 'MODERATION_REMOVAL' },
+      ],
+      gaps: [{ startSeq: 15, endSeq: 35, recoverable: true }],
+    });
+    const reverse = await queryMessages({ before: 51, through: 1, take: 1 });
+    expect(reverse.body.data).toMatchObject({
+      scannedThrough: 36,
+      hasMore: true,
+      messages: [{ seq: 36, contentType: 'TOMB' }],
+    });
+    const tail = await queryMessages({ before: 36, through: 1, take: 1 });
+    expect(tail.body.data).toMatchObject({
+      scannedThrough: 1,
+      hasMore: false,
+      messages: [{ seq: 11, contentType: 'TOMB' }],
+    });
+  });
+
+  it('keeps live enrichment separate and does not expose deleted media content', async () => {
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      await tx.insert(deletedMessage).values({
+        threadId,
+        messageSeq: 11,
+        deletionSeq: 1,
+        type: 'USER_RETRACTION',
+      });
+      await tx
+        .update(message)
+        .set({
+          isDeleted: true,
+          contentType: ContentType.IMAGE,
+          content: JSON.stringify({
+            privateBody: 'must not be parsed or returned',
+          }),
+        })
+        .where(eq(message.seq, 11));
+    });
+    const result = await queryMessages({ after: 0, through: 50, take: 10 });
+    expect(
+      result.body.data.messages.map(
+        (row: { contentType: string }) => row.contentType,
+      ),
+    ).toEqual(['TOMB', 'PURE_TEXT']);
+    expect(result.body.data.messages[0]).not.toHaveProperty('content');
+    expect(result.body.data.messages[0]).not.toHaveProperty('mediaStatus');
+    expect(result.body.data.messages[1]).toHaveProperty('content');
+  });
 
   it('clips the backward endpoint while validating the starting cursor', async () => {
     const bootstrap = await queryMessages({});

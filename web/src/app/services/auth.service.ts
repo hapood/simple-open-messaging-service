@@ -37,6 +37,8 @@ const LOGGED_IN_COOKIE = 'logged_in';
  *  default toast so a user looking away still catches why they're back at the sign-in screen. */
 const IMPORTANT_NOTICE_MS = 6000;
 
+import { clearSessionNotifications } from './notification-session';
+
 type LoginRes = {
   code: number;
   message: string;
@@ -269,8 +271,11 @@ export class AuthService {
       // A real login starts a fresh cache generation. Ordinary native DB commands never create or repair
       // account-cache tables; this is the single explicit initialization boundary.
       await tauriInvoke('native_db_recreate_cache');
-      await this.setSessionToken(token);
     }
+    await clearSessionNotifications().catch((error) =>
+      console.warn('[notification] login cleanup failed', error),
+    );
+    if (isTauri()) await this.setSessionToken(token);
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.
     this.loggedIn.set(true);
@@ -445,6 +450,9 @@ export class AuthService {
     } else {
       this.clearPresenceCookie();
     }
+    await clearSessionNotifications().catch((error) =>
+      console.warn('[notification] logout cleanup failed', error),
+    );
     return nativeOk;
   }
 

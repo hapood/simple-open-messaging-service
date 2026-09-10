@@ -7,7 +7,6 @@ import {
 
 const task = {
   id: 4n,
-  parentTaskId: null,
   kind: 'PROJECTION',
   scopeType: 'GROUP',
   scopeKey: 'group-key',
@@ -27,7 +26,6 @@ const task = {
     through: '20',
   },
   coalescingKey: 'group-meta',
-  supersededByTaskId: null,
   status: 'ASYNC_PROCESSING',
   resultCode: null,
   lastError: null,

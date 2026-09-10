@@ -252,7 +252,7 @@ export class DeletedMessageService {
     });
   }
 
-  /** The durable worker uses the same transactional deletion writer as withdrawals. */
+  /** Administrative deletion uses the same transactional writer as withdrawals. */
   async deleteByModeration(threadId: number, seq: number) {
     return this.database.db.transaction(async (tx) => ({
       threadId,

@@ -170,6 +170,7 @@ describe('MessageService.queryClientMessagePage', () => {
         db: { transaction: vi.fn((work) => work(tx)) },
       } as never,
       {} as never,
+      {} as never,
     );
 
     await expect(
@@ -249,6 +250,7 @@ describe('MessageService.queryClientMessagePage', () => {
         },
       } as never,
       {} as never,
+      {} as never,
     );
 
     const page = await svc.queryClientMessagePage(7, {
@@ -314,6 +316,7 @@ describe('MessageService.queryClientMessagePage', () => {
         },
       } as never,
       {} as never,
+      {} as never,
     );
 
     await expect(
@@ -339,6 +342,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
     expect(await svc.attachMediaStatus([])).toEqual([]);
     expect(store.mediaMessage.findMany).not.toHaveBeenCalled();
@@ -355,6 +359,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
+      {} as never,
       {} as never,
     );
     const out = await svc.attachMediaStatus([
@@ -377,6 +382,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
+      {} as never,
       {} as never,
     );
     const content = JSON.stringify({
@@ -414,6 +420,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
@@ -433,6 +440,7 @@ describe('MessageService.attachMediaStatus', () => {
           .fn()
           .mockResolvedValue([{ messageId: 1n, status: job }]),
       }) as never,
+      {} as never,
       {} as never,
     );
     const out = await svc.attachMediaStatus([
@@ -456,6 +464,7 @@ describe('MessageService.attachMediaStatus', () => {
           .fn()
           .mockResolvedValue([{ messageId: 1n, status: 'failed' }]),
       }) as never,
+      {} as never,
       {} as never,
     );
     const out = await svc.attachMediaStatus([
@@ -482,6 +491,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
@@ -507,6 +517,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
@@ -524,6 +535,7 @@ describe('MessageService.attachMediaStatus', () => {
           .fn()
           .mockResolvedValue([{ digest: DIG, isDeleted: true }]),
       }) as never,
+      {} as never,
       {} as never,
     );
     const out = await svc.attachMediaStatus([
@@ -550,6 +562,7 @@ describe('MessageService.attachMediaStatus', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }), // ready
@@ -562,7 +575,7 @@ describe('MessageService.attachMediaStatus', () => {
   });
 });
 
-describe('MessageService.queryMessages quote previews', () => {
+describe('MessageService quote previews', () => {
   const replyContent = JSON.stringify({ text: 'reply', quote: { seq: 4 } });
 
   it('batch-inlines a current target preview without changing stored content', async () => {
@@ -598,9 +611,12 @@ describe('MessageService.queryMessages quote previews', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
 
-    const [out] = await svc.queryMessages(1, {});
+    const [out] = await svc['attachQuotePreviews'](
+      await svc['queryMessageRows'](svc['database'].db, 1, {}),
+    );
 
     expect(JSON.parse(out.content)).toEqual({
       text: 'reply',
@@ -639,9 +655,12 @@ describe('MessageService.queryMessages quote previews', () => {
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
+      {} as never,
     );
 
-    const [out] = await svc.queryMessages(1, {});
+    const [out] = await svc['attachQuotePreviews'](
+      await svc['queryMessageRows'](svc['database'].db, 1, {}),
+    );
 
     expect(JSON.parse(out.content)).toEqual({
       text: 'reply',
@@ -670,6 +689,7 @@ describe('MessageService.queryMessages quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
       {} as never,
     );
 
@@ -709,6 +729,7 @@ describe('MessageService.queryMessages quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
       {} as never,
     );
 
@@ -759,6 +780,7 @@ describe('MessageService.queryMessages quote previews', () => {
         ]),
       }) as never,
       {} as never,
+      {} as never,
     );
 
     const [out] = await svc.attachQuotePreviews([reply]);
@@ -773,144 +795,5 @@ describe('MessageService.queryMessages quote previews', () => {
       imageIdentity: 'alice',
       imageShape: 'avatar',
     });
-  });
-});
-
-describe('MessageService.unreadMentionStates', () => {
-  it('uses semantic entities, ignores escaped protocol text, and preserves both mention kinds', async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      {
-        threadId: 7,
-        content: JSON.stringify({
-          text: '大家好 [@所有人](somfp://audience/all)',
-        }),
-      },
-      {
-        threadId: 7,
-        content: JSON.stringify({ text: '请看 [@我](somfp://user/self)' }),
-      },
-      {
-        threadId: 8,
-        content: JSON.stringify({
-          text: String.raw`\[@我](somfp://user/self)`,
-        }),
-      },
-    ]);
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(svc.unreadMentionStates(42, 'SELF', [7, 8])).resolves.toEqual(
-      new Map([
-        [7, ['all', 'me']],
-        [8, []],
-      ]),
-    );
-  });
-});
-
-describe('MessageService unified attention queries', () => {
-  it('commits the max read HWM and returns one capped authoritative state', async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      {
-        lastReadSeq: 9,
-        readRevision: 4,
-        unread: 1000,
-        mentionContents: [
-          JSON.stringify({ text: '[@所有人](somfp://audience/all)' }),
-          JSON.stringify({ text: '[@我](somfp://user/self)' }),
-        ],
-        account: 'self',
-      },
-    ]);
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(svc.commitReadState(42, 7, 9)).resolves.toEqual({
-      lastReadSeq: 9,
-      readRevision: 4,
-      count: 1000,
-      mention: ['all', 'me'],
-    });
-    expect(queryRaw).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns unread count and semantic mention from one PostgreSQL result set', async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      {
-        threadId: 7,
-        unread: 3,
-        mentionContents: [
-          JSON.stringify({
-            text: '大家好 [@所有人](somfp://audience/all)',
-          }),
-          JSON.stringify({ text: '请看 [@我](somfp://user/self)' }),
-        ],
-      },
-      {
-        threadId: 8,
-        unread: 1,
-        mentionContents: [
-          JSON.stringify({ text: String.raw`\[@我](somfp://user/self)` }),
-        ],
-      },
-    ]);
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(
-      svc.unreadAttentionByThread(42, 'SELF', [7, 8]),
-    ).resolves.toEqual(
-      new Map([
-        [7, { count: 3, mention: ['all', 'me'] }],
-        [8, { count: 1, mention: [] }],
-      ]),
-    );
-    expect(queryRaw).toHaveBeenCalledTimes(1);
-  });
-
-  it('applies global and per-thread dismiss bounds before deriving away count and mention', async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      {
-        threadId: 7,
-        cnt: 2n,
-        latest: 12,
-        mentionContents: [JSON.stringify({ text: '[@我](somfp://user/self)' })],
-      },
-    ]);
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(
-      svc.awayAttentionByThread(
-        42,
-        'self',
-        30,
-        { 7: 10 },
-        [42],
-        1000,
-        undefined,
-        100n,
-      ),
-    ).resolves.toEqual(
-      new Map([[7, { count: 2, latestSeq: 12, mention: ['me'] }]]),
-    );
-
-    expect(queryRaw).toHaveBeenCalledTimes(1);
   });
 });

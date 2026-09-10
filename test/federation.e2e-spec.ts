@@ -770,7 +770,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('Step 2: a federated message advances the peer client feed and emits its throttled wake', async () => {
     const beforeFeed = await appB.database.query.account.findFirst({
       where: eq(account.id, bobLocalIdB),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { threadFeedEndId: true },
     });
     expect(beforeFeed).toBeDefined();
     // Open bob's SSE stream before alice sends so the throttled state-feed wake is observed end to end.
@@ -846,28 +846,28 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       const wake = (await waitForSseEvent(
         reader,
         (event, data) =>
-          event === 'STATE_FEED_UPDATED' &&
+          event === 'THREAD_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          typeof (data as { feedId?: unknown }).feedId === 'number' &&
-          (data as { feedId: number }).feedId >
-            beforeFeed!.stateFeedAllocatedThrough,
+          typeof (data as { threadFeedEndId?: unknown }).threadFeedEndId ===
+            'number' &&
+          (data as { threadFeedEndId: number }).threadFeedEndId >
+            beforeFeed!.threadFeedEndId,
         10_000,
-      )) as { feedId: number };
-      expect(wake.feedId).toBeGreaterThan(
-        beforeFeed!.stateFeedAllocatedThrough,
+      )) as { threadFeedEndId: number };
+      expect(wake.threadFeedEndId).toBeGreaterThan(beforeFeed!.threadFeedEndId);
+      await vi.waitFor(
+        async () => {
+          const head = await appB.database.query.accountThreadState.findFirst({
+            where: and(
+              eq(accountThreadState.accountId, bobLocalIdB),
+              eq(accountThreadState.threadId, bobLocalThreadId),
+            ),
+          });
+          expect(head?.messageEndSeq).toBeGreaterThanOrEqual(bobLocalSeq);
+        },
+        { timeout: 10_000, interval: 100 },
       );
-      const head = await appB.database.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bobLocalIdB),
-          eq(clientStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-        ),
-        orderBy: desc(clientStateFeed.feedId),
-      });
-      expect(head?.body).toMatchObject({
-        threadId: bobLocalThreadId,
-        messageEndSeq: bobLocalSeq,
-      });
     } finally {
       await reader.cancel();
     }
@@ -1129,7 +1129,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           galleryFileDigest,
         ],
       },
-
     ];
 
     const sourceRows = await appA.database.transaction(async (tx) => {
@@ -1270,7 +1269,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // text reply is also directly forwarded to prove that reply context is intentionally stripped.
     const directSources = [
       ...sourceRows.map((row, index) => ({
-        seq: row.seq, contentType: sourceSpecs[index].contentType,
+        seq: row.seq,
+        contentType: sourceSpecs[index].contentType,
       })),
       { seq: innerSeq, contentType: ContentType.FORWARD },
       {
@@ -1300,6 +1300,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const destinationThreadA = await alicesThreadIdOnA();
     const outerClientMessageId = randomUUID();
+    // The outer carrier contains the source rows and one complete inner bundle.
+    const outerMessageCount = sourceRows.length * 2 + 1;
     const outerPayload = {
       threadId: destinationThreadA,
       sourceMessages: [
@@ -1339,7 +1341,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           account: 'alice',
           domain: DOM_A,
         });
-        expect(importedOnB?.forwardMessage?.bundle.messageCount).toBe(19);
+        expect(importedOnB?.forwardMessage?.bundle.messageCount).toBe(
+          outerMessageCount,
+        );
       },
       { timeout: 15_000, interval: 100 },
     );
@@ -1433,7 +1437,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           account: 'bob',
           domain: DOM_B,
         });
-        expect(relayedOnA?.forwardMessage?.bundle.messageCount).toBe(20);
+        expect(relayedOnA?.forwardMessage?.bundle.messageCount).toBe(
+          outerMessageCount + 1,
+        );
         expect(
           await appA.database.query.forwardBundleDependency.findMany({
             where: eq(
@@ -1465,7 +1471,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           account: 'alice',
           domain: DOM_A,
         });
-        expect(finalOnB?.forwardMessage?.bundle.messageCount).toBe(21);
+        expect(finalOnB?.forwardMessage?.bundle.messageCount).toBe(
+          outerMessageCount + 2,
+        );
         expect(
           await appB.database.query.forwardBundleDependency.findMany({
             where: eq(
@@ -2038,7 +2046,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // alice sends through the origin hub; the mirror commits one client thread head and wakes bob.
     const beforeGroupFeed = await appB.database.query.account.findFirst({
       where: eq(account.id, bobLocalIdB),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { threadFeedEndId: true },
     });
     expect(beforeGroupFeed).toBeDefined();
     const reader = await openSse(appB.baseUrl, tokenB);
@@ -2071,25 +2079,27 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       await waitForSseEvent(
         reader,
         (event, data) =>
-          event === 'STATE_FEED_UPDATED' &&
+          event === 'THREAD_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          typeof (data as { feedId?: unknown }).feedId === 'number' &&
-          (data as { feedId: number }).feedId >
-            beforeGroupFeed!.stateFeedAllocatedThrough,
+          typeof (data as { threadFeedEndId?: unknown }).threadFeedEndId ===
+            'number' &&
+          (data as { threadFeedEndId: number }).threadFeedEndId >
+            beforeGroupFeed!.threadFeedEndId,
         10_000,
       );
-      const head = await appB.database.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bobLocalIdB),
-          eq(clientStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-        ),
-        orderBy: desc(clientStateFeed.feedId),
-      });
-      expect(head?.body).toMatchObject({
-        threadId: mirrorB.id,
-        messageEndSeq: helloGroupSeq,
-      });
+      await vi.waitFor(
+        async () => {
+          const head = await appB.database.query.accountThreadState.findFirst({
+            where: and(
+              eq(accountThreadState.accountId, bobLocalIdB),
+              eq(accountThreadState.threadId, mirrorB.id),
+            ),
+          });
+          expect(head?.messageEndSeq).toBeGreaterThanOrEqual(helloGroupSeq);
+        },
+        { timeout: 10_000, interval: 100 },
+      );
     } finally {
       await reader.cancel();
     }
@@ -2101,7 +2111,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   }, 60_000);
 
   it('projects a federated join application and converges reject, renew, and revoke', async () => {
-    const { token: tokenErin } = await registerAndLogin(
+    const { id: erinLocalIdB, token: tokenErin } = await registerAndLogin(
       appB,
       'erin-join-projection',
       'Erin',
@@ -2172,6 +2182,43 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 5000, interval: 100 },
     );
 
+    // Renew only after the rejecting fact and its reverse command have converged.
+    // Before this boundary a first, delayed rejection may still revoke the old application.
+    await vi.waitFor(
+      async () => {
+        const mirror = await findGroupThreadByAccount(appB, firstGroupAccount);
+        expect(mirror).toBeDefined();
+        const relation = await findGroupRelationship(
+          appB.database,
+          mirror!.id,
+          erinLocalIdB,
+        );
+        const intents = await appB.database.query.relationshipIntent.findMany({
+          where: eq(relationshipIntent.pairId, relation.pair!.id),
+        });
+        expect(intents).toHaveLength(2);
+        expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
+          true,
+        );
+        const origin = await findGroupRelationship(
+          appA.database,
+          firstGroupThreadA,
+          {
+            account: 'erin-join-projection',
+            domain: DOM_B,
+            namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+          },
+        );
+        const originIntents =
+          await appA.database.query.relationshipIntent.findMany({
+            where: eq(relationshipIntent.pairId, origin.pair!.id),
+          });
+        expect(
+          originIntents.every((intent) => intent.status === 'REVOKED'),
+        ).toBe(true);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
     const renewed = await request(appB.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenErin}`)
@@ -2496,11 +2543,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const [bobFeedBeforeShared, daveFeedBeforeShared] = await Promise.all([
       appB.database.query.account.findFirst({
         where: eq(account.id, bobLocalIdB),
-        columns: { stateFeedAllocatedThrough: true },
+        columns: { threadFeedEndId: true },
       }),
       appB.database.query.account.findFirst({
         where: eq(account.id, daveLocalIdB),
-        columns: { stateFeedAllocatedThrough: true },
+        columns: { threadFeedEndId: true },
       }),
     ]);
     expect(bobFeedBeforeShared).toBeDefined();
@@ -2605,15 +2652,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(daveRelationship.pair?.active).toBe(true);
       const isFeedWakeAfter =
         (after: number) => (event: string, data: unknown) =>
-          event === 'STATE_FEED_UPDATED' &&
+          event === 'THREAD_FEED_UPDATED' &&
           typeof data === 'object' &&
           data !== null &&
-          typeof (data as { feedId?: unknown }).feedId === 'number' &&
-          (data as { feedId: number }).feedId > after;
+          typeof (data as { threadFeedEndId?: unknown }).threadFeedEndId ===
+            'number' &&
+          (data as { threadFeedEndId: number }).threadFeedEndId > after;
       await Promise.all([
         bobEvents
           .waitFor(
-            isFeedWakeAfter(bobFeedBeforeShared!.stateFeedAllocatedThrough),
+            isFeedWakeAfter(bobFeedBeforeShared!.threadFeedEndId),
             30_000,
           )
           .catch((error) => {
@@ -2623,7 +2671,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         daveEvents
           .waitFor(
-            isFeedWakeAfter(daveFeedBeforeShared!.stateFeedAllocatedThrough),
+            isFeedWakeAfter(daveFeedBeforeShared!.threadFeedEndId),
             30_000,
           )
           .catch((error) => {
@@ -2633,17 +2681,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
       ]);
       for (const userId of [bobLocalIdB, daveLocalIdB]) {
-        const head = await appB.database.query.clientStateFeed.findFirst({
-          where: and(
-            eq(clientStateFeed.userId, userId),
-            eq(clientStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-          ),
-          orderBy: desc(clientStateFeed.feedId),
-        });
-        expect(head?.body).toMatchObject({
-          threadId: firstMirrorBId,
-          messageEndSeq: hiBoth.seq,
-        });
+        await vi.waitFor(
+          async () => {
+            const head = await appB.database.query.accountThreadState.findFirst(
+              {
+                where: and(
+                  eq(accountThreadState.accountId, userId),
+                  eq(accountThreadState.threadId, firstMirrorBId),
+                ),
+              },
+            );
+            expect(head?.messageEndSeq).toBeGreaterThanOrEqual(hiBoth.seq);
+          },
+          { timeout: 10_000, interval: 100 },
+        );
       }
     } finally {
       await readerBob.cancel();
@@ -3225,6 +3276,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .returning({ id: relationshipPair.id });
     await appB.database.insert(relationshipIntent).values({
       pairId: dishonestPair.id,
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
       authorSide: 'A',
       status: 'REQUESTED',
       note: '',
@@ -3517,17 +3570,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           });
         expect(participant?.messageVisibleThroughSeq).toBe(boundary!.seq);
-        expect(
-          await appB.database.query.clientStateFeed.findFirst({
-            where: and(
-              eq(clientStateFeed.userId, bobLocalIdB),
-              eq(
-                clientStateFeed.compactionKey,
-                JSON.stringify(['THREAD_CONTENT_HEAD', threadB!.threadId]),
-              ),
-            ),
-          }),
-        ).toBeDefined();
+        expect(participant?.messageEndSeq).toBeGreaterThanOrEqual(
+          boundary!.seq,
+        );
       },
       { timeout: 40_000, interval: 150 },
     );

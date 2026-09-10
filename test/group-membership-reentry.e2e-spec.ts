@@ -1,5 +1,14 @@
 import { accountAddressInTx } from '../src/user/account-address.js';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
@@ -12,7 +21,6 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   groupMetaMemberFeed,
   message,
-  messageThread,
   accountThreadState,
 } from '../src/database/schema.js';
 import { readCurrentGroupMemberInTx } from '../src/group-meta/current-group-roster.js';
@@ -45,6 +53,22 @@ describe('group membership re-entry and ownership transfer', () => {
   });
 
   afterAll(async () => app.close());
+
+  afterEach(async () => {
+    // Source transactions now admit background fanout. Do not truncate their
+    // threads while the scheduler is still executing committed work.
+    await vi.waitFor(
+      async () => {
+        const outstanding = await database.pool.query(`
+        SELECT id, status FROM "DurableTask"
+        WHERE "taskType" IN ('FAN_OUT_THREAD_CONTENT', 'FAN_OUT_ACCOUNT_THREAD_CONTENT')
+          AND status NOT IN ('SUCCEEDED', 'SUPERSEDED', 'REJECTED')
+      `);
+        expect(outstanding.rows).toEqual([]);
+      },
+      { timeout: 15000, interval: 50 },
+    );
+  });
 
   async function befriend(
     first: { id: number; token: string; account: string },
@@ -122,6 +146,16 @@ describe('group membership re-entry and ownership transfer', () => {
     const groupId = created.body.data.threadId as number;
     await inviteAndJoin(groupId, owner, member);
 
+    const oldMessage = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        threadId: groupId,
+        content: JSON.stringify({ text: 'before-exit' }),
+      });
+    expect(oldMessage.body.code).toBe(BusinessCode.OK);
+    const oldSeq = oldMessage.body.data.seq as number;
+
     const kicked = await request(app.getHttpServer())
       .post('/api/v1/group/kick')
       .set('Authorization', `Bearer ${owner.token}`)
@@ -148,6 +182,8 @@ describe('group membership re-entry and ownership transfer', () => {
       ),
     });
     expect(participant?.messageVisibleThroughSeq).toBeNull();
+    expect(participant!.lastReadSeq).toBeGreaterThanOrEqual(oldSeq);
+    expect(participant!.previewSeqs).toEqual([]);
     expect(rejoined).toMatchObject({ operation: 'UPSERT' });
     expect(rejoined!.feedId).toBeGreaterThan(departed!.feedId);
 

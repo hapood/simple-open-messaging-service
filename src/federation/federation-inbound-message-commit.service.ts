@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -10,7 +10,6 @@ import { MessageDeleteType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import { type ForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import {
   FederationInboundMessagePageService,
@@ -57,8 +56,7 @@ interface SatisfiedQuoteDependency {
 
 export interface ForwardTombstonePageEffect {
   quoteDependencies: SatisfiedQuoteDependency[];
-  recipientUserIds: number[];
-  relayDeletion?: boolean;
+  deletions: { messageSeq: number; deletionSeq: number }[];
 }
 
 /** Commits fetched message and tombstone pages inside caller-owned cursor transactions. */
@@ -138,82 +136,7 @@ export class FederationInboundMessageCommitService {
       threadLock?: ThreadContentLock;
     },
   ): Promise<void> {
-    const threadLock = await requireThreadContentLockInTx(
-      tx,
-      params.threadId,
-      params.threadLock,
-    );
-    const staged = await tx.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, params.threadId),
-        eq(tables.message.sourceNamespaceId, params.namespaceId),
-        eq(tables.message.localState, 'STUB'),
-        sql`${tables.message.originSeq} >= ${params.throughSeq}`,
-        sql`${tables.message.originSeq} < ${params.beforeSeq}`,
-      ),
-      orderBy: asc(tables.message.seq),
-    });
-    let tombstoneEndSeq: number | null = null;
-    for (const item of staged) {
-      if (item.originSeq === null)
-        throw new Error('reverse STUB has no publisher sequence');
-      if (item.creatorAccount === null || item.creatorDomain === null)
-        throw new Error('reverse STUB has no federated author');
-      if (!item.isDeleted) continue;
-      const pending = await tx.query.federatedMessageTombstone.findFirst({
-        where: and(
-          eq(tables.federatedMessageTombstone.threadId, params.threadId),
-          eq(
-            tables.federatedMessageTombstone.sourceNamespaceId,
-            params.namespaceId,
-          ),
-          eq(tables.federatedMessageTombstone.messageSeq, item.originSeq),
-        ),
-        columns: { type: true },
-      });
-      let deletionSeq: number;
-      if (pending) {
-        const deletion = await DeletedMessageService.ensureFactInTx(tx, {
-          threadLock,
-          threadId: params.threadId,
-          messageSeq: item.seq,
-          type: pending.type,
-          sourceNamespaceId: params.namespaceId,
-          updatedAt: new Date(),
-        });
-        deletionSeq = deletion.deletionSeq;
-        await tx
-          .delete(tables.federatedMessageTombstone)
-          .where(
-            and(
-              eq(tables.federatedMessageTombstone.threadId, params.threadId),
-              eq(
-                tables.federatedMessageTombstone.sourceNamespaceId,
-                params.namespaceId,
-              ),
-              eq(tables.federatedMessageTombstone.messageSeq, item.originSeq),
-            ),
-          );
-      } else {
-        const existing = await tx.query.deletedMessage.findFirst({
-          where: and(
-            eq(tables.deletedMessage.threadId, params.threadId),
-            eq(tables.deletedMessage.messageSeq, item.seq),
-          ),
-          columns: { deletionSeq: true },
-        });
-        if (!existing)
-          throw new Error('deleted reverse STUB has no tombstone fact');
-        deletionSeq = existing.deletionSeq;
-      }
-      tombstoneEndSeq = Math.max(tombstoneEndSeq ?? deletionSeq, deletionSeq);
-    }
-    if (tombstoneEndSeq !== null)
-      await ClientThreadContentHeadWriter.publishTombstone(
-        tx,
-        params.threadId,
-        tombstoneEndSeq,
-      );
+    await requireThreadContentLockInTx(tx, params.threadId, params.threadLock);
     await tx.execute(sql`
       UPDATE "Message" staged
       SET "localState" = 'READY', "updatedAt" = CURRENT_TIMESTAMP
@@ -240,8 +163,7 @@ export class FederationInboundMessageCommitService {
       params.threadLock,
     );
     const satisfied: SatisfiedQuoteDependency[] = [];
-    const recipientUserIds = new Set<number>();
-    let relayDeletion = false;
+    const deletions: { messageSeq: number; deletionSeq: number }[] = [];
     for (const item of params.response.data.tombstones) {
       if (
         !Number.isSafeInteger(item.deletionSeq) ||
@@ -273,7 +195,6 @@ export class FederationInboundMessageCommitService {
           'tombstone query returned an item for a different thread',
           HttpStatus.BAD_REQUEST,
         );
-      for (const userId of route.recipients) recipientUserIds.add(userId);
       const authorityDomain =
         route.groupOriginDomain ?? params.response.peerDomain;
       if (
@@ -301,7 +222,7 @@ export class FederationInboundMessageCommitService {
         publishAsAuthority: route.memberSubmission,
         expectedFederationVersion: route.federationVersion,
       });
-      if (route.memberSubmission && deletion) relayDeletion = true;
+      if (deletion) deletions.push(deletion);
       satisfied.push({
         threadId: route.threadId,
         sourceNamespaceId: params.response.peerToken.namespaceId,
@@ -310,8 +231,7 @@ export class FederationInboundMessageCommitService {
     }
     return {
       quoteDependencies: satisfied,
-      recipientUserIds: [...recipientUserIds],
-      relayDeletion,
+      deletions,
     };
   }
 

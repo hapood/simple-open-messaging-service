@@ -14,7 +14,6 @@ function task(
 ): DurableTask {
   return {
     id: 1n,
-    parentTaskId: null,
     kind: 'MUTATION',
     scopeType: 'GROUP',
     scopeKey: 'group',
@@ -23,7 +22,6 @@ function task(
     payload,
     checkpoint: {},
     coalescingKey: null,
-    supersededByTaskId: null,
     status: 'PROCESSING',
     resultCode: null,
     lastError: null,

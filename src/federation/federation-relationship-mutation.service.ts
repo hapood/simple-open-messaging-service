@@ -1,3 +1,4 @@
+import { isGroupDissolvedInTx } from '../group/group-state.js';
 import {
   groupState as groupStateTable,
   readGroupState,
@@ -93,6 +94,8 @@ export class FederationRelationshipMutationService {
       allowOwnerDeactivation,
       initialRole,
     } = options;
+    if (status !== 'REVOKED' && (await isGroupDissolvedInTx(tx, threadId)))
+      return new Map<string, bigint>();
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [thread] = await tx
       .select({ groupId: tables.messageThread.id })
@@ -239,15 +242,7 @@ export class FederationRelationshipMutationService {
       if (feedId !== null)
         clientFeedUpdates.push({ userId: memberUserId, feedId });
     }
-    if (membership.request.status === 'REVOKED') {
-      return this.stateFeed.writeManyInTx(tx, [relationship]);
-    }
-    return this.writeIdentityRelationshipStateToPeerInTx(
-      tx,
-      memberUserId,
-      relationship,
-      membership.request.status === 'REQUESTED',
-    );
+    return this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   async writeGroupRelationshipIntentInTx(
@@ -265,6 +260,8 @@ export class FederationRelationshipMutationService {
       allowOwnerDeactivation,
       initialRole,
     } = options;
+    if (status !== 'REVOKED' && (await isGroupDissolvedInTx(tx, threadId)))
+      return new Map<string, bigint>();
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [state] = await tx
       .select({
@@ -447,15 +444,7 @@ export class FederationRelationshipMutationService {
         expiresAt: current.expiresAt,
       },
     };
-    if (current.status === 'REVOKED') {
-      return this.stateFeed.writeManyInTx(tx, [relationship]);
-    }
-    return this.writeIdentityRelationshipStateToPeerInTx(
-      tx,
-      localUserId,
-      relationship,
-      true,
-    );
+    return this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   async writeAddressedRelationshipRequestInTx(
@@ -511,9 +500,7 @@ export class FederationRelationshipMutationService {
       )
     ).firstIntent;
     if (!current) throw new Error('addressed friend request write disappeared');
-    return this.writeIdentityRelationshipStateToPeerInTx(
-      tx,
-      localUserId,
+    return this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain: remote.domain,
         namespaceId: remote.namespaceId,
@@ -530,19 +517,7 @@ export class FederationRelationshipMutationService {
           expiresAt: current.expiresAt,
         },
       },
-      true,
-    );
-  }
-
-  private async writeIdentityRelationshipStateToPeerInTx(
-    tx: DatabaseTransaction,
-    identityUserId: number,
-    relationship: PeerStateFeedWrite,
-    forceProfileReindex: boolean,
-  ): Promise<Map<string, bigint>> {
-    void identityUserId;
-    void forceProfileReindex;
-    return this.stateFeed.writeManyInTx(tx, [relationship]);
+    ]);
   }
 
   /**
