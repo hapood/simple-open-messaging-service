@@ -361,7 +361,7 @@ export class FederationPeerLifecycle {
         })
         .from(tables.federatedPeer)
         .where(eq(tables.federatedPeer.domain, domain))
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (
         locked?.trustLevel !== 'halted' ||

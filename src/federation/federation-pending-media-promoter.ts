@@ -84,7 +84,7 @@ export class FederationPendingMediaPromoter {
         .select()
         .from(tables.message)
         .where(eq(tables.message.id, batch.messageId))
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!stagedMessage) {
         throw new Error(`inbound PendingMedia ${batchId} has no Message STUB`);

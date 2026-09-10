@@ -98,7 +98,7 @@ export class FederationNamespaceService {
       .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
       .from(federatedPeer)
       .where(eq(federatedPeer.domain, identity.domain))
-      .for('update')
+      .for('no key update')
       .limit(1);
     if (!peer) this.unavailable(identity.domain);
 
@@ -157,7 +157,7 @@ export class FederationNamespaceService {
       .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
       .from(federatedPeer)
       .where(eq(federatedPeer.domain, domain))
-      .for('update')
+      .for('no key update')
       .limit(1);
     if (!peer?.activeNamespaceId) this.unavailable(domain);
     await tx

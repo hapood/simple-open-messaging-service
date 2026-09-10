@@ -51,6 +51,7 @@ google-services.json
 # temp directory
 .temp
 .tmp
+/tmp/
 
 .npmrc
 web/public/push/sw-runtime.js

@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, sql } from 'drizzle-orm';
 import { BusinessException } from '../src/common/business.exception.js';
@@ -171,8 +170,8 @@ describe('message report workflow', () => {
         .update(message)
         .set({
           contentType,
-          creatorAccount: contentType === 'SYSTEM' ? null : 'creator',
-          creatorDomain: contentType === 'SYSTEM' ? null : 'local',
+          creatorAccount: contentType === 'SYSTEM' ? '$system' : 'creator',
+          creatorDomain: 'local',
         })
         .where(eq(message.threadId, threadId));
       await expect(
@@ -206,27 +205,6 @@ describe('message report workflow', () => {
     expect(
       (await reports.list({ skip: 0, take: 20, isDeleted: false })).list[0],
     ).not.toHaveProperty('reporter');
-  });
-
-  it('removes obsolete deletion tasks without removing content fanouts', async () => {
-    await database.db.insert(durableTask).values({
-      kind: 'MUTATION',
-      scopeType: 'THREAD',
-      scopeKey: 'obsolete-deletion',
-      taskType: 'DELETE_MESSAGE',
-      payload: { threadId, seq: 1 },
-    });
-    await mod.get(DeletedMessageService).deleteByModeration(threadId, 1);
-    await database.pool.query(
-      await readFile(
-        'database/migrations/0022_remove_message_deletion_tasks.sql',
-        'utf8',
-      ),
-    );
-    const tasks = await database.db.select().from(durableTask);
-    expect(tasks).toHaveLength(2);
-    expect(tasks.every((task) => task.kind === 'PROJECTION')).toBe(true);
-    expect(await database.db.select().from(deletedMessage)).toHaveLength(1);
   });
 
   it('commits concurrent deletions once and only enqueues content fanouts', async () => {

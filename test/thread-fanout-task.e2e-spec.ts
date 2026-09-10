@@ -132,7 +132,7 @@ describe('transactional thread fanout queue', () => {
   }
   async function depart(users: Array<{ id: number }>) {
     await database.db.transaction(async (tx) => {
-      const boundary = await messages.writeDepartureMessageInTx(
+      const boundary = await messages.writeSystemMessageInTx(
         tx,
         threadId,
         SystemMessageType.FRIEND_REMOVED,
@@ -235,7 +235,7 @@ describe('transactional thread fanout queue', () => {
     const users = await departingPair();
     await expect(
       database.db.transaction(async (tx) => {
-        await messages.writeDepartureMessageInTx(
+        await messages.writeSystemMessageInTx(
           tx,
           threadId,
           SystemMessageType.FRIEND_REMOVED,
@@ -307,7 +307,7 @@ describe('transactional thread fanout queue', () => {
       .set({ active: true })
       .where(eq(relationshipPair.id, pair.id));
     await database.db.transaction(async (tx) => {
-      const boundary = await messages.writeDepartureMessageInTx(
+      const boundary = await messages.writeSystemMessageInTx(
         tx,
         threadId,
         SystemMessageType.GROUP_LEFT,

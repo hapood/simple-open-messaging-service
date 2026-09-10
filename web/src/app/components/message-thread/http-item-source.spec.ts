@@ -373,6 +373,36 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
   });
 
+  it('renders the system sender without requesting a sender profile and supplies thread context', async () => {
+    const resolver = { resolve: vi.fn(), prepare: vi.fn() };
+    const notification = {
+      ...row(10, 2),
+      contentType: 'SYSTEM' as const,
+      profileRev: 0,
+      creator: { account: '$system', domain: 'local', namespaceId: 0 },
+      content: JSON.stringify({
+        type: 'FRIEND_REMOVED',
+        reason: 'USER_REQUEST',
+        initiator: { account: 'alice', domain: 'local' },
+      }),
+    };
+    const { src } = setup(
+      { code: 0, message: 'ok', data: [notification], hasMore: false },
+      42,
+      new ThreadSendOutbox(),
+      resolver as unknown as ProfileResolutionService,
+    );
+    const items = await src.init(-1, 50, 0);
+    expect(items[0].data).toMatchObject({
+      type: 'system',
+      threadId: 42,
+      isSelf: false,
+      systemPeer: { account: 'alice', domain: 'local', name: 'Alice' },
+    });
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    src.destroy();
+  });
+
   it('renders on PENDING and resolves later messages from an already known sender', async () => {
     const pending = new Map<number, Subject<ResolvedProfile>>();
     const resolver = {

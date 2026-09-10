@@ -126,7 +126,7 @@ export class FederationThreadSyncStateService {
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}
         AND "namespaceId" = ${params.namespaceId}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     const state = stateResult.rows[0];
     if (!state) {
@@ -408,7 +408,7 @@ export class FederationThreadSyncStateService {
       WHERE t.id = ${threadId}
         AND ${eligiblePreviewOwnerSql(sql`s`, sql`t`, sql`a`)}
       ORDER BY s."accountId"
-      FOR UPDATE OF s`);
+      FOR NO KEY UPDATE OF s`);
     for (const owner of owners.rows) {
       await applyReadPositionInTx(tx, owner.accountId, {
         threadId,
@@ -588,7 +588,7 @@ export class FederationThreadSyncStateService {
       WHERE "threadId" = ${params.threadId}
         AND "namespaceId" = ${params.namespaceId}
         AND "authorizationEpoch" = ${params.authorizationEpoch}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     const state = stateResult.rows[0];
     if (!state) throw new Error('reverse synchronization state changed');
@@ -725,7 +725,7 @@ export class FederationThreadSyncStateService {
       WHERE "threadId" = ${params.threadId}
         AND "namespaceId" = ${params.namespaceId}
         AND "authorizationEpoch" = ${params.authorizationEpoch}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     if (
       state.rows[0]?.activeGapId === null ||

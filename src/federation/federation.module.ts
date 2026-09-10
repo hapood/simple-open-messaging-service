@@ -1,3 +1,6 @@
+import { StateFeedFanoutTaskHandler } from '../state-feed/state-feed-fanout-task.handler.js';
+import { FederationRelationshipTaskAdmission } from './federation-relationship-task-admission.service.js';
+import { FederationRelationshipTaskHandler } from './federation-relationship-task.handler.js';
 import { FederationReverseRevokeService } from './federation-reverse-revoke.service.js';
 import { Global, Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -133,6 +136,9 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     QuoteResolutionController,
   ],
   providers: [
+    StateFeedFanoutTaskHandler,
+    FederationRelationshipTaskAdmission,
+    FederationRelationshipTaskHandler,
     FederationReverseRevokeService,
     FederationThreadFanoutTaskHandler,
     KeypairService,

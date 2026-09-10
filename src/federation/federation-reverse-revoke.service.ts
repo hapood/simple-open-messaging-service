@@ -1,3 +1,9 @@
+import { eq } from 'drizzle-orm';
+import { durableTask } from '../database/schema.js';
+import {
+  enqueueReverseP2PRevokeInTx,
+  enqueueReverseGroupRevokeInTx,
+} from '../relationship/reverse-revoke-task.js';
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -12,7 +18,6 @@ import {
   ClientStateFeedService,
   type PendingClientStateFeedUpdate,
 } from '../client-state-feed/client-state-feed.service.js';
-import { systemAccountIdInTx } from '../user/system-account.js';
 import {
   readAccountTarget,
   type AccountTarget,
@@ -22,7 +27,7 @@ import { relationshipTaskAuthorUserId } from '../relationship/relationship-task-
 import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
-/** Remote facts are applied immediately; the reverse local intent is durable command work. */
+/** Applies the locally owned opposite direction after relationship deactivation. */
 @Injectable()
 export class FederationReverseRevokeService {
   constructor(
@@ -39,16 +44,7 @@ export class FederationReverseRevokeService {
     local: { id: number; account: string; domain: string },
     remote: NamespacedAddress,
   ): Promise<void> {
-    await this.tasks.enqueueTaskInTx(tx, {
-      scope: { type: 'USER_PAIR', endpoints: [local, remote] },
-      taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
-      actorUserId: await systemAccountIdInTx(tx),
-      payload: {
-        operation: 'RESPOND_TO_REVOKE',
-        intentAuthorUserId: local.id,
-        targetUserId: remote,
-      },
-    });
+    await enqueueReverseP2PRevokeInTx(tx, this.tasks, local.id, remote);
   }
 
   /** Reuses the group business lock already held by remote intent application. */
@@ -61,22 +57,7 @@ export class FederationReverseRevokeService {
       author: 'MEMBER' | 'GROUP';
     },
   ): Promise<void> {
-    await this.tasks.enqueueTaskInTx(tx, {
-      scope: { type: 'GROUP', address: input.group },
-      taskType:
-        input.author === 'GROUP'
-          ? DurableTaskType.REVOKE_GROUP_RELATIONSHIP
-          : DurableTaskType.REVOKE_USER_RELATIONSHIP,
-      actorUserId: await systemAccountIdInTx(tx),
-      payload: {
-        operation: 'RESPOND_TO_REVOKE',
-        threadId: input.threadId,
-        memberUserId: input.memberUserId,
-        ...(input.author === 'MEMBER'
-          ? { intentAuthorUserId: input.memberUserId }
-          : {}),
-      },
-    });
+    await enqueueReverseGroupRevokeInTx(tx, this.tasks, input);
   }
 
   async execute(task: DurableTask): Promise<void> {
@@ -88,6 +69,11 @@ export class FederationReverseRevokeService {
       throw new Error('Invalid reverse revoke task');
     const updates: PendingClientStateFeedUpdate[] = [];
     const peers = await this.database.db.transaction(async (tx) => {
+      const current = await tx.query.durableTask.findFirst({
+        where: eq(durableTask.id, task.id),
+      });
+      if (current?.checkpoint.reverseRevokeDone === true)
+        return new Map<string, bigint>();
       let allocated: Map<string, bigint>;
       // Each writer enters through its existing business/pair/thread/feed lock order.
       if (

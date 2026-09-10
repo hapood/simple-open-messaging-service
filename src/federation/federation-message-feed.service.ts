@@ -105,26 +105,29 @@ export class FederationMessageFeedService {
     selector: FederationThreadQuery,
   ): Promise<never> {
     const { messageAccessAfterSeq, currentEnd } =
-      await this.database.db.transaction(async (tx) => {
-        const authorized = await resolveAuthorizedFederationThreadInTx(
-          tx,
-          peerDomain,
-          namespaceId,
-          selector,
-        );
-        return {
-          messageAccessAfterSeq: authorized.messageAccessAfterSeq,
-          currentEnd: Math.max(
-            await this.readAdvertisedMessageEnd(
-              tx,
-              peerDomain,
-              namespaceId,
-              selector,
+      await this.database.db.transaction(
+        async (tx) => {
+          const authorized = await resolveAuthorizedFederationThreadInTx(
+            tx,
+            peerDomain,
+            namespaceId,
+            selector,
+          );
+          return {
+            messageAccessAfterSeq: authorized.messageAccessAfterSeq,
+            currentEnd: Math.max(
+              await this.readAdvertisedMessageEnd(
+                tx,
+                peerDomain,
+                namespaceId,
+                selector,
+              ),
+              authorized.messageAccessAfterSeq,
             ),
-            authorized.messageAccessAfterSeq,
-          ),
-        };
-      });
+          };
+        },
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
@@ -195,139 +198,149 @@ export class FederationMessageFeedService {
       this.invalidThrough();
     if (before !== undefined && through !== undefined && through > before)
       this.invalidReverseThrough();
-    return this.database.db.transaction(async (tx) => {
-      const { threadId, messageAccessAfterSeq, address, groupQueryDirection } =
-        await resolveAuthorizedFederationThreadInTx(
+    return this.database.db.transaction(
+      async (tx) => {
+        const {
+          threadId,
+          messageAccessAfterSeq,
+          address,
+          groupQueryDirection,
+        } = await resolveAuthorizedFederationThreadInTx(
           tx,
           peerDomain,
           namespaceId,
           selector,
         );
-      const currentEnd = Math.max(
-        await this.readAdvertisedMessageEnd(
+        const currentEnd = Math.max(
+          await this.readAdvertisedMessageEnd(
+            tx,
+            peerDomain,
+            namespaceId,
+            selector,
+          ),
+          messageAccessAfterSeq,
+        );
+        const resumeAfter = messageAccessAfterSeq;
+        const resumeBefore = currentEnd + 1;
+        if (
+          (after !== undefined &&
+            (after < resumeAfter || after >= resumeBefore)) ||
+          (before !== undefined &&
+            (before <= resumeAfter + 1 || before > resumeBefore))
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+            'message query cursor is beyond the current thread end',
+            HttpStatus.OK,
+            {
+              resumeAfter,
+              resumeBefore,
+            },
+          );
+        }
+        const forward = after !== undefined;
+        const queryEnd = forward
+          ? Math.min(through ?? currentEnd, currentEnd)
+          : 0;
+        const queryStart = forward ? resumeAfter : (through ?? resumeAfter + 1);
+        const queryBefore = forward ? 0 : Math.min(before!, resumeBefore);
+        const rows = (forward ? queryEnd <= after! : queryBefore <= queryStart)
+          ? []
+          : await tx
+              .select({
+                messageId: message.id,
+                threadId: message.threadId,
+                seq: message.seq,
+                profileRev: message.profileRev,
+                originSeq: message.originSeq,
+                originServerTime: message.originServerTime,
+                sourceNamespaceId: message.sourceNamespaceId,
+                contentType: message.contentType,
+                content: message.content,
+                createdAt: message.createdAt,
+                clientMessageId: message.clientMessageId,
+                threadType: messageThread.type,
+                groupId: messageThread.id,
+                authorityNamespaceId: messageThread.authorityNamespaceId,
+                authorAccount: sql<string>`${message.creatorAccount}`,
+                authorDomain: sql<string>`${message.creatorDomain}`,
+              })
+              .from(message)
+              .innerJoin(messageThread, eq(messageThread.id, message.threadId))
+              .where(
+                and(
+                  eq(message.threadId, threadId),
+                  forward
+                    ? gt(message.seq, after!)
+                    : gte(message.seq, queryStart),
+                  forward
+                    ? lte(message.seq, queryEnd)
+                    : lt(message.seq, queryBefore),
+                  eq(message.isDeleted, false),
+                  eq(message.localState, 'READY'),
+                  ne(message.contentType, ContentType.SYSTEM),
+                  groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                    ? or(
+                        and(
+                          eq(message.creatorDomain, 'local'),
+                          eq(message.sourceNamespaceId, 0),
+                        ),
+                        and(
+                          isNotNull(message.originSeq),
+                          eq(message.sourceNamespaceId, namespaceId),
+                        ),
+                      )
+                    : undefined,
+                  includeSelf
+                    ? undefined
+                    : groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                      ? eq(message.creatorDomain, 'local')
+                      : ne(message.creatorDomain, peerDomain),
+                ),
+              )
+              .orderBy(forward ? asc(message.seq) : desc(message.seq))
+              .limit(take + 1);
+        // Look ahead within the filtered wire-visible rows. A tail containing only
+        // local system messages must exhaust the range, not produce another page.
+        const selected = rows.slice(0, take);
+        const messages = await this.serializeMessagesInTx(
           tx,
+          selected,
           peerDomain,
           namespaceId,
-          selector,
-        ),
-        messageAccessAfterSeq,
-      );
-      const resumeAfter = messageAccessAfterSeq;
-      const resumeBefore = currentEnd + 1;
-      if (
-        (after !== undefined &&
-          (after < resumeAfter || after >= resumeBefore)) ||
-        (before !== undefined &&
-          (before <= resumeAfter + 1 || before > resumeBefore))
-      ) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-          'message query cursor is beyond the current thread end',
-          HttpStatus.OK,
-          {
-            resumeAfter,
-            resumeBefore,
+          address,
+        );
+        const scannedThrough =
+          rows.length > take
+            ? selected.at(-1)!.seq
+            : forward
+              ? queryEnd
+              : queryStart;
+        return {
+          page: {
+            messages,
+            scannedThrough,
+            hasMore: forward
+              ? scannedThrough < queryEnd
+              : scannedThrough > queryStart,
           },
-        );
-      }
-      const forward = after !== undefined;
-      const queryEnd = forward
-        ? Math.min(through ?? currentEnd, currentEnd)
-        : 0;
-      const queryStart = forward ? resumeAfter : (through ?? resumeAfter + 1);
-      const queryBefore = forward ? 0 : Math.min(before!, resumeBefore);
-      const rows = (forward ? queryEnd <= after! : queryBefore <= queryStart)
-        ? []
-        : await tx
-            .select({
-              messageId: message.id,
-              threadId: message.threadId,
-              seq: message.seq,
-              profileRev: message.profileRev,
-              originSeq: message.originSeq,
-              originServerTime: message.originServerTime,
-              sourceNamespaceId: message.sourceNamespaceId,
-              contentType: message.contentType,
-              content: message.content,
-              createdAt: message.createdAt,
-              clientMessageId: message.clientMessageId,
-              threadType: messageThread.type,
-              groupId: messageThread.id,
-              authorityNamespaceId: messageThread.authorityNamespaceId,
-              authorAccount: sql<string>`${message.creatorAccount}`,
-              authorDomain: sql<string>`${message.creatorDomain}`,
-            })
-            .from(message)
-            .innerJoin(messageThread, eq(messageThread.id, message.threadId))
-            .where(
-              and(
-                eq(message.threadId, threadId),
-                forward
-                  ? gt(message.seq, after!)
-                  : gte(message.seq, queryStart),
-                forward
-                  ? lte(message.seq, queryEnd)
-                  : lt(message.seq, queryBefore),
-                eq(message.isDeleted, false),
-                eq(message.localState, 'READY'),
-                ne(message.contentType, ContentType.SYSTEM),
-                groupQueryDirection === 'MIRROR_TO_ORIGIN'
-                  ? or(
-                      and(
-                        eq(message.creatorDomain, 'local'),
-                        eq(message.sourceNamespaceId, 0),
-                      ),
-                      and(
-                        isNotNull(message.originSeq),
-                        eq(message.sourceNamespaceId, namespaceId),
-                      ),
-                    )
-                  : undefined,
-                includeSelf
-                  ? undefined
-                  : groupQueryDirection === 'MIRROR_TO_ORIGIN'
-                    ? eq(message.creatorDomain, 'local')
-                    : ne(message.creatorDomain, peerDomain),
-              ),
-            )
-            .orderBy(forward ? asc(message.seq) : desc(message.seq))
-            .limit(take + 1);
-      // Look ahead within the filtered wire-visible rows. A tail containing only
-      // local system messages must exhaust the range, not produce another page.
-      const selected = rows.slice(0, take);
-      const messages = await this.serializeMessagesInTx(
-        tx,
-        selected,
-        peerDomain,
-        namespaceId,
-        address,
-      );
-      const scannedThrough =
-        rows.length > take
-          ? selected.at(-1)!.seq
-          : forward
-            ? queryEnd
-            : queryStart;
-      return {
-        page: {
-          messages,
-          scannedThrough,
-          hasMore: forward
-            ? scannedThrough < queryEnd
-            : scannedThrough > queryStart,
-        },
-        // These coordinates are local-only and come from the same authorized
-        // snapshot as the published message, never from the requesting peer.
-        authorReferences: selected.map((row) => ({
-          seq: row.seq,
-          account: row.authorAccount,
-          domain:
-            row.authorDomain === 'local' ? this.localDomain : row.authorDomain,
-          namespaceId: row.authorDomain === 'local' ? 0 : row.sourceNamespaceId,
-          profileRev: row.profileRev,
-        })),
-      };
-    });
+          // These coordinates are local-only and come from the same authorized
+          // snapshot as the published message, never from the requesting peer.
+          authorReferences: selected.map((row) => ({
+            seq: row.seq,
+            account: row.authorAccount,
+            domain:
+              row.authorDomain === 'local'
+                ? this.localDomain
+                : row.authorDomain,
+            namespaceId:
+              row.authorDomain === 'local' ? 0 : row.sourceNamespaceId,
+            profileRev: row.profileRev,
+          })),
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 
   private invalidDirection(): never {

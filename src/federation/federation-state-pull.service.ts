@@ -110,33 +110,7 @@ export class FederationStatePullService {
           threadRoundWakes: [],
           profileResolutions: [],
         };
-        this.clientStateFeed.notifyFeedUpdates(effect.clientFeedUpdates);
-        this.pushStateFeedDomains(effect.statePushDomains);
-        for (const status of effect.localSystemMessages)
-          await this.systemMessages.publish(status);
-        for (const wake of effect.threadRoundWakes)
-          this.eventEmitter.emit(FEDERATION_THREAD_ROUND_WAKE, wake);
-        for (const resolution of effect.profileResolutions) {
-          if (resolution.rev === 0) continue;
-          void this.profileResolutions
-            .start(resolution.userId, {
-              type: 'EXACT',
-              account: resolution.account,
-              domain: resolution.domain,
-              rev: resolution.rev,
-            })
-            .catch((error: unknown) => {
-              // Post-commit preloading may outlive the intent authorizing it.
-              if (
-                error instanceof BusinessException &&
-                error.bizCode === BusinessCode.NOT_FOUND
-              )
-                return;
-              this.logger.warn(
-                `profile resolution failed for ${resolution.account}@${resolution.domain} rev ${resolution.rev}: ${(error as Error).message}`,
-              );
-            });
-        }
+        await this.publishEffect(effect);
       },
     });
     const cursor = await this.readStatePullCursor(domain, context.namespaceId);
@@ -145,6 +119,38 @@ export class FederationStatePullService {
         `state feed for ${domain} stopped at ${cursor.toString()} before required revision ${requiredRevision.toString()}`,
       );
     return cursor;
+  }
+
+  async publishEffect(
+    effect: import('./federation-state-feed-consumer.service.js').StatePageEffect,
+  ): Promise<void> {
+    this.clientStateFeed.notifyFeedUpdates(effect.clientFeedUpdates);
+    this.pushStateFeedDomains(effect.statePushDomains);
+    for (const status of effect.localSystemMessages)
+      await this.systemMessages.publish(status);
+    for (const wake of effect.threadRoundWakes)
+      this.eventEmitter.emit(FEDERATION_THREAD_ROUND_WAKE, wake);
+    for (const resolution of effect.profileResolutions) {
+      if (resolution.rev === 0) continue;
+      void this.profileResolutions
+        .start(resolution.userId, {
+          type: 'EXACT',
+          account: resolution.account,
+          domain: resolution.domain,
+          rev: resolution.rev,
+        })
+        .catch((error: unknown) => {
+          // Post-commit preloading may outlive the intent authorizing it.
+          if (
+            error instanceof BusinessException &&
+            error.bizCode === BusinessCode.NOT_FOUND
+          )
+            return;
+          this.logger.warn(
+            `profile resolution failed for ${resolution.account}@${resolution.domain} rev ${resolution.rev}: ${(error as Error).message}`,
+          );
+        });
+    }
   }
 
   private pushStateFeedDomains(domains: Iterable<string>): void {

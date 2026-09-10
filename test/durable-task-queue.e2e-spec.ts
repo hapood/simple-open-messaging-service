@@ -1,11 +1,11 @@
+import { FederationRelationshipTaskAdmission } from '../src/federation/federation-relationship-task-admission.service.js';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { readFile } from 'node:fs/promises';
 import { asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { isUniqueViolation } from '../src/database/database-error.js';
-import { account, durableTask } from '../src/database/schema.js';
+import { durableTask } from '../src/database/schema.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { saveTaskCheckpointInTx } from '../src/durable-task/task-checkpoint.js';
@@ -171,58 +171,61 @@ describe('durable task enqueue', () => {
     },
   );
 
-  it('migrates admitted dissolution cleanup into the canonical forced pending slot', async () => {
-    const [member] = await database.db
-      .insert(account)
-      .values({ account: 'forced-migration-member' })
-      .returning();
-    const scope = {
-      type: 'GROUP' as const,
-      address: { account: '!migration', domain: 'local' },
+  it('coalesces remote revoke retries and lets a later request replace pending remote work', async () => {
+    const admission = new FederationRelationshipTaskAdmission(queue);
+    const item = {
+      account: 'remote-author',
+      peerAccount: 'local-member',
+      eventType: 'RELATIONSHIP_INTENT' as const,
+      feedId: '10',
+      body: {
+        status: 'REVOKED',
+        profileRev: 0,
+        note: '',
+        requestedAt: null,
+        expiresAt: null,
+      },
     };
-    const seed = await queue.enqueueTask({
-      scope,
-      taskType: 'DISBAND_GROUP',
-      payload: { threadId: 10 },
-    });
-    await database.db
-      .update(durableTask)
-      .set({
-        taskType: 'REVOKE_DISSOLVED_GROUP_MEMBER',
-        payload: {
-          threadId: 10,
-          memberUserId: {
-            account: member.account,
-            domain: 'local',
-            namespaceId: 0,
-          },
-        },
-      })
-      .where(eq(durableTask.id, seed.taskId));
-    await database.pool.query(
-      await readFile(
-        'database/migrations/0020_forced_group_revocations.sql',
-        'utf8',
-      ),
+    await database.db.transaction((tx) =>
+      admission.deferInTx(tx, 'remote.test', 19, item),
     );
-    const [migrated] = await database.db.select().from(durableTask);
-    expect(migrated).toMatchObject({
-      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
-      payload: { threadId: 10, memberUserId: member.id },
-      coalescingKey: JSON.stringify([
-        'GROUP_MEMBER_INTENT',
-        'GROUP',
-        member.id,
-      ]),
+    const [first] = await database.db.select().from(durableTask);
+    await database.db.transaction((tx) =>
+      admission.deferInTx(tx, 'remote.test', 19, { ...item, feedId: '11' }),
+    );
+    expect(await database.db.select().from(durableTask)).toHaveLength(1);
+    expect((await database.db.select().from(durableTask))[0].payload).toEqual(
+      first.payload,
+    );
+    const request = {
+      ...item,
+      feedId: '12',
+      body: { ...item.body, status: 'REQUESTED' },
+    };
+    await database.db.transaction((tx) =>
+      admission.deferInTx(tx, 'remote.test', 19, request),
+    );
+    const [replaced] = await database.db.select().from(durableTask);
+    expect(replaced.id).toBe(first.id);
+    expect(replaced.actorUserId).toBeNull();
+    expect(replaced.payload).toMatchObject({
+      initiator: { account: 'remote-author', domain: 'remote.test' },
+      item: { body: { status: 'REQUESTED' } },
     });
-    expect(
-      await queue.enqueueTask({
-        scope,
-        taskType: 'ACCEPT_GROUP_JOIN_REQUEST',
-        actorUserId: member.id,
-        payload: { threadId: 10, memberUserId: member.id, requestId: '1' },
-      }),
-    ).toEqual(seed);
+    const running = await store.claim(replaced.id);
+    await database.db.transaction((tx) =>
+      admission.deferInTx(tx, 'remote.test', 19, item),
+    );
+    const rows = await database.db
+      .select()
+      .from(durableTask)
+      .orderBy(asc(durableTask.id));
+    expect(rows).toHaveLength(2);
+    expect(rows[0].payload).toEqual(running!.payload);
+    expect(rows[1]).toMatchObject({
+      status: 'PENDING',
+      payload: { item: { body: { status: 'REVOKED' } } },
+    });
   });
 
   it('keeps a pending forced revoke only in its own direction and only while pending', async () => {
@@ -250,6 +253,15 @@ describe('durable task enqueue', () => {
       },
     ]) {
       expect(await queue.enqueueTask({ scope, ...request })).toEqual(forced);
+      expect(
+        await database.db.query.durableTask.findFirst({
+          where: eq(durableTask.id, forced.taskId),
+        }),
+      ).toMatchObject({
+        taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+        status: 'PENDING',
+        payload: { threadId: 10, memberUserId: 7 },
+      });
     }
     expect(await database.db.select().from(durableTask)).toHaveLength(1);
     const opposite = await queue.enqueueTask({
@@ -704,7 +716,7 @@ describe('durable task enqueue', () => {
     ]);
   });
 
-  it('blocks successors behind pending, processing, and failed tasks but not rejected ones', async () => {
+  it('blocks successors behind unfinished tasks and releases them after rejection or failure', async () => {
     const groupScope = {
       type: 'GROUP' as const,
       address: { domain: 'chat.example', account: 'group-1' },
@@ -753,7 +765,7 @@ describe('durable task enqueue', () => {
     });
     const eligibleAfterFailure = await eligibleIds('GROUP_MUTATION');
     expect(eligibleAfterFailure).toContain(unrelated.taskId);
-    expect(eligibleAfterFailure).not.toContain(third.taskId);
+    expect(eligibleAfterFailure).toContain(third.taskId);
   });
 
   it('atomically supersedes a pending Group Meta head fan-out', async () => {

@@ -31,7 +31,7 @@ describe('transactional friendship activation', () => {
       })),
     };
     const writeSystemMessageInTx = vi.fn(
-      async (writerTx, id, _type, _subject, options) => {
+      async (writerTx, id, _event, options) => {
         expect(writerTx).toBe(tx);
         const calls = tx.execute.mock.calls.length;
         await requireThreadContentLockInTx(writerTx, id, options.threadLock);
@@ -78,16 +78,14 @@ describe('transactional friendship activation', () => {
       expect(h.writeSystemMessageInTx).toHaveBeenCalledExactlyOnceWith(
         h.tx,
         15,
-        SystemMessageType.FRIEND_ADDED,
-        undefined,
+        { type: SystemMessageType.FRIEND_ADDED },
         expect.objectContaining({
-          actorUserId: 2,
           threadLock: expect.objectContaining({ tx: h.tx, threadId: 15 }),
         }),
       );
       expect(h.queries).toHaveLength(2);
       expect(h.queries[1]).toContain('"RelationshipIntent"');
-      expect(h.queries[0]).toContain('FOR UPDATE OF thread');
+      expect(h.queries[0]).toContain('FOR NO KEY UPDATE OF thread');
       expect(h.queries[0]).not.toContain('pg_advisory_xact_lock');
       expect(result.clientFeedUpdates).toEqual([{ userId: 2, feedId: 85 }]);
     },

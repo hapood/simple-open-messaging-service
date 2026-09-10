@@ -78,30 +78,31 @@ export class GroupMetaFeedService {
     profileRev: number,
   ): Promise<{ memberNamespaceId: number } | null> {
     try {
-      return await this.database.db.transaction(async (tx) => {
-        const authorized = await resolveAuthorizedFederationThreadInTx(
-          tx,
-          peerDomain,
-          namespaceId,
-          { type: 'GROUP', account: groupAccount },
-        );
-        if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
-          return null;
-        const [source] = await tx
-          .select({ groupId: group.id })
-          .from(group)
-          .where(
-            and(
-              eq(groupStateFields.account, groupAccount),
-              eq(groupStateFields.domain, 'local'),
-              eq(groupStateFields.namespaceId, 0),
-            ),
-          )
-          .limit(1);
-        if (!source) return null;
-        const storedMemberDomain =
-          memberDomain === this.ourDomain ? 'local' : memberDomain;
-        const rows = await tx.execute<{ memberNamespaceId: number }>(sql`
+      return await this.database.db.transaction(
+        async (tx) => {
+          const authorized = await resolveAuthorizedFederationThreadInTx(
+            tx,
+            peerDomain,
+            namespaceId,
+            { type: 'GROUP', account: groupAccount },
+          );
+          if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
+            return null;
+          const [source] = await tx
+            .select({ groupId: group.id })
+            .from(group)
+            .where(
+              and(
+                eq(groupStateFields.account, groupAccount),
+                eq(groupStateFields.domain, 'local'),
+                eq(groupStateFields.namespaceId, 0),
+              ),
+            )
+            .limit(1);
+          if (!source) return null;
+          const storedMemberDomain =
+            memberDomain === this.ourDomain ? 'local' : memberDomain;
+          const rows = await tx.execute<{ memberNamespaceId: number }>(sql`
           SELECT latest."memberNamespaceId"
           FROM (
             SELECT member_fact."memberNamespaceId", member_fact.operation, member_fact.body
@@ -115,8 +116,10 @@ export class GroupMetaFeedService {
           WHERE latest.operation = 'UPSERT'
             AND latest.body ->> 'profileRev' = ${profileRev.toString()}
         `);
-        return rows.rows[0] ?? null;
-      });
+          return rows.rows[0] ?? null;
+        },
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
     } catch (error) {
       if (
         error instanceof BusinessException &&
@@ -318,7 +321,7 @@ export class GroupMetaFeedService {
       SELECT "feedEndId"
       FROM "GroupMetaFeed"
       WHERE "threadId" = ${groupId}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     const feed = locked.rows[0];
     if (!feed) throw new Error('group meta feed is missing');
@@ -345,72 +348,75 @@ export class GroupMetaFeedService {
     take = DEFAULT_TAKE,
     through?: bigint,
   ): Promise<GroupMetaFeedPage> {
-    return this.database.db.transaction(async (tx) => {
-      const authorized = await resolveAuthorizedFederationThreadInTx(
-        tx,
-        peerDomain,
-        namespaceId,
-        { type: 'GROUP', account },
-      );
-      if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
-        throw new BusinessException(
-          BusinessCode.FORBIDDEN,
-          'group meta is not visible to this peer',
-          HttpStatus.OK,
+    return this.database.db.transaction(
+      async (tx) => {
+        const authorized = await resolveAuthorizedFederationThreadInTx(
+          tx,
+          peerDomain,
+          namespaceId,
+          { type: 'GROUP', account },
         );
-      const [source] = await tx
-        .select({ groupId: group.id })
-        .from(group)
-        .where(
-          and(
-            eq(groupStateFields.account, account),
-            eq(groupStateFields.domain, 'local'),
-            eq(groupStateFields.namespaceId, 0),
+        if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
+          throw new BusinessException(
+            BusinessCode.FORBIDDEN,
+            'group meta is not visible to this peer',
+            HttpStatus.OK,
+          );
+        const [source] = await tx
+          .select({ groupId: group.id })
+          .from(group)
+          .where(
+            and(
+              eq(groupStateFields.account, account),
+              eq(groupStateFields.domain, 'local'),
+              eq(groupStateFields.namespaceId, 0),
+            ),
+          )
+          .limit(1);
+        if (!source)
+          throw new BusinessException(
+            BusinessCode.FORBIDDEN,
+            'group meta is not visible to this peer',
+            HttpStatus.OK,
+          );
+        const [feed] = await tx
+          .select({ feedEndId: groupMetaFeed.feedEndId })
+          .from(groupMetaFeed)
+          .where(eq(groupMetaFeed.threadId, source.groupId))
+          .limit(1);
+        const [audience] = await tx
+          .select({ visibleAfter: threadAudience.groupMetaVisibleAfter })
+          .from(threadAudience)
+          .where(
+            and(
+              eq(threadAudience.threadId, authorized.threadId),
+              eq(threadAudience.targetDomain, peerDomain),
+              eq(threadAudience.targetNamespaceId, namespaceId),
+              sql`${threadAudience.localUserId} IS NULL`,
+            ),
+          )
+          .limit(1);
+        const page = await readGroupMetaPageInTx(tx, {
+          groupId: source.groupId,
+          account,
+          mode,
+          after,
+          take,
+          through,
+          end: feed?.feedEndId ?? 0n,
+          visibleAfter: audience?.visibleAfter ?? 0n,
+        });
+        return {
+          ...page,
+          items: page.items.map((item) =>
+            'domain' in item && item.domain === 'local'
+              ? { ...item, domain: this.ourDomain }
+              : item,
           ),
-        )
-        .limit(1);
-      if (!source)
-        throw new BusinessException(
-          BusinessCode.FORBIDDEN,
-          'group meta is not visible to this peer',
-          HttpStatus.OK,
-        );
-      const [feed] = await tx
-        .select({ feedEndId: groupMetaFeed.feedEndId })
-        .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.threadId, source.groupId))
-        .limit(1);
-      const [audience] = await tx
-        .select({ visibleAfter: threadAudience.groupMetaVisibleAfter })
-        .from(threadAudience)
-        .where(
-          and(
-            eq(threadAudience.threadId, authorized.threadId),
-            eq(threadAudience.targetDomain, peerDomain),
-            eq(threadAudience.targetNamespaceId, namespaceId),
-            sql`${threadAudience.localUserId} IS NULL`,
-          ),
-        )
-        .limit(1);
-      const page = await readGroupMetaPageInTx(tx, {
-        groupId: source.groupId,
-        account,
-        mode,
-        after,
-        take,
-        through,
-        end: feed?.feedEndId ?? 0n,
-        visibleAfter: audience?.visibleAfter ?? 0n,
-      });
-      return {
-        ...page,
-        items: page.items.map((item) =>
-          'domain' in item && item.domain === 'local'
-            ? { ...item, domain: this.ourDomain }
-            : item,
-        ),
-      };
-    });
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 }
 

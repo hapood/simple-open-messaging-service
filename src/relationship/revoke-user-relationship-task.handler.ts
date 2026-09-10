@@ -57,7 +57,7 @@ export class RevokeUserRelationshipTaskHandler
       return this.reverseRevokes.execute(task);
     if (task.kind !== 'MUTATION' || task.actorUserId === null)
       throw new Error('Invalid user relationship revocation');
-    const actorUserId = relationshipTaskAuthorUserId(task);
+    const intentAuthorUserId = relationshipTaskAuthorUserId(task);
     const {
       threadId,
       peerUserId,
@@ -72,16 +72,16 @@ export class RevokeUserRelationshipTaskHandler
       task.scopeType === 'USER_PAIR'
     ) {
       const [state] = await this.relationships.friendRelationshipStatuses(
-        actorUserId,
+        intentAuthorUserId,
         [peerUserId],
       );
       if (state?.status === 'INCOMING_PENDING')
-        await this.localRequests.reject(peerUserId, actorUserId);
-      else await this.localRequests.revoke(peerUserId, actorUserId);
+        await this.localRequests.reject(peerUserId, intentAuthorUserId);
+      else await this.localRequests.revoke(peerUserId, intentAuthorUserId);
       return;
     }
     if (typeof account === 'string' && typeof domain === 'string') {
-      const target = { actorUserId, account, domain };
+      const target = { actorUserId: intentAuthorUserId, account, domain };
       if (account.startsWith('!') && task.scopeType === 'GROUP')
         await this.groupRequests.revoke(target);
       else if (!account.startsWith('!') && task.scopeType === 'USER_PAIR')
@@ -110,13 +110,14 @@ export class RevokeUserRelationshipTaskHandler
     if (thread.type === 'P2P' && task.scopeType === 'USER_PAIR') {
       const ended = await this.participants.endP2P(
         threadId,
-        actorUserId,
+        intentAuthorUserId,
         expectedAuthorizationEpoch as number | undefined,
+        task.actorUserId!,
       );
       for (const peerDomain of ended.statePeers)
         this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
     } else if (thread.type === 'GROUP' && task.scopeType === 'GROUP') {
-      await this.groups.leaveGroup({ userId: actorUserId, threadId });
+      await this.groups.leaveGroup({ userId: intentAuthorUserId, threadId });
     } else throw new Error('User relationship revocation scope mismatch');
   }
 }

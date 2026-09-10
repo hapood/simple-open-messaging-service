@@ -73,7 +73,7 @@ export class FederationGroupMetaTaskCoordinator {
           AND source.account = ${input.groupAccount}
           AND source.domain = ${input.peerDomain}
           AND source."namespaceId" = ${input.namespaceId}
-        FOR UPDATE OF thread
+        FOR NO KEY UPDATE OF thread
       `);
     const state = stateResult.rows[0];
     if (!state) throw new Error('group-meta mirror identity changed');
@@ -84,7 +84,7 @@ export class FederationGroupMetaTaskCoordinator {
 
     const blockers = await tx.execute<{
       id: string;
-      status: 'PENDING' | 'PROCESSING' | 'ASYNC_PROCESSING' | 'FAILED';
+      status: 'PENDING' | 'PROCESSING' | 'ASYNC_PROCESSING';
       payload: Record<string, unknown>;
     }>(sql`
         SELECT id, status, payload
@@ -93,24 +93,18 @@ export class FederationGroupMetaTaskCoordinator {
           AND "scopeKey" = ${scopeKey}
           AND "taskType" = ${DurableTaskType.SYNC_GROUP_META}
           AND "coalescingKey" = ${coalescingKey}
-          AND status IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING', 'FAILED')
+          AND status IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING')
         ORDER BY id
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
-    const failed = blockers.rows.find((task) => task.status === 'FAILED');
-    if (failed)
-      throw new Error(
-        `group-meta sync lane is blocked by failed task ${failed.id.toString()}`,
-      );
     const active = blockers.rows.find(
       (task) =>
         task.status === 'PROCESSING' || task.status === 'ASYNC_PROCESSING',
     );
-    let activeThrough: bigint | null = null;
     if (active) {
       const activePayload = readGroupMetaSyncPayload(active.payload);
       assertSameMirror(activePayload, input);
-      activeThrough = BigInt(activePayload.through);
+      const activeThrough = BigInt(activePayload.through);
       if (activeThrough >= input.through)
         return { ready: false, taskId: BigInt(active.id) };
     }
@@ -130,11 +124,12 @@ export class FederationGroupMetaTaskCoordinator {
       namespaceId: input.namespaceId,
       through: desiredThrough.toString(),
     };
-    const after = activeThrough ?? committedThrough;
+    // Admission captures committed progress only. Handoff refreshes it after
+    // predecessors finish, including predecessors that terminate with failure.
+    const after = committedThrough;
     const checkpoint = {
       phase: 'PULL',
-      mode:
-        state.feedEndId === null && activeThrough === null ? 'full' : 'delta',
+      mode: state.feedEndId === null ? 'full' : 'delta',
       after: after.toString(),
       through: desiredThrough.toString(),
     } as const;

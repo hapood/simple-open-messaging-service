@@ -1,3 +1,5 @@
+import { FederationRelationshipTaskAdmission } from './federation-relationship-task-admission.service.js';
+import type { FederationLocalSystemMessage } from './federation-local-system-message-publisher.service.js';
 import { FederationReverseRevokeService } from './federation-reverse-revoke.service.js';
 import { groupStateSql } from '../group/group-state.js';
 import {
@@ -30,10 +32,7 @@ import { readCurrentGroupRosterInTx } from '../group-meta/current-group-roster.j
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { acquireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import {
-  MessageService,
-  type PublicMessage,
-} from '../message/message.service.js';
+import { MessageService } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
@@ -69,13 +68,7 @@ class PermanentFederationItemError extends Error {
 export interface StatePageEffect {
   clientFeedUpdates: PendingClientStateFeedUpdate[];
   statePushDomains: string[];
-  localSystemMessages: Array<{
-    actorUserId: AccountTarget;
-    threadId: number;
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>;
-    subjectUserId?: AccountTarget;
-    message?: PublicMessage;
-  }>;
+  localSystemMessages: FederationLocalSystemMessage[];
   threadRoundWakes: Array<{
     threadId: number;
     peerDomain: string;
@@ -97,6 +90,9 @@ export type StatePageApplyResult = StatePageEffect;
 export class FederationStateFeedConsumerService {
   @Inject(FederationReverseRevokeService)
   private readonly reverseRevokes!: FederationReverseRevokeService;
+
+  @Inject(FederationRelationshipTaskAdmission)
+  private readonly relationshipTasks!: FederationRelationshipTaskAdmission;
 
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationStateFeedConsumerService.name);
@@ -154,6 +150,7 @@ export class FederationStateFeedConsumerService {
     peerDomain: string,
     namespaceId: number,
     page: PeerStateFeedPage,
+    execution: 'FEED' | 'TASK' = 'FEED',
   ): Promise<StatePageApplyResult> {
     const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const statePushDomains: string[] = [];
@@ -294,6 +291,16 @@ export class FederationStateFeedConsumerService {
             expiresAt <= new Date()
           )
             continue;
+          if (
+            execution === 'FEED' &&
+            (await this.relationshipTasks.deferInTx(
+              tx,
+              peerDomain,
+              namespaceId,
+              item,
+            ))
+          )
+            continue;
           const [localUser] = await tx
             .select({
               id: tables.account.id,
@@ -357,7 +364,7 @@ export class FederationStateFeedConsumerService {
             expiresAt,
             origin: peerDomain,
           });
-          if (body.status === 'REVOKED' && effect.changed)
+          if (body.status === 'REVOKED' && effect.removed)
             await this.reverseRevokes.enqueueP2PInTx(
               tx,
               localUser,
@@ -381,25 +388,25 @@ export class FederationStateFeedConsumerService {
             ).firstIntent;
             if (!localDirection)
               throw new Error('local friend state disappeared');
-            const confirmation = await this.stateFeed.writeManyInTx(tx, [
-              {
-                peerDomain,
-                namespaceId,
-                account: localUser.account,
-                domain: this.config.domain,
-                subjectAccount: remoteIdentity.account,
-                subjectDomain: peerDomain,
-                eventType: 'RELATIONSHIP_INTENT',
-                forceReindex: true,
-                body: {
-                  status: localDirection.status,
-                  profileRev: localDirection.profileRev,
-                  note: localDirection.note,
-                  requestedAt: localDirection.requestedAt,
-                  expiresAt: localDirection.expiresAt,
+            const confirmation =
+              await this.stateFeed.writeAcceptanceConfirmationsInTx(tx, [
+                {
+                  peerDomain,
+                  namespaceId,
+                  account: localUser.account,
+                  domain: this.config.domain,
+                  subjectAccount: remoteIdentity.account,
+                  subjectDomain: peerDomain,
+                  eventType: 'RELATIONSHIP_INTENT',
+                  body: {
+                    status: localDirection.status,
+                    profileRev: localDirection.profileRev,
+                    note: localDirection.note,
+                    requestedAt: localDirection.requestedAt,
+                    expiresAt: localDirection.expiresAt,
+                  },
                 },
-              },
-            ]);
+              ]);
             statePushDomains.push(...confirmation.keys());
           }
           void effect.requestCreated;
@@ -496,6 +503,16 @@ export class FederationStateFeedConsumerService {
             storageStatus === 'REQUESTED' &&
             expiresAt !== null &&
             expiresAt <= new Date()
+          )
+            continue;
+          if (
+            execution === 'FEED' &&
+            (await this.relationshipTasks.deferInTx(
+              tx,
+              peerDomain,
+              namespaceId,
+              item,
+            ))
           )
             continue;
           if (inviteDirection && storageStatus === 'REQUESTED') {
@@ -691,7 +708,7 @@ export class FederationStateFeedConsumerService {
               requestedAt,
               expiresAt,
             });
-          if (storageStatus === 'REVOKED' && membership.changed)
+          if (storageStatus === 'REVOKED' && membership.wasActive)
             await this.reverseRevokes.enqueueGroupInTx(tx, {
               threadId: relationshipThread.id,
               group: {
@@ -804,11 +821,10 @@ export class FederationStateFeedConsumerService {
                 'group relationship placeholder thread is missing',
               );
             if (membership.wasActive) {
-              const boundary = await this.message.writeDepartureMessageInTx(
+              const boundary = await this.message.writeSystemMessageInTx(
                 tx,
                 thread.id,
-                SystemMessageType.GROUP_LEFT,
-                localMember.id,
+                { type: SystemMessageType.GROUP_LEFT, member: localMember.id },
                 {
                   threadLock: membership.threadLock,
                 },
@@ -826,10 +842,11 @@ export class FederationStateFeedConsumerService {
                   ),
                 );
               localSystemMessages.push({
-                actorUserId: localMember.id,
                 threadId: thread.id,
-                type: SystemMessageType.GROUP_LEFT,
-                subjectUserId: localMember.id,
+                event: {
+                  type: SystemMessageType.GROUP_LEFT,
+                  member: localMember.id,
+                },
                 message: boundary.message,
               });
             }
@@ -920,7 +937,7 @@ export class FederationStateFeedConsumerService {
               })
               .from(tables.messageThread)
               .where(eq(tables.messageThread.id, groupState.id))
-              .for('update')
+              .for('no key update')
               .limit(1);
             if (!originThread) throw new Error('origin group thread missing');
             try {
@@ -967,19 +984,12 @@ export class FederationStateFeedConsumerService {
               active: true,
               hostedLocally: true,
             });
-            const owner = (
-              await readCurrentGroupRosterInTx(tx, groupState.id)
-            ).find((candidate) => candidate.role === GroupRole.OWNER);
-            if (!owner) throw new Error('origin group owner missing');
             localSystemMessages.push({
-              actorUserId: {
-                account: owner.account,
-                domain: owner.domain,
-                namespaceId: owner.namespaceId,
-              },
               threadId: originThread.id,
-              type: SystemMessageType.GROUP_JOINED,
-              subjectUserId: member.id,
+              event: {
+                type: SystemMessageType.GROUP_JOINED,
+                member: member.id,
+              },
             });
             const confirmation =
               await this.relationshipMutations.writeGroupRelationshipIntentInTx(
@@ -1009,14 +1019,12 @@ export class FederationStateFeedConsumerService {
                 memberUserId: member.id,
                 hostedLocally: true,
                 afterPairDeactivated: async () => {
-                  const boundary = await this.message.writeDepartureMessageInTx(
+                  const boundary = await this.message.writeSystemMessageInTx(
                     tx,
                     originThread.id,
-                    SystemMessageType.GROUP_LEFT,
-                    member.id,
+                    { type: SystemMessageType.GROUP_LEFT, member: member.id },
                     {
                       threadLock: membership.threadLock,
-                      actorUserId: member.id,
                     },
                   );
                   return { boundary };
@@ -1025,10 +1033,8 @@ export class FederationStateFeedConsumerService {
             if (!deactivation.pairChanged || !deactivation.effect) continue;
             const { boundary } = deactivation.effect;
             localSystemMessages.push({
-              actorUserId: member.id,
               threadId: originThread.id,
-              type: SystemMessageType.GROUP_LEFT,
-              subjectUserId: member.id,
+              event: { type: SystemMessageType.GROUP_LEFT, member: member.id },
               message: boundary.message,
             });
             await tx

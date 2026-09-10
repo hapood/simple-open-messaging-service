@@ -1,8 +1,13 @@
+import { enqueueReverseGroupRevokeInTx } from '../relationship/reverse-revoke-task.js';
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
 import { groupAccount as group, profileTable } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
+
+vi.mock('../relationship/reverse-revoke-task.js', () => ({
+  enqueueReverseGroupRevokeInTx: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('../user/account-address.js', () => ({
   accountAddressInTx: async (_tx: unknown, target: number | object) =>
@@ -434,7 +439,7 @@ describe('GroupService membership lifecycle', () => {
             },
           ],
         },
-        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [{ status: 'ACCEPTED', active: true }] },
       ],
     });
     const service = createService(tx, {});
@@ -475,7 +480,7 @@ describe('GroupService membership lifecycle', () => {
             },
           ],
         },
-        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [{ status: 'ACCEPTED', active: true }] },
         { rows: [] },
       ],
     });
@@ -499,7 +504,7 @@ describe('GroupService membership lifecycle', () => {
     );
   });
 
-  it('revokes both directions when a member leaves a local group', async () => {
+  it('revokes the member direction and queues the group response', async () => {
     const tx = createTx({
       selects: [
         [
@@ -524,7 +529,7 @@ describe('GroupService membership lifecycle', () => {
             },
           ],
         },
-        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [{ status: 'ACCEPTED', active: true }] },
         { rows: [] },
       ],
     });
@@ -554,15 +559,11 @@ describe('GroupService membership lifecycle', () => {
       undefined,
       { publishGroupState: true, allowOwnerDeactivation: false },
     );
-    expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledWith(
+    expect(writeGroupRelationshipIntentInTx).not.toHaveBeenCalled();
+    expect(enqueueReverseGroupRevokeInTx).toHaveBeenCalledWith(
       tx,
-      10,
-      2,
-      '',
-      'REVOKED',
-      expect.any(Array),
       undefined,
-      { publishGroupState: true, allowOwnerDeactivation: false },
+      expect.objectContaining({ threadId: 10, author: 'GROUP' }),
     );
   });
 
@@ -690,7 +691,7 @@ describe('GroupService membership lifecycle', () => {
             },
           ],
         },
-        { rows: [{ status: 'ACCEPTED' }] },
+        { rows: [{ status: 'ACCEPTED', active: true }] },
       ],
     });
     const writeMemberRelationshipIntentInTx = vi
@@ -862,7 +863,7 @@ describe('GroupService membership lifecycle', () => {
       createdAt: new Date(),
     };
     const messages = {
-      writeDepartureMessageInTx: vi
+      writeSystemMessageInTx: vi
         .fn()
         .mockResolvedValue({ message: systemMessage }),
     };
@@ -871,13 +872,11 @@ describe('GroupService membership lifecycle', () => {
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: true });
-    expect(messages.writeDepartureMessageInTx).toHaveBeenCalledWith(
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
       tx,
       10,
-      'GROUP_LEFT',
-      2,
+      { type: 'GROUP_LEFT', member: 2 },
       {
-        actorUserId: 1,
         threadLock: { threadId: 10 },
       },
     );
@@ -885,7 +884,7 @@ describe('GroupService membership lifecycle', () => {
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
-    expect(messages.writeDepartureMessageInTx).toHaveBeenCalledTimes(1);
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(1);
   });
 
   it('does not publish effects when a kick transaction rejects during state-feed projection', async () => {
@@ -937,7 +936,7 @@ describe('GroupService membership lifecycle', () => {
       .fn()
       .mockRejectedValue(rollback);
     const messages = {
-      writeDepartureMessageInTx: vi.fn().mockResolvedValue({
+      writeSystemMessageInTx: vi.fn().mockResolvedValue({
         message: { threadId: 10, seq: 9, creator: null, createdAt: new Date() },
       }),
     };

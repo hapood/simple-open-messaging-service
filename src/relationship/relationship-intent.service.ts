@@ -101,7 +101,7 @@ export class RelationshipIntentService {
         AND "endpointBAccount" = ${key.endpointB.account}
         AND "endpointBDomain" = ${key.endpointB.domain}
         AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     const row = locked.rows[0];
     if (!row) return undefined;
@@ -491,7 +491,7 @@ export class RelationshipIntentService {
       WHERE participant."threadId" = ${params.threadId}
         AND ((owner.account = ${member.account} AND ${member.domain} = 'local')
           OR owner.id = ANY(${sql.param(projectionUserIds)}::integer[]))
-      ORDER BY participant."accountId" FOR UPDATE OF participant
+      ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant
     `);
     return { ...pair, threadLock };
   }
@@ -711,7 +711,7 @@ export class RelationshipIntentService {
         .select({ id: messageThread.id })
         .from(messageThread)
         .where(eq(messageThread.id, pair.threadId))
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!thread[0]) throw new Error('P2P relationship thread does not exist');
     }
@@ -822,7 +822,7 @@ export class RelationshipIntentService {
         AND "endpointBAccount" = ${key.endpointB.account}
         AND "endpointBDomain" = ${key.endpointB.domain}
         AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
-      FOR UPDATE
+      FOR NO KEY UPDATE
     `);
     const row = locked.rows[0];
     if (!row) throw new Error('relationship pair lock disappeared');
@@ -857,7 +857,7 @@ export class RelationshipIntentService {
       .from(relationshipIntent)
       .where(eq(relationshipIntent.pairId, pairId))
       .orderBy(relationshipIntent.authorSide)
-      .for('update');
+      .for('no key update');
   }
 
   private async readIntentInTx(

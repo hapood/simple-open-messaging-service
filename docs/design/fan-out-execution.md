@@ -1,9 +1,9 @@
 # Fan-out Execution
 
-Status: Group Meta head fan-out implements bounded pages, pending-task
-supersession, and page-boundary yielding. Message wake fan-out implements
-process-local per-thread coalescing and recipient-batch yielding. Group
-dissolution implements non-yielding, one-member-at-a-time child admission.
+Status: Group Meta and thread-content fan-out use durable tasks and cooperative
+yielding. Committed state-feed delivery uses durable watermark tasks with
+best-effort transport hints. Group dissolution retains exhaustive child
+admission and mandatory forced-revocation work.
 
 This document defines application execution policy. It does not define
 federation authorization or wire behavior; those remain under
@@ -135,3 +135,18 @@ for those children to execute.
   page, and repeatedly while an older run is yielding.
 - Message tests cover recipients that see both wakes, only the newest wake, and
   non-replaceable notification semantics.
+
+## Committed state feed delivery
+
+`FAN_OUT_STATE_FEED` durably admits delivery of an already committed client or
+peer feed watermark. Feed writes, acceptance-confirmation reindexing, and task
+admission share the source transaction. Delivery never rewrites feed rows.
+Each task addresses one recipient feed, and pending replacement merges its
+watermark with MAX. At the delivery boundary a running task can hand that
+watermark to a pending successor and finish successfully. The final SSE or
+federation wake remains best effort; reconnect reads the persisted feed head.
+
+Group metadata updates advance only their own compacted head. They do not
+refresh or reindex an unchanged thread content head to impose cross-stream
+ordering. Acceptance confirmation is the explicit exception to identical-body
+compaction: it must be discoverable again after a peer's existing feed cursor.

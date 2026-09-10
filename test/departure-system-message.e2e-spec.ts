@@ -1,3 +1,4 @@
+import { FederationRelationshipTaskHandler } from '../src/federation/federation-relationship-task.handler.js';
 import { FederationThreadQueryDenialService } from '../src/federation/federation-thread-query-denial.service.js';
 import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
 import { RevokeForbiddenGroupTaskHandler } from '../src/group/revoke-forbidden-group-task.handler.js';
@@ -13,7 +14,7 @@ import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -34,7 +35,7 @@ import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
-import { EndFriendshipTaskHandler } from '../src/account-thread-state/end-friendship-task.handler.js';
+import { RevokeUserRelationshipTaskHandler } from '../src/relationship/revoke-user-relationship-task.handler.js';
 import { FederationGroupRelationshipService } from '../src/federation/federation-group-relationship.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { GroupMetaSyncTaskExecutionService } from '../src/federation/group-meta-sync-task-execution.service.js';
@@ -235,7 +236,7 @@ describe('departure system message paths', () => {
     memberAccount: string;
     invite: boolean;
   }) {
-    return database.db.transaction((tx) =>
+    const effect = await database.db.transaction((tx) =>
       consumer.applyPageInTx(tx, target.peerDomain, target.namespaceId, {
         items: [
           {
@@ -259,6 +260,24 @@ describe('departure system message paths', () => {
         hasMore: false,
       }),
     );
+    const pending = await database.db.query.durableTask.findFirst({
+      where: and(
+        eq(
+          durableTask.taskType,
+          DurableTaskType.APPLY_FEDERATED_RELATIONSHIP_INTENT,
+        ),
+        eq(durableTask.status, 'PENDING'),
+        sql`${durableTask.payload}->>'namespaceId' = ${String(target.namespaceId)}`,
+      ),
+    });
+    if (pending) {
+      const store = app.get(DurableTaskStoreService);
+      await app
+        .get(FederationRelationshipTaskHandler)
+        .execute((await store.claim(pending.id))!);
+      await store.markSucceeded(pending.id);
+    }
+    return effect;
   }
 
   it.each(['leave', 'kick', 'dissolve'] as const)(
@@ -293,9 +312,7 @@ describe('departure system message paths', () => {
       await run();
       const rows = await notices(h.threadId);
       expect(rows).toHaveLength(1);
-      expect(JSON.parse(rows[0].content).subject.account).toBe(
-        h.member.account,
-      );
+      expect(JSON.parse(rows[0].content).member.account).toBe(h.member.account);
       expect(
         (await boundary(h.threadId, h.member.id))?.messageVisibleThroughSeq,
       ).toBe(rows[0].seq);
@@ -330,7 +347,7 @@ describe('departure system message paths', () => {
   it('rolls a failed departure message back with membership and boundary', async () => {
     const h = await hosted();
     const spy = vi
-      .spyOn(app.get(MessageService), 'writeDepartureMessageInTx')
+      .spyOn(app.get(MessageService), 'writeSystemMessageInTx')
       .mockRejectedValueOnce(new Error('storage failed'));
     try {
       await expect(
@@ -357,7 +374,7 @@ describe('departure system message paths', () => {
     );
     const departure = vi.spyOn(
       app.get(MessageService),
-      'writeDepartureMessageInTx',
+      'writeSystemMessageInTx',
     );
     try {
       await groups.leaveGroup({ threadId: h.threadId, userId: h.member.id });
@@ -488,10 +505,169 @@ describe('departure system message paths', () => {
     await run();
     const rows = await notices(h.threadId);
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0].content).subject.account).toBe(
+    expect(JSON.parse(rows[0].content).member.account).toBe(
       h.sourceMembers[3].account,
     );
     await assertHeads(h.threadId, [h.member.id, h.observer.id], rows[0].seq);
+  });
+
+  it('treats a full mirror roster as a baseline without join notifications', async () => {
+    const h = await mirror();
+    const [task] = await database.db
+      .insert(durableTask)
+      .values({
+        kind: 'PROJECTION',
+        scopeType: 'GROUP',
+        scopeKey: `baseline-${++serial}`,
+        taskType: 'SYNC_GROUP_META',
+        status: 'ASYNC_PROCESSING',
+        createdAt: sql`now()`,
+        startedAt: sql`now()`,
+        payload: {
+          groupId: h.groupId,
+          groupAccount: h.parent.account,
+          peerDomain: h.peerDomain,
+          namespaceId: h.namespaceId,
+          through: '5',
+        },
+        checkpoint: { phase: 'FINALIZE', mode: 'full', through: '5' },
+      })
+      .returning();
+    await database.db
+      .update(groupMetaProfileFeed)
+      .set({ fullSyncRunId: task.id })
+      .where(eq(groupMetaProfileFeed.threadId, h.groupId));
+    await database.db
+      .delete(groupMetaFeed)
+      .where(eq(groupMetaFeed.threadId, h.groupId));
+    await app.get(GroupMetaSyncTaskExecutionService).execute(task);
+    expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(0);
+    expect(
+      await database.db.query.durableTask.findFirst({
+        where: and(
+          eq(
+            durableTask.scopeKey,
+            JSON.stringify(['THREAD_FANOUT', h.threadId]),
+          ),
+          eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT),
+        ),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('commits mirror joins with local fanout, ignores profile updates, and rolls back failed admission', async () => {
+    const h = await mirror();
+    const newcomer = await identity();
+    await activate(h.groupId, h.threadId, newcomer.id, false);
+    const remote = {
+      account: `joined-${++serial}`,
+      domain: h.peerDomain,
+      namespaceId: h.namespaceId,
+    };
+    const facts = [
+      { member: h.sourceMembers[3], operation: 'UPSERT' as const },
+      {
+        member: { account: newcomer.account, domain: 'local', namespaceId: 0 },
+        operation: 'UPSERT' as const,
+      },
+      { member: remote, operation: 'UPSERT' as const },
+      { member: remote, operation: 'DEPART' as const },
+      { member: remote, operation: 'UPSERT' as const },
+    ];
+    await database.db.insert(groupMetaMemberFeed).values(
+      facts.map(({ member, operation }, index) => ({
+        threadId: h.groupId,
+        feedId: BigInt(6 + index),
+        memberAccount: member.account,
+        memberDomain: member.domain,
+        memberNamespaceId: member.namespaceId,
+        operation,
+        body: operation === 'UPSERT' ? { role: 'MEMBER', profileRev: 2 } : {},
+      })),
+    );
+    const [task] = await database.db
+      .insert(durableTask)
+      .values({
+        kind: 'PROJECTION',
+        scopeType: 'GROUP',
+        scopeKey: `join-${++serial}`,
+        taskType: 'SYNC_GROUP_META',
+        status: 'ASYNC_PROCESSING',
+        createdAt: sql`now()`,
+        startedAt: sql`now()`,
+        payload: {
+          groupId: h.groupId,
+          groupAccount: h.parent.account,
+          peerDomain: h.peerDomain,
+          namespaceId: h.namespaceId,
+          through: '10',
+        },
+        checkpoint: { phase: 'FINALIZE', mode: 'delta', through: '10' },
+      })
+      .returning();
+    const service = app.get(GroupMetaSyncTaskExecutionService);
+    const writer = app.get(MessageService);
+    const write = writer.writeSystemMessageInTx.bind(writer);
+    const failure = vi
+      .spyOn(writer, 'writeSystemMessageInTx')
+      .mockImplementationOnce(async (...args) => {
+        await write(...args);
+        throw new Error('after fanout admission');
+      });
+    try {
+      await expect(service.execute(task)).rejects.toThrow(
+        'after fanout admission',
+      );
+    } finally {
+      failure.mockRestore();
+    }
+    expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(0);
+    expect(
+      (
+        await database.db.query.groupMetaFeed.findFirst({
+          where: eq(groupMetaFeed.threadId, h.groupId),
+        })
+      )?.feedEndId,
+    ).toBe(5n);
+    expect(
+      await database.db.query.durableTask.findFirst({
+        where: and(
+          eq(
+            durableTask.scopeKey,
+            JSON.stringify(['THREAD_FANOUT', h.threadId]),
+          ),
+          eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT),
+        ),
+      }),
+    ).toBeUndefined();
+    await service.execute(task);
+    const joined = await notices(h.threadId, 'GROUP_JOINED');
+    expect(joined.map((row) => JSON.parse(row.content).member.account)).toEqual(
+      [newcomer.account, remote.account, remote.account],
+    );
+    expect(await notices(h.threadId)).toHaveLength(1);
+    await assertHeads(
+      h.threadId,
+      [h.member.id, h.observer.id, newcomer.id],
+      joined[2].seq,
+    );
+    // A second task at the same committed coordinate cannot repeat notifications.
+    const [replay] = await database.db
+      .insert(durableTask)
+      .values({
+        kind: task.kind,
+        scopeType: task.scopeType,
+        scopeKey: `join-${++serial}`,
+        taskType: task.taskType,
+        status: 'ASYNC_PROCESSING',
+        createdAt: sql`now()`,
+        startedAt: sql`now()`,
+        payload: task.payload,
+        checkpoint: task.checkpoint,
+      })
+      .returning();
+    await service.execute(replay);
+    expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(3);
   });
 
   it.each(['local', 'remote', 'denied'] as const)(
@@ -561,15 +737,19 @@ describe('departure system message paths', () => {
           if (outcome === 'P2P_REVOKE_QUEUED') {
             const pending = await database.db.query.durableTask.findFirst({
               where: and(
-                eq(durableTask.taskType, DurableTaskType.END_FRIENDSHIP),
-                eq(durableTask.actorUserId, local.id),
+                eq(
+                  durableTask.taskType,
+                  DurableTaskType.REVOKE_USER_RELATIONSHIP,
+                ),
+                sql`${durableTask.payload}->>'threadId' = ${String(threadId)}`,
                 eq(durableTask.status, 'PENDING'),
               ),
             });
             expect(pending?.payload.threadId).toBe(threadId);
+            expect(pending?.payload.intentAuthorUserId).toBe(local.id);
             const store = app.get(DurableTaskStoreService);
             const claimed = await store.claim(pending!.id);
-            await app.get(EndFriendshipTaskHandler).execute(claimed!);
+            await app.get(RevokeUserRelationshipTaskHandler).execute(claimed!);
             await store.markSucceeded(pending!.id);
           }
           return outcome;
@@ -595,6 +775,26 @@ describe('departure system message paths', () => {
       await run();
       const rows = await notices(threadId, 'FRIEND_REMOVED');
       expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        creatorAccount: '$system',
+        creatorDomain: 'local',
+        creatorNamespaceId: 0,
+        profileRev: 0,
+      });
+      expect(JSON.parse(rows[0].content)).toEqual(
+        path === 'denied'
+          ? {
+              type: 'FRIEND_REMOVED',
+              initiator: { account: '$system', domain: 'local' },
+            }
+          : {
+              type: 'FRIEND_REMOVED',
+              initiator:
+                path === 'local'
+                  ? { account: local.account, domain: 'local' }
+                  : { account: peer.account, domain: peerDomain },
+            },
+      );
       for (const id of typeof peerTarget === 'number'
         ? [local.id, peerTarget]
         : [local.id])

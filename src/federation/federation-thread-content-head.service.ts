@@ -60,7 +60,6 @@ export class FederationThreadContentHeadService {
     peerDomain: string,
     namespaceId: number,
     threadId: number,
-    forceReindex = false,
   ): Promise<void> {
     const projection = await this.readProjectionInTx(
       tx,
@@ -78,7 +77,6 @@ export class FederationThreadContentHeadService {
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: projection.peerAccount ?? '',
         subjectDomain: projection.peerAccount ? peerDomain : 'local',
-        forceReindex,
         body: {
           messageEndSeq: projection.messageEndSeq,
           tombstoneEndSeq: projection.tombstoneEndSeq,

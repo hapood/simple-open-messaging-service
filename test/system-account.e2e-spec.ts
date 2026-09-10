@@ -2,7 +2,12 @@ import { FederationReverseRevokeService } from '../src/federation/federation-rev
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
-import { account, durableTask } from '../src/database/schema.js';
+import {
+  account,
+  durableTask,
+  message,
+  messageThread,
+} from '../src/database/schema.js';
 import { systemAccountIdInTx } from '../src/user/system-account.js';
 import { UserService } from '../src/user/user.service.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
@@ -48,6 +53,48 @@ describe('system account attribution', () => {
     expect(() =>
       users.addUser({ account: '$system', name: 'Impersonator' }),
     ).toThrow();
+  });
+
+  it('enforces the reserved system sender independently of event participants', async () => {
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({ type: 'P2P', updatedAt: new Date() })
+      .returning();
+    const notification = {
+      threadId: thread.id,
+      seq: 1,
+      contentType: 'SYSTEM' as const,
+      creatorAccount: '$system',
+      creatorDomain: 'local',
+      content: JSON.stringify({
+        type: 'GROUP_JOINED',
+        member: { account: 'alice', domain: 'local' },
+      }),
+      updatedAt: new Date(),
+    };
+    const [stored] = await database.db
+      .insert(message)
+      .values(notification)
+      .returning();
+    expect(stored).toMatchObject({
+      creatorAccount: '$system',
+      creatorDomain: 'local',
+      creatorNamespaceId: 0,
+      profileRev: 0,
+      sourceNamespaceId: 0,
+    });
+    for (const invalid of [
+      { creatorAccount: 'alice' },
+      { creatorAccount: null, creatorDomain: null },
+      { profileRev: 1 },
+      { contentType: 'PURE_TEXT' as const },
+    ]) {
+      await expect(
+        database.db
+          .insert(message)
+          .values({ ...notification, seq: 2, ...invalid }),
+      ).rejects.toThrow();
+    }
   });
 
   it('rolls reverse task admission back with the receiving transaction', async () => {

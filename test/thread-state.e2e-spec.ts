@@ -10,6 +10,7 @@ import { FederationProfileService } from '../src/federation/federation-profile.s
 import { ProfileResolutionCoordinatorService } from '../src/federation/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { seedFederatedPeerNamespace } from './seed.js';
+import { resolveAuthorizedFederationThreadInTx } from '../src/federation/federation-thread-query-authorization.js';
 
 describe('account-owned THREAD_STATE and default profiles', () => {
   let mod: TestingModule;
@@ -48,15 +49,13 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       await database.db
         .insert(tables.account)
         .values({ account: target, defaultProfileRev: 7 });
-    await database.db
-      .insert(tables.profileTable)
-      .values({
-        account: target,
-        domain,
-        namespaceId,
-        profileRev: 7,
-        displayName: 'Disclosed profile',
-      });
+    await database.db.insert(tables.profileTable).values({
+      account: target,
+      domain,
+      namespaceId,
+      profileRev: 7,
+      displayName: 'Disclosed profile',
+    });
     const [thread] = await database.db
       .insert(tables.messageThread)
       .values({
@@ -128,6 +127,109 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       namespaceId,
     };
   }
+
+  it('publishes participant state while a concurrent foreign-key holder remains open', async () => {
+    const f = await fixture();
+    await f.activate();
+    await database.db
+      .delete(tables.accountThreadState)
+      .where(eq(tables.accountThreadState.threadId, f.thread.id));
+    const foreignKeyWriter = await database.pool.connect();
+    try {
+      await foreignKeyWriter.query('BEGIN');
+      await foreignKeyWriter.query(
+        `
+        INSERT INTO "UserQuotaDailyUsage" ("userId", date, category, count)
+        VALUES ($1, CURRENT_DATE, 'requests', 1)
+      `,
+        [f.owner.id],
+      );
+      await database.db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1000ms'`);
+        await tx
+          .insert(tables.accountThreadState)
+          .values({ accountId: f.owner.id, threadId: f.thread.id });
+      });
+      // The foreign-key holder can subsequently update the same parent without a cycle.
+      await foreignKeyWriter.query(
+        `UPDATE "Account"
+        SET "stateFeedAllocatedThrough" = "stateFeedAllocatedThrough" + 1 WHERE id = $1`,
+        [f.owner.id],
+      );
+      expect((await f.snapshot()).body.conversationState).toBe('ACTIVE');
+    } finally {
+      await foreignKeyWriter.query('ROLLBACK');
+      foreignKeyWriter.release();
+    }
+  });
+
+  it.each(['revocation', 'thread deletion'] as const)(
+    'reads an authorized snapshot without waiting for concurrent %s',
+    async (change) => {
+      const f = await fixture(true);
+      await f.activate();
+      const revocation = await database.pool.connect();
+      try {
+        await revocation.query('BEGIN');
+        if (change === 'revocation') {
+          await revocation.query(
+            `UPDATE "RelationshipIntent" SET status = 'REVOKED'
+          WHERE "pairId" = $1 AND "authorSide" = 'A'`,
+            [f.pair.id.toString()],
+          );
+        } else {
+          await revocation.query(
+            'DELETE FROM "AccountThreadState" WHERE "threadId" = $1',
+            [f.thread.id],
+          );
+          await revocation.query('DELETE FROM "MessageThread" WHERE id = $1', [
+            f.thread.id,
+          ]);
+        }
+        await database.db.transaction(
+          async (tx) => {
+            await tx.execute(sql`SET LOCAL lock_timeout = '1000ms'`);
+            const authorized = await resolveAuthorizedFederationThreadInTx(
+              tx,
+              f.domain,
+              f.namespaceId,
+              { type: 'P2P', account: f.owner.account, peerAccount: f.target },
+            );
+            expect(authorized.threadId).toBe(f.thread.id);
+            await revocation.query('COMMIT');
+            // A page keeps one authorization/data snapshot even after the writer commits.
+            const samePage = await resolveAuthorizedFederationThreadInTx(
+              tx,
+              f.domain,
+              f.namespaceId,
+              { type: 'P2P', account: f.owner.account, peerAccount: f.target },
+            );
+            expect(samePage.threadId).toBe(f.thread.id);
+          },
+          { isolationLevel: 'repeatable read', accessMode: 'read only' },
+        );
+        await expect(
+          database.db.transaction(
+            (tx) =>
+              resolveAuthorizedFederationThreadInTx(
+                tx,
+                f.domain,
+                f.namespaceId,
+                {
+                  type: 'P2P',
+                  account: f.owner.account,
+                  peerAccount: f.target,
+                },
+              ),
+            { isolationLevel: 'repeatable read', accessMode: 'read only' },
+          ),
+        ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+      } finally {
+        await revocation.query('ROLLBACK');
+        revocation.release();
+      }
+    },
+  );
 
   it('does not authorize request shells; establishment and its snapshot roll back together', async () => {
     const f = await fixture();
@@ -261,15 +363,13 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .update(tables.relationshipIntent)
       .set({ status: 'REVOKED', profileRev: 8 })
       .where(eq(tables.relationshipIntent.pairId, f.pair.id));
-    await database.db
-      .insert(tables.profileTable)
-      .values({
-        account: f.target,
-        domain: f.domain,
-        namespaceId: 0,
-        profileRev: 8,
-        displayName: 'New establishment',
-      });
+    await database.db.insert(tables.profileTable).values({
+      account: f.target,
+      domain: f.domain,
+      namespaceId: 0,
+      profileRev: 8,
+      displayName: 'New establishment',
+    });
     await expect(
       coordinator.start(f.owner.id, { ...exact, rev: 8 }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });

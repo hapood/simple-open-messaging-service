@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { UserDetailPage } from './user-detail-page'
 
-const state = vi.hoisted(() => ({ canManage: false }))
+const state = vi.hoisted(() => ({ canManage: false, isDeleted: false }))
 const disable = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }))
 const enable = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }))
 const forceLogout = vi.hoisted(() => ({
@@ -31,7 +31,7 @@ vi.mock('@/hooks/use-user-detail', () => ({
         bio: '',
         domain: 'local',
         isGroup: false,
-        isDeleted: false,
+        isDeleted: state.isDeleted,
         tokenVersion: 1,
         createdAt: 1,
         updatedAt: 1,
@@ -69,6 +69,7 @@ function renderPage() {
 describe('UserDetailPage mutation authorization', () => {
   beforeEach(() => {
     state.canManage = false
+    state.isDeleted = false
     vi.clearAllMocks()
     disable.mutateAsync.mockResolvedValue(undefined)
     enable.mutateAsync.mockResolvedValue(undefined)
@@ -99,5 +100,15 @@ describe('UserDetailPage mutation authorization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'users.action.forceLogout' }))
     await waitFor(() => expect(forceLogout.mutateAsync).toHaveBeenCalledWith(42))
     expect(toast.success).toHaveBeenCalledWith('users.toast.forceLoggedOut')
+  })
+
+  it('does not offer login-code issuance for a disabled user', () => {
+    state.canManage = true
+    state.isDeleted = true
+    renderPage()
+
+    expect(
+      screen.queryByRole('button', { name: 'users.action.issueLoginCode' }),
+    ).not.toBeInTheDocument()
   })
 })

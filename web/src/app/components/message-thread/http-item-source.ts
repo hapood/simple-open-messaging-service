@@ -735,26 +735,22 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     file: FileInfo | null,
   ): ChatMsgData {
     if (m.contentType === 'SYSTEM') {
-      let systemActorIsSelf = false;
-      try {
-        const actor = JSON.parse(m.content) as {
-          actor?: { account?: string; domain?: string };
-          caller?: { account?: string; domain?: string };
-        };
-        const identity = actor.actor ?? actor.caller;
-        const self = this.userService.sessionProfile();
-        systemActorIsSelf =
-          !!identity &&
-          !!self &&
-          identity.account === self.account &&
-          identity.domain === self.domain;
-      } catch {
-        // The system row owns malformed-content fallback rendering.
-      }
       return {
         type: 'system',
         msgId: m.seq,
-        isSelf: systemActorIsSelf,
+        threadId: m.threadId,
+        isSelf: false,
+        systemPeer:
+          this.conv.type === 'P2P'
+            ? {
+                account: this.conv.peerUser.account,
+                domain: this.conv.peerUser.domain,
+                name:
+                  this.conv.defaultProfileResolved === false
+                    ? ''
+                    : this.conv.peerUser.name,
+              }
+            : undefined,
         isGroupConversation: this.conv.type === 'GROUP',
         name: '',
         text: m.content,
@@ -846,7 +842,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (this.conv.type === 'GROUP' && this.memberProfiles) {
       await Promise.all(
         msgs.flatMap((message) => {
-          if (message.creator === null) return [];
+          if (message.contentType === 'SYSTEM' || message.creator === null)
+            return [];
           const identity = parseUserIdentityKey(
             this.creatorKey(message.creator)!,
           );
@@ -865,7 +862,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     await Promise.all(
       msgs.map(async (message) => {
-        if (message.creator === null) return;
+        if (message.contentType === 'SYSTEM' || message.creator === null)
+          return;
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
@@ -898,6 +896,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const preparations: Promise<void>[] = [];
     for (const message of msgs) {
       if (
+        message.contentType === 'SYSTEM' ||
         message.creator === null ||
         this.profileRequests.has(message.seq) ||
         this.profilesBySeq.has(message.seq)

@@ -7,6 +7,7 @@ import { DurableTaskStoreService } from './durable-task-store.service.js';
 import { DurableAsyncTaskDispatcherService } from './durable-async-task-dispatcher.service.js';
 import { DurableAsyncTaskRecoveryService } from './durable-async-task-recovery.service.js';
 import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler.service.js';
+import { DurableTaskWakeService } from './durable-task-wake.service.js';
 
 @Module({
   imports: [DatabaseModule],
@@ -18,6 +19,7 @@ import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler
     DurableAsyncTaskSchedulerService,
     DurableAsyncTaskRecoveryService,
     DurableTaskSchedulerService,
+    DurableTaskWakeService,
   ],
   exports: [
     DurableTaskSchedulerService,

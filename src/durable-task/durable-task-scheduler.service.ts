@@ -1,10 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  type OnApplicationBootstrap,
-  type OnApplicationShutdown,
-} from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import { Injectable, Logger, type OnApplicationShutdown } from '@nestjs/common';
 import { optionalIntEnv } from '../common/env.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler.service.js';
@@ -17,12 +11,10 @@ import {
 import { DurableTaskStoreService } from './durable-task-store.service.js';
 import type { DurableTask } from './durable-task.types.js';
 
-const POLL_INTERVAL_MS = 1000;
+const DISCOVERY_RETRY_MS = 1000;
 
 @Injectable()
-export class DurableTaskSchedulerService
-  implements OnApplicationBootstrap, OnApplicationShutdown
-{
+export class DurableTaskSchedulerService implements OnApplicationShutdown {
   private readonly logger = new Logger(DurableTaskSchedulerService.name);
   private readonly maxConcurrency = optionalIntEnv(
     'DURABLE_TASK_MAX_CONCURRENCY',
@@ -36,16 +28,13 @@ export class DurableTaskSchedulerService
   private stopping = false;
   private stopTask: Promise<void> | null = null;
   private startupRecovery: DurableTask[] | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly store: DurableTaskStoreService,
     private readonly dispatcher: DurableTaskDispatcherService,
     private readonly asyncScheduler: DurableAsyncTaskSchedulerService,
   ) {}
-
-  onApplicationBootstrap(): void {
-    void this.wake();
-  }
 
   onApplicationShutdown(): Promise<void> {
     return this.stop();
@@ -56,6 +45,7 @@ export class DurableTaskSchedulerService
     if (this.stopTask) return this.stopTask;
     this.stopping = true;
     this.pumpRequested = false;
+    this.clearRetryTimer();
     this.stopTask = (async () => {
       if (this.pumpTask) await this.pumpTask;
       await Promise.allSettled([...this.activeExecutions]);
@@ -63,15 +53,11 @@ export class DurableTaskSchedulerService
     return this.stopTask;
   }
 
-  @Interval(POLL_INTERVAL_MS)
-  poll(): void {
-    void this.wake();
-  }
-
   wake(): Promise<void> {
     if (this.stopping) {
       return Promise.resolve();
     }
+    this.clearRetryTimer();
     this.pumpRequested = true;
     if (!this.pumpTask) {
       const task = this.pump().finally(() => {
@@ -84,6 +70,7 @@ export class DurableTaskSchedulerService
   }
 
   private async pump(): Promise<void> {
+    let retryDiscovery = false;
     try {
       // Capture interrupted tasks before this process starts any execution. Never
       // rescan PROCESSING during normal scheduling: an in-flight query can return
@@ -108,12 +95,29 @@ export class DurableTaskSchedulerService
         await this.fillAvailableSlots();
       } while (this.pumpRequested && !this.stopping);
     } catch (error) {
+      retryDiscovery = true;
+      this.pumpRequested = false;
       this.logger.error({
         msg: 'durable task scheduler pump failed',
         err: error instanceof Error ? error : undefined,
         failure: unexpectedTaskDiagnostics(error),
       });
+    } finally {
+      // A failed query is not evidence of an empty queue. Retry discovery, while
+      // terminal task failures never cause task execution to be retried.
+      if (retryDiscovery && !this.stopping) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          void this.wake();
+        }, DISCOVERY_RETRY_MS);
+        this.retryTimer.unref();
+      }
     }
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   private async fillAvailableSlots(): Promise<void> {
@@ -163,8 +167,8 @@ export class DurableTaskSchedulerService
         this.start(claimed);
       }
 
-      // Every candidate may have lost its conditional claim to another process. Polling will
-      // reliably revisit the database; spinning here would only create claim contention.
+      // A competing claim or completion emits a committed database notification.
+      // Yield to that wake instead of spinning on another executor's work.
       if (!claimedAny) {
         return;
       }

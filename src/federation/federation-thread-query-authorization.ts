@@ -27,9 +27,9 @@ export interface AuthorizedFederationThread {
  * user-to-peer direction. GROUP origin-to-member-home publication uses a group-authored intent;
  * member-home-to-origin publication uses a member-authored intent belonging to a local account that
  * has retained AccountThreadState. ThreadAudience supplies an optional history floor only on the
- * authoritative server; it is not the authorization fact. An intent-authorized query holds a shared
- * intent lock for its bounded page transaction, so a concurrent revocation either wins first or waits
- * for that page to finish.
+ * authoritative server; it is not the authorization fact. Authorization and page data share a
+ * read-only MVCC snapshot. Revocations do not wait for readers; receiving writers reject stale
+ * rounds through their epoch gate.
  */
 export async function resolveAuthorizedFederationThreadInTx(
   tx: DatabaseTransaction,
@@ -91,7 +91,7 @@ export async function resolveAuthorizedFederationThreadInTx(
           )
         )
       LIMIT 1
-      FOR SHARE OF intent
+
     `);
     const origin = originRows.rows[0];
     if (origin) {
@@ -152,7 +152,7 @@ export async function resolveAuthorizedFederationThreadInTx(
           )
         )
       LIMIT 1
-      FOR SHARE OF intent
+
     `);
     const mirror = mirrorRows.rows[0];
     if (mirror) {
@@ -211,7 +211,7 @@ export async function resolveAuthorizedFederationThreadInTx(
               )
             )
           LIMIT 1
-          FOR SHARE OF intent
+
         `);
   const authorized = rows.rows[0];
   if (!authorized) {

@@ -67,6 +67,7 @@ describe('FederationStatePullService drain window', () => {
       try {
         await expect(service.pullStateFromPeer('peer.test')).resolves.toBe(2n);
         expect(start).toHaveBeenCalledWith(3, {
+          type: 'EXACT',
           account: 'alice',
           domain: 'peer.test',
           rev: 2,

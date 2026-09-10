@@ -641,7 +641,7 @@ export class FederationRecognitionService {
         ),
       )
       .where(eq(tables.federatedPeer.domain, domain))
-      .for('update', { of: tables.federatedPeer })
+      .for('no key update', { of: tables.federatedPeer })
       .limit(1);
     return peer;
   }

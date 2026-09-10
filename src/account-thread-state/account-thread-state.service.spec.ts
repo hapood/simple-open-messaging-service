@@ -1,7 +1,12 @@
+import { enqueueReverseP2PRevokeInTx } from '../relationship/reverse-revoke-task.js';
 import { writeP2PClientRelationshipInTx } from '../relationship/p2p-client-relationship.js';
 import { describe, expect, it, vi } from 'vitest';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 import { PgDialect } from 'drizzle-orm/pg-core';
+vi.mock('../relationship/reverse-revoke-task.js', () => ({
+  enqueueReverseP2PRevokeInTx: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../relationship/thread-content-lock.js', async (importOriginal) => ({
   ...(await importOriginal<
     typeof import('../relationship/thread-content-lock.js')
@@ -80,7 +85,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         createdAt: new Date(),
       };
       const messages = {
-        writeDepartureMessageInTx: vi
+        writeSystemMessageInTx: vi
           .fn()
           .mockResolvedValue({ message: systemMessage }),
       };
@@ -101,13 +106,11 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         statePeers: [],
         systemMessage,
       });
-      expect(messages.writeDepartureMessageInTx).toHaveBeenCalledWith(
+      expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
         tx,
         10,
-        'FRIEND_REMOVED',
-        { account: 'bob', domain: 'local', namespaceId: 0 },
+        { type: 'FRIEND_REMOVED', initiator: 1 },
         {
-          actorUserId: 1,
           threadLock: expect.objectContaining({ tx, threadId: 10 }),
         },
       );
@@ -121,7 +124,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
             sql.includes('"authorizationEpoch"'),
         ),
       ).toEqual([expect.objectContaining({ params: [1, false, 10] })]);
-      expect(tx.execute).toHaveBeenCalledTimes(14);
+      expect(enqueueReverseP2PRevokeInTx).toHaveBeenCalledWith(tx, undefined, 2, 1);
       expect(writeP2PClientRelationshipInTx).toHaveBeenCalled();
       expect(clientFeed.notifyFeedUpdates).toHaveBeenCalledWith([
         { userId: 2, feedId: 7 },
@@ -129,7 +132,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       // Both canonical account scopes are locked first, followed by
       // RelationshipPair, MessageThread, intents, and participant rows.
       expect(tx.execute.mock.invocationCallOrder[4]).toBeLessThan(
-        messages.writeDepartureMessageInTx.mock.invocationCallOrder[0],
+        messages.writeSystemMessageInTx.mock.invocationCallOrder[0],
       );
       expect(tx.update).toHaveBeenCalledOnce();
       expect(set).toHaveBeenCalledWith(
@@ -174,7 +177,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
         ),
       },
     };
-    const messages = { writeDepartureMessageInTx: vi.fn() };
+    const messages = { writeSystemMessageInTx: vi.fn() };
     const service = new AccountThreadStateService(
       database as never,
       {} as never,
@@ -187,7 +190,7 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
       statePeers: [],
       systemMessage: null,
     });
-    expect(messages.writeDepartureMessageInTx).not.toHaveBeenCalled();
+    expect(messages.writeSystemMessageInTx).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
   });
 });

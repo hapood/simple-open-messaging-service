@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { callHistory, message, messageThread } from '../database/schema.js';
@@ -25,11 +20,8 @@ export interface CallHistorySnapshot {
 }
 
 @Injectable()
-export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
+export class CallHistoryService implements OnModuleInit {
   private readonly logger = new Logger(CallHistoryService.name);
-  private readonly pending = new Map<string, CallHistorySnapshot>();
-  private retryTimer?: ReturnType<typeof setInterval>;
-  private retrying = false;
   constructor(private readonly database: DatabaseService) {}
 
   /** Admission and observations are durable before their successful acknowledgement. */
@@ -64,13 +56,11 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
       );
   }
 
-  /** One terminal notice and its device fanout share the durable terminal decision. */
-  async finish(input: CallHistorySnapshot): Promise<void> {
-    const snapshot = this.pending.get(input.key) ?? input;
+  /** Attempt once; one terminal notice and its fanout share the durable decision. */
+  async finish(snapshot: CallHistorySnapshot): Promise<void> {
     const content = parseCallEndedContent(JSON.stringify(snapshot.content));
     if (!content || content.initiatedAt === undefined)
       throw new Error('invalid terminal call observation');
-    this.pending.set(snapshot.key, snapshot);
     // Commit the journal independently, but acquire parents before child/FK locks.
     await this.database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, snapshot.threadId);
@@ -99,7 +89,7 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
         .select()
         .from(callHistory)
         .where(eq(callHistory.key, snapshot.key))
-        .for('update');
+        .for('no key update');
       if (!existing || !existing.terminal)
         throw new Error('terminal call journal is missing');
       if (existing.messageSeq !== null) return;
@@ -122,6 +112,8 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
         threadId: snapshot.threadId,
         seq,
         contentType: ContentType.SYSTEM,
+        creatorAccount: '$system',
+        creatorDomain: 'local',
         content: JSON.stringify(terminalContent),
         updatedAt: new Date(),
       });
@@ -139,7 +131,6 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
         tombstoneEndSeq,
       });
     });
-    this.pending.delete(snapshot.key);
   }
 
   /** Live media cannot survive a process restart; preserve one interrupted-call notice. */
@@ -166,42 +157,6 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
             },
       });
     }
-    this.retryTimer = setInterval(() => {
-      void this.retryPending();
-    }, 5000);
-    this.retryTimer.unref();
-  }
-
-  private async retryPending(): Promise<void> {
-    if (this.retrying) return;
-    this.retrying = true;
-    try {
-      const attempted = new Set(this.pending.keys());
-      for (const snapshot of [...this.pending.values()])
-        await this.tryFinish(snapshot);
-      const rows = await this.database.db
-        .select()
-        .from(callHistory)
-        .where(
-          and(eq(callHistory.terminal, true), isNull(callHistory.messageSeq)),
-        );
-      for (const row of rows) {
-        if (attempted.has(row.key)) continue;
-        await this.tryFinish({
-          key: row.key,
-          threadId: row.threadId,
-          revision: row.revision,
-          content: row.snapshot as unknown as CallEndedContent,
-        });
-      }
-    } catch (error) {
-      this.logger.error(
-        'Terminal call history remains pending for retry',
-        error,
-      );
-    } finally {
-      this.retrying = false;
-    }
   }
 
   private async tryFinish(snapshot: CallHistorySnapshot): Promise<void> {
@@ -209,13 +164,9 @@ export class CallHistoryService implements OnModuleInit, OnModuleDestroy {
       await this.finish(snapshot);
     } catch (error) {
       this.logger.error(
-        `Terminal call history ${snapshot.key} remains pending for retry`,
+        `Terminal call history ${snapshot.key} startup recovery failed`,
         error,
       );
     }
-  }
-
-  onModuleDestroy(): void {
-    if (this.retryTimer) clearInterval(this.retryTimer);
   }
 }

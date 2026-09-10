@@ -301,7 +301,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         outcome: 'declined',
         type: 'CALL_ENDED',
         caller: { account: 'erin', domain: DOM_A },
-        callee: { account: 'frank', domain: DOM_B },
+        callee: { account: 'frank', domain: 'local' },
       });
     } finally {
       await frankSse.cancel();

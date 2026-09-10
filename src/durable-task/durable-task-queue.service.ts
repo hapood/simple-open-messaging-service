@@ -102,12 +102,13 @@ export class DurableTaskQueueService {
         coalescingKey,
       );
       if (existing) {
+        // Mandatory cleanup must survive later commands in the same direction.
         if (existing.taskType === DurableTaskType.FORCE_REVOKE_GROUP_MEMBER)
           return { taskId: existing.id };
         if (
           existing.taskType === taskType &&
           existing.actorUserId === actorUserId &&
-          isDeepStrictEqual(existing.payload, payload)
+          sameTaskBehavior(taskType, existing.payload, payload)
         )
           return { taskId: existing.id };
 
@@ -153,7 +154,7 @@ export class DurableTaskQueueService {
         latest.coalescingKey === coalescingKey &&
         latest.taskType === taskType &&
         latest.actorUserId === actorUserId &&
-        isDeepStrictEqual(latest.payload, payload)
+        sameTaskBehavior(taskType, latest.payload, payload)
       )
         return { taskId: latest.id };
     }
@@ -199,7 +200,7 @@ export class DurableTaskQueueService {
         sql`CASE WHEN ${durableTask.taskType} = ${DurableTaskType.FORCE_REVOKE_GROUP_MEMBER} THEN 0 ELSE 1 END`,
         desc(durableTask.id),
       )
-      .for('update')
+      .for('no key update')
       .limit(1);
     return task ?? null;
   }
@@ -234,7 +235,7 @@ export class DurableTaskQueueService {
         ),
       )
       .orderBy(asc(durableTask.id))
-      .for('update');
+      .for('no key update');
 
     for (const task of pending) {
       if (
@@ -357,6 +358,24 @@ function resolveMutationCoalescingKey(input: {
   actorUserId: number | null;
   payload: Record<string, unknown>;
 }): string | null {
+  if (input.taskType === DurableTaskType.APPLY_FEDERATED_RELATIONSHIP_INTENT) {
+    const item = input.payload.item as
+      | { account?: unknown; peerAccount?: unknown }
+      | undefined;
+    if (
+      !Number.isSafeInteger(input.payload.namespaceId) ||
+      Number(input.payload.namespaceId) <= 0 ||
+      typeof item?.account !== 'string' ||
+      typeof item.peerAccount !== 'string'
+    )
+      throw new TypeError('invalid remote relationship task identity');
+    return JSON.stringify([
+      'REMOTE_INTENT',
+      input.payload.namespaceId,
+      item.account,
+      item.peerAccount,
+    ]);
+  }
   if (input.scopeType === 'USER_PAIR') {
     switch (input.taskType) {
       case DurableTaskType.SEND_LOCAL_RELATIONSHIP_REQUEST:
@@ -489,4 +508,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   }
   const prototype = Object.getPrototypeOf(value) as object | null;
   return prototype === Object.prototype || prototype === null;
+}
+
+/** Transport cursor movement does not create a new business command. */
+function sameTaskBehavior(
+  taskType: string,
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  if (taskType !== DurableTaskType.APPLY_FEDERATED_RELATIONSHIP_INTENT)
+    return isDeepStrictEqual(left, right);
+  const normalize = (value: Record<string, unknown>) => {
+    const { feedId: _feedId, ...item } = value.item as Record<string, unknown>;
+    void _feedId;
+    return { ...value, item };
+  };
+  return isDeepStrictEqual(normalize(left), normalize(right));
 }

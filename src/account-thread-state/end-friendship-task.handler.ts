@@ -36,12 +36,13 @@ export class EndFriendshipTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
-    const { actorUserId, threadId, expectedAuthorizationEpoch } =
+    const { intentAuthorUserId, threadId, expectedAuthorizationEpoch } =
       readTask(task);
     const ended = await this.participants.endP2P(
       threadId,
-      actorUserId,
+      intentAuthorUserId,
       expectedAuthorizationEpoch,
+      task.actorUserId!,
     );
 
     for (const domain of ended.statePeers) {
@@ -51,7 +52,7 @@ export class EndFriendshipTaskHandler
 }
 
 function readTask(task: DurableTask): {
-  actorUserId: number;
+  intentAuthorUserId: number;
   threadId: number;
   expectedAuthorizationEpoch?: number;
 } {
@@ -73,7 +74,7 @@ function readTask(task: DurableTask): {
     throw new Error('end-friendship task has an invalid thread ID');
   }
   return {
-    actorUserId: relationshipTaskAuthorUserId(task),
+    intentAuthorUserId: relationshipTaskAuthorUserId(task),
     threadId: threadId as number,
     expectedAuthorizationEpoch: expectedAuthorizationEpoch as
       | number

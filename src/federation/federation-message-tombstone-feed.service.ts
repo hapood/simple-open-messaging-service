@@ -41,20 +41,23 @@ export class FederationMessageTombstoneFeedService {
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    const currentEnd = await this.database.db.transaction(async (tx) => {
-      const authorized = await resolveAuthorizedFederationThreadInTx(
-        tx,
-        peerDomain,
-        namespaceId,
-        selector,
-      );
-      return this.readAdvertisedDeletionEnd(
-        tx,
-        peerDomain,
-        namespaceId,
-        selector,
-      );
-    });
+    const currentEnd = await this.database.db.transaction(
+      async (tx) => {
+        const authorized = await resolveAuthorizedFederationThreadInTx(
+          tx,
+          peerDomain,
+          namespaceId,
+          selector,
+        );
+        return this.readAdvertisedDeletionEnd(
+          tx,
+          peerDomain,
+          namespaceId,
+          selector,
+        );
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the tombstone query cursor',
@@ -75,84 +78,87 @@ export class FederationMessageTombstoneFeedService {
   ): Promise<FederationMessageTombstoneQueryPage> {
     const take = this.pageSize(requestedTake);
     if (through !== undefined && through < after) this.invalidThrough();
-    return this.database.db.transaction(async (tx) => {
-      const { threadId, address, groupQueryDirection } =
-        await resolveAuthorizedFederationThreadInTx(
+    return this.database.db.transaction(
+      async (tx) => {
+        const { threadId, address, groupQueryDirection } =
+          await resolveAuthorizedFederationThreadInTx(
+            tx,
+            peerDomain,
+            namespaceId,
+            selector,
+          );
+        const currentEnd = await this.readAdvertisedDeletionEnd(
           tx,
           peerDomain,
           namespaceId,
           selector,
         );
-      const currentEnd = await this.readAdvertisedDeletionEnd(
-        tx,
-        peerDomain,
-        namespaceId,
-        selector,
-      );
-      const resumeAfter = 0;
-      const resumeBefore = currentEnd + 1;
-      if (after < resumeAfter || after >= resumeBefore) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-          'tombstone query cursor is beyond the current thread end',
-          HttpStatus.OK,
-          {
-            resumeAfter,
-            resumeBefore,
-          },
-        );
-      }
-      const queryEnd =
-        through === undefined || through > currentEnd ? currentEnd : through;
-      const rows = await tx
-        .select({
-          deletionSeq: deletedMessage.deletionSeq,
-          threadId: deletedMessage.threadId,
-          type: deletedMessage.type,
-          deletedAt: deletedMessage.createdAt,
-          messageSeq: message.seq,
-        })
-        .from(deletedMessage)
-        .innerJoin(
-          message,
-          and(
-            eq(message.threadId, deletedMessage.threadId),
-            eq(message.seq, deletedMessage.messageSeq),
-          ),
-        )
-        .where(
-          and(
-            eq(deletedMessage.threadId, threadId),
-            eq(deletedMessage.sourceNamespaceId, 0),
-            groupQueryDirection === 'MIRROR_TO_ORIGIN'
-              ? eq(message.creatorDomain, 'local')
-              : undefined,
-            includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
-            maxMessageSeq !== undefined
-              ? lte(message.seq, maxMessageSeq)
-              : undefined,
-            gt(deletedMessage.deletionSeq, after),
-            lte(deletedMessage.deletionSeq, queryEnd),
-          ),
-        )
-        .orderBy(asc(deletedMessage.deletionSeq))
-        .limit(take + 1);
-      const selected = rows.slice(0, take);
-      const tombstones = selected.map((row) => ({
-        deletionSeq: row.deletionSeq,
-        thread: address,
-        messageSeq: row.messageSeq,
-        type: row.type,
-        deletedAt: row.deletedAt.getTime(),
-      }));
-      const scannedThrough =
-        rows.length > take ? selected.at(-1)!.deletionSeq : queryEnd;
-      return {
-        tombstones,
-        scannedThrough,
-        hasMore: scannedThrough < queryEnd,
-      };
-    });
+        const resumeAfter = 0;
+        const resumeBefore = currentEnd + 1;
+        if (after < resumeAfter || after >= resumeBefore) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+            'tombstone query cursor is beyond the current thread end',
+            HttpStatus.OK,
+            {
+              resumeAfter,
+              resumeBefore,
+            },
+          );
+        }
+        const queryEnd =
+          through === undefined || through > currentEnd ? currentEnd : through;
+        const rows = await tx
+          .select({
+            deletionSeq: deletedMessage.deletionSeq,
+            threadId: deletedMessage.threadId,
+            type: deletedMessage.type,
+            deletedAt: deletedMessage.createdAt,
+            messageSeq: message.seq,
+          })
+          .from(deletedMessage)
+          .innerJoin(
+            message,
+            and(
+              eq(message.threadId, deletedMessage.threadId),
+              eq(message.seq, deletedMessage.messageSeq),
+            ),
+          )
+          .where(
+            and(
+              eq(deletedMessage.threadId, threadId),
+              eq(deletedMessage.sourceNamespaceId, 0),
+              groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                ? eq(message.creatorDomain, 'local')
+                : undefined,
+              includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
+              maxMessageSeq !== undefined
+                ? lte(message.seq, maxMessageSeq)
+                : undefined,
+              gt(deletedMessage.deletionSeq, after),
+              lte(deletedMessage.deletionSeq, queryEnd),
+            ),
+          )
+          .orderBy(asc(deletedMessage.deletionSeq))
+          .limit(take + 1);
+        const selected = rows.slice(0, take);
+        const tombstones = selected.map((row) => ({
+          deletionSeq: row.deletionSeq,
+          thread: address,
+          messageSeq: row.messageSeq,
+          type: row.type,
+          deletedAt: row.deletedAt.getTime(),
+        }));
+        const scannedThrough =
+          rows.length > take ? selected.at(-1)!.deletionSeq : queryEnd;
+        return {
+          tombstones,
+          scannedThrough,
+          hasMore: scannedThrough < queryEnd,
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 
   private async readAdvertisedDeletionEnd(

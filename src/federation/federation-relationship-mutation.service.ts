@@ -198,7 +198,6 @@ export class FederationRelationshipMutationService {
       subjectAccount: group.account,
       subjectDomain: group.domain,
       eventType: 'RELATIONSHIP_INTENT',
-      forceReindex: status === 'ACCEPTED',
       body: {
         status: membership.request.status,
         profileRev: membership.request.profileRev,
@@ -242,7 +241,9 @@ export class FederationRelationshipMutationService {
       if (feedId !== null)
         clientFeedUpdates.push({ userId: memberUserId, feedId });
     }
-    return this.stateFeed.writeManyInTx(tx, [relationship]);
+    return relationship.body.status === 'ACCEPTED'
+      ? this.stateFeed.writeAcceptanceConfirmationsInTx(tx, [relationship])
+      : this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   async writeGroupRelationshipIntentInTx(
@@ -374,7 +375,6 @@ export class FederationRelationshipMutationService {
       subjectAccount: member.account,
       subjectDomain: member.domain,
       eventType: 'RELATIONSHIP_INTENT',
-      forceReindex: status === 'ACCEPTED',
       body: {
         status: membership.request.status,
         profileRev: membership.request.profileRev,
@@ -383,7 +383,9 @@ export class FederationRelationshipMutationService {
         expiresAt: membership.request.expiresAt,
       },
     };
-    return this.stateFeed.writeManyInTx(tx, [relationship]);
+    return relationship.body.status === 'ACCEPTED'
+      ? this.stateFeed.writeAcceptanceConfirmationsInTx(tx, [relationship])
+      : this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   async writeP2PIntentInTx(
@@ -393,11 +395,20 @@ export class FederationRelationshipMutationService {
     wantsFriend: boolean,
     note: string,
     clientFeedUpdates: PendingClientStateFeedUpdate[],
-    forceConfirmationReindex = false,
   ): Promise<Map<string, bigint>> {
     const remote = await accountAddressInTx(tx, peerUserId);
-    if (remote.domain === 'local')
-      throw new Error('federated friend must be foreign');
+    if (remote.domain === 'local') {
+      clientFeedUpdates.push(
+        ...(await this.relationships.writeLocalP2PIntentInTx(
+          tx,
+          localUserId,
+          peerUserId,
+          wantsFriend,
+          note,
+        )),
+      );
+      return new Map();
+    }
     const local = await tx.query.account.findFirst({
       where: and(
         eq(tables.account.id, localUserId),
@@ -435,7 +446,6 @@ export class FederationRelationshipMutationService {
       subjectAccount: remote.account,
       subjectDomain: remote.domain,
       eventType: 'RELATIONSHIP_INTENT',
-      forceReindex: forceConfirmationReindex && current.status === 'ACCEPTED',
       body: {
         status: current.status,
         profileRev: current.profileRev,
@@ -444,7 +454,9 @@ export class FederationRelationshipMutationService {
         expiresAt: current.expiresAt,
       },
     };
-    return this.stateFeed.writeManyInTx(tx, [relationship]);
+    return relationship.body.status === 'ACCEPTED'
+      ? this.stateFeed.writeAcceptanceConfirmationsInTx(tx, [relationship])
+      : this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   async writeAddressedRelationshipRequestInTx(

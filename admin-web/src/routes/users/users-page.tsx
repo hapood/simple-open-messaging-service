@@ -297,7 +297,7 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {canManage && u.domain === 'local' ? (
+                      {canManage && u.domain === 'local' && !u.isDeleted ? (
                         <Button
                           variant="outline"
                           size="sm"

@@ -24,28 +24,24 @@ describe('deriveLocalGroupSystemEvents', () => {
       ),
     ).toEqual([
       {
-        actorUserId: 5,
-        subjectUserId: 2,
+        member: 2,
         type: SystemMessageType.GROUP_ADMIN_GRANTED,
       },
       {
-        actorUserId: 5,
-        subjectUserId: 3,
+        member: 3,
         type: SystemMessageType.GROUP_ADMIN_REVOKED,
       },
       {
-        actorUserId: 5,
-        subjectUserId: 5,
+        member: 5,
         type: SystemMessageType.GROUP_JOINED,
       },
       {
-        actorUserId: 4,
-        subjectUserId: 4,
+        member: 4,
         type: SystemMessageType.GROUP_LEFT,
       },
       {
-        actorUserId: 5,
-        subjectUserId: 5,
+        previousOwner: 1,
+        newOwner: 5,
         type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
       },
     ]);

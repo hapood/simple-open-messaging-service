@@ -199,8 +199,11 @@ describe('FederationMessageFeedService thread query', () => {
             .set({
               contentType: 'SYSTEM',
               content: JSON.stringify({ type: 'FRIEND_ADDED' }),
-              creatorAccount: null,
-              creatorDomain: null,
+              creatorAccount: '$system',
+              creatorDomain: 'local',
+              creatorNamespaceId: 0,
+              sourceNamespaceId: 0,
+              profileRev: 0,
             })
             .where(and(eq(message.threadId, thread.id), eq(message.seq, seq)));
       }

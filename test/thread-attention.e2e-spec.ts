@@ -416,9 +416,9 @@ describe('transactional thread attention', () => {
       (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 6 }))
         .taskId,
     );
-    expect((await state()).previewSeqs).toEqual([8, 7]);
+    expect((await state()).previewSeqs).toEqual([8, 7, 6]);
     await projectCurrentHeads();
-    expect((await state()).previewSeqs).toEqual([8, 7]);
+    expect((await state()).previewSeqs).toEqual([8, 7, 6]);
     await run(
       (
         await service.enqueueReadPosition(userId, {
@@ -431,6 +431,55 @@ describe('transactional thread attention', () => {
     expect((await state()).previewSeqs).toEqual([8, 7, 6, 5, 4]);
     await new ThreadHistoryService(db).clear(threadId, 7);
     expect((await state()).previewSeqs).toEqual([8]);
+  });
+
+  it('retains the read-boundary preview through head and visibility updates, then prunes when passed', async () => {
+    await put(1, '[@Reader](somfp://user/reader)');
+    await projectCurrentHeads();
+    await run(
+      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 1 }))
+        .taskId,
+    );
+    expect(await state()).toMatchObject({
+      lastReadSeq: 1,
+      unreadCount: 0,
+      lastMentionSeq: null,
+      previewSeqs: [1],
+    });
+    // A new own message forces preview selection without adding an unread slot.
+    await put(2, 'own', { creatorAccount: 'reader' });
+    await projectCurrentHeads();
+    expect((await state()).previewSeqs).toEqual([1]);
+    await db.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      await tx
+        .update(accountThreadState)
+        .set({ messageVisibleThroughSeq: 2 })
+        .where(eq(accountThreadState.accountId, userId));
+    });
+    expect((await state()).previewSeqs).toEqual([1]);
+    const delta = await service.queryThreadFeedDelta(userId, {
+      after: 0,
+      previewCount: 1,
+    });
+    expect(delta.items[0].previews?.map((row) => row.seq)).toEqual([1]);
+    await run(
+      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 2 }))
+        .taskId,
+    );
+    expect((await state()).previewSeqs).toEqual([]);
+  });
+
+  it('clears a preview at the read boundary when its history is cleared', async () => {
+    await put(1);
+    await projectCurrentHeads();
+    await run(
+      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 1 }))
+        .taskId,
+    );
+    expect((await state()).previewSeqs).toEqual([1]);
+    await new ThreadHistoryService(db).clear(threadId, 1);
+    expect((await state()).previewSeqs).toEqual([]);
   });
 
   it('initializes empty previews and read state atomically without a cache or task', async () => {
@@ -641,7 +690,7 @@ describe('transactional thread attention', () => {
     expect(await state()).toEqual(before);
     expect(await db.db.select().from(durableTask)).toEqual(beforeTasks);
   });
-  it('reconciles history clearing and visibility boundaries', async () => {
+  it('reconciles history clearing and blocking', async () => {
     await put(1);
     await put(2);
     await put(3);
@@ -653,14 +702,38 @@ describe('transactional thread attention', () => {
     expect((await state()).unreadCount).toBe(2);
     await db.db
       .update(accountThreadState)
-      .set({ messageVisibleThroughSeq: 2 })
-      .where(eq(accountThreadState.accountId, userId));
-    expect((await state()).unreadCount).toBe(1);
-    await db.db
-      .update(accountThreadState)
       .set({ blocked: true })
       .where(eq(accountThreadState.accountId, userId));
     expect((await state()).unreadCount).toBe(0);
+  });
+
+  it('persists visibility bounds without changing projections, feed cursors or tasks', async () => {
+    await put(1);
+    await put(2);
+    await put(3, '[@Reader](somfp://user/reader)');
+    await projectCurrentHeads();
+    const before = await state();
+    expect(before).toMatchObject({
+      unreadCount: 3,
+      previewSeqs: [3, 2, 1],
+      lastMentionSeq: 3,
+    });
+    const beforeOwner = await db.db.select().from(account);
+    const beforeTasks = await db.db.select().from(durableTask);
+    // Include a synthetic backward bound to make any implicit pruning or
+    // recount observable; business departures use a newly written message head.
+    for (const messageVisibleThroughSeq of [3, 2, null]) {
+      await db.db.transaction(async (tx) => {
+        await requireThreadContentLockInTx(tx, threadId);
+        await tx
+          .update(accountThreadState)
+          .set({ messageVisibleThroughSeq })
+          .where(eq(accountThreadState.accountId, userId));
+      });
+      expect(await state()).toEqual({ ...before, messageVisibleThroughSeq });
+      expect(await db.db.select().from(account)).toEqual(beforeOwner);
+      expect(await db.db.select().from(durableTask)).toEqual(beforeTasks);
+    }
   });
   it('rejects an ahead cursor and advances across an empty compacted range', async () => {
     await expect(

@@ -44,7 +44,6 @@ export class RelationshipRequestTaskExecutionService {
             true,
             '',
             clientFeedUpdates,
-            true,
           );
         } else {
           clientFeedUpdates.push(

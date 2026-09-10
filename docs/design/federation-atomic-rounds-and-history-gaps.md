@@ -14,6 +14,16 @@ at its final timeline position and the matching synchronization progress is
 committed. A Message may still be a STUB at that point; downloading and other
 local content materialization are not synchronization-round dependencies.
 
+Federation message, tombstone, group-meta, and group-profile queries read their
+authorization and data in one `REPEATABLE READ, READ ONLY` transaction. They do
+not lock authorization rows against concurrent revocation or deletion. An
+in-flight page may finish from its earlier committed snapshot; a new page sees
+the committed authorization change. Receiving writers still validate their
+captured epoch atomically before committing facts and progress. Non-key writer
+serialization uses `FOR NO KEY UPDATE`, including trigger re-entry, so it remains
+compatible with foreign-key checks. Physical deletion retains its required row
+lock without blocking ordinary MVCC readers.
+
 ## 2. Durable model
 
 ### 2.1 Thread authorization epoch

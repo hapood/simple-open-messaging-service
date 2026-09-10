@@ -109,6 +109,7 @@ export async function resolveWorkloadProfiles({
           nodeName,
           viewer,
           {
+            type: 'EXACT',
             account: projection.account,
             domain: projection.domain,
             rev: projection.defaultProfileRev,
@@ -129,7 +130,11 @@ export async function resolveWorkloadProfiles({
         add(
           nodeName,
           viewer,
-          { threadId: projection.threadId, messageSeq: message.seq },
+          {
+            type: 'MESSAGE_AUTHOR',
+            threadId: projection.threadId,
+            messageSeq: message.seq,
+          },
           message.profileRev,
           'MESSAGE_AUTHOR_HISTORY',
           message.clientMessageId,
@@ -142,6 +147,7 @@ export async function resolveWorkloadProfiles({
           nodeName,
           viewer,
           {
+            type: 'GROUP_MEMBER',
             threadId: projection.threadId,
             memberAccount: member.account,
             memberDomain: storedDomain(
@@ -180,6 +186,7 @@ export async function resolveWorkloadProfiles({
         node.name,
         viewer,
         {
+          type: 'EXACT',
           account: reference.address.slice(0, separator),
           domain: reference.address.slice(separator + 1),
           rev: reference.profileRev,
@@ -203,7 +210,11 @@ export async function resolveWorkloadProfiles({
           add(
             node.name,
             viewer,
-            { threadId: thread.threadId, messageSeq: message.seq },
+            {
+              type: 'MESSAGE_AUTHOR',
+              threadId: thread.threadId,
+              messageSeq: message.seq,
+            },
             message.profileRev,
             'P2P_MESSAGE_AUTHOR',
             pair,

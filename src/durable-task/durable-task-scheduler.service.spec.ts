@@ -104,6 +104,7 @@ function createAsyncScheduler(store: DurableTaskStoreService) {
 const savedConcurrency = process.env.DURABLE_TASK_MAX_CONCURRENCY;
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   if (savedConcurrency === undefined) {
     delete process.env.DURABLE_TASK_MAX_CONCURRENCY;
@@ -113,6 +114,116 @@ afterEach(() => {
 });
 
 describe('DurableTaskSchedulerService', () => {
+  it('stays idle without a timer after draining and resumes on a new wake', async () => {
+    vi.useFakeTimers();
+    const tasks: DurableTask[] = [];
+    const harness = createStore(tasks);
+    const dispatcher = new DurableTaskDispatcherService();
+    const execute = vi.fn(async () => {});
+    dispatcher.register({ taskType: 'TEST_COMMAND', execute });
+    const scheduler = new DurableTaskSchedulerService(
+      harness.store,
+      dispatcher,
+      createAsyncScheduler(harness.store),
+    );
+    await scheduler.wake();
+    const idleQueries = vi.mocked(harness.store.findEligible).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.store.findEligible).toHaveBeenCalledTimes(idleQueries);
+    expect(vi.getTimerCount()).toBe(0);
+    tasks.push(makeTask(1n));
+    await scheduler.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(tasks[0].status).toBe('SUCCEEDED');
+    const drainedQueries = vi.mocked(harness.store.findEligible).mock.calls
+      .length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.store.findEligible).toHaveBeenCalledTimes(drainedQueries);
+    expect(vi.getTimerCount()).toBe(0);
+    await scheduler.stop();
+  });
+
+  it('preserves a wake arriving during an empty discovery query', async () => {
+    const tasks: DurableTask[] = [];
+    const harness = createStore(tasks);
+    const gate = deferred();
+    vi.mocked(harness.store.findEligible).mockImplementationOnce(async () => {
+      await gate.promise;
+      return [];
+    });
+    const dispatcher = new DurableTaskDispatcherService();
+    const execute = vi.fn(async () => {});
+    dispatcher.register({ taskType: 'TEST_COMMAND', execute });
+    const scheduler = new DurableTaskSchedulerService(
+      harness.store,
+      dispatcher,
+      createAsyncScheduler(harness.store),
+    );
+    const pump = scheduler.wake();
+    await vi.waitFor(() =>
+      expect(harness.store.findEligible).toHaveBeenCalledOnce(),
+    );
+    tasks.push(makeTask(1n));
+    void scheduler.wake();
+    gate.resolve();
+    await pump;
+    await vi.waitFor(() =>
+      expect(harness.markSucceeded).toHaveBeenCalledOnce(),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    await scheduler.stop();
+  });
+
+  it.each(['findCheckpointedProcessing', 'findEligible', 'claim'] as const)(
+    'retries a failed %s query without spinning, then stops after draining',
+    async (method) => {
+      vi.useFakeTimers();
+      vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const harness = createStore([makeTask(1n)]);
+      vi.mocked(harness.store[method]).mockRejectedValueOnce(
+        new Error('database unavailable'),
+      );
+      const dispatcher = new DurableTaskDispatcherService();
+      const execute = vi.fn(async () => {});
+      dispatcher.register({ taskType: 'TEST_COMMAND', execute });
+      const scheduler = new DurableTaskSchedulerService(
+        harness.store,
+        dispatcher,
+        createAsyncScheduler(harness.store),
+      );
+      await scheduler.wake();
+      expect(harness.store[method]).toHaveBeenCalledOnce();
+      expect(execute).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(harness.markSucceeded).toHaveBeenCalledWith(1n);
+      expect(vi.getTimerCount()).toBe(0);
+      await scheduler.stop();
+    },
+  );
+
+  it('cancels discovery recovery on shutdown', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const harness = createStore([]);
+    vi.mocked(harness.store.findEligible).mockRejectedValue(
+      new Error('database unavailable'),
+    );
+    const scheduler = new DurableTaskSchedulerService(
+      harness.store,
+      new DurableTaskDispatcherService(),
+      createAsyncScheduler(harness.store),
+    );
+    await scheduler.wake();
+    expect(vi.getTimerCount()).toBe(1);
+    await scheduler.stop();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.store.findEligible).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('captures recovery once and drains it across concurrency-limited batches', async () => {
     process.env.DURABLE_TASK_MAX_CONCURRENCY = '1';
     const tasks = [1n, 2n, 3n].map((id) => ({
@@ -175,7 +286,7 @@ describe('DurableTaskSchedulerService', () => {
     },
   );
 
-  it('does not scan locally executing tasks for recovery during polling', async () => {
+  it('does not scan locally executing tasks for recovery on subsequent wakes', async () => {
     const task = { ...makeTask(1n), taskType: 'FAN_OUT_GROUP_META_HEAD' };
     const harness = createStore([task]);
     const gate = deferred();

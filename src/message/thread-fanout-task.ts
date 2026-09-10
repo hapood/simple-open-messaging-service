@@ -152,7 +152,7 @@ export async function yieldThreadFanoutInTx(
     )
     .orderBy(asc(durableTask.id))
     .limit(1)
-    .for('update');
+    .for('no key update');
   if (!next) return false;
   const newer = parseThreadFanoutTarget(next.payload);
   if (newer.threadId !== target.threadId)

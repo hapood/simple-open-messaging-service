@@ -376,6 +376,49 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
   });
 
+  it('keeps server previews while optimistic reads clear unread and mentions', async () => {
+    await populate([p2p(1, 11)]);
+    for (const seq of [1, 3, 5]) await seedMessage(1, seq);
+    await publishThreadState(threadSnapshot(), true);
+    const previewFields = {
+      lastMessagePreview: repo.items()[0].lastMessagePreview,
+      lastMessagePreviewSeq: repo.items()[0].lastMessagePreviewSeq,
+      lastMessageAt: repo.items()[0].lastMessageAt,
+      lastMessageSenderId: repo.items()[0].lastMessageSenderId,
+    };
+    for (const seq of [5, 8]) {
+      expect(repo.commitLocalRead(1, seq)).toBe(true);
+      await flush(30);
+      expect(repo.items()[0]).toMatchObject({
+        ...previewFields,
+        lastReadSeq: seq,
+        unreadCount: 0,
+        mentionUnread: [],
+      });
+    }
+    // A server cursor behind the optimistic cursor still owns preview membership.
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadFeedId: 2,
+      lastReadSeq: 5,
+      unreadCount: 0,
+      lastMentionSeq: null,
+    });
+    expect(repo.items()[0]).toMatchObject(previewFields);
+    expect(await (await webdb.db()).get('threads', 1)).toMatchObject(
+      previewFields,
+    );
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadFeedId: 3,
+      lastReadSeq: 8,
+      unreadCount: 0,
+      lastMentionSeq: null,
+      previews: [],
+    });
+    expect(repo.items()[0].lastMessagePreview).toBeNull();
+  });
+
   it('handles message and tomb heads together and masks deleted preview content without decrementing count', async () => {
     await populate([p2p(1, 11)]);
     await publishThreadState(threadSnapshot(), true);

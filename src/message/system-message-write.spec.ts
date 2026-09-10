@@ -24,13 +24,13 @@ describe('MessageService local system messages', () => {
     const stored = {
       id: 10n,
       threadId: 7,
-      creatorAccount: null,
-      creatorDomain: null,
+      creatorAccount: '$system',
+      creatorDomain: 'local',
       seq: 4,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
         type: SystemMessageType.GROUP_JOINED,
-        subject: { account: 'alice', domain: 'local.test' },
+        member: { account: 'alice', domain: 'local.test' },
       }),
       isDeleted: false,
       createdAt: new Date(),
@@ -77,12 +77,10 @@ describe('MessageService local system messages', () => {
       insert,
     };
 
-    const result = await service.writeSystemMessageInTx(
-      tx as never,
-      7,
-      SystemMessageType.GROUP_JOINED,
-      2,
-    );
+    const result = await service.writeSystemMessageInTx(tx as never, 7, {
+      type: SystemMessageType.GROUP_JOINED,
+      member: 2,
+    });
 
     expect(result.message.contentType).toBe(ContentType.SYSTEM);
     expect(insertValues).toHaveBeenCalledWith(
@@ -90,8 +88,14 @@ describe('MessageService local system messages', () => {
         contentType: ContentType.SYSTEM,
       }),
     );
-    expect(insertValues.mock.calls[0][0]).not.toHaveProperty('creatorAccount');
-    expect(insertValues.mock.calls[0][0]).not.toHaveProperty('creatorDomain');
+    expect(insertValues.mock.calls[0][0]).toMatchObject({
+      creatorAccount: '$system',
+      creatorDomain: 'local',
+    });
+    expect(JSON.parse(insertValues.mock.calls[0][0].content)).toEqual({
+      type: 'GROUP_JOINED',
+      member: { account: 'alice', domain: 'local' },
+    });
     expect(threadUpdate).toBe(1);
   });
 
@@ -104,7 +108,10 @@ describe('MessageService local system messages', () => {
     Object.assign(service, { logger });
 
     await expect(
-      service.tryWriteSystemMessage(7, SystemMessageType.GROUP_JOINED, 2),
+      service.tryWriteSystemMessage(7, {
+        type: SystemMessageType.GROUP_JOINED,
+        member: 2,
+      }),
     ).resolves.toBeNull();
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('storage unavailable'),
@@ -117,13 +124,13 @@ describe('MessageService local system messages', () => {
     const stored = {
       id: 11n,
       threadId: 7,
-      creatorAccount: null,
-      creatorDomain: null,
+      creatorAccount: '$system',
+      creatorDomain: 'local',
       seq: 5,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
         type: SystemMessageType.FRIEND_REMOVED,
-        subject: { account: 'bob', domain: 'local.test' },
+        initiator: { account: 'bob', domain: 'local' },
       }),
       isDeleted: false,
       createdAt: new Date(),
@@ -155,19 +162,17 @@ describe('MessageService local system messages', () => {
     };
     const service = new MessageService({} as never, {} as never, {} as never);
 
-    await service.writeSystemMessageInTx(
-      tx as never,
-      7,
-      SystemMessageType.FRIEND_REMOVED,
-      2,
-    );
+    await service.writeSystemMessageInTx(tx as never, 7, {
+      type: SystemMessageType.FRIEND_REMOVED,
+      initiator: 2,
+    });
 
     expect(enqueueDepartureFanoutsInTx).toHaveBeenLastCalledWith(
       tx,
       { tx, threadId: 7 },
       { threadId: 7, messageEndSeq: 5, tombstoneEndSeq: 2 },
       'P2P',
-      2,
+      undefined,
     );
     expect(enqueueThreadFanoutInTx).toHaveBeenLastCalledWith(
       tx,

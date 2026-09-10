@@ -1,6 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { readFile } from 'node:fs/promises';
 import {
   afterAll,
   beforeAll,
@@ -698,86 +697,4 @@ describe('federation thread synchronization state', () => {
       });
     },
   );
-
-  it('preserves an unambiguous mirror cursor and rebuilds mixed authority cursors during migration', async () => {
-    await initializeTail(10);
-    const migration = await readFile(
-      new URL(
-        '../database/migrations/0001_source_scoped_thread_sync.sql',
-        import.meta.url,
-      ),
-      'utf8',
-    );
-    const rollback = new Error('rollback migration fixture');
-    await expect(
-      database.db.transaction(async (tx) => {
-        // Reconstruct the preceding schema inside a rollback-only isolated transaction.
-        await tx.execute(
-          sql.raw(`
-        ALTER TABLE "FederationThreadSyncState" DROP CONSTRAINT "FederationThreadSyncState_activeGap_fkey";
-        ALTER TABLE "FederationThreadSyncState" DROP CONSTRAINT "FederationThreadSyncState_namespaceId_fkey";
-        ALTER TABLE "FederationThreadHistoryGap" DROP CONSTRAINT "FederationThreadHistoryGap_namespaceId_fkey";
-        ALTER TABLE "FederationThreadSyncState" DROP CONSTRAINT "FederationThreadSyncState_pkey";
-        ALTER TABLE "FederationThreadHistoryGap" DROP CONSTRAINT "FederationThreadHistoryGap_threadId_id_key";
-        DROP INDEX "FederationThreadHistoryGap_interval_key";
-        DROP INDEX "FederationThreadHistoryGap_recoverable_idx";
-        ALTER TABLE "FederationThreadSyncState" DROP COLUMN "namespaceId";
-        ALTER TABLE "FederationThreadHistoryGap" DROP COLUMN "namespaceId";
-        ALTER TABLE "FederationThreadSyncState" ADD CONSTRAINT "FederationThreadSyncState_pkey" PRIMARY KEY ("threadId");
-        ALTER TABLE "FederationThreadHistoryGap" ADD CONSTRAINT "FederationThreadHistoryGap_threadId_id_key" UNIQUE ("threadId", id);
-        CREATE UNIQUE INDEX "FederationThreadHistoryGap_interval_key" ON "FederationThreadHistoryGap" ("threadId", "startSeq", "endSeq");
-        CREATE INDEX "FederationThreadHistoryGap_recoverable_idx" ON "FederationThreadHistoryGap" ("threadId", "endSeq") WHERE recoverable = true;
-        ALTER TABLE "FederationThreadSyncState" ADD CONSTRAINT "FederationThreadSyncState_activeGap_fkey" FOREIGN KEY ("threadId", "activeGapId") REFERENCES "FederationThreadHistoryGap"("threadId", id) ON DELETE RESTRICT;
-      `),
-        );
-        const local = await tx.execute<{ id: number }>(sql`
-          WITH created_group AS (
-            INSERT INTO "GroupAccount" (account, "updatedAt")
-            VALUES ('!migration-authority', CURRENT_TIMESTAMP)
-            RETURNING id
-          )
-          INSERT INTO "MessageThread" (type, "groupAccountId", "groupAccount", "groupDomain", "curSeq", "authorityNamespaceId", "updatedAt")
-          SELECT 'GROUP', id, '!migration-authority', 'local', 1, 0, CURRENT_TIMESTAMP FROM created_group RETURNING id
-      `);
-        const localId = local.rows[0].id;
-        await tx.execute(
-          sql`INSERT INTO "FederationThreadSyncState" ("threadId", "messageTargetSeq", "messageProcessedThroughSeq") VALUES (${localId}, 10, 10)`,
-        );
-        await tx.execute(
-          sql`INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "targetDomain") VALUES (${localId}, ${namespaceId}, ${peerDomain})`,
-        );
-        await tx.execute(
-          sql`INSERT INTO "PeerStateFeedPullCursor" ("peerDomain", "namespaceId", initialized, "committedThrough") VALUES (${peerDomain}, ${namespaceId}, true, 50)`,
-        );
-        await tx.execute(
-          sql`INSERT INTO "Message" ("threadId", seq, "contentType", content, "updatedAt") VALUES (${localId}, 1, 'SYSTEM', '{}', CURRENT_TIMESTAMP)`,
-        );
-        await tx.execute(sql.raw(migration));
-        const mirror = await tx.query.federationThreadSyncState.findFirst({
-          where: eq(federationThreadSyncState.threadId, threadId),
-        });
-        expect(mirror).toMatchObject({
-          namespaceId,
-          messageTargetSeq: 10,
-          messageProcessedThroughSeq: 9,
-        });
-        expect(mirror?.activeGapId).not.toBeNull();
-        expect(
-          await tx.query.federationThreadSyncState.findFirst({
-            where: eq(federationThreadSyncState.threadId, localId),
-          }),
-        ).toBeUndefined();
-        const cursor = await tx.execute<{ committedThrough: string }>(
-          sql`SELECT "committedThrough" FROM "PeerStateFeedPullCursor" WHERE "namespaceId" = ${namespaceId}`,
-        );
-        expect(String(cursor.rows[0].committedThrough)).toBe('0');
-        expect(
-          await tx.query.message.findFirst({
-            where: eq(message.threadId, localId),
-          }),
-        ).toBeDefined();
-        throw rollback;
-      }),
-    ).rejects.toBe(rollback);
-  });
 });

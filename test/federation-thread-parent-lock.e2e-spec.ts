@@ -3,7 +3,13 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { groupAccount, messageThread } from '../src/database/schema.js';
+import {
+  account,
+  federationThreadSyncState,
+  groupAccount,
+  messageThread,
+} from '../src/database/schema.js';
+import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { sql } from 'drizzle-orm';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
@@ -19,6 +25,52 @@ describe('group business scope and content lock ordering', () => {
   });
   afterAll(async () => {
     await mod?.close();
+  });
+
+  it('reacquires an existing group pair without upgrading against a key-share holder', async () => {
+    const [parent] = await database.db
+      .insert(groupAccount)
+      .values({ account: '!pair-lock', updatedAt: new Date() })
+      .returning();
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: 'GROUP',
+        groupAccount: parent.account,
+        groupDomain: 'local',
+        groupAccountId: parent.id,
+        updatedAt: new Date(),
+      })
+      .returning();
+    const [member] = await database.db
+      .insert(account)
+      .values({ account: 'pair-lock-member' })
+      .returning();
+    const service = new RelationshipIntentService();
+    const params = {
+      groupId: thread.id,
+      threadId: thread.id,
+      memberUserId: member.id,
+    };
+    const pair = await database.db.transaction((tx) =>
+      service.lockGroupMutationInTx(tx, params),
+    );
+    const reader = await database.pool.connect();
+    try {
+      await reader.query('BEGIN');
+      await reader.query(
+        'SELECT id FROM "RelationshipPair" WHERE id = $1 FOR KEY SHARE',
+        [pair.id.toString()],
+      );
+      await database.db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1000ms'`);
+        const locked = await service.lockGroupMutationInTx(tx, params);
+        expect(locked.id).toBe(pair.id);
+      });
+    } finally {
+      await reader.query('ROLLBACK');
+      reader.release();
+    }
   });
 
   it.each(['epoch gate', 'state feed'] as const)(
@@ -41,6 +93,11 @@ describe('group business scope and content lock ordering', () => {
           updatedAt: new Date(),
         })
         .returning();
+      await database.db.insert(federationThreadSyncState).values({
+        threadId: thread.id,
+        namespaceId: 0,
+        authorizationEpoch: thread.authorizationEpoch,
+      });
       const membership = await database.pool.connect();
       let result: Promise<unknown> | undefined;
       try {

@@ -12,6 +12,7 @@ describe('group relationship client identities', () => {
       );
       const group = { id: 28, account: '!group', profileRev: 0 };
       Object.assign(service, {
+        relationshipTasks: { deferInTx: vi.fn().mockResolvedValue(false) },
         reverseRevokes: { enqueueGroupInTx: vi.fn(async () => undefined) },
         config: { domain: 'bravo.test' },
         clientStateFeed: { writeInTx },
@@ -90,6 +91,7 @@ describe('group relationship client identities', () => {
     const writeInTx = vi.fn().mockResolvedValue(1);
     const service = Object.create(RelationshipService.prototype);
     Object.assign(service, {
+        relationshipTasks: { deferInTx: vi.fn().mockResolvedValue(false) },
       config: { domain: 'bravo.test' },
       clientStateFeed: { writeInTx },
     });

@@ -143,7 +143,7 @@ describe('FederationGroupMetaTaskCoordinator', () => {
         checkpoint: {
           phase: 'PULL',
           mode: 'delta',
-          after: '10',
+          after: '5',
           through: '20',
         },
       }),
@@ -163,14 +163,19 @@ describe('FederationGroupMetaTaskCoordinator', () => {
     expect(h.update).not.toHaveBeenCalled();
   });
 
-  it('reports a failed lane instead of creating unreachable pending work', async () => {
+  it('admits new work after a failure from committed progress', async () => {
     const h = harness(5n, [
       { id: 31n, status: 'FAILED', payload: payload('10') },
     ]);
 
-    await expect(h.coordinator.ensure(input)).rejects.toThrow(
-      'blocked by failed task 31',
+    await expect(h.coordinator.ensure(input)).resolves.toEqual({
+      ready: false,
+      taskId: 40n,
+    });
+    expect(h.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkpoint: { phase: 'PULL', mode: 'delta', after: '5', through: '20' },
+      }),
     );
-    expect(h.insert).not.toHaveBeenCalled();
   });
 });

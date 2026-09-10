@@ -141,13 +141,10 @@ describe('FederationResetService', () => {
         tx,
         'peer.example',
       );
-      expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
-        tx,
-        44,
-        'FEDERATION_NAMESPACE_ARCHIVED',
-        undefined,
-        { domain: 'peer.example' },
-      );
+      expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(tx, 44, {
+        type: 'FEDERATION_NAMESPACE_ARCHIVED',
+        domain: 'peer.example',
+      });
     },
   );
 });

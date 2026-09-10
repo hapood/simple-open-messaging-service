@@ -46,7 +46,6 @@ describe('addressed friendship acceptance', () => {
       true,
       '',
       [],
-      true,
     );
   });
 });

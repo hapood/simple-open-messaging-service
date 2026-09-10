@@ -1,3 +1,5 @@
+import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { enqueueReverseP2PRevokeInTx } from '../relationship/reverse-revoke-task.js';
 import { writeP2PClientRelationshipInTx } from '../relationship/p2p-client-relationship.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
@@ -49,6 +51,8 @@ export class AccountThreadStateService {
   private readonly relationshipIntents!: RelationshipIntentService;
   @Inject(ThreadPreviewService)
   private readonly previews!: ThreadPreviewService;
+  @Inject(DurableTaskQueueService)
+  private readonly tasks!: DurableTaskQueueService;
   constructor(
     private database: DatabaseService,
     private readonly stateFeed: PeerStateFeedService,
@@ -143,7 +147,7 @@ export class AccountThreadStateService {
       await requireThreadContentLockInTx(tx, threadId);
       const current = await tx.execute<{ blocked: boolean }>(sql`
           SELECT blocked FROM "AccountThreadState"
-          WHERE "accountId" = ${userId} AND "threadId" = ${threadId} FOR UPDATE`);
+          WHERE "accountId" = ${userId} AND "threadId" = ${threadId} FOR NO KEY UPDATE`);
       if (!current.rows[0]) throw new Error('thread participant is missing');
       if (current.rows[0].blocked === blocked) return null;
       const [participant] = await tx
@@ -316,6 +320,7 @@ export class AccountThreadStateService {
     threadId: number,
     callerUserId: number,
     expectedAuthorizationEpoch?: number,
+    initiator: AccountTarget = callerUserId,
   ): Promise<{
     transitioned: boolean;
     statePeers: string[];
@@ -336,11 +341,10 @@ export class AccountThreadStateService {
       if (!endpoints) throw new Error('P2P endpoints are missing');
       ({ mine, peer } = endpoints);
       const { callerSide, pairId } = endpoints;
-      const peerSide = callerSide === 'A' ? 'B' : 'A';
       const pair = await tx.execute<{ id: string; active: boolean }>(sql`
         SELECT id, active FROM "RelationshipPair"
         WHERE id = ${pairId} AND "threadId" = ${threadId} AND kind = 'P2P'
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       if (
         pair.rows[0] === undefined ||
@@ -365,13 +369,13 @@ export class AccountThreadStateService {
         SELECT id FROM "RelationshipIntent"
         WHERE "pairId" = ${pairId}
         ORDER BY "authorSide"
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       await tx.execute(sql`
         SELECT id FROM "AccountThreadState"
         WHERE "threadId" = ${threadId}
         ORDER BY "accountId"
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       const outgoing = await tx.execute<{ status: string }>(sql`
         SELECT status FROM "RelationshipIntent"
@@ -393,19 +397,11 @@ export class AccountThreadStateService {
 
       if (wasActive && this.messages) {
         systemMessage = (
-          await this.messages.writeDepartureMessageInTx(
+          await this.messages.writeSystemMessageInTx(
             tx,
             threadId,
-            SystemMessageType.FRIEND_REMOVED,
-            {
-              account: peer.account,
-              domain: peer.domain,
-              namespaceId: peer.namespaceId,
-            },
-            {
-              actorUserId: callerUserId,
-              threadLock,
-            },
+            { type: SystemMessageType.FRIEND_REMOVED, initiator },
+            { threadLock },
           )
         ).message;
         if (localHistoryUserIds.length > 0)
@@ -443,16 +439,12 @@ export class AccountThreadStateService {
         RETURNING "profileRev"
       `);
       if (wasActive && peer.domain === 'local')
-        await tx.execute(sql`
-          INSERT INTO "RelationshipIntent" (
-            "pairId", "authorSide", status, note, "messageEndSeq", "tombstoneEndSeq",
-            "requestedAt", "expiresAt", "updatedAt"
-          ) VALUES (${pairId}, ${peerSide}, 'REVOKED', '', 0, 0, NULL, NULL, CURRENT_TIMESTAMP)
-          ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
-            status = 'REVOKED', note = '', "requestedAt" = NULL,
-            "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "RelationshipIntent".status <> 'REVOKED'
-        `);
+        await enqueueReverseP2PRevokeInTx(
+          tx,
+          this.tasks,
+          peer.userId!,
+          mine.userId,
+        );
       await setLockedP2PPairActiveInTx(tx, pairId, false);
       pendingClientUpdates.push(
         ...(await writeP2PClientRelationshipInTx(

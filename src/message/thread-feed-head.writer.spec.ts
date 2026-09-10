@@ -131,6 +131,20 @@ describe('mention projection in the shared head writer', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('skips duplicate heads with a retained read-boundary preview', async () => {
+    const execute = vi.fn().mockResolvedValue({
+      rows: [
+        { ...state, lastReadSeq: 5, lastMentionSeq: null, previewSeqs: [5] },
+      ],
+    });
+    await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
+      threadId: 2,
+      messageEndSeq: 5,
+      tombstoneEndSeq: 0,
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { delta: 0, previews: [5], tomb: false, expected: [false, false] },
     { delta: 1, previews: [5], tomb: false, expected: [true, false] },

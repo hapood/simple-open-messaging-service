@@ -34,7 +34,7 @@ export async function enqueueReadPositionInTx(
   }>(sql`
     SELECT id::text, status, payload FROM "DurableTask"
     WHERE kind = 'MUTATION' AND "scopeKey" = ${scope}
-    ORDER BY id DESC LIMIT 1 FOR UPDATE`);
+    ORDER BY id DESC LIMIT 1 FOR NO KEY UPDATE`);
   const pending = last.rows[0];
   if (
     !request.force &&

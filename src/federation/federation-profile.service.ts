@@ -181,50 +181,51 @@ export class FederationProfileService {
     if (account.startsWith('!')) {
       let row;
       try {
-        row = await this.database.db.transaction(async (tx) => {
-          const authorized = await resolveAuthorizedFederationThreadInTx(
-            tx,
-            peerDomain,
-            namespaceId,
-            { type: 'GROUP', account },
-          );
-          if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
-            this.profileNotDisclosed();
-          const [value] = await tx
-            .select({
-              groupId: groupStateTable.id,
-              account: groupStateFields.account,
-              displayName: tables.profileTable.displayName,
-              avatar: tables.profileTable.avatar,
-              bio: tables.profileTable.bio,
-              profileRev: tables.profileTable.profileRev,
-            })
-            .from(groupStateTable)
-            .innerJoin(
-              tables.profileTable,
-              and(
-                eq(tables.profileTable.account, groupStateFields.account),
-                eq(tables.profileTable.domain, groupStateFields.domain),
-                eq(
-                  tables.profileTable.namespaceId,
-                  groupStateFields.namespaceId,
+        row = await this.database.db.transaction(
+          async (tx) => {
+            const authorized = await resolveAuthorizedFederationThreadInTx(
+              tx,
+              peerDomain,
+              namespaceId,
+              { type: 'GROUP', account },
+            );
+            if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
+              this.profileNotDisclosed();
+            const [value] = await tx
+              .select({
+                groupId: groupStateTable.id,
+                account: groupStateFields.account,
+                displayName: tables.profileTable.displayName,
+                avatar: tables.profileTable.avatar,
+                bio: tables.profileTable.bio,
+                profileRev: tables.profileTable.profileRev,
+              })
+              .from(groupStateTable)
+              .innerJoin(
+                tables.profileTable,
+                and(
+                  eq(tables.profileTable.account, groupStateFields.account),
+                  eq(tables.profileTable.domain, groupStateFields.domain),
+                  eq(
+                    tables.profileTable.namespaceId,
+                    groupStateFields.namespaceId,
+                  ),
+                  eq(tables.profileTable.profileRev, rev),
                 ),
-                eq(tables.profileTable.profileRev, rev),
-              ),
-            )
-            .leftJoin(
-              tables.groupMetaProfileFeed,
-              and(
-                eq(tables.groupMetaProfileFeed.threadId, groupStateTable.id),
-                eq(tables.groupMetaProfileFeed.profileRev, rev),
-              ),
-            )
-            .where(
-              and(
-                eq(groupStateFields.account, account),
-                eq(groupStateFields.domain, 'local'),
-                eq(groupStateFields.namespaceId, 0),
-                sql`(
+              )
+              .leftJoin(
+                tables.groupMetaProfileFeed,
+                and(
+                  eq(tables.groupMetaProfileFeed.threadId, groupStateTable.id),
+                  eq(tables.groupMetaProfileFeed.profileRev, rev),
+                ),
+              )
+              .where(
+                and(
+                  eq(groupStateFields.account, account),
+                  eq(groupStateFields.domain, 'local'),
+                  eq(groupStateFields.namespaceId, 0),
+                  sql`(
                   ${tables.groupMetaProfileFeed.threadId} IS NOT NULL
                   OR EXISTS (
                     SELECT 1
@@ -251,11 +252,13 @@ export class FederationProfileService {
                       )
                   )
                 )`,
-              ),
-            )
-            .limit(1);
-          return value;
-        });
+                ),
+              )
+              .limit(1);
+            return value;
+          },
+          { isolationLevel: 'repeatable read', accessMode: 'read only' },
+        );
       } catch (error) {
         if (
           error instanceof BusinessException &&

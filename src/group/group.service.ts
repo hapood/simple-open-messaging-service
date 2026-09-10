@@ -1,3 +1,5 @@
+import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { enqueueReverseGroupRevokeInTx } from '../relationship/reverse-revoke-task.js';
 import {
   groupState as group,
   groupStateFields,
@@ -11,7 +13,13 @@ import {
   type AccountTarget,
 } from '../user/account-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import {
@@ -78,6 +86,8 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
 export class GroupService {
   private readonly logger = new Logger(GroupService.name);
 
+  @Inject(DurableTaskQueueService)
+  private readonly tasks!: DurableTaskQueueService;
   constructor(
     private database: DatabaseService,
     private readonly federation: FederationService,
@@ -839,14 +849,12 @@ export class GroupService {
       const systemMessage =
         transitioned && outgoing.rows[0]?.active === true && this.messages
           ? (
-              await this.messages.writeDepartureMessageInTx(
+              await this.messages.writeSystemMessageInTx(
                 tx,
                 params.threadId,
-                SystemMessageType.GROUP_LEFT,
-                params.userId,
+                { type: SystemMessageType.GROUP_LEFT, member: params.userId },
                 {
                   threadLock: mutationLock.threadLock,
-                  actorUserId: params.userId,
                 },
               )
             ).message
@@ -886,7 +894,24 @@ export class GroupService {
             )
           : new Map<string, bigint>();
       let groupRequestState = new Map<string, bigint>();
-      if (transitioned && thread.groupDomain === 'local') {
+      if (
+        transitioned &&
+        !params.dissolvedFanout &&
+        outgoing.rows[0]?.active === true &&
+        localMember &&
+        thread.groupDomain === 'local'
+      )
+        await enqueueReverseGroupRevokeInTx(tx, this.tasks, {
+          threadId: params.threadId,
+          group: { account: thread.groupAccount, domain: thread.groupDomain },
+          memberUserId: localMember.id,
+          author: 'GROUP',
+        });
+      if (
+        transitioned &&
+        (!localMember || params.dissolvedFanout) &&
+        thread.groupDomain === 'local'
+      ) {
         groupRequestState =
           await this.relationshipMutations.writeGroupRelationshipIntentInTx(
             tx,
@@ -1197,14 +1222,15 @@ export class GroupService {
       const [localTarget] = await localAccountsForTargetsInTx(tx, [target]);
       const systemMessage = this.messages
         ? (
-            await this.messages.writeDepartureMessageInTx(
+            await this.messages.writeSystemMessageInTx(
               tx,
               params.threadId,
-              SystemMessageType.GROUP_LEFT,
-              params.targetUserId,
+              {
+                type: SystemMessageType.GROUP_LEFT,
+                member: params.targetUserId,
+              },
               {
                 threadLock: mutationLock.threadLock,
-                actorUserId: params.operatorUserId,
               },
             )
           ).message
@@ -1231,18 +1257,13 @@ export class GroupService {
           'REVOKED',
           clientFeedUpdates,
         );
-      if (localTarget) {
-        const reverseState =
-          await this.relationshipMutations.writeMemberRelationshipIntentInTx(
-            tx,
-            params.threadId,
-            localTarget.id,
-            'REVOKED',
-            clientFeedUpdates,
-          );
-        for (const [domain, feedId] of reverseState)
-          requestState.set(domain, feedId);
-      }
+      if (localTarget)
+        await enqueueReverseGroupRevokeInTx(tx, this.tasks, {
+          threadId: params.threadId,
+          group: { account: thread.groupAccount, domain: thread.groupDomain },
+          memberUserId: localTarget.id,
+          author: 'MEMBER',
+        });
       return {
         transitioned: true,
         clientFeedUpdates,
@@ -1386,12 +1407,11 @@ export class GroupService {
       return { clientFeedUpdates };
     });
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.emitSystemMessage(
-      params.fromUserId,
-      params.threadId,
-      SystemMessageType.GROUP_OWNER_TRANSFERRED,
-      params.toUserId,
-    );
+    await this.messages?.tryWriteSystemMessage(params.threadId, {
+      type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
+      previousOwner: params.fromUserId,
+      newOwner: params.toUserId,
+    });
   }
 
   /** Set ADMIN or MEMBER in the authoritative Group Meta roster. */
@@ -1518,25 +1538,12 @@ export class GroupService {
     });
     if (!result.changed) return;
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.emitSystemMessage(
-      params.operatorUserId,
-      params.threadId,
-      params.role === GroupRole.ADMIN
-        ? SystemMessageType.GROUP_ADMIN_GRANTED
-        : SystemMessageType.GROUP_ADMIN_REVOKED,
-      params.targetUserId,
-    );
-  }
-
-  private async emitSystemMessage(
-    actorUserId: number,
-    threadId: number,
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
-    subjectUserId?: AccountTarget,
-  ): Promise<void> {
-    if (!this.messages) return;
-    await this.messages.tryWriteSystemMessage(threadId, type, subjectUserId, {
-      actorUserId,
+    await this.messages?.tryWriteSystemMessage(params.threadId, {
+      type:
+        params.role === GroupRole.ADMIN
+          ? SystemMessageType.GROUP_ADMIN_GRANTED
+          : SystemMessageType.GROUP_ADMIN_REVOKED,
+      member: params.targetUserId,
     });
   }
 

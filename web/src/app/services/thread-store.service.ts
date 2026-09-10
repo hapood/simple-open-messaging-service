@@ -1091,9 +1091,9 @@ export class ThreadRepository {
     )
       return;
     const projection = projectThreadAttention(state, count)!;
-    const preview = state.server.previews
-      ?.filter((p) => p.seq > projection.lastReadSeq)
-      .at(-1);
+    // Preview membership belongs to the server; optimistic reads only affect
+    // attention state and must not prune the conversation summary.
+    const preview = state.server.previews?.at(-1);
     const namespaceId = preview?.sender
       ? this.namespaces.activeNamespaceId(preview.sender.domain)
       : null;

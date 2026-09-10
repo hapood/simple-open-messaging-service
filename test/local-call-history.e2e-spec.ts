@@ -21,7 +21,6 @@ describe('local terminal call history transactions', () => {
     history = new CallHistoryService(database);
   });
   afterAll(async () => {
-    history.onModuleDestroy();
     await database.pool.end();
   });
   async function snapshot(): Promise<CallHistorySnapshot> {
@@ -62,7 +61,8 @@ describe('local terminal call history transactions', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       contentType: 'SYSTEM',
-      creatorAccount: null,
+      creatorAccount: '$system',
+      creatorDomain: 'local',
       originSeq: null,
     });
     expect(JSON.parse(rows[0].content)).toEqual(call.content);
@@ -154,7 +154,6 @@ describe('local terminal call history transactions', () => {
     ).toHaveLength(0);
     const recovered = new CallHistoryService(database);
     await recovered.onModuleInit();
-    recovered.onModuleDestroy();
     const [row] = await database.db
       .select()
       .from(message)
@@ -170,7 +169,7 @@ describe('local terminal call history transactions', () => {
       .where(eq(callHistory.key, call.key));
     expect(journal.snapshot.outcome).toBe('missed');
   });
-  it('continues startup recovery after a failed write and retries the failed record', async () => {
+  it('continues startup recovery after a failed write', async () => {
     const calls = [await snapshot(), await snapshot()];
     for (const call of calls) await history.observe(call);
     const recovered = new CallHistoryService(database);
@@ -188,21 +187,8 @@ describe('local terminal call history transactions', () => {
       );
       expect(affected.filter((row) => row.messageSeq !== null)).toHaveLength(1);
       expect(affected.every((row) => row.terminal)).toBe(true);
-      await vi.waitFor(
-        async () => {
-          for (const call of calls) {
-            const [row] = await database.db
-              .select()
-              .from(callHistory)
-              .where(eq(callHistory.key, call.key));
-            expect(row.messageSeq).not.toBeNull();
-          }
-        },
-        { timeout: 6500, interval: 100 },
-      );
     } finally {
       transaction.mockRestore();
-      recovered.onModuleDestroy();
     }
   });
 
@@ -211,7 +197,6 @@ describe('local terminal call history transactions', () => {
     await history.observe(call);
     const recovered = new CallHistoryService(database);
     await recovered.onModuleInit();
-    recovered.onModuleDestroy();
     const [row] = await database.db
       .select()
       .from(message)

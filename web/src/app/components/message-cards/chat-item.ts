@@ -154,10 +154,11 @@ export interface AuthoredMessageItem extends ChatMessageBase {
   contentType: AuthoredContentType;
 }
 
-/** Server-authored timeline notice. It has no creator field. */
+/** A $system@local notification; event participants live in its content. */
 export interface SystemMessageItem extends ChatMessageBase {
   type: 'system';
   contentType: 'SYSTEM';
+  systemPeer?: { account: string; domain: string; name: string };
 }
 
 export type ChatMsgData = AuthoredMessageItem | SystemMessageItem;

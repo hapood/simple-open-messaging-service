@@ -5,6 +5,10 @@ import { ClientStateFeedService } from './client-state-feed.service.js';
 
 const dialect = new PgDialect();
 
+vi.mock('../state-feed/state-feed-fanout-task.js', () => ({
+  enqueueStateFeedFanoutInTx: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('ClientStateFeedService', () => {
   it('coalesces committed SSE high watermarks in an independent window per feed', async () => {
     vi.useFakeTimers();

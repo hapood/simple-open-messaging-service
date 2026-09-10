@@ -55,7 +55,7 @@ export class FederationResetService {
         SELECT "activeNamespaceId", "trustLevel", "haltCode", "haltReason"
         FROM "FederatedPeer"
         WHERE domain = ${normalized}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       const peer = peerResult.rows[0];
       this.assertResettable(peer, normalized);
@@ -123,7 +123,7 @@ export class FederationResetService {
         SELECT "activeNamespaceId", "trustLevel", "haltCode"
         FROM "FederatedPeer"
         WHERE domain = ${normalized}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       this.assertResettable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
@@ -139,15 +139,10 @@ export class FederationResetService {
         ORDER BY thread.id
       `);
       for (const thread of affectedThreads.rows) {
-        await this.messages.writeSystemMessageInTx(
-          tx,
-          thread.threadId,
-          SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
-          undefined,
-          {
-            domain: normalized,
-          },
-        );
+        await this.messages.writeSystemMessageInTx(tx, thread.threadId, {
+          type: SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
+          domain: normalized,
+        });
       }
 
       await tx.execute(sql`

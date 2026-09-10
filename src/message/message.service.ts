@@ -1,10 +1,6 @@
 import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
 import {
-  accountAddressInTx,
-  type AccountTarget,
-} from '../user/account-address.js';
-import {
   forwardMessage,
   mediaAsset,
   messageAsset,
@@ -79,8 +75,9 @@ import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
   SystemMessageType,
+  resolveSystemMessageInTx,
+  type SystemMessageInput,
 } from './system-message.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
 import { enqueueThreadFanoutInTx } from './thread-fanout-task.js';
 import { requireOutboundPendingMedia } from './pending-media-row.js';
 import { resolveStoredQuotes } from './quote-reference.js';
@@ -506,92 +503,21 @@ export class MessageService {
     }
   }
 
-  /** Write a departure notice. The relationship transaction owns history boundaries. */
-  async writeDepartureMessageInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-    type:
-      | typeof SystemMessageType.FRIEND_REMOVED
-      | typeof SystemMessageType.GROUP_LEFT,
-    subjectUserId: AccountTarget,
-    options: {
-      threadLock?: ThreadContentLock;
-      actorUserId?: AccountTarget;
-    },
-  ): Promise<{ message: PublicMessage; messageId: bigint }> {
-    return this.writeSystemMessageInTx(
-      tx,
-      threadId,
-      type,
-      subjectUserId,
-      options,
-    );
-  }
-
-  /** Server-only structured timeline notice. It is persisted for this server's clients only and is
-   * never allocated to the federation message feed. Relationship/roster state remains authoritative. */
+  /** Local server notification; content identifies event participants independently of its sender. */
   async writeSystemMessageInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
-    subjectUserId?: AccountTarget,
-    options?: {
-      threadLock?: ThreadContentLock;
-      count?: number;
-      actorUserId?: AccountTarget;
-      subjectAddress?: MessageAuthorAddress;
-      actorAddress?: MessageAuthorAddress;
-      domain?: string;
-    },
+    event: SystemMessageInput,
+    options?: { threadLock?: ThreadContentLock },
   ): Promise<{ message: PublicMessage; messageId: bigint }> {
     const threadLock = await requireThreadContentLockInTx(
       tx,
       threadId,
       options?.threadLock,
     );
-    const subjectRequired =
-      type !== SystemMessageType.FRIEND_ADDED &&
-      type !== SystemMessageType.MESSAGES_MODERATED &&
-      type !== SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED;
-    if (
-      subjectRequired &&
-      subjectUserId === undefined &&
-      options?.subjectAddress === undefined
-    )
-      throw new Error('system message subject is required');
-    if (
-      !subjectRequired &&
-      (subjectUserId !== undefined || options?.subjectAddress !== undefined)
-    )
-      throw new Error(`${type} does not accept a subject`);
-    const subject =
-      options?.subjectAddress ??
-      (subjectUserId === undefined
-        ? undefined
-        : await accountAddressInTx(tx, subjectUserId));
-    if (subjectUserId !== undefined && !subject)
-      throw new Error('system message subject does not exist');
-    const actor =
-      options?.actorAddress ??
-      (options?.actorUserId === undefined
-        ? undefined
-        : await accountAddressInTx(tx, options.actorUserId));
-    if (options?.actorUserId !== undefined && !actor)
-      throw new Error('system message actor does not exist');
-    const toAddress = (identity: { account: string; domain: string }) => ({
-      account: identity.account,
-      domain:
-        identity.domain === 'local'
-          ? loadFederationConfig().domain
-          : identity.domain,
-    });
-    const content = stringifySystemMessageContent({
-      type,
-      ...(subject ? { subject: toAddress(subject) } : {}),
-      ...(actor ? { actor: toAddress(actor) } : {}),
-      ...(options?.count === undefined ? {} : { count: options.count }),
-      ...(options?.domain === undefined ? {} : { domain: options.domain }),
-    });
+    const content = stringifySystemMessageContent(
+      await resolveSystemMessageInTx(tx, event),
+    );
     const [{ curSeq: seq, deletionSeqAllocatedThrough }] = await tx
       .update(messageThread)
       .set({ curSeq: sql`${messageThread.curSeq} + 1` })
@@ -605,6 +531,8 @@ export class MessageService {
       .values({
         content,
         contentType: ContentType.SYSTEM,
+        creatorAccount: '$system',
+        creatorDomain: 'local',
         threadId,
         seq,
         updatedAt: new Date(),
@@ -616,7 +544,7 @@ export class MessageService {
         updatedAt: new Date(),
       })
       .where(eq(messageThread.id, threadId));
-    // System rows have no author and share the regular account preview window.
+    // System rows share the regular account preview window.
     // Admission remains atomic with the relationship mutation and its boundaries.
     await enqueueThreadFanoutInTx(tx, threadLock, {
       threadId,
@@ -624,11 +552,9 @@ export class MessageService {
       tombstoneEndSeq: deletionSeqAllocatedThrough,
     });
     if (
-      type === SystemMessageType.FRIEND_REMOVED ||
-      type === SystemMessageType.GROUP_LEFT
+      event.type === SystemMessageType.FRIEND_REMOVED ||
+      event.type === SystemMessageType.GROUP_LEFT
     ) {
-      if (subjectUserId === undefined)
-        throw new Error('departure subject is missing');
       await enqueueDepartureFanoutsInTx(
         tx,
         threadLock,
@@ -637,8 +563,8 @@ export class MessageService {
           messageEndSeq: seq,
           tombstoneEndSeq: deletionSeqAllocatedThrough,
         },
-        type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
-        subjectUserId,
+        event.type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
+        event.type === SystemMessageType.GROUP_LEFT ? event.member : undefined,
       );
     }
     return { message: stripMessageId(stored), messageId: stored.id };
@@ -646,46 +572,24 @@ export class MessageService {
 
   async writeSystemMessage(
     threadId: number,
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
-    subjectUserId?: AccountTarget,
-    options?: {
-      count?: number;
-      actorUserId?: AccountTarget;
-      subjectAddress?: MessageAuthorAddress;
-      actorAddress?: MessageAuthorAddress;
-      domain?: string;
-    },
+    event: SystemMessageInput,
   ): Promise<PublicMessage> {
     const result = await this.database.db.transaction((tx) =>
-      this.writeSystemMessageInTx(tx, threadId, type, subjectUserId, options),
+      this.writeSystemMessageInTx(tx, threadId, event),
     );
     return result.message;
   }
 
-  /** Best-effort local timeline decoration. State/meta callers invoke this only after their authoritative
-   * transaction commits; a bad payload, missing subject or storage failure must never roll state back. */
+  /** Best-effort decoration after the authoritative state transaction has committed. */
   async tryWriteSystemMessage(
     threadId: number,
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>,
-    subjectUserId?: AccountTarget,
-    options?: {
-      count?: number;
-      actorUserId?: AccountTarget;
-      subjectAddress?: MessageAuthorAddress;
-      actorAddress?: MessageAuthorAddress;
-      domain?: string;
-    },
+    event: SystemMessageInput,
   ): Promise<PublicMessage | null> {
     try {
-      return await this.writeSystemMessage(
-        threadId,
-        type,
-        subjectUserId,
-        options,
-      );
+      return await this.writeSystemMessage(threadId, event);
     } catch (error) {
       this.logger.error(
-        `failed to write local system message ${type} for thread ${threadId}: ${(error as Error).message}`,
+        `failed to write local system message ${event.type} for thread ${threadId}: ${(error as Error).message}`,
         (error as Error).stack,
       );
       return null;

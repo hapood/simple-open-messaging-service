@@ -89,7 +89,7 @@ export class ThreadFeedHeadWriter {
       FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
       JOIN "MessageThread" t ON t.id = s."threadId"
       WHERE s."accountId" = ${accountId} AND s."threadId" = ${threadId}
-      FOR UPDATE OF s`);
+      FOR NO KEY UPDATE OF s`);
     return result.rows[0];
   }
 
@@ -118,7 +118,9 @@ export class ThreadFeedHeadWriter {
     next: { lastReadSeq: number; messageEndSeq: number },
   ): Promise<number[]> {
     if (previous.blocked) return [];
-    const lower = Math.max(next.lastReadSeq, previous.clearedSeq ?? 0);
+    // Reading a preview keeps its slot until the cursor passes it. History
+    // clearing still removes the boundary message itself.
+    const lower = Math.max(next.lastReadSeq - 1, previous.clearedSeq ?? 0);
     const upper = Math.min(
       next.messageEndSeq,
       previous.messageVisibleThroughSeq ?? next.messageEndSeq,
@@ -232,7 +234,8 @@ export class ThreadFeedHeadWriter {
       !mentionOutsideVisibility &&
       !state.previewSeqs.some(
         (seq) =>
-          seq <= Math.max(state.lastReadSeq, state.clearedSeq ?? 0) ||
+          seq < state.lastReadSeq ||
+          seq <= (state.clearedSeq ?? 0) ||
           (state.messageVisibleThroughSeq !== null &&
             seq > state.messageVisibleThroughSeq),
       ) &&

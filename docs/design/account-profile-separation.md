@@ -1,8 +1,7 @@
 # Local accounts and source-scoped profiles
 
-The source schema and migration `0003_account_profile_separation.sql` describe
-the account/profile separation. The migration has been exercised on isolated E2E
-databases. The running federation lab has not been migrated.
+The source schema and [SQL baseline](../../database/migrations/0000_base.sql)
+define the account/profile separation.
 
 ## Ownership
 

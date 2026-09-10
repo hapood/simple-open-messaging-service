@@ -252,7 +252,7 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 | `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `sourceNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
 | `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                            |
 | `threadId`                              |                      | conversation FK                                                                                                        |
-| `creatorAccount` / `creatorDomain`      | Address snapshot     | author identity; null only for server-authored SYSTEM items                                                            |
+| `creatorAccount` / `creatorDomain`      | Address snapshot     | sender identity; SYSTEM items use `$system@local`                                                            |
 | `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                        |
 
 Unique: `(threadId, seq)` is the local timeline identity; `(threadId,
@@ -363,7 +363,7 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 
 `MessageReport` stores `threadId`, `seq`, `isDeleted`, `createdAt`, and `updatedAt`. Its composite primary key and message foreign key both use `(threadId, seq)`. There is no separate report ID, message ID, reporter ID, review status, reviewer, or review timestamp. `isDeleted` dismisses a report independently of `Message.isDeleted`; reporting an available message again reactivates the same row and updates `updatedAt`. Active duplicates do not change either timestamp.
 
-Migration `0010_message_reports.sql` merges existing per-reporter rows into one row per message before dropping obsolete columns and the review-status enum. An undeleted message with any pending report stays active; resolved reports and deleted messages become dismissed entries.
+The [SQL baseline](../../database/migrations/0000_base.sql) stores one report row per message. Active reports have `isDeleted = false`; dismissed reports have `isDeleted = true`.
 
 ### Local call history
 

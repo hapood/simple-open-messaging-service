@@ -1,3 +1,4 @@
+import type { FederationLocalSystemMessage } from './federation-local-system-message-publisher.service.js';
 import { isGroupDissolvedInTx } from '../group/group-state.js';
 import {
   groupState as groupStateTable,
@@ -278,7 +279,6 @@ export class FederationService {
         true,
         '',
         clientFeedUpdates,
-        true,
       );
       return state;
     });
@@ -708,17 +708,16 @@ export class FederationService {
       return {
         allocated,
         clientFeedUpdates,
-        shouldWriteStatus: !alreadyVisible,
+        // Mirrors observe joins when the authoritative roster delta commits.
+        shouldWriteStatus: thread.groupDomain === 'local' && !alreadyVisible,
       };
     });
     if (result === null) return;
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     if (result.shouldWriteStatus)
       await this.publishLocalSystemMessage({
-        actorUserId: memberUserId,
         threadId,
-        type: SystemMessageType.GROUP_JOINED,
-        subjectUserId: memberUserId,
+        event: { type: SystemMessageType.GROUP_JOINED, member: memberUserId },
       });
     await this.pushStateFeedDomains(result.allocated.keys());
   }
@@ -825,7 +824,7 @@ export class FederationService {
         const pairId = BigInt(request.pairId);
         await tx.execute(sql`
           SELECT id FROM "RelationshipPair" WHERE id = ${pairId}
-          FOR UPDATE
+          FOR NO KEY UPDATE
         `);
         const updated = await tx.execute(sql`
           UPDATE "RelationshipIntent"
@@ -1249,13 +1248,9 @@ export class FederationService {
    * until the user accepts the request. */
 
   /** Publish a server-local timeline notice only after its state transaction commits. */
-  private async publishLocalSystemMessage(status: {
-    actorUserId: number;
-    threadId: number;
-    type: Exclude<SystemMessageType, 'CALL_ENDED'>;
-    subjectUserId?: number;
-    message?: PublicMessage;
-  }): Promise<void> {
+  private async publishLocalSystemMessage(
+    status: FederationLocalSystemMessage,
+  ): Promise<void> {
     await this.localSystemMessages.publish(status);
   }
 

@@ -328,7 +328,7 @@ export class FederationMediaLocalizationService {
           eq(tables.messageThread.id, tables.message.threadId),
         )
         .where(eq(tables.message.id, msg.id))
-        .for('update', { of: tables.message })
+        .for('no key update', { of: tables.message })
         .limit(1);
       if (!locked || locked.localState !== 'FAILED') return null;
       const pending = await tx.query.pendingMedia.findFirst({

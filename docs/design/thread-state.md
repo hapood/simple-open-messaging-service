@@ -76,7 +76,7 @@ the peer no longer discloses it, the client retains its placeholder; local
 state does not override federation disclosure policy. Federation HTTP endpoints
 are unchanged.
 
-Implementation: [migration](../../database/migrations/0025_thread_state.sql),
+Implementation: [migration](../../database/migrations/0000_base.sql),
 [selectors](../../shared/profile-selector.ts),
 [profile authorization](../../src/federation/profile-resolution-coordinator.service.ts),
 [browser projection](../../web/src/app/services/thread-state-projection.ts),

@@ -1,3 +1,5 @@
+import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { enqueueReverseP2PRevokeInTx } from '../relationship/reverse-revoke-task.js';
 import { writeP2PClientRelationshipInTx } from './p2p-client-relationship.js';
 import { initializeRelationshipThreadStateInTx } from '../federation/federation-relationship-thread-state.js';
 import { groupState as group, groupStateFields } from '../group/group-state.js';
@@ -33,7 +35,10 @@ import { BusinessException } from '../common/business.exception.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../message/message.service.js';
-import { SystemMessageType } from '../message/system-message.js';
+import {
+  SystemMessageType,
+  type SystemMessageInput,
+} from '../message/system-message.js';
 import {
   closeFederatedAudienceInTx,
   openFederatedAudienceInTx,
@@ -87,6 +92,8 @@ export function applyFederatedPendingProfileSnapshot(
 export class RelationshipService {
   @Inject(ThreadPreviewService)
   private readonly previews!: ThreadPreviewService;
+  @Inject(DurableTaskQueueService)
+  private readonly tasks!: DurableTaskQueueService;
   constructor(
     private readonly database: DatabaseService,
     private readonly participantService: AccountThreadStateService,
@@ -426,6 +433,18 @@ export class RelationshipService {
       peerUserId,
       written.shouldBeActive,
     );
+    if (!wantsFriend && pairEffect.transitioned && peer.domain === 'local') {
+      const [reverseAuthor] = await localAccountsForTargetsInTx(tx, [
+        peerUserId,
+      ]);
+      if (reverseAuthor)
+        await enqueueReverseP2PRevokeInTx(
+          tx,
+          this.tasks,
+          reverseAuthor.id,
+          actorUserId,
+        );
+    }
     if (peer && peer.domain !== 'local' && pairEffect.threadId !== undefined) {
       if (wantsFriend)
         await openFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
@@ -458,8 +477,8 @@ export class RelationshipService {
     );
   }
 
-  /** Rejection/deletion closes only the actor's direction. The opposite request remains valid and may
-   * intentionally reactivate the relationship when this direction is requested again. */
+  /** Closes the author's direction. An active local pair schedules its opposite direction separately;
+   * a pending relationship leaves the opposite request available for a later acknowledgement. */
   async closeLocalP2PIntentInTx(
     tx: DatabaseTransaction,
     userAId: number,
@@ -852,14 +871,16 @@ export class RelationshipService {
     );
     if (!applied.changed)
       return { changed: false, requestCreated: false, clientFeedUpdates: [] };
-    const localStateRevision =
-      applied.publishAccepted ? 1 : undefined;
+    const localStateRevision = applied.publishAccepted ? 1 : undefined;
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
       params.localUserId,
       params.peerUserId,
       applied.shouldBeActive,
-      { actorUserId: params.peerUserId, subjectUserId: params.peerUserId },
+      {
+        type: 'FRIEND_REMOVED',
+        initiator: params.peerUserId,
+      },
     );
     const localDirection = (
       await this.relationshipIntents.readP2PRelationshipInTx(
@@ -935,7 +956,10 @@ export class RelationshipService {
     userAId: AccountTarget,
     userBId: AccountTarget,
     desiredActive: boolean,
-    departure = { actorUserId: userAId, subjectUserId: userBId },
+    departureEvent: Extract<SystemMessageInput, { type: 'FRIEND_REMOVED' }> = {
+      type: 'FRIEND_REMOVED',
+      initiator: userAId,
+    },
   ): Promise<{
     active: boolean;
     transitioned: boolean;
@@ -989,11 +1013,9 @@ export class RelationshipService {
       await this.messages.writeSystemMessageInTx(
         tx,
         threadId,
-        SystemMessageType.FRIEND_ADDED,
-        undefined,
+        { type: SystemMessageType.FRIEND_ADDED },
         {
           threadLock,
-          actorUserId: userAId,
         },
       );
       const clientFeedUpdates = await tx
@@ -1023,14 +1045,12 @@ export class RelationshipService {
           await localAccountsForTargetsInTx(tx, [userAId, userBId])
         ).map((row) => ({ userId: row.id }));
         const recipientUserIds = recipients.map((row) => row.userId);
-        const boundary = await this.messages.writeDepartureMessageInTx(
+        const boundary = await this.messages.writeSystemMessageInTx(
           tx,
           current.threadId,
-          SystemMessageType.FRIEND_REMOVED,
-          departure.subjectUserId,
+          departureEvent,
           {
             threadLock,
-            actorUserId: departure.actorUserId,
           },
         );
         if (recipientUserIds.length > 0)

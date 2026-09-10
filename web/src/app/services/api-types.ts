@@ -3623,7 +3623,7 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Sender address snapshot; null for server-authored SYSTEM messages
+             * @description Sender address snapshot; SYSTEM notifications use $system@local at namespace 0
              * @example {
              *       "account": "alice",
              *       "domain": "local"

@@ -18,6 +18,7 @@ describe('incoming group relationship allocator ordering', () => {
         FederationStateFeedConsumerService.prototype,
       ) as FederationStateFeedConsumerService;
       Object.assign(service, {
+        relationshipTasks: { deferInTx: vi.fn().mockResolvedValue(false) },
         reverseRevokes: {
           enqueueGroupInTx: vi.fn(async () => {
             order.push('task');
@@ -27,7 +28,7 @@ describe('incoming group relationship allocator ordering', () => {
         relationshipIntents: {
           applyRemoteGroupIntentInTx: vi.fn(async () => {
             order.push('group');
-            return { changed: true, shouldBeActive: status === 'ACCEPTED' };
+            return { changed: true, wasActive: true, shouldBeActive: status === 'ACCEPTED' };
           }),
         },
         stateFeed: { lockTargetsInTx },

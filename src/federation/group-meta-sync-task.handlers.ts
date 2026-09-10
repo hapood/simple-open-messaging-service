@@ -24,7 +24,10 @@ export class GroupMetaSyncHandoffTaskHandler
   readonly taskType = DurableTaskType.SYNC_GROUP_META;
   private unregister?: () => void;
 
-  constructor(private readonly dispatcher: DurableTaskDispatcherService) {}
+  constructor(
+    private readonly dispatcher: DurableTaskDispatcherService,
+    private readonly execution: GroupMetaSyncTaskExecutionService,
+  ) {}
 
   onModuleInit(): void {
     this.unregister = this.dispatcher.register(this);
@@ -34,8 +37,10 @@ export class GroupMetaSyncHandoffTaskHandler
     this.unregister?.();
   }
 
-  async execute(task: DurableTask): Promise<{ status: 'ASYNC_PROCESSING' }> {
-    readGroupMetaSyncTask(task);
+  async execute(
+    task: DurableTask,
+  ): Promise<void | { status: 'ASYNC_PROCESSING' }> {
+    if ((await this.execution.prepare(task)).ready) return;
     return { status: 'ASYNC_PROCESSING' };
   }
 }

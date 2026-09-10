@@ -122,10 +122,14 @@ export class ThreadFeedService implements OnModuleInit, OnModuleDestroy {
               (preview): ThreadFeedPreview => ({
                 seq: preview.seq,
                 createdAt: new Date(preview.createdAt).toISOString(),
-                sender: preview.creatorAccount !== null && preview.creatorDomain !== null ? {
-                  account: preview.creatorAccount,
-                  domain: preview.creatorDomain,
-                } : null,
+                sender:
+                  preview.creatorAccount !== null &&
+                  preview.creatorDomain !== null
+                    ? {
+                        account: preview.creatorAccount,
+                        domain: preview.creatorDomain,
+                      }
+                    : null,
                 status: preview.isDeleted ? preview.deletionType! : 'LIVE',
                 ...(!preview.isDeleted
                   ? {
@@ -161,7 +165,7 @@ export class ThreadFeedService implements OnModuleInit, OnModuleDestroy {
 
   private async lockThread(tx: DatabaseTransaction, threadId: number) {
     await tx.execute(
-      sql`SELECT 1 FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
+      sql`SELECT 1 FROM "MessageThread" WHERE id = ${threadId} FOR NO KEY UPDATE`,
     );
   }
 
@@ -188,7 +192,7 @@ export class ThreadFeedService implements OnModuleInit, OnModuleDestroy {
     const execute = async (tx: DatabaseTransaction) => {
       await this.lockThread(tx, threadId as number);
       const current = await tx.execute<{ status: string }>(
-        sql`SELECT status FROM "DurableTask" WHERE id = ${task.id} FOR UPDATE`,
+        sql`SELECT status FROM "DurableTask" WHERE id = ${task.id} FOR NO KEY UPDATE`,
       );
       if (current.rows[0]?.status === 'SUCCEEDED') return;
       if (current.rows[0]?.status !== 'PROCESSING')

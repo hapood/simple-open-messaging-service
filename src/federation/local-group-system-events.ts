@@ -1,11 +1,8 @@
 import { GroupRole } from '../database/enums.js';
 import { SystemMessageType } from '../message/system-message.js';
 
-export interface LocalGroupSystemEvent {
-  actorUserId: number;
-  subjectUserId: number;
-  type: Exclude<SystemMessageType, 'CALL_ENDED'>;
-}
+export type LocalGroupSystemEvent =
+  import('../message/system-message.js').SystemMessageInput;
 
 /** Pure roster diff used only to decorate the local timeline after GROUP_META commits. */
 export function deriveLocalGroupSystemEvents(
@@ -21,20 +18,17 @@ export function deriveLocalGroupSystemEvents(
     const previousRole = previousRoles.get(userId);
     if (previousRole === undefined) {
       events.push({
-        actorUserId: userId,
-        subjectUserId: userId,
+        member: userId,
         type: SystemMessageType.GROUP_JOINED,
       });
     } else if (role === GroupRole.ADMIN && previousRole === GroupRole.MEMBER) {
       events.push({
-        actorUserId: nextOwnerId,
-        subjectUserId: userId,
+        member: userId,
         type: SystemMessageType.GROUP_ADMIN_GRANTED,
       });
     } else if (role === GroupRole.MEMBER && previousRole === GroupRole.ADMIN) {
       events.push({
-        actorUserId: nextOwnerId,
-        subjectUserId: userId,
+        member: userId,
         type: SystemMessageType.GROUP_ADMIN_REVOKED,
       });
     }
@@ -42,16 +36,15 @@ export function deriveLocalGroupSystemEvents(
   for (const { userId } of before) {
     if (!nextIds.has(userId)) {
       events.push({
-        actorUserId: userId,
-        subjectUserId: userId,
+        member: userId,
         type: SystemMessageType.GROUP_LEFT,
       });
     }
   }
   if (previousOwnerId !== nextOwnerId) {
     events.push({
-      actorUserId: nextOwnerId,
-      subjectUserId: nextOwnerId,
+      previousOwner: previousOwnerId,
+      newOwner: nextOwnerId,
       type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
     });
   }

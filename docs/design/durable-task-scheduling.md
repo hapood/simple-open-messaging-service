@@ -80,9 +80,8 @@ completed.
 
 ## 3. Persistence model
 
-Migration `0011_durable_tasks.sql` discards the old `DomainCommand` table and
-creates the following clean-cut model. No old queue data or API field is
-retained for compatibility.
+The [SQL baseline](../../database/migrations/0000_base.sql) defines the following
+durable task model.
 
 | Field           | Meaning                                                                         |
 | --------------- | ------------------------------------------------------------------------------- |
@@ -91,7 +90,7 @@ retained for compatibility.
 | `scopeType`     | `USER_PAIR` or `GROUP`                                                          |
 | `scopeKey`      | Canonical serialization scope                                                   |
 | `taskType`      | Stable uppercase task discriminator                                             |
-| `actorUserId`   | Authenticated local actor, when applicable                                      |
+| `actorUserId`   | Business operator (local user or system account), when applicable               |
 | `payload`       | Normalized JSON; immutable after claim, replaceable in an eligible pending slot |
 | `checkpoint`    | Required JSON object containing type-specific durable progress                  |
 | `coalescingKey` | Optional desired-state slot used by supersession                                |
@@ -132,9 +131,27 @@ remain execution operations, not pending admission updates.
 ## 4. Current mutation execution
 
 `DurableTaskQueueService.enqueueTask()` currently creates `MUTATION` tasks.
-The scheduler polls PostgreSQL and conditionally claims a `PENDING` row as
-`PROCESSING`. A task is eligible only when no earlier non-successful task exists
-in its `(kind, scopeKey)` lane and no task in that lane is already processing.
+The scheduler is triggered by committed PostgreSQL task notifications and
+conditionally claims a `PENDING` row as `PROCESSING`. It drains available work
+up to the concurrency limit, refills slots when executions finish, and exits
+when no task is eligible. There is no periodic task polling while idle or busy.
+A task is eligible only when no earlier unfinished task exists in its
+`(kind, scopeKey)` lane and no task in that lane is already processing.
+`SUCCEEDED`, `REJECTED`, `FAILED`, and `SUPERSEDED` are all terminal and release
+successors; a failed task is not automatically retried.
+
+The [wake migration](../../database/migrations/0002_durable_task_wake.sql) emits
+`durable_task_work` notifications for pending inserts, pending input changes,
+and status transitions. Database triggers cover admission in caller-owned
+transactions and async completions. Rollbacks emit no notifications; repeated
+notifications with the same payload within one transaction are coalesced by
+PostgreSQL. Checkpoint-only writes on running tasks do not wake discovery.
+A dedicated connection commits `LISTEN` before scanning existing work. Listener
+reconnection repeats that scan to cover disconnected intervals, without
+re-executing local `PROCESSING` tasks. Initial startup recovery still runs once.
+Discovery query failures and listener disconnections schedule recovery retries;
+an empty successful scan schedules no timer. Notifications arriving during a
+scan request another pass through the same pump.
 
 The process-local concurrency limit defaults to eight through
 `DURABLE_TASK_MAX_CONCURRENCY`. Its active-lane set is an optimization only;
@@ -177,7 +194,12 @@ its own transaction. Terminal transitions still commit status and final effects
 together rather than splitting them into a checkpoint-only write.
 
 An async-capable row left in `PROCESSING` by a shutdown is safe to run again
-because this pre-handoff handler only requests the state transition. At
+because pre-handoff preparation only refreshes task checkpoints and requests
+the state transition. Group Meta sync refreshes its starting cursor from the
+mirror's committed end after predecessors finish. It never assumes a failed
+predecessor reached its target, and completes without a handoff when a previous
+round already covered its target. Preparation can be repeated before handoff;
+already asynchronous tasks retain their page checkpoints on recovery. At
 application bootstrap, rows already in `ASYNC_PROCESSING` are submitted once to
 the async runner. The durable task ID identifies the row for checkpoint and
 terminal updates; it is not an execution-instance ID or a process-local
@@ -189,11 +211,12 @@ Execution outcomes are:
 | ------------------------------------------ | ------------------ | ------------------- |
 | Mutation committed                         | `SUCCEEDED`        | Allowed             |
 | Valid business refusal                     | `REJECTED`         | Allowed             |
-| Unexpected error                           | `FAILED`           | Blocked             |
+| Unexpected error                           | `FAILED`           | Allowed             |
 | Process stops after an ordinary task claim | `PROCESSING`       | Blocked             |
 | Work handed to an async scheduler          | `ASYNC_PROCESSING` | Blocked             |
 
-There is no automatic retry or failed-task bypass. A mutation may commit just
+There is no automatic task retry. Failed rows remain available for investigation
+and do not block later tasks. A mutation may commit just
 before its terminal task update is lost; such a row deliberately remains
 `PROCESSING` for manual investigation instead of being executed again.
 
@@ -236,14 +259,16 @@ commit
 
 Forced member revocations use the same canonical member merge identity as
 ordinary group commands. Local addressed members normalize to Account.id.
-While a forced revoke is PENDING, later commands for that member and intent direction retain it and
-return its task ID without replacing its payload or inserting a new task. The
-barrier does not inspect PROCESSING or terminal tasks. A forced revoke replaces
-a pending request or acknowledgement in that direction in place even when later
-group commands exist. If those barriers left multiple pending intents in that
-direction, the latest slot becomes the forced revoke and the remaining pending
-slots become SUPERSEDED in the same transaction. Opposite-direction and running
-tasks remain unchanged. Ordinary directional commands also replace their pending slot without an intervening-work barrier.
+`FORCE_REVOKE_GROUP_MEMBER` is the exception to ordinary pending replacement:
+while it is pending, later commands for the same member and authored direction
+return its task ID without replacing its payload or appending another task.
+Mandatory cleanup must complete even if a later application would be rejected
+by execution-time permission checks. The barrier does not apply to the opposite
+direction, processing work, or terminal tasks. A forced revoke replaces ordinary
+pending work in its direction and supersedes any older pending slots atomically.
+All other directional commands follow the default rule: different behavior
+replaces pending work; identical behavior returns success without appending work.
+Processing work remains immutable and may have a pending successor.
 Child admission and the parent's
 shared checkpoint write commit or roll back together.
 
@@ -461,10 +486,10 @@ the task already terminal stops without writing. Detecting the empty final page
 and the terminal transition must be coordinated with the locked task state so a
 second recovery runner cannot reopen completed work.
 
-An unexpected error marks the task `FAILED` and blocks later tasks only in that
-group's `PROJECTION` lane pending investigation; it never blocks the group's
-`MUTATION` lane. Automatic retry/backoff and failed-task operator actions remain
-separate operational design work.
+An unexpected error marks the task `FAILED` and releases later tasks in that
+group's `PROJECTION` lane. The failed row and its checkpoint remain available
+for investigation. Automatic task retry/backoff and failed-task operator actions
+remain separate operational design work.
 
 This task continues to use `DurableTask.checkpoint` and needs no task-specific
 expansion table. The canonical Group Meta storage migration is a separate
@@ -495,13 +520,15 @@ same `GROUP` mutation lane:
 | Existing state                                                                        | New request                        | Admission result                                                                                |
 | ------------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
 | No matching pending or identical running row                                          | Any                                | Insert a new pending row with the directional key                                               |
+| Matching `PENDING FORCE_REVOKE_GROUP_MEMBER`                                          | Any command in the same direction  | Preserve mandatory cleanup and return its task ID                                               |
 | Matching `PENDING`, identical type/actor/payload                                      | Exact duplicate                    | Return its task ID                                                                              |
 | Matching `PENDING`                                                                    | Different desired state or payload | Rewrite in place regardless of intervening work; supersede other pending rows in this direction |
 | Identical `PROCESSING` or `ASYNC_PROCESSING` type/actor/payload, no pending successor | Exact duplicate                    | Return the running task ID; append nothing                                                      |
 | Running task, different new intent                                                    | Different desired state or payload | Keep running work immutable and admit a pending successor                                       |
 | Matching task is terminal                                                             | Any                                | Ignore it and insert a new pending row                                                          |
 
-`FAILED` is a blocking row and is never edited. Claimed task inputs remain immutable.
+`FAILED` is a terminal row and is never edited by admission. It does not block
+successors. Claimed task inputs remain immutable.
 Pending replacement represents the latest desired state for that direction and does
 not preserve ordering relative to intervening opposite-direction or other group
 commands. Different directions remain separate. Task names follow the intent author:
@@ -589,9 +616,11 @@ feed cursors, not only handler return values.
 - An identical pending group-member mutation returns the existing task ID and
   performs no insert or update.
 - A different value for the same directional group-member intent rewrites the
-  same-direction pending row in place and retains its task ID.
-- Intervening blocking mutation work prevents in-place movement; the new intent
-  is appended after that work.
+  same-direction pending row in place and retains its task ID, except for
+  pending `FORCE_REVOKE_GROUP_MEMBER` work.
+- A pending forced revoke retains its type and payload when a later command
+  arrives in the same direction. Opposite-direction commands are unaffected.
+- Intervening work does not prevent ordinary pending replacement.
 - Member-authored and group-authored intent slots never coalesce with each
   other.
 - A claimed or failed mutation is never edited; a later intent becomes a
@@ -618,7 +647,7 @@ feed cursors, not only handler return values.
   their kinds form different lanes.
 - Two projections in the same group lane execute in durable task order, even
   when their task types differ.
-- A failed projection blocks later projections for that group but does not
+- A failed projection releases later projections for that group and does not
   prevent a later group mutation from being claimed.
 - A processing projection is discoverable for restart recovery; ordinary
   processing mutations remain non-resumable.
@@ -779,11 +808,65 @@ continue to use `actorUserId` as their author when no separate author is present
 Group query-denial parent tasks carry the system operator, which their member
 revocation children inherit. Administrator-initiated work retains the administrator.
 
-Inbound peer revocations update only the peer-authored intent directly inside the
-state-feed consumption transaction. A changed revocation also admits a reverse
-local revoke task in that same transaction. The task operator is the system account;
-its author is the local user or local group, and it shares that author's pending
-request/acknowledgement/revoke slot. The task executes the existing local intent
-writer and saves its completion checkpoint in the same transaction. A retry after
-commit cannot reapply an old revoke over a subsequent authorization. Remote intent
-application retains its existing relationship and departure projections.
+Received federation revocations are admitted as remote-initiated durable
+relationship work. The state-feed consumer validates and queues the command in
+the same transaction as cursor advancement; it does not first revoke the remote
+intent outside the task. The handler reuses the existing transactional intent
+application and projection methods. A later intent for the same remote direction
+replaces a pending command, while processing work remains immutable.
+
+Every revoke task changes one authored direction. This applies to both local
+pairs and federation relationships, including group/member pairs. The transition
+from an active relationship to an inactive relationship creates the system
+message, visibility boundary, and a system-initiated reverse task for the locally
+owned opposite direction in one transaction. The reverse task uses the existing
+directional writer. The relationship is already inactive, so that transition
+naturally produces neither another departure message nor another reverse task.
+No extra message/reverse-task suppression flag is required. Forced dissolution cleanup retains its mandatory local-direction cleanup; it is outside ordinary replaceable revoke work. Only an actual local
+intent change to `REVOKED` publishes that direction to federation; an incoming
+remote fact is never echoed as a locally authored fact.
+
+The reverse task shares the intent author's pending request/acknowledgement/revoke
+slot. Except for the pending forced-revoke barrier above, a newer command with different behavior replaces pending work; identical
+behavior returns success without appending work. Processing tasks retain their
+payload and checkpoint, with a pending successor when needed. A task checkpoint
+commits with its business writes so crash recovery cannot replay a completed
+revoke over a later authorization.
+
+## Notification attribution
+
+Task `actorUserId` identifies the business operator, not the handler or worker
+executing it. Relationship intent ownership is separate. System notifications
+always use `$system@local` as their sender and describe event participants with
+event-specific content fields; they do not copy the task actor into a generic
+message actor. See [system messages](system-messages.md).
+
+## State feed fanout
+
+`FAN_OUT_STATE_FEED` fans out committed feed high watermarks to local clients
+and federation peers. Source transactions write or reindex their feed rows and
+admit the fanout task atomically. The task does not rewrite state, allocate feed
+IDs, or carry an instruction to force reindexing. `FEDERATION_STATE_FEED_PUSH`
+is a post-commit wake hint emitted by delivery, not the durable source of work.
+
+One task targets one client account or one captured peer namespace. Its
+`STATE_FEED` scope and coalescing key identify that recipient feed; payloads
+contain the recipient and committed `feedId`. Pending admission merges feed IDs
+with MAX. A processing task can yield to a pending successor after transferring
+its watermark coverage atomically. Independent feeds keep independent tasks,
+so replacement never loses a departed member or another recipient. Feed IDs are
+already committed when delivery executes. Reconnect reads the durable feed head
+if a best-effort wake is lost.
+
+Acceptance confirmation may republish an unchanged `ACCEPTED` relationship
+snapshot at a new feed position so the peer can observe the confirmation after
+its existing cursor. This is an explicit source-side operation. Group metadata
+updates do not reindex or refresh thread content heads: the two streams advance
+independently and consumers must not rely on metadata preceding content by feed
+ID. No `forceReindex` flag is part of the write or task contract.
+
+`FAN_OUT_GROUP_META_HEAD` retains combined local and federation audiences.
+`FAN_OUT_THREAD_CONTENT`, `FAN_OUT_ACCOUNT_THREAD_CONTENT`, and
+`FAN_OUT_FEDERATION_THREAD_CONTENT` retain their separate delivery scopes and
+reuse internal projection helpers. Only thread content needs the federation
+system-message filter.

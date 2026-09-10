@@ -108,7 +108,10 @@ export class OtpLoginService {
    *  ONCE (reveal-once) + the audit view. */
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
     const [target] = await this.database.db
-      .select({ id: accountTable.id })
+      .select({
+        id: accountTable.id,
+        disabledAt: accountTable.disabledAt,
+      })
       .from(accountTable)
       .where(and(eq(accountTable.id, userId), eq(accountTable.domain, 'local')))
       .limit(1);
@@ -116,6 +119,12 @@ export class OtpLoginService {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local user not found',
+      );
+    }
+    if (target.disabledAt !== null) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'cannot issue a login code for a disabled user',
       );
     }
     const code = generateCode();

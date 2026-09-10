@@ -52,7 +52,12 @@ describe('EndFriendshipTaskHandler', () => {
         ),
       ).resolves.toBeUndefined();
 
-      expect(endP2P).toHaveBeenCalledWith(12, 7, undefined);
+      expect(endP2P).toHaveBeenCalledWith(
+        12,
+        7,
+        undefined,
+        system ? 99 : 7,
+      );
       expect(emit).toHaveBeenCalledWith('federation.state-feed.push', {
         peerDomain: 'peer.test',
       });

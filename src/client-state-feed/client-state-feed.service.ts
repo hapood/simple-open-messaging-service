@@ -1,3 +1,4 @@
+import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task.js';
 import { hasEstablishedThreadRelationship } from '../relationship/relationship-authorization.js';
 import { groupStateSql } from '../group/group-state.js';
 
@@ -162,6 +163,11 @@ export class ClientStateFeedService implements OnModuleDestroy {
           updatedAt: new Date(),
         },
       });
+    await enqueueStateFeedFanoutInTx(tx, {
+      target: 'CLIENT',
+      userId: write.userId,
+      feedId: String(owner.feedId),
+    });
     return owner.feedId;
   }
 
@@ -348,7 +354,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         .select({ allocatedThrough: account.stateFeedAllocatedThrough })
         .from(account)
         .where(eq(account.id, userId))
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!owner)
         throw new Error(`client state feed owner ${userId} is missing`);

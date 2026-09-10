@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { isProfileSelector } from '../../../shared/profile-selector.ts';
 import { federationLabNodes } from '../topology.mjs';
 import { resolveWorkloadProfiles } from './profile-resolution.mjs';
 
@@ -50,6 +51,13 @@ for (const messageRevs of [[3, 4], [1], [2, 3], []]) {
     const profiles = Object.fromEntries(
       federationLabNodes.map(({ name }) => [name, { intentRefs: [] }]),
     );
+    profiles.alpha.intentRefs.push({
+      address: member.address,
+      subjectType: 'USER',
+      subjectAddress: owner.address,
+      profileRev: 2,
+    });
+    const pair = `${owner.address}|${member.address}`;
     const checks = await resolveWorkloadProfiles({
       actors: {
         user: (address) => ({
@@ -58,25 +66,62 @@ for (const messageRevs of [[3, 4], [1], [2, 3], []]) {
           node: federationLabNodes.find((node) =>
             address.endsWith(`@${node.domain}`),
           ),
-          resolveProfile: async (selector) => ({
-            status: 'READY',
-            profile: {
-              rev:
-                'messageSeq' in selector
-                  ? messageRevs[selector.messageSeq - 1]
-                  : selector.memberAccount === member.account
-                    ? 2
-                    : 1,
-            },
-          }),
+          resolveProfile: async (selector) => {
+            assert.ok(
+              isProfileSelector(selector),
+              `invalid API selector: ${JSON.stringify(selector)}`,
+            );
+            return {
+              status: 'READY',
+              profile: {
+                rev:
+                  selector.type === 'EXACT'
+                    ? selector.rev
+                    : selector.type === 'MESSAGE_AUTHOR'
+                      ? selector.threadId === 20
+                        ? 5
+                        : messageRevs[selector.messageSeq - 1]
+                      : selector.memberAccount === member.account
+                        ? 2
+                        : 1,
+              },
+            };
+          },
         }),
       },
       groups,
       profiles,
+      p2p: { alpha: { pairs: { active: [pair] } } },
+      p2pMessages: {
+        alpha: new Map([
+          [
+            pair,
+            {
+              threadId: 20,
+              messages: [
+                {
+                  seq: 1,
+                  profileRev: 5,
+                  localState: 'READY',
+                  isDeleted: false,
+                },
+              ],
+            },
+          ],
+        ]),
+      },
       log: { groups: [{ address: group.address }] },
       timeoutMs: 1000,
       onProgress: () => {},
     });
+    assert.deepEqual(
+      checks.find((check) => check.kind === 'P2P_MESSAGE_AUTHOR')?.selector,
+      { type: 'MESSAGE_AUTHOR', threadId: 20, messageSeq: 1 },
+    );
+    assert.deepEqual(
+      checks.find((check) => check.kind === 'RELATIONSHIP_CURRENT')?.selector,
+      { type: 'EXACT', account: member.account, domain: 'bravo.test', rev: 2 },
+    );
     for (const nodeName of ['alpha', 'bravo']) {
       const roster = checks.find(
         (check) =>

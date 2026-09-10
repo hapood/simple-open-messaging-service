@@ -14,6 +14,7 @@ and client behavior.
 
 ## Design
 
+- [Database concurrency and locking](./design/database-concurrency-and-locking.md)
 - [Local call history](./design/local-call-history.md)
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
@@ -36,3 +37,5 @@ and client behavior.
 
 Completed plans and superseded implementation notes are not retained here. Git
 history remains available when implementation-era context is needed.
+
+- [System messages](design/system-messages.md): reserved sender, event-specific content, participant profiles, and departure boundaries.

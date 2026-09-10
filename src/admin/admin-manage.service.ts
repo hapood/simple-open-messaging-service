@@ -19,7 +19,7 @@ type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
  * Admin self-management domain logic: list, promote, disable/enable, role change.
  *
  * The last-super guard is RACE-FREE. disable / demote of an enabled SUPER_ADMIN runs inside a
- * $transaction that SELECT ... FOR UPDATE-locks every enabled super row before counting, so two
+ * $transaction that SELECT ... FOR NO KEY UPDATE-locks every enabled super row before counting, so two
  * super-admins disabling each other concurrently cannot drive the enabled-super count to 0: the
  * second transaction blocks on the row lock, then re-reads the post-commit count and refuses. A
  * real state change (an actual disable, or a role transition) is followed by revokeSessionsByAdmin
@@ -160,7 +160,7 @@ export class AdminManageService {
   /**
    * Race-free disable / demote. Within a transaction:
    *   1. load the target's current (role, enabled);
-   *   2. if the change would remove an enabled SUPER_ADMIN from the enabled-super set, FOR UPDATE-lock
+   *   2. if the change would remove an enabled SUPER_ADMIN from the enabled-super set, FOR NO KEY UPDATE-lock
    *      the enabled super rows and refuse when only one remains;
    *   3. apply the state change in one UPDATE (atomic).
    * Throws BusinessException on NOT_FOUND (unknown admin) / FORBIDDEN (would remove the last super);
@@ -190,7 +190,7 @@ export class AdminManageService {
         // Lock the enabled super rows so a concurrent disable/demote serializes behind this txn, then
         // re-count under the lock (the count may have dropped if a concurrent txn already committed).
         const locked = await tx.execute<{ id: number }>(sql`
-          SELECT id FROM "Admin" WHERE role = 'SUPER_ADMIN' AND enabled = true FOR UPDATE
+          SELECT id FROM "Admin" WHERE role = 'SUPER_ADMIN' AND enabled = true FOR NO KEY UPDATE
         `);
         if (locked.rows.length <= 1) {
           throw new BusinessException(

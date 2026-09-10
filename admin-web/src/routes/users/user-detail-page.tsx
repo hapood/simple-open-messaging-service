@@ -145,13 +145,15 @@ export function UserDetailPage() {
                   >
                     {t('users.action.forceLogout')}
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setDlg({ kind: 'issue' })}
-                  >
-                    {t('users.action.issueLoginCode')}
-                  </Button>
+                  {!u.isDeleted ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDlg({ kind: 'issue' })}
+                    >
+                      {t('users.action.issueLoginCode')}
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     size="sm"

@@ -64,6 +64,41 @@ export class GroupMetaSyncTaskExecutionService {
     private readonly messages: MessageService,
   ) {}
 
+  /** Refresh admission-time cursors before any asynchronous page can run.
+   * A predecessor may have failed, or completed a full recovery beyond this
+   * task's target. PROCESSING recovery can safely repeat this preparation. */
+  async prepare(task: DurableTask): Promise<{ ready: boolean }> {
+    const { payload } = readGroupMetaSyncTask(task);
+    return this.database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: payload.groupAccount, domain: payload.peerDomain },
+      ]);
+      const current = await lockTaskInTx(tx, task.id, 'PROCESSING');
+      requireSameTask(readGroupMetaSyncTask(current).payload, payload);
+      await requireMirrorInTx(tx, payload);
+      const [feed] = await tx
+        .select({ feedEndId: groupMetaFeed.feedEndId })
+        .from(groupMetaFeed)
+        .where(eq(groupMetaFeed.threadId, payload.groupId))
+        .limit(1);
+      if (feed && feed.feedEndId >= BigInt(payload.through)) {
+        return { ready: true };
+      }
+      await saveTaskCheckpointInTx(
+        tx,
+        task.id,
+        {
+          phase: 'PULL',
+          mode: feed ? 'delta' : 'full',
+          after: (feed?.feedEndId ?? 0n).toString(),
+          through: payload.through,
+        },
+        'PROCESSING',
+      );
+      return { ready: false };
+    });
+  }
+
   async execute(task: DurableTask): Promise<GroupMetaSyncCompletionEffect> {
     for (;;) {
       const current = await this.readCurrent(task.id);
@@ -431,9 +466,9 @@ export class GroupMetaSyncTaskExecutionService {
         .limit(1);
       if (feed && feed.feedEndId > through)
         throw new Error('group-meta mirror cursor moved beyond task target');
-      // Full snapshots establish a baseline; only a committed delta can prove an observed departure.
+      // Full snapshots establish a baseline; only a committed delta can prove an observed membership transition.
       if (checkpoint.mode === 'delta' && feed && feed.feedEndId < through)
-        await this.writeObservedDeparturesInTx(
+        await this.writeObservedMembershipTransitionsInTx(
           tx,
           payload,
           thread.id,
@@ -488,7 +523,7 @@ export class GroupMetaSyncTaskExecutionService {
     });
   }
 
-  private async writeObservedDeparturesInTx(
+  private async writeObservedMembershipTransitionsInTx(
     tx: DatabaseTransaction,
     payload: GroupMetaSyncTaskPayload,
     threadId: number,
@@ -496,8 +531,9 @@ export class GroupMetaSyncTaskExecutionService {
     after: bigint,
     through: bigint,
   ): Promise<void> {
-    const departed = await tx.execute<
-      Record<string, unknown> & NamespacedAddress
+    const transitions = await tx.execute<
+      Record<string, unknown> &
+        NamespacedAddress & { operation: 'UPSERT' | 'DEPART' }
     >(sql`
       WITH transitions AS (
         SELECT "feedId", "memberAccount" AS account, "memberDomain" AS domain,
@@ -509,12 +545,14 @@ export class GroupMetaSyncTaskExecutionService {
         FROM "GroupMetaMemberFeed"
         WHERE "threadId" = ${payload.groupId} AND "feedId" <= ${through}
       )
-      SELECT account, domain, "namespaceId" FROM transitions
-      WHERE "feedId" > ${after} AND operation = 'DEPART' AND previous = 'UPSERT'
-        AND domain <> 'local'
+      SELECT account, domain, "namespaceId", operation FROM transitions
+      WHERE "feedId" > ${after} AND (
+        (operation = 'UPSERT' AND previous IS DISTINCT FROM 'UPSERT')
+        OR (operation = 'DEPART' AND previous = 'UPSERT' AND domain <> 'local')
+      )
       ORDER BY "feedId"
     `);
-    if (!departed.rows.length) return;
+    if (!transitions.rows.length) return;
     const recipientUserIds = await readCurrentLocalAuthorizedGroupMemberIdsInTx(
       tx,
       {
@@ -523,14 +561,20 @@ export class GroupMetaSyncTaskExecutionService {
       },
     );
     if (!recipientUserIds.length) return;
-    // Local members use their directed relationship transition, preventing a second notice when
-    // the roster later catches up. Other members are observed through the Group Meta cursor.
-    for (const member of departed.rows)
-      await this.messages.writeDepartureMessageInTx(
+    // Joins follow the authoritative roster for both local and remote members. Local departures
+    // already have a directed relationship boundary, so only remote departures are included.
+    // The writer admits local content fanout atomically with this round's committed cursor.
+    for (const { operation, ...member } of transitions.rows)
+      await this.messages.writeSystemMessageInTx(
         tx,
         threadId,
-        SystemMessageType.GROUP_LEFT,
-        member,
+        {
+          type:
+            operation === 'UPSERT'
+              ? SystemMessageType.GROUP_JOINED
+              : SystemMessageType.GROUP_LEFT,
+          member,
+        },
         { threadLock },
       );
   }
@@ -686,15 +730,18 @@ function validateItem(
 async function lockTaskInTx(
   tx: DatabaseTransaction,
   taskId: bigint,
+  expectedStatus: 'PROCESSING' | 'ASYNC_PROCESSING' = 'ASYNC_PROCESSING',
 ): Promise<DurableTask> {
   const [task] = await tx
     .select()
     .from(durableTask)
     .where(eq(durableTask.id, taskId))
-    .for('update')
+    .for('no key update')
     .limit(1);
-  if (!task || task.status !== 'ASYNC_PROCESSING')
-    throw new Error('async group-meta task is no longer active');
+  if (!task || task.status !== expectedStatus)
+    throw new Error(
+      'group-meta task is no longer active in the expected phase',
+    );
   return task;
 }
 

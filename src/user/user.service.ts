@@ -73,7 +73,7 @@ export class UserService {
         })
         .from(accountTable)
         .where(eq(accountTable.id, userId))
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!current)
         throw new BusinessException(

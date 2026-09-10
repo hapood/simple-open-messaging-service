@@ -1,3 +1,4 @@
+import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task.js';
 import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
@@ -28,8 +29,6 @@ interface PeerStateFeedWriteBase {
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
-  /** Reallocate the same body after one of its referenced compacted keys moved later. */
-  forceReindex?: boolean;
 }
 
 export type PeerStateFeedWrite = PeerStateFeedWriteBase &
@@ -143,7 +142,7 @@ export class PeerStateFeedService {
             eq(peerStateFeedTarget.namespaceId, target.namespaceId),
           ),
         )
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!locked[0])
         throw new Error(
@@ -283,14 +282,9 @@ export class PeerStateFeedService {
           throw new Error(
             `${write.eventType} revision ${nextSnapshotRevision} changed without advancing`,
           );
-        if (!write.forceReindex) continue;
-      }
-      if (
-        current &&
-        isDeepStrictEqual(current.body, body) &&
-        !write.forceReindex
-      )
         continue;
+      }
+      if (current && isDeepStrictEqual(current.body, body)) continue;
       const [allocated] = await tx
         .update(peerStateFeedTarget)
         .set({
@@ -330,58 +324,76 @@ export class PeerStateFeedService {
           },
         });
       result.set(write.peerDomain, allocated.feedId);
-      if (write.eventType === 'GROUP_META_FEED_HEAD') {
-        const dependents = await tx
-          .select()
-          .from(peerStateFeed)
-          .where(
-            and(
-              eq(peerStateFeed.peerDomain, write.peerDomain),
-              eq(peerStateFeed.namespaceId, write.namespaceId),
-              eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-              eq(peerStateFeed.account, write.account),
-            ),
-          );
-        if (dependents.length > 0) {
-          const route = await tx.execute<{
-            threadId: number;
-            messageAccessAfterSeq: number;
-          }>(sql`
-            SELECT thread.id AS "threadId", audience."messageAccessAfterSeq"
-            FROM "MessageThread" thread
-            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
-              AND audience."targetDomain" = ${write.peerDomain}
-              AND audience."targetNamespaceId" = ${write.namespaceId}
-              AND audience."localUserId" IS NULL
-            WHERE thread.type = 'GROUP' AND thread."groupDomain" = 'local'
-              AND thread."groupAccount" = ${write.account}
-              AND thread."authorityNamespaceId" = 0
-          `);
-          const thread = route.rows[0];
-          if (!thread)
-            throw new Error('group content head has no authorized thread');
-          const latestHead = await readThreadHeadSnapshotInTx(
-            tx,
-            thread.threadId,
-            thread.messageAccessAfterSeq,
-          );
-          const moved = await this.writeManyInTx(
-            tx,
-            dependents.map((dependent) => ({
-              peerDomain: dependent.peerDomain,
-              namespaceId: dependent.namespaceId,
-              account: dependent.account,
-              domain: dependent.domain,
-              eventType: 'THREAD_CONTENT_HEAD' as const,
-              subjectAccount: dependent.subjectAccount,
-              subjectDomain: dependent.subjectDomain,
-              body: latestHead,
-              forceReindex: true,
-            })),
-          );
-          for (const entry of moved) result.set(...entry);
-        }
-      }
+    }
+    for (const [peerDomain, feedId] of result) {
+      const target = writes.find((write) => write.peerDomain === peerDomain)!;
+      await enqueueStateFeedFanoutInTx(tx, {
+        target: 'PEER',
+        peerDomain,
+        namespaceId: target.namespaceId,
+        feedId: feedId.toString(),
+      });
+    }
+    return result;
+  }
+
+  /** Acceptance confirmation republishes an existing compacted relationship key.
+   * A changed body is written normally; an unchanged body receives a new feed position. */
+  async writeAcceptanceConfirmationsInTx(
+    tx: DatabaseTransaction,
+    writes: readonly PeerStateFeedWrite[],
+  ): Promise<Map<string, bigint>> {
+    if (
+      writes.some(
+        (write) =>
+          write.eventType !== 'RELATIONSHIP_INTENT' ||
+          write.body.status !== 'ACCEPTED',
+      )
+    )
+      throw new Error(
+        'acceptance confirmation requires an accepted relationship',
+      );
+    await this.lockTargetsInTx(tx, writes);
+    const before = new Map<number, bigint>();
+    for (const write of writes) {
+      if (before.has(write.namespaceId)) continue;
+      const target = await tx.query.peerStateFeedTarget.findFirst({
+        where: eq(peerStateFeedTarget.namespaceId, write.namespaceId),
+      });
+      before.set(write.namespaceId, target!.allocatedThrough);
+    }
+    const result = await this.writeManyInTx(tx, writes);
+    for (const write of writes) {
+      const key = and(
+        eq(peerStateFeed.namespaceId, write.namespaceId),
+        eq(peerStateFeed.peerDomain, write.peerDomain),
+        eq(peerStateFeed.account, write.account),
+        eq(peerStateFeed.domain, write.domain),
+        eq(peerStateFeed.eventType, write.eventType),
+        eq(peerStateFeed.subjectAccount, write.subjectAccount),
+        eq(peerStateFeed.subjectDomain, write.subjectDomain),
+      );
+      const row = await tx.query.peerStateFeed.findFirst({ where: key });
+      if (!row || row.feedId > before.get(write.namespaceId)!) continue;
+      const [allocated] = await tx
+        .update(peerStateFeedTarget)
+        .set({
+          allocatedThrough: sql`${peerStateFeedTarget.allocatedThrough} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
+        .returning({ feedId: peerStateFeedTarget.allocatedThrough });
+      await tx
+        .update(peerStateFeed)
+        .set({ feedId: allocated.feedId, updatedAt: new Date() })
+        .where(key);
+      result.set(write.peerDomain, allocated.feedId);
+      await enqueueStateFeedFanoutInTx(tx, {
+        target: 'PEER',
+        peerDomain: write.peerDomain,
+        namespaceId: write.namespaceId,
+        feedId: allocated.feedId.toString(),
+      });
     }
     return result;
   }

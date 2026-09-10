@@ -89,7 +89,7 @@ export class GroupProjectionTaskExecutionService {
                checkpoint ->> 'afterAudienceId' AS "afterAudienceId"
         FROM "DurableTask"
         WHERE id = ${task.id}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       const current = locked.rows[0];
       if (!current || current.status !== 'PROCESSING') return emptyEffect();
@@ -163,7 +163,7 @@ export class GroupProjectionTaskExecutionService {
             ),
           ),
         )
-        .for('update');
+        .for('no key update');
       const currentIds = new Set(
         currentAudience.map((audience) => audience.id),
       );

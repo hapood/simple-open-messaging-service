@@ -7,10 +7,14 @@ test databases, not the business database.
 Implementation checkpoint: Drizzle and migration `0013` declare `previewSeqs`.
 The existing `ThreadFeedHeadWriter` now applies signed interval counts during
 fanout/read writes. Migration `0015` removes source-message count updates and
-trigger-owned read deltas. Both writers and lifecycle boundary reconciliation
+trigger-owned read deltas. Both writers and block-state reconciliation
 reuse `thread_unread_count`; no second count implementation is introduced.
-Visibility/block changes and history clearing still reconcile in their existing
-transactions, bounded by the published message end. Preview references now update
+Block changes and history clearing still reconcile in their existing
+transactions, bounded by the published message end. Changes to the visibility
+upper bound only persist that value; they do not reconcile counts, prune previews,
+or independently publish a thread feed. Departure boundaries are set at a newly
+written departure message, above existing previews. Message queries and subsequent
+projections continue to enforce the stored upper bound. Preview references now update
 in the same writer transaction, with no parallel projection service or cache fallback.
 The shared `resolveReadPositionInTx` clamps the effective read position to mapped,
 recoverable gap boundaries at admission and execution, logging adjustments at debug
@@ -183,7 +187,8 @@ task path; do not move them back into the HTTP transaction.
 
 Message eligibility requires an active relationship/member, an available local
 owner, an unblocked state, the current nonretired authority namespace, and the
-message being inside the visible window with `seq > lastReadSeq`. Exclude the
+message being inside the visible window with `seq >= lastReadSeq` for previews
+and `seq > lastReadSeq` for unread counts and mentions. Exclude the
 owner's own messages before applying capacity. Preserve the current exclusion of
 authorless system rows from previews. A tombstone already associated with an
 inserted message may occupy its seq slot with a deleted status.
@@ -210,8 +215,12 @@ Count message slots regardless of `isDeleted`; a tomb retains its original seq
 and sender and is not a second message. Exclude own messages using the same
 identity rule before and after deletion. Preserve existing system-message count
 eligibility; do not silently equate it with the authorless-row preview exclusion.
-Select the largest N eligible other-sender preview seqs within `(R, E]`, including
-tomb slots. Preview capacity does not limit the count.
+Select the largest N eligible other-sender preview seqs within `[R, E]`, including
+tomb slots, and strictly above the history-clearing boundary. Reading a preview
+retains its slot at equality; only advancing beyond it prunes it. Preview capacity
+does not limit the count. The frontend projects previews from the server snapshot
+without filtering by its optimistic read cursor; local reads update only attention
+state, including unread counts and mentions.
 
 Persist `unreadCount`, `previewSeqs`, the fact heads used by that calculation, and
 task progress atomically. Do not calculate current facts and then write an older
@@ -223,7 +232,8 @@ below must prevent a later unread insertion below an already projected end.
 Reverse insertion is deliberately outside the unread window and creates no
 unread/preview work. A changed read position still updates its interval and
 previews even if both heads match.
-Lifecycle/visibility changes must not be mistaken for duplicate content hints.
+History clearing must not be mistaken for a duplicate content hint. Visibility
+upper-bound writes alone do not trigger projection work.
 
 Only material projection changes allocate a feed ID. A changed tombstone head
 must allocate and wake notifications even if count and seq array are unchanged,

@@ -49,7 +49,7 @@ export async function requireP2PThreadContentLockUnderPairInTx(
     JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
     WHERE thread.id = ${threadId} AND thread.type = 'P2P'
       AND pair.id = ${pairId} AND pair.kind = 'P2P'
-    FOR UPDATE OF thread
+    FOR NO KEY UPDATE OF thread
   `);
   if (locked.rows.length !== 1)
     throw new Error('P2P content thread does not belong to the locked pair');
@@ -65,7 +65,7 @@ export async function requireGroupThreadContentLockUnderGroupInTx(
   const locked = await tx.execute(sql`
     SELECT id FROM "MessageThread"
     WHERE id = ${threadId} AND id = ${groupId} AND type = 'GROUP'
-    FOR UPDATE
+    FOR NO KEY UPDATE
   `);
   if (locked.rows.length !== 1)
     throw new Error('group relationship thread does not exist');
@@ -121,13 +121,13 @@ export async function lockThreadContentInTx(
         { account: pair.endpointBAccount, domain: pair.endpointBDomain },
       ]);
       await tx.execute(
-        sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} AND "threadId" = ${threadId} FOR UPDATE`,
+        sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} AND "threadId" = ${threadId} FOR NO KEY UPDATE`,
       );
     }
     // An unbound shell has no relationship parent yet. Authorization remains the caller's responsibility.
   }
   const locked = await tx.execute(
-    sql`SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
+    sql`SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR NO KEY UPDATE`,
   );
   return locked.rows.length > 0;
 }

@@ -78,7 +78,7 @@ describe('per-peer state feed', () => {
     await mod.close();
   });
 
-  it('refreshes a dependent thread snapshot when group metadata reindexes it', async () => {
+  it('keeps group metadata and thread content independently indexed', async () => {
     const peerDomain = 'fresh-snapshot.test';
     await seedPeer(peerDomain);
     const account = '!fresh-snapshot';
@@ -152,8 +152,8 @@ describe('per-peer state feed', () => {
       );
     const head = rows.find((row) => row.eventType === 'THREAD_CONTENT_HEAD')!;
     const meta = rows.find((row) => row.eventType === 'GROUP_META_FEED_HEAD')!;
-    expect(head.body).toMatchObject({ messageEndSeq: 1, tombstoneEndSeq: 1 });
-    expect(head.feedId > meta.feedId).toBe(true);
+    expect(head.body).toMatchObject({ messageEndSeq: 0, tombstoneEndSeq: 0 });
+    expect(head.feedId < meta.feedId).toBe(true);
     await database.db.transaction((tx) =>
       feed.writeManyInTx(tx, [
         {
@@ -255,7 +255,7 @@ describe('per-peer state feed', () => {
             body,
           },
         ]);
-        await feed.writeManyInTx(tx, [
+        await feed.writeAcceptanceConfirmationsInTx(tx, [
           {
             peerDomain: domain,
             namespaceId: testNamespaceId,
@@ -265,7 +265,6 @@ describe('per-peer state feed', () => {
             subjectDomain: domain,
             eventType: 'RELATIONSHIP_INTENT',
             body,
-            forceReindex: true,
           },
         ]);
       });

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, eq, inArray, lt, notExists, notInArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, lt, notExists } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { DatabaseService } from '../database/database.service.js';
 import { durableTask } from '../database/schema.js';
@@ -35,10 +35,10 @@ export class DurableTaskStoreService {
                   eq(earlier.scopeKey, durableTask.scopeKey),
                   eq(earlier.kind, durableTask.kind),
                   lt(earlier.id, durableTask.id),
-                  notInArray(earlier.status, [
-                    'SUCCEEDED',
-                    'REJECTED',
-                    'SUPERSEDED',
+                  inArray(earlier.status, [
+                    'PENDING',
+                    'PROCESSING',
+                    'ASYNC_PROCESSING',
                   ]),
                 ),
               ),

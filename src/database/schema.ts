@@ -93,6 +93,7 @@ export const durableTaskKind = pgEnum('DurableTaskKind', [
   'PROJECTION',
 ]);
 export const durableTaskScopeType = pgEnum('DurableTaskScopeType', [
+  'STATE_FEED',
   'THREAD',
   'USER_PAIR',
   'GROUP',
@@ -407,7 +408,7 @@ export const durableTask = pgTable(
     index('DurableTask_blocking_scope_id_idx')
       .on(table.kind, table.scopeKey, table.id)
       .where(
-        sql`${table.status} IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING', 'FAILED')`,
+        sql`${table.status} IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING')`,
       ),
     uniqueIndex('DurableTask_one_processing_per_scope')
       .on(table.kind, table.scopeKey)
@@ -844,7 +845,7 @@ export const message = pgTable(
     contentType: contentType().notNull(),
     content: jsonbText().notNull(),
     threadId: integer().notNull(),
-    /** Author identity snapshot. Both fields are null only for server-authored SYSTEM notices. */
+    /** Author identity snapshot. Server notifications use the reserved $system@local identity. */
     creatorAccount: varchar({ length: 31 }),
     creatorDomain: varchar({ length: 63 }),
     /** Subject namespace is independent of the stream which delivered the message. */
@@ -885,7 +886,7 @@ export const message = pgTable(
     check('Message_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
       'Message_system_creator_check',
-      sql`(${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} IS NULL AND ${table.creatorDomain} IS NULL) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} IS NOT NULL AND ${table.creatorDomain} IS NOT NULL)`,
+      sql`${table.creatorAccount} IS NOT NULL AND ${table.creatorDomain} IS NOT NULL AND ((${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} = '$system' AND ${table.creatorDomain} = 'local' AND ${table.creatorNamespaceId} = 0 AND ${table.profileRev} = 0 AND ${table.sourceNamespaceId} = 0) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} <> '$system'))`,
     ),
     check(
       'Message_origin_seq_check',

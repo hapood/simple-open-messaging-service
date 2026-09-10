@@ -13,7 +13,7 @@ describe('content parent lock ordering', () => {
     ).rejects.toThrow('does not belong to the locked pair');
     expect(execute).toHaveBeenCalledOnce();
     const query = new PgDialect().sqlToQuery(execute.mock.calls[0][0]);
-    expect(query.sql).toContain('FOR UPDATE OF thread');
+    expect(query.sql).toContain('FOR NO KEY UPDATE OF thread');
     expect(query.params).toEqual([7, 9n]);
   });
 
@@ -75,7 +75,7 @@ describe('content parent lock ordering', () => {
         query.sql.includes('pg_advisory_xact_lock'),
       );
       const rowLocks = queries.filter((query) =>
-        query.sql.includes('FOR UPDATE'),
+        query.sql.includes('FOR NO KEY UPDATE'),
       );
       expect(rowLocks).toHaveLength(type === 'GROUP' ? 1 : 2);
       expect(queries.indexOf(rowLocks[0])).toBeGreaterThan(advisoryIndex);

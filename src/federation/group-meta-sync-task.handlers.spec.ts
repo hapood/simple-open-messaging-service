@@ -39,15 +39,27 @@ const task = {
 describe('group-meta sync task handlers', () => {
   it('hands ordinary execution off to the async runner', async () => {
     const dispatcher = new DurableTaskDispatcherService();
-    const handler = new GroupMetaSyncHandoffTaskHandler(dispatcher);
+    const prepare = vi.fn().mockResolvedValue({ ready: false });
+    const handler = new GroupMetaSyncHandoffTaskHandler(dispatcher, {
+      prepare,
+    } as never);
     handler.onModuleInit();
 
     await expect(dispatcher.execute(task)).resolves.toEqual({
       status: 'ASYNC_PROCESSING',
     });
+    expect(prepare).toHaveBeenCalledWith(task);
 
     handler.onModuleDestroy();
     expect(dispatcher.supportedTaskTypes).toEqual([]);
+  });
+
+  it('completes without an async handoff when predecessors already covered the target', async () => {
+    const dispatcher = new DurableTaskDispatcherService();
+    const handler = new GroupMetaSyncHandoffTaskHandler(dispatcher, {
+      prepare: vi.fn().mockResolvedValue({ ready: true }),
+    } as never);
+    await expect(handler.execute(task)).resolves.toBeUndefined();
   });
 
   it('registers async execution and delegates the durable task', async () => {
@@ -72,9 +84,7 @@ describe('group-meta sync task handlers', () => {
     await dispatcher.execute(asyncTask);
 
     expect(execute).toHaveBeenCalledWith(asyncTask);
-    expect(notifyFeedUpdates).toHaveBeenCalledWith([
-      { userId: 2, feedId: 9 },
-    ]);
+    expect(notifyFeedUpdates).toHaveBeenCalledWith([{ userId: 2, feedId: 9 }]);
     expect(emit).toHaveBeenCalledWith('federation.state-feed.push', {
       peerDomain: 'peer.test',
     });

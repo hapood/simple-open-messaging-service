@@ -1,16 +1,13 @@
-import type { AccountTarget } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import {
   MessageService,
   type PublicMessage,
 } from '../message/message.service.js';
-import { SystemMessageType } from '../message/system-message.js';
+import type { SystemMessageInput } from '../message/system-message.js';
 
 export interface FederationLocalSystemMessage {
-  actorUserId: AccountTarget;
   threadId: number;
-  type: Exclude<SystemMessageType, 'CALL_ENDED'>;
-  subjectUserId?: AccountTarget;
+  event: SystemMessageInput;
   message?: PublicMessage;
 }
 
@@ -22,11 +19,6 @@ export class FederationLocalSystemMessagePublisher {
 
   async publish(status: FederationLocalSystemMessage): Promise<void> {
     if (status.message) return;
-    await this.messages.tryWriteSystemMessage(
-      status.threadId,
-      status.type,
-      status.subjectUserId,
-      { actorUserId: status.actorUserId },
-    );
+    await this.messages.tryWriteSystemMessage(status.threadId, status.event);
   }
 }

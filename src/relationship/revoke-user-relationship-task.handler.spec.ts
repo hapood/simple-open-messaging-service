@@ -98,7 +98,7 @@ describe('user relationship revocation', () => {
         expectedAuthorizationEpoch: 8,
       },
     } as DurableTask);
-    expect(endP2P).toHaveBeenCalledExactlyOnceWith(12, 7, 8);
+    expect(endP2P).toHaveBeenCalledExactlyOnceWith(12, 7, 8, 99);
   });
 
   it.each(['P2P', 'GROUP'] as const)(
@@ -138,7 +138,12 @@ describe('user relationship revocation', () => {
         payload: { threadId: 12 },
       } as DurableTask);
       if (type === 'P2P') {
-        expect(participants.endP2P).toHaveBeenCalledWith(12, 7, undefined);
+        expect(participants.endP2P).toHaveBeenCalledWith(
+          12,
+          7,
+          undefined,
+          7,
+        );
         expect(groups.leaveGroup).not.toHaveBeenCalled();
       } else {
         expect(groups.leaveGroup).toHaveBeenCalledWith({

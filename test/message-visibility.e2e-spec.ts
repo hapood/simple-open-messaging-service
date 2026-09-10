@@ -49,6 +49,8 @@ describe('message lookup with retained conversation history', () => {
         threadId: retainedThreadId,
         seq: 1,
         contentType: 'SYSTEM',
+        creatorAccount: '$system',
+        creatorDomain: 'local',
         content: '{}',
         updatedAt: new Date(),
       },

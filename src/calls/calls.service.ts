@@ -30,7 +30,6 @@ import {
   CallHistoryService,
   type CallHistorySnapshot,
 } from './call-history.service.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
 import type { CallEndedContent } from '../../shared/call-ended-content.js';
 import {
   type CallMediaType,
@@ -1363,7 +1362,7 @@ export class CallsService implements OnModuleDestroy {
         if (!local) throw new Error('call participant no longer exists');
         return {
           account: local.account,
-          domain: loadFederationConfig().domain,
+          domain: 'local',
         };
       };
       call.historyIdentity = {

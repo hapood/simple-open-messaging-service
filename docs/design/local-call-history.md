@@ -5,7 +5,8 @@ Status: implemented.
 ## Ownership and scope
 
 A call-history notice is a local `Message` with `contentType: SYSTEM` and
-`content.type: CALL_ENDED`. It is generated when the local call reaches a terminal
+`content.type: CALL_ENDED`. Its sender is `$system@local` at profile revision zero.
+Call direction comes from `caller`/`callee`, independently of the sender. It is generated when the local call reaches a terminal
 state, from authenticated peer lifecycle facts or local actions and failure
 observations. Ringing, acceptance, media connection, and video upgrade update
 live call state without creating timeline messages.

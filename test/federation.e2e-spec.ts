@@ -2746,8 +2746,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           orderBy: desc(message.seq),
         });
         expect(boundaryMessage).toMatchObject({
-          creatorAccount: null,
-          creatorDomain: null,
+          creatorAccount: '$system',
+          creatorDomain: 'local',
         });
         expect(
           await appB.database.query.accountThreadState.findFirst({
@@ -3559,8 +3559,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           orderBy: desc(message.seq),
         });
         expect(boundary).toMatchObject({
-          creatorAccount: null,
-          creatorDomain: null,
+          creatorAccount: '$system',
+          creatorDomain: 'local',
         });
         const participant =
           await appB.database.query.accountThreadState.findFirst({

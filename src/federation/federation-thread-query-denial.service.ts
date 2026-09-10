@@ -110,7 +110,7 @@ export class FederationThreadQueryDenialService {
             AND thread.type = 'GROUP'
             AND group_profile.account = ${groupLocation.groupAccount}
             AND group_profile.domain = ${groupLocation.groupDomain}
-          FOR UPDATE OF thread
+          FOR NO KEY UPDATE OF thread
         `);
         const lockedGroup = lockedGroups.rows[0];
         if (

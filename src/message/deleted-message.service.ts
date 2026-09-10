@@ -211,7 +211,7 @@ export class DeletedMessageService {
         WHERE message."threadId" = ${threadId}
           AND message.seq = ${seq}
           AND author.id = ${userId}
-        FOR UPDATE OF message
+        FOR NO KEY UPDATE OF message
       `);
       const target = locked.rows[0] as
         | {
@@ -222,10 +222,7 @@ export class DeletedMessageService {
             isDeleted: boolean;
           }
         | undefined;
-      if (
-        !target ||
-        target.contentType === 'SYSTEM'
-      ) {
+      if (!target || target.contentType === 'SYSTEM') {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'message not found',
@@ -274,10 +271,7 @@ export class DeletedMessageService {
       where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
       columns: { contentType: true },
     });
-    if (
-      !target ||
-      target.contentType === 'SYSTEM'
-    )
+    if (!target || target.contentType === 'SYSTEM')
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'message cannot be deleted',
@@ -338,7 +332,7 @@ export class DeletedMessageService {
   }
 
   /** Both deletion arrival and federated message insertion take this exact lock. There need not be a
-   * Message row yet, which is why a stable-identity advisory lock is used instead of FOR UPDATE. */
+   * Message row yet, which is why a stable-identity advisory lock is used instead of FOR NO KEY UPDATE. */
   static async lockFederatedIdentity(
     tx: DatabaseTransaction,
     threadId: number,

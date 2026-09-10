@@ -41,7 +41,7 @@ export class GroupRevokeFanoutService {
           COALESCE(checkpoint ->> 'afterPairId', '0') AS "afterPairId"
         FROM "DurableTask"
         WHERE id = ${parent.id}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `);
       const current = locked.rows[0];
       if (

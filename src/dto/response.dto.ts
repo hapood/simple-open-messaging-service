@@ -183,7 +183,7 @@ export class MessageResponseDto {
     example: { account: 'alice', domain: 'local' },
     nullable: true,
     description:
-      'Sender address snapshot; null for server-authored SYSTEM messages',
+      'Sender address snapshot; SYSTEM notifications use $system@local at namespace 0',
   })
   creator!: MessageAuthorAddressResponseDto | null;
 

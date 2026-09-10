@@ -394,6 +394,29 @@ and mirrored groups, addressed members, request projections, and publisher-scope
 Runner queries must evolve with the schema: groups use `MessageThread` plus `GroupAccount` and
 `Profile`; foreign members are addressed references, not local account rows.
 
+## Group-join latency probe
+
+[group-join-latency.mjs](group-join-latency.mjs) measures one scenario against two running lab
+nodes: a user on the applicant node applies to a group owned on the owner node, the owner accepts
+through `POST /group/join-request/accept`, and the probe reports, per node, when the accept
+admission returns, when its durable task finishes, when the SSE wake-ups
+(`THREAD_FEED_UPDATED` / `STATE_FEED_UPDATED`) arrive, and when the `GROUP_JOINED` system message
+(with the local thread id) is served. Both participants hold a live `GET /api/v1/events` stream and
+pull the feeds exactly like the shipped clients — only on a wake-up, never by polling.
+
+```bash
+npm run dev:be  # in another terminal; the probe attaches to the running backends
+node dev/federation-lab/group-join-latency.mjs [--prefix=join] [--applicant=alpha]
+    [--owner=bravo] [--window-timeout-ms=30000] [--poll-interval-ms=50]
+```
+
+The window is measured from the accept call. JSON artifacts (timeline, SSE frames, per-node
+durable tasks, token-free) are written below `runtime/join-latency/`. Like the workload, the run
+leaves its accounts and group behind; `npm run dev:reset` clears them. When the applicant node
+serves the mirrored membership but no join notice within the window, the probe reports the gap as
+a note instead of failing, because the member-authored federated application path does not write a
+local `GROUP_JOINED` notice on the applicant's home node.
+
 ## Built assets and reset
 
 To test prebuilt assets rather than frontend development servers, run:

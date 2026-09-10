@@ -23,7 +23,10 @@ function transaction(pairChanged: boolean) {
       };
     if (sql.includes('SELECT id FROM "MessageThread"'))
       return { rows: [{ id: 31 }] };
-    if (sql.includes('FROM "RelationshipPair"') && sql.includes('FOR UPDATE'))
+    if (
+      sql.includes('FROM "RelationshipPair"') &&
+      sql.includes('FOR NO KEY UPDATE')
+    )
       return { rows: [{ id: 9n, active: !pairChanged, threadId: 31 }] };
     if (sql.includes('UPDATE "RelationshipPair"'))
       return { rowCount: pairChanged ? 1 : 0, rows: [] };
@@ -64,7 +67,7 @@ describe('RelationshipIntentService remote-group authorization epoch', () => {
           active,
         }),
       ).resolves.toBe(changed);
-      expect(forUpdate).toHaveBeenCalledWith('update');
+      expect(forUpdate).toHaveBeenCalledWith('no key update');
       expect(
         queries.filter((query) => query.includes('pg_advisory_xact_lock')),
       ).toHaveLength(1);
@@ -74,7 +77,9 @@ describe('RelationshipIntentService remote-group authorization epoch', () => {
         ),
       ).toHaveLength(1);
       expect(
-        queries.some((query) => query.includes('FOR UPDATE OF group_profile')),
+        queries.some((query) =>
+          query.includes('FOR NO KEY UPDATE OF group_profile'),
+        ),
       ).toBe(false);
       expect(
         queries.some((query) => query.includes('UPDATE "MessageThread"')),

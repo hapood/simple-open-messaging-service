@@ -57,7 +57,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     expect(query).toContain('intent."expiresAt" > CURRENT_TIMESTAMP');
     expect(query).not.toContain('pair.active = true');
     expect(query).toContain('LEFT JOIN "ThreadAudience" audience');
-    expect(query).toContain('FOR SHARE OF intent');
+    expect(query).not.toContain('FOR SHARE');
     expect(query).not.toContain('ThreadMember');
     expect(executed.params).not.toContain(0);
   });
@@ -90,7 +90,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     expect(query).toContain("pair.kind = 'GROUP_MEMBER'");
     expect(query).toContain("'ORIGIN_DISTRIBUTION' AS");
     expect(query).toContain('LEFT JOIN "ThreadAudience" audience');
-    expect(query).toContain('FOR SHARE OF intent');
+    expect(query).not.toContain('FOR SHARE');
     expect(query).not.toContain('pair.active = true');
     expect(executed.params).not.toContain(0);
   });
@@ -129,7 +129,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     expect(mirrorQuery).toMatch(/group_state\.domain = \$\d+/);
     expect(mirrorQuery).toContain('JOIN "AccountThreadState" local_state');
     expect(mirrorQuery).toContain('JOIN "RelationshipIntent" intent');
-    expect(mirrorQuery).toContain('FOR SHARE OF intent');
+    expect(mirrorQuery).not.toContain('FOR SHARE');
     expect(mirrorQuery).not.toContain('ThreadAudience');
   });
 

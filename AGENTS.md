@@ -81,6 +81,21 @@ height drift. Bounding rectangles include active scale transforms from chat-box
 animations and would introduce measurement jitter. Keep `offsetHeight` as the
 transform-invariant measurement API and enforce integer heights in CSS.
 
+## Database Concurrency and Locking
+
+Use MVCC reads and preserve concurrency with foreign-key checks. Prefer
+`FOR NO KEY UPDATE` for non-key read-modify-write operations. Avoid `FOR UPDATE`
+unless physical deletion or referenced-key protection requires it; explain the
+reason in source. Ordinary `SELECT` queries need no row lock. Do not use
+`FOR SHARE` as a default before writing, or upgrade a non-key write lock later
+in the transaction. Keep lock modes consistent across helpers and triggers,
+while preserving the established resource acquisition order.
+
+Read federation authorization and page data in one read-only repeatable-read
+snapshot. Validate captured authorization epochs atomically when committing
+round writes, and retain commit-time audience checks for changes not covered
+by an epoch. Verify concurrency changes with PostgreSQL-backed tests.
+
 ## Testing Guidelines
 
 Vitest is the backend and admin test runner; Angular uses `ng test`. Add or

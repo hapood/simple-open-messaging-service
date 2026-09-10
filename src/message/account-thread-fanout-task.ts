@@ -48,12 +48,14 @@ export async function enqueueDepartureFanoutsInTx(
   lock: ThreadContentLock,
   target: ThreadFanoutTarget,
   kind: 'P2P' | 'GROUP',
-  subject: AccountTarget,
+  member?: AccountTarget,
 ): Promise<void> {
   await requireThreadContentLockInTx(tx, target.threadId, lock);
+  if (kind === 'GROUP' && member === undefined)
+    throw new Error('departure member is missing');
   const recipients =
     kind === 'GROUP'
-      ? await localAccountsForTargetsInTx(tx, [subject])
+      ? await localAccountsForTargetsInTx(tx, [member!])
       : (
           await tx.execute<{ id: number }>(sql`
         SELECT a.id FROM "Account" a

@@ -1,7 +1,15 @@
-import { parseCallEndedContent } from '../../../../../../shared/call-ended-content';
+import {
+  parseSystemMessageContent,
+  type SystemEventAddress,
+} from '../../../../../../shared/system-message-content';
+import { ProfileResolutionService } from '../../../services/profile-resolution.service';
+import { UserService } from '../../../services/user.service';
+import { displayUserAccount } from '../../../services/model';
 import {
   Component,
   computed,
+  effect,
+  signal,
   inject,
   input,
   ChangeDetectionStrategy,
@@ -10,19 +18,6 @@ import { TranslocoService } from '@jsverse/transloco';
 import { LanguageService } from '../../../services/language.service';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
-
-const LABEL_KEYS: Record<string, string> = {
-  FRIEND_ADDED: 'friendAdded',
-  FRIEND_REMOVED: 'friendRemoved',
-  GROUP_JOINED: 'groupJoined',
-  GROUP_LEFT: 'groupLeft',
-  GROUP_ADMIN_GRANTED: 'groupAdminGranted',
-  GROUP_ADMIN_REVOKED: 'groupAdminRevoked',
-  GROUP_OWNER_TRANSFERRED: 'groupOwnerTransferred',
-  MESSAGE_WITHDRAWN: 'messageWithdrawn',
-  MESSAGES_MODERATED: 'messagesModerated',
-  FEDERATION_NAMESPACE_ARCHIVED: 'federationNamespaceArchived',
-};
 
 @Component({
   selector: 'app-msg-system-row',
@@ -71,24 +66,73 @@ export class SystemRowComponent {
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);
+  private readonly profiles = inject(ProfileResolutionService);
+  private readonly users = inject(UserService);
+  private readonly profileName = signal('');
+  private readonly event = computed(() =>
+    parseSystemMessageContent(this.data().text),
+  );
+  private readonly displayIdentity = computed(
+    (): SystemEventAddress | undefined => {
+      const event = this.event();
+      if (!event) return undefined;
+      if ('member' in event) return event.member;
+      if (event.type === 'GROUP_OWNER_TRANSFERRED') return event.newOwner;
+      if (event.type === 'MESSAGE_WITHDRAWN') return event.author;
+      if (event.type === 'FRIEND_REMOVED') {
+        const data = this.data();
+        return this.isCurrentUser(event.initiator) && data.type === 'system'
+          ? data.systemPeer
+          : event.initiator;
+      }
+      return undefined;
+    },
+  );
+
+  constructor() {
+    effect((onCleanup) => {
+      const data = this.data();
+      const identity = this.displayIdentity();
+      this.profileName.set('');
+      if (!identity || !data.isGroupConversation || !data.threadId) return;
+      const subscription = this.profiles
+        .resolve({
+          type: 'GROUP_MEMBER',
+          threadId: data.threadId,
+          memberAccount: identity.account,
+          memberDomain: identity.domain,
+        })
+        .subscribe({
+          next: (profile) => this.profileName.set(profile.name.trim()),
+          error: () => this.profileName.set(''),
+        });
+      onCleanup(() => subscription.unsubscribe());
+    });
+  }
+
+  private isCurrentUser(identity: SystemEventAddress): boolean {
+    const self = this.users.sessionProfile();
+    return (
+      !!self &&
+      identity.account === self.account &&
+      identity.domain === self.domain
+    );
+  }
+
   readonly label = computed(() => {
     this.language.lang();
     try {
-      const body = JSON.parse(this.data().text) as {
-        type?: string;
-        subject?: { account?: string; domain?: string };
-        actor?: { account?: string; domain?: string };
-        count?: number;
-        domain?: string;
-      };
+      const body = this.event();
+      if (!body) return this.fallback('invalid system message content');
       if (body.type === 'CALL_ENDED') {
-        const call = parseCallEndedContent(this.data().text);
-        if (!call) return this.fallback('invalid call-ended system message');
+        const call = body;
         const media = this.transloco.translate(
           call.mediaType === 'VIDEO' ? 'call.videoCall' : 'call.audioCall',
         );
         const direction = this.transloco.translate(
-          this.data().isSelf ? 'call.record.outgoing' : 'call.record.incoming',
+          this.isCurrentUser(call.caller)
+            ? 'call.record.outgoing'
+            : 'call.record.incoming',
         );
         const result = this.transloco.translate(
           call.outcome === 'completed'
@@ -109,50 +153,60 @@ export class SystemRowComponent {
         });
         return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
       }
-      const labelKey = LABEL_KEYS[body.type ?? ''];
-      if (!labelKey) return this.fallback('unknown system message type');
-
-      const name = body.subject?.account?.trim();
-      if (body.type === 'FRIEND_ADDED')
-        return this.transloco.translate('chat.systemMessage.friendAdded');
-      if (body.type === 'MESSAGES_MODERATED')
-        return this.transloco.translate(
-          'chat.systemMessage.messagesModerated',
-          { count: body.count },
-        );
-      if (body.type === 'FEDERATION_NAMESPACE_ARCHIVED')
-        return this.transloco.translate(
-          'chat.systemMessage.federationNamespaceArchived',
-          { domain: body.domain },
-        );
-      if (!name) return this.fallback('system message subject is missing');
-      if (body.type === 'MESSAGE_WITHDRAWN') {
-        return this.transloco.translate(
-          this.data().isSelf
-            ? 'chat.systemMessage.messageWithdrawnSelf'
-            : 'chat.systemMessage.messageWithdrawn',
-          { name },
-        );
-      }
-      if (body.type === 'FRIEND_REMOVED') {
-        if (this.data().isSelf)
-          return this.transloco.translate(
-            'chat.systemMessage.friendRemovedSelf',
-            { name },
+      const identity = this.displayIdentity();
+      const data = this.data();
+      const peer = data.type === 'system' ? data.systemPeer : undefined;
+      const peerName =
+        peer &&
+        identity?.account === peer.account &&
+        identity.domain === peer.domain
+          ? peer.name.trim()
+          : '';
+      const name =
+        this.profileName() || peerName || displayUserAccount(identity ?? {});
+      const translate = (key: string) =>
+        this.transloco.translate(`chat.systemMessage.${key}`, { name });
+      switch (body.type) {
+        case 'FRIEND_ADDED':
+          return translate('friendAdded');
+        case 'FRIEND_REMOVED':
+          if (body.initiator.account === '$system' && body.initiator.domain === 'local') return translate('friendRemoved');
+          if (this.isCurrentUser(body.initiator))
+            return name
+              ? translate('friendRemovedSelf')
+              : translate('friendRemoved');
+          return translate('friendRemovedOther');
+        case 'GROUP_JOINED':
+          return translate('groupJoined');
+        case 'GROUP_LEFT':
+          return translate(
+            this.isCurrentUser(body.member) ? 'groupLeftSelf' : 'groupLeft',
           );
-        if (!this.data().isSelf && this.data().name.trim())
+        case 'GROUP_ADMIN_GRANTED':
+          return translate('groupAdminGranted');
+        case 'GROUP_ADMIN_REVOKED':
+          return translate('groupAdminRevoked');
+        case 'GROUP_OWNER_TRANSFERRED':
+          return translate('groupOwnerTransferred');
+        case 'MESSAGE_WITHDRAWN':
+          return translate(
+            this.isCurrentUser(body.author)
+              ? 'messageWithdrawnSelf'
+              : 'messageWithdrawn',
+          );
+        case 'MESSAGES_MODERATED':
           return this.transloco.translate(
-            'chat.systemMessage.friendRemovedOther',
-            { name: this.data().name.trim() },
+            'chat.systemMessage.messagesModerated',
+            { count: body.count },
+          );
+        case 'FEDERATION_NAMESPACE_ARCHIVED':
+          return this.transloco.translate(
+            'chat.systemMessage.federationNamespaceArchived',
+            { domain: body.domain },
           );
       }
-      if (body.type === 'GROUP_LEFT' && this.data().isSelf)
-        return this.transloco.translate('chat.systemMessage.groupLeftSelf');
-      return this.transloco.translate(`chat.systemMessage.${labelKey}`, {
-        name,
-      });
     } catch (error) {
-      return this.fallback('failed to parse or render system message', error);
+      return this.fallback('failed to render system message', error);
     }
   });
 

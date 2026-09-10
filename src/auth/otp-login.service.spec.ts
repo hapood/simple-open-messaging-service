@@ -192,6 +192,19 @@ describe('OtpLoginService', () => {
       expect(argon2.hash).not.toHaveBeenCalled();
       expect(store.loginCode.create).not.toHaveBeenCalled();
     });
+
+    it('rejects a disabled user before hashing or inserting a code', async () => {
+      store.user.findUnique.mockResolvedValue({
+        id: 42,
+        disabledAt: new Date(),
+      });
+
+      await expect(svc.issueCode(7, 42)).rejects.toMatchObject({
+        bizCode: BusinessCode.FORBIDDEN,
+      });
+      expect(argon2.hash).not.toHaveBeenCalled();
+      expect(store.loginCode.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('verifyAndLogin', () => {
