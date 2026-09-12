@@ -1,4 +1,4 @@
-import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
+import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';

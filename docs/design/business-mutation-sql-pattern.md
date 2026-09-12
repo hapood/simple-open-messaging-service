@@ -1,9 +1,8 @@
 # Business mutation SQL pattern
 
-Status: agreed implementation standard for subsequent business-mutation refactors.
-The [group join acceptance experiment](./group-join-decision-experiment.md) is the
-first reference implementation. Adopting this standard does not itself switch an
-existing production handler or authorize unrelated business changes.
+Status: agreed implementation standard for business-mutation code.
+The [group membership intent implementation](./group-membership-intent.md) is
+the first reference implementation.
 
 The [task responsibility and lock index](./durable-task-responsibilities-and-locks.md)
 records each current task's responsibility, business scope, and execution reference.
@@ -11,15 +10,13 @@ Update that index when a task is added or its scope changes.
 
 ## New implementation boundary
 
-New use cases live under `src/business-v2/`. API and durable-task handlers call
+New use cases live under `src/business/`. API and durable-task handlers call
 use-case entries there after the specific flow has been reviewed for routing.
 Keep domain SQL beside its use case and established reusable fragments under
 `shared/sql`; new lock primitives belong under `shared/locks`.
 
-Only the implemented join-decision experiment and its direct shared dependencies
-have moved so far. Do not scaffold or migrate invitations, friendship requests,
-or other business flows as part of this move. Existing production handlers and
-domain implementations remain unchanged.
+Migrate one complete business entry at a time. Once an entry uses this standard,
+remove its old writer instead of retaining a compatibility path or dual write.
 
 ## Transaction ownership and locks
 
@@ -28,55 +25,90 @@ business updates, and durable task admission. Internal SQL fragments and update
 helpers consume that transaction and its validated context; they do not open
 transactions or reacquire the same business/relationship lock set.
 
-Use two independent business-lock names and responsibilities:
+Use exactly three explicit business-lock names and responsibilities:
 
 | Name | Protected business state |
 | --- | --- |
-| Account Meta Lock | One account's own metadata, whether the account represents a user or a group. |
-| Relationship Pair Lock | The relationship between two canonical endpoints, including both authored Intents. |
+| Account State Lock | Mutable business state owned by one acting user or group account. It never grants authority to change another account's owned state. |
+| Relationship Pair Lock | The relationship between two canonical endpoints, including both authored Intents and relationship-derived projections for either endpoint. |
+| Thread Content Lock | Message and deletion sequences, thread content state, and content-derived projections for one thread. |
 
-Both are exclusive transaction-scoped advisory locks, acquired with
-`pg_advisory_xact_lock(hashtextextended(key, 0))`. An Account Meta Lock is not a
-row lock on the `Account` table. A Relationship Pair Lock is not the row lock on
-`RelationshipPair`. These are independent responsibilities, not parent and child
-business scopes. A relationship-only mutation does not require an Account Meta
-Lock merely because an endpoint is a group or because a user initiated it.
-Any Intent modification requires its Relationship Pair Lock. A mutation that
-also changes account metadata requires the applicable Account Meta Locks.
+Account State and Relationship Pair locks are exclusive transaction-scoped
+advisory locks acquired with
+`pg_advisory_xact_lock(hashtextextended(key, 0))`. A Thread Content Lock is the
+canonical `MessageThread FOR NO KEY UPDATE` lock represented by a transaction-bound
+capability. These locks describe independent ownership domains rather than a
+parent-child hierarchy.
 
-The transaction owner declares its complete business scope set and acquires
-Account Meta Locks before Relationship Pair Locks, then necessary row/allocator
-locks. Deduplicate and sort keys within each scope class. This acquisition order
-does not imply a semantic hierarchy. Internal helpers consume the validated
-context and do not add business scopes after writes begin.
+An account command changes only the acting account's owned state. A Pair command
+may change either endpoint's Intent and relationship-derived projection without
+thereby acquiring authority over the endpoint's account-owned state. Sending or
+changing content requires the Thread Content Lock. A command that crosses more
+than one ownership domain acquires every applicable lock.
 
-Retain the existing `['business-scope', 'ACCOUNT', domain, account]` key encoding
-for account metadata; do not rename the wire-independent lock key to `META`.
-Changing the key would stop old and new writers from excluding one another.
-Legacy ACCOUNT locks currently protect broader aggregate operations, including
-group roster changes. The join-decision experiment also retains that broader
-group lock. Their current behavior is not an implementation of metadata-only
-scope selection. Before narrowing a flow's lock set, explicitly preserve
-cross-Pair invariants, shared roster/authorization state, and compatibility with
-legacy writers that do not acquire the new Pair advisory lock. This naming
-standard does not remove those existing protections.
+The transaction owner declares its complete business scope set before mutation
+and acquires locks in this global order:
+
+```text
+Account State Locks (canonical account-address order)
+Relationship Pair Locks (canonical pair-key order)
+Thread Content Locks (thread-id order)
+implicit row and allocator locks (their documented canonical order)
+```
+
+Deduplicate keys within each class. Internal helpers consume transaction-bound
+lock capabilities and never acquire an earlier lock class after a later class or
+after writes begin.
+
+The Account State Lock retains the key encoding
+`['business-scope', 'ACCOUNT', domain, account]`. The word `ACCOUNT` identifies
+the owned account state domain; it does not mean that every relationship
+containing that address belongs to the account lock.
 
 Use canonical stored endpoint identities and relationship namespaces for the Pair
 key, with endpoints sorted so both authored directions share a key. Do not use a
 request ID, Intent author side, or caller-relative address order as its identity.
 The [task index](./durable-task-responsibilities-and-locks.md) distinguishes current
-production scopes from the fork's new scope requirements.
+production scopes from the implementation's new scope requirements.
 Keep the row and allocator locks required for shared records, foreign-key
 concurrency, and triggers. Central ownership removes redundant locking, not
 necessary protection. Ordinary reads do not acquire business locks implicitly.
 
-Independent business scopes do not guarantee freedom from deadlocks. Acquire
-all required `PeerStateFeedTarget` allocators in peer-domain/namespace order
-before any `Account` state-feed allocator, including allocations or locks taken
-by triggers. Acquire Account allocators in account-ID order. Lock preparation
-must not issue redundant business updates that trigger early feed allocation.
-SQL writes and foreign-key checks still acquire implicit locks; include them
-when reviewing the complete transaction order.
+The three explicit lock classes close the business ownership model. Deadlock
+freedom additionally requires every implicit database lock either to be dominated
+by one common explicit lock or to follow one canonical row order. Acquire
+federation namespace allocators in namespace-ID order and account-owned allocators
+in account-ID order. Lock preparation must not issue redundant writes that trigger
+early allocation. SQL writes, triggers, task rows, and foreign-key checks still
+acquire implicit locks and remain part of the transaction-order review; they do
+not constitute additional explicit business-lock classes.
+
+Use distinct feed coordinates:
+
+- `Account.clientStateFeedEndId` is the unified local-client state-feed end for
+  that account. Account-, Pair-, and Thread-derived projections may advance it
+  under their respective explicit locks, so it is an implicit shared allocator
+  acquired in account-ID order rather than a reason to acquire another account's
+  Account State Lock.
+- `IdentityNamespace.stateFeedEndId` is the unified outbound State Feed end for
+  one verified federation identity epoch. Pair and Thread projections may
+  advance it under their respective explicit locks, so multi-namespace writers
+  acquire namespace rows in namespace-ID order. It starts at zero. Namespace
+  `0` (`local`) remains zero and is never used as an outbound peer allocator.
+- `PeerStateFeedPullCursor.committedThrough` is inbound consumption progress and
+  is not an authored feed end.
+
+The separate `PeerStateFeedTarget` allocator is redundant in the target schema:
+its state belongs on the corresponding remote `IdentityNamespace`. Empty-database
+migration may remove the old table and writers directly; no backfill, dual write,
+or compatibility adapter is required.
+
+An `IdentityNamespace` allocator row is a terminal implicit resource. After a
+transaction locks or updates one, it must not acquire an Account State,
+Relationship Pair, or Thread Content lock. Namespace lifecycle operations obey
+the same order. Federation reset only retires the namespace and updates peer
+lifecycle state; it does not acquire a Thread Content lock or author messages
+after locking the namespace row.
 
 Authorization must use a fresh statement snapshot after waiting for business
 locks. A SELECT before a lock may locate identity, but cannot authorize the
@@ -156,9 +188,9 @@ business handler.
 
 ## Adoption and verification
 
-Apply this pattern one business flow at a time. Isolated experimental methods
-and temporary forks are allowed while establishing equivalence. Keep production
-routing on the existing path until the specific replacement is reviewed.
+Apply this pattern one complete business flow at a time. Review the replacement,
+switch its production entry, and remove the old writer. Do not retain a dual-write
+or compatibility adapter; the migration assumes an empty database.
 
 Verify canonical state and immediate feed effects, invalid/stale requests,
 branch-specific configuration behavior, idempotency, and transaction rollback.

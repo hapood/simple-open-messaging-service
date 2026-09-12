@@ -3,7 +3,7 @@ import type { DatabaseTransaction } from '../database/database.service.js';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../relationship/thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 
 /** Activate each remote source from its retained authored authorization snapshot. */

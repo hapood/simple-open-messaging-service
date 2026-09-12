@@ -1,15 +1,15 @@
 import {
-  experimentalPairBusinessKey,
-  lockExperimentalPairsInTx,
+  relationshipPairBusinessKey,
+  lockRelationshipPairsInTx,
   type PairAddressScope,
-} from '../src/business-v2/shared/locks/pair-business-lock.js';
-import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
+} from '../src/business/shared/locks/relationship-pair-business-lock.js';
+import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import {
-  admitGroupRequestFanoutInTx,
-  groupRequestFanoutKey,
-} from '../src/business-v2/group/accept-join-request/group-request-fanout.js';
-import { GroupRequestExecutionService } from '../src/business-v2/group/accept-join-request/group-request-execution.service.js';
+  admitGroupMembershipProjectionFanoutInTx,
+  groupMembershipProjectionFanoutKey,
+} from '../src/business/group/membership-intent/group-membership-projection-fanout.js';
+import { GroupMembershipProjectionFanoutService } from '../src/business/group/membership-intent/group-membership-projection-fanout.service.js';
 import { insertPendingTaskInTx } from '../src/durable-task/task-admission.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import {
@@ -37,12 +37,12 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { GroupRole } from '../src/database/enums.js';
 import { GroupService } from '../src/group/group.service.js';
 import {
-  ExperimentalGroupJoinDecisionService,
-  type GroupJoinDecisionDependencies,
-} from '../src/business-v2/group/accept-join-request/group-join-decision.service.js';
+  GroupAuthoredMembershipIntentService,
+  type GroupAuthoredMembershipIntentDependencies,
+} from '../src/business/group/membership-intent/group-authored-membership-intent.service.js';
 import {
-  ExperimentalGroupMembershipService,
-} from '../src/business-v2/group/accept-join-request/group-membership-decision.service.js';
+  MemberAuthoredGroupMembershipIntentService,
+} from '../src/business/group/membership-intent/member-authored-group-membership-intent.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
@@ -50,7 +50,7 @@ import { FederationRelationshipMutationService } from '../src/federation/federat
 import { AuthoritativeGroupMetaMutationService } from '../src/federation/authoritative-group-meta-mutation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
-import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
 import { readCurrentGroupMemberInTx } from '../src/group-meta/current-group-roster.js';
 import { findGroupRelationship, seedUser } from './seed.js';
 
@@ -77,14 +77,14 @@ function pairScope(
 describe('experimental group join decision', () => {
   let app: INestApplication;
   let database: DatabaseService;
-  let deps: GroupJoinDecisionDependencies;
+  let deps: GroupAuthoredMembershipIntentDependencies;
   let services: {
     groups: GroupService;
     intents: RelationshipIntentService;
     mutations: FederationRelationshipMutationService;
     previews: ThreadPreviewService;
   };
-  let experiment: ExperimentalGroupJoinDecisionService;
+  let experiment: GroupAuthoredMembershipIntentService;
   let baseline: GroupService;
   const statements: string[] = [];
   const businessLocks: string[] = [];
@@ -103,7 +103,7 @@ describe('experimental group join decision', () => {
     },
   ): Promise<void> {
     if (path === 'baseline') await baseline.handleJoinRequest(params);
-    else await experiment.handleGroupIntent(params);
+    else await experiment.execute(params);
   }
 
   beforeAll(async () => {
@@ -142,7 +142,7 @@ describe('experimental group join decision', () => {
       mutations: app.get(FederationRelationshipMutationService),
       previews: app.get(ThreadPreviewService),
     };
-    experiment = new ExperimentalGroupJoinDecisionService(deps);
+    experiment = new GroupAuthoredMembershipIntentService(deps);
     baseline = new GroupService(
       measured,
       deps.federation,
@@ -731,7 +731,7 @@ describe('experimental group join decision', () => {
       statements.length = 0;
       await (handler === baseline
         ? handler.handleJoinRequest(f.params)
-        : handler.handleGroupIntent(f.params));
+        : handler.execute(f.params));
       counts.push(statements.length);
     }
     // Five redundant pair preparations alone account for fifteen round trips.
@@ -744,8 +744,8 @@ describe('experimental group join decision', () => {
     );
     const f = await fixture();
     const outcomes = await Promise.allSettled([
-      experiment.handleGroupIntent(f.params),
-      experiment.handleGroupIntent(f.params),
+      experiment.execute(f.params),
+      experiment.execute(f.params),
     ]);
     expect(
       outcomes.filter((result) => result.status === 'fulfilled'),
@@ -770,7 +770,7 @@ describe('experimental group join decision', () => {
   it('rejects an unauthorized manager and an expired request without changing membership', async () => {
     const f = await fixture();
     await expect(
-      experiment.handleGroupIntent({
+      experiment.execute({
         ...f.params,
         managerUserId: f.applicant.id,
       }),
@@ -779,7 +779,7 @@ describe('experimental group join decision', () => {
       .update(tables.relationshipIntent)
       .set({ requestedAt: new Date(0), expiresAt: new Date(1) })
       .where(eq(tables.relationshipIntent.id, f.params.requestId));
-    await expect(experiment.handleGroupIntent(f.params)).rejects.toMatchObject({
+    await expect(experiment.execute(f.params)).rejects.toMatchObject({
       bizCode: BusinessCode.NOT_FOUND,
     });
     expect((await state(f)).pair?.active).toBe(false);
@@ -788,18 +788,18 @@ describe('experimental group join decision', () => {
   it('acquires the group then the pair business lock once before row locks', async () => {
     const f = await fixture();
     businessLocks.length = 0;
-    await experiment.handleGroupIntent(f.params);
+    await experiment.execute(f.params);
     const scope = pairScope(f.pair);
     expect(businessLocks).toEqual([
       businessAccountScopeKey({ account: f.group.account, domain: 'local' }),
-      experimentalPairBusinessKey(scope),
+      relationshipPairBusinessKey(scope),
     ]);
     const reversed: PairAddressScope = {
       kind: scope.kind,
       addresses: [...scope.addresses].reverse() as [string, string],
     };
-    expect(experimentalPairBusinessKey(reversed)).toBe(
-      experimentalPairBusinessKey(scope),
+    expect(relationshipPairBusinessKey(reversed)).toBe(
+      relationshipPairBusinessKey(scope),
     );
   });
 
@@ -809,7 +809,7 @@ describe('experimental group join decision', () => {
     const release = deferred();
     let blockerPid = 0;
     const blocker = database.db.transaction(async (tx) => {
-      await lockExperimentalPairsInTx(tx, [pairScope(f.pair)]);
+      await lockRelationshipPairsInTx(tx, [pairScope(f.pair)]);
       blockerPid = (
         await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`)
       ).rows[0].pid;
@@ -817,7 +817,7 @@ describe('experimental group join decision', () => {
       await release.promise;
     });
     await ready.promise;
-    const result = experiment.handleGroupIntent(f.params).then(
+    const result = experiment.execute(f.params).then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -863,7 +863,7 @@ describe('experimental group join decision', () => {
     });
     const before = await database.db.query.durableTask.findMany();
     statements.length = 0;
-    await experiment.handleGroupIntent(f.params);
+    await experiment.execute(f.params);
     const after = await database.db.query.durableTask.findMany();
     const inserted = after.filter(
       (task) => !before.some((previous) => previous.id === task.id),
@@ -901,7 +901,7 @@ describe('experimental group join decision', () => {
     );
     const before = await database.db.query.durableTask.findMany();
     const messagesBefore = await database.db.query.message.findMany();
-    await experiment.handleGroupIntent({ ...f.params, decision: 'REVOKED' });
+    await experiment.execute({ ...f.params, decision: 'REVOKED' });
     expect(await database.db.query.durableTask.findMany()).toEqual(before);
     expect(await database.db.query.message.findMany()).toEqual(messagesBefore);
   });
@@ -922,7 +922,7 @@ describe('experimental group join decision', () => {
         captured = result.rows;
         return result;
       });
-    await experiment.handleGroupIntent(f.params);
+    await experiment.execute(f.params);
     spy.mockRestore();
     console.error('RESULT_ROW', JSON.stringify(captured));
     const pairRow = await database.db.query.relationshipPair.findFirst({
@@ -1008,12 +1008,12 @@ describe('experimental group join decision', () => {
       );
     });
     const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
-    const key = groupRequestFanoutKey(f.group.threadId);
+    const key = groupMembershipProjectionFanoutKey(f.group.threadId);
     await database.db.transaction(async (tx) => {
       await lockBusinessAccountsInTx(tx, [
         { account: f.group.account, domain: 'local' },
       ]);
-      await admitGroupRequestFanoutInTx(tx, {
+      await admitGroupMembershipProjectionFanoutInTx(tx, {
         threadId: f.group.threadId,
         groupAccount: f.group.account,
       });
@@ -1025,7 +1025,7 @@ describe('experimental group join decision', () => {
       .update(tables.durableTask)
       .set({ status: 'PROCESSING', startedAt: new Date() })
       .where(eq(tables.durableTask.id, task.id));
-    const execution = app.get(GroupRequestExecutionService);
+    const execution = app.get(GroupMembershipProjectionFanoutService);
     await execution.execute(task, { threadId: f.group.threadId });
     // One throttled wake per written account, published only after the page commit.
     expect(notify).toHaveBeenCalledTimes(1);
@@ -1111,13 +1111,13 @@ describe('experimental group join decision', () => {
 
   it('replaces pending join-request work while preserving a worker claim', async () => {
     const f = await fixture();
-    const key = groupRequestFanoutKey(f.group.threadId);
+    const key = groupMembershipProjectionFanoutKey(f.group.threadId);
     const admit = () =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
           { account: f.group.account, domain: 'local' },
         ]);
-        await admitGroupRequestFanoutInTx(tx, {
+        await admitGroupMembershipProjectionFanoutInTx(tx, {
           threadId: f.group.threadId,
           groupAccount: f.group.account,
         });
@@ -1200,7 +1200,7 @@ describe('experimental group join decision', () => {
       await release.promise;
     });
     await ready.promise;
-    const outcome = experiment.handleGroupIntent(f.params).then(
+    const outcome = experiment.execute(f.params).then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -1247,7 +1247,7 @@ describe('experimental group join decision', () => {
           throw new Error('late failure');
         }),
       );
-    await expect(experiment.handleGroupIntent(f.params)).rejects.toThrow(
+    await expect(experiment.execute(f.params)).rejects.toThrow(
       'late failure',
     );
     expect(await state(f)).toEqual(before);
@@ -1255,7 +1255,7 @@ describe('experimental group join decision', () => {
     expect(notify).not.toHaveBeenCalled();
     expect(push).not.toHaveBeenCalled();
     failure.mockRestore();
-    await experiment.handleGroupIntent(f.params);
+    await experiment.execute(f.params);
     expect((await state(f)).pair?.active).toBe(true);
   });
 
@@ -1306,7 +1306,7 @@ describe('experimental group join decision', () => {
         },
       );
       await ready.promise;
-      const outcome = experiment.handleGroupIntent(f.params).then(
+      const outcome = experiment.execute(f.params).then(
         () => undefined,
         (error: unknown) => error,
       );
@@ -1340,10 +1340,10 @@ describe('experimental group join decision', () => {
       undefined,
     );
     const f = await fixture();
-    await experiment.handleGroupIntent({ ...f.params, decision: 'ACCEPTED' });
+    await experiment.execute({ ...f.params, decision: 'ACCEPTED' });
     expect((await state(f)).pair?.active).toBe(true);
     statements.length = 0;
-    await experiment.handleGroupIntent({ ...f.params, decision: 'REVOKED' });
+    await experiment.execute({ ...f.params, decision: 'REVOKED' });
     process.stdout.write(
       `experiment local KICK: ${statements.length} SQL statements\n`,
     );
@@ -1515,9 +1515,9 @@ describe('experimental group join decision', () => {
       managerUserId: owner.id,
       requestId: request!.id,
     };
-    await experiment.handleGroupIntent({ ...params, decision: 'ACCEPTED' });
+    await experiment.execute({ ...params, decision: 'ACCEPTED' });
     statements.length = 0;
-    await experiment.handleGroupIntent({ ...params, decision: 'REVOKED' });
+    await experiment.execute({ ...params, decision: 'REVOKED' });
     process.stdout.write(
       `experiment remote KICK: ${statements.length} SQL statements\n`,
     );
@@ -1570,7 +1570,7 @@ describe('experimental group join decision', () => {
     );
     const f = await fixture();
     // The accepted applicant becomes the administrator whose reach is under test.
-    await experiment.handleGroupIntent({ ...f.params, decision: 'ACCEPTED' });
+    await experiment.execute({ ...f.params, decision: 'ACCEPTED' });
     await services.groups.setRole({
       threadId: f.group.threadId,
       targetUserId: f.applicant.id,
@@ -1590,7 +1590,7 @@ describe('experimental group join decision', () => {
     );
     const admin = f.applicant;
     // An administrator removes a member.
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: f.group.threadId,
       managerUserId: admin.id,
       requestId: await sideBIntentId(f.group.threadId, junior.id),
@@ -1600,7 +1600,7 @@ describe('experimental group join decision', () => {
     // The owner, a peer manager, and the administrator themselves are out of reach.
     for (const target of [f.owner, admin]) {
       await expect(
-        experiment.handleGroupIntent({
+        experiment.execute({
           threadId: f.group.threadId,
           managerUserId: admin.id,
           requestId: await sideBIntentId(f.group.threadId, target.id),
@@ -1610,7 +1610,7 @@ describe('experimental group join decision', () => {
       expect(await rosteredMember(f.group.threadId, target.id)).toBeDefined();
     }
     // The owner still outranks the administrator.
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       requestId: await sideBIntentId(f.group.threadId, admin.id),
@@ -1625,20 +1625,20 @@ describe('experimental group join decision', () => {
     );
     // A rostered member is out of reach once the group is dissolved.
     const kicked = await fixture();
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       ...kicked.params,
       decision: 'ACCEPTED',
     });
     await dissolveGroup(kicked.group.account);
     await expect(
-      experiment.handleGroupIntent({ ...kicked.params, decision: 'REVOKED' }),
+      experiment.execute({ ...kicked.params, decision: 'REVOKED' }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_FORBIDDEN });
     expect(await state(kicked)).toMatchObject({ roster: expect.anything() });
 
     // A pending application may still be rejected there (v1 semantics).
     const rejected = await fixture();
     await dissolveGroup(rejected.group.account);
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       ...rejected.params,
       decision: 'REVOKED',
     });
@@ -1661,7 +1661,7 @@ describe('experimental group join decision', () => {
     // would consume a new slot.
     const f = await fixture();
     await fillAuthorizedPairs(f.group.account, f.group.threadId, 998);
-    await expect(experiment.handleGroupIntent(f.params)).rejects.toMatchObject({
+    await expect(experiment.execute(f.params)).rejects.toMatchObject({
       bizCode: BusinessCode.GROUP_FULL,
     });
     const rejected = await state(f);
@@ -1703,7 +1703,7 @@ describe('experimental group join decision', () => {
       invited.group.threadId,
       997,
     );
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       ...invited.params,
       decision: 'ACCEPTED',
     });
@@ -1727,7 +1727,7 @@ describe('experimental group join decision', () => {
       );
     });
     await expect(
-      experiment.handleGroupIntent({ ...f.params, decision: 'ACCEPTED' }),
+      experiment.execute({ ...f.params, decision: 'ACCEPTED' }),
     ).resolves.toBeUndefined();
     const result = await state(f);
     expect(result.pair?.active).toBe(false);
@@ -1777,7 +1777,7 @@ describe('experimental group join decision', () => {
       updatedAt: new Date(),
     });
     statements.length = 0;
-    await experiment.handleGroupIntent({ ...f.params, decision: 'ACCEPTED' });
+    await experiment.execute({ ...f.params, decision: 'ACCEPTED' });
     process.stdout.write(
       `experiment INVITE COMPLETION: ${statements.length} SQL statements\n`,
     );
@@ -1803,7 +1803,7 @@ describe('experimental group join decision', () => {
     );
     const f = await fixture();
     statements.length = 0;
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
@@ -1871,7 +1871,7 @@ describe('experimental group join decision', () => {
       updatedAt: new Date(),
     });
     statements.length = 0;
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
@@ -1917,7 +1917,7 @@ describe('experimental group join decision', () => {
       .where(eq(tables.groupMeta.threadId, group.threadId));
     businessLocks.length = 0;
     statements.length = 0;
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: group.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
@@ -1930,7 +1930,7 @@ describe('experimental group join decision', () => {
     // Account scope first, then pair scope, once each, like ACK and REVOKE.
     expect(businessLocks).toEqual([
       businessAccountScopeKey({ account: group.account, domain: 'local' }),
-      experimentalPairBusinessKey({
+      relationshipPairBusinessKey({
         kind: 'GROUP_MEMBER',
         addresses: [`${group.account}@local`, `${invitee.account}@local`],
       }),
@@ -2007,7 +2007,7 @@ describe('experimental group join decision', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toMatchObject({
       taskType: 'FAN_OUT_GROUP_PROJECTION',
-      coalescingKey: groupRequestFanoutKey(group.threadId),
+      coalescingKey: groupMembershipProjectionFanoutKey(group.threadId),
       checkpoint: { afterManagerId: '0' },
     });
     // Only the invitee is woken in-process; managers learn through the
@@ -2048,7 +2048,7 @@ describe('experimental group join decision', () => {
       bio: '',
     });
     statements.length = 0;
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: created.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
@@ -2115,7 +2115,7 @@ describe('experimental group join decision', () => {
       );
     });
     // Side B REVOKED receives a fresh invitation without touching side B.
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
@@ -2136,9 +2136,9 @@ describe('experimental group join decision', () => {
 
     // A rostered member is already satisfied: silent no-op, no tasks.
     const g = await fixture();
-    await experiment.handleGroupIntent(g.params);
+    await experiment.execute(g.params);
     const tasksBefore = await database.db.query.durableTask.findMany();
-    await experiment.handleGroupIntent({
+    await experiment.execute({
       threadId: g.group.threadId,
       managerUserId: g.owner.id,
       decision: 'REQUESTED',
@@ -2160,7 +2160,7 @@ describe('experimental group join decision', () => {
     // A stranger with no local account is not found; the minted pair rolls back.
     const ghost = `join-req-${sequence}-ghost`;
     await expect(
-      experiment.handleGroupIntent({
+      experiment.execute({
         threadId: g.group.threadId,
         managerUserId: g.owner.id,
         decision: 'REQUESTED',
@@ -2176,7 +2176,7 @@ describe('experimental group join decision', () => {
 
     // A non-manager is forbidden.
     await expect(
-      experiment.handleGroupIntent({
+      experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.applicant.id,
         decision: 'REQUESTED',
@@ -2198,7 +2198,7 @@ describe('experimental group join decision', () => {
       [f.group.threadId],
     );
     await expect(
-      experiment.handleGroupIntent({
+      experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
@@ -2217,10 +2217,10 @@ describe('experimental group join decision', () => {
   });
 
   describe('experimental group membership', () => {
-    let membership: ExperimentalGroupMembershipService;
+    let membership: MemberAuthoredGroupMembershipIntentService;
 
     beforeAll(() => {
-      membership = new ExperimentalGroupMembershipService({
+      membership = new MemberAuthoredGroupMembershipIntentService({
         database: deps.database,
         clientFeed: deps.clientFeed,
       });
@@ -2251,7 +2251,7 @@ describe('experimental group join decision', () => {
     it('applies to join, refreshes the application, and admits the projection fan-out', async () => {
       const f = await memberFixture();
       const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
@@ -2334,7 +2334,7 @@ describe('experimental group join decision', () => {
 
       // A live application is refreshed: new number, note, and expiry.
       notify.mockClear();
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
@@ -2364,7 +2364,7 @@ describe('experimental group join decision', () => {
 
     it('completes an outstanding invitation from the member side', async () => {
       const f = await memberFixture();
-      await experiment.handleGroupIntent({
+      await experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
@@ -2372,7 +2372,7 @@ describe('experimental group join decision', () => {
         note: 'join us',
       });
       const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'ACCEPTED',
@@ -2417,14 +2417,14 @@ describe('experimental group join decision', () => {
 
     it('collapses req + outstanding invitation into acceptance', async () => {
       const f = await memberFixture();
-      await experiment.handleGroupIntent({
+      await experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
         target: { account: f.member.account, domain: 'local', namespaceId: 0 },
         note: 'join us',
       });
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
@@ -2453,7 +2453,7 @@ describe('experimental group join decision', () => {
 
     it('withdraws a pending application silently for managers', async () => {
       const f = await memberFixture();
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
@@ -2461,7 +2461,7 @@ describe('experimental group join decision', () => {
       });
       const tasksBefore = await database.db.query.durableTask.findMany();
       const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REVOKED',
@@ -2501,14 +2501,14 @@ describe('experimental group join decision', () => {
 
     it('declines an outstanding invitation without touching side A', async () => {
       const f = await memberFixture();
-      await experiment.handleGroupIntent({
+      await experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
         target: { account: f.member.account, domain: 'local', namespaceId: 0 },
         note: 'join us',
       });
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REVOKED',
@@ -2536,7 +2536,7 @@ describe('experimental group join decision', () => {
 
     it('leaves the roster with the full departure effect', async () => {
       const f = await memberFixture();
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
@@ -2552,14 +2552,14 @@ describe('experimental group join decision', () => {
           eq(tables.relationshipIntent.authorSide, 'B'),
         ),
       });
-      await experiment.handleGroupIntent({
+      await experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         requestId: sideB!.id,
         decision: 'ACCEPTED',
       });
       const before = await database.db.query.durableTask.findMany();
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REVOKED',
@@ -2624,14 +2624,14 @@ describe('experimental group join decision', () => {
       const f = await memberFixture();
       // Nothing to accept, nothing to revoke.
       await expect(
-        membership.handleGroupMembership({
+        membership.execute({
           threadId: f.group.threadId,
           memberUserId: f.member.id,
           decision: 'ACCEPTED',
         }),
       ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
       await expect(
-        membership.handleGroupMembership({
+        membership.execute({
           threadId: f.group.threadId,
           memberUserId: f.member.id,
           decision: 'REVOKED',
@@ -2640,18 +2640,18 @@ describe('experimental group join decision', () => {
 
       // A dissolved group is a silent no-op for positive directions and keeps
       // withdrawals forbidden for rostered members (disband owns departures).
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
       });
-      await experiment.handleGroupIntent({
+      await experiment.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
         target: { account: f.member.account, domain: 'local', namespaceId: 0 },
       });
-      await membership.handleGroupMembership({
+      await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'ACCEPTED',
@@ -2665,7 +2665,7 @@ describe('experimental group join decision', () => {
         [f.group.threadId],
       );
       await expect(
-        membership.handleGroupMembership({
+        membership.execute({
           threadId: f.group.threadId,
           memberUserId: f.member.id,
           decision: 'REVOKED',
@@ -2678,7 +2678,7 @@ describe('experimental group join decision', () => {
         `member-exp-${++sequence}-stranger`,
       );
       await expect(
-        membership.handleGroupMembership({
+        membership.execute({
           threadId: f.group.threadId,
           memberUserId: stranger.id,
           decision: 'REQUESTED',

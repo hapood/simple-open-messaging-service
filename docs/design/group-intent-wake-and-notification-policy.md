@@ -1,7 +1,7 @@
 # Group intent wake and projection notification policy
 
 Status: resolved (2026-09-12). This records the two deferred review findings on
-[ExperimentalGroupJoinDecisionService](../../src/business-v2/group/accept-join-request/group-join-decision.service.ts)
+[GroupAuthoredMembershipIntentService](../../src/business/group/membership-intent/group-authored-membership-intent.service.ts)
 (from the 2026-09-11 v2-vs-legacy comparison) and the decisions taken. The
 [unified group intent decision](./unified-group-intent-decision.md) keeps the
 statement-level detail.
@@ -57,7 +57,7 @@ what counts for its badge. Three changes landed:
    forward-only guard (migration 0009's documented design; the
    `groupInviteEndFeedId` column always existed).
 3. **The member-authored family exists**:
-   [ExperimentalGroupMembershipService](../../src/business-v2/group/accept-join-request/group-membership-decision.service.ts)
+   [MemberAuthoredGroupMembershipIntentService](../../src/business/group/membership-intent/member-authored-group-membership-intent.service.ts)
    covers user→group REQUESTED (application), ACCEPTED (invitation
    completion), and REVOKED (withdraw / decline / leave), so the application
    direction has a v2 admission source. Legacy inbound paths are unchanged.

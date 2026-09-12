@@ -147,6 +147,11 @@ export const identityNamespace = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
+    /** Unified outbound State Feed end for this federation identity epoch.
+     * Namespace 0 is local and never allocates from this coordinate. */
+    stateFeedEndId: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -177,6 +182,10 @@ export const identityNamespace = pgTable(
     check(
       'IdentityNamespace_retiredAt_check',
       sql`${table.retiredAt} IS NULL OR ${table.retiredAt} >= ${table.createdAt}`,
+    ),
+    check(
+      'IdentityNamespace_stateFeedEndId_check',
+      sql`${table.stateFeedEndId} >= 0 AND (${table.id} <> 0 OR ${table.stateFeedEndId} = 0)`,
     ),
   ],
 );
@@ -318,7 +327,7 @@ export const account = pgTable(
     hashPwd: varchar({ length: 127 }),
     mustChangePassword: boolean().default(false).notNull(),
     disabledAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    stateFeedEndId: integer().default(0).notNull(),
+    clientStateFeedEndId: integer().default(0).notNull(),
     threadFeedEndId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -337,6 +346,10 @@ export const account = pgTable(
       sql`(${table.kind} = 'USER' AND ${table.account} <> '$system') OR (${table.kind} = 'SYSTEM' AND ${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
     ),
     check('Account_threadFeedEndId_check', sql`${table.threadFeedEndId} >= 0`),
+    check(
+      'Account_clientStateFeedEndId_check',
+      sql`${table.clientStateFeedEndId} >= 0`,
+    ),
     unique('Account_account_key').on(table.account),
     check('Account_account_check', sql`${table.account} NOT LIKE '!%'`),
     check(
@@ -1803,31 +1816,6 @@ export const peerStateFeed = pgTable(
       sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '')
         OR (${table.eventType} = 'THREAD_CONTENT_HEAD' AND ((${table.account} LIKE '!%' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local') OR (${table.account} NOT LIKE '!%' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} = ${table.peerDomain})))
         OR (${table.eventType} = 'GROUP_META_FEED_HEAD' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
-    ),
-  ],
-);
-
-export const peerStateFeedTarget = pgTable(
-  'PeerStateFeedTarget',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    namespaceId: integer().primaryKey().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.peerDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'PeerStateFeedTarget_namespace_fkey',
-    }).onDelete('restrict'),
-    check(
-      'PeerStateFeedTarget_allocatedThrough_check',
-      sql`${table.allocatedThrough} >= 0`,
     ),
   ],
 );

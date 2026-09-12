@@ -33,11 +33,7 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(
-      database as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new FederationResetService(database as never, {} as never);
 
     await expect(service.preview('Peer.Example.')).resolves.toMatchObject({
       domain: 'peer.example',
@@ -70,11 +66,7 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(
-      database as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new FederationResetService(database as never, {} as never);
 
     await expect(service.preview('peer.example')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
@@ -82,7 +74,7 @@ describe('FederationResetService', () => {
   });
 
   it.each([false, true])(
-    'commits namespace retirement and archival messages together (rollback=%s)',
+    'commits namespace retirement atomically (rollback=%s)',
     async (rollback) => {
       const execute = vi
         .fn()
@@ -94,9 +86,6 @@ describe('FederationResetService', () => {
               haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
             },
           ],
-        })
-        .mockResolvedValueOnce({
-          rows: [{ threadId: 44 }, { threadId: 45 }],
         })
         .mockResolvedValue({ rows: [] });
       const tx = { execute };
@@ -112,14 +101,9 @@ describe('FederationResetService', () => {
       const namespaces = {
         retireActiveInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       };
-      const message = { id: 55, threadId: 44 };
-      const messages = {
-        writeSystemMessageInTx: vi.fn().mockResolvedValue({ message }),
-      };
       const service = new FederationResetService(
         database as never,
         namespaces as never,
-        messages as never,
       );
 
       if (rollback) {
@@ -141,10 +125,6 @@ describe('FederationResetService', () => {
         tx,
         'peer.example',
       );
-      expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(tx, 44, {
-        type: 'FEDERATION_NAMESPACE_ARCHIVED',
-        domain: 'peer.example',
-      });
     },
   );
 });

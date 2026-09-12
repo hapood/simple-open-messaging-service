@@ -23,7 +23,7 @@ describe('group relationship client identities', () => {
             publishAccepted: false,
           }),
         },
-        stateFeed: { lockTargetsInTx: vi.fn() },
+        stateFeed: { lockOutboundStateFeedNamespacesInTx: vi.fn() },
         groupRelationships: { syncActiveInTx: vi.fn() },
         ensureFederatedGroupRequestShellInTx: vi.fn().mockResolvedValue({
           groupId: 28,

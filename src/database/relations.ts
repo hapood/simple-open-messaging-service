@@ -28,7 +28,6 @@ import {
   forwardBundleAsset,
   federatedPeer,
   peerStateFeed,
-  peerStateFeedTarget,
   peerStateFeedPullCursor,
   relationshipIntent,
   relationshipPair,
@@ -40,7 +39,6 @@ export const federatedPeerRelations = relations(
   federatedPeer,
   ({ many, one }) => ({
     stateFeed: many(peerStateFeed),
-    stateFeedTarget: one(peerStateFeedTarget),
     stateFeedPullCursor: one(peerStateFeedPullCursor),
   }),
 );
@@ -51,16 +49,6 @@ export const peerStateFeedRelations = relations(peerStateFeed, ({ one }) => ({
     references: [federatedPeer.domain],
   }),
 }));
-
-export const peerStateFeedTargetRelations = relations(
-  peerStateFeedTarget,
-  ({ one }) => ({
-    peer: one(federatedPeer, {
-      fields: [peerStateFeedTarget.peerDomain],
-      references: [federatedPeer.domain],
-    }),
-  }),
-);
 
 export const peerStateFeedPullCursorRelations = relations(
   peerStateFeedPullCursor,

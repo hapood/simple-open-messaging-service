@@ -99,7 +99,7 @@ export class SseService implements OnModuleDestroy {
     try {
       const [user] = await this.database.db
         .select({
-          stateFeedEndId: account.stateFeedEndId,
+          stateFeedEndId: account.clientStateFeedEndId,
           threadFeedEndId: account.threadFeedEndId,
           profileRev: userTable.defaultProfileRev,
         })

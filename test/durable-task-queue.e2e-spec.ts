@@ -103,7 +103,7 @@ describe('durable task enqueue', () => {
     const reverse = await queue.enqueueTask({ ...revoke, actorUserId: 2 });
     const ack = await queue.enqueueTask({
       ...revoke,
-      taskType: 'ACCEPT_RELATIONSHIP_REQUEST',
+      taskType: 'REJECT_RELATIONSHIP_REQUEST',
       payload: { peerUserId: 2 },
     });
     expect(ack.taskId).toBe(first.taskId);
@@ -117,8 +117,8 @@ describe('durable task enqueue', () => {
     expect(await database.db.select().from(durableTask)).toHaveLength(2);
     const next = await queue.enqueueTask({
       ...revoke,
-      taskType: 'SEND_LOCAL_RELATIONSHIP_REQUEST',
-      payload: { targetUserId: 2, note: '' },
+      taskType: 'REVOKE_ADDRESSED_RELATIONSHIP_REQUEST',
+      payload: { account: 'bob', domain: 'peer.test' },
     });
     expect(next.taskId).not.toBe(first.taskId);
     expect(

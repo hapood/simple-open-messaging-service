@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
-import { businessAccountScopeKey } from '../relationship/business-scope-lock.js';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 
-vi.mock('../relationship/thread-content-lock.js', () => ({
+vi.mock('../business/shared/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 12 }),
 }));
 vi.mock('./group-state.js', async (importOriginal) => ({

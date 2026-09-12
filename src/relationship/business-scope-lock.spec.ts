@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { businessAccountScopeKey } from './business-scope-lock.js';
+import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
 
 describe('business scope lock keys', () => {
   it('uses one account-address scope for users', () => {

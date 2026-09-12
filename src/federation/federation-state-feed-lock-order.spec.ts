@@ -11,7 +11,7 @@ describe('incoming group relationship allocator ordering', () => {
       const projectionBoundary = new Error(
         'stop at client projection boundary',
       );
-      const lockTargetsInTx = vi.fn(async () => {
+      const lockOutboundStateFeedNamespacesInTx = vi.fn(async () => {
         order.push('peer');
       });
       const service = Object.create(
@@ -35,7 +35,7 @@ describe('incoming group relationship allocator ordering', () => {
             };
           }),
         },
-        stateFeed: { lockTargetsInTx },
+        stateFeed: { lockOutboundStateFeedNamespacesInTx },
         relationshipMutations: {
           writeGroupRequestEffectsInTx: vi.fn(async () => {
             order.push('client');
@@ -85,7 +85,7 @@ describe('incoming group relationship allocator ordering', () => {
           ? ['group', 'task', 'peer', 'client']
           : ['group', 'peer', 'client'],
       );
-      expect(lockTargetsInTx).toHaveBeenCalledWith(tx, [
+      expect(lockOutboundStateFeedNamespacesInTx).toHaveBeenCalledWith(tx, [
         { peerDomain: 'peer.test', namespaceId: 3 },
       ]);
     },

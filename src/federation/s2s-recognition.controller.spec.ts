@@ -123,7 +123,6 @@ describe('FederationRecognitionService health transitions', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
       {} as never,
       events as never,
@@ -188,7 +187,6 @@ describe('FederationRecognitionService health transitions', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     const degrade = vi
       .spyOn(service, 'markTransportDegraded')
@@ -234,7 +232,6 @@ describe('FederationRecognitionService health transitions', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         events as never,
       );
       vi.spyOn(recognition as never, 'lockPeer').mockResolvedValue({
@@ -269,7 +266,6 @@ describe('FederationRecognitionService health transitions', () => {
     const events = { emit: vi.fn() };
     const recognition = new FederationRecognitionService(
       database as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -321,7 +317,6 @@ describe('FederationRecognitionService health transitions', () => {
 describe('FederationRecognitionService Recognize HTTP classification', () => {
   function subject() {
     const service = new FederationRecognitionService(
-      {} as never,
       {} as never,
       {} as never,
       {} as never,

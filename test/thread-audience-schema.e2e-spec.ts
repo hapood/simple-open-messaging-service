@@ -122,7 +122,6 @@ describe('ThreadAudience schema', () => {
           'FederationTombstoneCheckpoint',
           'FederationP2PHistoryGrant',
           'PeerStateFeed',
-          'PeerStateFeedTarget',
           'PeerStateFeedPullCursor',
           'FederationThreadSyncState',
         ],
@@ -133,7 +132,6 @@ describe('ThreadAudience schema', () => {
         'FederationThreadSyncState',
         'PeerStateFeed',
         'PeerStateFeedPullCursor',
-        'PeerStateFeedTarget',
       ].sort(),
     );
 
@@ -161,7 +159,7 @@ describe('ThreadAudience schema', () => {
       `SELECT conname, pg_get_constraintdef(oid) AS definition
        FROM pg_constraint
        WHERE conrelid IN (
-         '"PeerStateFeedTarget"'::regclass,
+         '"IdentityNamespace"'::regclass,
          '"PeerStateFeedPullCursor"'::regclass,
          '"FederationThreadSyncState"'::regclass
        )`,
@@ -170,8 +168,8 @@ describe('ThreadAudience schema', () => {
       cursorConstraints.rows.map((row) => [row.conname, row.definition]),
     );
     expect(
-      cursorChecks.get('PeerStateFeedTarget_allocatedThrough_check'),
-    ).toContain('allocatedThrough');
+      cursorChecks.get('IdentityNamespace_stateFeedEndId_check'),
+    ).toContain('stateFeedEndId');
     expect(
       cursorChecks.get('PeerStateFeedPullCursor_committedThrough_check'),
     ).toContain('committedThrough');

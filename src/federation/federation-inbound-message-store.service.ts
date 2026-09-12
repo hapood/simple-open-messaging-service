@@ -35,7 +35,7 @@ import {
   type MapFederationOriginSequence,
 } from './federation-message-sequence-policy.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
-import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
+import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
 import {
   storeFederationQuote,
   type FederationQuoteTarget,
@@ -191,6 +191,11 @@ export class FederationInboundMessageStoreService {
       const seq = sequencePolicy
         ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
         : await this.allocateMessageSeq(tx, threadId);
+      const storedContent = contextualizeCasUrls(
+        incoming.content,
+        threadId,
+        seq,
+      );
       const [thread] = await tx
         .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
         .from(tables.messageThread)
@@ -201,7 +206,7 @@ export class FederationInboundMessageStoreService {
         .insert(tables.message)
         .values({
           contentType: incoming.contentType as ContentType,
-          content: incoming.content,
+          content: storedContent,
           threadId,
           creatorAccount: creator.account,
           creatorDomain: creator.domain,

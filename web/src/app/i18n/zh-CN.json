@@ -562,7 +562,6 @@
       "messageWithdrawn": "{{name}} 撤回了一条消息",
       "messageWithdrawnSelf": "你撤回了一条消息",
       "messagesModerated": "管理员删除了 {{count}} 条消息",
-      "federationNamespaceArchived": "对方服务器已更新 {{domain}} 的身份绑定，此会话已归档，无法继续发送消息",
       "updated": "会话已更新"
     },
     "selection": {

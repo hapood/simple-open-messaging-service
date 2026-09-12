@@ -9,8 +9,8 @@ import type {
   DurableTask,
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
-import { GroupService } from './group.service.js';
 import { readForcedMemberRevokeTask } from './group-disband-task.js';
+import { GroupDisbandMembershipRevocationService } from '../business/group/disband/group-disband-membership-revocation.service.js';
 import { FederationThreadQueryDenialService } from '../federation/federation-thread-query-denial.service.js';
 
 @Injectable()
@@ -22,7 +22,7 @@ export class ForceRevokeGroupMemberTaskHandler
 
   constructor(
     private readonly dispatcher: DurableTaskDispatcherService,
-    private readonly groups: GroupService,
+    private readonly disbandMembershipRevocations: GroupDisbandMembershipRevocationService,
     private readonly denial: FederationThreadQueryDenialService,
   ) {}
 
@@ -39,8 +39,10 @@ export class ForceRevokeGroupMemberTaskHandler
       await this.denial.revokeForbiddenMember(task);
       return;
     }
-    await this.groups.revokeDissolvedGroupMember(
-      readForcedMemberRevokeTask(task),
-    );
+    const command = readForcedMemberRevokeTask(task);
+    await this.disbandMembershipRevocations.execute({
+      threadId: command.threadId,
+      memberAddress: command.memberUserId,
+    });
   }
 }

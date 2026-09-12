@@ -6,7 +6,7 @@ vi.mock('../user/account-address.js', async (original) => ({
 import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { RelationshipService } from './relationship.service.js';
-import { requireThreadContentLockInTx } from './thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import { SystemMessageType } from '../message/system-message.js';
 
 describe('transactional friendship activation', () => {

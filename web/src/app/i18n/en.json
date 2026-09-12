@@ -562,7 +562,6 @@
       "messageWithdrawn": "{{name}} withdrew a message",
       "messageWithdrawnSelf": "You withdrew a message",
       "messagesModerated": "An administrator deleted {{count}} message(s)",
-      "federationNamespaceArchived": "The other server updated the identity binding for {{domain}}. This conversation is archived and can no longer send messages",
       "updated": "Conversation updated"
     },
     "selection": {

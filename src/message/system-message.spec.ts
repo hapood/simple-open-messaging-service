@@ -72,26 +72,6 @@ describe('system message content', () => {
     ).toBeNull();
   });
 
-  it('requires a domain for an archived federation namespace notice', () => {
-    expect(
-      parseSystemMessageContent(
-        stringifySystemMessageContent({
-          type: SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
-          domain: 'peer.test',
-        }),
-      ),
-    ).toEqual({
-      type: SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
-      domain: 'peer.test',
-    });
-    expect(
-      parseSystemMessageContent(
-        JSON.stringify({
-          type: SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
-        }),
-      ),
-    ).toBeNull();
-  });
   it.each([
     {
       type: 'FRIEND_REMOVED',

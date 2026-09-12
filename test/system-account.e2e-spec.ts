@@ -171,7 +171,7 @@ describe('system account attribution', () => {
     expect(
       await queue.enqueueTask({
         scope,
-        taskType: 'ACCEPT_RELATIONSHIP_REQUEST',
+        taskType: 'REJECT_RELATIONSHIP_REQUEST',
         actorUserId: 101,
         payload: { peerUserId: 102 },
       }),

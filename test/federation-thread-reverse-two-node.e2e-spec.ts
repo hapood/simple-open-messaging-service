@@ -105,7 +105,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(localFriendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       appA.database,
-      localFriendRequest.body.data.taskId,
+      localFriendRequest.body,
       alice.id,
       carol.id,
     );
@@ -114,7 +114,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({ account: 'reversealice', domain: 'local' });
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, localFriendAccepted.body);
+    expect(localFriendAccepted.body.data).toMatchObject({ status: 'OK' });
   }, 120_000);
 
   beforeEach(async () => {

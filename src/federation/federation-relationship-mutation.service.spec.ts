@@ -115,7 +115,7 @@ describe('FederationRelationshipMutationService', () => {
       }),
     };
     const stateFeed = {
-      lockTargetsInTx: vi.fn().mockImplementation(async () => {
+      lockOutboundStateFeedNamespacesInTx: vi.fn().mockImplementation(async () => {
         order.push('peer-lock');
       }),
       writeManyInTx: vi.fn().mockImplementation(async () => {
@@ -149,7 +149,7 @@ describe('FederationRelationshipMutationService', () => {
       true,
       'hello',
     );
-    expect(stateFeed.lockTargetsInTx).toHaveBeenCalledWith(tx, [
+    expect(stateFeed.lockOutboundStateFeedNamespacesInTx).toHaveBeenCalledWith(tx, [
       { peerDomain: 'peer.example', namespaceId: 12 },
     ]);
     expect(relationshipIntents.readP2PRelationshipInTx).toHaveBeenCalledWith(
@@ -209,7 +209,7 @@ describe('FederationRelationshipMutationService', () => {
       lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
     };
     const stateFeed = {
-      lockTargetsInTx: vi.fn().mockImplementation(async () => {
+      lockOutboundStateFeedNamespacesInTx: vi.fn().mockImplementation(async () => {
         order.push('peer-lock');
       }),
       writeManyInTx: vi.fn().mockImplementation(async () => {
@@ -261,7 +261,7 @@ describe('FederationRelationshipMutationService', () => {
       ),
     ).resolves.toEqual(new Map([['peer.example', 22n]]));
 
-    expect(stateFeed.lockTargetsInTx).toHaveBeenCalledWith(tx, [
+    expect(stateFeed.lockOutboundStateFeedNamespacesInTx).toHaveBeenCalledWith(tx, [
       { peerDomain: 'peer.example', namespaceId: 12 },
     ]);
     expect(order).toEqual(['peer-lock', 'client', 'peer-write']);
@@ -315,7 +315,7 @@ describe('FederationRelationshipMutationService', () => {
       }),
     };
     const stateFeed = {
-      lockTargetsInTx: vi.fn().mockImplementation(async () => {
+      lockOutboundStateFeedNamespacesInTx: vi.fn().mockImplementation(async () => {
         order.push('peer-lock');
       }),
       writeManyInTx: vi.fn().mockResolvedValue(new Map()),

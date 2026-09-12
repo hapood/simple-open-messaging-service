@@ -14,7 +14,7 @@ export async function captureThreadStateUpdatesInTx(
   return tx
     .select({
       userId: account.id,
-      feedId: account.stateFeedEndId,
+      feedId: account.clientStateFeedEndId,
       threadFeedEndId: account.threadFeedEndId,
     })
     .from(account)

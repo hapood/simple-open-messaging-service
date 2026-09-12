@@ -31,7 +31,7 @@ import {
 } from '../group/group-capacity.js';
 import { readCurrentGroupRosterInTx } from '../group-meta/current-group-roster.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
-import { acquireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { acquireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { MessageService } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -339,7 +339,7 @@ export class FederationStateFeedConsumerService {
             localUser.id,
             remoteIdentity,
           );
-          await this.stateFeed.lockTargetsInTx(tx, [
+          await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
             { peerDomain, namespaceId },
           ]);
           const effect = await this.relationships.applyRemoteP2PIntentInTx(tx, {
@@ -566,7 +566,7 @@ export class FederationStateFeedConsumerService {
                 requestedAt,
                 expiresAt,
               });
-            await this.stateFeed.lockTargetsInTx(tx, [
+            await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
               { peerDomain, namespaceId },
             ]);
             if (membership.shouldBeActive) {
@@ -722,7 +722,7 @@ export class FederationStateFeedConsumerService {
           // The group mutation has acquired its business scope. Reserve the peer
           // allocator before request projections or system messages touch Account;
           // activation/confirmation can publish peer state later in this transaction.
-          await this.stateFeed.lockTargetsInTx(tx, [
+          await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
             { peerDomain, namespaceId },
           ]);
           if (

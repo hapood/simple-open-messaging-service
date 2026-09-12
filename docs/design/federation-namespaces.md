@@ -60,8 +60,6 @@ Reset is a short metadata transaction rather than a deletion job:
 3. Retire the referenced namespace.
 4. Clear `activeNamespaceId` and all holder-specific recognition state.
 5. Move the peer back to the unrecognized lifecycle state and append reset audit facts.
-6. Append one namespace-archived system message to each affected remotely authoritative
-   thread.
 
 No user, group, message, thread, relationship, media, feed, or cursor row is deleted. No replacement
 namespace is created during reset. A later successful identity verification creates a new namespace
@@ -153,11 +151,7 @@ local identity              -> alice@local
 ```
 
 The synthetic `.local` value is never sent to the server and is never stored as the identity's
-public domain. A thread bound to an archived remote namespace hides its composer. Its system message
-is represented by the structured type `FEDERATION_NAMESPACE_ARCHIVED`; clients may render it as:
-
-> The other server updated the identity binding for this domain. This conversation is archived and
-> can no longer send messages.
+public domain. A thread bound to an archived remote namespace hides its composer.
 
 ## Migration
 

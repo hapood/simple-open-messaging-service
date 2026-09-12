@@ -1,3 +1,4 @@
+import { expect } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import { durableTask, relationshipIntent } from '../src/database/schema.js';
@@ -71,13 +72,20 @@ function readResponseData(responseBody: unknown): Record<string, unknown> {
   return responseBody.data as Record<string, unknown>;
 }
 
+/** The local request answers synchronously through the user-intent family: the
+ * response carries no taskId, so verify the committed intent state directly. */
 export async function waitForLocalRelationshipRequest(
   database: Database,
-  taskId: string,
+  responseBody: unknown,
   fromUserId: number,
   toUserId: number,
 ): Promise<void> {
-  await waitForDurableTask(database, taskId);
+  const data = readResponseData(responseBody);
+  if (typeof data.taskId === 'string') {
+    await waitForDurableTask(database, data.taskId);
+  } else {
+    expect(data).toMatchObject({ status: 'OK' });
+  }
   const relationship = await findP2PRelationship(
     database,
     fromUserId,

@@ -5,7 +5,7 @@ import {
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../relationship/thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';

@@ -98,10 +98,6 @@ describe('SystemRowComponent', () => {
       { type: 'FRIEND_REMOVED', initiator: alice },
       'alice@peer.test 已解除与你的好友关系',
     ],
-    [
-      { type: 'FEDERATION_NAMESPACE_ARCHIVED', domain: 'peer.test' },
-      '对方服务器已更新 peer.test 的身份绑定',
-    ],
   ])('renders event-specific participants: %j', (body, expected) => {
     expect(render(body).nativeElement.textContent).toContain(expected);
   });

@@ -9,7 +9,7 @@ import type { MarkReadDto } from '../dto/message.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { Logger } from '@nestjs/common';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import {
   ThreadFeedHeadWriter,
   readPositionInterval,

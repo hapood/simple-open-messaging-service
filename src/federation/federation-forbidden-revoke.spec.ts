@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
-import { businessAccountScopeKey } from '../relationship/business-scope-lock.js';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 
-vi.mock('../relationship/thread-content-lock.js', () => ({
+vi.mock('../business/shared/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 12 }),
 }));
 

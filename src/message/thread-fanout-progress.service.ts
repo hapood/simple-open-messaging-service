@@ -10,7 +10,7 @@ import { durableTask } from '../database/schema.js';
 import {
   acquireThreadContentLockInTx,
   requireThreadContentLockInTx,
-} from '../relationship/thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import {
   hasEstablishedThreadRelationship,
   isThreadMutuallyAuthorized,

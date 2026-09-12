@@ -4,8 +4,8 @@ import { SystemMessageType } from '../message/system-message.js';
 import {
   requireGroupThreadContentLockUnderGroupInTx,
   type ThreadContentLock,
-} from '../relationship/thread-content-lock.js';
-import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from '../group-meta/current-group-roster.js';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';

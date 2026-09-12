@@ -15,7 +15,6 @@ import {
   relationshipIntent,
   relationshipPair,
   peerStateFeed,
-  peerStateFeedTarget,
   account as user,
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
@@ -380,13 +379,13 @@ describe('per-peer state feed', () => {
     ).rejects.toThrow('rollback');
     const [target] = await database.db
       .select()
-      .from(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.peerDomain, DOMAINS[1]));
+      .from(identityNamespace)
+      .where(eq(identityNamespace.domain, DOMAINS[1]));
     const rows = await database.db
       .select()
       .from(peerStateFeed)
       .where(eq(peerStateFeed.account, '!rollback'));
-    expect(target.allocatedThrough).toBe(1n);
+    expect(target.stateFeedEndId).toBe(1n);
     expect(rows).toHaveLength(0);
   });
 

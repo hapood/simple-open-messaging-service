@@ -29,10 +29,6 @@ import {
   waitForSseEvent,
 } from './federation-test-helpers';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
-import {
-  waitForDurableTask,
-  waitForLocalRelationshipRequest,
-} from './durable-task-helpers.js';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -88,6 +84,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
     // 1. Alice sends a relationship request to Bob; Bob accepts and both sides get the P2P thread.
+    // The intent family answers synchronously — the committed pair state is
+    // visible the moment the request answers.
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
@@ -95,13 +93,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
+        expect(res.body.data).toEqual({ status: 'OK' });
       });
-    await waitForLocalRelationshipRequest(
-      database.db,
-      invite.body.data.taskId,
-      alice.id,
-      bob.id,
-    );
 
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
@@ -109,14 +102,14 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .send({ account: 'alice', domain: 'local' });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
-    expect(accept.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForDurableTask(database.db, accept.body.data.taskId);
+    expect(accept.body.data).toMatchObject({ status: 'OK' });
     const relationship = await findP2PRelationship(
       database.db,
       alice.id,
       bob.id,
     );
     const threadId = relationship.pair?.threadId;
+    expect(accept.body.data.threadId).toBe(threadId);
     if (threadId === null || threadId === undefined) {
       throw new Error('friend acceptance completed without a P2P thread');
     }
@@ -245,8 +238,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         .send({ account: 'bob', domain: 'local' });
       expect(removed.status).toBe(200);
       expect(removed.body.code).toBe(0);
-      expect(removed.body.data).toMatchObject({ status: 'PENDING' });
-      await waitForDurableTask(database.db, removed.body.data.taskId);
+      expect(removed.body.data).toEqual({ status: 'OK' });
       // Visibility changes are published through the unified thread feed.
       const observed: unknown[] = [];
       const boundaryWake = (await waitForSseEvent(
@@ -302,8 +294,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
         ),
       });
       expect(boundary).toMatchObject({
-        creatorAccount: null,
-        creatorDomain: null,
+        creatorAccount: '$system',
+        creatorDomain: 'local',
       });
       const participants = await database.db.query.accountThreadState.findMany({
         where: eq(accountThreadState.threadId, threadId),

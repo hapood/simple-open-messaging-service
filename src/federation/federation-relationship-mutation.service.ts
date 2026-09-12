@@ -26,7 +26,7 @@ import {
   type FederatedPendingProfileSnapshot,
 } from '../relationship/relationship.service.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
@@ -75,7 +75,7 @@ export class FederationRelationshipMutationService {
     group: { domain: string; namespaceId: number },
   ): Promise<void> {
     if (group.domain === 'local') return;
-    await this.stateFeed.lockTargetsInTx(tx, [
+    await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { peerDomain: group.domain, namespaceId: group.namespaceId },
     ]);
   }
@@ -289,7 +289,7 @@ export class FederationRelationshipMutationService {
     if (!state?.groupId) throw new Error('group invite target is invalid');
     const member = await accountAddressInTx(tx, memberUserId);
     if (member.domain !== 'local')
-      await this.stateFeed.lockTargetsInTx(tx, [
+      await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
           peerDomain: member.domain,
           namespaceId: member.namespaceId!,
@@ -427,7 +427,7 @@ export class FederationRelationshipMutationService {
     });
     if (!remote || !local) throw new Error('invalid federated friend intent');
     await this.relationshipIntents.lockPairInTx(tx, localUserId, peerUserId);
-    await this.stateFeed.lockTargetsInTx(tx, [
+    await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { peerDomain: remote.domain, namespaceId: remote.namespaceId! },
     ]);
     clientFeedUpdates.push(
@@ -500,7 +500,7 @@ export class FederationRelationshipMutationService {
       namespaceId: remote.namespaceId,
     };
     await this.relationshipIntents.lockPairInTx(tx, localUserId, remoteUserId);
-    await this.stateFeed.lockTargetsInTx(tx, [
+    await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { peerDomain: remote.domain, namespaceId: remote.namespaceId },
     ]);
     clientFeedUpdates.push(

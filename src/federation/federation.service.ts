@@ -113,7 +113,7 @@ import { readCurrentGroupMemberInTx } from '../group-meta/current-group-roster.j
 import {
   lockBusinessAccountsInTx,
   type BusinessScopeAddress,
-} from '../relationship/business-scope-lock.js';
+} from '../business/shared/locks/account-business-lock.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -809,7 +809,7 @@ export class FederationService {
         }
       }
       await lockBusinessAccountsInTx(tx, businessAddresses);
-      await this.stateFeed.lockTargetsInTx(
+      await this.stateFeed.lockOutboundStateFeedNamespacesInTx(
         tx,
         expired.rows
           .filter((request) => request.subjectDomain !== 'local')
@@ -1663,4 +1663,4 @@ export class FederationService {
     return this.profiles.fetchRemoteAccount(address);
   }
 }
-import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
+import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';

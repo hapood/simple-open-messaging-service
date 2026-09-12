@@ -1,7 +1,4 @@
-import {
-  readAccountTarget,
-  type AccountTarget,
-} from '../user/account-address.js';
+import { readAccountTarget, type AccountTarget } from '../user/account-address.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 
 export function readDisbandGroupTask(task: DurableTask): {

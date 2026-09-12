@@ -15,7 +15,7 @@ import {
   businessAccountScopeKey,
   lockBusinessAccountsInTx,
   type BusinessScopeAddress,
-} from '../relationship/business-scope-lock.js';
+} from '../business/shared/locks/account-business-lock.js';
 import { DurableTaskType } from './durable-task.constants.js';
 import {
   insertPendingTaskInTx,
@@ -378,8 +378,6 @@ function resolveMutationCoalescingKey(input: {
   }
   if (input.scopeType === 'USER_PAIR') {
     switch (input.taskType) {
-      case DurableTaskType.SEND_LOCAL_RELATIONSHIP_REQUEST:
-      case DurableTaskType.ACCEPT_RELATIONSHIP_REQUEST:
       case DurableTaskType.REJECT_RELATIONSHIP_REQUEST:
       case DurableTaskType.REVOKE_RELATIONSHIP_REQUEST:
       case DurableTaskType.SEND_FEDERATED_RELATIONSHIP_REQUEST:

@@ -5,7 +5,7 @@ import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.
 import { durableTask } from '../src/database/schema.js';
 import { systemAccountIdInTx } from '../src/user/system-account.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
-import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -410,7 +410,7 @@ describe('federation directed-state boundaries', () => {
       onStateFeedUpdated: () => undefined,
     } as never);
     const stateFeed = {
-      lockTargetsInTx: async () => undefined,
+      lockOutboundStateFeedNamespacesInTx: async () => undefined,
       writeManyInTx: async () => new Map(),
     };
     const mutations = Object.create(

@@ -4,7 +4,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import {
   localAccountsForTargetsInTx,
   type AccountTarget,

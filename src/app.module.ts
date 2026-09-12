@@ -44,6 +44,12 @@ import { RateLimitModule } from './rate-limit/rate-limit.module.js';
 import { DurableTaskModule } from './durable-task/durable-task.module.js';
 import { DurableTaskSchedulerService } from './durable-task/durable-task-scheduler.service.js';
 import { DurableAsyncTaskSchedulerService } from './durable-task/durable-async-task-scheduler.service.js';
+import { DatabaseService } from './database/database.service.js';
+import { ClientStateFeedService } from './client-state-feed/client-state-feed.service.js';
+import { PeerStateFeedService } from './federation/peer-state-feed.service.js';
+import { FederationService } from './federation/federation.service.js';
+import { FederationNamespaceService } from './federation/federation-namespace.service.js';
+import { UserIntentService } from './business/user/p2p-intent/user-intent.service.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -100,6 +106,33 @@ import { DurableAsyncTaskSchedulerService } from './durable-task/durable-async-t
   providers: [
     RevokeUserRelationshipTaskHandler,
     RevokeGroupRelationshipTaskHandler,
+    {
+      // The intent service takes a single dependencies object, so it wires as a
+      // factory. AppModule is the one scope that sees every dependency without a
+      // module cycle (FederationModule imports RelationshipModule).
+      provide: UserIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationService,
+        FederationNamespaceService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        federation: FederationService,
+        namespaces: FederationNamespaceService,
+      ) =>
+        new UserIntentService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation,
+          namespaces,
+        }),
+    },
   ],
 })
 export class AppModule implements OnModuleDestroy {

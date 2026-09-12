@@ -22,8 +22,7 @@ export type OrdinarySystemMessageContent<A = SystemEventAddress> =
     }
   | { type: 'GROUP_OWNER_TRANSFERRED'; previousOwner: A; newOwner: A }
   | { type: 'MESSAGE_WITHDRAWN'; author: A }
-  | { type: 'MESSAGES_MODERATED'; count: number }
-  | { type: 'FEDERATION_NAMESPACE_ARCHIVED'; domain: string };
+  | { type: 'MESSAGES_MODERATED'; count: number };
 
 export type SystemMessageContent =
   | OrdinarySystemMessageContent
@@ -40,7 +39,6 @@ export const SystemMessageType = {
   GROUP_OWNER_TRANSFERRED: 'GROUP_OWNER_TRANSFERRED',
   MESSAGE_WITHDRAWN: 'MESSAGE_WITHDRAWN',
   MESSAGES_MODERATED: 'MESSAGES_MODERATED',
-  FEDERATION_NAMESPACE_ARCHIVED: 'FEDERATION_NAMESPACE_ARCHIVED',
 } as const;
 
 export function parseSystemMessageContent(
@@ -100,12 +98,6 @@ export function parseSystemMessageContent(
           typeof body['count'] === 'number' &&
           Number.isSafeInteger(body['count']) &&
           body['count'] > 0;
-        break;
-      case 'FEDERATION_NAMESPACE_ARCHIVED':
-        valid =
-          keys('domain') &&
-          typeof body['domain'] === 'string' &&
-          !!body['domain'].trim();
         break;
     }
     return valid ? (body as unknown as OrdinarySystemMessageContent) : null;

@@ -3,7 +3,7 @@ import {
   lockThreadContentInTx,
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../relationship/thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,

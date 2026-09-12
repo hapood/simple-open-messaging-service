@@ -19,8 +19,8 @@ import {
   readForbiddenGroupTask,
   readForcedMemberRevokeTask,
 } from '../group/group-disband-task.js';
-import { businessAccountScopeKey } from '../relationship/business-scope-lock.js';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 
 /** Converges locally authored relationship directions after authenticated query denial. */
 @Injectable()

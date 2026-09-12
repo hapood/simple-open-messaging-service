@@ -56,6 +56,27 @@ A compatible lock mode does not fix a cycle caused by inconsistent resource
 ordering. When changing an application lock, review every trigger that can
 reacquire the affected row's lock in the same transaction.
 
+The canonical explicit business-lock order is Account State, Relationship Pair,
+then Thread Content. These three classes define business ownership; all other
+locks are PostgreSQL row, allocator, foreign-key, or task locks. Such implicit
+locks are safe only when conflicting writers share a dominating explicit lock
+or acquire the rows in one documented order. See the
+[business mutation standard](./business-mutation-sql-pattern.md).
+
+`Account.clientStateFeedEndId` is the local-client allocator for one account,
+but Account-, Pair-, and Thread-derived projections may all advance it. It is
+therefore an implicit shared row lock acquired by account ID, not justification
+for taking another actor's Account State Lock. `IdentityNamespace.stateFeedEndId`
+is the equivalent outbound federation allocator for one remote identity epoch
+and is acquired by namespace ID; the local namespace keeps zero. Inbound progress
+remains separate in `PeerStateFeedPullCursor.committedThrough`.
+
+The namespace allocator is terminal in the lock graph. Federation fanout may
+advance it only after all required Thread Content locks. Namespace retirement
+updates lifecycle state only. Code that already holds a namespace allocator or
+lifecycle write lock must not later acquire Account State, Relationship Pair,
+or Thread Content locks.
+
 ## Queries and authorization epochs
 
 Federation message, tombstone, group-meta, and group-profile queries read
@@ -80,7 +101,7 @@ make queries concurrent: ordinary reads already have that concurrency.
 
 ## Implementation and verification
 
-- [Thread content locks](../../src/relationship/thread-content-lock.ts)
+- [Thread content locks](../../src/business/shared/locks/thread-content-lock.ts)
 - [Relationship-pair writes](../../src/relationship/relationship-intent.service.ts)
 - [Trigger lock modes](../../database/migrations/0001_non_key_write_locks.sql)
 - [Snapshot authorization](../../src/federation/federation-thread-query-authorization.ts)

@@ -23,8 +23,13 @@ import {
   RejectGroupJoinRequestTaskHandler,
   RevokeGroupInvitationTaskHandler,
 } from './group-request-task.handlers.js';
-import { GroupRequestExecutionService } from '../business-v2/group/accept-join-request/group-request-execution.service.js';
-import { GroupRequestFanoutTaskHandler } from '../business-v2/group/accept-join-request/group-request-fanout.handler.js';
+import { GroupMembershipProjectionFanoutService } from '../business/group/membership-intent/group-membership-projection-fanout.service.js';
+import { GroupMembershipProjectionFanoutTaskHandler } from '../business/group/membership-intent/group-membership-projection-fanout.handler.js';
+import { GroupDisbandMembershipRevocationService } from '../business/group/disband/group-disband-membership-revocation.service.js';
+import { DatabaseService } from '../database/database.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
+import { FederationService } from '../federation/federation.service.js';
 
 @Module({
   imports: [
@@ -53,8 +58,31 @@ import { GroupRequestFanoutTaskHandler } from '../business-v2/group/accept-join-
     RejectGroupJoinRequestTaskHandler,
     RevokeGroupInvitationTaskHandler,
     AcceptGroupInvitationTaskHandler,
-    GroupRequestExecutionService,
-    GroupRequestFanoutTaskHandler,
+    GroupMembershipProjectionFanoutService,
+    GroupMembershipProjectionFanoutTaskHandler,
+    // The disband revocation keeps the experiment-family deps-object
+    // constructor, so the module wires it through a factory.
+    {
+      provide: GroupDisbandMembershipRevocationService,
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        federation: FederationService,
+      ) =>
+        new GroupDisbandMembershipRevocationService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation,
+        }),
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationService,
+      ],
+    },
   ],
   exports: [GroupService, RolesGuard],
 })

@@ -93,9 +93,9 @@ describe('incoming invitation read watermark', () => {
     expect(replay.body.data).toEqual({ readThroughFeedId: 1 });
     const owner = await database.db.query.account.findFirst({
       where: eq(account.id, seeded.id),
-      columns: { stateFeedEndId: true },
+      columns: { clientStateFeedEndId: true },
     });
-    expect(owner?.stateFeedEndId).toBe(2);
+    expect(owner?.clientStateFeedEndId).toBe(2);
 
     await request(app.getHttpServer())
       .post('/api/v1/relationship/requests/read')

@@ -2,12 +2,12 @@ import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task
 import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
-import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
+  identityNamespace,
   peerStateFeed,
-  peerStateFeedTarget,
   peerStateEventType,
 } from '../database/schema.js';
 import {
@@ -66,7 +66,7 @@ export interface PeerStateFeedPage {
   hasMore: boolean;
 }
 
-export interface PeerStateFeedTargetKey {
+export interface PeerStateFeedNamespaceKey {
   peerDomain: string;
   namespaceId: number;
 }
@@ -109,25 +109,14 @@ const snapshotRevision = (
 export class PeerStateFeedService {
   constructor(private readonly database: DatabaseService) {}
 
-  async initializePeerInTx(
-    tx: DatabaseTransaction,
-    peerDomain: string,
-    namespaceId: number,
-  ): Promise<void> {
-    await tx
-      .insert(peerStateFeedTarget)
-      .values({ peerDomain, namespaceId })
-      .onConflictDoNothing();
-  }
-
   /**
-   * Acquires peer feed allocators in their global order. Transactions that can
-   * also allocate client state must call this after their business-scope locks
-   * and before the first Account allocator is touched.
+   * Acquires outbound namespace allocators in their global order. This is a
+   * terminal implicit lock class: callers must hold every required Account,
+   * Pair, and Thread business lock before entering it.
    */
-  async lockTargetsInTx(
+  async lockOutboundStateFeedNamespacesInTx(
     tx: DatabaseTransaction,
-    targets: readonly PeerStateFeedTargetKey[],
+    targets: readonly PeerStateFeedNamespaceKey[],
   ): Promise<void> {
     const ordered = [
       ...new Map(
@@ -136,27 +125,23 @@ export class PeerStateFeedService {
           target,
         ]),
       ).values(),
-    ].sort(
-      (left, right) =>
-        left.peerDomain.localeCompare(right.peerDomain) ||
-        left.namespaceId - right.namespaceId,
-    );
+    ].sort((left, right) => left.namespaceId - right.namespaceId);
     for (const target of ordered) {
-      await this.initializePeerInTx(tx, target.peerDomain, target.namespaceId);
       const locked = await tx
-        .select({ namespaceId: peerStateFeedTarget.namespaceId })
-        .from(peerStateFeedTarget)
+        .select({ namespaceId: identityNamespace.id })
+        .from(identityNamespace)
         .where(
           and(
-            eq(peerStateFeedTarget.peerDomain, target.peerDomain),
-            eq(peerStateFeedTarget.namespaceId, target.namespaceId),
+            eq(identityNamespace.domain, target.peerDomain),
+            eq(identityNamespace.id, target.namespaceId),
+            isNull(identityNamespace.retiredAt),
           ),
         )
         .for('no key update')
         .limit(1);
       if (!locked[0])
         throw new Error(
-          `missing state feed target for ${target.peerDomain}/${target.namespaceId}`,
+          `missing active federation namespace ${target.peerDomain}/${target.namespaceId}`,
         );
     }
   }
@@ -226,7 +211,7 @@ export class PeerStateFeedService {
         a.subjectDomain.localeCompare(b.subjectDomain) ||
         a.subjectAccount.localeCompare(b.subjectAccount),
     );
-    await this.lockTargetsInTx(tx, ordered);
+    await this.lockOutboundStateFeedNamespacesInTx(tx, ordered);
     for (const write of ordered) {
       // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
       // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
@@ -296,15 +281,22 @@ export class PeerStateFeedService {
       }
       if (current && isDeepStrictEqual(current.body, body)) continue;
       const [allocated] = await tx
-        .update(peerStateFeedTarget)
+        .update(identityNamespace)
         .set({
-          allocatedThrough: sql`${peerStateFeedTarget.allocatedThrough} + 1`,
-          updatedAt: new Date(),
+          stateFeedEndId: sql`${identityNamespace.stateFeedEndId} + 1`,
         })
-        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
-        .returning({ feedId: peerStateFeedTarget.allocatedThrough });
+        .where(
+          and(
+            eq(identityNamespace.id, write.namespaceId),
+            eq(identityNamespace.domain, write.peerDomain),
+            isNull(identityNamespace.retiredAt),
+          ),
+        )
+        .returning({ feedId: identityNamespace.stateFeedEndId });
       if (!allocated)
-        throw new Error(`missing state feed target for ${write.peerDomain}`);
+        throw new Error(
+          `missing active federation namespace ${write.peerDomain}`,
+        );
       await tx
         .insert(peerStateFeed)
         .values({
@@ -363,14 +355,18 @@ export class PeerStateFeedService {
       throw new Error(
         'acceptance confirmation requires an accepted relationship',
       );
-    await this.lockTargetsInTx(tx, writes);
+    await this.lockOutboundStateFeedNamespacesInTx(tx, writes);
     const before = new Map<number, bigint>();
     for (const write of writes) {
       if (before.has(write.namespaceId)) continue;
-      const target = await tx.query.peerStateFeedTarget.findFirst({
-        where: eq(peerStateFeedTarget.namespaceId, write.namespaceId),
+      const target = await tx.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, write.namespaceId),
       });
-      before.set(write.namespaceId, target!.allocatedThrough);
+      if (!target || target.domain !== write.peerDomain || target.retiredAt)
+        throw new Error(
+          `missing active federation namespace ${write.peerDomain}`,
+        );
+      before.set(write.namespaceId, target.stateFeedEndId);
     }
     const result = await this.writeManyInTx(tx, writes);
     for (const write of writes) {
@@ -386,13 +382,22 @@ export class PeerStateFeedService {
       const row = await tx.query.peerStateFeed.findFirst({ where: key });
       if (!row || row.feedId > before.get(write.namespaceId)!) continue;
       const [allocated] = await tx
-        .update(peerStateFeedTarget)
+        .update(identityNamespace)
         .set({
-          allocatedThrough: sql`${peerStateFeedTarget.allocatedThrough} + 1`,
-          updatedAt: new Date(),
+          stateFeedEndId: sql`${identityNamespace.stateFeedEndId} + 1`,
         })
-        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
-        .returning({ feedId: peerStateFeedTarget.allocatedThrough });
+        .where(
+          and(
+            eq(identityNamespace.id, write.namespaceId),
+            eq(identityNamespace.domain, write.peerDomain),
+            isNull(identityNamespace.retiredAt),
+          ),
+        )
+        .returning({ feedId: identityNamespace.stateFeedEndId });
+      if (!allocated)
+        throw new Error(
+          `missing active federation namespace ${write.peerDomain}`,
+        );
       await tx
         .update(peerStateFeed)
         .set({ feedId: allocated.feedId, updatedAt: new Date() })
@@ -410,9 +415,9 @@ export class PeerStateFeedService {
 
   async readFeedEndId(namespaceId: number): Promise<bigint> {
     const [target] = await this.database.db
-      .select({ feedId: peerStateFeedTarget.allocatedThrough })
-      .from(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
+      .select({ feedId: identityNamespace.stateFeedEndId })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
       .limit(1);
     return target?.feedId ?? 0n;
   }
@@ -422,9 +427,14 @@ export class PeerStateFeedService {
     namespaceId: number,
   ): Promise<never> {
     const [target] = await this.database.db
-      .select({ peerDomain: peerStateFeedTarget.peerDomain })
-      .from(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
+      .select({ peerDomain: identityNamespace.domain })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.id, namespaceId),
+          eq(identityNamespace.domain, peerDomain),
+        ),
+      )
       .limit(1);
     if (!target) throw new Error(`peer ${peerDomain} has no state feed`);
     throw new BusinessException(
@@ -456,15 +466,18 @@ export class PeerStateFeedService {
     return this.database.db.transaction(async (tx) => {
       const [target] = await tx
         .select()
-        .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
+        .from(identityNamespace)
+        .where(
+          and(
+            eq(identityNamespace.id, namespaceId),
+            eq(identityNamespace.domain, peerDomain),
+          ),
+        )
         .limit(1);
       if (!target) {
-        throw new Error(
-          `peer ${peerDomain} has no initialized state-feed target`,
-        );
+        throw new Error(`peer ${peerDomain} has no federation namespace`);
       }
-      const stateFeedEndId = target.allocatedThrough;
+      const stateFeedEndId = target.stateFeedEndId;
       if (through !== undefined && through < after) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,

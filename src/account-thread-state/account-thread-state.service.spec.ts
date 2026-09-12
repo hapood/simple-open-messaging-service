@@ -7,9 +7,9 @@ vi.mock('../relationship/reverse-revoke-task.js', () => ({
   enqueueReverseP2PRevokeInTx: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../relationship/thread-content-lock.js', async (importOriginal) => ({
+vi.mock('../business/shared/locks/thread-content-lock.js', async (importOriginal) => ({
   ...(await importOriginal<
-    typeof import('../relationship/thread-content-lock.js')
+    typeof import('../business/shared/locks/thread-content-lock.js')
   >()),
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 9 }),
 }));

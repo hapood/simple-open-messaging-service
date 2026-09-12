@@ -11,14 +11,16 @@ import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { UserIntentService } from '../business/user/p2p-intent/user-intent.service.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   AcceptRelationshipDto,
   ReadRelationshipRequestsDto,
+  RelationshipIntentResultDto,
   RequestRelationshipDto,
   RevokeRelationshipDto,
 } from '../dto/relationship.dto.js';
@@ -38,10 +40,11 @@ export class RelationshipController {
   constructor(
     private readonly userService: UserService,
     private readonly relationships: RelationshipService,
-    private readonly participantService: AccountThreadStateService,
     private readonly federationService: FederationService,
     private readonly durableTasks: DurableTaskQueueService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly userIntents: UserIntentService,
+    private readonly userQuota: UserQuotaService,
   ) {}
 
   @ApiBearerAuth()
@@ -74,9 +77,9 @@ export class RelationshipController {
   async revokeRelationship(
     @Request() req: FastifyRequest,
     @Body() dto: RevokeRelationshipDto,
-  ): Promise<DurableTaskAcceptedDto> {
+  ): Promise<DurableTaskAcceptedDto | RelationshipIntentResultDto> {
     const me = req.user.userId;
-    const account = normalizeAccount(dto.account);
+    const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
     if (account.startsWith('!')) {
       const address =
@@ -92,121 +95,37 @@ export class RelationshipController {
       });
       return { taskId: taskId.toString(), status: 'PENDING' };
     }
-    const remoteContext =
-      domain === 'local'
-        ? undefined
-        : await this.relationships.federatedRelationshipContext(
-            me,
-            account,
-            domain,
-          );
-    const [actor, localTarget] = await Promise.all([
-      this.userService.findUniqueUser({ id: me }),
-      domain === 'local'
-        ? this.userService.findUniqueUser({
-            account_domain: { account, domain },
-            namespaceId: 0,
-          })
-        : Promise.resolve(null),
-    ]);
-    if (!actor) throw new Error('authenticated user profile is missing');
-    if (localTarget?.id === me) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_SELF,
-        'can not revoke relationship with self',
-      );
+    // The composed revocation owns the state gate: withdraw (own pending),
+    // reject (incoming pending), and end-friendship all resolve inside one
+    // transaction; nothing live on either side is the NOT_FOUND case.
+    try {
+      await this.userIntents.execute({
+        userId: me,
+        decision: 'REVOKED',
+        target: { account, domain },
+      });
+    } catch (error) {
+      throw this.asRelationshipNotFound(error, account, domain);
     }
-    if (localTarget) {
-      const [relationship] =
-        await this.relationships.friendRelationshipStatuses(me, [
-          localTarget.id,
-        ]);
-      if (
-        relationship.status === 'OUTGOING_PENDING' ||
-        relationship.status === 'INCOMING_PENDING'
-      ) {
-        const { taskId } = await this.durableTasks.enqueueTask({
-          scope: {
-            type: 'USER_PAIR',
-            endpoints: [
-              { account: actor.account, domain: actor.domain },
-              { account: localTarget.account, domain: localTarget.domain },
-            ],
-          },
-          taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
-          actorUserId: me,
-          payload: { peerUserId: localTarget.id },
-        });
-        return { taskId: taskId.toString(), status: 'PENDING' };
-      }
-      if (relationship?.status !== 'FRIEND') {
-        throw new BusinessException(
-          BusinessCode.FRIEND_NOT_FOUND,
-          `relationship with [${account}@${domain}] does not exist`,
-        );
-      }
-    }
-    if (remoteContext) {
-      const relationship = remoteContext.status;
-      if (
-        relationship === 'INCOMING_PENDING' ||
-        relationship === 'OUTGOING_PENDING'
-      ) {
-        const { taskId } = await this.durableTasks.enqueueTask({
-          scope: {
-            type: 'USER_PAIR',
-            endpoints: [
-              { account: actor.account, domain: actor.domain },
-              { account, domain },
-            ],
-          },
-          taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
-          actorUserId: me,
-          payload: { account, domain },
-        });
-        return { taskId: taskId.toString(), status: 'PENDING' };
-      }
-      if (relationship !== 'FRIEND') {
-        throw new BusinessException(
-          BusinessCode.FRIEND_NOT_FOUND,
-          `relationship with [${account}@${domain}] does not exist`,
-        );
-      }
-    }
-    const target =
-      localTarget ??
-      (remoteContext?.namespaceId
-        ? { account, domain, namespaceId: remoteContext.namespaceId }
-        : null);
-    if (!target) {
-      throw new BusinessException(
+    return { status: 'OK' };
+  }
+
+  /** The legacy endpoint surfaced stale revocations as FRIEND_NOT_FOUND; the
+   * intent family's generic NOT_FOUND keeps its legacy client-facing code. */
+  private asRelationshipNotFound(
+    error: unknown,
+    account: string,
+    domain: string,
+  ): unknown {
+    if (
+      error instanceof BusinessException &&
+      error.bizCode === BusinessCode.NOT_FOUND
+    )
+      return new BusinessException(
         BusinessCode.FRIEND_NOT_FOUND,
         `relationship with [${account}@${domain}] does not exist`,
       );
-    }
-    const threadId = await this.participantService.findP2PThreadBetween(
-      me,
-      localTarget?.id ?? target,
-    );
-    if (threadId === null) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_NOT_FOUND,
-        `relationship with [${account}@${domain}] does not exist`,
-      );
-    }
-    const { taskId } = await this.durableTasks.enqueueTask({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: actor.account, domain: actor.domain },
-          { account: target.account, domain: target.domain },
-        ],
-      },
-      taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
-      actorUserId: me,
-      payload: { threadId },
-    });
-    return { taskId: taskId.toString(), status: 'PENDING' };
+    return error;
   }
 
   @ApiBearerAuth()
@@ -219,7 +138,7 @@ export class RelationshipController {
   async requestRelationship(
     @Request() req: FastifyRequest,
     @Body() dto: RequestRelationshipDto,
-  ): Promise<DurableTaskAcceptedDto> {
+  ): Promise<DurableTaskAcceptedDto | RelationshipIntentResultDto> {
     const me = req.user.userId;
     const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
@@ -253,26 +172,27 @@ export class RelationshipController {
         avatar: dto.avatar,
       });
     }
-    const [actor, target] = await Promise.all([
-      this.userService.findUniqueUser({ id: me }),
-      this.userService.findUniqueUser({
-        account_domain: { account, domain: 'local' },
-        namespaceId: 0,
-      }),
-    ]);
-    if (!actor || actor.availability !== 'AVAILABLE') {
+    const identities = await this.userService.findRelationshipAdmissionAccounts(
+      me,
+      account,
+    );
+    const actor = identities.find((row) => row.id === me);
+    const target = identities.find(
+      (row) => row.id !== me && row.account === account,
+    );
+    if (!actor || actor.availability !== 'AVAILABLE' || actor.disabledAt) {
       throw new BusinessException(
         BusinessCode.UNAUTHENTICATED,
         'authenticated user does not exist',
       );
     }
-    if (target && me === target.id) {
+    if (actor.account === account) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
         'can not request a relationship with yourself',
       );
     }
-    if (!target || target.availability !== 'AVAILABLE') {
+    if (!target || target.availability !== 'AVAILABLE' || target.disabledAt) {
       // Errors are localized client-side by their numeric code (see ApiResult.messageKey) — they carry no
       // messageKey — so this throws and flows through the global AllExceptionsFilter like every other error.
       throw new BusinessException(
@@ -280,22 +200,20 @@ export class RelationshipController {
         'user does not exist',
       );
     }
-    const { taskId } = await this.durableTasks.enqueueTask({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: actor.account, domain: actor.domain },
-          { account: target.account, domain: target.domain },
-        ],
-      },
-      taskType: DurableTaskType.SEND_LOCAL_RELATIONSHIP_REQUEST,
-      actorUserId: me,
-      payload: {
-        targetUserId: target.id,
+    // Quota admission runs inside the intent transaction (the legacy tick slot),
+    // so a rolled-back request does not consume the counter.
+    const outcome = await this.userIntents.execute(
+      {
+        userId: me,
+        decision: 'REQUESTED',
+        target: { account, domain: 'local' },
         note: dto.note ?? '',
       },
-    });
-    return { taskId: taskId.toString(), status: 'PENDING' };
+      { admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx) },
+    );
+    return outcome.threadId
+      ? { status: 'OK', threadId: outcome.threadId }
+      : { status: 'OK' };
   }
 
   private async enqueueFederatedRelationshipRequest(
@@ -377,16 +295,16 @@ export class RelationshipController {
       'INCOMING',
     );
     if (scope.peerUserId !== null) {
-      const { taskId } = await this.durableTasks.enqueueTask({
-        scope: {
-          type: 'USER_PAIR',
-          endpoints: [scope.local, scope.remote],
-        },
-        taskType: DurableTaskType.ACCEPT_RELATIONSHIP_REQUEST,
-        actorUserId: me,
-        payload: { peerUserId: scope.peerUserId },
+      // A known peer activates synchronously; the addressed (unrecognized
+      // remote) branch below stays durable-task based.
+      const outcome = await this.userIntents.execute({
+        userId: me,
+        decision: 'ACCEPTED',
+        target: scope.remote,
       });
-      return { taskId: taskId.toString(), status: 'PENDING' as const };
+      return outcome.threadId
+        ? { status: 'OK' as const, threadId: outcome.threadId }
+        : { status: 'OK' as const };
     }
     const { taskId } = await this.durableTasks.enqueueTask({
       scope: { type: 'USER_PAIR', endpoints: [scope.local, scope.remote] },

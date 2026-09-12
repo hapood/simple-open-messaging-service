@@ -92,7 +92,7 @@ describe('LINK message send (single instance)', () => {
     expect(invite.body.code).toBe(0);
     await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.taskId,
+      invite.body,
       alice.id,
       bob.id,
     );
@@ -100,7 +100,7 @@ describe('LINK message send (single instance)', () => {
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
       .send({ account: alice.account, domain: 'local' });
-    await waitForAcceptedDurableTask(database.db, accept.body);
+    expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
     if (threadId === null || threadId === undefined)
@@ -153,7 +153,7 @@ describe('LINK message send (single instance)', () => {
       .expect((res) => expect(res.body.code).toBe(0));
     await waitForLocalRelationshipRequest(
       database.db,
-      invite.body.data.taskId,
+      invite.body,
       alice.id,
       bob.id,
     );
@@ -161,7 +161,7 @@ describe('LINK message send (single instance)', () => {
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
       .send({ account: alice.account, domain: 'local' });
-    await waitForAcceptedDurableTask(database.db, accept.body);
+    expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
     if (threadId === null || threadId === undefined)

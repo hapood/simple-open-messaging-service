@@ -11,9 +11,9 @@ import {
   federatedPeer,
   groupAccount as group,
   groupMeta,
+  identityNamespace,
   messageThread,
   peerStateFeed,
-  peerStateFeedTarget,
   threadAudience,
 } from '../src/database/schema.js';
 import type { DurableTask } from '../src/durable-task/durable-task.types.js';
@@ -21,7 +21,7 @@ import { FEDERATION_STATE_FEED_PUSH } from '../src/federation/federation-state-f
 import { GroupProjectionTaskExecutionService } from '../src/federation/group-projection-task-execution.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
-import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
 
 describe('Group Meta head fan-out task execution', () => {
   const suffix = Date.now().toString(36);
@@ -113,9 +113,6 @@ describe('Group Meta head fan-out task execution', () => {
       .delete(peerStateFeed)
       .where(eq(peerStateFeed.namespaceId, peerNamespaceId));
     await database.db
-      .delete(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.namespaceId, peerNamespaceId));
-    await database.db
       .delete(threadAudience)
       .where(eq(threadAudience.threadId, threadId));
     await database.db
@@ -126,6 +123,9 @@ describe('Group Meta head fan-out task execution', () => {
     await database.db
       .delete(federatedPeer)
       .where(eq(federatedPeer.domain, peerDomain));
+    await database.db
+      .delete(identityNamespace)
+      .where(eq(identityNamespace.id, peerNamespaceId));
     await mod.close();
   });
 
@@ -177,11 +177,11 @@ describe('Group Meta head fan-out task execution', () => {
       const [owner] = await tx
         .update(account)
         .set({
-          stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
+          clientStateFeedEndId: sql`${account.clientStateFeedEndId} + 1`,
         })
         .where(eq(account.id, write.userId))
         .returning();
-      return owner.stateFeedEndId;
+      return owner.clientStateFeedEndId;
     });
     let fanout: Promise<unknown> | undefined;
     try {
@@ -194,7 +194,7 @@ describe('Group Meta head fan-out task execution', () => {
         await tx
           .update(account)
           .set({
-            stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
+            clientStateFeedEndId: sql`${account.clientStateFeedEndId} + 1`,
           })
           .where(eq(account.id, localUserId));
         const pid = await tx.execute<{ pid: number }>(

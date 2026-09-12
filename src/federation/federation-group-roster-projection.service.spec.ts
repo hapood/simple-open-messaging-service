@@ -1,4 +1,4 @@
-import { requireGroupThreadContentLockUnderGroupInTx } from '../relationship/thread-content-lock.js';
+import { requireGroupThreadContentLockUnderGroupInTx } from '../business/shared/locks/thread-content-lock.js';
 import { describe, expect, it, vi } from 'vitest';
 import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
 

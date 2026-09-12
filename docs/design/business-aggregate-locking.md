@@ -5,14 +5,10 @@ normative documents under [`spec/v1`](../../spec/v1/).
 
 ## 1. Purpose
 
-This document records the existing aggregate-lock implementation. For new use
-cases, the business-lock names are **Account Meta Lock** and **Relationship Pair
-Lock**, with independent responsibilities as defined in the
-[business mutation standard](./business-mutation-sql-pattern.md). The existing
-ACCOUNT advisory lock has broader aggregate responsibilities than account
-metadata alone. The group scope described below must not be removed merely by
-renaming it; each migrated flow must preserve its cross-relationship invariants
-and compatibility with existing writers.
+This document defines the target aggregate-lock implementation. The three
+explicit business locks are **Account State Lock**, **Relationship Pair Lock**,
+and **Thread Content Lock**, with responsibilities defined in the
+[business mutation standard](./business-mutation-sql-pattern.md).
 
 Every user and group is identified by one account address. Mutations may
 originate from a local API request or an inbound federation intent. An
@@ -21,15 +17,14 @@ accepting, revoking, joining, leaving, or otherwise updating it. Database rows
 alone cannot serialize that bootstrap interval because the rows may not exist
 yet.
 
-Every aggregate mutation therefore starts with transaction-scoped PostgreSQL
-advisory locks for its participating account addresses. Existing database rows
-are then locked in one fixed order and all mutation decisions are made from
-data re-read after those locks were acquired.
+Every mutation starts by acquiring all applicable explicit locks in global
+class order. Existing database rows are then locked in one fixed order and all
+mutation decisions are made from data re-read after those locks were acquired.
 
-The group business scope serializes changes to the same group. Do not additionally
-lock a GroupAccount row for that purpose. Thread, relationship, and projection row
-locks are retained where they protect their own shared records and allocation
-ordering. All group mutation entry points must participate in the business scope.
+The Account State Lock serializes only state owned by the acting group or user.
+Membership relationships use their Pair locks; messages use their Thread lock.
+All mutation entry points, including federation inbound processing and fanout,
+must acquire their applicable explicit lock at the transaction boundary.
 
 ## 2. Canonical scopes
 
@@ -41,10 +36,10 @@ unchanged. Both kinds of identity use the same lock-key shape:
 ["business-scope", "ACCOUNT", domain, account]
 ```
 
-A P2P mutation locks both user addresses. A group mutation locks the group
-address; the account may therefore begin with `!`. When one transaction needs
-multiple address locks, it deduplicates and sorts their complete encoded keys
-before acquiring any of them.
+An account-state mutation locks each account whose owned state it changes. It
+does not lock an endpoint merely because a Pair references it. When one
+transaction needs multiple account locks, it deduplicates and sorts their
+complete encoded keys before acquiring any of them.
 
 The representation deliberately keeps domain and account in separate JSON
 values. It does not concatenate an address with a punctuation separator. The
@@ -60,26 +55,28 @@ therefore cannot leave a stale business lock behind.
 
 ## 3. Lock order
 
-Transactions that publish state to both peers and local accounts use this
-global allocator order after acquiring their business aggregate locks:
+All transactions use this explicit lock order:
 
 ```text
-PeerStateFeedTarget (peer domain, then namespace id)
-Account state-feed allocator (account id)
+Account State advisory locks (canonical account-address order)
+Relationship Pair advisory locks (canonical pair-key order)
+Thread Content row locks (thread-id order)
 ```
 
-All peer allocator rows needed by a transaction are prelocked before its first
-client-state write. This includes fan-out pages and maintenance sweeps that may
-touch more than one peer. It prevents one transaction from holding an Account
-allocator while waiting for a peer allocator as another transaction waits in
-the opposite direction.
+Within the remaining implicit row locks, federation namespace allocators are
+acquired by namespace ID and account-owned allocators by account ID. A transaction
+must not acquire an earlier explicit class from an internal helper. A namespace
+allocator is terminal: no Account State, Relationship Pair, or Thread Content
+lock may be acquired after it. Namespace retirement changes only namespace and
+peer lifecycle state; it does not author thread messages.
 
-P2P mutations acquire resources in this order:
+Typical P2P mutations acquire resources in this order:
 
 ```text
-ACCOUNT advisory scopes for both users (canonical address order)
+applicable Account State advisory scopes
+Relationship Pair advisory scope
+Thread Content lock when content changes
 RelationshipPair
-MessageThread
 RelationshipIntent A
 RelationshipIntent B
 AccountThreadState (accountId order)
@@ -88,13 +85,14 @@ AccountThreadState (accountId order)
 Group mutations acquire resources in this order:
 
 ```text
-ACCOUNT advisory scope for the group
+applicable Account State advisory scopes
+Relationship Pair advisory scopes (pair-key order)
+Thread Content lock when content changes
 Group
-MessageThread
 RelationshipPair
 RelationshipIntent A
 RelationshipIntent B
-GroupMetaFeed allocator or replica cursor
+GroupMeta allocator or replica cursor
 AccountThreadState (accountId order)
 ```
 
@@ -103,11 +101,16 @@ exist. When multiple projection rows are needed, their identifiers are sorted
 before locking. Intent rows are always locked in canonical author-side order,
 never in caller or local-versus-remote order.
 
-The group account address identifies the whole group aggregate, not one member's
-relationship with that group. The shared scope serializes participating group
-mutations for different members as well as changes to the group itself. This
-allows canonical group metadata and mirrored Group Meta replicas to be rebuilt
-from a stable aggregate state.
+The group Account State Lock protects state authored by the group account. It
+does not replace the individual Pair Lock for each member relationship. A
+member-authored membership command locks the member's Account State scope, not
+the group account merely because the group is the other Pair endpoint.
+Cross-pair group invariants use their shared canonical row/allocator lock (for
+example `GroupMeta`) in the documented implicit order.
+
+The explicit locks are a complete ownership taxonomy, not a claim that row locks
+can be acquired arbitrarily. Every implicit conflict must be dominated by one
+explicit lock or follow a canonical row order.
 
 ## 4. Bootstrap and revalidation
 
@@ -126,10 +129,10 @@ change concurrently are evaluated again from the locked state.
 
 ## 5. Covered transitions
 
-Both user account scopes apply whenever a P2P pair aggregate is updated. Current
-entry points include local friend requests, acceptance, rejection or revocation,
-established relationship termination, and equivalent inbound federation
-`ACCEPTED` or `REVOKED` transitions.
+The acting user's Account State scope applies to a P2P command. The other
+endpoint is covered by the Pair scope for intent and relationship-derived state;
+its Account State scope is not acquired unless that same transaction separately
+changes state owned by that account.
 
 The group account scope applies whenever the group aggregate is updated. Current entry
 points include requests and invitations to join, acceptance, rejection or

@@ -16,7 +16,7 @@ import {
 import {
   businessAccountScopeKey,
   lockBusinessAccountsInTx,
-} from '../relationship/business-scope-lock.js';
+} from '../business/shared/locks/account-business-lock.js';
 import {
   type GroupMetaSyncTaskPayload,
   readGroupMetaSyncPayload,

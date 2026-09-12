@@ -7,17 +7,18 @@ adopted the [business mutation SQL pattern](./business-mutation-sql-pattern.md).
 
 ## How to read the lock column
 
-The following names describe existing scopes; they are not new lock APIs.
-The target terminology is **Account Meta Lock** for a user or group's own
-metadata and **Relationship Pair Lock** for a relationship. Both use
-transaction-scoped advisory locks. Existing group ACCOUNT scopes below protect
-broader aggregate state and have not yet been narrowed to metadata-only use.
+The target terminology has exactly three explicit business-lock classes:
+**Account State Lock**, **Relationship Pair Lock**, and **Thread Content Lock**.
+The first two are transaction-scoped advisory locks; Thread Content is the
+canonical `MessageThread FOR NO KEY UPDATE` lock represented by a
+transaction-bound capability. The tables below inventory current paths and may
+therefore show broader legacy scopes until each path is replaced.
 
 | Scope | Actual business lock |
 | --- | --- |
-| Group account | One transaction advisory lock for the group's `[domain, account]`. Local authority uses `local`; a mirrored group uses its authority domain. All members of that group share this scope. |
-| User endpoints | Transaction advisory locks for both users' `[domain, account]`, deduplicated and sorted by canonical key. This is not a single pair-specific advisory lock. |
-| Thread parents | `requireThreadContentLockInTx` resolves the thread: group account for a GROUP, both user endpoints for a bound P2P. It then locks the required pair/thread rows. An unbound P2P shell has no relationship parent yet. |
+| Account state | One transaction advisory lock for each account whose owned mutable state changes, deduplicated and sorted by canonical key. Referencing an account as a Pair endpoint does not by itself require its Account State Lock. |
+| Relationship pair | One transaction advisory lock for the canonical unordered endpoint pair. It protects both authored Intents and relationship-derived state for either endpoint. |
+| Thread content | One canonical `MessageThread FOR NO KEY UPDATE` lock for message, deletion, and content-projection changes. |
 | None at execution | The task uses the row/allocator locks described in its row, without an ACCOUNT advisory business scope. Admission may have a different lock path. |
 
 The ACCOUNT scope is encoded as:
@@ -26,16 +27,25 @@ The ACCOUNT scope is encoded as:
 ["business-scope", "ACCOUNT", domain.toLowerCase(), account]
 ```
 
-[lockBusinessAccountsInTx](../../src/relationship/business-scope-lock.ts) applies
+[lockBusinessAccountsInTx](../../src/business/shared/locks/account-business-lock.ts) applies
 `pg_advisory_xact_lock(hashtextextended(key, 0))`. The lock lasts until the owning
 transaction commits or rolls back. Paginated and asynchronous tasks reacquire
 required locks for each database transaction; no lock is held across HTTP work.
 
 A `DurableTask.scopeType`, `scopeKey`, or coalescing key controls scheduling and
 admission. It is not, by itself, evidence of a PostgreSQL business lock.
-`RelationshipPair`, `MessageThread`, `AccountThreadState`, task rows, and feed
-allocators have additional row locks. Those are not separate business-lock classes.
+`RelationshipPair`, `AccountThreadState`, task rows, and feed allocators have
+additional implicit row locks. Those are not separate business-lock classes.
 Read-only/no-op paths may return before acquiring the mutation locks below.
+
+The global explicit order is Account State, Relationship Pair, then Thread
+Content. Implicit conflicts must either be dominated by a shared explicit lock
+or use a canonical row order. The target feed allocators are
+`Account.clientStateFeedEndId` for local clients and
+`IdentityNamespace.stateFeedEndId` for outbound federation. They are implicit
+shared rows ordered respectively by account ID and namespace ID; advancing one
+does not require an unrelated explicit lock class. Namespace `0/local` keeps
+zero; inbound progress uses `PeerStateFeedPullCursor.committedThrough`.
 
 ## User relationship commands
 
@@ -56,7 +66,7 @@ Read-only/no-op paths may return before acquiring the mutation locks below.
 | Task | Responsibility | Business scope during mutation | Execution reference |
 | --- | --- | --- | --- |
 | `INVITE_GROUP_MEMBER` | Check invitation eligibility and author the group's invitation to the target member. | Group account | [Execution](../../src/group/group-invite-task-execution.service.ts) |
-| `ACCEPT_GROUP_JOIN_REQUEST` | Validate manager and pending application; author the group ACK, activate membership, update Group Meta and immediate projections, and admit Meta head fanout. | Group account, shared across applicants | [Production handler](../../src/group/group-request-task.handlers.ts), [experimental transaction](../../src/business-v2/group/accept-join-request/group-join-decision.service.ts) |
+| `ACCEPT_GROUP_JOIN_REQUEST` | Validate manager and pending application; author the group ACK, activate membership, update Group Meta and immediate projections, and admit Meta head fanout. | Group account, shared across applicants | [Production handler](../../src/group/group-request-task.handlers.ts), [experimental transaction](../../src/business/group/membership-intent/group-authored-membership-intent.service.ts) |
 | `REJECT_GROUP_JOIN_REQUEST` | Validate manager and application, then author the group-side rejection and its effects. | Group account | [Handlers](../../src/group/group-request-task.handlers.ts), [group service](../../src/group/group.service.ts) |
 | `REVOKE_GROUP_INVITATION` | Validate manager and invitation, then revoke the group's invitation direction. | Group account | [Handlers](../../src/group/group-request-task.handlers.ts) |
 | `ACCEPT_GROUP_INVITATION` | Accept a group invitation as the invited local user and fold membership. | Group account | [Handler](../../src/group/group-request-task.handlers.ts), [federation service](../../src/federation/federation.service.ts) |
@@ -79,15 +89,15 @@ Read-only/no-op paths may return before acquiring the mutation locks below.
 | `APPLY_FEDERATED_RELATIONSHIP_INTENT` | Apply one received relationship intent and checkpoint its effects; discard application from a retired peer namespace. | User endpoints for P2P; group account for group membership. The `FederatedPeer` lifecycle row is fenced before business locks. | [Handler](../../src/federation/federation-relationship-task.handler.ts), [consumer](../../src/federation/federation-state-feed-consumer.service.ts) |
 | `SYNC_GROUP_META` | Prepare asynchronous retrieval, apply remote Group Meta pages/recovery, and finalize the mirrored roster and local projections. Both handoff and async handlers use the same task type. | Remote group account for each prepare/apply/finalize transaction | [Handlers](../../src/federation/group-meta-sync-task.handlers.ts), [execution](../../src/federation/group-meta-sync-task-execution.service.ts) |
 | `FAN_OUT_GROUP_META_HEAD` | Read the latest canonical group Meta head, enumerate audiences, and write each audience's state-feed Meta head reference and notification hints. Does not author the membership ACK or rewrite canonical Group Meta. | Group account for each projection page | [Execution](../../src/federation/group-projection-task-execution.service.ts) |
-| `FAN_OUT_STATE_FEED` | Wake one local account or peer for already-persisted state-feed positions; does not generate group-wide Meta projections. | None at execution: lock the `Account` or `PeerStateFeedTarget` allocator and the task/admission rows | [Handler](../../src/state-feed/state-feed-fanout-task.handler.ts), [owner lock and coalescing](../../src/state-feed/state-feed-fanout-task.ts) |
+| `FAN_OUT_STATE_FEED` | Wake one local account or peer for already-persisted state-feed positions; does not generate group-wide Meta projections. | None at execution: lock the `Account` or `IdentityNamespace` allocator and the task/admission rows | [Handler](../../src/state-feed/state-feed-fanout-task.handler.ts), [owner lock and coalescing](../../src/state-feed/state-feed-fanout-task.ts) |
 | `FAN_OUT_THREAD_CONTENT` | Project committed message/deletion changes into active local recipients' thread feeds and read/unread/preview state, then issue SSE/push hints. | Thread parents for each projection batch | [Handler](../../src/message/thread-fanout-task.handler.ts), [progress service](../../src/message/thread-fanout-progress.service.ts) |
 | `FAN_OUT_ACCOUNT_THREAD_CONTENT` | Project a thread-content change for one specified local account, including retained relationship and visibility checks. | Thread parents | [Handler](../../src/message/thread-fanout-task.handler.ts), [progress service](../../src/message/thread-fanout-progress.service.ts) |
 | `FAN_OUT_FEDERATION_THREAD_CONTENT` | Project committed content heads toward federation audiences and schedule peer state-feed notifications. | Thread parents for each projection step | [Handler](../../src/federation/federation-thread-fanout-task.handler.ts) |
 | `COMMIT_THREAD_READ_POSITION` | Apply an account's read intent, update read-related projections, and finalize the attention task atomically. | None at execution: current handler locks `MessageThread` directly with `FOR NO KEY UPDATE`, then task/projection rows. Admission uses thread-parent business locks. | [Execution](../../src/message/thread-feed.service.ts), [admission](../../src/message/thread-read-position.ts) |
 
-## Current acceptance experiment
+## Membership-intent implementation
 
-The fork under `src/business-v2/group/accept-join-request/` acquires both:
+The implementation under `src/business/group/membership-intent/` acquires both:
 
 1. The existing group account scope:
    `["business-scope", "ACCOUNT", "local", groupAccount]`.
@@ -98,21 +108,18 @@ The fork under `src/business-v2/group/accept-join-request/` acquires both:
    identities already in hand; the primitive performs no normalization,
    validation, or canonicalization lookup.
 
-[The Pair primitive](../../src/business-v2/shared/locks/pair-business-lock.ts)
-is confined to the new fork. Group scopes are acquired before Pair scopes, once
-per transaction, followed by row/allocator locks. Both local and federated
-applicants share the authoritative group's group lock and acquire their own
-member Pair lock. The peer allocator row remains a separate lower-level lock.
+[The Pair primitive](../../src/business/shared/locks/relationship-pair-business-lock.ts)
+is part of the business module. Account scopes are acquired before Pair scopes,
+once per transaction, followed by Thread Content and implicit row/allocator
+locks. Both local and federated applicants acquire their own member Pair lock.
 The pending request already has a Pair row, so this path locks it without the
 legacy insert/no-op threadId-update sequence.
 
-The tables above describe production paths. Their existing lock behavior is not
-changed by this fork. New Intent writers require a Relationship Pair Lock;
-account metadata writes require an Account Meta Lock. When both apply, acquire
-Account Meta Locks before Relationship Pair Locks. Do not infer metadata-lock
-requirements merely from a group endpoint. Before narrowing an existing group
-scope, preserve cross-Pair invariants and compatibility with legacy writers as
-required by the business mutation standard.
+The tables above describe current production paths. New Intent writers require
+a Relationship Pair Lock; account-owned state writes require an Account State
+Lock; content writes require a Thread Content Lock. Acquire them in that order.
+Migration replaces and removes each old writer directly; no dual-write or
+legacy-lock compatibility period is required.
 
 After commit, the directed ACK wakes only the applicant peer through the existing
 throttled notification path. Group-wide Meta projection remains the responsibility

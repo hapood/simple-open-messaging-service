@@ -39,8 +39,8 @@ import { SystemMessageType } from '../message/system-message.js';
 import {
   requireP2PThreadContentLockUnderPairInTx,
   requireThreadContentLockInTx,
-} from '../relationship/thread-content-lock.js';
-import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 import { setLockedP2PPairActiveInTx } from '../relationship/p2p-pair-state.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
@@ -175,7 +175,7 @@ export class AccountThreadStateService {
         feedId: number;
         threadFeedEndId: number;
       }>(sql`
-        SELECT "stateFeedEndId" AS "feedId", "threadFeedEndId" FROM "Account" WHERE id = ${userId}
+        SELECT "clientStateFeedEndId" AS "feedId", "threadFeedEndId" FROM "Account" WHERE id = ${userId}
       `);
       const feedId = head.rows[0]?.feedId ?? null;
       return {
@@ -405,7 +405,7 @@ export class AccountThreadStateService {
       if (!transitioned) return { transitioned, statePeers, systemMessage };
 
       if (peer.domain !== 'local')
-        await this.stateFeed.lockTargetsInTx(tx, [
+        await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
           { peerDomain: peer.domain, namespaceId: peer.namespaceId! },
         ]);
 

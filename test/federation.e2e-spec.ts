@@ -37,7 +37,6 @@ import { BusinessCode } from '../src/common/business-code.js';
 import {
   waitForAcceptedDurableTask,
   waitForAcceptedDurableTasks,
-  waitForDurableTask,
 } from './durable-task-helpers.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import {
@@ -70,7 +69,6 @@ import {
   messageThread,
   peerStateFeed,
   peerStateFeedPullCursor,
-  peerStateFeedTarget,
   s2SKeyCache,
   accountThreadState,
   threadAudience,
@@ -402,7 +400,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       });
     expect(res.status).toBe(200);
     expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, res.body);
+    // The addressed request commits synchronously through the intent family;
+    // delivery to the origin is the peer feed pull asserted below.
+    expect(res.body.data).toMatchObject({ status: 'OK' });
 
     const incoming = await vi.waitFor(
       async () => {
@@ -503,7 +503,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ account: 'alice', domain: DOM_A });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, accepted.body);
+    // The address-only acceptance activates synchronously on the accepting
+    // side; the origin learns through the peer state-feed push.
+    expect(accepted.body.data).toMatchObject({ status: 'OK' });
 
     aliceAddressOnB = {
       account: 'alice',
@@ -605,7 +607,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           note: 'A request',
         });
       expect(fromA.body.code).toBe(BusinessCode.OK);
-      await waitForAcceptedDurableTask(appA.database, fromA.body);
+      // Both crossed requests commit synchronously; with the state feeds
+      // blocked their peer items park until the unblock below.
+      expect(fromA.body.data).toMatchObject({ status: 'OK' });
 
       const fromB = await request(appB.baseUrl)
         .post('/api/v1/relationship/request')
@@ -617,7 +621,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           note: 'B request',
         });
       expect(fromB.body.code).toBe(BusinessCode.OK);
-      await waitForAcceptedDurableTask(appB.database, fromB.body);
+      // The live reverse request collapses into acceptance on B; the thread
+      // id may already be present even while the feeds are blocked.
+      expect(fromB.body.data).toMatchObject({ status: 'OK' });
 
       await vi.waitFor(
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
@@ -1751,7 +1757,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const beforeAccount = await appA.database.query.account.findFirst({
       where: eq(account.id, aliceLocalIdA),
-      columns: { stateFeedEndId: true },
+      columns: { clientStateFeedEndId: true },
     });
     expect(beforeUser).toBeDefined();
     expect(beforeAccount).toBeDefined();
@@ -1769,12 +1775,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const afterAccount = await appA.database.query.account.findFirst({
       where: eq(account.id, aliceLocalIdA),
-      columns: { stateFeedEndId: true },
+      columns: { clientStateFeedEndId: true },
     });
     expect(afterUser!.defaultProfileRev).toBe(
       beforeUser!.defaultProfileRev + 1,
     );
-    expect(afterAccount!.stateFeedEndId).toBe(beforeAccount!.stateFeedEndId);
+    expect(afterAccount!.clientStateFeedEndId).toBe(
+      beforeAccount!.clientStateFeedEndId,
+    );
     expect(
       await appA.database.query.profileTable.findFirst({
         where: and(
@@ -2604,8 +2612,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
                 eq(message.content, textContent('hi both')),
               ),
             }),
-            appA.database.query.peerStateFeedTarget.findFirst({
-              where: eq(peerStateFeedTarget.peerDomain, DOM_B),
+            appA.database.query.identityNamespace.findFirst({
+              where: eq(identityNamespace.domain, DOM_B),
             }),
             appB.database.query.peerStateFeedPullCursor.findFirst({
               where: eq(peerStateFeedPullCursor.peerDomain, DOM_A),
@@ -2625,7 +2633,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               `shared-mirror receiver cursor snapshot: ${JSON.stringify(
                 {
                   sourceStateAllocatedThrough:
-                    sourceStateCursor?.allocatedThrough?.toString(),
+                    sourceStateCursor?.stateFeedEndId?.toString(),
                   receiverStateCommittedThrough:
                     receiverStateCursor?.committedThrough?.toString(),
                   receiverMessageTarget: receiverThreadState?.messageTargetSeq,
@@ -3390,7 +3398,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
-    await waitForDurableTask(appA.database, res.body.data.taskId);
+    // The unfriend commits synchronously, including the boundary head item
+    // this test reads from the outbound feed right after.
+    expect(res.body.data).toEqual({ status: 'OK' });
     expect(
       await appA.database.query.peerStateFeed.findFirst({
         where: and(
@@ -3432,7 +3442,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         note: 'revive from alice',
       });
     expect(revive.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, revive.body);
+    expect(revive.body.data).toMatchObject({ status: 'OK' });
     expect(
       await findActiveP2pBetween(appA, aliceLocalIdA, bobAddressOnA),
     ).toEqual(oldThreadA);
@@ -3541,7 +3551,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'bob', domain: DOM_B });
     expect(response.body.code).toBe(BusinessCode.OK);
-    await waitForDurableTask(appA.database, response.body.data.taskId);
+    expect(response.body.data).toEqual({ status: 'OK' });
 
     await vi.waitFor(
       async () => {

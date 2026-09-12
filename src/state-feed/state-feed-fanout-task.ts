@@ -1,10 +1,6 @@
 import { and, desc, eq, gt } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import {
-  account,
-  durableTask,
-  peerStateFeedTarget,
-} from '../database/schema.js';
+import { account, durableTask, identityNamespace } from '../database/schema.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import {
   insertPendingTaskInTx,
@@ -58,12 +54,12 @@ export async function lockStateFeedOwnerInTx(
     return rows.length > 0;
   }
   const rows = await tx
-    .select({ id: peerStateFeedTarget.namespaceId })
-    .from(peerStateFeedTarget)
+    .select({ id: identityNamespace.id })
+    .from(identityNamespace)
     .where(
       and(
-        eq(peerStateFeedTarget.namespaceId, input.namespaceId),
-        eq(peerStateFeedTarget.peerDomain, input.peerDomain),
+        eq(identityNamespace.id, input.namespaceId),
+        eq(identityNamespace.domain, input.peerDomain),
       ),
     )
     .for('no key update');

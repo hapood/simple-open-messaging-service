@@ -370,7 +370,7 @@ describe('departure system message paths', () => {
     const h = await mirror();
     const peerLocks = vi.spyOn(
       app.get(PeerStateFeedService),
-      'lockTargetsInTx',
+      'lockOutboundStateFeedNamespacesInTx',
     );
     const departure = vi.spyOn(
       app.get(MessageService),
@@ -541,18 +541,25 @@ describe('departure system message paths', () => {
       .delete(groupMeta)
       .where(eq(groupMeta.threadId, h.groupId));
     await app.get(GroupMetaSyncTaskExecutionService).execute(task);
+    // The full roster is a baseline: no join/left system message is admitted.
     expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(0);
-    expect(
-      await database.db.query.durableTask.findFirst({
-        where: and(
-          eq(
-            durableTask.scopeKey,
-            JSON.stringify(['THREAD_FANOUT', h.threadId]),
-          ),
-          eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT),
-        ),
-      }),
-    ).toBeUndefined();
+    expect(await notices(h.threadId, 'GROUP_LEFT')).toHaveLength(0);
+    // The committed cursor advance still publishes the new mirror cursor to
+    // members, so a content-less fan-out (messageEndSeq at the current head)
+    // is admitted even for a baseline sync.
+    const fanout = await database.db.query.durableTask.findFirst({
+      where: and(
+        eq(durableTask.scopeKey, JSON.stringify(['THREAD_FANOUT', h.threadId])),
+        eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT),
+      ),
+    });
+    expect(fanout).toBeDefined();
+    const head = await database.db.execute(
+      sql`SELECT COALESCE(max(seq), 0) AS head FROM "Message" WHERE "threadId" = ${h.threadId}`,
+    );
+    expect(Number(fanout!.payload.messageEndSeq)).toBe(
+      Number(head.rows[0].head),
+    );
   });
 
   it('commits mirror joins with local fanout, ignores profile updates, and rolls back failed admission', async () => {

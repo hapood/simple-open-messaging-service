@@ -140,7 +140,7 @@ Lock order (mirrored group scope):
 
 ```text
 lockBusinessAccountsInTx([{ account: groupAccount, domain: peerDomain }])
-lockExperimentalPairsInTx(GROUP_MEMBER pair, sorted addresses)
+lockRelationshipPairsInTx(GROUP_MEMBER pair, sorted addresses)
 thread content lock under the group, canonical pair FOR NO KEY UPDATE,
   RelationshipIntent rows in author-side order, AccountThreadState rows
 stateFeed.lockTargetsInTx([{ peerDomain, namespaceId }])   -- before any
@@ -156,7 +156,7 @@ acquires the same advisory scope internally; acquiring it beforehand is
 re-entrant and keeps the locator-before-scope ordering honest. Row preparation
 must not issue business updates that trigger early feed allocation before
 `lockTargetsInTx` (the `prepareRecipient` precedent in
-`group-join-acceptance-sql.ts`).
+`group-membership-acceptance-sql.ts`).
 
 The applier must remain callable from the deferred path
 (`APPLY_FEDERATED_RELATIONSHIP_INTENT` re-running the item with
@@ -168,8 +168,8 @@ unchanged, so `federation-relationship-task.handler.ts` keeps validating it.
 | Concern | Reused as-is | Adapted |
 | --- | --- | --- |
 | Thread shell + authority namespace | `ensureFederatedGroupRequestShellInTx` (`:115`) | — |
-| Canonical pair mint | The authoritative invitation mint (`group-join-decision.service.ts:302`) extracted into a shared fragment | — |
-| Side-A intent persist | `authoredIntentWriteSql` shape | **Mirror variant**: `profileRev`, `messageEndSeq`, `tombstoneEndSeq` become bound parameters taken from the event body. The shared fragment derives them from `GroupAccount` and the local thread tail (`group-relationship-sql.ts:21-44`), which is wrong on a mirror (no `GroupAccount` row; the coordinates are the origin's, not the local tail's). |
+| Canonical pair mint | The authoritative invitation mint (`group-authored-membership-intent.service.ts:302`) extracted into a shared fragment | — |
+| Side-A intent persist | `authoredIntentWriteSql` shape | **Mirror variant**: `profileRev`, `messageEndSeq`, `tombstoneEndSeq` become bound parameters taken from the event body. The shared fragment derives them from `GroupAccount` and the local thread tail (`authored-relationship-intent-sql.ts:21-44`), which is wrong on a mirror (no `GroupAccount` row; the coordinates are the origin's, not the local tail's). |
 | Promotion of local `REQUESTED` | `publishAccepted` semantics of `applyRemoteIntentOnPairInTx` (`relationship-intent.service.ts:677-690`) | Recomposed inside the activation SQL |
 | Sync-state initialization | `initializeRelationshipThreadStateInTx` semantics | Must reproduce the gap rules verbatim (below) |
 | Client feed row | `ClientStateFeedService.writeInTx` compaction + `publishEffect` contract | — |

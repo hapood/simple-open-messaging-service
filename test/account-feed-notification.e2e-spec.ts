@@ -144,12 +144,14 @@ describe('account feed notification delivery', () => {
     await expectDelivered(
       'STATE_FEED_UPDATED',
       'feedId',
-      blocked.stateFeedEndId,
+      blocked.clientStateFeedEndId,
     );
     await participants.setBlocked(userId, threadId, false);
     const unblocked = await heads();
     expect(unblocked.threadFeedEndId).toBeGreaterThan(blocked.threadFeedEndId);
-    expect(unblocked.stateFeedEndId).toBeGreaterThan(blocked.stateFeedEndId);
+    expect(unblocked.clientStateFeedEndId).toBeGreaterThan(
+      blocked.clientStateFeedEndId,
+    );
     await expectDelivered(
       'THREAD_FEED_UPDATED',
       'threadFeedEndId',
@@ -158,7 +160,7 @@ describe('account feed notification delivery', () => {
     await expectDelivered(
       'STATE_FEED_UPDATED',
       'feedId',
-      unblocked.stateFeedEndId,
+      unblocked.clientStateFeedEndId,
     );
   });
 

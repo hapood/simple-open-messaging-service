@@ -7,7 +7,7 @@ import {
   type DurableTaskScope,
 } from '../durable-task/durable-task-queue.service.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
-import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 
 export function remoteIntentKey(

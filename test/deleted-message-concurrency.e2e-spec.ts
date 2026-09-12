@@ -22,10 +22,10 @@ import { DeletedMessageService } from '../src/message/deleted-message.service.js
 import { ThreadPreviewModule } from '../src/message/thread-preview.module.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
-import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 import { MessageService } from '../src/message/message.service.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
-import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
+import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
 
 describe('federated message deletion transaction ordering', () => {
   let mod: TestingModule;

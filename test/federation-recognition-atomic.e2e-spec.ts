@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { eq } from 'drizzle-orm';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -8,12 +16,10 @@ import {
   federatedPeerEvent,
   identityNamespace,
   peerStateFeedPullCursor,
-  peerStateFeedTarget,
 } from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';
-import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 
 describe('FederationRecognitionService atomic commit', () => {
   let mod: TestingModule;
@@ -39,10 +45,6 @@ describe('FederationRecognitionService atomic commit', () => {
       [domain],
     );
     await database.pool.query(
-      'DELETE FROM "PeerStateFeedTarget" WHERE "peerDomain" = $1',
-      [domain],
-    );
-    await database.pool.query(
       'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
       [domain],
     );
@@ -65,24 +67,22 @@ describe('FederationRecognitionService atomic commit', () => {
   });
 
   function service(
-    stateFeed: PeerStateFeedService,
+    namespaces: FederationNamespaceService = new FederationNamespaceService(
+      database,
+    ),
   ): FederationRecognitionService {
     return new FederationRecognitionService(
       database,
       {} as never,
       {} as never,
-      stateFeed,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
-      new FederationNamespaceService(database),
+      namespaces,
       { emit: () => undefined } as never,
     );
   }
 
   it('commits inbound recognition, namespace, and State Feed cursors together', async () => {
-    await service(new PeerStateFeedService(database)).acceptInbound(
-      domain,
-      document,
-    );
+    await service().acceptInbound(domain, document);
 
     expect(
       await database.db.query.federatedPeer.findFirst({
@@ -100,13 +100,7 @@ describe('FederationRecognitionService atomic commit', () => {
         .select()
         .from(identityNamespace)
         .where(eq(identityNamespace.domain, domain)),
-    ).toHaveLength(1);
-    expect(
-      await database.db
-        .select()
-        .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.peerDomain, domain)),
-    ).toHaveLength(1);
+    ).toEqual([expect.objectContaining({ stateFeedEndId: 0n })]);
     expect(
       await database.db
         .select()
@@ -115,16 +109,20 @@ describe('FederationRecognitionService atomic commit', () => {
     ).toHaveLength(1);
   });
 
-  it('rolls back the recognition fact and cursors when initialization fails', async () => {
-    const failingStateFeed = {
-      initializePeerInTx: async () => {
-        throw new Error('state-feed initialization failed');
+  it('rolls back the recognition fact and cursors when namespace initialization fails', async () => {
+    const failingNamespaces = new FederationNamespaceService(database);
+    const activateVerifiedInTx =
+      failingNamespaces.activateVerifiedInTx.bind(failingNamespaces);
+    vi.spyOn(failingNamespaces, 'activateVerifiedInTx').mockImplementation(
+      async (...args) => {
+        await activateVerifiedInTx(...args);
+        throw new Error('namespace initialization failed');
       },
-    } as unknown as PeerStateFeedService;
+    );
 
     await expect(
-      service(failingStateFeed).acceptInbound(domain, document),
-    ).rejects.toThrow('state-feed initialization failed');
+      service(failingNamespaces).acceptInbound(domain, document),
+    ).rejects.toThrow('namespace initialization failed');
 
     expect(
       await database.db
@@ -137,12 +135,6 @@ describe('FederationRecognitionService atomic commit', () => {
         .select()
         .from(peerStateFeedPullCursor)
         .where(eq(peerStateFeedPullCursor.peerDomain, domain)),
-    ).toEqual([]);
-    expect(
-      await database.db
-        .select()
-        .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.peerDomain, domain)),
     ).toEqual([]);
     expect(
       await database.db
@@ -172,7 +164,7 @@ describe('FederationRecognitionService atomic commit', () => {
       localServiceAvailable: true,
       remoteServiceReachable: true,
     });
-    const recognition = service(new PeerStateFeedService(database));
+    const recognition = service();
 
     await recognition.markTransportDegraded(domain, 'first failure');
     await recognition.markTransportDegraded(domain, 'retry failure');

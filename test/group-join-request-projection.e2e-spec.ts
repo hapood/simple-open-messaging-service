@@ -252,7 +252,7 @@ describe('group join request projection', () => {
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
-      friendRequest.body.data.taskId,
+      friendRequest.body,
       owner.id,
       member.id,
     );
@@ -261,10 +261,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ account: owner.account, domain: 'local' });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(
-      app.get(DatabaseService).db,
-      accepted.body,
-    );
+    expect(accepted.body.data).toMatchObject({ status: 'OK' });
 
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
@@ -367,7 +364,7 @@ describe('group join request projection', () => {
       .send({ account: member.account, domain: 'local' });
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
-      friendRequest.body.data.taskId,
+      friendRequest.body,
       owner.id,
       member.id,
     );
@@ -375,10 +372,7 @@ describe('group join request projection', () => {
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ account: owner.account, domain: 'local' });
-    await waitForAcceptedDurableTask(
-      app.get(DatabaseService).db,
-      friendAccepted.body,
-    );
+    expect(friendAccepted.body.data).toMatchObject({ status: 'OK' });
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${owner.token}`)

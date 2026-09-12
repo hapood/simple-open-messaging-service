@@ -61,6 +61,7 @@ import type {
   MediaStatus,
 } from '../message-cards/chat-item';
 import {
+  contextualMediaUrl,
   parseAudioContent,
   parseFileContent,
   parseGalleryContent,
@@ -578,6 +579,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = m.seq;
+      const resolveMediaUrl = (item: Record<string, unknown>) =>
+        contextualMediaUrl(item, m.threadId, id);
       if (id > this.loadedSeq) this.loadedSeq = id;
       const creatorKey = this.creatorKey(m.creator);
       if (creatorKey !== null) {
@@ -593,24 +596,32 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       let images: AlbumImage[] | null = null;
       if (m.contentType === 'IMAGE') {
         images = [
-          { ...parseImageContent(m.content), msgId: id, status: m.mediaStatus },
+          {
+            ...parseImageContent(m.content, resolveMediaUrl),
+            msgId: id,
+            status: m.mediaStatus,
+          },
         ];
       } else if (m.contentType === 'VIDEO') {
-        const v = parseVideoContent(m.content);
+        const v = parseVideoContent(m.content, resolveMediaUrl);
         if (v) images = [{ ...v, msgId: id, status: m.mediaStatus }];
       } else if (m.contentType === 'AUDIO') {
-        const a = parseAudioContent(m.content);
+        const a = parseAudioContent(m.content, resolveMediaUrl);
         if (a) images = [{ ...a, msgId: id, status: m.mediaStatus }];
       } else if (m.contentType === 'GALLERY') {
-        images = parseGalleryContent(m.content).map((media) => ({
-          ...media,
-          msgId: id,
-          status: m.mediaStatus,
-        }));
+        images = parseGalleryContent(m.content, resolveMediaUrl).map(
+          (media) => ({
+            ...media,
+            msgId: id,
+            status: m.mediaStatus,
+          }),
+        );
       }
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
       const file: FileInfo | null =
-        m.contentType === 'FILE' ? parseFileContent(m.content) : null;
+        m.contentType === 'FILE'
+          ? parseFileContent(m.content, resolveMediaUrl)
+          : null;
       // Surface the clientMessageId so the kernel can pair this server-confirmed real with the optimistic
       // bubble that shares it (mountNewerReals flags resortTarget by clientMessageId; reconcileOptimistic then
       // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two

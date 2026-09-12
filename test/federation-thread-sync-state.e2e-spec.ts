@@ -25,11 +25,11 @@ import {
   threadAudience,
 } from '../src/database/schema.js';
 import { setLockedP2PPairActiveInTx } from '../src/relationship/p2p-pair-state.js';
-import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
 import { FederationRelationshipMutationService } from '../src/federation/federation-relationship-mutation.service.js';
-import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 
 describe('federation thread synchronization state', () => {
   let mod: TestingModule;

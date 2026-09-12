@@ -95,6 +95,20 @@ export class AcceptRelationshipDto {
   domain!: string;
 }
 
+/** Synchronous P2P intent result. `threadId` is present only when the pair is active after the
+ * command — clients read it as the FRIEND fact. */
+export class RelationshipIntentResultDto {
+  @ApiProperty({ example: 'OK', enum: ['OK'] })
+  status!: 'OK';
+
+  @ApiProperty({
+    required: false,
+    example: 42,
+    description: 'P2P thread id when the pair is active after the command',
+  })
+  threadId?: number;
+}
+
 /** Advance the account-wide relationship-request read watermark. The value is a client state-feed
  * cursor that the caller has already applied durably; it is not a relationship intent id. */
 export class ReadRelationshipRequestsDto {

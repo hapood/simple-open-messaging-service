@@ -57,6 +57,31 @@ export class UserService {
       .then(([row]) => row ?? null);
   }
 
+  /** Relationship-request admission projection: both endpoints as live local
+   * identities including the admin-disable fact, which the public projection
+   * deliberately omits (the legacy task-handler admission contract). */
+  findRelationshipAdmissionAccounts(actorUserId: number, targetAccount: string) {
+    return this.database.db
+      .select({
+        id: accountTable.id,
+        account: accountTable.account,
+        domain: accountTable.domain,
+        availability: accountTable.availability,
+        disabledAt: accountTable.disabledAt,
+      })
+      .from(accountTable)
+      .where(
+        and(
+          eq(accountTable.domain, 'local'),
+          eq(accountTable.namespaceId, 0),
+          or(
+            eq(accountTable.id, actorUserId),
+            eq(accountTable.account, targetAccount),
+          ),
+        ),
+      );
+  }
+
   findSelfProfile(userId: number) {
     return this.findUniqueUser({ id: userId });
   }

@@ -41,10 +41,6 @@ import {
   uploadAvatar,
 } from './federation-test-helpers.js';
 import { findP2PRelationship } from './seed.js';
-import {
-  waitForAcceptedDurableTask,
-  waitForDurableTask,
-} from './durable-task-helpers.js';
 
 describe('federation durable missed transport (two nodes)', () => {
   let appA: FedApp;
@@ -268,6 +264,9 @@ describe('federation durable missed transport (two nodes)', () => {
           where: eq(message.id, pending!.messageId!),
         });
         expect(stagedMessage?.localState).toBe('STUB');
+        expect(stagedMessage?.content).toContain(
+          `?threadId=${stagedMessage!.threadId}&seq=${stagedMessage!.seq}`,
+        );
         const syncState =
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(
@@ -532,7 +531,12 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'missedbob', domain: FED_DOMAIN_B });
     expect(removed.body.code).toBe(BusinessCode.OK);
-    await waitForDurableTask(appA.database, removed.body.data.taskId);
+    // The revocation commits synchronously now; its peer feed item parks in
+    // the blocked outbound queue until the proxy unblocks.
+    expect(removed.body.data).toEqual({ status: 'OK' });
+    expect(
+      (await findP2PRelationship(appA.database, aliceIdA, bobAddressOnA)).pair,
+    ).toMatchObject({ active: false });
     const restored = await request(appA.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -543,7 +547,7 @@ describe('federation durable missed transport (two nodes)', () => {
         note: 'restore after compacted revoke',
       });
     expect(restored.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, restored.body);
+    expect(restored.body.data).toMatchObject({ status: 'OK' });
     proxy.blockStateFeed(false);
 
     await vi.waitFor(

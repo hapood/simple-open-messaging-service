@@ -50,7 +50,7 @@ export interface PendingClientStateFeedUpdate {
   threadFeedEndId?: number;
 }
 
-/** Device-facing compacted state feed. Account.stateFeedEndId is the shared allocator. */
+/** Device-facing compacted state feed. Account.clientStateFeedEndId is the shared allocator. */
 @Injectable()
 export class ClientStateFeedService implements OnModuleDestroy {
   private static readonly PUSH_COALESCE_MS = 1_000;
@@ -121,10 +121,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
   async readEndId(userId: number): Promise<number> {
     const owner = await this.database.db.query.account.findFirst({
       where: eq(account.id, userId),
-      columns: { stateFeedEndId: true },
+      columns: { clientStateFeedEndId: true },
     });
     if (!owner) throw new Error(`client state feed owner ${userId} is missing`);
-    return owner.stateFeedEndId;
+    return owner.clientStateFeedEndId;
   }
 
   async rejectMissingAfter(userId: number): Promise<never> {
@@ -166,11 +166,11 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const [owner] = await tx
       .update(account)
       .set({
-        stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
+        clientStateFeedEndId: sql`${account.clientStateFeedEndId} + 1`,
         updatedAt: new Date(),
       })
       .where(eq(account.id, write.userId))
-      .returning({ feedId: account.stateFeedEndId });
+      .returning({ feedId: account.clientStateFeedEndId });
     if (!owner) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
@@ -388,7 +388,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     let pending: PendingClientStateFeedUpdate | undefined;
     const readThroughFeedId = await this.database.db.transaction(async (tx) => {
       const [owner] = await tx
-        .select({ allocatedThrough: account.stateFeedEndId })
+        .select({ allocatedThrough: account.clientStateFeedEndId })
         .from(account)
         .where(eq(account.id, userId))
         .for('no key update')

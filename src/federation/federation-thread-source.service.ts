@@ -9,7 +9,7 @@ import {
   FederationThreadSourceInactiveError,
 } from './federation-errors.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
-import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
+import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
 
 @Injectable()
 export class FederationThreadSourceService {

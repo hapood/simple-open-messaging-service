@@ -81,7 +81,7 @@ describe('group membership re-entry and ownership transfer', () => {
     expect(sent.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       database.db,
-      sent.body.data.taskId,
+      sent.body,
       first.id,
       second.id,
     );
@@ -90,7 +90,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${second.token}`)
       .send({ account: first.account, domain: 'local' });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, accepted.body);
+    expect(accepted.body.data).toMatchObject({ status: 'OK' });
   }
 
   async function inviteAndJoin(

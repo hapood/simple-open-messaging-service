@@ -4,8 +4,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
-import { MessageService } from '../message/message.service.js';
-import { SystemMessageType } from '../message/system-message.js';
 
 export interface FederationResetPreview {
   domain: string;
@@ -40,7 +38,6 @@ export class FederationResetService {
   constructor(
     private readonly database: DatabaseService,
     private readonly namespaces: FederationNamespaceService,
-    private readonly messages: MessageService,
   ) {}
 
   async preview(domain: string): Promise<FederationResetPreview> {
@@ -127,23 +124,6 @@ export class FederationResetService {
       `);
       this.assertResettable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
-
-      const affectedThreads = await tx.execute<{
-        threadId: number;
-      }>(sql`
-        SELECT thread.id AS "threadId"
-        FROM "MessageThread" thread
-        JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
-        WHERE thread."authorityNamespaceId" = ${archived.namespaceId}
-        GROUP BY thread.id
-        ORDER BY thread.id
-      `);
-      for (const thread of affectedThreads.rows) {
-        await this.messages.writeSystemMessageInTx(tx, thread.threadId, {
-          type: SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
-          domain: normalized,
-        });
-      }
 
       await tx.execute(sql`
         UPDATE "FederatedPeer"

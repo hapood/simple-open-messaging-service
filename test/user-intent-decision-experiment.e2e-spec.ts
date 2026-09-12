@@ -1,8 +1,8 @@
 import {
-  experimentalPairBusinessKey,
+  relationshipPairBusinessKey,
   type PairAddressScope,
-} from '../src/business-v2/shared/locks/pair-business-lock.js';
-import { businessAccountScopeKey } from '../src/relationship/business-scope-lock.js';
+} from '../src/business/shared/locks/relationship-pair-business-lock.js';
+import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -31,9 +31,9 @@ import { FederationService } from '../src/federation/federation.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import {
-  ExperimentalUserIntentService,
+  UserIntentService,
   type UserIntentDependencies,
-} from '../src/business-v2/user/p2p-intent/user-intent-decision.service.js';
+} from '../src/business/user/p2p-intent/user-intent.service.js';
 
 type Seeded = Awaited<ReturnType<typeof seedUser>>;
 
@@ -67,7 +67,7 @@ describe('experimental user intent decision', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let deps: UserIntentDependencies;
-  let experiment: ExperimentalUserIntentService;
+  let experiment: UserIntentService;
   let baseline: RelationshipService;
   const statements: string[] = [];
   const businessLocks: string[] = [];
@@ -100,7 +100,7 @@ describe('experimental user intent decision', () => {
       else await baseline.revokeRelationshipRequest(peerUserId, params.userId);
       return;
     }
-    await experiment.handleUserIntent({
+    await experiment.execute({
       userId: params.userId,
       decision: params.decision,
       target: params.target,
@@ -139,7 +139,7 @@ describe('experimental user intent decision', () => {
       federation: app.get(FederationService),
       namespaces: app.get(FederationNamespaceService),
     };
-    experiment = new ExperimentalUserIntentService(deps);
+    experiment = new UserIntentService(deps);
     baseline = new RelationshipService(
       measured,
       app.get(AccountThreadStateService),
@@ -437,20 +437,22 @@ describe('experimental user intent decision', () => {
     const { alice, bob } = await twoUsers('ack-noop');
     await seedFriends(alice.id, bob.id);
     const before = await state(alice, bob);
+    // The satisfied acceptance is a write-free no-op whose outcome still
+    // carries the active thread id for the HTTP surface.
     await expect(
-      experiment.handleUserIntent({
+      experiment.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
         target: { account: alice.account, domain: 'local' },
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ threadId: before.pair.threadId });
     const after = await state(alice, bob);
     expect(after.pair).toEqual(before.pair);
     expect(after.feeds).toHaveLength(before.feeds.length);
     // A stale accept (no live reverse request) reports NOT_FOUND.
     const carol = await seedUser(app, `ack-stale-${++sequence}-carol`);
     await expect(
-      experiment.handleUserIntent({
+      experiment.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
         target: { account: carol.account, domain: 'local' },
@@ -654,7 +656,7 @@ describe('experimental user intent decision', () => {
     expect(after.threadTasks).toHaveLength(0);
   });
 
-  it('acquires the endpoint scopes then the pair scope once', async () => {
+  it('acquires the actor scope then the pair scope once', async () => {
     vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
       undefined,
     );
@@ -668,10 +670,11 @@ describe('experimental user intent decision', () => {
       decision: 'ACCEPTED',
     });
     const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
+    // The command owns only the local actor's account state; both endpoints'
+    // intent and relationship-derived projections are protected by the Pair.
     expect(businessLocks).toEqual([
-      businessAccountScopeKey({ account: alice.account, domain: 'local' }),
       businessAccountScopeKey({ account: bob.account, domain: 'local' }),
-      experimentalPairBusinessKey(pairScope(pair!)),
+      relationshipPairBusinessKey(pairScope(pair!)),
     ]);
   });
 
@@ -696,7 +699,7 @@ describe('experimental user intent decision', () => {
         }),
       );
     await expect(
-      experiment.handleUserIntent({
+      experiment.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
         target: { account: alice.account, domain: 'local' },
@@ -709,11 +712,111 @@ describe('experimental user intent decision', () => {
     expect(notify).not.toHaveBeenCalled();
     expect(push).not.toHaveBeenCalled();
     failure.mockRestore();
-    await experiment.handleUserIntent({
+    await experiment.execute({
       userId: bob.id,
       decision: 'ACCEPTED',
       target: { account: alice.account, domain: 'local' },
     });
     expect((await state(alice, bob)).pair?.active).toBe(true);
+  });
+
+  it('activates exactly once under concurrent duplicate acceptance', async () => {
+    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+      undefined,
+    );
+    const { alice, bob } = await twoUsers('ack-race');
+    await experiment.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: bob.account, domain: 'local' },
+    });
+    // Two racing acceptances serialize on the endpoint/pair scopes: the loser
+    // observes the active pair and must not double-write the system history.
+    await Promise.all([
+      experiment.execute({
+        userId: bob.id,
+        decision: 'ACCEPTED',
+        target: { account: alice.account, domain: 'local' },
+      }),
+      experiment.execute({
+        userId: bob.id,
+        decision: 'ACCEPTED',
+        target: { account: alice.account, domain: 'local' },
+      }),
+    ]);
+    const after = await state(alice, bob);
+    expect(after.pair?.active).toBe(true);
+    expect(
+      after.messages.filter(
+        (message) => contentOf(message).type === 'FRIEND_ADDED',
+      ),
+    ).toHaveLength(1);
+    expect(
+      after.feeds.filter((feed) => feed.body?.status === 'ACCEPTED'),
+    ).toHaveLength(2);
+  });
+
+  it('resolves the direct-namespace pair over a mirrored same-account decoy', async () => {
+    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+      undefined,
+    );
+    const { alice, bob } = await twoUsers('decoy');
+    await experiment.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: bob.account, domain: 'local' },
+    });
+    // A group-mirror pair in a foreign namespace carries bob's account too;
+    // the P2P locator must never capture it.
+    const decoyNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      `decoy-${++sequence}.test`,
+    );
+    const [mirror] = await database.db
+      .insert(tables.relationshipPair)
+      .values({
+        kind: 'GROUP_MEMBER',
+        endpointAType: 'USER',
+        endpointAAccount: bob.account,
+        endpointADomain: 'local',
+        endpointANamespaceId: 0,
+        endpointBType: 'GROUP',
+        endpointBAccount: `!mirror-${sequence}`,
+        endpointBDomain: `decoy-${sequence}.test`,
+        endpointBNamespaceId: decoyNamespaceId,
+        active: true,
+        established: true,
+        updatedAt: new Date(),
+      })
+      .returning({ id: tables.relationshipPair.id });
+    await database.db.insert(tables.relationshipIntent).values({
+      pairId: mirror!.id,
+      authorSide: 'A',
+      status: 'REQUESTED',
+      note: '',
+      requestedAt: new Date(),
+      expiresAt: new Date(Date.now() + 86_400_000),
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
+      updatedAt: new Date(),
+    });
+
+    const revoked = await experiment.execute({
+      userId: bob.id,
+      decision: 'REVOKED',
+      target: { account: alice.account, domain: 'local' },
+    });
+    expect(revoked).toEqual({});
+    const after = await state(bob, alice);
+    expect(
+      after.intents.find((intent) => intent.authorSide === after.firstSide)
+        ?.status,
+    ).toBe('REVOKED');
+    const mirrorIntents = await database.db.query.relationshipIntent.findMany({
+      where: eq(tables.relationshipIntent.pairId, mirror!.id),
+    });
+    expect(mirrorIntents.map((intent) => intent.status)).toEqual([
+      'REQUESTED',
+    ]);
   });
 });

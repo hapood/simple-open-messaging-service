@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, asc, count, eq } from 'drizzle-orm';
@@ -19,11 +19,10 @@ import { seedUserWithSession } from './seed.js';
 import {
   waitForAcceptedDurableTasks,
   waitForDurableTask,
-  waitForLocalRelationshipRequest,
 } from './durable-task-helpers.js';
 
 describe('group disband task fan-out', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
 
   beforeAll(async () => {
@@ -48,21 +47,18 @@ describe('group disband task fan-out', () => {
   it('marks a hosted group terminal, checkpoints children, and revokes every active member', async () => {
     const owner = await seedUserWithSession(app, 'disband-owner');
     const member = await seedUserWithSession(app, 'disband-member');
+    // The user-intent flow commits synchronously; only the group steps below
+    // travel through durable tasks.
     const sent = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ account: member.account, domain: 'local' });
-    await waitForLocalRelationshipRequest(
-      database.db,
-      sent.body.data.taskId,
-      owner.id,
-      member.id,
-    );
+    expect(sent.body.code).toBe(BusinessCode.OK);
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ account: owner.account, domain: 'local' });
-    await waitForDurableTask(database.db, accepted.body.data.taskId);
+    expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')

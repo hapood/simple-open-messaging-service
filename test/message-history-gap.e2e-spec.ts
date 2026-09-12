@@ -16,7 +16,7 @@ import {
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
-import { requireThreadContentLockInTx } from '../src/relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 
 describe('client message history gaps', () => {
   let app: INestApplication;

@@ -1,19 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { RelationshipController } from './relationship.controller.js';
+
+/** Constructor order: userService, relationships, federation, durableTasks,
+ * clientStateFeed, userIntents, userQuota. */
+function build(overrides: {
+  userService?: unknown;
+  relationships?: unknown;
+  federation?: unknown;
+  durableTasks?: unknown;
+  clientStateFeed?: unknown;
+  userIntents?: unknown;
+  userQuota?: unknown;
+}): RelationshipController {
+  return new RelationshipController(
+    (overrides.userService ?? {}) as never,
+    (overrides.relationships ?? {}) as never,
+    (overrides.federation ?? {}) as never,
+    (overrides.durableTasks ?? {}) as never,
+    (overrides.clientStateFeed ?? {}) as never,
+    (overrides.userIntents ?? {}) as never,
+    (overrides.userQuota ?? {}) as never,
+  );
+}
 
 describe('RelationshipController.markRelationshipRequestsRead', () => {
   it('advances the relationship-request read watermark', async () => {
     const clientStateFeed = {
       markRelationshipRequestsRead: vi.fn().mockResolvedValue(42),
     };
-    const controller = new RelationshipController(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      clientStateFeed as never,
-    );
+    const controller = build({ clientStateFeed });
 
     await expect(
       controller.markRelationshipRequestsRead(
@@ -39,14 +56,7 @@ describe('RelationshipController.acceptRelationship', () => {
     const durableTasks = {
       enqueueTask: vi.fn().mockResolvedValue({ taskId: 93n }),
     };
-    const controller = new RelationshipController(
-      {} as never,
-      {} as never,
-      {} as never,
-      federationService as never,
-      durableTasks as never,
-      {} as never,
-    );
+    const controller = build({ federation: federationService, durableTasks });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
@@ -71,297 +81,57 @@ describe('RelationshipController.acceptRelationship', () => {
     });
   });
 
-  it('validates and queues a local P2P request by Address', async () => {
-    const relationshipService = {
+  it('activates a known local P2P request synchronously through the intent service', async () => {
+    const relationships = {
       resolveP2PRequestCommandScope: vi.fn().mockResolvedValue({
         local: { account: 'alice', domain: 'local' },
         remote: { account: 'bob', domain: 'local' },
         peerUserId: 9,
       }),
-      acceptRelationshipRequest: vi.fn(),
     };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 94n }),
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({ threadId: 12 }),
     };
-    const controller = new RelationshipController(
-      {} as never,
-      relationshipService as never,
-      {} as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
+    const controller = build({ relationships, userIntents });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         domain: 'local',
       }),
-    ).resolves.toEqual({ taskId: '94', status: 'PENDING' });
-    expect(
-      relationshipService.resolveP2PRequestCommandScope,
-    ).toHaveBeenCalledWith(7, 'bob', 'local', 'INCOMING');
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
-        ],
-      },
-      taskType: 'ACCEPT_RELATIONSHIP_REQUEST',
-      actorUserId: 7,
-      payload: { peerUserId: 9 },
-    });
-    expect(
-      relationshipService.acceptRelationshipRequest,
-    ).not.toHaveBeenCalled();
-  });
-});
-
-describe('RelationshipController.revokeRelationship', () => {
-  it('resolves and queues a local outgoing request by Address', async () => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({ id: 7, account: 'alice', domain: 'local' })
-        .mockResolvedValueOnce({ id: 9, account: 'bob', domain: 'local' }),
-    };
-    const relationshipService = {
-      friendRelationshipStatuses: vi.fn().mockResolvedValue([
-        {
-          userId: 9,
-          status: 'OUTGOING_PENDING',
-        },
-      ]),
-      revokeRelationshipRequest: vi.fn(),
-    };
-    const participantService = {
-      findP2PThreadBetween: vi.fn(),
-    };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 93n }),
-    };
-    const controller = new RelationshipController(
-      userService as never,
-      relationshipService as never,
-      participantService as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
-
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        domain: 'local',
-      }),
-    ).resolves.toEqual({ taskId: '93', status: 'PENDING' });
-    expect(relationshipService.friendRelationshipStatuses).toHaveBeenCalledWith(
+    ).resolves.toEqual({ status: 'OK', threadId: 12 });
+    expect(relationships.resolveP2PRequestCommandScope).toHaveBeenCalledWith(
       7,
-      [9],
+      'bob',
+      'local',
+      'INCOMING',
     );
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
-        ],
-      },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
-      actorUserId: 7,
-      payload: { peerUserId: 9 },
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'ACCEPTED',
+      target: { account: 'bob', domain: 'local' },
     });
-    expect(participantService.findP2PThreadBetween).not.toHaveBeenCalled();
-    expect(
-      relationshipService.revokeRelationshipRequest,
-    ).not.toHaveBeenCalled();
   });
 
-  it('resolves and queues a local incoming request by Address', async () => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({ id: 7, account: 'alice', domain: 'local' })
-        .mockResolvedValueOnce({ id: 9, account: 'bob', domain: 'local' }),
-    };
-    const relationshipService = {
-      friendRelationshipStatuses: vi.fn().mockResolvedValue([
-        {
-          userId: 9,
-          status: 'INCOMING_PENDING',
-        },
-      ]),
-    };
-    const participantService = { findP2PThreadBetween: vi.fn() };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 94n }),
-    };
-    const controller = new RelationshipController(
-      userService as never,
-      relationshipService as never,
-      participantService as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
-
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        domain: 'local',
+  it('keeps the addressed remote acceptance durable-task based', async () => {
+    const relationships = {
+      resolveP2PRequestCommandScope: vi.fn().mockResolvedValue({
+        local: { account: 'alice', domain: 'local' },
+        remote: { account: 'bob', domain: 'peer.test' },
+        peerUserId: null,
       }),
-    ).resolves.toEqual({ taskId: '94', status: 'PENDING' });
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
-        ],
-      },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
-      actorUserId: 7,
-      payload: { peerUserId: 9 },
-    });
-    expect(participantService.findP2PThreadBetween).not.toHaveBeenCalled();
-  });
-
-  it('queues an active local friendship end by Address', async () => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({ id: 7, account: 'alice', domain: 'local' })
-        .mockResolvedValueOnce({ id: 9, account: 'bob', domain: 'local' }),
-    };
-    const inviteService = {
-      friendRelationshipStatuses: vi
-        .fn()
-        .mockResolvedValue([{ userId: 9, status: 'FRIEND' }]),
-    };
-    const participantService = {
-      findP2PThreadBetween: vi.fn().mockResolvedValue(12),
-      endP2P: vi.fn(),
     };
     const durableTasks = {
       enqueueTask: vi.fn().mockResolvedValue({ taskId: 95n }),
     };
-    const controller = new RelationshipController(
-      userService as never,
-      inviteService as never,
-      participantService as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
+    const controller = build({ relationships, durableTasks });
 
     await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: ' Bob ',
-        domain: 'local',
-      }),
-    ).resolves.toEqual({ taskId: '95', status: 'PENDING' });
-    expect(inviteService.friendRelationshipStatuses).toHaveBeenCalledWith(7, [
-      9,
-    ]);
-    expect(participantService.findP2PThreadBetween).toHaveBeenCalledWith(7, 9);
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
-        ],
-      },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
-      actorUserId: 7,
-      payload: { threadId: 12 },
-    });
-    expect(participantService.endP2P).not.toHaveBeenCalled();
-  });
-
-  it('ends a federated friendship using its address without a remote account lookup', async () => {
-    const users = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValue({ id: 7, account: 'alice', domain: 'local' }),
-    };
-    const relationships = {
-      federatedRelationshipContext: vi
-        .fn()
-        .mockResolvedValue({ namespaceId: 12, status: 'FRIEND' }),
-    };
-    const participants = {
-      findP2PThreadBetween: vi.fn().mockResolvedValue(42),
-    };
-    const tasks = { enqueueTask: vi.fn().mockResolvedValue({ taskId: 95n }) };
-    const controller = new RelationshipController(
-      users as never,
-      relationships as never,
-      participants as never,
-      {} as never,
-      tasks as never,
-      {} as never,
-    );
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+      controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         domain: 'peer.test',
       }),
     ).resolves.toEqual({ taskId: '95', status: 'PENDING' });
-    expect(users.findUniqueUser).toHaveBeenCalledExactlyOnceWith({ id: 7 });
-    expect(participants.findP2PThreadBetween).toHaveBeenCalledWith(7, {
-      account: 'bob',
-      domain: 'peer.test',
-      namespaceId: 12,
-    });
-    expect(tasks.enqueueTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskType: 'REVOKE_USER_RELATIONSHIP',
-        payload: { threadId: 42 },
-      }),
-    );
-  });
-
-  it('validates and queues an addressed federated revoke', async () => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({ id: 7, account: 'alice', domain: 'local' })
-        .mockResolvedValueOnce(null),
-    };
-    const inviteService = {
-      federatedRelationshipContext: vi
-        .fn()
-        .mockResolvedValue({ namespaceId: 2, status: 'OUTGOING_PENDING' }),
-    };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 93n }),
-    };
-    const controller = new RelationshipController(
-      userService as never,
-      inviteService as never,
-      {} as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
-
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        domain: 'peer.test',
-      }),
-    ).resolves.toEqual({ taskId: '93', status: 'PENDING' });
-    expect(inviteService.federatedRelationshipContext).toHaveBeenCalledWith(
-      7,
-      'bob',
-      'peer.test',
-    );
-    expect(userService.findUniqueUser).toHaveBeenCalledExactlyOnceWith({
-      id: 7,
-    });
     expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
       scope: {
         type: 'USER_PAIR',
@@ -370,43 +140,128 @@ describe('RelationshipController.revokeRelationship', () => {
           { account: 'bob', domain: 'peer.test' },
         ],
       },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
+      taskType: 'ACCEPT_ADDRESSED_RELATIONSHIP_REQUEST',
       actorUserId: 7,
       payload: { account: 'bob', domain: 'peer.test' },
     });
   });
 });
 
-describe('RelationshipController.requestRelationship', () => {
-  it('returns durable task acceptance without executing the relationship transaction', async () => {
-    const userService = {
-      findUniqueUser: vi
+describe('RelationshipController.revokeRelationship', () => {
+  it('revokes a local relationship synchronously through the intent service', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({}),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+        account: ' Bob ',
+        domain: 'local',
+      }),
+    ).resolves.toEqual({ status: 'OK' });
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REVOKED',
+      target: { account: 'bob', domain: 'local' },
+    });
+  });
+
+  it('revokes a federated relationship by address through the intent service', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({}),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'peer.test',
+      }),
+    ).resolves.toEqual({ status: 'OK' });
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REVOKED',
+      target: { account: 'bob', domain: 'peer.test' },
+    });
+  });
+
+  it('maps the stale-revocation NOT_FOUND onto the legacy FRIEND_NOT_FOUND code', async () => {
+    const userIntents = {
+      execute: vi
         .fn()
-        .mockResolvedValueOnce({
+        .mockRejectedValue(
+          new BusinessException(BusinessCode.NOT_FOUND, 'request not found'),
+        ),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'local',
+      }),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FRIEND_NOT_FOUND });
+  });
+
+  it('keeps the addressed group revocation durable-task based', async () => {
+    const federationService = {
+      resolveGroupJoinRequestCommandScope: vi
+        .fn()
+        .mockResolvedValue({ account: '!remote-group', domain: 'peer.test' }),
+    };
+    const durableTasks = {
+      enqueueTask: vi.fn().mockResolvedValue({ taskId: 96n }),
+    };
+    const controller = build({ federation: federationService, durableTasks });
+
+    await expect(
+      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+        account: '!remote-group',
+        domain: 'peer.test',
+      }),
+    ).resolves.toEqual({ taskId: '96', status: 'PENDING' });
+    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
+      scope: {
+        type: 'GROUP',
+        address: { account: '!remote-group', domain: 'peer.test' },
+      },
+      taskType: 'REVOKE_USER_RELATIONSHIP',
+      actorUserId: 7,
+      payload: { account: '!remote-group', domain: 'peer.test' },
+    });
+  });
+});
+
+describe('RelationshipController.requestRelationship', () => {
+  it('runs the local request synchronously with in-transaction quota admission', async () => {
+    const userService = {
+      findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue([
+        {
           id: 7,
           account: 'alice',
           domain: 'local',
           availability: 'AVAILABLE',
-        })
-        .mockResolvedValueOnce({
+          disabledAt: null,
+        },
+        {
           id: 9,
           account: 'bob',
           domain: 'local',
           availability: 'AVAILABLE',
-        }),
+          disabledAt: null,
+        },
+      ]),
     };
-    const relationshipService = { createRelationshipRequest: vi.fn() };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 81n }),
+    const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
+    const admissionTx = { admission: true };
+    const userIntents = {
+      execute: vi.fn().mockImplementation(async (_params, options) => {
+        await options?.admissionInTx?.(admissionTx);
+        return {};
+      }),
     };
-    const controller = new RelationshipController(
-      userService as never,
-      relationshipService as never,
-      {} as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
+    const controller = build({ userService, userIntents, userQuota });
 
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
@@ -414,22 +269,98 @@ describe('RelationshipController.requestRelationship', () => {
         domain: 'local',
         note: 'hello',
       }),
-    ).resolves.toEqual({ taskId: '81', status: 'PENDING' });
+    ).resolves.toEqual({ status: 'OK' });
+    expect(userService.findRelationshipAdmissionAccounts).toHaveBeenCalledWith(
+      7,
+      'bob',
+    );
+    expect(userIntents.execute).toHaveBeenCalledWith(
+      {
+        userId: 7,
+        decision: 'REQUESTED',
+        target: { account: 'bob', domain: 'local' },
+        note: 'hello',
+      },
+      expect.objectContaining({ admissionInTx: expect.any(Function) }),
+    );
+    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+  });
+
+  it('returns the active thread when the request collapses into acceptance', async () => {
+    const userService = {
+      findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue([
+        {
+          id: 7,
+          account: 'alice',
+          domain: 'local',
+          availability: 'AVAILABLE',
+          disabledAt: null,
+        },
+        {
+          id: 9,
+          account: 'bob',
+          domain: 'local',
+          availability: 'AVAILABLE',
+          disabledAt: null,
+        },
+      ]),
+    };
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({ threadId: 33 }),
+    };
+    const controller = build({ userService, userIntents });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'local',
+      }),
+    ).resolves.toEqual({ status: 'OK', threadId: 33 });
+  });
+
+  it('keeps the federated request durable-task based', async () => {
+    const userService = {
+      findUniqueUser: vi.fn().mockResolvedValue({
+        id: 7,
+        account: 'alice',
+        domain: 'local',
+        availability: 'AVAILABLE',
+      }),
+    };
+    const federationService = { ourDomain: 'us.test' };
+    const durableTasks = {
+      enqueueTask: vi.fn().mockResolvedValue({ taskId: 82n }),
+    };
+    const controller = build({
+      userService,
+      federationService,
+      durableTasks,
+    });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'peer.test',
+        displayName: 'Bob',
+      }),
+    ).resolves.toEqual({ taskId: '82', status: 'PENDING' });
     expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
       scope: {
         type: 'USER_PAIR',
         endpoints: [
           { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'local' },
+          { account: 'bob', domain: 'peer.test' },
         ],
       },
-      taskType: 'SEND_LOCAL_RELATIONSHIP_REQUEST',
+      taskType: 'SEND_FEDERATED_RELATIONSHIP_REQUEST',
       actorUserId: 7,
-      payload: { targetUserId: 9, note: 'hello' },
+      payload: {
+        account: 'bob',
+        domain: 'peer.test',
+        note: '',
+        displayName: 'Bob',
+      },
     });
-    expect(
-      relationshipService.createRelationshipRequest,
-    ).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -448,34 +379,34 @@ describe('RelationshipController.requestRelationship', () => {
       },
       expectedCode: 20001,
     },
-  ])('rejects $name before enqueue', async ({ target, expectedCode }) => {
-    const userService = {
-      findUniqueUser: vi
-        .fn()
-        .mockResolvedValueOnce({
-          id: 7,
-          account: 'alice',
-          domain: 'local',
-          availability: 'AVAILABLE',
-        })
-        .mockResolvedValueOnce(target),
-    };
-    const durableTasks = { enqueueTask: vi.fn() };
-    const controller = new RelationshipController(
-      userService as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      durableTasks as never,
-      {} as never,
-    );
+  ])(
+    'rejects $name before the intent runs',
+    async ({ target, expectedCode }) => {
+      const userService = {
+        findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue(
+          target === null
+            ? [
+                {
+                  id: 7,
+                  account: 'alice',
+                  domain: 'local',
+                  availability: 'AVAILABLE',
+                  disabledAt: null,
+                },
+              ]
+            : [target],
+        ),
+      };
+      const userIntents = { execute: vi.fn() };
+      const controller = build({ userService, userIntents });
 
-    await expect(
-      controller.requestRelationship({ user: { userId: 7 } } as never, {
-        account: 'alice',
-        domain: 'local',
-      }),
-    ).rejects.toMatchObject({ bizCode: expectedCode });
-    expect(durableTasks.enqueueTask).not.toHaveBeenCalled();
-  });
+      await expect(
+        controller.requestRelationship({ user: { userId: 7 } } as never, {
+          account: target === null ? 'bob' : 'alice',
+          domain: 'local',
+        }),
+      ).rejects.toMatchObject({ bizCode: expectedCode });
+      expect(userIntents.execute).not.toHaveBeenCalled();
+    },
+  );
 });

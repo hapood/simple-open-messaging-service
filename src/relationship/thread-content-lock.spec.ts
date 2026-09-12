@@ -3,7 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   requireThreadContentLockInTx,
   requireP2PThreadContentLockUnderPairInTx,
-} from './thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 
 describe('content parent lock ordering', () => {
   it('rejects a child thread outside the held P2P pair without issuing parent locks', async () => {

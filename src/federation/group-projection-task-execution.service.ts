@@ -20,7 +20,7 @@ import { loadFederationConfig } from './federation.config.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import type { GroupMetaHeadFanoutPayload } from './group-projection-task.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
-import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 
 const AUDIENCE_PAGE_SIZE = 10;
 
@@ -175,7 +175,7 @@ export class GroupProjectionTaskExecutionService {
       const activePage = page
         .filter((audience) => currentIds.has(audience.id))
         .sort(compareAudienceTargets);
-      await this.peerStateFeed.lockTargetsInTx(
+      await this.peerStateFeed.lockOutboundStateFeedNamespacesInTx(
         tx,
         activePage
           .filter((audience) => audience.targetDomain !== 'local')

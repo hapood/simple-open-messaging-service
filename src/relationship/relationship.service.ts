@@ -45,7 +45,7 @@ import {
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
-import { requireP2PThreadContentLockUnderPairInTx } from './thread-content-lock.js';
+import { requireP2PThreadContentLockUnderPairInTx } from '../business/shared/locks/thread-content-lock.js';
 
 /** Relationship-request TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -1021,7 +1021,7 @@ export class RelationshipService {
       const clientFeedUpdates = await tx
         .select({
           userId: accountTable.id,
-          feedId: accountTable.stateFeedEndId,
+          feedId: accountTable.clientStateFeedEndId,
         })
         .from(accountTable)
         .where(
@@ -1069,7 +1069,7 @@ export class RelationshipService {
         clientFeedUpdates = await tx
           .select({
             userId: accountTable.id,
-            feedId: accountTable.stateFeedEndId,
+            feedId: accountTable.clientStateFeedEndId,
           })
           .from(accountTable)
           .where(inArray(accountTable.id, recipientUserIds))

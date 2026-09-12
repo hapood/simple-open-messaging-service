@@ -18,7 +18,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../relationship/thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import {
   and,
   asc,

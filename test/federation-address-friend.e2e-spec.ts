@@ -353,7 +353,9 @@ describe('federated Address friend requests', () => {
     expect(revoked.body.code, JSON.stringify(revoked.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDurableTask(appA.database, revoked.body);
+    // The local authoring side is synchronous now: the revocation (and its
+    // peer feed item) is committed when the request answers.
+    expect(revoked.body.data).toEqual({ status: 'OK' });
     expect((await readRequest())?.status).toBe('REVOKED');
     await vi.waitFor(
       async () => {
@@ -491,7 +493,7 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${aliceToken}`)
       .send(target);
     expect(revoke.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, revoke.body);
+    expect(revoke.body.data).toEqual({ status: 'OK' });
     const reverse = await vi.waitFor(
       async () => {
         const tasks = await appB.database.query.durableTask.findMany({
@@ -524,19 +526,14 @@ describe('federated Address friend requests', () => {
         const intents = await appA.database.query.relationshipIntent.findMany({
           where: eq(relationshipIntent.pairId, relation.pair!.id),
         });
+        // The composed revocation already revoked both directions when the
+        // request answered, so the peer's reverse lands as a convergence no-op:
+        // the initiator side no longer enqueues a RESPOND_TO_REVOKE ack task.
+        expect(intents).not.toHaveLength(0);
         expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
           true,
         );
-        const tasks = await appA.database.query.durableTask.findMany({
-          where: eq(durableTask.taskType, 'REVOKE_USER_RELATIONSHIP'),
-        });
-        const response = tasks.find(
-          (row) =>
-            row.payload.operation === 'RESPOND_TO_REVOKE' &&
-            row.payload.intentAuthorUserId === aliceId &&
-            row.createdAt >= reverse.createdAt,
-        );
-        expect(response?.status).toBe('SUCCEEDED');
+        expect(relation.pair?.active).toBe(false);
       },
       { timeout: 20_000, interval: 100 },
     );

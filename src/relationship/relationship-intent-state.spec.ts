@@ -3,7 +3,7 @@ import {
   deriveRelationshipIntentTransition,
   isEffectiveRelationshipIntent,
   type RelationshipIntentSnapshot,
-} from './relationship-intent-state.js';
+} from '../business/shared/relationship-intent-state.js';
 
 const now = new Date('2026-08-24T12:00:00.000Z');
 const future = new Date('2026-08-25T12:00:00.000Z');

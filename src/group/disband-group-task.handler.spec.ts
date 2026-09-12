@@ -54,10 +54,10 @@ describe('group disband task handlers', () => {
 
   it('routes denial children to the existing intent writers rather than dissolution', async () => {
     const revokeForbiddenMember = vi.fn().mockResolvedValue(undefined);
-    const revokeDissolvedGroupMember = vi.fn();
+    const execute = vi.fn();
     const handler = new ForceRevokeGroupMemberTaskHandler(
       new DurableTaskDispatcherService(),
-      { revokeDissolvedGroupMember } as never,
+      { execute } as never,
       { revokeForbiddenMember } as never,
     );
     const task = {
@@ -74,7 +74,7 @@ describe('group disband task handlers', () => {
     };
     await handler.execute(task);
     expect(revokeForbiddenMember).toHaveBeenCalledWith(task);
-    expect(revokeDissolvedGroupMember).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('marks the group terminal and admits members until enumeration is complete', async () => {
@@ -106,12 +106,10 @@ describe('group disband task handlers', () => {
 
   it('routes a forced child to one member revoke transaction', async () => {
     const dispatcher = new DurableTaskDispatcherService();
-    const revokeDissolvedGroupMember = vi.fn().mockResolvedValue(undefined);
+    const execute = vi.fn().mockResolvedValue({ transitioned: true });
     const handler = new ForceRevokeGroupMemberTaskHandler(
       dispatcher,
-      {
-        revokeDissolvedGroupMember,
-      } as never,
+      { execute } as never,
       {} as never,
     );
     handler.onModuleInit();
@@ -119,14 +117,17 @@ describe('group disband task handlers', () => {
       ...parent,
       id: 11n,
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
-      payload: { threadId: 12, memberUserId: 9 },
+      payload: {
+        threadId: 12,
+        memberUserId: { account: 'member', domain: 'local', namespaceId: 0 },
+      },
     } satisfies DurableTask;
 
     await dispatcher.execute(child);
 
-    expect(revokeDissolvedGroupMember).toHaveBeenCalledWith({
+    expect(execute).toHaveBeenCalledWith({
       threadId: 12,
-      memberUserId: 9,
+      memberAddress: { account: 'member', domain: 'local', namespaceId: 0 },
     });
   });
 });

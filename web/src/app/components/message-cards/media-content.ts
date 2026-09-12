@@ -6,6 +6,21 @@ export type MediaUrlResolver = (item: Record<string, unknown>) => string;
 const defaultUrlResolver: MediaUrlResolver = (item) =>
   typeof item['url'] === 'string' ? item['url'] : '';
 
+const BARE_CAS_URL_RE =
+  /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/;
+
+/** Repair media URLs cached while an inbound federated message was still a STUB. */
+export function contextualMediaUrl(
+  item: Record<string, unknown>,
+  threadId: number,
+  seq: number,
+): string {
+  const url = typeof item['url'] === 'string' ? item['url'] : '';
+  return BARE_CAS_URL_RE.test(url)
+    ? `${url}?threadId=${threadId}&seq=${seq}`
+    : url;
+}
+
 export function parseImageContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,

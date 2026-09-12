@@ -6,7 +6,7 @@ import {
 import {
   requireGroupThreadContentLockUnderGroupInTx,
   type ThreadContentLock,
-} from './thread-content-lock.js';
+} from '../business/shared/locks/thread-content-lock.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -18,15 +18,14 @@ import {
   account as user,
 } from '../database/schema.js';
 import {
+  RELATIONSHIP_INTENT_REQUEST_TTL_MS,
   isEffectiveRelationshipIntent,
   type RelationshipIntentStatus,
-} from './relationship-intent-state.js';
-import { lockBusinessAccountsInTx } from './business-scope-lock.js';
+} from '../business/shared/relationship-intent-state.js';
+import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
 import { setLockedP2PPairActiveInTx } from './p2p-pair-state.js';
 
-export type { RelationshipIntentStatus } from './relationship-intent-state.js';
-
-const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export type { RelationshipIntentStatus } from '../business/shared/relationship-intent-state.js';
 
 export interface RelationshipIntentState extends Record<string, unknown> {
   id: bigint;
@@ -536,7 +535,7 @@ export class RelationshipIntentService {
     const expiresAt =
       status === 'REQUESTED'
         ? (params.expiresAt ??
-          new Date(requestedAt!.getTime() + REQUEST_TTL_MS))
+          new Date(requestedAt!.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS))
         : null;
     const written = await tx.execute(sql`
       INSERT INTO "RelationshipIntent" (

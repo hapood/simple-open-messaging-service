@@ -96,15 +96,15 @@ operational registration set.
 
 ### MessageThread — Conversation
 
-| Field                                                     | Type                    | Description                                                                                             |
-| --------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `id`                                                      | Int (PK)                |                                                                                                         |
-| `type`                                                    | MessageThreadType       | `P2P` \| `GROUP`                                                                                        |
-| `curSeq`                                                  | Int                     | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
-| `clearedSeq`                                              | Int?                    | inclusive history boundary shared by every viewer; messages at or below it are unavailable              |
-| `pullUntil`                                               | Int                     | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
-| `groupId`                                                 | Int? (unique, FK→Group) | independent group profile for GROUP; null for P2P                                                       |
-| `createdAt` / `updatedAt`                                 |                         |                                                                                                         |
+| Field                     | Type                    | Description                                                                                             |
+| ------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `id`                      | Int (PK)                |                                                                                                         |
+| `type`                    | MessageThreadType       | `P2P` \| `GROUP`                                                                                        |
+| `curSeq`                  | Int                     | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
+| `clearedSeq`              | Int?                    | inclusive history boundary shared by every viewer; messages at or below it are unavailable              |
+| `pullUntil`               | Int                     | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
+| `groupId`                 | Int? (unique, FK→Group) | independent group profile for GROUP; null for P2P                                                       |
+| `createdAt` / `updatedAt` |                         |                                                                                                         |
 
 ### P2P endpoint resolution
 
@@ -242,18 +242,18 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 
 ### Message — Message
 
-| Field                                   | Type                 | Description                                                                                                            |
-| --------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                    |
-| `seq`                                   | Int                  | positive per-thread monotonic seq, allocated atomically from `curSeq`; the external ordering key and frontend identity |
-| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| FORWARD \| GALLERY \| SYSTEM`               |
-| `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                  |
-| `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                          |
+| Field                                   | Type                 | Description                                                                                                                                                                                                           |
+| --------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                                                                                                                   |
+| `seq`                                   | Int                  | positive per-thread monotonic seq, allocated atomically from `curSeq`; the external ordering key and frontend identity                                                                                                |
+| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| FORWARD \| GALLERY \| SYSTEM`                                                                                                                      |
+| `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                                                                                                                 |
+| `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                                                                                                                         |
 | `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `sourceNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
-| `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                            |
-| `threadId`                              |                      | conversation FK                                                                                                        |
-| `creatorAccount` / `creatorDomain`      | Address snapshot     | sender identity; SYSTEM items use `$system@local`                                                            |
-| `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                        |
+| `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                                                                                                                           |
+| `threadId`                              |                      | conversation FK                                                                                                                                                                                                       |
+| `creatorAccount` / `creatorDomain`      | Address snapshot     | sender identity; SYSTEM items use `$system@local`                                                                                                                                                                     |
+| `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                                                                                                                       |
 
 Unique: `(threadId, seq)` is the local timeline identity; `(threadId,
 creatorAccount, creatorDomain, originSeq)` deduplicates an author's federated
@@ -272,16 +272,16 @@ The normative identities and derivation rules are defined by
 [Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
 columns are implementation details and never replace the wire coordinates:
 
-| Wire identity or coordinate                      | SOMS local representation                                                                                                                 |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Direct incoming `(publisher, thread, seq)`       | Captured publisher namespace plus `Message(threadId, sourceNamespaceId, originSeq)`; local `Message.seq` is a separate display/order coordinate |
-| `quoteTarget.seq`                               | Durable `quote: { seq, namespaceId: capturedPublisherNamespace }`; resolve by thread, source namespace, and origin sequence at read time |
-| `quoteTarget.originSeq`                         | Durable `quote: { seq: originSeq, namespaceId: 0 }`; already addresses the receiver's local thread sequence |
-| Direct-media `digest` bound to an outer message  | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                     |
-| Remote media not yet localized                   | `PendingMedia(threadId, creatorAccount, creatorDomain, originSeq, digest)` until digest and authorization checks succeed                  |
-| Outer FORWARD card root `bundleId`               | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                               |
-| Child bundle relation                            | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests         |
-| Asset within a verified root closure             | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                    |
+| Wire identity or coordinate                     | SOMS local representation                                                                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Direct incoming `(publisher, thread, seq)`      | Captured publisher namespace plus `Message(threadId, sourceNamespaceId, originSeq)`; local `Message.seq` is a separate display/order coordinate |
+| `quoteTarget.seq`                               | Durable `quote: { seq, namespaceId: capturedPublisherNamespace }`; resolve by thread, source namespace, and origin sequence at read time        |
+| `quoteTarget.originSeq`                         | Durable `quote: { seq: originSeq, namespaceId: 0 }`; already addresses the receiver's local thread sequence                                     |
+| Direct-media `digest` bound to an outer message | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                           |
+| Remote media not yet localized                  | `PendingMedia(threadId, creatorAccount, creatorDomain, originSeq, digest)` until digest and authorization checks succeed                        |
+| Outer FORWARD card root `bundleId`              | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                                     |
+| Child bundle relation                           | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests               |
+| Asset within a verified root closure            | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                          |
 
 For inbound data, `sourceDomain/sourceBundleId` records the remote opaque bundle identity while the
 local `ForwardBundle.id` may use a local key. Retries must retain that mapping; shape or timestamp
@@ -299,10 +299,10 @@ similarity is not an identity substitute.
 ### Federation (S2S)
 
 - **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `outboundRecognitionConfirmed` records delivery of this node's Recognize notification. `inboundRecognitionConfirmed` records evidence that the peer recognizes this node, supplied by either its Recognize notification or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; the successful Health states both confirm recognition while distinguishing current reachability quality. Per-peer daily-quota overrides remain domain-scoped.
-- **FederationNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
+- **IdentityNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
-- **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted
+- **PeerStateFeed / IdentityNamespace.stateFeedEndId / PeerStateFeedPullCursor** — compacted
   per-peer relationship and group/thread heads with transactional source and
   receiver cursors. Delta and cursor-unavailable full consumption both use a
   fixed-through paginated round; page commits persist facts without outward

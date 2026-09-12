@@ -199,11 +199,6 @@ export class SystemRowComponent {
             'chat.systemMessage.messagesModerated',
             { count: body.count },
           );
-        case 'FEDERATION_NAMESPACE_ARCHIVED':
-          return this.transloco.translate(
-            'chat.systemMessage.federationNamespaceArchived',
-            { domain: body.domain },
-          );
       }
     } catch (error) {
       return this.fallback('failed to render system message', error);

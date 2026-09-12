@@ -1,4 +1,4 @@
-import { lockBusinessAccountsInTx } from '../src/relationship/business-scope-lock.js';
+import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, count, eq } from 'drizzle-orm';

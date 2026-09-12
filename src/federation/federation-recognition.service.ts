@@ -15,7 +15,6 @@ import {
   type FederationPeerHealthRecovered,
 } from './federation-health.events.js';
 import { loadFederationConfig } from './federation.config.js';
-import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { SignatureService } from './signature.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import {
@@ -50,7 +49,6 @@ export class FederationRecognitionService {
     private readonly database: DatabaseService,
     private readonly discovery: DiscoveryService,
     private readonly signature: SignatureService,
-    private readonly stateFeed: PeerStateFeedService,
     private readonly transportConfig: FederationTransportConfigService,
     private readonly namespaces: FederationNamespaceService,
     private readonly events: EventEmitter2,
@@ -628,7 +626,6 @@ export class FederationRecognitionService {
     domain: string,
     namespaceId: number,
   ): Promise<void> {
-    await this.stateFeed.initializePeerInTx(tx, domain, namespaceId);
     await tx
       .insert(tables.peerStateFeedPullCursor)
       .values({ peerDomain: domain, namespaceId })

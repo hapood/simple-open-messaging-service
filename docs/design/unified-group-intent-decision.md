@@ -1,9 +1,9 @@
 # Unified group intent decision
 
 Status: owner-approved extension of the
-[join decision experiment](./group-join-decision-experiment.md). Production
+[join decision experiment](./group-membership-intent.md). Production
 handlers stay unchanged and no new handler is registered in this round. The
-experimental service evolves from "join request decision" into a unified
+new service evolves from "join request decision" into a unified
 group-authored intent decision family with three commands: **ACK**,
 **REVOKE**, and **REQUESTED**. The same family now covers the user-authored
 side (P2P pairs) — see [User intent family](#user-intent-family-p2p).
@@ -203,9 +203,9 @@ completing an already-authorized invitation succeeds at the limit.
 ## User intent family (P2P)
 
 The same experiment shape now covers the user-authored side:
-[ExperimentalUserIntentService](../../src/business-v2/user/p2p-intent/user-intent-decision.service.ts)
-(`handleUserIntent({userId, decision, target, note?})`), unregistered like the
-group fork. A P2P pair is the identical `RelationshipPair` state machine — the
+[UserIntentService](../../src/business/user/p2p-intent/user-intent.service.ts)
+(`execute({userId, decision, target, note?})`), unregistered like the
+group command family. A P2P pair is the identical `RelationshipPair` state machine — the
 actor authors **their own canonical side** instead of a fixed side A, and the
 reverse side's state selects the branch:
 
@@ -231,12 +231,12 @@ revoker's address). Remote acceptance additionally calls the existing
 `initializeRelationshipThreadStateInTx` (gap recovery included) inside the
 transaction; composing that subsystem was out of proportion.
 
-Lock order: both endpoint ACCOUNT scopes → the experimental P2P Pair scope →
+Lock order: both endpoint ACCOUNT scopes → the implementational P2P Pair scope →
 pair row (mint-if-absent for REQUESTED, else lock) → thread shell mint →
 thread content lock → intent rows → one post-lock authorization statement →
 participant reset/lock → Account row locks → peer target lock.
 
-PostgreSQL constraints this family documents for both forks:
+PostgreSQL constraints this family documents for both command families:
 
 - **One update per row per statement.** Two data-modifying CTEs that update
   the same row silently apply only one of them (it is not predictable which),

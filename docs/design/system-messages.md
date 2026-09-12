@@ -40,7 +40,6 @@ before content is persisted.
 | `GROUP_OWNER_TRANSFERRED`       | `previousOwner` and `newOwner` addresses                      |
 | `MESSAGE_WITHDRAWN`             | `author` address                                              |
 | `MESSAGES_MODERATED`            | Positive integer `count`                                      |
-| `FEDERATION_NAMESPACE_ARCHIVED` | `domain`                                                      |
 | `CALL_ENDED`                    | The independent [call-history content](local-call-history.md) |
 
 Do not store viewer-relative `isSelf` or incoming/outgoing fields. Both local

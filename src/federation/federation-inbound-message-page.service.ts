@@ -32,7 +32,7 @@ import {
   type FederatedForwardCard,
 } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
-import type { ThreadContentLock } from '../relationship/thread-content-lock.js';
+import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';

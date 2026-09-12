@@ -7,7 +7,7 @@ import {
   profileTable,
 } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { requireThreadContentLockInTx } from '../relationship/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 
 /** Read-only group presentation. Group coordinates are thread IDs, including mirrored groups. */
 const revision = sql<number>`COALESCE(${groupAccount.defaultProfileRev}, ${groupMetaProfileFeed.profileRev}, 0)`;
