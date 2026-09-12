@@ -27,13 +27,14 @@ import {
 import { GroupRole } from '../database/enums.js';
 import {
   durableTask,
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   messageThread,
 } from '../database/schema.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
+import { enqueueThreadFanoutInTx } from '../message/thread-fanout-task.js';
 import {
   toClientIdentity,
   type NamespacedAddress,
@@ -77,11 +78,11 @@ export class GroupMetaSyncTaskExecutionService {
       requireSameTask(readGroupMetaSyncTask(current).payload, payload);
       await requireMirrorInTx(tx, payload);
       const [feed] = await tx
-        .select({ feedEndId: groupMetaFeed.feedEndId })
-        .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.threadId, payload.groupId))
+        .select({ metaEndId: groupMeta.metaEndId })
+        .from(groupMeta)
+        .where(eq(groupMeta.threadId, payload.groupId))
         .limit(1);
-      if (feed && feed.feedEndId >= BigInt(payload.through)) {
+      if (feed && feed.metaEndId >= BigInt(payload.through)) {
         return { ready: true };
       }
       await saveTaskCheckpointInTx(
@@ -90,7 +91,7 @@ export class GroupMetaSyncTaskExecutionService {
         {
           phase: 'PULL',
           mode: feed ? 'delta' : 'full',
-          after: (feed?.feedEndId ?? 0n).toString(),
+          after: (feed?.metaEndId ?? 0n).toString(),
           through: payload.through,
         },
         'PROCESSING',
@@ -420,7 +421,10 @@ export class GroupMetaSyncTaskExecutionService {
         throw new Error('group-meta final checkpoint changed');
       await requireMirrorInTx(tx, payload);
       const [thread] = await tx
-        .select({ id: messageThread.id })
+        .select({
+          id: messageThread.id,
+          tombstoneEndSeq: messageThread.tombstoneEndSeq,
+        })
         .from(messageThread)
         .where(eq(messageThread.id, payload.groupId))
         .limit(1);
@@ -460,33 +464,47 @@ export class GroupMetaSyncTaskExecutionService {
         throw new Error('full group-meta mirror has no current profile item');
       const through = BigInt(checkpoint.through);
       const [feed] = await tx
-        .select({ feedEndId: groupMetaFeed.feedEndId })
-        .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.threadId, payload.groupId))
+        .select({ metaEndId: groupMeta.metaEndId })
+        .from(groupMeta)
+        .where(eq(groupMeta.threadId, payload.groupId))
         .limit(1);
-      if (feed && feed.feedEndId > through)
+      if (feed && feed.metaEndId > through)
         throw new Error('group-meta mirror cursor moved beyond task target');
       // Full snapshots establish a baseline; only a committed delta can prove an observed membership transition.
-      if (checkpoint.mode === 'delta' && feed && feed.feedEndId < through)
-        await this.writeObservedMembershipTransitionsInTx(
+      let transitions = 0;
+      if (checkpoint.mode === 'delta' && feed && feed.metaEndId < through)
+        transitions = await this.writeObservedMembershipTransitionsInTx(
           tx,
           payload,
           thread.id,
           threadLock,
-          feed.feedEndId,
+          feed.metaEndId,
           through,
         );
       await tx
-        .insert(groupMetaFeed)
-        .values({ threadId: payload.groupId, feedEndId: through })
+        .insert(groupMeta)
+        .values({ threadId: payload.groupId, metaEndId: through })
         .onConflictDoUpdate({
-          target: groupMetaFeed.threadId,
-          set: { feedEndId: through, updatedAt: new Date() },
+          target: groupMeta.threadId,
+          set: { metaEndId: through, updatedAt: new Date() },
         });
       await tx
         .update(messageThread)
         .set({ updatedAt: new Date() })
         .where(eq(messageThread.id, thread.id));
+      // A meta-only advance carries no system message, so nothing else admits
+      // the local fan-out that publishes the new mirror cursor to members.
+      // Membership transitions already rode their system message's fan-out.
+      if ((feed?.metaEndId ?? 0n) < through && transitions === 0) {
+        const head = await tx.execute<{ head: number }>(sql`
+          SELECT COALESCE(max(seq), 0) AS head FROM "Message"
+          WHERE "threadId" = ${thread.id}`);
+        await enqueueThreadFanoutInTx(tx, threadLock, {
+          threadId: thread.id,
+          messageEndSeq: head.rows[0].head,
+          tombstoneEndSeq: thread.tombstoneEndSeq,
+        });
+      }
       const projection = await this.applyCommittedGroupMetaInTx(
         tx,
         payload,
@@ -530,7 +548,7 @@ export class GroupMetaSyncTaskExecutionService {
     threadLock: ThreadContentLock,
     after: bigint,
     through: bigint,
-  ): Promise<void> {
+  ): Promise<number> {
     const transitions = await tx.execute<
       Record<string, unknown> &
         NamespacedAddress & { operation: 'UPSERT' | 'DEPART' }
@@ -552,7 +570,7 @@ export class GroupMetaSyncTaskExecutionService {
       )
       ORDER BY "feedId"
     `);
-    if (!transitions.rows.length) return;
+    if (!transitions.rows.length) return 0;
     const recipientUserIds = await readCurrentLocalAuthorizedGroupMemberIdsInTx(
       tx,
       {
@@ -560,7 +578,7 @@ export class GroupMetaSyncTaskExecutionService {
         threadId,
       },
     );
-    if (!recipientUserIds.length) return;
+    if (!recipientUserIds.length) return 0;
     // Joins follow the authoritative roster for both local and remote members. Local departures
     // already have a directed relationship boundary, so only remote departures are included.
     // The writer admits local content fanout atomically with this round's committed cursor.
@@ -577,6 +595,7 @@ export class GroupMetaSyncTaskExecutionService {
         },
         { threadLock },
       );
+    return transitions.rows.length;
   }
 
   private async applyCommittedGroupMetaInTx(

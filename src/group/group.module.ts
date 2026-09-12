@@ -23,6 +23,8 @@ import {
   RejectGroupJoinRequestTaskHandler,
   RevokeGroupInvitationTaskHandler,
 } from './group-request-task.handlers.js';
+import { GroupRequestExecutionService } from '../business-v2/group/accept-join-request/group-request-execution.service.js';
+import { GroupRequestFanoutTaskHandler } from '../business-v2/group/accept-join-request/group-request-fanout.handler.js';
 
 @Module({
   imports: [
@@ -51,6 +53,8 @@ import {
     RejectGroupJoinRequestTaskHandler,
     RevokeGroupInvitationTaskHandler,
     AcceptGroupInvitationTaskHandler,
+    GroupRequestExecutionService,
+    GroupRequestFanoutTaskHandler,
   ],
   exports: [GroupService, RolesGuard],
 })

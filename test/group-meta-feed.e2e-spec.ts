@@ -8,7 +8,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
   groupAccount as groupAccountTable,
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   messageThread,
@@ -99,9 +99,7 @@ describe('canonical Group Meta feed', () => {
     await database.db
       .delete(groupMetaProfileFeed)
       .where(eq(groupMetaProfileFeed.threadId, groupId));
-    await database.db
-      .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.threadId, groupId));
+    await database.db.delete(groupMeta).where(eq(groupMeta.threadId, groupId));
   });
 
   afterAll(async () => {
@@ -432,8 +430,8 @@ describe('canonical Group Meta feed', () => {
       );
       const [head] = await database.db
         .select()
-        .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.threadId, groupId));
+        .from(groupMeta)
+        .where(eq(groupMeta.threadId, groupId));
       const page = await database.db.transaction((tx) =>
         readGroupMetaPageInTx(tx, {
           groupId,
@@ -441,7 +439,7 @@ describe('canonical Group Meta feed', () => {
           mode,
           after: 0n,
           take: 100,
-          end: head.feedEndId,
+          end: head.metaEndId,
           visibleAfter: 0n,
           client: { localDomain },
         }),

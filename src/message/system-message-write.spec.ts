@@ -43,9 +43,7 @@ describe('MessageService local system messages', () => {
         where: vi.fn(() => query),
         returning: vi.fn(() => {
           threadUpdate += 1;
-          return Promise.resolve([
-            { curSeq: 4, deletionSeqAllocatedThrough: 0 },
-          ]);
+          return Promise.resolve([{ curSeq: 4, tombstoneEndSeq: 0 }]);
         }),
         then: (resolve: (value: unknown) => unknown) =>
           Promise.resolve(undefined).then(resolve),
@@ -139,9 +137,7 @@ describe('MessageService local system messages', () => {
     const query = {
       set: vi.fn(() => query),
       where: vi.fn(() => query),
-      returning: vi
-        .fn()
-        .mockResolvedValue([{ curSeq: 5, deletionSeqAllocatedThrough: 2 }]),
+      returning: vi.fn().mockResolvedValue([{ curSeq: 5, tombstoneEndSeq: 2 }]),
       then: (resolve: (value: unknown) => unknown) =>
         Promise.resolve(undefined).then(resolve),
     };

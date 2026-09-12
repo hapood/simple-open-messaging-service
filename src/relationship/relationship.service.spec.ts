@@ -30,9 +30,21 @@ describe('applyFederatedPendingProfileSnapshot', () => {
 });
 
 function localRecipientQuery(rows: unknown[]) {
-  return () => ({
-    from: () => ({ where: () => ({ orderBy: async () => rows }) }),
-  });
+  return (fields?: { threadFeedEndId?: unknown }) =>
+    fields?.threadFeedEndId
+      ? {
+          from: () => ({
+            where: async () =>
+              rows.map((row) => ({
+                userId: (row as { id: number }).id,
+                feedId: 10,
+                threadFeedEndId: 4,
+              })),
+          }),
+        }
+      : {
+          from: () => ({ where: () => ({ orderBy: async () => rows }) }),
+        };
 }
 describe('relationship client profile references', () => {
   function setup(peerRev?: number, available = true) {
@@ -46,14 +58,6 @@ describe('relationship client profile references', () => {
       avatar: 'wrong',
       bio: 'wrong',
       defaultProfileRev: 99,
-    };
-    const remote = {
-      ...local,
-      id: 2,
-      account: 'bob',
-      domain: 'remote.test',
-      namespaceId: 4,
-      defaultProfileRev: 0,
     };
     const tx = {
       select: localRecipientQuery([local]),
@@ -561,16 +565,6 @@ describe('RelationshipService local relationship client-state projection', () =>
       availability: 'AVAILABLE',
       isDeleted: false,
       name: 'Alice',
-      avatar: '',
-      bio: '',
-    };
-    const peer = {
-      id: 2,
-      account: 'bob',
-      domain: 'peer.test',
-      availability: 'AVAILABLE',
-      isDeleted: false,
-      name: 'Bob',
       avatar: '',
       bio: '',
     };

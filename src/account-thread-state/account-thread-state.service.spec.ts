@@ -124,7 +124,12 @@ describe('AccountThreadStateService.endP2P transaction boundary', () => {
             sql.includes('"authorizationEpoch"'),
         ),
       ).toEqual([expect.objectContaining({ params: [1, false, 10] })]);
-      expect(enqueueReverseP2PRevokeInTx).toHaveBeenCalledWith(tx, undefined, 2, 1);
+      expect(enqueueReverseP2PRevokeInTx).toHaveBeenCalledWith(
+        tx,
+        undefined,
+        2,
+        1,
+      );
       expect(writeP2PClientRelationshipInTx).toHaveBeenCalled();
       expect(clientFeed.notifyFeedUpdates).toHaveBeenCalledWith([
         { userId: 2, feedId: 7 },
@@ -201,9 +206,9 @@ describe('AccountThreadStateService.setBlocked', () => {
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
     const tx = {
-      execute: vi
-        .fn()
-        .mockResolvedValue({ rows: [{ blocked: false, feedId: 12 }] }),
+      execute: vi.fn().mockResolvedValue({
+        rows: [{ blocked: false, feedId: 12, threadFeedEndId: 8 }],
+      }),
       update: vi.fn(() => ({ set })),
     };
     const database = {
@@ -229,6 +234,7 @@ describe('AccountThreadStateService.setBlocked', () => {
     expect(clientFeed.notifyFeedUpdated).toHaveBeenCalledWith({
       userId: 4,
       feedId: 12,
+      threadFeedEndId: 8,
     });
     expect(database.db.transaction.mock.invocationCallOrder[0]).toBeLessThan(
       clientFeed.notifyFeedUpdated.mock.invocationCallOrder[0],

@@ -56,7 +56,7 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   forwardMessage,
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   groupRequestProjection,
@@ -1751,7 +1751,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const beforeAccount = await appA.database.query.account.findFirst({
       where: eq(account.id, aliceLocalIdA),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     expect(beforeUser).toBeDefined();
     expect(beforeAccount).toBeDefined();
@@ -1769,14 +1769,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const afterAccount = await appA.database.query.account.findFirst({
       where: eq(account.id, aliceLocalIdA),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     expect(afterUser!.defaultProfileRev).toBe(
       beforeUser!.defaultProfileRev + 1,
     );
-    expect(afterAccount!.stateFeedAllocatedThrough).toBe(
-      beforeAccount!.stateFeedAllocatedThrough,
-    );
+    expect(afterAccount!.stateFeedEndId).toBe(beforeAccount!.stateFeedEndId);
     expect(
       await appA.database.query.profileTable.findFirst({
         where: and(
@@ -1963,8 +1961,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const [originMeta, publishedHead, mirrorProfile] = await Promise.all([
-          appA.database.query.groupMetaFeed.findFirst({
-            where: eq(groupMetaFeed.threadId, trdA!.groupId),
+          appA.database.query.groupMeta.findFirst({
+            where: eq(groupMeta.threadId, trdA!.groupId),
           }),
           appA.database.query.peerStateFeed.findFirst({
             where: and(
@@ -1978,7 +1976,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ]);
         expect(publishedHead?.body).toMatchObject({
-          groupMetaFeedEndId: originMeta!.feedEndId.toString(),
+          groupMetaFeedEndId: originMeta!.metaEndId.toString(),
         });
         expect(mirrorProfile?.profileRev).toBeGreaterThan(0);
       },
@@ -2382,8 +2380,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       body: { role: GroupRole.MEMBER, profileRev: 1 },
     });
     await appB.database
-      .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.threadId, firstMirrorGroupBId));
+      .delete(groupMeta)
+      .where(eq(groupMeta.threadId, firstMirrorGroupBId));
 
     // Invite dave to the SAME group bob is in; appB adds dave to the EXISTING mirror thread.
     const groupInviteDave = await request(appA.baseUrl)

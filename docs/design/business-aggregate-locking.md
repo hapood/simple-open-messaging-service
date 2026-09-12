@@ -5,6 +5,15 @@ normative documents under [`spec/v1`](../../spec/v1/).
 
 ## 1. Purpose
 
+This document records the existing aggregate-lock implementation. For new use
+cases, the business-lock names are **Account Meta Lock** and **Relationship Pair
+Lock**, with independent responsibilities as defined in the
+[business mutation standard](./business-mutation-sql-pattern.md). The existing
+ACCOUNT advisory lock has broader aggregate responsibilities than account
+metadata alone. The group scope described below must not be removed merely by
+renaming it; each migrated flow must preserve its cross-relationship invariants
+and compatibility with existing writers.
+
 Every user and group is identified by one account address. Mutations may
 originate from a local API request or an inbound federation intent. An
 aggregate can also be created for the first time while another transaction is
@@ -166,3 +175,11 @@ mark pushes occur only after that transaction commits. Here, "push" means the
 network wake-up; creation and persistence of the referenced feed items remains
 inside the transaction. Pushes are hints and are never part of the atomic
 relationship state change.
+
+## 7. Task lookup
+
+See the [task responsibility and business-lock index](./durable-task-responsibilities-and-locks.md)
+for each task type, its branch-specific scope, and the current execution path.
+The [business mutation SQL pattern](./business-mutation-sql-pattern.md) defines
+the transaction-owner convention for subsequent refactors; existing task paths
+are not assumed to have been migrated already.

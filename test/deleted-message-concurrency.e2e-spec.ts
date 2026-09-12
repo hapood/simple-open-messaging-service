@@ -9,7 +9,6 @@ import {
   accountThreadState,
   federatedMessageTombstone,
   federatedPeer,
-  federationDeletedCursor,
   federationMessageReceipt,
   fileSyncProgress,
   identityNamespace,
@@ -36,12 +35,6 @@ describe('federated message deletion transaction ordering', () => {
   let namespaceId: number;
 
   const peerDomain = 'peer.test';
-  const cursor = () => ({
-    peerDomain,
-    namespaceId,
-    streamAccount: 'bob',
-    streamKind: 'p2p-author',
-  });
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -114,7 +107,6 @@ describe('federated message deletion transaction ordering', () => {
       sourceNamespaceId: namespaceId,
       remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
-      cursor: cursor(),
       expectedFederationVersion: 0,
     });
   }
@@ -204,7 +196,7 @@ describe('federated message deletion transaction ordering', () => {
           await ThreadFeedHeadWriter.advanceInTx(tx, reader.id, {
             threadId,
             messageEndSeq: head!.curSeq,
-            tombstoneEndSeq: head!.deletionSeqAllocatedThrough,
+            tombstoneEndSeq: head!.tombstoneEndSeq,
           });
         });
       const stored = await database.db.transaction((tx) =>
@@ -234,7 +226,7 @@ describe('federated message deletion transaction ordering', () => {
     },
   );
 
-  it('applies a federated tomb using local message coordinates and persists fanout with its cursor', async () => {
+  it('applies a federated tomb using local message coordinates and persists fanout', async () => {
     await insertIncoming();
     const stored = (await database.db.query.message.findMany())[0];
     expect(stored.seq).not.toBe(7);
@@ -250,8 +242,6 @@ describe('federated message deletion transaction ordering', () => {
       messageEndSeq: stored.seq,
       tombstoneEndSeq: result!.deletionSeq,
     });
-    const cursors = await database.db.query.federationDeletedCursor.findMany();
-    expect(cursors[0].committedThrough).toBe(9);
     expect(await apply(9)).toBeNull();
     expect(await database.db.query.durableTask.findMany()).toHaveLength(1);
   });
@@ -353,15 +343,7 @@ describe('federated message deletion transaction ordering', () => {
           eq(deletedMessage.sourceNamespaceId, namespaceId),
         ),
       );
-    const storedCursor =
-      await database.db.query.federationDeletedCursor.findFirst({
-        where: and(
-          eq(federationDeletedCursor.threadId, threadId),
-          eq(federationDeletedCursor.namespaceId, namespaceId),
-        ),
-        columns: { committedThrough: true },
-      });
-    return { stored, tombstones, logs, cursor: storedCursor };
+    return { stored, tombstones, logs };
   }
 
   it('allocates deletion coordinates per thread without gaps on concurrent retries', async () => {
@@ -402,15 +384,15 @@ describe('federated message deletion transaction ordering', () => {
     const [firstAllocator, secondAllocator] = await Promise.all([
       database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { deletionSeqAllocatedThrough: true },
+        columns: { tombstoneEndSeq: true },
       }),
       database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, otherThread.id),
-        columns: { deletionSeqAllocatedThrough: true },
+        columns: { tombstoneEndSeq: true },
       }),
     ]);
-    expect(firstAllocator?.deletionSeqAllocatedThrough).toBe(2);
-    expect(secondAllocator?.deletionSeqAllocatedThrough).toBe(1);
+    expect(firstAllocator?.tombstoneEndSeq).toBe(2);
+    expect(secondAllocator?.tombstoneEndSeq).toBe(1);
   });
 
   it('stores local deletion facts in namespace zero', async () => {
@@ -717,7 +699,6 @@ describe('federated message deletion transaction ordering', () => {
     expect(state.logs).toHaveLength(1);
     expect(state.logs[0]?.messageSeq).toBe(state.stored?.seq);
     expect(state.logs[0]?.deletionSeq).toBe(1);
-    expect(state.cursor?.committedThrough).toBe(10);
   });
 
   it('serializes a deletion behind an in-progress message insert and converges to deleted', async () => {
@@ -742,10 +723,9 @@ describe('federated message deletion transaction ordering', () => {
     expect(state.stored?.isDeleted).toBe(true);
     expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
-    expect(state.cursor?.committedThrough).toBe(11);
   });
 
-  it('is idempotent and never regresses the remote deletion HWM', async () => {
+  it('is idempotent when an older tombstone arrives after a newer one', async () => {
     await insertIncoming();
     await apply(12);
     await apply(11);
@@ -755,7 +735,6 @@ describe('federated message deletion transaction ordering', () => {
     expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
     expect(state.logs[0]?.deletionSeq).toBe(1);
-    expect(state.cursor?.committedThrough).toBe(12);
   });
 
   it('turns a tombstoned STUB into a formal deletion and cancels its download', async () => {

@@ -101,7 +101,10 @@ describe('system message content', () => {
       type: 'FRIEND_REMOVED',
       initiator: { account: 'alice', domain: 'local' },
     },
-    { type: 'FRIEND_REMOVED', initiator: { account: '$system', domain: 'local' } },
+    {
+      type: 'FRIEND_REMOVED',
+      initiator: { account: '$system', domain: 'local' },
+    },
     { type: 'GROUP_LEFT', member: { account: 'bob', domain: 'peer.test' } },
   ])('accepts event-specific content: $type', (body) => {
     expect(parseSystemMessageContent(JSON.stringify(body))).toEqual(body);

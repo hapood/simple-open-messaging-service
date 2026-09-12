@@ -37,14 +37,23 @@ describe('group relationship client identities', () => {
         limit.mockResolvedValueOnce([group]).mockResolvedValueOnce([{ id: 2 }]);
       const tx = {
         execute: vi.fn().mockResolvedValue({ rows: [] }),
-        select: () => ({
-          from: () => ({
-            where: () => ({
-              limit,
-              orderBy: () => [{ id: 2, account: 'member' }],
-            }),
-          }),
-        }),
+        select: (fields?: { threadFeedEndId?: unknown }) =>
+          fields?.threadFeedEndId
+            ? {
+                from: () => ({
+                  where: async () => [
+                    { userId: 2, feedId: 85, threadFeedEndId: 4 },
+                  ],
+                }),
+              }
+            : {
+                from: () => ({
+                  where: () => ({
+                    limit,
+                    orderBy: () => [{ id: 2, account: 'member' }],
+                  }),
+                }),
+              },
         query: {
           messageThread: { findFirst: vi.fn().mockResolvedValue({ id: 28 }) },
         },
@@ -91,7 +100,7 @@ describe('group relationship client identities', () => {
     const writeInTx = vi.fn().mockResolvedValue(1);
     const service = Object.create(RelationshipService.prototype);
     Object.assign(service, {
-        relationshipTasks: { deferInTx: vi.fn().mockResolvedValue(false) },
+      relationshipTasks: { deferInTx: vi.fn().mockResolvedValue(false) },
       config: { domain: 'bravo.test' },
       clientStateFeed: { writeInTx },
     });

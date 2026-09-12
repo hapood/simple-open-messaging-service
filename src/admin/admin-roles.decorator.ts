@@ -6,7 +6,7 @@ export const ADMIN_ROLES_KEY = 'admin:roles';
 
 /**
  * Restrict an admin route to the given roles. Requires AdminAuthGuard to have run first — it
- * authenticates the admin and (via AdminJwtStrategy) attaches `role` to `req.user`. AdminRolesGuard
+ * authenticates the admin and attaches `role` to `req.user`. AdminRolesGuard
  * then checks `req.user.role` against this set.
  *
  * Usage: `@UseGuards(AdminAuthGuard, AdminRolesGuard)` + `@Roles(AdminRole.SUPER_ADMIN)`.

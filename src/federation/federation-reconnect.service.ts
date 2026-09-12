@@ -1,16 +1,18 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
+import {
+  FEDERATION_PEER_HEALTH_RECOVERED,
+  type FederationPeerHealthRecovered,
+} from './federation-health.events.js';
 
 /** 60s reconnect sweep cadence (§4.3). Module-scope so @Interval can read it at decoration time. */
 const SWEEP_MS = 60_000;
 /** Max stagger across domains within one tick (avoids a thundering herd on a fleet-wide outage). */
 const JITTER_MS = 5000;
-/** Durable reconciliation cadence for recognized peers; lightweight HWM reads return quickly. */
-const RECONCILE_MS = 5 * 60_000;
 const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
 
 /**
@@ -18,6 +20,10 @@ const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
  * probing belongs to FederationHealthSchedulerService, whose bounded queue prevents slow Health
  * requests from accumulating here. After recognition recovery, this service exchanges ephemeral feed
  * revisions and drains state before messages.
+ *
+ * State reconciliation is event-driven: a Health degraded → available transition triggers one
+ * reconcile pass for that peer. Degradation refuses outbound S2S, so hints and pulls stop for the
+ * whole window; recovery is when the missed state must drain.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.
@@ -49,13 +55,17 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     );
   }
 
-  @Interval(RECONCILE_MS)
-  periodicReconciliation(): void {
-    void this.reconcileTrustedPeers().catch((error) =>
-      this.logger.warn(
-        `recognized-peer reconciliation failed: ${(error as Error).message}`,
-      ),
-    );
+  /** One reconcile pass for a peer whose Health just returned from degraded to available. */
+  @OnEvent(FEDERATION_PEER_HEALTH_RECOVERED)
+  onHealthRecovered(event: FederationPeerHealthRecovered): void {
+    const domain = event.peerDomain;
+    if (this.inFlight.has(domain)) return;
+    this.inFlight.add(domain);
+    void this.reconcile(domain)
+      .catch((error) =>
+        this.logger.debug(`reconcile ${domain}: ${(error as Error).message}`),
+      )
+      .finally(() => this.inFlight.delete(domain));
   }
 
   @Interval(REQUEST_EXPIRY_SWEEP_MS)

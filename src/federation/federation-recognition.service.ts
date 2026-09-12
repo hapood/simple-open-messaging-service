@@ -1,5 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { and, eq, getTableColumns, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -9,6 +10,10 @@ import {
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DiscoveryService, type WellKnownDoc } from './discovery.service.js';
+import {
+  FEDERATION_PEER_HEALTH_RECOVERED,
+  type FederationPeerHealthRecovered,
+} from './federation-health.events.js';
 import { loadFederationConfig } from './federation.config.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { SignatureService } from './signature.service.js';
@@ -48,6 +53,7 @@ export class FederationRecognitionService {
     private readonly stateFeed: PeerStateFeedService,
     private readonly transportConfig: FederationTransportConfigService,
     private readonly namespaces: FederationNamespaceService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async recognize(peerDomain: string): Promise<void> {
@@ -344,6 +350,7 @@ export class FederationRecognitionService {
       await this.markTransportDegraded(normalized, 'Health unavailable');
       return;
     }
+    let recovered = false;
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       if (
@@ -362,6 +369,7 @@ export class FederationRecognitionService {
         remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
+      recovered = peer.trustLevel === 'degraded' && trustLevel === 'available';
       await tx
         .update(tables.federatedPeer)
         .set({
@@ -380,6 +388,12 @@ export class FederationRecognitionService {
         })
         .where(eq(tables.federatedPeer.domain, normalized));
     });
+    // Emitted post-commit: degraded blocks outbound S2S, so head hints and pulls stop for the
+    // whole degradation window; recovery is the moment the missed state has to be drained.
+    if (recovered)
+      this.events.emit(FEDERATION_PEER_HEALTH_RECOVERED, {
+        peerDomain: normalized,
+      } satisfies FederationPeerHealthRecovered);
   }
 
   async markReachable(domain: string): Promise<void> {

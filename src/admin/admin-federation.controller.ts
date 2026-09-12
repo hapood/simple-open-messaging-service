@@ -124,8 +124,7 @@ export class AdminFederationController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers/:domain/reset')
   @ApiOperation({
-    summary:
-      'Retire the active namespace of an identity-mismatch halted peer',
+    summary: 'Retire the active namespace of an identity-mismatch halted peer',
   })
   async resetPeer(
     @Param('domain') domain: string,

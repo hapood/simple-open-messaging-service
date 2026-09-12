@@ -106,7 +106,7 @@ export class UserManageService {
           updatedAt: user.updatedAt,
           isDeleted: sql<boolean>`${account.disabledAt} IS NOT NULL`,
           profileRev: user.defaultProfileRev,
-          stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
+          stateFeedEndId: account.stateFeedEndId,
           mustChangePassword: account.mustChangePassword,
         })
         .from(user)

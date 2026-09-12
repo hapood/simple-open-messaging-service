@@ -106,7 +106,7 @@ export class CallHistoryService implements OnModuleInit {
         .where(eq(messageThread.id, snapshot.threadId))
         .returning({
           seq: messageThread.curSeq,
-          tombstoneEndSeq: messageThread.deletionSeqAllocatedThrough,
+          tombstoneEndSeq: messageThread.tombstoneEndSeq,
         });
       await tx.insert(message).values({
         threadId: snapshot.threadId,

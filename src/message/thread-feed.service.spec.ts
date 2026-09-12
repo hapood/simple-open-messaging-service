@@ -1,27 +1,80 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadFeedService } from './thread-feed.service.js';
 import { mentionsAccount } from './thread-feed-head.writer.js';
+import type { DurableTask } from '../durable-task/durable-task.types.js';
+
+describe('read-position notifications', () => {
+  it.each([false, true])(
+    'publishes only after a successful commit (rollback: %s)',
+    async (rollback) => {
+      let committed = false;
+      const onThreadFeedUpdated = vi.fn(() => expect(committed).toBe(true));
+      const tx = {
+        execute: vi
+          .fn()
+          .mockResolvedValue({ rows: [{ status: 'PROCESSING' }] }),
+      };
+      const database = {
+        db: {
+          transaction: async (run: (tx: unknown) => Promise<unknown>) => {
+            const result = await run(tx);
+            expect(onThreadFeedUpdated).not.toHaveBeenCalled();
+            if (rollback) throw new Error('commit rejected');
+            committed = true;
+            return result;
+          },
+        },
+      };
+      const service = new ThreadFeedService(database as never, {} as never);
+      Object.assign(service, { sse: { onThreadFeedUpdated } });
+      vi.spyOn(service, 'applyReadPositionInTx').mockResolvedValue(4);
+      const readEndId = vi
+        .spyOn(service, 'readEndId')
+        .mockImplementation(async () => {
+          expect(committed).toBe(true);
+          return 8;
+        });
+      const task = {
+        id: 1n,
+        taskType: 'COMMIT_THREAD_READ_POSITION',
+        scopeType: 'ACCOUNT_THREAD',
+        actorUserId: 7,
+        payload: { threadId: 9, localReadHwm: 4 },
+      } as DurableTask;
+      if (rollback) {
+        await expect(service.executeTask(task)).rejects.toThrow(
+          'commit rejected',
+        );
+        expect(readEndId).not.toHaveBeenCalled();
+        expect(onThreadFeedUpdated).not.toHaveBeenCalled();
+      } else {
+        await service.executeTask(task);
+        expect(onThreadFeedUpdated).toHaveBeenCalledExactlyOnceWith(7, {
+          threadFeedEndId: 8,
+        });
+      }
+    },
+  );
+});
 
 describe('thread feed database previews', () => {
   function setup() {
     const read = vi.fn(async (_tx, _accountId, _threadId, take) =>
-      [1, 2, 3]
-        .slice(-take)
-        .map((seq) => ({
-          seq,
-          createdAt: '2026-09-08T00:00:0' + (seq - 1) + 'Z',
-          creatorAccount: 'peer',
-          creatorDomain: 'local',
-          isDeleted: seq !== 1,
-          deletionType:
-            seq === 2
-              ? 'USER_RETRACTION'
-              : seq === 3
-                ? 'MODERATION_REMOVAL'
-                : null,
-          contentType: 'PURE_TEXT',
-          content: '{"text":"hello"}',
-        })),
+      [1, 2, 3].slice(-take).map((seq) => ({
+        seq,
+        createdAt: '2026-09-08T00:00:0' + (seq - 1) + 'Z',
+        creatorAccount: 'peer',
+        creatorDomain: 'local',
+        isDeleted: seq !== 1,
+        deletionType:
+          seq === 2
+            ? 'USER_RETRACTION'
+            : seq === 3
+              ? 'MODERATION_REMOVAL'
+              : null,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"hello"}',
+      })),
     );
     const execute = vi.fn().mockImplementation(async () =>
       execute.mock.calls.length % 2 === 1

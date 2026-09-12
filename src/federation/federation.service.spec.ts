@@ -617,13 +617,11 @@ function makeStubs() {
     accountThreadState: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
     mediaAsset: { findFirst: vi.fn() },
-    federationDeletedCursor: { findFirst: vi.fn().mockResolvedValue(null) },
     deletedParticipant: { findFirst: vi.fn() },
   };
   const sse = { onMediaStatus: vi.fn() };
   const deletedMessages = {
     applyFederated: vi.fn(),
-    advanceFederatedCursor: vi.fn(),
   };
   const eventEmitter = {
     emitAsync: vi.fn().mockResolvedValue(undefined),
@@ -702,9 +700,6 @@ function makeStubs() {
         accountThreadState: {
           findMany: store.accountThreadState.findMany,
           findFirst: store.deletedParticipant.findFirst,
-        },
-        federationDeletedCursor: {
-          findFirst: store.federationDeletedCursor.findFirst,
         },
         message: {
           findMany: async (...args: unknown[]) =>

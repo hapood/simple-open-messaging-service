@@ -10,7 +10,7 @@ import {
   durableTask,
   federatedPeer,
   groupAccount as group,
-  groupMetaFeed,
+  groupMeta,
   messageThread,
   peerStateFeed,
   peerStateFeedTarget,
@@ -85,9 +85,7 @@ describe('Group Meta head fan-out task execution', () => {
       })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    await database.db
-      .insert(groupMetaFeed)
-      .values({ threadId, feedEndId: 12n });
+    await database.db.insert(groupMeta).values({ threadId, metaEndId: 12n });
     const audiences = await database.db
       .insert(threadAudience)
       .values([
@@ -150,6 +148,7 @@ describe('Group Meta head fan-out task execution', () => {
     );
     expect(clientStateFeed.notifyFeedUpdates).toHaveBeenCalledWith([
       { userId: localUserId, feedId: 17 },
+      { userId: localUserId, feedId: 0, threadFeedEndId: 0 },
     ]);
     const [published] = await database.db
       .select({ body: peerStateFeed.body })
@@ -178,11 +177,11 @@ describe('Group Meta head fan-out task execution', () => {
       const [owner] = await tx
         .update(account)
         .set({
-          stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
+          stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
         })
         .where(eq(account.id, write.userId))
         .returning();
-      return owner.stateFeedAllocatedThrough;
+      return owner.stateFeedEndId;
     });
     let fanout: Promise<unknown> | undefined;
     try {
@@ -195,7 +194,7 @@ describe('Group Meta head fan-out task execution', () => {
         await tx
           .update(account)
           .set({
-            stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
+            stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
           })
           .where(eq(account.id, localUserId));
         const pid = await tx.execute<{ pid: number }>(
@@ -227,9 +226,9 @@ describe('Group Meta head fan-out task execution', () => {
             ),
           );
         await tx
-          .update(groupMetaFeed)
-          .set({ feedEndId: 13n })
-          .where(eq(groupMetaFeed.threadId, threadId));
+          .update(groupMeta)
+          .set({ metaEndId: 13n })
+          .where(eq(groupMeta.threadId, threadId));
       });
       expect(await fanout).toBeNull();
       expect(

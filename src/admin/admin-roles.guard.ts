@@ -11,7 +11,7 @@ type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
 
 /**
  * Role gate for admin routes decorated with @Roles(...). Reads the caller's role from `req.user.role`
- * (populated by AdminJwtStrategy) and rejects with FORBIDDEN when it is absent or not in the allowed
+ * (populated by AdminAuthGuard) and rejects with FORBIDDEN when it is absent or not in the allowed
  * set. Runs strictly AFTER AdminAuthGuard in the guard chain. Routes without @Roles pass through
  * (AdminAuthGuard already proved a valid admin identity) — list/view endpoints are open to all roles.
  */

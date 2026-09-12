@@ -15,6 +15,9 @@ interface ThreadContentProjection {
   peerAccount?: string;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  /** The group's canonical meta head, carried by group-authored heads only.
+   * A mirror reporting back to its origin must not publish a meta head. */
+  groupMetaFeedEndId?: string;
 }
 
 @Injectable()
@@ -80,6 +83,9 @@ export class FederationThreadContentHeadService {
         body: {
           messageEndSeq: projection.messageEndSeq,
           tombstoneEndSeq: projection.tombstoneEndSeq,
+          ...(projection.groupMetaFeedEndId === undefined
+            ? {}
+            : { groupMetaFeedEndId: projection.groupMetaFeedEndId }),
         },
       },
     ]);
@@ -160,10 +166,22 @@ export class FederationThreadContentHeadService {
     if (thread.threadType === 'GROUP') {
       if (!thread.groupAccount)
         throw new Error(`group thread ${threadId} has no group address`);
+      // Only an authoritative local group authors the meta head; a mirror's
+      // head must not hand the origin its own applied cursor.
+      const groupAuthored =
+        thread.groupDomain === 'local' && thread.groupNamespaceId === 0;
+      const metaHead = groupAuthored
+        ? (
+            await tx.execute<{ metaEndId: string }>(sql`
+              SELECT "metaEndId"::text AS "metaEndId" FROM "GroupMeta"
+              WHERE "threadId" = ${threadId} LIMIT 1`)
+          ).rows[0]
+        : undefined;
       return {
         account: thread.groupAccount,
         messageEndSeq,
         tombstoneEndSeq,
+        groupMetaFeedEndId: metaHead?.metaEndId,
       };
     }
     if (!route.account || !route.peerAccount)

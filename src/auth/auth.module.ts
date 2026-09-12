@@ -32,8 +32,9 @@ import { PasswordHasher } from './password-hasher.service.js';
     // AdminAuthService / AdminBootstrapService share the exact same parameters + pepper.
     PasswordHasher,
     // Global guard: every route is authenticated unless it opts out with @Public(). Resolves the
-    // single session token via BearerAuthService. (Admin routes are @Public() + their own AdminJwtStrategy;
-    // the s2s signature guard is @Public() + its own check.) Registered here to co-locate with
+    // single session token via BearerAuthService. (Admin routes are @Public() + their own AdminAuthGuard,
+    // which validates the opaque admin_session cookie; the s2s signature guard is @Public() + its own
+    // check.) Registered here to co-locate with
     // LocalStrategy/PassportModule — mirrors the APP_INTERCEPTOR→AdminAuditInterceptor precedent.
     { provide: APP_GUARD, useClass: SessionAuthGuard },
     // Global interceptor: re-issues the browser session cookie on sliding. SessionAuthGuard stashes the

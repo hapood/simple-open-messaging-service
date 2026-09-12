@@ -24,7 +24,7 @@ describe('SseService', () => {
             where: () => query,
             limit: async () => [
               {
-                stateFeedAllocatedThrough: 4,
+                stateFeedEndId: 4,
                 threadFeedEndId: 3,
                 profileRev: 2,
               },
@@ -231,35 +231,34 @@ describe('SseService', () => {
     }
   });
 
-  it('coalesces committed attention heads and retries a failed poll', async () => {
+  it('pushes committed heads to every online device without idle head queries', async () => {
     vi.useFakeTimers();
     const svc = makeService();
-    const client = mockRes();
-    svc.register(7, 11, client.res);
+    const first = mockRes();
+    const second = mockRes();
+    svc.register(7, 11, first.res);
+    svc.register(7, 12, second.res);
     await Promise.resolve();
     const database = (
       svc as unknown as {
         database: { db: { select: ReturnType<typeof vi.fn> } };
       }
     ).database;
-    const query = vi.fn().mockResolvedValue([{ id: 7, head: 8 }]);
-    database.db.select.mockImplementation(() => ({
-      from: () => ({ where: query }),
-    }));
+    database.db.select.mockClear();
     try {
-      await svc.pollThreadHeads();
-      await svc.pollThreadHeads();
-      expect(
-        client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
-      ).toHaveLength(1);
-      query.mockRejectedValueOnce(new Error('temporary database failure'));
-      await svc.pollThreadHeads();
-      query.mockResolvedValueOnce([{ id: 7, head: 9 }]);
-      await svc.pollThreadHeads();
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(
-        client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
-      ).toHaveLength(2);
+      svc.onThreadFeedUpdated(7, { threadFeedEndId: 8 });
+      svc.onStateFeedUpdated(7, { feedId: 9 });
+      svc.onThreadFeedUpdated(99, { threadFeedEndId: 10 });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(database.db.select).not.toHaveBeenCalled();
+      for (const client of [first, second]) {
+        expect(
+          client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
+        ).toEqual([expect.stringContaining('"threadFeedEndId":8')]);
+        expect(
+          client.writes.filter((w) => w.includes('event: STATE_FEED_UPDATED')),
+        ).toEqual([expect.stringContaining('"feedId":9')]);
+      }
     } finally {
       svc.onModuleDestroy();
       vi.useRealTimers();

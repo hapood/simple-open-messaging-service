@@ -15,7 +15,7 @@ import {
   adminActionLog,
   pendingMedia,
   groupAccount,
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   loginCode,
@@ -145,7 +145,7 @@ export const messageThreadRelations = relations(
       fields: [messageThread.groupAccountId],
       references: [groupAccount.id],
     }),
-    groupMeta: one(groupMetaFeed),
+    groupMeta: one(groupMeta),
     groupProfile: one(groupMetaProfileFeed),
     groupMembers: many(groupMetaMemberFeed),
     messageAssets: many(messageAsset),
@@ -258,9 +258,9 @@ export const groupAccountRelations = relations(groupAccount, ({ one }) => ({
   messageThread: one(messageThread),
 }));
 
-export const groupMetaFeedRelations = relations(groupMetaFeed, ({ one }) => ({
+export const groupMetaFeedRelations = relations(groupMeta, ({ one }) => ({
   thread: one(messageThread, {
-    fields: [groupMetaFeed.threadId],
+    fields: [groupMeta.threadId],
     references: [messageThread.id],
   }),
 }));

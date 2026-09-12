@@ -138,12 +138,7 @@ describe('user relationship revocation', () => {
         payload: { threadId: 12 },
       } as DurableTask);
       if (type === 'P2P') {
-        expect(participants.endP2P).toHaveBeenCalledWith(
-          12,
-          7,
-          undefined,
-          7,
-        );
+        expect(participants.endP2P).toHaveBeenCalledWith(12, 7, undefined, 7);
         expect(groups.leaveGroup).not.toHaveBeenCalled();
       } else {
         expect(groups.leaveGroup).toHaveBeenCalledWith({

@@ -17,7 +17,7 @@ interface GroupRoleChange {
 @Injectable()
 export class AuthoritativeGroupMetaMutationService {
   constructor(
-    private readonly groupMetaFeed: GroupMetaFeedService,
+    private readonly groupMeta: GroupMetaFeedService,
     private readonly tasks: DurableTaskQueueService,
   ) {}
 
@@ -36,7 +36,7 @@ export class AuthoritativeGroupMetaMutationService {
         throw new Error('privileged group roles must remain on the origin');
     }
 
-    await this.groupMetaFeed.reconcileMembersInTx(
+    await this.groupMeta.reconcileMembersInTx(
       tx,
       params.groupId,
       params.changes.map(({ member, role }) => ({
@@ -76,7 +76,7 @@ export class AuthoritativeGroupMetaMutationService {
     groupId: number,
     profileRev: number,
   ): Promise<void> {
-    await this.groupMetaFeed.reconcileProfileInTx(tx, groupId, profileRev);
+    await this.groupMeta.reconcileProfileInTx(tx, groupId, profileRev);
   }
 
   /** Admits head fan-out after every dependent write in the outer transaction. */

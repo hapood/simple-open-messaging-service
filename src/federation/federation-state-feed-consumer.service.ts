@@ -12,6 +12,7 @@ import {
   type AccountTarget,
 } from '../user/account-address.js';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
@@ -1082,6 +1083,7 @@ export class FederationStateFeedConsumerService {
           const body = item.body as {
             messageEndSeq?: unknown;
             tombstoneEndSeq?: unknown;
+            groupMetaFeedEndId?: unknown;
           };
           if (
             !Number.isSafeInteger(body.messageEndSeq) ||
@@ -1094,6 +1096,43 @@ export class FederationStateFeedConsumerService {
             throw new PermanentFederationItemError(
               'invalid THREAD_CONTENT_HEAD body',
             );
+          // The meta head rides group-authored heads only. Its presence makes
+          // this item also a meta-sync trigger, like the legacy
+          // GROUP_META_FEED_HEAD item it retires.
+          const groupMetaFeedEndId = body.groupMetaFeedEndId;
+          if (groupMetaFeedEndId !== undefined && !item.account.startsWith('!'))
+            throw new PermanentFederationItemError(
+              'invalid THREAD_CONTENT_HEAD key for a meta head',
+            );
+          if (
+            groupMetaFeedEndId !== undefined &&
+            (typeof groupMetaFeedEndId !== 'string' ||
+              !/^(0|[1-9]\d*)$/.test(groupMetaFeedEndId))
+          )
+            throw new PermanentFederationItemError(
+              'invalid THREAD_CONTENT_HEAD body',
+            );
+          if (typeof groupMetaFeedEndId === 'string') {
+            const [mirror] = await tx
+              .select({ groupId: groupStateTable.id })
+              .from(groupStateTable)
+              .where(
+                and(
+                  eq(groupStateFields.account, item.account),
+                  eq(groupStateFields.domain, peerDomain),
+                  eq(groupStateFields.namespaceId, namespaceId),
+                ),
+              )
+              .limit(1);
+            if (mirror)
+              await this.groupMetaTasks.ensureInTx(tx, {
+                groupId: mirror.groupId,
+                groupAccount: item.account,
+                peerDomain,
+                namespaceId,
+                through: BigInt(groupMetaFeedEndId),
+              });
+          }
           let threadAddress: FederationThreadAddress;
           if (item.account.startsWith('!')) {
             if (item.peerAccount !== undefined)
@@ -1169,6 +1208,12 @@ export class FederationStateFeedConsumerService {
         await tx.execute(sql.raw(`RELEASE SAVEPOINT ${savepoint}`));
       }
     }
+    clientFeedUpdates.push(
+      ...(await captureThreadStateUpdatesInTx(
+        tx,
+        clientFeedUpdates.map(({ userId }) => userId),
+      )),
+    );
     return {
       clientFeedUpdates,
       statePushDomains,

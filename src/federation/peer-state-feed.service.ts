@@ -46,6 +46,9 @@ export type PeerStateFeedWrite = PeerStateFeedWriteBase &
         body: PeerStateBody & {
           messageEndSeq: number;
           tombstoneEndSeq: number;
+          /** Group meta head carried by group-authored heads only; P2P heads
+           * must omit it. Part of the snapshot revision below. */
+          groupMetaFeedEndId?: string;
         };
       }
   );
@@ -83,13 +86,20 @@ const snapshotRevision = (
   if (eventType === 'THREAD_CONTENT_HEAD') {
     const messageEndSeq = body.messageEndSeq;
     const tombstoneEndSeq = body.tombstoneEndSeq;
+    // The optional meta head is part of the progress coordinate: a meta-only
+    // advance is legitimate progress and must allocate a new feed position.
+    const metaFeedEndId = body.groupMetaFeedEndId;
+    const metaRevision =
+      typeof metaFeedEndId === 'string' && /^(0|[1-9]\d*)$/.test(metaFeedEndId)
+        ? metaFeedEndId
+        : '0';
     return Number.isSafeInteger(messageEndSeq) &&
       Number(messageEndSeq) >= 0 &&
       Number(messageEndSeq) <= FEDERATION_THREAD_SEQUENCE_MAX &&
       Number.isSafeInteger(tombstoneEndSeq) &&
       Number(tombstoneEndSeq) >= 0 &&
       Number(tombstoneEndSeq) <= FEDERATION_THREAD_SEQUENCE_MAX
-      ? `${Number(messageEndSeq)}:${Number(tombstoneEndSeq)}`
+      ? `${Number(messageEndSeq)}:${Number(tombstoneEndSeq)}:${metaRevision}`
       : undefined;
   }
   return undefined;

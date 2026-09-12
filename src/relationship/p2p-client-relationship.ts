@@ -9,6 +9,8 @@ import {
 import type { NamespacedAddress } from '../common/client-identity.js';
 import type { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import type { RelationshipIntentService } from './relationship-intent.service.js';
+import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
+import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
 
 /** Publish both current authored directions to each local endpoint in the owning transaction. */
 export async function writeP2PClientRelationshipInTx(
@@ -17,7 +19,7 @@ export async function writeP2PClientRelationshipInTx(
   secondTarget: AccountTarget,
   intents: RelationshipIntentService,
   feed: ClientStateFeedService,
-): Promise<Array<{ userId: number; feedId: number }>> {
+): Promise<PendingClientStateFeedUpdate[]> {
   const first = await accountAddressInTx(tx, firstTarget);
   const second = await accountAddressInTx(tx, secondTarget);
   const relationship = await intents.readP2PRelationshipInTx(tx, first, second);
@@ -61,6 +63,15 @@ export async function writeP2PClientRelationshipInTx(
       if (feedId !== null) pending.push({ userId: owner.id, feedId });
     }
   }
+  if (relationship.pair.threadId !== null)
+    pending.push(
+      ...(await captureThreadStateUpdatesInTx(
+        tx,
+        recipients
+          .filter((owner) => owner.availability === 'AVAILABLE')
+          .map((owner) => owner.id),
+      )),
+    );
   return pending;
 }
 

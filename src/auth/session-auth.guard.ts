@@ -26,8 +26,8 @@ import { MEDIA_TOKEN_COOKIE } from './media-token.js';
  * the httpOnly `media_token` cookie (auto-attached same-origin on the browser), falling back to an
  * `Authorization: Bearer` header (native clients + the desktop SSE worker, which can't use a cookie).
  * This mirrors the `/uploads/*` validator in `bootstrap.ts`, so every route honors the same credential.
- * Public routes that carry another auth mechanism (admin JWT / s2s signature) are marked `@Public()` so
- * this guard skips them and their own route-scoped guard runs.
+ * Public routes that carry another auth mechanism (admin session cookie / s2s signature) are marked
+ * `@Public()` so this guard skips them and their own route-scoped guard runs.
  */
 @Injectable()
 export class SessionAuthGuard implements CanActivate {

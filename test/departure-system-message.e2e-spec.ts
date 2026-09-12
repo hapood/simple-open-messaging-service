@@ -19,7 +19,7 @@ import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   groupAccount,
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   messageThread,
@@ -211,8 +211,8 @@ describe('departure system message paths', () => {
       })),
     );
     await database.db
-      .insert(groupMetaFeed)
-      .values({ threadId: parent.id, feedEndId: 5n });
+      .insert(groupMeta)
+      .values({ threadId: parent.id, metaEndId: 5n });
     await database.db
       .insert(groupMetaProfileFeed)
       .values({ threadId: parent.id, feedId: 1n, profileRev: 1 });
@@ -538,8 +538,8 @@ describe('departure system message paths', () => {
       .set({ fullSyncRunId: task.id })
       .where(eq(groupMetaProfileFeed.threadId, h.groupId));
     await database.db
-      .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.threadId, h.groupId));
+      .delete(groupMeta)
+      .where(eq(groupMeta.threadId, h.groupId));
     await app.get(GroupMetaSyncTaskExecutionService).execute(task);
     expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(0);
     expect(
@@ -624,10 +624,10 @@ describe('departure system message paths', () => {
     expect(await notices(h.threadId, 'GROUP_JOINED')).toHaveLength(0);
     expect(
       (
-        await database.db.query.groupMetaFeed.findFirst({
-          where: eq(groupMetaFeed.threadId, h.groupId),
+        await database.db.query.groupMeta.findFirst({
+          where: eq(groupMeta.threadId, h.groupId),
         })
-      )?.feedEndId,
+      )?.metaEndId,
     ).toBe(5n);
     expect(
       await database.db.query.durableTask.findFirst({

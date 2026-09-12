@@ -28,7 +28,11 @@ describe('incoming group relationship allocator ordering', () => {
         relationshipIntents: {
           applyRemoteGroupIntentInTx: vi.fn(async () => {
             order.push('group');
-            return { changed: true, wasActive: true, shouldBeActive: status === 'ACCEPTED' };
+            return {
+              changed: true,
+              wasActive: true,
+              shouldBeActive: status === 'ACCEPTED',
+            };
           }),
         },
         stateFeed: { lockTargetsInTx },

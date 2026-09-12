@@ -58,7 +58,7 @@ function target() {
       }),
     ),
   };
-  const groupMetaFeed = {
+  const groupMeta = {
     serve: vi.fn().mockResolvedValue({}),
     resolveAllocatedMemberProfile: vi
       .fn()
@@ -71,7 +71,7 @@ function target() {
     {} as never,
     peerStateFeed as never,
     roundScheduler as never,
-    groupMetaFeed as never,
+    groupMeta as never,
   );
   return {
     controller,
@@ -82,7 +82,7 @@ function target() {
     messageFeedPull,
     tombstonePull,
     roundScheduler,
-    groupMetaFeed,
+    groupMeta,
   };
 }
 
@@ -373,7 +373,7 @@ describe('S2sController reverse thread queries', () => {
 
 describe('S2sController group-meta modes', () => {
   it('routes both modes with the common feed pagination parameters', async () => {
-    const { controller, groupMetaFeed } = target();
+    const { controller, groupMeta } = target();
     const fullReq = {
       query: {
         account: '!01arz3ndektsv4rrffq69g5fav',
@@ -392,7 +392,7 @@ describe('S2sController group-meta modes', () => {
       '25',
       '40',
     );
-    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+    expect(groupMeta.serve).toHaveBeenLastCalledWith(
       'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
@@ -416,7 +416,7 @@ describe('S2sController group-meta modes', () => {
       'delta',
       '7',
     );
-    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+    expect(groupMeta.serve).toHaveBeenLastCalledWith(
       'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
@@ -428,7 +428,7 @@ describe('S2sController group-meta modes', () => {
   });
 
   it('routes an omitted cursor for recovery-window discovery', async () => {
-    const { controller, groupMetaFeed } = target();
+    const { controller, groupMeta } = target();
     const req = {
       query: {
         account: '!01arz3ndektsv4rrffq69g5fav',
@@ -438,7 +438,7 @@ describe('S2sController group-meta modes', () => {
     } as unknown as FastifyRequest;
 
     await controller.getGroupMeta(req, '!01arz3ndektsv4rrffq69g5fav', 'full');
-    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+    expect(groupMeta.serve).toHaveBeenLastCalledWith(
       'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
@@ -450,7 +450,7 @@ describe('S2sController group-meta modes', () => {
   });
 
   it('rejects another page parameter when after is omitted', async () => {
-    const { controller, groupMetaFeed } = target();
+    const { controller, groupMeta } = target();
     const req = {
       query: {
         account: '!01arz3ndektsv4rrffq69g5fav',
@@ -472,7 +472,7 @@ describe('S2sController group-meta modes', () => {
       bizCode: BusinessCode.FEDERATION_MALFORMED,
       status: 400,
     });
-    expect(groupMetaFeed.serve).not.toHaveBeenCalled();
+    expect(groupMeta.serve).not.toHaveBeenCalled();
   });
 });
 
@@ -556,7 +556,7 @@ describe('S2sController message author profiles', () => {
 
 describe('S2sController group member profiles', () => {
   it('uses the exact Group Meta allocation and returns the complete profile', async () => {
-    const { controller, federation, groupMetaFeed } = target();
+    const { controller, federation, groupMeta } = target();
     const req = {
       method: 'GET',
       url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=4',
@@ -573,7 +573,7 @@ describe('S2sController group member profiles', () => {
       bio: 'Member biography',
       avatar: null,
     });
-    expect(groupMetaFeed.resolveAllocatedMemberProfile).toHaveBeenCalledWith(
+    expect(groupMeta.resolveAllocatedMemberProfile).toHaveBeenCalledWith(
       'mirror.example',
       7,
       '!group',
@@ -590,7 +590,7 @@ describe('S2sController group member profiles', () => {
   });
 
   it('rejects a zero revision before reading an allocation', async () => {
-    const { controller, groupMetaFeed } = target();
+    const { controller, groupMeta } = target();
     const req = {
       method: 'GET',
       url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=0',
@@ -603,7 +603,7 @@ describe('S2sController group member profiles', () => {
       bizCode: BusinessCode.FEDERATION_MALFORMED,
       status: 400,
     });
-    expect(groupMetaFeed.resolveAllocatedMemberProfile).not.toHaveBeenCalled();
+    expect(groupMeta.resolveAllocatedMemberProfile).not.toHaveBeenCalled();
   });
 });
 

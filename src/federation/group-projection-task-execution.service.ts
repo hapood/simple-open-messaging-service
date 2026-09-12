@@ -1,5 +1,6 @@
 import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { Injectable } from '@nestjs/common';
+import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -9,7 +10,7 @@ import {
 import { DatabaseService } from '../database/database.service.js';
 import {
   durableTask,
-  groupMetaFeed,
+  groupMeta,
   messageThread,
   threadAudience,
 } from '../database/schema.js';
@@ -50,7 +51,11 @@ export class GroupProjectionTaskExecutionService {
       if (!effect.processed) return;
       const current = await this.retainCurrentAudience(effect);
       this.clientStateFeed.notifyFeedUpdates(
-        current.clientUpdates.map(({ userId, feedId }) => ({ userId, feedId })),
+        current.clientUpdates.map(({ userId, feedId, threadFeedEndId }) => ({
+          userId,
+          feedId,
+          ...(threadFeedEndId === undefined ? {} : { threadFeedEndId }),
+        })),
       );
       for (const peerDomain of new Set(
         current.peerTargets.map((target) => target.peerDomain),
@@ -120,11 +125,11 @@ export class GroupProjectionTaskExecutionService {
           account: groupStateFields.account,
           domain: groupStateFields.domain,
           namespaceId: groupStateFields.namespaceId,
-          feedEndId: groupMetaFeed.feedEndId,
+          metaEndId: groupMeta.metaEndId,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.id))
-        .innerJoin(groupMetaFeed, eq(groupMetaFeed.threadId, group.id))
+        .innerJoin(groupMeta, eq(groupMeta.threadId, group.id))
         .where(eq(messageThread.id, payload.threadId))
         .limit(1);
       if (!state) throw new Error('Group Meta head fan-out source is missing');
@@ -198,7 +203,7 @@ export class GroupProjectionTaskExecutionService {
             eventType: 'GROUP_META_FEED_HEAD',
             subjectAccount: '',
             subjectDomain: 'local',
-            body: { groupMetaFeedEndId: state.feedEndId.toString() },
+            body: { groupMetaFeedEndId: state.metaEndId.toString() },
           });
           if (feedId !== null)
             clientUpdates.push({
@@ -219,7 +224,7 @@ export class GroupProjectionTaskExecutionService {
             eventType: 'GROUP_META_FEED_HEAD',
             subjectAccount: '',
             subjectDomain: 'local',
-            body: { groupMetaFeedEndId: state.feedEndId.toString() },
+            body: { groupMetaFeedEndId: state.metaEndId.toString() },
           },
         ]);
         if (published.has(audience.targetDomain))
@@ -227,6 +232,18 @@ export class GroupProjectionTaskExecutionService {
             audienceId: audience.id,
             peerDomain: audience.targetDomain,
           });
+      }
+      const captured = await captureThreadStateUpdatesInTx(
+        tx,
+        activePage
+          .filter((audience) => audience.targetDomain === 'local')
+          .map((audience) => audience.localUserId!),
+      );
+      for (const update of captured) {
+        const audience = activePage.find(
+          (row) => row.localUserId === update.userId,
+        )!;
+        clientUpdates.push({ ...update, audienceId: audience.id });
       }
       await saveTaskCheckpointInTx(tx, task.id, {
         afterAudienceId: page.at(-1)!.id.toString(),

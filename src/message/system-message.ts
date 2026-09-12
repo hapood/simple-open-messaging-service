@@ -29,7 +29,8 @@ export async function resolveSystemMessageInTx(
     return { account, domain };
   };
   switch (event.type) {
-    case 'FRIEND_REMOVED': return { ...event, initiator: await resolve(event.initiator) };
+    case 'FRIEND_REMOVED':
+      return { ...event, initiator: await resolve(event.initiator) };
     case 'GROUP_JOINED':
     case 'GROUP_LEFT':
     case 'GROUP_ADMIN_GRANTED':

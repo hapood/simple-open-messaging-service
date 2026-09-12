@@ -43,6 +43,7 @@ import {
 import { lockBusinessAccountsInTx } from '../relationship/business-scope-lock.js';
 import { setLockedP2PPairActiveInTx } from '../relationship/p2p-pair-state.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { ThreadPreviewService } from '../message/thread-preview.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
@@ -161,14 +162,27 @@ export class AccountThreadStateService {
         )
         .returning({ id: accountThreadState.id });
       if (!participant) throw new Error('thread participant is missing');
-      if (!blocked)
+      if (!blocked) {
         await this.previews.initializeReadWindowsInTx(tx, threadId, [userId]);
-      const head = await tx.execute<{ feedId: number }>(sql`
-        SELECT "stateFeedAllocatedThrough" AS "feedId" FROM "Account" WHERE id = ${userId}
+        // A blocked member missed every fan-out; resuming publishes the
+        // current group meta head with the reopened read windows.
+        await ThreadFeedHeadWriter.reconcileGroupMetaHeadInTx(tx, {
+          threadId,
+          userIds: [userId],
+        });
+      }
+      const head = await tx.execute<{
+        feedId: number;
+        threadFeedEndId: number;
+      }>(sql`
+        SELECT "stateFeedEndId" AS "feedId", "threadFeedEndId" FROM "Account" WHERE id = ${userId}
       `);
       const feedId = head.rows[0]?.feedId ?? null;
       return {
-        notification: feedId === null ? null : { userId, feedId },
+        notification:
+          feedId === null
+            ? null
+            : { userId, feedId, threadFeedEndId: head.rows[0].threadFeedEndId },
       };
     });
     if (pending?.notification)

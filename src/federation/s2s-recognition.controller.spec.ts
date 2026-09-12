@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
+import { FEDERATION_PEER_HEALTH_RECOVERED } from './federation-health.events.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 
@@ -117,18 +118,21 @@ describe('S2sRecognitionController Health privacy projection', () => {
 
 describe('FederationRecognitionService health transitions', () => {
   function service() {
-    return new FederationRecognitionService(
+    const events = { emit: vi.fn() };
+    const recognition = new FederationRecognitionService(
       {} as never,
       {} as never,
       {} as never,
       {} as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
       {} as never,
+      events as never,
     );
+    return { recognition, events };
   }
 
   it('replays the latest recognition stage to re-entrant subscribers', () => {
-    const recognition = service();
+    const { recognition } = service();
     const first = vi.fn();
     const second = vi.fn();
     const unsubscribeFirst = recognition.subscribeProgress(
@@ -153,7 +157,7 @@ describe('FederationRecognitionService health transitions', () => {
   });
 
   it('derives availability independently from recognition direction facts', () => {
-    const recognition = service();
+    const { recognition } = service();
     const lifecycle = (
       recognition as unknown as {
         lifecycle(peer: Record<string, unknown>): string;
@@ -184,6 +188,7 @@ describe('FederationRecognitionService health transitions', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     const degrade = vi
       .spyOn(service, 'markTransportDegraded')
@@ -197,26 +202,32 @@ describe('FederationRecognitionService health transitions', () => {
     );
   });
 
+  function txDatabase() {
+    const updateValues = vi.fn();
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn((values: unknown) => {
+          updateValues(values);
+          return { where: vi.fn().mockResolvedValue(undefined) };
+        }),
+      }),
+    };
+    const database = {
+      db: {
+        transaction: vi.fn(
+          async (operation: (value: typeof tx) => Promise<void>) =>
+            operation(tx),
+        ),
+      },
+    };
+    return { database, updateValues };
+  }
+
   it.each(['available', 'degraded'] as const)(
     'confirms peer recognition when Health returns %s',
     async (status) => {
-      const updateValues = vi.fn();
-      const tx = {
-        update: vi.fn().mockReturnValue({
-          set: vi.fn((values: unknown) => {
-            updateValues(values);
-            return { where: vi.fn().mockResolvedValue(undefined) };
-          }),
-        }),
-      };
-      const database = {
-        db: {
-          transaction: vi.fn(
-            async (operation: (value: typeof tx) => Promise<void>) =>
-              operation(tx),
-          ),
-        },
-      };
+      const { database, updateValues } = txDatabase();
+      const events = { emit: vi.fn() };
       const recognition = new FederationRecognitionService(
         database as never,
         {} as never,
@@ -224,6 +235,7 @@ describe('FederationRecognitionService health transitions', () => {
         {} as never,
         {} as never,
         {} as never,
+        events as never,
       );
       vi.spyOn(recognition as never, 'lockPeer').mockResolvedValue({
         trustLevel: 'degraded',
@@ -245,11 +257,47 @@ describe('FederationRecognitionService health transitions', () => {
           remoteServiceReachable: true,
         }),
       );
+      expect(events.emit).toHaveBeenCalledExactlyOnceWith(
+        FEDERATION_PEER_HEALTH_RECOVERED,
+        { peerDomain: 'peer.example' },
+      );
     },
   );
 
+  it('emits no recovery event when the peer was already available', async () => {
+    const { database } = txDatabase();
+    const events = { emit: vi.fn() };
+    const recognition = new FederationRecognitionService(
+      database as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      events as never,
+    );
+    vi.spyOn(
+      recognition as unknown as {
+        lockPeer(tx: unknown): Promise<Record<string, unknown>>;
+      },
+      'lockPeer',
+    ).mockResolvedValue({
+      trustLevel: 'available',
+      identityPinnedAt: new Date(),
+      recognizesPeer: true,
+      localServiceAvailable: true,
+      inboundRecognitionConfirmed: true,
+      inboundRecognizedAt: new Date(),
+      lightweightInboundReady: true,
+    });
+
+    await recognition.applyHealthResult('peer.example', 'available');
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
   it('coalesces concurrent Health checks for the same domain', async () => {
-    const recognition = service();
+    const { recognition } = service();
     let complete!: (status: 'available') => void;
     const pending = new Promise<'available'>((resolve) => {
       complete = resolve;
@@ -273,6 +321,7 @@ describe('FederationRecognitionService health transitions', () => {
 describe('FederationRecognitionService Recognize HTTP classification', () => {
   function subject() {
     const service = new FederationRecognitionService(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

@@ -12,10 +12,16 @@ vi.mock('../durable-task/task-checkpoint.js', () => ({
 
 describe('reverse revocation commands', () => {
   function harness() {
-    const tx = { query: {
-      account: { findFirst: vi.fn().mockResolvedValue({ account: 'local-user' }) },
-      durableTask: { findFirst: vi.fn().mockResolvedValue({ checkpoint: {} }) },
-    } };
+    const tx = {
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue({ account: 'local-user' }),
+        },
+        durableTask: {
+          findFirst: vi.fn().mockResolvedValue({ checkpoint: {} }),
+        },
+      },
+    };
     const enqueueTaskInTx = vi.fn();
     const mutations = {
       writeP2PIntentInTx: vi.fn(async () => new Map()),

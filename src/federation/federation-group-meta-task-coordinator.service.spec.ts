@@ -18,12 +18,12 @@ function payload(through: string) {
   };
 }
 
-function harness(feedEndId: bigint | null, blockers: Blocker[] = []) {
+function harness(metaEndId: bigint | null, blockers: Blocker[] = []) {
   let executeIndex = 0;
   const execute = vi.fn(async () => {
     executeIndex += 1;
     if (executeIndex === 1) return { rows: [] };
-    if (executeIndex === 2) return { rows: [{ groupId: 8, feedEndId }] };
+    if (executeIndex === 2) return { rows: [{ groupId: 8, metaEndId }] };
     return { rows: blockers };
   });
   const returning = vi.fn(async () => [{ taskId: 40n }]);

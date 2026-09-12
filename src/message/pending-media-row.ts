@@ -44,7 +44,9 @@ export function requireOutboundPendingMedia(
     row.originDomain !== null ||
     row.expectedAuthorizationEpoch !== null
   ) {
-    throw new Error(`PendingMedia ${row.batchId} has an invalid OUTBOUND shape`);
+    throw new Error(
+      `PendingMedia ${row.batchId} has an invalid OUTBOUND shape`,
+    );
   }
   return row as OutboundPendingMediaRow;
 }

@@ -99,15 +99,15 @@ export class ThreadPreviewService {
         throw new Error('Message thread mismatch');
       const heads = await tx.execute<{
         curSeq: number;
-        deletionSeqAllocatedThrough: number;
+        tombstoneEndSeq: number;
       }>(sql`
-        SELECT "curSeq", "deletionSeqAllocatedThrough" FROM "MessageThread" WHERE id = ${threadId}`);
+        SELECT "curSeq", "tombstoneEndSeq" FROM "MessageThread" WHERE id = ${threadId}`);
       const head = heads.rows[0];
       if (!head) throw new Error('Message thread disappeared');
       await enqueueMessageFanoutsInTx(tx, lock, {
         threadId,
         messageEndSeq: head.curSeq,
-        tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+        tombstoneEndSeq: head.tombstoneEndSeq,
       });
       return result;
     });

@@ -14,8 +14,8 @@ export const IS_PUBLIC = 'isPublic';
 /**
  * Mark a controller or handler as public — the global `SessionAuthGuard` (registered as APP_GUARD in
  * AuthModule) short-circuits to `true` without inspecting the bearer token. Use on login/register/health
- * and on routes authenticated by a *different* mechanism (admin JWT, s2s HTTP signature, notification
- * token) so the user-JWT guard does not reject them before their own guard runs.
+ * and on routes authenticated by a *different* mechanism (the admin session cookie via AdminAuthGuard,
+ * the s2s HTTP signature) so this guard does not reject them before their own guard runs.
  */
 export const Public = () => SetMetadata(IS_PUBLIC, true);
 

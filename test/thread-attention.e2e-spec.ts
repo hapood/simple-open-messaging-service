@@ -1,5 +1,13 @@
 import { MessageVisibilityService } from '../src/message/message-visibility.service.js';
-import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
+import {
+  beforeAll,
+  afterAll,
+  beforeEach,
+  describe,
+  it,
+  expect,
+  vi,
+} from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -61,7 +69,7 @@ describe('transactional thread attention', () => {
       .insert(accountThreadState)
       .values({ accountId: userId, threadId, updatedAt: new Date() });
     const previews = new ThreadPreviewService(db);
-    Object.assign(service, { previews });
+    Object.assign(service, { previews, sse: { onThreadFeedUpdated: vi.fn() } });
   });
   const state = async () =>
     (await db.db.query.accountThreadState.findFirst({

@@ -243,7 +243,6 @@ export class KeypairService implements OnApplicationBootstrap {
         OR EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id <> 0 LIMIT 1)
         OR EXISTS (SELECT 1 FROM "FederatedPeerEvent" LIMIT 1)
         OR EXISTS (SELECT 1 FROM "S2SKeyCache" LIMIT 1)
-        OR EXISTS (SELECT 1 FROM "FederationDeletedCursor" LIMIT 1)
         AS "hasHistory"
     `);
     return result.rows[0]?.hasHistory === true;

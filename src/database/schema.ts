@@ -318,7 +318,7 @@ export const account = pgTable(
     hashPwd: varchar({ length: 127 }),
     mustChangePassword: boolean().default(false).notNull(),
     disabledAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    stateFeedAllocatedThrough: integer().default(0).notNull(),
+    stateFeedEndId: integer().default(0).notNull(),
     threadFeedEndId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -528,6 +528,17 @@ export const accountThreadState = pgTable(
       .notNull()
       .default(sql`'{}'::integer[]`),
     lastMentionSeq: integer(),
+    /** Manager-side GroupRequestProjection watermarks for this group thread,
+     * one fan-out end per direction: applications and invitations. Read stays
+     * behind end until the manager consumes the pending request list. */
+    joinRequestEndFeedId: integer().default(0).notNull(),
+    groupInviteEndFeedId: integer().default(0).notNull(),
+    joinRequestReadFeedId: integer().default(0).notNull(),
+    /** Last group meta feed end id published to this member on the thread feed.
+     * Null for P2P conversations; the thread fan-out keeps it at the canonical
+     * GroupMeta head. Client-visible: any writer must let the allocation
+     * trigger see the change. */
+    groupMetaFeedEndId: bigint({ mode: 'bigint' }),
     muted: boolean().default(false).notNull(),
     /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
     blocked: boolean().default(false).notNull(),
@@ -585,6 +596,10 @@ export const accountThreadState = pgTable(
       'AccountThreadState_lastMentionSeq_check',
       sql`${table.lastMentionSeq} IS NULL OR ${table.lastMentionSeq} > 0`,
     ),
+    check(
+      'AccountThreadState_groupMetaFeedEndId_check',
+      sql`${table.groupMetaFeedEndId} IS NULL OR ${table.groupMetaFeedEndId} >= 0`,
+    ),
     foreignKey({
       columns: [table.accountId],
       foreignColumns: [account.id],
@@ -618,7 +633,7 @@ export const messageThread = pgTable(
     curSeq: integer().default(0).notNull(),
     /** Inclusive lower history boundary shared by every viewer of this thread. */
     clearedSeq: integer(),
-    deletionSeqAllocatedThrough: integer().default(0).notNull(),
+    tombstoneEndSeq: integer().default(0).notNull(),
     /** Group subject address; null for a P2P thread. */
     groupAccount: varchar({ length: 31 }),
     groupDomain: varchar({ length: 63 }),
@@ -674,8 +689,8 @@ export const messageThread = pgTable(
       sql`${table.authorizationEpoch} >= 0`,
     ),
     check(
-      'MessageThread_deletionSeqAllocatedThrough_check',
-      sql`${table.deletionSeqAllocatedThrough} >= 0`,
+      'MessageThread_tombstoneEndSeq_check',
+      sql`${table.tombstoneEndSeq} >= 0`,
     ),
     check(
       'MessageThread_clearedSeq_check',
@@ -1083,51 +1098,6 @@ export const federatedMessageTombstone = pgTable(
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'FederatedMessageTombstone_threadId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
-  ],
-);
-
-/** One cursor per ordered remote deletion stream. A thread can have several streams (notably a group
- * origin pulling author servers), hence this is not a MessageThread column. */
-export const federationDeletedCursor = pgTable(
-  'FederationDeletedCursor',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    threadId: integer().notNull(),
-    namespaceId: integer().notNull(),
-    streamAccount: varchar({ length: 255 }).default('').notNull(),
-    streamKind: varchar({ length: 32 }).notNull(),
-    committedThrough: integer().default(0).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    check(
-      'FederationDeletedCursor_committedThrough_check',
-      sql`${table.committedThrough} >= 0`,
-    ),
-    uniqueIndex('FederationDeletedCursor_stream_key').using(
-      'btree',
-      table.threadId.asc().nullsLast().op('int4_ops'),
-      table.namespaceId.asc().nullsLast().op('int4_ops'),
-      table.streamAccount.asc().nullsLast().op('text_ops'),
-      table.streamKind.asc().nullsLast().op('text_ops'),
-    ),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'FederationDeletedCursor_namespaceId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'FederationDeletedCursor_threadId_fkey',
     })
       .onUpdate('cascade')
       .onDelete('cascade'),
@@ -1658,6 +1628,7 @@ export const groupRequestProjection = pgTable(
     }),
     uniqueIndex('GroupRequestProjection_manager_feed_key').on(
       table.managerUserId,
+      table.direction,
       table.feedId,
     ),
     index('GroupRequestProjection_thread_feed_idx').on(
@@ -1862,14 +1833,19 @@ export const peerStateFeedTarget = pgTable(
 );
 
 /** One group-scoped Group Meta coordinate space. Local groups author it; remote groups mirror it. */
-export const groupMetaFeed = pgTable(
-  'GroupMetaFeed',
+export const groupMeta = pgTable(
+  'GroupMeta',
   {
     threadId: integer().primaryKey().notNull(),
     /** Origin allocation end or mirror's last completely applied round cursor. */
-    feedEndId: bigint({ mode: 'bigint' })
+    metaEndId: bigint({ mode: 'bigint' })
       .default(sql`0`)
       .notNull(),
+    /** Group-scoped request number streams. Applications and invitations
+     * advance independently, so every manager copies the same event number and
+     * GC deletions can never reuse one. */
+    applicationEndId: integer().default(0).notNull(),
+    invitationEndId: integer().default(0).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1878,9 +1854,17 @@ export const groupMetaFeed = pgTable(
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'GroupMetaFeed_threadId_fkey',
+      name: 'GroupMeta_threadId_fkey',
     }).onDelete('cascade'),
-    check('GroupMetaFeed_feedEndId_check', sql`${table.feedEndId} >= 0`),
+    check('GroupMeta_metaEndId_check', sql`${table.metaEndId} >= 0`),
+    check(
+      'GroupMeta_applicationEndId_check',
+      sql`${table.applicationEndId} >= 0`,
+    ),
+    check(
+      'GroupMeta_invitationEndId_check',
+      sql`${table.invitationEndId} >= 0`,
+    ),
   ],
 );
 

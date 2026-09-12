@@ -64,7 +64,7 @@ const localState = {
   account: '!group',
   domain: 'local',
   namespaceId: 0,
-  feedEndId: 12n,
+  metaEndId: 12n,
   memberDomain: 'local',
   memberNamespaceId: 0,
 };
@@ -133,14 +133,19 @@ describe('AuthoritativeGroupMembershipFinalizer', () => {
         target.service.finalizeInTx(target.tx as never, {
           threadId: 7,
           groupId: 5,
-          memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
+          memberUserId: {
+            account: 'alice',
+            domain: 'peer.test',
+            namespaceId: 9,
+          },
           active: false,
           canonicalRosterChanged: true,
         }),
       ).resolves.toEqual({ audienceChanged: !active, fanoutTaskCreated: true });
 
       if (active) expect(audience.close).not.toHaveBeenCalled();
-      else expect(audience.close).toHaveBeenCalledWith(target.tx, 'peer.test', 7);
+      else
+        expect(audience.close).toHaveBeenCalledWith(target.tx, 'peer.test', 7);
       expect(target.tx.update).not.toHaveBeenCalled();
     },
   );

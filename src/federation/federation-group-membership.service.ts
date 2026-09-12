@@ -25,7 +25,7 @@ export interface GroupMembershipSyncResult {
  * outer relationship mutation's responsibility. */
 @Injectable()
 export class FederationGroupMembershipService {
-  constructor(private readonly groupMetaFeed: GroupMetaFeedService) {}
+  constructor(private readonly groupMeta: GroupMetaFeedService) {}
 
   async syncFromActiveInTx(
     tx: DatabaseTransaction,
@@ -59,7 +59,7 @@ export class FederationGroupMembershipService {
         (current.role === GroupRole.OWNER && !params.allowOwnerDeactivation)
       )
         return { canonicalRosterChanged: false };
-      await this.groupMetaFeed.reconcileMembersInTx(tx, params.groupId, [
+      await this.groupMeta.reconcileMembersInTx(tx, params.groupId, [
         {
           namespaceId: current.namespaceId,
           account: current.account,
@@ -89,12 +89,12 @@ export class FederationGroupMembershipService {
         );
       const source = await readGroupState(tx, eq(group.id, params.groupId));
       if (!source) throw new Error('authoritative group profile is missing');
-      await this.groupMetaFeed.reconcileProfileInTx(
+      await this.groupMeta.reconcileProfileInTx(
         tx,
         params.groupId,
         source.profileRev,
       );
-      await this.groupMetaFeed.reconcileMembersInTx(tx, params.groupId, [
+      await this.groupMeta.reconcileMembersInTx(tx, params.groupId, [
         {
           namespaceId: identity.namespaceId,
           account: identity.account,

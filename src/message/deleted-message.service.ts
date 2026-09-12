@@ -8,7 +8,6 @@ import { ContentType, MessageDeleteType } from '../database/enums.js';
 import {
   deletedMessage,
   federatedMessageTombstone,
-  federationDeletedCursor,
   fileSyncProgress,
   message,
   messageThread,
@@ -58,11 +57,11 @@ export class DeletedMessageService {
     const [allocated] = await tx
       .update(messageThread)
       .set({
-        deletionSeqAllocatedThrough: sql`${messageThread.deletionSeqAllocatedThrough} + 1`,
+        tombstoneEndSeq: sql`${messageThread.tombstoneEndSeq} + 1`,
       })
       .where(eq(messageThread.id, params.threadId))
       .returning({
-        deletionSeq: messageThread.deletionSeqAllocatedThrough,
+        deletionSeq: messageThread.tombstoneEndSeq,
       });
     if (!allocated) throw new Error('deletion sequence allocation failed');
     await tx.insert(deletedMessage).values({
@@ -108,9 +107,9 @@ export class DeletedMessageService {
   ) {
     const tail = await this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { deletionSeqAllocatedThrough: true },
+      columns: { tombstoneEndSeq: true },
     });
-    const end = tail?.deletionSeqAllocatedThrough ?? 0;
+    const end = tail?.tombstoneEndSeq ?? 0;
     const cursorData = {
       resumeAfter: 0,
       resumeBefore: end + 1,
@@ -309,13 +308,13 @@ export class DeletedMessageService {
       if (onFirstDeletion) await onFirstDeletion(tx);
       const head = await tx.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+        columns: { curSeq: true, tombstoneEndSeq: true },
       });
       if (!head) throw new Error('Deletion thread disappeared');
       await enqueueMessageFanoutsInTx(tx, threadLock, {
         threadId,
         messageEndSeq: head.curSeq,
-        tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+        tombstoneEndSeq: head.tombstoneEndSeq,
       });
     }
     await tx
@@ -349,52 +348,6 @@ export class DeletedMessageService {
     return threadLock;
   }
 
-  /** Consume a remote stream item that is intentionally a no-op locally (currently: a group origin
-   * relaying this server's own-author tombstone back to it). This never touches Message state. */
-  async advanceFederatedCursor(params: {
-    threadId: number;
-    remoteDeletionSeq: number;
-    cursor: {
-      peerDomain: string;
-      namespaceId: number;
-      streamAccount: string;
-      streamKind: string;
-    };
-    expectedFederationVersion: number;
-  }): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
-      await this.assertFederatedResponseWritable(
-        tx,
-        params.threadId,
-        params.cursor.peerDomain,
-        params.cursor.namespaceId,
-        params.expectedFederationVersion,
-      );
-      await tx
-        .insert(federationDeletedCursor)
-        .values({
-          threadId: params.threadId,
-          namespaceId: params.cursor.namespaceId,
-          streamAccount: params.cursor.streamAccount,
-          streamKind: params.cursor.streamKind,
-          committedThrough: params.remoteDeletionSeq,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [
-            federationDeletedCursor.threadId,
-            federationDeletedCursor.namespaceId,
-            federationDeletedCursor.streamAccount,
-            federationDeletedCursor.streamKind,
-          ],
-          set: {
-            committedThrough: sql`GREATEST(${federationDeletedCursor.committedThrough}, ${params.remoteDeletionSeq})`,
-            updatedAt: new Date(),
-          },
-        });
-    });
-  }
-
   async applyFederated(params: {
     threadId: number;
     messageSeq: number;
@@ -404,12 +357,6 @@ export class DeletedMessageService {
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
     allowPending?: boolean;
-    cursor: {
-      peerDomain: string;
-      namespaceId: number;
-      streamAccount: string;
-      streamKind: string;
-    };
     expectedFederationVersion: number;
   }) {
     return this.database.db.transaction((tx) =>
@@ -431,12 +378,6 @@ export class DeletedMessageService {
       allowPending?: boolean;
       /** An authenticated member retraction becomes a locally published authority fact. */
       publishAsAuthority?: boolean;
-      cursor?: {
-        peerDomain: string;
-        namespaceId: number;
-        streamAccount: string;
-        streamKind: string;
-      };
       expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
     },
@@ -555,13 +496,13 @@ export class DeletedMessageService {
       if (localDeletion.created) {
         const head = await tx.query.messageThread.findFirst({
           where: eq(messageThread.id, params.threadId),
-          columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+          columns: { curSeq: true, tombstoneEndSeq: true },
         });
         if (!head) throw new Error('Deletion thread disappeared');
         await enqueueMessageFanoutsInTx(tx, threadLock, {
           threadId: params.threadId,
           messageEndSeq: head.curSeq,
-          tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+          tombstoneEndSeq: head.tombstoneEndSeq,
         });
       }
       await tx
@@ -599,31 +540,6 @@ export class DeletedMessageService {
       await tx
         .delete(pendingMedia)
         .where(eq(pendingMedia.batchId, staged.batchId));
-    }
-
-    if (params.cursor) {
-      await tx
-        .insert(federationDeletedCursor)
-        .values({
-          threadId: params.threadId,
-          namespaceId: params.cursor.namespaceId,
-          streamAccount: params.cursor.streamAccount,
-          streamKind: params.cursor.streamKind,
-          committedThrough: params.remoteDeletionSeq,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [
-            federationDeletedCursor.threadId,
-            federationDeletedCursor.namespaceId,
-            federationDeletedCursor.streamAccount,
-            federationDeletedCursor.streamKind,
-          ],
-          set: {
-            committedThrough: sql`GREATEST(${federationDeletedCursor.committedThrough}, ${params.remoteDeletionSeq})`,
-            updatedAt: new Date(),
-          },
-        });
     }
     return target && localDeletionSeq !== null
       ? {

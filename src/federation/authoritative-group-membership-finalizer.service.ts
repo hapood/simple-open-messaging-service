@@ -8,7 +8,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
-  groupMetaFeed,
+  groupMeta,
   messageThread,
   threadAudience,
   account as user,
@@ -50,11 +50,11 @@ export class AuthoritativeGroupMembershipFinalizer {
         account: groupStateFields.account,
         domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
-        feedEndId: groupMetaFeed.feedEndId,
+        metaEndId: groupMeta.metaEndId,
       })
       .from(group)
       .innerJoin(messageThread, eq(messageThread.id, group.id))
-      .leftJoin(groupMetaFeed, eq(groupMetaFeed.threadId, group.id))
+      .leftJoin(groupMeta, eq(groupMeta.threadId, group.id))
       .where(
         and(
           eq(group.id, params.groupId),
@@ -66,7 +66,7 @@ export class AuthoritativeGroupMembershipFinalizer {
     if (state.domain !== 'local' || state.namespaceId !== 0)
       return { audienceChanged: false, fanoutTaskCreated: false };
 
-    const feedEndId = state.feedEndId ?? 0n;
+    const metaEndId = state.metaEndId ?? 0n;
     let audienceChanged: boolean;
     if (member.domain === 'local') {
       const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
@@ -77,7 +77,7 @@ export class AuthoritativeGroupMembershipFinalizer {
             tx,
             params.threadId,
             localAccount.id,
-            feedEndId,
+            metaEndId,
           )
         : await this.closeLocalAudienceInTx(
             tx,
@@ -89,7 +89,7 @@ export class AuthoritativeGroupMembershipFinalizer {
         tx,
         member.domain,
         params.threadId,
-        feedEndId,
+        metaEndId,
       );
       // REQUESTED may have already opened query authorization without publishing a head.
       // Mutual activation must therefore refresh the compacted content head even when the

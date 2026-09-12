@@ -1,4 +1,5 @@
 import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task.js';
+import { captureThreadStateUpdatesInTx } from './capture-thread-state-updates.js';
 import { hasEstablishedThreadRelationship } from '../relationship/relationship-authorization.js';
 import { groupStateSql } from '../group/group-state.js';
 
@@ -13,6 +14,7 @@ import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
   account,
   clientStateFeed,
+  groupMeta,
   groupRequestProjection,
   account as user,
 } from '../database/schema.js';
@@ -45,9 +47,10 @@ export interface ClientStateFeedWrite {
 export interface PendingClientStateFeedUpdate {
   userId: number;
   feedId: number;
+  threadFeedEndId?: number;
 }
 
-/** Device-facing compacted state feed. Account.stateFeedAllocatedThrough is the shared allocator. */
+/** Device-facing compacted state feed. Account.stateFeedEndId is the shared allocator. */
 @Injectable()
 export class ClientStateFeedService implements OnModuleDestroy {
   private static readonly PUSH_COALESCE_MS = 1_000;
@@ -66,6 +69,12 @@ export class ClientStateFeedService implements OnModuleDestroy {
   ) {}
 
   notifyFeedUpdated(pending: PendingClientStateFeedUpdate): void {
+    // Conversation mutations can advance both independent feeds. A repeated
+    // state head must not suppress a newer read/preview head.
+    if (pending.threadFeedEndId !== undefined)
+      this.sse.onThreadFeedUpdated(pending.userId, {
+        threadFeedEndId: pending.threadFeedEndId,
+      });
     const current = this.pushHighWatermarks.get(pending.userId) ?? 0;
     if (pending.feedId <= current) return;
     this.pushHighWatermarks.set(pending.userId, pending.feedId);
@@ -82,14 +91,25 @@ export class ClientStateFeedService implements OnModuleDestroy {
 
   /** Publish one committed high-watermark hint per affected user. */
   notifyFeedUpdates(pending: Iterable<PendingClientStateFeedUpdate>): void {
-    const highWatermarks = new Map<number, number>();
-    for (const update of pending)
-      highWatermarks.set(
-        update.userId,
-        Math.max(highWatermarks.get(update.userId) ?? 0, update.feedId),
-      );
-    for (const [userId, feedId] of highWatermarks)
-      this.notifyFeedUpdated({ userId, feedId });
+    const highWatermarks = new Map<number, PendingClientStateFeedUpdate>();
+    for (const update of pending) {
+      const current = highWatermarks.get(update.userId);
+      highWatermarks.set(update.userId, {
+        userId: update.userId,
+        feedId: Math.max(current?.feedId ?? 0, update.feedId),
+        ...(current?.threadFeedEndId !== undefined ||
+        update.threadFeedEndId !== undefined
+          ? {
+              threadFeedEndId: Math.max(
+                current?.threadFeedEndId ?? 0,
+                update.threadFeedEndId ?? 0,
+              ),
+            }
+          : {}),
+      });
+    }
+    for (const update of highWatermarks.values())
+      this.notifyFeedUpdated(update);
   }
 
   onModuleDestroy(): void {
@@ -101,10 +121,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
   async readEndId(userId: number): Promise<number> {
     const owner = await this.database.db.query.account.findFirst({
       where: eq(account.id, userId),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     if (!owner) throw new Error(`client state feed owner ${userId} is missing`);
-    return owner.stateFeedAllocatedThrough;
+    return owner.stateFeedEndId;
   }
 
   async rejectMissingAfter(userId: number): Promise<never> {
@@ -146,11 +166,11 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const [owner] = await tx
       .update(account)
       .set({
-        stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
+        stateFeedEndId: sql`${account.stateFeedEndId} + 1`,
         updatedAt: new Date(),
       })
       .where(eq(account.id, write.userId))
-      .returning({ feedId: account.stateFeedAllocatedThrough });
+      .returning({ feedId: account.stateFeedEndId });
     if (!owner) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
@@ -308,18 +328,35 @@ export class ClientStateFeedService implements OnModuleDestroy {
       current.expiresAt.getTime() === expiresAt.getTime()
     )
       return null;
-    const [owner] = await tx
-      .update(account)
-      .set({
-        stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
-        updatedAt: new Date(),
+    // The group's per-direction counters number the event; every manager's
+    // projection copy carries that number, and the row is created lazily for
+    // groups that have not fanned group meta yet.
+    const invitation = write.direction === 'INVITATION';
+    const [feed] = await tx
+      .insert(groupMeta)
+      .values({
+        threadId: write.threadId,
+        applicationEndId: invitation ? 0 : 1,
+        invitationEndId: invitation ? 1 : 0,
       })
-      .where(eq(account.id, write.managerUserId))
-      .returning({ feedId: account.stateFeedAllocatedThrough });
-    if (!owner) throw new Error('group-request projection owner missing');
+      .onConflictDoUpdate({
+        target: groupMeta.threadId,
+        set: {
+          applicationEndId: sql`${groupMeta.applicationEndId} + ${invitation ? 0 : 1}`,
+          invitationEndId: sql`${groupMeta.invitationEndId} + ${invitation ? 1 : 0}`,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({
+        feedId: invitation
+          ? groupMeta.invitationEndId
+          : groupMeta.applicationEndId,
+      });
+    if (!feed) throw new Error('group-request projection feed is missing');
+    const feedId = feed.feedId;
     await tx
       .insert(groupRequestProjection)
-      .values({ ...write, note, requestedAt, expiresAt, feedId: owner.feedId })
+      .values({ ...write, note, requestedAt, expiresAt, feedId })
       .onConflictDoUpdate({
         target: [
           groupRequestProjection.managerUserId,
@@ -330,7 +367,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
           groupRequestProjection.direction,
         ],
         set: {
-          feedId: owner.feedId,
+          feedId,
           requestId: write.requestId,
           memberProfileRev: write.memberProfileRev,
           status: write.status,
@@ -340,7 +377,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
           updatedAt: new Date(),
         },
       });
-    return owner.feedId;
+    return feedId;
   }
 
   /** Monotonically advance the account-wide incoming friend/group invitation read watermark. */
@@ -351,7 +388,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     let pending: PendingClientStateFeedUpdate | undefined;
     const readThroughFeedId = await this.database.db.transaction(async (tx) => {
       const [owner] = await tx
-        .select({ allocatedThrough: account.stateFeedAllocatedThrough })
+        .select({ allocatedThrough: account.stateFeedEndId })
         .from(account)
         .where(eq(account.id, userId))
         .for('no key update')
@@ -527,10 +564,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
              group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
              group_state.avatar, group_state."profileRev" AS "profileRev",
-             COALESCE(meta_feed."feedEndId", 0)::text AS "groupMetaFeedEndId"
+             COALESCE(meta_feed."metaEndId", 0)::text AS "groupMetaFeedEndId"
       FROM "MessageThread" thread
       JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      LEFT JOIN "GroupMetaFeed" meta_feed ON meta_feed."threadId" = group_state.id
+      LEFT JOIN "GroupMeta" meta_feed ON meta_feed."threadId" = group_state.id
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
       LIMIT 1
     `);
@@ -588,6 +625,12 @@ export class ClientStateFeedService implements OnModuleDestroy {
       });
       if (feedId !== null) pending.push({ userId, feedId });
     }
+    pending.push(
+      ...(await captureThreadStateUpdatesInTx(
+        tx,
+        consumers.rows.map(({ userId }) => userId),
+      )),
+    );
     return pending;
   }
 

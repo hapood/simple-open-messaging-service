@@ -63,12 +63,12 @@ export class FederationGroupMetaTaskCoordinator {
     await lockBusinessAccountsInTx(tx, [groupAddress]);
     const stateResult = await tx.execute<{
       groupId: number;
-      feedEndId: string | null;
+      metaEndId: string | null;
     }>(sql`
-        SELECT source.id AS "groupId", feed."feedEndId"
+        SELECT source.id AS "groupId", feed."metaEndId"
         FROM ${groupStateSql} source
         JOIN "MessageThread" thread ON thread.id = source.id
-        LEFT JOIN "GroupMetaFeed" feed ON feed."threadId" = source.id
+        LEFT JOIN "GroupMeta" feed ON feed."threadId" = source.id
         WHERE source.id = ${input.groupId}
           AND source.account = ${input.groupAccount}
           AND source.domain = ${input.peerDomain}
@@ -78,7 +78,7 @@ export class FederationGroupMetaTaskCoordinator {
     const state = stateResult.rows[0];
     if (!state) throw new Error('group-meta mirror identity changed');
     const committedThrough =
-      state.feedEndId === null ? 0n : BigInt(state.feedEndId);
+      state.metaEndId === null ? 0n : BigInt(state.metaEndId);
     if (committedThrough >= input.through)
       return { ready: true, committedThrough };
 
@@ -129,7 +129,7 @@ export class FederationGroupMetaTaskCoordinator {
     const after = committedThrough;
     const checkpoint = {
       phase: 'PULL',
-      mode: state.feedEndId === null ? 'full' : 'delta',
+      mode: state.metaEndId === null ? 'full' : 'delta',
       after: after.toString(),
       through: desiredThrough.toString(),
     } as const;

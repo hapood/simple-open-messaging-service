@@ -33,7 +33,7 @@ per-item savepoints; no transaction-global lock cache is maintained.
 `threadId`, thread-local `deletionSeq`, target `messageSeq`, deletion type,
 `createdAt`, and `updatedAt`. Its primary key is `(threadId, deletionSeq)`, and
 `(threadId, messageSeq)` is unique because a message reaches only one terminal
-deletion fact. `MessageThread.deletionSeqAllocatedThrough` allocates the next
+deletion fact. `MessageThread.tombstoneEndSeq` allocates the next
 deletion sequence atomically and starts at `0` before the first deletion. There
 is no global `DeletedMessage.id`; database identity, local queries, client
 hints, and federation publication all use the explicit thread coordinate.

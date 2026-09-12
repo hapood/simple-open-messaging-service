@@ -153,7 +153,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       // The foreign-key holder can subsequently update the same parent without a cycle.
       await foreignKeyWriter.query(
         `UPDATE "Account"
-        SET "stateFeedAllocatedThrough" = "stateFeedAllocatedThrough" + 1 WHERE id = $1`,
+        SET "stateFeedEndId" = "stateFeedEndId" + 1 WHERE id = $1`,
         [f.owner.id],
       );
       expect((await f.snapshot()).body.conversationState).toBe('ACTIVE');

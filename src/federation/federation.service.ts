@@ -1512,7 +1512,7 @@ export class FederationService {
     return rows.map((r) => r.domain);
   }
 
-  /** Fully recognized peers participating in startup and periodic reconciliation. */
+  /** Fully recognized peers participating in startup reconciliation. */
   async listTrustedPeerDomains(): Promise<string[]> {
     const rows = await this.database.db.query.federatedPeer.findMany({
       where: and(

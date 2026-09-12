@@ -6,7 +6,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import {
-  groupMetaFeed,
+  groupMeta,
   groupMetaMemberFeed,
   groupMetaProfileFeed,
   threadAudience,
@@ -137,7 +137,7 @@ export class GroupMetaFeedService {
   ): Promise<bigint> {
     if (members.length === 0)
       throw new Error('group meta member projection is empty');
-    let feedEndId = await this.lockFeedInTx(tx, groupId);
+    let metaEndId = await this.lockFeedInTx(tx, groupId);
     const history = await tx
       .select({
         account: groupMetaMemberFeed.memberAccount,
@@ -182,11 +182,11 @@ export class GroupMetaFeedService {
         );
       })
       .sort(compareMembers);
-    if (changes.length === 0) return feedEndId;
+    if (changes.length === 0) return metaEndId;
     await tx.insert(groupMetaMemberFeed).values(
       changes.map((change) => ({
         threadId: groupId,
-        feedId: ++feedEndId,
+        feedId: ++metaEndId,
         memberAccount: change.account,
         memberDomain: change.domain,
         memberNamespaceId: change.namespaceId,
@@ -195,8 +195,8 @@ export class GroupMetaFeedService {
         updatedAt: new Date(),
       })),
     );
-    await this.advanceFeedInTx(tx, groupId, feedEndId);
-    return feedEndId;
+    await this.advanceFeedInTx(tx, groupId, metaEndId);
+    return metaEndId;
   }
 
   async reconcileProfileInTx(
@@ -204,23 +204,23 @@ export class GroupMetaFeedService {
     groupId: number,
     profileRev: number,
   ): Promise<bigint> {
-    let feedEndId = await this.lockFeedInTx(tx, groupId);
+    let metaEndId = await this.lockFeedInTx(tx, groupId);
     const [current] = await tx
       .select({ profileRev: groupMetaProfileFeed.profileRev })
       .from(groupMetaProfileFeed)
       .where(eq(groupMetaProfileFeed.threadId, groupId))
       .limit(1);
-    if (current?.profileRev === profileRev) return feedEndId;
-    feedEndId += 1n;
+    if (current?.profileRev === profileRev) return metaEndId;
+    metaEndId += 1n;
     await tx
       .insert(groupMetaProfileFeed)
-      .values({ threadId: groupId, feedId: feedEndId, profileRev })
+      .values({ threadId: groupId, feedId: metaEndId, profileRev })
       .onConflictDoUpdate({
         target: groupMetaProfileFeed.threadId,
-        set: { feedId: feedEndId, profileRev, updatedAt: new Date() },
+        set: { feedId: metaEndId, profileRev, updatedAt: new Date() },
       });
-    await this.advanceFeedInTx(tx, groupId, feedEndId);
-    return feedEndId;
+    await this.advanceFeedInTx(tx, groupId, metaEndId);
+    return metaEndId;
   }
 
   async reconcileInTx(
@@ -229,7 +229,7 @@ export class GroupMetaFeedService {
     profileRev: number,
     members: readonly GroupMetaMemberWrite[],
   ): Promise<bigint> {
-    let feedEndId = await this.lockFeedInTx(tx, groupId);
+    let metaEndId = await this.lockFeedInTx(tx, groupId);
     const history = await tx
       .select({
         account: groupMetaMemberFeed.memberAccount,
@@ -280,7 +280,7 @@ export class GroupMetaFeedService {
       await tx.insert(groupMetaMemberFeed).values(
         changes.map((change) => ({
           threadId: groupId,
-          feedId: ++feedEndId,
+          feedId: ++metaEndId,
           memberAccount: change.account,
           memberDomain: change.domain,
           memberNamespaceId: change.namespaceId,
@@ -296,17 +296,17 @@ export class GroupMetaFeedService {
       .where(eq(groupMetaProfileFeed.threadId, groupId))
       .limit(1);
     if (currentProfile?.profileRev !== profileRev) {
-      feedEndId += 1n;
+      metaEndId += 1n;
       await tx
         .insert(groupMetaProfileFeed)
-        .values({ threadId: groupId, feedId: feedEndId, profileRev })
+        .values({ threadId: groupId, feedId: metaEndId, profileRev })
         .onConflictDoUpdate({
           target: groupMetaProfileFeed.threadId,
-          set: { feedId: feedEndId, profileRev, updatedAt: new Date() },
+          set: { feedId: metaEndId, profileRev, updatedAt: new Date() },
         });
     }
-    await this.advanceFeedInTx(tx, groupId, feedEndId);
-    return feedEndId;
+    await this.advanceFeedInTx(tx, groupId, metaEndId);
+    return metaEndId;
   }
 
   private async lockFeedInTx(
@@ -314,29 +314,29 @@ export class GroupMetaFeedService {
     groupId: number,
   ): Promise<bigint> {
     await tx
-      .insert(groupMetaFeed)
+      .insert(groupMeta)
       .values({ threadId: groupId })
-      .onConflictDoNothing({ target: groupMetaFeed.threadId });
-    const locked = await tx.execute<{ feedEndId: string }>(sql`
-      SELECT "feedEndId"
-      FROM "GroupMetaFeed"
+      .onConflictDoNothing({ target: groupMeta.threadId });
+    const locked = await tx.execute<{ metaEndId: string }>(sql`
+      SELECT "metaEndId"
+      FROM "GroupMeta"
       WHERE "threadId" = ${groupId}
       FOR NO KEY UPDATE
     `);
     const feed = locked.rows[0];
     if (!feed) throw new Error('group meta feed is missing');
-    return BigInt(feed.feedEndId);
+    return BigInt(feed.metaEndId);
   }
 
   private async advanceFeedInTx(
     tx: DatabaseTransaction,
     groupId: number,
-    feedEndId: bigint,
+    metaEndId: bigint,
   ): Promise<void> {
     await tx
-      .update(groupMetaFeed)
-      .set({ feedEndId, updatedAt: new Date() })
-      .where(eq(groupMetaFeed.threadId, groupId));
+      .update(groupMeta)
+      .set({ metaEndId, updatedAt: new Date() })
+      .where(eq(groupMeta.threadId, groupId));
   }
 
   async serve(
@@ -380,9 +380,9 @@ export class GroupMetaFeedService {
             HttpStatus.OK,
           );
         const [feed] = await tx
-          .select({ feedEndId: groupMetaFeed.feedEndId })
-          .from(groupMetaFeed)
-          .where(eq(groupMetaFeed.threadId, source.groupId))
+          .select({ metaEndId: groupMeta.metaEndId })
+          .from(groupMeta)
+          .where(eq(groupMeta.threadId, source.groupId))
           .limit(1);
         const [audience] = await tx
           .select({ visibleAfter: threadAudience.groupMetaVisibleAfter })
@@ -403,7 +403,7 @@ export class GroupMetaFeedService {
           after,
           take,
           through,
-          end: feed?.feedEndId ?? 0n,
+          end: feed?.metaEndId ?? 0n,
           visibleAfter: audience?.visibleAfter ?? 0n,
         });
         return {

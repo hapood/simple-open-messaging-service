@@ -26,8 +26,11 @@ the snapshot and default profile reference with `READ_ONLY` state.
 The migration backfills established conversations, including empty and retained
 read-only conversations, and removes old `THREAD_BLOCK` snapshots. Full state
 queries include unblocked conversations. Existing state-feed wakes remain in
-use; connected-client head polling also detects committed trigger-generated
-state changes.
+use. Business transactions capture the state and thread heads affected by
+conversation changes, then publish them through the existing SSE notification
+methods and per-account throttles after commit. Read-position tasks also publish
+their thread head after commit. There is no periodic head query or database
+notification listener for these feeds; SSE reconnects recover via `HELLO`.
 
 ## Independent feed consumption
 

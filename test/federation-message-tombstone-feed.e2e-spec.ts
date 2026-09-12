@@ -91,7 +91,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .values({
         type: 'P2P',
         curSeq: 0,
-        deletionSeqAllocatedThrough: 1,
+        tombstoneEndSeq: 1,
         updatedAt: now,
       })
       .returning();
@@ -229,7 +229,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .returning();
     await database.db
       .update(messageThread)
-      .set({ deletionSeqAllocatedThrough: 2 })
+      .set({ tombstoneEndSeq: 2 })
       .where(eq(messageThread.id, thread.id));
     await database.db
       .update(peerStateFeed)
@@ -293,7 +293,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     );
     await database.db
       .update(messageThread)
-      .set({ deletionSeqAllocatedThrough: 4 })
+      .set({ tombstoneEndSeq: 4 })
       .where(eq(messageThread.id, thread.id));
     await database.db
       .update(peerStateFeed)

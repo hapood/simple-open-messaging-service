@@ -74,6 +74,7 @@ describe('FederationRecognitionService atomic commit', () => {
       stateFeed,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
       new FederationNamespaceService(database),
+      { emit: () => undefined } as never,
     );
   }
 

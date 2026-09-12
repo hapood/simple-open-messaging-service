@@ -89,13 +89,11 @@ describe('FederationRelationshipMutationService', () => {
       domain: 'peer.example',
       namespaceId: 12,
     };
-    const findFirst = vi
-      .fn()
-      .mockResolvedValue({
-        account: 'local-user',
-        domain: 'local',
-        namespaceId: 0,
-      });
+    const findFirst = vi.fn().mockResolvedValue({
+      account: 'local-user',
+      domain: 'local',
+      namespaceId: 0,
+    });
     const tx = { query: { account: { findFirst } } } as never;
     const relationshipIntents = {
       lockPairInTx: vi.fn().mockResolvedValue({}),

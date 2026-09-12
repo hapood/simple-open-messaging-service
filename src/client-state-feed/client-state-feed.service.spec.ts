@@ -10,6 +10,39 @@ vi.mock('../state-feed/state-feed-fanout-task.js', () => ({
 }));
 
 describe('ClientStateFeedService', () => {
+  it('merges independent thread heads and does not suppress them with an unchanged state head', async () => {
+    vi.useFakeTimers();
+    const onStateFeedUpdated = vi.fn();
+    const onThreadFeedUpdated = vi.fn();
+    const service = new ClientStateFeedService(
+      undefined as never,
+      { onStateFeedUpdated, onThreadFeedUpdated } as never,
+    );
+    try {
+      service.notifyFeedUpdates([
+        { userId: 1, feedId: 9, threadFeedEndId: 4 },
+        { userId: 1, feedId: 7, threadFeedEndId: 8 },
+        { userId: 2, feedId: 2, threadFeedEndId: 3 },
+      ]);
+      expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
+        threadFeedEndId: 8,
+      });
+      expect(onThreadFeedUpdated).toHaveBeenCalledWith(2, {
+        threadFeedEndId: 3,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(onStateFeedUpdated).toHaveBeenCalledWith(1, { feedId: 9 });
+      service.notifyFeedUpdated({ userId: 1, feedId: 9, threadFeedEndId: 10 });
+      expect(onThreadFeedUpdated).toHaveBeenLastCalledWith(1, {
+        threadFeedEndId: 10,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
+    } finally {
+      service.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
   it('coalesces committed SSE high watermarks in an independent window per feed', async () => {
     vi.useFakeTimers();
     const onStateFeedUpdated = vi.fn();
@@ -165,6 +198,11 @@ describe('ClientStateFeedService', () => {
     );
     vi.spyOn(service, 'writeInTx').mockResolvedValue(9);
     const tx = {
+      select: () => ({
+        from: () => ({
+          where: async () => [{ userId: 7, feedId: 10, threadFeedEndId: 3 }],
+        }),
+      }),
       execute: vi
         .fn()
         .mockResolvedValueOnce({
@@ -192,6 +230,7 @@ describe('ClientStateFeedService', () => {
     ).resolves.toEqual([
       { userId: 7, feedId: 9 },
       { userId: 7, feedId: 9 },
+      { userId: 7, feedId: 10, threadFeedEndId: 3 },
     ]);
 
     expect(service.writeInTx).toHaveBeenNthCalledWith(

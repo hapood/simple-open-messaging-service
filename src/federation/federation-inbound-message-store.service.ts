@@ -337,13 +337,13 @@ export class FederationInboundMessageStoreService {
   ): Promise<void> {
     const head = await tx.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
-      columns: { curSeq: true, deletionSeqAllocatedThrough: true },
+      columns: { curSeq: true, tombstoneEndSeq: true },
     });
     if (!head) throw new Error('Inbound message thread disappeared');
     await enqueueMessageFanoutsInTx(tx, lock, {
       threadId,
       messageEndSeq: head.curSeq,
-      tombstoneEndSeq: head.deletionSeqAllocatedThrough,
+      tombstoneEndSeq: head.tombstoneEndSeq,
     });
   }
 

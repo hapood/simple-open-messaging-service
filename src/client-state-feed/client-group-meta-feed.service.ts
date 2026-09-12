@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { groupMetaFeed } from '../database/schema.js';
+import { groupMeta } from '../database/schema.js';
 import { readGroupMetaPageInTx } from '../group-meta/group-meta-page.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 
@@ -78,9 +78,9 @@ export class ClientGroupMetaFeedService {
       `);
       if (!authorized.rows[0]) return this.forbidden();
       const [feed] = await tx
-        .select({ feedEndId: groupMetaFeed.feedEndId })
-        .from(groupMetaFeed)
-        .where(eq(groupMetaFeed.threadId, groupId))
+        .select({ metaEndId: groupMeta.metaEndId })
+        .from(groupMeta)
+        .where(eq(groupMeta.threadId, groupId))
         .limit(1);
       return readGroupMetaPageInTx(tx, {
         groupId,
@@ -89,7 +89,7 @@ export class ClientGroupMetaFeedService {
         after,
         take,
         through,
-        end: feed?.feedEndId ?? 0n,
+        end: feed?.metaEndId ?? 0n,
         visibleAfter: 0n,
         client: { localDomain: loadFederationConfig().domain },
       });

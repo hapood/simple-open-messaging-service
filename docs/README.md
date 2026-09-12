@@ -14,6 +14,8 @@ and client behavior.
 
 ## Design
 
+- [Business mutation SQL pattern](./design/business-mutation-sql-pattern.md)
+
 - [Database concurrency and locking](./design/database-concurrency-and-locking.md)
 - [Local call history](./design/local-call-history.md)
 
@@ -21,6 +23,7 @@ and client behavior.
 - [Client message history synchronization](./design/client-message-history-sync.md)
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
 - [Durable task scheduling](./design/durable-task-scheduling.md)
+- [Task responsibilities and business locks](./design/durable-task-responsibilities-and-locks.md)
 - [Message deletion](./design/message-deletion.md)
 - [Message inline entities](./design/message-entities.md)
 - [Federation consistency stress testing](./design/federation-consistency-stress-testing.md)

@@ -22,7 +22,7 @@ describe('database preview lifecycle', () => {
     vi.mocked(enqueueMessageFanoutsInTx).mockClear();
     const tx = {
       execute: vi.fn().mockResolvedValue({
-        rows: [{ curSeq: 9, deletionSeqAllocatedThrough: 3 }],
+        rows: [{ curSeq: 9, tombstoneEndSeq: 3 }],
       }),
     };
     const transaction = vi.fn(async (run: (tx: object) => Promise<unknown>) =>

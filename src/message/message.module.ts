@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { GatewayModule } from '../gateway/gateway.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
 import { ThreadFeedService } from './thread-feed.service.js';
 import { MessageService } from './message.service.js';
@@ -19,7 +20,12 @@ import { ThreadPreviewModule } from './thread-preview.module.js';
     MessageReportService,
     ThreadHistoryService,
   ],
-  imports: [LinkPreviewModule, DurableTaskModule, ThreadPreviewModule],
+  imports: [
+    LinkPreviewModule,
+    DurableTaskModule,
+    ThreadPreviewModule,
+    GatewayModule,
+  ],
   exports: [
     ThreadFeedService,
     MessageService,

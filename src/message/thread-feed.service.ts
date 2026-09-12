@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
+import { SseService } from '../gateway/sse.service.js';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -44,6 +45,8 @@ export interface ThreadFeedState {
 /** Unified compacted thread snapshots and recoverable read mutations. */
 @Injectable()
 export class ThreadFeedService implements OnModuleInit, OnModuleDestroy {
+  @Inject(SseService)
+  private readonly sse!: SseService;
   @Inject(ThreadPreviewService)
   private readonly previews!: ThreadPreviewService;
   private unregister: Array<() => void> = [];
@@ -207,6 +210,10 @@ export class ThreadFeedService implements OnModuleInit, OnModuleDestroy {
         WHERE id = ${task.id} AND status = 'PROCESSING'`);
       return lastReadSeq;
     };
-    await this.database.db.transaction(execute);
+    const lastReadSeq = await this.database.db.transaction(execute);
+    if (lastReadSeq !== undefined)
+      this.sse.onThreadFeedUpdated(task.actorUserId, {
+        threadFeedEndId: await this.readEndId(task.actorUserId),
+      });
   }
 }

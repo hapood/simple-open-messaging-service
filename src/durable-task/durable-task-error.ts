@@ -58,9 +58,7 @@ export function unexpectedTaskDiagnostics(
   );
   return {
     causes,
-    ...(databaseError
-      ? { database: databaseDiagnostics(databaseError) }
-      : {}),
+    ...(databaseError ? { database: databaseDiagnostics(databaseError) } : {}),
   };
 }
 

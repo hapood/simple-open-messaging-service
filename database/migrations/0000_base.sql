@@ -482,25 +482,6 @@ $$;
 
 
 --
--- Name: soms_notify_federation_message_committed(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.soms_notify_federation_message_committed() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  IF NEW."contentType" <> 'SYSTEM' THEN
-    PERFORM pg_notify(
-      'soms_federation_message_committed',
-      json_build_object('threadId', NEW."threadId", 'seq', NEW.seq)::text
-    );
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-
---
 -- Name: thread_feed_before_write(); Type: FUNCTION; Schema: public; Owner: -
 --
 

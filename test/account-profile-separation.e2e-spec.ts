@@ -7,7 +7,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
   groupAccount,
-  groupMetaFeed,
+  groupMeta,
   groupMetaProfileFeed,
   messageThread,
   profileTable,
@@ -158,8 +158,8 @@ describe('account controls and exact profiles', () => {
       displayName: 'Received name',
     });
     await database.db
-      .insert(groupMetaFeed)
-      .values({ threadId: thread.id, feedEndId: 1n });
+      .insert(groupMeta)
+      .values({ threadId: thread.id, metaEndId: 1n });
     await database.db
       .insert(groupMetaProfileFeed)
       .values({ threadId: thread.id, feedId: 2n, profileRev: 2 });

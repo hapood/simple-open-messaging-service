@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   durableTask,
-  groupMetaFeed,
+  groupMeta,
   messageThread,
 } from '../src/database/schema.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
@@ -61,18 +61,16 @@ describe('Group Meta handoff after predecessor completion', () => {
     await database.pool.query(
       'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
     );
-    await database.db
-      .delete(groupMetaFeed)
-      .where(eq(groupMetaFeed.threadId, groupId));
+    await database.db.delete(groupMeta).where(eq(groupMeta.threadId, groupId));
   });
 
   it.each([null, 5n])(
     'releases a failed predecessor without assuming its target was committed (feed: %s)',
-    async (feedEndId) => {
-      if (feedEndId !== null)
+    async (metaEndId) => {
+      if (metaEndId !== null)
         await database.db
-          .insert(groupMetaFeed)
-          .values({ threadId: groupId, feedEndId });
+          .insert(groupMeta)
+          .values({ threadId: groupId, metaEndId });
       const first = await ensure(10n);
       await store.claim(first);
       const second = await ensure(20n);
@@ -101,8 +99,8 @@ describe('Group Meta handoff after predecessor completion', () => {
       });
       expect(current?.checkpoint).toEqual({
         phase: 'PULL',
-        mode: feedEndId === null ? 'full' : 'delta',
-        after: (feedEndId ?? 0n).toString(),
+        mode: metaEndId === null ? 'full' : 'delta',
+        after: (metaEndId ?? 0n).toString(),
         through: '20',
       });
     },
@@ -110,23 +108,23 @@ describe('Group Meta handoff after predecessor completion', () => {
 
   it.each([10n, 25n])(
     'refreshes progress at execution and skips already-covered targets (feed: %s)',
-    async (feedEndId) => {
+    async (metaEndId) => {
       await database.db
-        .insert(groupMetaFeed)
-        .values({ threadId: groupId, feedEndId: 5n });
+        .insert(groupMeta)
+        .values({ threadId: groupId, metaEndId: 5n });
       const first = await ensure(10n);
       await store.claim(first);
       const second = await ensure(20n);
       await database.db
-        .update(groupMetaFeed)
-        .set({ feedEndId })
-        .where(eq(groupMetaFeed.threadId, groupId));
+        .update(groupMeta)
+        .set({ metaEndId })
+        .where(eq(groupMeta.threadId, groupId));
       await store.markSucceeded(first);
       const task = (await store.claim(second))!;
       await expect(execution.prepare(task)).resolves.toEqual({
-        ready: feedEndId >= 20n,
+        ready: metaEndId >= 20n,
       });
-      if (feedEndId < 20n) {
+      if (metaEndId < 20n) {
         const current = await database.db.query.durableTask.findFirst({
           where: eq(durableTask.id, second),
         });

@@ -206,6 +206,48 @@ export class ThreadFeedHeadWriter {
     }
   }
 
+  /** Publish the group meta head to members whose stored copy is behind, even
+   * when no content head moved — meta-only mutations advance no message
+   * sequence. Blocked recipients stay stale; unblocking re-reads the head.
+   * Caller holds the thread lock and runs this after the content-head writes;
+   * the allocation trigger numbers each changed row for the thread feed. */
+  static async advanceGroupMetaHeadsInTx(
+    tx: DatabaseTransaction,
+    input: {
+      threadId: number;
+      userIds: readonly number[];
+      groupMetaFeedEndId: bigint;
+    },
+  ): Promise<void> {
+    if (input.userIds.length === 0) return;
+    await tx.execute(sql`
+      UPDATE "AccountThreadState" s
+      SET "groupMetaFeedEndId" = GREATEST(
+        COALESCE(s."groupMetaFeedEndId", 0::bigint), ${input.groupMetaFeedEndId}::bigint)
+      FROM unnest(${sql.param([...input.userIds])}::integer[]) AS u(id)
+      WHERE s."threadId" = ${input.threadId} AND s."accountId" = u.id
+        AND s.blocked = false
+        AND COALESCE(s."groupMetaFeedEndId", 0::bigint) < ${input.groupMetaFeedEndId}::bigint`);
+  }
+
+  /** Read the canonical group meta head and catch the given members up in one
+   * lock scope. No-op for threads without a meta feed (P2P). */
+  static async reconcileGroupMetaHeadInTx(
+    tx: DatabaseTransaction,
+    input: { threadId: number; userIds: readonly number[] },
+  ): Promise<void> {
+    const result = await tx.execute<{ metaEndId: string }>(sql`
+      SELECT "metaEndId"::text AS "metaEndId" FROM "GroupMeta"
+      WHERE "threadId" = ${input.threadId} LIMIT 1`);
+    const head = result.rows[0];
+    if (!head?.metaEndId) return;
+    await this.advanceGroupMetaHeadsInTx(tx, {
+      threadId: input.threadId,
+      userIds: input.userIds,
+      groupMetaFeedEndId: BigInt(head.metaEndId),
+    });
+  }
+
   /** Caller holds the thread lock, checks authorization, and checkpoints in this transaction. */
   static async advanceInTx(
     tx: DatabaseTransaction,

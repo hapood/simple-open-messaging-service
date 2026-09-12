@@ -2,7 +2,10 @@ import { MessageVisibilityService } from './message-visibility.service.js';
 import type { AccountThreadFanoutTarget } from './account-thread-fanout-task.js';
 import { Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import { durableTask } from '../database/schema.js';
 import {
   acquireThreadContentLockInTx,
@@ -85,6 +88,20 @@ export class ThreadFanoutProgressService {
     return readThreadFanoutProgress(task.checkpoint);
   }
 
+  /** Every fan-out reconciles the group meta head as a side effect: rows
+   * behind the canonical value catch up even when the payload's content heads
+   * did not move. Threads without a meta feed (P2P) publish nothing. */
+  private advanceGroupMetaHeadInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    userIds: readonly number[],
+  ): Promise<void> {
+    return ThreadFeedHeadWriter.reconcileGroupMetaHeadInTx(tx, {
+      threadId,
+      userIds,
+    });
+  }
+
   async save(taskId: bigint, progress: ThreadFanoutProgress): Promise<void> {
     await this.database.db.transaction((tx) =>
       saveTaskCheckpointInTx(tx, taskId, { ...progress }),
@@ -134,6 +151,10 @@ export class ThreadFanoutProgressService {
           });
         }
       }
+      if (lock)
+        await this.advanceGroupMetaHeadInTx(tx, target.threadId, [
+          target.accountId,
+        ]);
       await saveTaskCheckpointInTx(tx, taskId, {
         phase: 'DONE',
         afterAccountId: target.accountId,
@@ -161,6 +182,7 @@ export class ThreadFanoutProgressService {
             ...(await ThreadFeedHeadWriter.advanceInTx(tx, userId, target)),
           });
       }
+      await this.advanceGroupMetaHeadInTx(tx, target.threadId, userIds);
       await saveTaskCheckpointInTx(tx, taskId, {
         phase: 'FEED',
         afterAccountId: userIds[userIds.length - 1],

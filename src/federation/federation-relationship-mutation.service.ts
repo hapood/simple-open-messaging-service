@@ -10,7 +10,8 @@ import {
   type AccountTarget,
 } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
-import { and, eq, ne } from 'drizzle-orm';
+import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
+import { and, eq } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import {
   ClientStateFeedService,
@@ -141,6 +142,10 @@ export class FederationRelationshipMutationService {
       membership.request.status === 'REVOKED'
         ? null
         : membership.request.requestedAt;
+    if (clientFeedUpdates && membership.pairChanged)
+      clientFeedUpdates.push(
+        ...(await captureThreadStateUpdatesInTx(tx, [memberUserId])),
+      );
     if (group.domain === 'local' && membership.changed)
       await this.writeGroupRequestEffectsInTx(
         tx,
@@ -365,6 +370,10 @@ export class FederationRelationshipMutationService {
       });
       if (feedId !== null)
         clientFeedUpdates.push({ userId: localAccount.id, feedId });
+      if (membership.pairChanged)
+        clientFeedUpdates.push(
+          ...(await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
+        );
       return new Map();
     }
     const relationship: PeerStateFeedWrite = {

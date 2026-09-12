@@ -2,8 +2,7 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { eq, inArray } from 'drizzle-orm';
-import { Interval } from '@nestjs/schedule';
+import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { account, account as userTable } from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
@@ -36,9 +35,6 @@ interface SseClient {
 export class SseService implements OnModuleDestroy {
   private readonly logger = new Logger(SseService.name);
   private readonly clients: Record<number, SseClient[]> = {};
-  private readonly stateHeads = new Map<number, number>();
-  private readonly threadHeads = new Map<number, number>();
-  private pollingAttention = false;
   private readonly stateThrottle = new AccountFeedThrottle(
     1000,
     (userId, feedId) =>
@@ -103,7 +99,7 @@ export class SseService implements OnModuleDestroy {
     try {
       const [user] = await this.database.db
         .select({
-          stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
+          stateFeedEndId: account.stateFeedEndId,
           threadFeedEndId: account.threadFeedEndId,
           profileRev: userTable.defaultProfileRev,
         })
@@ -119,7 +115,7 @@ export class SseService implements OnModuleDestroy {
         userId,
         // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
         // The client pulls (cursor, stateFeedEndId] after this handshake and later feed signals.
-        stateFeedEndId: user?.stateFeedAllocatedThrough ?? 0,
+        stateFeedEndId: user?.stateFeedEndId ?? 0,
         threadFeedEndId: user?.threadFeedEndId ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
@@ -261,51 +257,6 @@ export class SseService implements OnModuleDestroy {
   /** Thread projection cursor only. The durable, compacted feed owns the item body. */
   onThreadFeedUpdated(userId: number, data: { threadFeedEndId: number }) {
     this.threadThrottle.enqueue(userId, data.threadFeedEndId);
-  }
-
-  /** Poll committed allocator heads for connected accounts only. This coalesces all
-   * transactional writers and recovers a wake lost between commit and process failure. */
-  @Interval(1000)
-  async pollThreadHeads(): Promise<void> {
-    if (this.pollingAttention) return;
-    const ids = Object.keys(this.clients).map(Number);
-    for (const id of this.threadHeads.keys())
-      if (!this.clients[id]) {
-        this.threadHeads.delete(id);
-        this.stateHeads.delete(id);
-      }
-    if (!ids.length) return;
-    this.pollingAttention = true;
-    try {
-      const heads = await this.database.db
-        .select({
-          id: account.id,
-          head: account.threadFeedEndId,
-          stateHead: account.stateFeedAllocatedThrough,
-        })
-        .from(account)
-        .where(inArray(account.id, ids));
-      for (const { id, head, stateHead } of heads) {
-        if (
-          Number.isInteger(stateHead) &&
-          this.stateHeads.get(id) !== stateHead
-        ) {
-          this.onStateFeedUpdated(id, { feedId: stateHead });
-          this.stateHeads.set(id, stateHead);
-        }
-        if (this.threadHeads.get(id) !== head) {
-          this.onThreadFeedUpdated(id, { threadFeedEndId: head });
-          this.threadHeads.set(id, head);
-        }
-      }
-    } catch (error) {
-      this.logger.warn({
-        msg: 'thread feed wake polling failed; next poll retries',
-        err: error,
-      });
-    } finally {
-      this.pollingAttention = false;
-    }
   }
 
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the

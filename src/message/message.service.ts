@@ -518,13 +518,13 @@ export class MessageService {
     const content = stringifySystemMessageContent(
       await resolveSystemMessageInTx(tx, event),
     );
-    const [{ curSeq: seq, deletionSeqAllocatedThrough }] = await tx
+    const [{ curSeq: seq, tombstoneEndSeq }] = await tx
       .update(messageThread)
       .set({ curSeq: sql`${messageThread.curSeq} + 1` })
       .where(eq(messageThread.id, threadId))
       .returning({
         curSeq: messageThread.curSeq,
-        deletionSeqAllocatedThrough: messageThread.deletionSeqAllocatedThrough,
+        tombstoneEndSeq: messageThread.tombstoneEndSeq,
       });
     const [stored] = await tx
       .insert(message)
@@ -549,7 +549,7 @@ export class MessageService {
     await enqueueThreadFanoutInTx(tx, threadLock, {
       threadId,
       messageEndSeq: seq,
-      tombstoneEndSeq: deletionSeqAllocatedThrough,
+      tombstoneEndSeq: tombstoneEndSeq,
     });
     if (
       event.type === SystemMessageType.FRIEND_REMOVED ||
@@ -561,7 +561,7 @@ export class MessageService {
         {
           threadId,
           messageEndSeq: seq,
-          tombstoneEndSeq: deletionSeqAllocatedThrough,
+          tombstoneEndSeq: tombstoneEndSeq,
         },
         event.type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
         event.type === SystemMessageType.GROUP_LEFT ? event.member : undefined,

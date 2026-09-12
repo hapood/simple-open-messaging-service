@@ -65,7 +65,7 @@ export class S2sController {
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
-    private readonly groupMetaFeed: GroupMetaFeedService,
+    private readonly groupMeta: GroupMetaFeedService,
   ) {}
 
   @Get('group-meta')
@@ -112,7 +112,7 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
-    return this.groupMetaFeed.serve(
+    return this.groupMeta.serve(
       this.signerDomain(req),
       req.peer!.namespaceId,
       normalizedAccount,
@@ -414,7 +414,7 @@ export class S2sController {
       );
     }
     const peerDomain = this.signerDomain(req);
-    const allocation = await this.groupMetaFeed.resolveAllocatedMemberProfile(
+    const allocation = await this.groupMeta.resolveAllocatedMemberProfile(
       peerDomain,
       req.peer!.namespaceId,
       account,

@@ -1021,7 +1021,7 @@ export class RelationshipService {
       const clientFeedUpdates = await tx
         .select({
           userId: accountTable.id,
-          feedId: accountTable.stateFeedAllocatedThrough,
+          feedId: accountTable.stateFeedEndId,
         })
         .from(accountTable)
         .where(
@@ -1069,7 +1069,7 @@ export class RelationshipService {
         clientFeedUpdates = await tx
           .select({
             userId: accountTable.id,
-            feedId: accountTable.stateFeedAllocatedThrough,
+            feedId: accountTable.stateFeedEndId,
           })
           .from(accountTable)
           .where(inArray(accountTable.id, recipientUserIds))

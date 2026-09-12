@@ -84,7 +84,7 @@ describe('Friend-request client state e2e', () => {
 
     const before = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     expect(before).toBeDefined();
 
@@ -103,20 +103,18 @@ describe('Friend-request client state e2e', () => {
 
     const after = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     // The compacted client intent itself drives the device-local notification watermark.
-    expect(after!.stateFeedAllocatedThrough).toBe(
-      before!.stateFeedAllocatedThrough + 1,
-    );
+    expect(after!.stateFeedEndId).toBe(before!.stateFeedEndId + 1);
 
     const delta = await request(http)
       .get('/api/v1/user/state-feed')
       .set(authB)
       .query({
         mode: 'delta',
-        after: before!.stateFeedAllocatedThrough,
-        through: after!.stateFeedAllocatedThrough,
+        after: before!.stateFeedEndId,
+        through: after!.stateFeedEndId,
       });
     expect(delta.body.code).toBe(0);
     expect(delta.body.data.items).toContainEqual(
@@ -152,15 +150,15 @@ describe('Friend-request client state e2e', () => {
     await waitForDurableTask(database.db, accepted.body.data.taskId);
     const acceptedHead = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
-      columns: { stateFeedAllocatedThrough: true },
+      columns: { stateFeedEndId: true },
     });
     const handledDelta = await request(http)
       .get('/api/v1/user/state-feed')
       .set(authB)
       .query({
         mode: 'delta',
-        after: after!.stateFeedAllocatedThrough,
-        through: acceptedHead!.stateFeedAllocatedThrough,
+        after: after!.stateFeedEndId,
+        through: acceptedHead!.stateFeedEndId,
       });
     expect(handledDelta.body.data.items).toContainEqual(
       expect.objectContaining({
