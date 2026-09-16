@@ -33,6 +33,7 @@ import {
 } from '../../services/user.service';
 import {
   applyGroupJoinRequestAction,
+  hasUnreadGroupJoinRequests,
   mergeGroupJoinRequestPage,
 } from '../../services/group-join-request-state';
 
@@ -92,12 +93,12 @@ export class GroupJoinRequestsComponent implements OnDestroy {
 
   constructor() {
     const threadId = this.conversations.openThreadId();
-    const hasUnreadApplications =
-      threadId !== undefined &&
-      this.users.groupJoinRequestHeads().has(threadId);
+    const thread = this.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    const hasUnreadApplications = hasUnreadGroupJoinRequests(thread);
     if (hasUnreadApplications) {
       this.activeTab.set(1);
-      this.markApplicationsRead();
       void this.loadRequests('APPLICATION', false);
     } else {
       void this.loadRequests('INVITATION', false);
@@ -111,7 +112,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   setTab(index: number): void {
     this.activeTab.set(index);
     if (index === 1 && this.applications().length === 0) {
-      this.markApplicationsRead();
       void this.loadRequests('APPLICATION', false);
     }
     if (index === 2 && this.candidates().length === 0)
@@ -186,16 +186,12 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       if (res.code !== 0) return this.showBusinessError(res);
       this.invitations.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key
-            ? { ...row, status: 'REVOKED' }
-            : row,
+          this.candidateKey(row) === key ? { ...row, status: 'REVOKED' } : row,
         ),
       );
       this.candidates.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key
-            ? { ...row, state: 'AVAILABLE' }
-            : row,
+          this.candidateKey(row) === key ? { ...row, state: 'AVAILABLE' } : row,
         ),
       );
     } catch {
@@ -352,6 +348,14 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       } else {
         this.applicationBefore = res.data.before ?? undefined;
         this.applicationsHasMore.set(res.data.hasMore);
+        if (!append) {
+          const latestReceivedFeedId = res.data.data.reduce(
+            (latest, request) => Math.max(latest, request.feedId),
+            0,
+          );
+          if (latestReceivedFeedId > 0)
+            this.markApplicationsRead(latestReceivedFeedId);
+        }
       }
     } catch {
       this.showNetworkError();
@@ -394,20 +398,35 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       this.federatedAddress.set({ account: match[1], domain: match[2] });
   }
 
-  private markApplicationsRead(): void {
+  private markApplicationsRead(joinRequestReadFeedId: number): void {
     const threadId = this.conversations.openThreadId();
-    const head =
-      threadId === undefined
-        ? undefined
-        : this.users.groupJoinRequestHeads().get(threadId);
-    if (threadId === undefined || !head) return;
-    this.users.markGroupJoinRequestsRead(threadId);
+    const thread = this.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    if (
+      threadId === undefined ||
+      !thread ||
+      !hasUnreadGroupJoinRequests(thread)
+    )
+      return;
     this.groups
       .markJoinRequestsRead({
         groupId: threadId,
-        readFeedId: head.latestFeedId,
+        joinRequestReadFeedId,
       })
-      .subscribe();
+      .subscribe({
+        next: (result) => {
+          if (result.code === 0) {
+            this.conversations.markJoinRequestsReadLocally(
+              threadId,
+              joinRequestReadFeedId,
+            );
+          } else {
+            this.showBusinessError(result);
+          }
+        },
+        error: () => this.showNetworkError(),
+      });
   }
 
   private addActing(id: string): void {

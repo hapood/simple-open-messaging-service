@@ -21,7 +21,7 @@ import {
 } from '../database/database.service.js';
 import {
   groupAccount,
-  clientStateFeed,
+  accountThreadState,
   groupRequestProjection,
   messageThread,
   profileTable,
@@ -32,6 +32,9 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
+import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
+import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 import { FederationService } from '../federation/federation.service.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
@@ -245,14 +248,14 @@ export class GroupService {
    * removed rows; manager enumeration lives in the batch sweep only. */
   @Interval(60 * 60 * 1000)
   async garbageCollectJoinRequestProjections(): Promise<number> {
-    const pending: Array<{ userId: number; feedId: number }> = [];
+    const pending: PendingClientStateFeedUpdate[] = [];
     const count = await this.database.db.transaction(async (tx) => {
       const candidates = await tx.execute<{
         threadId: number;
-        latestFeedId: number;
+        expiredThroughFeedId: number;
       }>(sql`
         SELECT projection."threadId",
-          MAX(projection."feedId")::integer AS "latestFeedId"
+          MAX(projection."feedId")::integer AS "expiredThroughFeedId"
         FROM "GroupRequestProjection" projection
         WHERE projection."expiresAt" <= CURRENT_TIMESTAMP
         GROUP BY projection."threadId"
@@ -273,32 +276,31 @@ export class GroupService {
           groupId: candidate.threadId,
           threadId: candidate.threadId,
         });
-        for (const manager of managers) {
-          const [head] = await tx
-            .select({
-              account: clientStateFeed.account,
-              domain: clientStateFeed.domain,
-            })
-            .from(clientStateFeed)
-            .where(
-              and(
-                eq(clientStateFeed.userId, manager.userId),
-                eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
-                sql`(${clientStateFeed.body}->>'threadId')::integer = ${candidate.threadId}`,
-              ),
-            )
-            .limit(1);
-          if (!head) continue;
-          const feedId =
-            await this.clientStateFeed.writeGroupJoinRequestHeadInTx(tx, {
-              userId: manager.userId,
-              account: head.account,
-              domain: head.domain,
-              threadId: candidate.threadId,
-              readFeedId: candidate.latestFeedId,
-            });
-          if (feedId !== null) pending.push({ userId: manager.userId, feedId });
-        }
+        const managerIds = managers.map((manager) => manager.userId);
+        if (managerIds.length === 0) continue;
+        await lockAccountFeedAllocatorsInTx(tx, managerIds);
+        const updated = await tx.execute<{ accountId: number }>(sql`
+          UPDATE "AccountThreadState"
+          SET "joinRequestReadFeedId" = LEAST(
+                "joinRequestEndFeedId",
+                GREATEST("joinRequestReadFeedId", ${candidate.expiredThroughFeedId})),
+              "updatedAt" = CURRENT_TIMESTAMP
+          WHERE "threadId" = ${candidate.threadId}
+            AND "accountId" IN (${sql.join(
+              managerIds.map((id) => sql`${id}`),
+              sql`, `,
+            )})
+            AND "joinRequestReadFeedId" >= 0
+            AND "joinRequestReadFeedId" < LEAST(
+              "joinRequestEndFeedId", ${candidate.expiredThroughFeedId})
+          RETURNING "accountId" AS "accountId"
+        `);
+        pending.push(
+          ...(await captureThreadStateUpdatesInTx(
+            tx,
+            updated.rows.map((row) => row.accountId),
+          )),
+        );
       }
       return removed;
     });
@@ -309,41 +311,28 @@ export class GroupService {
   async markJoinRequestsRead(
     threadId: number,
     managerUserId: number,
-    readFeedId: number,
+    joinRequestReadFeedId: number,
   ): Promise<void> {
-    let pending: { userId: number; feedId: number } | undefined;
+    let pending: PendingClientStateFeedUpdate | undefined;
     await this.database.db.transaction(async (tx) => {
-      const [identity] = await tx
-        .select({ account: groupStateFields.account })
-        .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.id))
-        .where(eq(messageThread.id, threadId))
-        .limit(1);
-      if (!identity)
-        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-      const [head] = await tx
-        .select({ domain: clientStateFeed.domain })
-        .from(clientStateFeed)
+      await lockAccountFeedAllocatorsInTx(tx, [managerUserId]);
+      const [updated] = await tx
+        .update(accountThreadState)
+        .set({
+          joinRequestReadFeedId: sql`LEAST(${accountThreadState.joinRequestEndFeedId}, ${joinRequestReadFeedId})`,
+          updatedAt: new Date(),
+        })
         .where(
           and(
-            eq(clientStateFeed.userId, managerUserId),
-            eq(clientStateFeed.account, identity.account),
-            eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
+            eq(accountThreadState.accountId, managerUserId),
+            eq(accountThreadState.threadId, threadId),
+            sql`${accountThreadState.joinRequestReadFeedId} >= 0`,
+            sql`${accountThreadState.joinRequestReadFeedId} < LEAST(${accountThreadState.joinRequestEndFeedId}, ${joinRequestReadFeedId})`,
           ),
         )
-        .limit(1);
-      if (!head) return;
-      const feedId = await this.clientStateFeed.writeGroupJoinRequestHeadInTx(
-        tx,
-        {
-          userId: managerUserId,
-          account: identity.account,
-          domain: head.domain,
-          threadId,
-          readFeedId,
-        },
-      );
-      if (feedId !== null) pending = { userId: managerUserId, feedId };
+        .returning({ accountId: accountThreadState.accountId });
+      if (!updated) return;
+      [pending] = await captureThreadStateUpdatesInTx(tx, [updated.accountId]);
     });
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }

@@ -24,6 +24,8 @@ import {
   type ThreadFanoutProjection,
 } from './thread-fanout-progress.service.js';
 
+const FANOUT_YIELD_WINDOW = 50;
+
 /** Durable database projection with lossy post-commit notification hints.
  * Network delivery is not part of the task's completion condition. */
 @Injectable()
@@ -74,24 +76,36 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     const checkpoint = await this.progress.read(task.id);
     if (checkpoint.phase === 'DONE') return;
     if (checkpoint.phase === 'FEED') {
-      // P2P and groups share this checkpointed loop. Recipient count affects
-      // batching only; processing never creates per-account child tasks.
+      // P2P and groups share this checkpointed loop. Each recipient commits in
+      // its own transaction; the window only bounds work before checking for a
+      // newer coalesced target. Processing never creates per-account child tasks.
       const audience = (
         await this.participants.getActiveParticipantUserIds(target.threadId)
       )
         .map((member) => member.userId)
         .filter((id) => id > checkpoint.afterAccountId)
         .sort((a, b) => a - b);
-      for (let start = 0; start < audience.length; start += 50) {
+      for (
+        let start = 0;
+        start < audience.length;
+        start += FANOUT_YIELD_WINDOW
+      ) {
         if (await this.progress.yieldToNewer(task.id, target)) return;
-        const projected = await this.progress.projectBatch(
-          task.id,
-          target,
-          audience.slice(start, start + 50),
-        );
-        void this.wakeBatch(projected).catch((error: unknown) => {
-          this.logger.warn(`Thread notification hint failed: ${String(error)}`);
-        });
+        for (const userId of audience.slice(
+          start,
+          start + FANOUT_YIELD_WINDOW,
+        )) {
+          const projected = await this.progress.projectActiveAccount(
+            task.id,
+            target,
+            userId,
+          );
+          void this.wakeBatch(projected).catch((error: unknown) => {
+            this.logger.warn(
+              `Thread notification hint failed: ${String(error)}`,
+            );
+          });
+        }
       }
     }
     await this.progress.save(task.id, { phase: 'DONE', afterAccountId: 0 });

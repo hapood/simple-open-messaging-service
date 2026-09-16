@@ -28,10 +28,12 @@ describe('execution measurement with PostgreSQL', () => {
   let groups: GroupService;
   let dispatcher: DurableTaskDispatcherService;
   let disbandHandler: DisbandGroupTaskHandler;
-  let log: ReturnType<typeof vi.spyOn>;
+  let debug: ReturnType<typeof vi.spyOn>;
 
   beforeAll(async () => {
-    log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    debug = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
     module = await Test.createTestingModule({ imports: [AppModule] }).compile();
     database = module.get(DatabaseService);
     groups = module.get(GroupService);
@@ -43,7 +45,7 @@ describe('execution measurement with PostgreSQL', () => {
   afterAll(async () => {
     disbandHandler.onModuleDestroy();
     await module.close();
-    log.mockRestore();
+    debug.mockRestore();
     if (previousSampleRate === undefined)
       delete process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE;
     else process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE = previousSampleRate;
@@ -145,7 +147,7 @@ describe('execution measurement with PostgreSQL', () => {
   });
 
   function measurements(): ExecutionMeasurement[] {
-    return log.mock.calls
+    return debug.mock.calls
       .map(([value]) => value)
       .filter(
         (value): value is ExecutionMeasurement =>

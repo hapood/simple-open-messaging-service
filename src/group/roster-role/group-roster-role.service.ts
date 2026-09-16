@@ -24,11 +24,12 @@ import type {
 import type { GroupMetaFeedService } from '../meta/group-meta-feed.service.js';
 import type { MessageService } from '../../message/message.service.js';
 import { SystemMessageType } from '../../../shared/system-message-content.js';
+import { transitionGroupManagerProjection } from '../shared/group-manager-projection.js';
 
 /** One command family: the group's canonical roster role facts, authored by
- * its owner. Ownership transfer swaps two members' roles; SET_ROLE moves one
- * member between ADMIN and MEMBER. Targets are addressed; the roster names
- * their authoritative identity. */
+ * its owner. Ownership transfer promotes the target and leaves the previous
+ * owner as an administrator; SET_ROLE moves one member between ADMIN and
+ * MEMBER. Targets are addressed; the roster names their authoritative identity. */
 export type GroupRosterRoleCommand =
   | {
       threadId: number;
@@ -65,6 +66,7 @@ interface RosterRoleChange {
   account: string;
   domain: string;
   namespaceId: number;
+  previousRole: GroupRole;
   role: GroupRole;
   profileRev: number;
   /** Local Account.id to project the role onto, or null for a peer member. */
@@ -201,7 +203,8 @@ export class GroupRosterRoleService {
       account: row.operatorAccount,
       domain: 'local',
       namespaceId: 0,
-      role: GroupRole.MEMBER,
+      previousRole: GroupRole.OWNER,
+      role: GroupRole.ADMIN,
       profileRev: requireProfileRev(row.operatorProfileRev, 'operator'),
       localId: params.operatorUserId,
     };
@@ -228,6 +231,7 @@ export class GroupRosterRoleService {
         account: row.targetAccount,
         domain: row.targetDomain,
         namespaceId: row.targetNamespaceId!,
+        previousRole: row.targetRole!,
         role: GroupRole.OWNER,
         profileRev: requireProfileRev(row.targetProfileRev, 'target'),
         localId: row.localTargetId,
@@ -275,6 +279,7 @@ export class GroupRosterRoleService {
       account: row.targetAccount,
       domain: row.targetDomain!,
       namespaceId: row.targetNamespaceId!,
+      previousRole: row.targetRole!,
       role: params.role,
       profileRev: requireProfileRev(row.targetProfileRev, 'target'),
       localId: row.localTargetId,
@@ -321,9 +326,21 @@ export class GroupRosterRoleService {
     for (const change of [...context.changes]
       .filter((change) => change.localId !== null)
       .sort((a, b) => a.localId! - b.localId!)) {
+      const managerProjection = transitionGroupManagerProjection(
+        change.previousRole,
+        change.role,
+        {
+          applicationEndId: sql`(SELECT "applicationEndId" FROM "GroupMeta" WHERE "threadId" = ${context.threadId})`,
+          invitationEndId: sql`(SELECT "invitationEndId" FROM "GroupMeta" WHERE "threadId" = ${context.threadId})`,
+        },
+      );
       await tx
         .update(accountThreadState)
-        .set({ role: change.role, updatedAt: now })
+        .set({
+          ...managerProjection,
+          role: change.role,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(accountThreadState.accountId, change.localId!),

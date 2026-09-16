@@ -22,19 +22,29 @@
     },
     "bundleMessage": {
       "type": "object",
-      "required": ["id", "author", "contentType", "content", "sentAt"],
+      "required": [
+        "id",
+        "author",
+        "profile",
+        "contentType",
+        "content",
+        "sentAt"
+      ],
       "properties": {
         "id": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "author": {
           "type": "object",
-          "required": ["account", "domain"],
           "properties": {
             "account": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
+          },
+          "dependentRequired": {
+            "account": ["domain"],
+            "domain": ["account"]
           },
           "additionalProperties": false
         },
@@ -42,7 +52,11 @@
           "type": "object",
           "required": ["displayName"],
           "properties": {
-            "displayName": { "type": "string" },
+            "displayName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 30
+            },
             "avatarDigest": {
               "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             }

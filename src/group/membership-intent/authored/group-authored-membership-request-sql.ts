@@ -46,7 +46,7 @@ function localRecipientKey(
  * membership effects wait for the invitee's ack and the group's completion ACK.
  * The pair row already exists (the transaction owner minted it), so sibling
  * CTEs read the intent back through the same UNION ALL fallback as revocation.
- * Manager notification stays projection-only — no GROUP_JOIN_REQUEST_HEAD or
+ * Manager notification stays projection-only — no client-state attention head or
  * PROFILE feed rows — matching the decision-time doctrine; the reconcile path
  * rebuilds those cosmetic rows. */
 export function groupAuthoredMembershipRequestSql(

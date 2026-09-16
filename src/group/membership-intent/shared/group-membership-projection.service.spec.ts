@@ -35,7 +35,15 @@ function harness(params?: {
     rows: params?.current ? [params.current] : [],
   });
   const tx = {
-    query: { account: { findFirst: vi.fn().mockResolvedValue(identity) } },
+    query: {
+      account: { findFirst: vi.fn().mockResolvedValue(identity) },
+      groupMeta: {
+        findFirst: vi.fn().mockResolvedValue({
+          applicationEndId: 8,
+          invitationEndId: 5,
+        }),
+      },
+    },
     execute,
     insert,
     select: vi.fn(() => ({
@@ -131,8 +139,14 @@ describe('GroupMembershipProjectionService', () => {
       }),
     );
     expect(target.participantValues).toHaveBeenCalledWith(
-      expect.objectContaining({ role: 'OWNER' }),
+      expect.objectContaining({
+        role: 'OWNER',
+        joinRequestEndFeedId: expect.anything(),
+        joinRequestReadFeedId: expect.anything(),
+        groupInviteEndFeedId: expect.anything(),
+      }),
     );
+    expect(target.tx.query.groupMeta.findFirst).not.toHaveBeenCalled();
   });
 
   it('keeps the canonical role and profile revision while membership remains active', async () => {
@@ -164,6 +178,12 @@ describe('GroupMembershipProjectionService', () => {
         }),
       }),
     );
+    const conflict = target.participantConflict.mock.calls[0]![0] as {
+      set: Record<string, unknown>;
+    };
+    expect(conflict.set).not.toHaveProperty('joinRequestEndFeedId');
+    expect(conflict.set).not.toHaveProperty('joinRequestReadFeedId');
+    expect(conflict.set).not.toHaveProperty('groupInviteEndFeedId');
   });
 
   it('appends a bodyless departure but protects the current owner', async () => {

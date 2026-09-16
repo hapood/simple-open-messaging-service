@@ -104,56 +104,6 @@ describe('UserService profile refresh', () => {
     httpMock = TestBed.inject(HttpTestingController);
   });
 
-  it('treats a join-request head covered by the optimistic read watermark as an acknowledgement', () => {
-    svc.groupJoinRequestHeads.set(
-      new Map([[7, { latestFeedId: 12, readFeedId: 12 }]]),
-    );
-
-    expect(svc.applyGroupJoinRequestHead(7, 12, 12)).toBe(false);
-    expect(svc.groupJoinRequestHeads().get(7)).toEqual({
-      latestFeedId: 12,
-      readFeedId: 12,
-    });
-  });
-
-  it('reports only a head newer than the local read watermark as new attention', () => {
-    svc.groupJoinRequestHeads.set(
-      new Map([[7, { latestFeedId: 12, readFeedId: 12 }]]),
-    );
-
-    expect(svc.applyGroupJoinRequestHead(7, 13, 12)).toBe(true);
-    expect(svc.groupJoinRequestHeads().get(7)).toEqual({
-      latestFeedId: 13,
-      readFeedId: 12,
-    });
-  });
-
-  it('garbage-collects one group head from memory and durable metadata', async () => {
-    const webdb = TestBed.inject(WebdbService) as unknown as {
-      putMeta: Mock;
-    };
-    webdb.putMeta.mockClear();
-    svc.groupJoinRequestHeads.set(
-      new Map([
-        [7, { latestFeedId: 13, readFeedId: 12 }],
-        [8, { latestFeedId: 20, readFeedId: 19 }],
-      ]),
-    );
-
-    svc.clearGroupJoinRequestHead(7);
-    await flush();
-
-    expect(svc.groupJoinRequestHeads()).toEqual(
-      new Map([[8, { latestFeedId: 20, readFeedId: 19 }]]),
-    );
-    expect(webdb.putMeta).toHaveBeenCalledWith('groupJoinRequestHeads', {
-      '8': 20,
-    });
-    expect(webdb.putMeta).toHaveBeenCalledWith('groupJoinRequestReadFeedIds', {
-      '8': 19,
-    });
-  });
-
   afterEach(() => {
     httpMock.verify();
   });

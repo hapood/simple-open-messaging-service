@@ -42,7 +42,10 @@ describe('transactional thread attention', () => {
   beforeAll(() => db.onModuleInit());
   afterAll(() => db.onApplicationShutdown());
   beforeEach(async () => {
-    await truncateTablesForTest(db.pool, 'TRUNCATE "Account", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      db.pool,
+      'TRUNCATE "Account", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
+    );
     const [owner] = await db.db
       .insert(account)
       .values({ account: 'reader' })
@@ -99,7 +102,7 @@ describe('transactional thread attention', () => {
       db,
       new MessageVisibilityService(db),
     );
-    await progress.projectBatch(taskId, target, [userId]);
+    await progress.projectActiveAccount(taskId, target, userId);
     expect(await state()).toMatchObject({
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
@@ -116,7 +119,7 @@ describe('transactional thread attention', () => {
         .set({ blocked: false })
         .where(eq(accountThreadState.accountId, userId));
     });
-    await progress.projectBatch(taskId, target, [userId]);
+    await progress.projectActiveAccount(taskId, target, userId);
     expect(await state()).toMatchObject(target);
     expect((await state()).threadFeedId).toBeGreaterThan(blocked.threadFeedId);
   });

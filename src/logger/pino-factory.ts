@@ -6,11 +6,14 @@ import { openRotatingDestination } from './log-rotator.js';
 /**
  * Translate a Nest-style LOG_LEVEL into a pino level. Nest's 'log' has no pino equivalent (nestjs-pino
  * maps the *method* name log→info), so the pino instance's own `level` must be a real pino level:
- * 'log'→'info', 'verbose'→'trace'. Default 'log' → 'info' keeps routine output while suppressing
- * debug/trace. Unknown values fall back to 'info'.
+ * 'log'→'info', 'verbose'→'trace'. Development defaults to info for useful local feedback;
+ * production defaults to warn to minimize steady-state logging overhead. An explicit, invalid value
+ * still falls back to info so a configuration typo does not silently hide application logs.
  */
 function resolvePinoLevel(raw: string | undefined): pino.LevelWithSilent {
-  const v = (raw ?? 'log').toLowerCase();
+  const v = (
+    raw ?? (process.env.NODE_ENV === 'production' ? 'warn' : 'log')
+  ).toLowerCase();
   if (v === 'log') return 'info';
   if (v === 'verbose') return 'trace';
   if (

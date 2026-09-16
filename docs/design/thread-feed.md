@@ -75,7 +75,10 @@ retirement do not delete preview state; later activation owns initialization.
 Read advancement prunes references in its transaction. Force rollback can select
 earlier eligible slots. Clients also filter by their optimistic read position.
 There is no memory window, startup hydration, cache deletion, or cache queue.
-Use canonical parent/thread/state/account lock order for database mutations.
+Use canonical Account State / Relationship Pair / Thread Content ordering for
+database mutations. A fan-out projection commits one account-thread pair per
+transaction: after its parent and thread locks, it locks that account's
+`Account` feed allocator before acquiring or writing `AccountThreadState`.
 
 ## HTTP and SSE contract
 
@@ -95,6 +98,9 @@ interface ThreadFeedState {
   messageEndSeq: number;
   tombstoneEndSeq: number;
   groupMetaFeedEndId: string | null;
+  joinRequestEndFeedId: number;
+  joinRequestReadFeedId: number; // -1 disables manager-only attention
+  groupInviteEndFeedId: number;
   unreadCount: number;
   lastReadSeq: number;
   lastMentionSeq: number | null;

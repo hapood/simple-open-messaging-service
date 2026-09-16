@@ -709,6 +709,40 @@ describe('FederationThreadRoundSchedulerService', () => {
     await scheduler.onModuleDestroy();
   });
 
+  it('stops a denied mirror until the next push without pulling state', async () => {
+    const { scheduler, forward, federation } = harness();
+    federation.handleThreadQueryForbidden.mockResolvedValueOnce(
+      'MIRROR_WAITING_FOR_PUSH',
+    );
+    forward.runMessages
+      .mockRejectedValueOnce(
+        new FederationThreadRoundRemoteError(
+          new S2sResponseError('forbidden', 200, BusinessCode.FORBIDDEN),
+          7,
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await scheduler.wake(1, 'a.test', 'message');
+    await vi.waitFor(() =>
+      expect(federation.handleThreadQueryForbidden).toHaveBeenCalledOnce(),
+    );
+    expect(federation.pullStateFromPeer).not.toHaveBeenCalled();
+
+    await scheduler.wake(1, 'a.test', 'message');
+    expect(forward.runMessages).toHaveBeenCalledOnce();
+    scheduler.onWake({
+      threadId: 1,
+      peerDomain: 'a.test',
+      namespaceId: 7,
+      direction: 'forward',
+    });
+    await vi.waitFor(() =>
+      expect(forward.runMessages).toHaveBeenCalledTimes(2),
+    );
+    await scheduler.onModuleDestroy();
+  });
+
   it('reconstructs independent message, tombstone, and reverse work at startup', async () => {
     const { scheduler, databaseState, forward, reverse } = harness();
     databaseState.startupRows = [

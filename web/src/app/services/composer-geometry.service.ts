@@ -10,6 +10,7 @@ const WIDE_HEIGHT_PX = 82;
 export class ComposerGeometryService {
   private readonly tauri = isTauri();
   private lastHeight = -1;
+  private activeContainer?: HTMLElement;
 
   constructor() {
     this.syncForWidth(document.documentElement.clientWidth);
@@ -21,10 +22,11 @@ export class ComposerGeometryService {
     let observedComposer: HTMLElement | null = null;
     const sync = (): void => {
       const composer = container.querySelector<HTMLElement>('app-chat-input');
-      if (composer) this.syncHeight(this.composerLayoutHeight(composer));
+      if (composer)
+        this.syncHeight(this.composerLayoutHeight(composer), container);
       else if (container.classList.contains('msg-container--friendship-ended'))
-        this.syncHeight(0);
-      else this.syncForWidth(container.clientWidth);
+        this.syncHeight(0, container);
+      else this.syncForWidth(container.clientWidth, container);
     };
     sync();
     const observer = new ResizeObserver(sync);
@@ -49,6 +51,22 @@ export class ComposerGeometryService {
     };
   }
 
+  /** Promote one chatbox's owned geometry to the global notification channel. */
+  setActive(container: HTMLElement, active: boolean): void {
+    if (this.tauri) return;
+    if (active) {
+      this.activeContainer = container;
+      const ownedHeight = Number.parseFloat(
+        container.style.getPropertyValue('--soms-composer-height'),
+      );
+      if (Number.isFinite(ownedHeight)) this.publishGlobal(ownedHeight);
+      return;
+    }
+    if (this.activeContainer !== container) return;
+    this.activeContainer = undefined;
+    this.publishGlobal(0);
+  }
+
   /** The Web bar carries the safe-area padding inside its border box, while the shared geometry contract
    * publishes composer and safe-area heights separately. */
   private composerLayoutHeight(composer: HTMLElement): number {
@@ -64,7 +82,21 @@ export class ComposerGeometryService {
     return composer.offsetHeight - safeBottom;
   }
 
-  private syncHeight(height: number): void {
+  private syncHeight(height: number, container?: HTMLElement): void {
+    const next = Math.max(0, Math.round(height));
+    // Each chatbox owns its geometry. Desktop keeps two fully laid-out panes mounted during a switch, so a
+    // root-only value would let the hidden pane overwrite the foreground pane's scroll-tail reserve.
+    container?.style.setProperty('--soms-composer-height', `${next}px`);
+    if (container) {
+      if (this.activeContainer === container) this.publishGlobal(next);
+      return;
+    }
+    this.publishGlobal(next);
+  }
+
+  /** The root custom property is a notification for consumers outside the active chatbox, not its source
+   * of truth. Only the active container may publish here after its locally owned value has been updated. */
+  private publishGlobal(height: number): void {
     const next = Math.max(0, Math.round(height));
     if (next === this.lastHeight) return;
     this.lastHeight = next;
@@ -75,14 +107,9 @@ export class ComposerGeometryService {
   }
 
   /** Shared by global initialization and every browser width notification. */
-  private syncForWidth(width: number): void {
+  private syncForWidth(width: number, container?: HTMLElement): void {
     const height =
       width >= WIDE_BREAKPOINT_PX ? WIDE_HEIGHT_PX : COMPACT_HEIGHT_PX;
-    if (height === this.lastHeight) return;
-    this.lastHeight = height;
-    document.documentElement.style.setProperty(
-      '--soms-composer-height',
-      `${height}px`,
-    );
+    this.syncHeight(height, container);
   }
 }

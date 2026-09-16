@@ -154,14 +154,13 @@ failure.
 - Best-effort wake failure never rolls back committed state; durable feed heads
   remain discoverable on reconnect.
 
-## Mirror dissolution
+## Mirror authorization denial
 
-An origin denial can terminate a mirror without a final Group Meta page. The
-mirror disband parent records `groupDissolvedAt`, disables federation rounds,
-and advances the authorization epoch. A durable pair-cursor sweep then revokes
-each still-active local member, writes the local `GROUP_LEFT` boundary and
-client projection, and performs no Group Meta or peer-intent publication.
-Repeated parent and child execution is idempotent.
+An authenticated origin denial stops the current mirror round without changing
+membership intent, synthesizing a departure, or marking the group dissolved.
+The denial is logged at debug level and the mirror waits for a later State Feed
+push. Relationship cleanup after denial is a protocol `MAY`; this implementation
+does not perform it for remotely authoritative mirrored groups.
 
 ## Verification
 

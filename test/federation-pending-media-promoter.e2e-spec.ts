@@ -34,7 +34,7 @@ describe('FederationPendingMediaPromoter', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "MessageThread", "IdentityNamespace" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "MessageThread" RESTART IDENTITY CASCADE; DELETE FROM "IdentityNamespace" WHERE id <> 0',
     );
   });
 

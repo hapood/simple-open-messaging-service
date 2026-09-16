@@ -34,7 +34,10 @@ describe('group membership re-entry and ownership transfer', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => app.close());
@@ -188,7 +191,7 @@ describe('group membership re-entry and ownership transfer', () => {
     ).toBeDefined();
   });
 
-  it('transfers ownership, demotes the old owner, and lets the new owner kick them', async () => {
+  it('transfers ownership, keeps the old owner as admin, and lets the new owner kick them', async () => {
     const oldOwner = await seedUserWithSession(app, 'transfer-old-owner');
     const newOwner = await seedUserWithSession(app, 'transfer-new-owner');
     await befriend(oldOwner, newOwner);
@@ -205,7 +208,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .send({ groupId, account: newOwner.account, domain: 'local' });
     expect(transferred.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, oldOwner.id)).toMatchObject({
-      role: 'MEMBER',
+      role: 'ADMIN',
     });
     expect(
       await database.db.query.accountThreadState.findFirst({
@@ -214,7 +217,7 @@ describe('group membership re-entry and ownership transfer', () => {
           eq(accountThreadState.accountId, oldOwner.id),
         ),
       }),
-    ).toMatchObject({ role: 'MEMBER' });
+    ).toMatchObject({ role: 'ADMIN' });
     expect(
       await database.db.query.accountThreadState.findFirst({
         where: and(

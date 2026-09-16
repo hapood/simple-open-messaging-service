@@ -45,6 +45,7 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ChatContextService } from '../message-thread/chat-context.service';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
+import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -144,10 +145,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',
   );
   readonly hasUnreadJoinRequests = computed(() => {
-    const threadId = this.threadId();
-    if (threadId === undefined) return false;
-    const head = this.userService.groupJoinRequestHeads().get(threadId);
-    return !!head && head.latestFeedId > head.readFeedId;
+    return hasUnreadGroupJoinRequests(this.userMsgTrd());
   });
   readonly overviewMembers = computed(() => this.roster().slice(0, 5));
   readonly remainingMemberCount = computed(() =>

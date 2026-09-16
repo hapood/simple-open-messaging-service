@@ -143,7 +143,12 @@ type ConversationItemBase = {
   lastMessageSenderId?: string | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
   mentionUnread: Array<'all' | 'me'>;
-  /** Latest group-join application activity; local/client-state metadata used only for list recency. */
+  /** Manager-only join-application projection coordinates from the thread head. */
+  joinRequestEndFeedId?: number;
+  /** -1 disables manager attention; zero is the pre-first-application position. */
+  joinRequestReadFeedId?: number;
+  groupInviteEndFeedId?: number;
+  /** Local timestamp observed when the thread head advances to a new unread application. */
   joinRequestAt?: number | null;
 };
 

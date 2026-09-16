@@ -7,8 +7,9 @@ business operation and durable-task handler execution; intermediate values
 randomly sample root executions. A child business operation always follows its
 sampled parent task so their measurements remain comparable.
 
-Each sampled scope emits one structured `execution_measurement` log when it
-finishes. The log contains a correlation `executionId`, operation kind and
+Each sampled scope emits one debug-level structured `execution_measurement` log
+when it finishes. The logger must therefore allow `debug` records. The log
+contains a correlation `executionId`, operation kind and
 name, outcome, wall-clock duration, SQL execution count, database round-trip
 count, database failures, and summed database duration. Durable tasks use
 `task:<id>` as the correlation ID. Do not use `executionId` or `taskId` as a

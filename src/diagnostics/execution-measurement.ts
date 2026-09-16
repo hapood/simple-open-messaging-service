@@ -105,7 +105,7 @@ export async function runMeasuredExecution<T>(
     scope.closed = true;
     const measurement = snapshot(scope, outcome);
     if (options.publish) options.publish(measurement);
-    else logger.log(measurement);
+    else logger.debug(measurement);
   }
 }
 

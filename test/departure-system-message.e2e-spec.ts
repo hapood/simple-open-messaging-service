@@ -4,7 +4,6 @@ import { FederationThreadQueryDenialService } from '../src/federation/federation
 import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
 import { RevokeForbiddenGroupTaskHandler } from '../src/group/revoke-forbidden-group-task.handler.js';
 import { DisbandGroupTaskHandler } from '../src/group/disband-group-task.handler.js';
-import { DisbandMirrorGroupMembersTaskHandler } from '../src/group/disband-mirror-group-members-task.handler.js';
 import { ForceRevokeGroupMemberTaskHandler } from '../src/group/force-revoke-group-member-task.handler.js';
 import { GroupRevokeFanoutService } from '../src/group/group-revoke-fanout.service.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
@@ -757,46 +756,56 @@ describe('departure system message paths', () => {
             state!.authorizationEpoch,
           ),
       ).toBe(
-        path === 'mirror' ? 'GROUP_DISBAND_QUEUED' : 'GROUP_REVOKE_QUEUED',
+        path === 'mirror' ? 'MIRROR_WAITING_FOR_PUSH' : 'GROUP_REVOKE_QUEUED',
       );
       const admitted = await database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, h.threadId),
       });
-      expect(admitted!.authorizationEpoch).toBe(
-        state!.authorizationEpoch + (path === 'mirror' ? 1 : 0),
-      );
-      expect(admitted!.federationRoundsEnabled).toBe(path === 'hosted');
+      expect(admitted!.authorizationEpoch).toBe(state!.authorizationEpoch);
+      expect(admitted!.federationRoundsEnabled).toBe(true);
+      if (path === 'mirror') {
+        expect(
+          await database.db.query.durableTask.findFirst({
+            where: and(
+              eq(durableTask.status, 'PENDING'),
+              sql`${durableTask.payload} ->> 'threadId' = ${String(h.threadId)}`,
+            ),
+          }),
+        ).toBeUndefined();
+        for (const target of [h.member.id, h.observer.id])
+          expect(
+            (await findGroupRelationship(database.db, h.groupId, target)).pair
+              ?.active,
+          ).toBe(true);
+        await expect(
+          app
+            .get(FederationThreadSourceService)
+            .resolve(h.threadId, peerDomain, namespaceId),
+        ).resolves.toMatchObject({ kind: 'GROUP', localGroupAuthority: false });
+        return;
+      }
       const parent = await database.db.query.durableTask.findFirst({
         where: and(
-          eq(
-            durableTask.taskType,
-            path === 'mirror'
-              ? DurableTaskType.DISBAND_MIRROR_GROUP_MEMBERS
-              : DurableTaskType.REVOKE_FORBIDDEN_GROUP,
-          ),
+          eq(durableTask.taskType, DurableTaskType.REVOKE_FORBIDDEN_GROUP),
           eq(durableTask.status, 'PENDING'),
         ),
       });
-      expect(parent?.coalescingKey === null).toBe(path === 'hosted');
+      expect(parent?.coalescingKey).toBeNull();
       const store = app.get(DurableTaskStoreService);
       const claimed = await store.claim(parent!.id);
-      if (path === 'mirror') {
-        await app.get(DisbandMirrorGroupMembersTaskHandler).execute(claimed!);
-      } else {
-        expect(
-          await app
-            .get(GroupRevokeFanoutService)
-            .insertNextMember(claimed!, h.threadId),
-        ).toBe(true);
-        const interrupted = await database.db.query.durableTask.findFirst({
-          where: eq(durableTask.id, parent!.id),
-        });
-        expect(
-          BigInt(interrupted!.checkpoint.afterPairId as string),
-        ).toBeGreaterThan(0n);
-        // Re-enter using the original task snapshot: progress must be read from PostgreSQL.
-        await app.get(RevokeForbiddenGroupTaskHandler).execute(claimed!);
-      }
+      expect(
+        await app
+          .get(GroupRevokeFanoutService)
+          .insertNextMember(claimed!, h.threadId),
+      ).toBe(true);
+      const interrupted = await database.db.query.durableTask.findFirst({
+        where: eq(durableTask.id, parent!.id),
+      });
+      expect(
+        BigInt(interrupted!.checkpoint.afterPairId as string),
+      ).toBeGreaterThan(0n);
+      // Re-enter using the original task snapshot: progress must be read from PostgreSQL.
+      await app.get(RevokeForbiddenGroupTaskHandler).execute(claimed!);
       await store.markSucceeded(parent!.id);
       const children = await database.db
         .select()
@@ -808,17 +817,14 @@ describe('departure system message paths', () => {
             eq(durableTask.status, 'PENDING'),
           ),
         );
-      expect(children).toHaveLength(path === 'mirror' ? 2 : 1);
+      expect(children).toHaveLength(1);
       for (const child of children) {
-        expect(child.payload.direction).toBe(
-          path === 'mirror' ? 'MIRROR' : 'GROUP',
-        );
+        expect(child.payload.direction).toBe('GROUP');
         const running = await store.claim(child.id);
         await app.get(ForceRevokeGroupMemberTaskHandler).execute(running!);
         await store.markSucceeded(child.id);
       }
-      const targets = 'observer' in h ? [h.member.id, h.observer.id] : [remote];
-      for (const target of targets)
+      for (const target of [remote])
         expect(
           (await findGroupRelationship(database.db, h.groupId, target)).pair
             ?.active,

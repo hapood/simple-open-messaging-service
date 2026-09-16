@@ -662,11 +662,8 @@ export class FederationThreadRoundSchedulerService
       cause instanceof S2sResponseError &&
       cause.code === BusinessCode.FORBIDDEN
     ) {
-      // A denied meta read already converged the mirror locally inside the
-      // executor; content rounds stay separately authorized, so this lane
-      // simply stops.
       this.logger.debug(
-        `meta round forbidden for thread ${threadId} from ${peerDomain}`,
+        `meta round forbidden for thread ${threadId} from ${peerDomain}; waiting for the next push`,
       );
       return false;
     }
@@ -690,6 +687,12 @@ export class FederationThreadRoundSchedulerService
             return true;
           }
           this.blockThread(threadId, peerDomain, namespaceId);
+          if (outcome === 'MIRROR_WAITING_FOR_PUSH') {
+            this.logger.debug(
+              `stopped forbidden mirror thread ${threadId} from ${peerDomain}; waiting for the next push`,
+            );
+            return false;
+          }
           this.logger.debug(
             `stopped forbidden federation thread ${threadId} from ${peerDomain}: ${outcome}`,
           );

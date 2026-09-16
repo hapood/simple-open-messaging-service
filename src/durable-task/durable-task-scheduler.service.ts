@@ -77,7 +77,6 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
         this.startupRecovery = await this.store.findCheckpointedProcessing([
           ...new Set([
             DurableTaskType.DISBAND_GROUP,
-            DurableTaskType.DISBAND_MIRROR_GROUP_MEMBERS,
             DurableTaskType.REVOKE_FORBIDDEN_GROUP,
             DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
             DurableTaskType.FAN_OUT_THREAD_CONTENT,

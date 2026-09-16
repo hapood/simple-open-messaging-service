@@ -527,8 +527,6 @@ export class ThreadRepository {
     if (changed) {
       void this.persistThread(changed);
       this.writeGroupProfile(changed.group);
-      if (changed.role !== 'OWNER' && changed.role !== 'ADMIN')
-        this.userService.clearGroupJoinRequestHead(threadId);
     }
   }
 
@@ -1039,6 +1037,8 @@ export class ThreadRepository {
     for (const stored of states) {
       if (epoch !== this.sessionEpoch) return;
       let state = this.threadStates.get(stored.threadId) ?? stored;
+      const previousJoinRequestEndFeedId =
+        state.server?.joinRequestEndFeedId ?? 0;
       if (stored.server) state = mergeThreadAttention(state, stored.server);
       const local = Math.max(
         stored.localReadSeq ?? 0,
@@ -1050,6 +1050,14 @@ export class ThreadRepository {
         this.localStableReadSeq.set(state.threadId, state.localReadSeq);
       if (state.server) {
         const snapshot = state.server;
+        if (
+          emitLive &&
+          snapshot.joinRequestReadFeedId >= 0 &&
+          snapshot.joinRequestReadFeedId < snapshot.joinRequestEndFeedId &&
+          snapshot.joinRequestEndFeedId > previousJoinRequestEndFeedId
+        )
+          this.applyJoinRequestActivity(state.threadId, Date.now());
+        this.applyGroupProjectionHeads(snapshot);
         this.serverLastReadSeq.set(state.threadId, snapshot.lastReadSeq);
         this.messageRepo.applyThreadContentHead(
           state.threadId,
@@ -1076,6 +1084,7 @@ export class ThreadRepository {
   ): Promise<ConversationItem | undefined> {
     const state = this.threadStates.get(threadId);
     if (!state?.server) return;
+    const server = state.server;
     const range = attentionCountRange(state);
     const me = this.userService.sessionProfile();
     if (!range || !me) return;
@@ -1103,7 +1112,7 @@ export class ThreadRepository {
     const projection = projectThreadAttention(state, count)!;
     // Preview membership belongs to the server; optimistic reads only affect
     // attention state and must not prune the conversation summary.
-    const preview = state.server.previews?.at(-1);
+    const preview = server.previews?.at(-1);
     const namespaceId = preview?.sender
       ? this.namespaces.activeNamespaceId(preview.sender.domain)
       : null;
@@ -1116,6 +1125,9 @@ export class ThreadRepository {
           lastReadSeq: projection.lastReadSeq,
           unreadCount: projection.unreadCount,
           mentionUnread: projection.hasUnreadMention ? ['me' as const] : [],
+          joinRequestEndFeedId: server.joinRequestEndFeedId,
+          joinRequestReadFeedId: server.joinRequestReadFeedId,
+          groupInviteEndFeedId: server.groupInviteEndFeedId,
           lastMessagePreview: preview
             ? preview.status === 'LIVE'
               ? (preview.text ?? '')
@@ -1138,6 +1150,57 @@ export class ThreadRepository {
       }),
     );
     return projected;
+  }
+
+  private applyGroupProjectionHeads(snapshot: ThreadFeedSnapshot): void {
+    let changed: ConversationItem | undefined;
+    this._items.update((items) =>
+      items.map((item) => {
+        if (
+          item.threadId !== snapshot.threadId ||
+          (item.joinRequestEndFeedId === snapshot.joinRequestEndFeedId &&
+            item.joinRequestReadFeedId === snapshot.joinRequestReadFeedId &&
+            item.groupInviteEndFeedId === snapshot.groupInviteEndFeedId)
+        )
+          return item;
+        changed = {
+          ...item,
+          joinRequestEndFeedId: snapshot.joinRequestEndFeedId,
+          joinRequestReadFeedId: snapshot.joinRequestReadFeedId,
+          groupInviteEndFeedId: snapshot.groupInviteEndFeedId,
+        };
+        return changed;
+      }),
+    );
+    if (changed) void this.persistThread(changed);
+  }
+
+  markJoinRequestsReadLocally(
+    threadId: number,
+    joinRequestReadFeedId: number,
+  ): void {
+    let changed: ConversationItem | undefined;
+    this._items.update((items) =>
+      items.map((item) => {
+        if (
+          item.threadId !== threadId ||
+          item.joinRequestReadFeedId === undefined ||
+          item.joinRequestEndFeedId === undefined ||
+          item.joinRequestReadFeedId < 0 ||
+          item.joinRequestReadFeedId >= item.joinRequestEndFeedId
+        )
+          return item;
+        changed = {
+          ...item,
+          joinRequestReadFeedId: Math.min(
+            item.joinRequestEndFeedId,
+            Math.max(item.joinRequestReadFeedId, joinRequestReadFeedId),
+          ),
+        };
+        return changed;
+      }),
+    );
+    if (changed) void this.persistThread(changed);
   }
 
   /**
@@ -1318,17 +1381,6 @@ export class ThreadRepository {
             );
           } else if (op.eventType === 'PROFILE') {
             this.applyStateProfile(op);
-          } else if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
-            const hasNewUnread = this.userService.applyGroupJoinRequestHead(
-              op.body.threadId,
-              op.body.latestFeedId,
-              op.body.readFeedId,
-            );
-            if (hasNewUnread)
-              this.applyJoinRequestActivity(
-                op.body.threadId,
-                op.body.latestRequestAt,
-              );
           } else if (op.eventType === 'INCOMING_INVITE_HEAD') {
             this.userService.applyRelationshipRequestReadHead(
               op.body.readThroughFeedId,

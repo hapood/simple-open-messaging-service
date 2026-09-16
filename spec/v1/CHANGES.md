@@ -3,6 +3,10 @@
 This non-normative change record identifies candidate corrections before the
 v1 wire contract is frozen. The operation specifications define the requirements.
 
+- Forward-bundle messages now require the immutable nickname snapshot in
+  `profile.displayName`. The `author.account/domain` Address pair is optional;
+  when supplied, both fields remain required together. The former bundle shape
+  without `profile.displayName` is not accepted.
 - Relationship confirmation now explicitly requires an initialization
   `THREAD_CONTENT_HEAD` ordered after the authored `ACCEPTED` acknowledgement,
   even when passive access or unchanged sequence bounds already exist. An

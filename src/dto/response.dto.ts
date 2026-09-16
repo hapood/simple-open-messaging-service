@@ -112,6 +112,15 @@ export class ThreadFeedStateDto {
   @ApiProperty({ type: String, nullable: true, example: '42' })
   groupMetaFeedEndId!: number | null;
 
+  @ApiProperty({ minimum: 0 })
+  joinRequestEndFeedId!: number;
+
+  @ApiProperty({ minimum: -1 })
+  joinRequestReadFeedId!: number;
+
+  @ApiProperty({ minimum: 0 })
+  groupInviteEndFeedId!: number;
+
   @ApiProperty({
     example: 42,
     description:

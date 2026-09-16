@@ -178,28 +178,43 @@ export class GroupService {
     >(`${apiPrefix()}/group/invitations`, params);
   }
 
-  markJoinRequestsRead(params: { groupId: number; readFeedId: number }) {
+  markJoinRequestsRead(params: {
+    groupId: number;
+    joinRequestReadFeedId: number;
+  }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/join-requests/read`,
       params,
     );
   }
 
-  acceptJoinRequest(params: { groupId: number; account: string; domain: string }) {
+  acceptJoinRequest(params: {
+    groupId: number;
+    account: string;
+    domain: string;
+  }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/join-request/accept`,
       params,
     );
   }
 
-  rejectJoinRequest(params: { groupId: number; account: string; domain: string }) {
+  rejectJoinRequest(params: {
+    groupId: number;
+    account: string;
+    domain: string;
+  }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/join-request/reject`,
       params,
     );
   }
 
-  revokeInvitation(params: { groupId: number; account: string; domain: string }) {
+  revokeInvitation(params: {
+    groupId: number;
+    account: string;
+    domain: string;
+  }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/invitation/revoke`,
       params,

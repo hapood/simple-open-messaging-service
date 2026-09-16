@@ -121,6 +121,8 @@ This is an independent fact keyed by `(accountId, threadId)`. It references a
 local `Account` and a `MessageThread`. It stores the
 local role fact, `lastReadSeq`, `unreadCount`, `lastMentionSeq`, bounded `previewSeqs`,
 the published `messageEndSeq` / `tombstoneEndSeq`, `threadFeedId`, mute/block/pin state,
+the manager-only `joinRequestEndFeedId`, `joinRequestReadFeedId`, and
+`groupInviteEndFeedId` projection coordinates,
 inclusive `messageVisibleThroughSeq`, and alias. The thread-wide `clearedSeq` history boundary lives
 on `MessageThread`. A thread may therefore have
 zero, one, or several participants: a cross-server P2P usually has one, a

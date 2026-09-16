@@ -31,26 +31,6 @@ export function readForcedMemberRevokeTask(task: DurableTask): {
   return { threadId, memberUserId };
 }
 
-export function readMirrorGroupMemberRevokeTask(task: DurableTask): {
-  threadId: number;
-  memberUserId: AccountTarget;
-  expectedAuthorizationEpoch: number;
-} {
-  const command = readForcedMemberRevokeTask(task);
-  if (task.payload.direction !== 'MIRROR')
-    throw new Error('group task is not a mirror member disband');
-  const expectedAuthorizationEpoch = task.payload.expectedAuthorizationEpoch;
-  if (
-    !Number.isSafeInteger(expectedAuthorizationEpoch) ||
-    (expectedAuthorizationEpoch as number) < 0
-  )
-    throw new Error('invalid mirror member authorization epoch');
-  return {
-    ...command,
-    expectedAuthorizationEpoch: expectedAuthorizationEpoch as number,
-  };
-}
-
 export type QueryDeniedGroupMembershipRevocationTask =
   | {
       direction: 'GROUP';
@@ -145,23 +125,6 @@ export function readForbiddenGroupTask(task: DurableTask): {
     namespaceId: readPositiveInteger(task.payload.namespaceId, 'namespace ID'),
     expectedAuthorizationEpoch: expectedAuthorizationEpoch as number,
   };
-}
-
-/** The mirror-member disband carries the captured denial coordinates. The
- * authority address identifies the mirror and the authorization epoch prevents
- * a task from applying to a newer, reopened generation. */
-export function readDisbandMirrorGroupMembersTask(task: DurableTask): {
-  threadId: number;
-  groupAccount: string;
-  peerDomain: string;
-  namespaceId: number;
-  expectedAuthorizationEpoch: number;
-} {
-  const forbidden = readForbiddenGroupTask(task);
-  const groupAccount = task.payload.groupAccount;
-  if (typeof groupAccount !== 'string' || !isValidGroupAccount(groupAccount))
-    throw new Error('invalid mirror disband group account');
-  return { ...forbidden, groupAccount };
 }
 
 function assertGroupTask(task: DurableTask): void {

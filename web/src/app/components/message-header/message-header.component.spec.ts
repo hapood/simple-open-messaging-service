@@ -98,7 +98,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
           provide: UserService,
           useValue: {
             sessionProfile: signal({ id: 1 }),
-            groupJoinRequestHeads: signal(new Map()),
           },
         },
         { provide: ChatContextService, useValue: { canAdministerGroup } },

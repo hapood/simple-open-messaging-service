@@ -276,6 +276,7 @@ describe('ForwardBundleService', () => {
       {
         id: 1,
         author: { account: 'alice', domain: 'peer.test' },
+        profile: { displayName: 'Alice' },
         contentType: ContentType.LINK,
         content: JSON.stringify({
           url: 'https://example.test',
@@ -288,6 +289,7 @@ describe('ForwardBundleService', () => {
       {
         id: 2,
         author: { account: 'alice', domain: 'peer.test' },
+        profile: { displayName: 'Alice' },
         contentType: ContentType.CONTACT_CARD,
         content: JSON.stringify({
           account: 'bob',
@@ -301,6 +303,7 @@ describe('ForwardBundleService', () => {
       {
         id: 3,
         author: { account: 'alice', domain: 'peer.test' },
+        profile: { displayName: 'Alice' },
         contentType: ContentType.IMAGE,
         content: JSON.stringify({
           url: `/uploads/msg-assets/cc/cc/${retainedDigest}`,
@@ -601,7 +604,7 @@ describe('ForwardBundleService', () => {
     expect(JSON.parse(prepared.messages[0].content)).toEqual({ text: 'reply' });
   });
 
-  it('omits the optional profile when the exact message revision is unavailable', async () => {
+  it('uses the creator account as display name when the exact revision is unavailable', async () => {
     const database = databaseFake(0) as ReturnType<typeof databaseFake>;
     database.db.execute
       .mockResolvedValueOnce({ rows: [{ authorized: true }] })
@@ -616,7 +619,7 @@ describe('ForwardBundleService', () => {
       account: 'alice',
       domain: process.env.SOMS_DOMAIN ?? 'local',
     });
-    expect(prepared.messages[0].profile).toBeUndefined();
+    expect(prepared.messages[0].profile).toEqual({ displayName: 'alice' });
   });
 
   it('keeps a known avatarless exact profile without inventing an avatar', async () => {
@@ -631,7 +634,7 @@ describe('ForwardBundleService', () => {
     expect(prepared.assets).toEqual([]);
   });
 
-  it('omits the complete profile when its referenced avatar cannot be snapshotted', async () => {
+  it('keeps the required display name when its avatar cannot be snapshotted', async () => {
     const database = databaseFake(0) as ReturnType<typeof databaseFake>;
     database.db.execute.mockResolvedValue({
       rows: [
@@ -649,7 +652,7 @@ describe('ForwardBundleService', () => {
       { threadId: 4, seq: 7 },
     ]);
 
-    expect(prepared.messages[0].profile).toBeUndefined();
+    expect(prepared.messages[0].profile).toEqual({ displayName: 'Alice' });
     expect(prepared.assets).toEqual([]);
   });
 
@@ -860,6 +863,103 @@ describe('ForwardBundleService', () => {
     }
   });
 
+  it('accepts a required display name without an author address', async () => {
+    const insertedBundles: Array<{ messages: ForwardBundleMessage[] }> = [];
+    const tx = {
+      query: {
+        forwardBundle: { findFirst: vi.fn().mockResolvedValue(undefined) },
+      },
+      insert: vi.fn((table: unknown) => ({
+        values: vi.fn(async (value: unknown) => {
+          if (table === forwardBundle) {
+            insertedBundles.push(value as (typeof insertedBundles)[number]);
+          }
+        }),
+      })),
+    };
+    const service = forwardService({});
+
+    await expect(
+      service.importClosure(
+        'peer.test',
+        {
+          id: 'root',
+          messages: [
+            {
+              id: 1,
+              author: {},
+              profile: { displayName: 'Alice' },
+              contentType: ContentType.PURE_TEXT,
+              content: JSON.stringify({ text: 'hello' }),
+              sentAt: 1,
+            },
+          ],
+          children: [],
+          assets: [],
+        },
+        tx as never,
+      ),
+    ).resolves.toHaveProperty('localRootBundleId');
+
+    expect(insertedBundles[0].messages[0]).toMatchObject({
+      author: {},
+      profile: { displayName: 'Alice' },
+    });
+  });
+
+  it.each([
+    ['account only', { account: 'alice' }],
+    ['domain only', { domain: 'peer.test' }],
+  ])(
+    'rejects a partial optional author address: %s',
+    async (_label, author) => {
+      const service = forwardService({});
+
+      await expect(
+        service.importClosure('peer.test', {
+          id: 'root',
+          messages: [
+            {
+              id: 1,
+              author,
+              profile: { displayName: 'Alice' },
+              contentType: ContentType.PURE_TEXT,
+              content: JSON.stringify({ text: 'hello' }),
+              sentAt: 1,
+            },
+          ],
+          children: [],
+          assets: [],
+        }),
+      ).rejects.toMatchObject({
+        bizCode: BusinessCode.FEDERATION_MALFORMED,
+      });
+    },
+  );
+
+  it('rejects the old bundle shape without a display name', async () => {
+    const service = forwardService({});
+
+    await expect(
+      service.importClosure('peer.test', {
+        id: 'root',
+        messages: [
+          {
+            id: 1,
+            author: { account: 'alice', domain: 'peer.test' },
+            contentType: ContentType.PURE_TEXT,
+            content: JSON.stringify({ text: 'hello' }),
+            sentAt: 1,
+          },
+        ],
+        children: [],
+        assets: [],
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+  });
+
   it('rejects a FORWARD card whose bundleId differs from childBundleId', async () => {
     const service = forwardService({});
     await expect(
@@ -901,6 +1001,7 @@ describe('ForwardBundleService', () => {
               domain: 'peer.test',
               displayName: 'Alice',
             },
+            profile: { displayName: 'Alice' },
             contentType: ContentType.PURE_TEXT,
             content: JSON.stringify({ text: 'hello' }),
             sentAt: 1,

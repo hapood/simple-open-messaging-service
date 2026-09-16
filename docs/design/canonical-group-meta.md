@@ -311,32 +311,21 @@ fan-out. The mirror may consequently retain the last validated `UPSERT` as
 historical replica state. It must not treat that row as authorization or expose
 it as current membership after the local relationship has ended.
 
-#### Mirror dissolution and re-entry
+#### Mirror authorization denial
 
-A dissolution is invisible on the wire: the origin appends no synthetic empty
-roster, and the closed audience turns every later authorized read into an
-HTTP 200 `FORBIDDEN` denial. The mirror therefore converges on denial. Both
-denial surfaces — a Group Meta round page fetch and a thread content round —
-admit one system-authored `DISBAND_MIRROR_GROUP_MEMBERS` parent. Its first
-transaction records a recoverable tombstone (`MessageThread.groupDissolvedAt`,
-the mirror arm of the unified `groupState.dissolvedAt`) and disables federation rounds. A durable
-pair-cursor sweep then departs each still-active local member with a statement
-that synthesizes the boundary the meta channel can no longer deliver: the
-mirrored `REVOKED` facts, the pair deactivation, the `GROUP_LEFT` message with
-its watermarks, and the member's client feed row. No meta facts are written and
-no peer state feed is touched. Repeated denials coalesce onto the parent, and
-replays of every step are no-ops.
+An origin may close the mirror's audience without appending a synthetic empty
+roster or a final `DEPART`. A later Group Meta or content query can therefore
+return HTTP 200 `FORBIDDEN`. The mirror stops that round without advancing its
+cursor, records the event at debug level, and waits for the next State Feed
+push. It does not translate the denial into a local dissolution, revoke local
+members, synthesize `GROUP_LEFT`, or disable future federation rounds.
 
-This dissolved state is local bookkeeping for lost read access, not the
-origin's terminal dissolution. The origin remains the authority: a member may
-re-request, and a positive origin fact (an invitation, an acceptance, an ACK)
-keeps applying while dissolved. The activation statement clears
-`groupDissolvedAt` and re-enables rounds exactly when membership re-forms; the
-next meta head re-raises `metaTargetId`; the zero cursor re-opens a full
-snapshot recovery drain at the merged target whose batches rebuild the
-replica. A
-dissolved local
-group, by contrast, stays terminal: positive member-authored commands skip it.
+The protocol permits a receiving peer to end relationship directions it
+authors locally after an authenticated denial, but this is optional (`MAY`),
+not required convergence. A mirror that retains the relationship must still
+treat current authorization checks—not retained Group Meta rows—as the access
+gate. A later push retries from the last committed cursor and can carry the
+facts that converge or restore authorization.
 
 ### 6.2 Local client
 

@@ -30,7 +30,6 @@ export interface ClientStateFeedWrite {
   eventType:
     | 'PROFILE'
     | 'RELATIONSHIP_INTENT'
-    | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
     | 'THREAD_STATE';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
@@ -192,79 +191,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       write.subjectAccount,
       write.subjectDomain,
     ]);
-  }
-
-  /** Merge the account-wide unread watermark for one group's compacted application head. */
-  async writeGroupJoinRequestHeadInTx(
-    tx: DatabaseTransaction,
-    write: {
-      userId: number;
-      account: string;
-      domain: string;
-      threadId: number;
-      latestFeedId?: number;
-      latestRequestAt?: number;
-      readFeedId?: number;
-    },
-  ): Promise<number | null> {
-    const [current] = await tx
-      .select({ body: clientStateFeed.body })
-      .from(clientStateFeed)
-      .where(
-        and(
-          eq(clientStateFeed.userId, write.userId),
-          eq(clientStateFeed.account, write.account),
-          eq(clientStateFeed.domain, write.domain),
-          eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
-          eq(clientStateFeed.subjectAccount, ''),
-          eq(clientStateFeed.subjectDomain, 'local'),
-        ),
-      )
-      .limit(1);
-    const body = current?.body as
-      | {
-          latestFeedId?: unknown;
-          latestRequestAt?: unknown;
-          readFeedId?: unknown;
-        }
-      | undefined;
-    const currentLatest =
-      typeof body?.latestFeedId === 'number' ? body.latestFeedId : 0;
-    const currentRead =
-      typeof body?.readFeedId === 'number' ? body.readFeedId : 0;
-    const latestFeedId =
-      write.latestFeedId !== undefined && write.latestFeedId > currentLatest
-        ? write.latestFeedId
-        : currentLatest;
-    const latestRequestAt =
-      write.latestFeedId !== undefined &&
-      write.latestFeedId >= currentLatest &&
-      write.latestRequestAt !== undefined
-        ? write.latestRequestAt
-        : typeof body?.latestRequestAt === 'number'
-          ? body.latestRequestAt
-          : 0;
-    const requestedRead =
-      write.readFeedId !== undefined && write.readFeedId > currentRead
-        ? write.readFeedId
-        : currentRead;
-    const readFeedId =
-      requestedRead > latestFeedId ? latestFeedId : requestedRead;
-    return this.writeInTx(tx, {
-      userId: write.userId,
-      account: write.account,
-      domain: write.domain,
-      namespaceId: 0,
-      eventType: 'GROUP_JOIN_REQUEST_HEAD',
-      subjectAccount: '',
-      subjectDomain: 'local',
-      body: {
-        threadId: write.threadId,
-        latestFeedId,
-        latestRequestAt,
-        readFeedId,
-      },
-    });
   }
 
   /** Persist one shared group-request projection. Original request timestamps are immutable:

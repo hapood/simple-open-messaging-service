@@ -8,12 +8,16 @@ import {
   type AccountTarget,
 } from '../../../user/account-address.js';
 import { Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
 import { GroupRole } from '../../../database/enums.js';
-import { accountThreadState } from '../../../database/schema.js';
+import { accountThreadState, groupMeta } from '../../../database/schema.js';
 import { readCurrentGroupMemberInTx } from '../../meta/current-group-roster.js';
 import { GroupMetaFeedService } from '../../meta/group-meta-feed.service.js';
+import {
+  initialGroupManagerProjection,
+  transitionGroupManagerProjection,
+} from '../../shared/group-manager-projection.js';
 
 export interface GroupMembershipSyncResult {
   canonicalRosterChanged: boolean;
@@ -54,7 +58,11 @@ export class GroupMembershipProjectionService {
         : undefined;
 
     if (!params.active) {
-      if (!params.hostedLocally || !params.pairChanged || params.updateCanonicalRoster === false)
+      if (
+        !params.hostedLocally ||
+        !params.pairChanged ||
+        params.updateCanonicalRoster === false
+      )
         return { canonicalRosterChanged: false };
       if (current?.role === GroupRole.OWNER && !params.allowOwnerDeactivation)
         throw new Error('owner deactivation requires explicit authorization');
@@ -101,23 +109,42 @@ export class GroupMembershipProjectionService {
       canonicalRosterChanged = true;
     }
 
-    if (localAccount)
+    if (localAccount) {
+      // Keep manager-head initialization inside the participant upsert. This
+      // preserves missing-row repair without a separate GroupMeta round trip.
+      const projectionHead = {
+        applicationEndId: sql<number>`(SELECT ${groupMeta.applicationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
+        invitationEndId: sql<number>`(SELECT ${groupMeta.invitationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
+      };
+      const initialManagerProjection = initialGroupManagerProjection(
+        role,
+        projectionHead,
+      );
+      const previousRole = params.pairChanged ? null : (current?.role ?? null);
+      const managerProjection = transitionGroupManagerProjection(
+        previousRole,
+        role,
+        projectionHead,
+      );
       await tx
         .insert(accountThreadState)
         .values({
           accountId: localAccount.id,
           threadId: params.threadId,
           role,
+          ...initialManagerProjection,
           updatedAt: new Date(),
         })
         .onConflictDoUpdate({
           target: [accountThreadState.accountId, accountThreadState.threadId],
           set: {
             role,
+            ...managerProjection,
             messageVisibleThroughSeq: null,
             updatedAt: new Date(),
           },
         });
+    }
     return { canonicalRosterChanged };
   }
 }

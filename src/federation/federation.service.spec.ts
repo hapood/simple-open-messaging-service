@@ -246,7 +246,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     expect(harness.userIntents.execute).toHaveBeenCalledOnce();
   });
 
-  it('queues mirror dissolution and closes round admission atomically', async () => {
+  it('leaves a denied mirror unchanged for a later state-feed push', async () => {
     const harness = groupForbiddenHarness(7, [
       { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
       { groupId: 4, groupDomain: 'peer.test', memberUserId: 3 },
@@ -254,42 +254,19 @@ describe('thread-query FORBIDDEN convergence', () => {
 
     await expect(
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
-    ).resolves.toBe('GROUP_DISBAND_QUEUED');
+    ).resolves.toBe('MIRROR_WAITING_FOR_PUSH');
     expect(
       harness.relationshipMutations.lockGroupMutationInTx,
     ).not.toHaveBeenCalled();
     expect(
       harness.relationshipIntents.lockGroupBusinessScopeInTx,
-    ).toHaveBeenCalledWith(harness.tx, {
-      account: '!group',
-      domain: 'peer.test',
-    });
+    ).not.toHaveBeenCalled();
     expect(
       harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
-    // The per-member revocation parent is gone from the mirror branch; the
-    // disband parent carries the convergence instead.
     expect(harness.tasks.enqueueTaskInTx).not.toHaveBeenCalled();
-    // Pair miss, group read, epoch lock, member scan, rounds fence, admission
-    // advisory lock, admission mirror read, admission blocker scan.
-    expect(harness.tx.execute).toHaveBeenCalledTimes(8);
-    expect(harness.insertedValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'MUTATION',
-        scopeType: 'GROUP',
-        taskType: 'DISBAND_MIRROR_GROUP_MEMBERS',
-        actorUserId: 99,
-        payload: {
-          threadId: 31,
-          groupAccount: '!group',
-          peerDomain: 'peer.test',
-          namespaceId: 5,
-          expectedAuthorizationEpoch: 8,
-        },
-        coalescingKey: JSON.stringify(['DISBAND_MIRROR_GROUP_MEMBERS', 31]),
-        status: 'PENDING',
-      }),
-    );
+    expect(harness.tx.execute).toHaveBeenCalledTimes(2);
+    expect(harness.insertedValues).not.toHaveBeenCalled();
     expect(
       harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
@@ -336,9 +313,15 @@ describe('thread-query FORBIDDEN convergence', () => {
     ).not.toHaveBeenCalled();
   });
 
-  it('does not revoke group directions when the frozen epoch is stale', async () => {
+  it('does not revoke authoritative group directions when the frozen epoch is stale', async () => {
     const harness = groupForbiddenHarness(8, [
-      { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
+      {
+        groupId: 4,
+        groupDomain: 'local',
+        memberUserId: null,
+        memberAccount: 'remote',
+        memberDomain: 'peer.test',
+      },
     ]);
 
     await expect(
@@ -1187,6 +1170,7 @@ describe('FederationService global missed transport', () => {
       threadId: 10,
       federationVersion: 3,
       toAccount: 'alice',
+      authority: 'PEER',
       creatorAccount: 'bob',
       creatorDomain: 'peer.test',
       recipients: [1],

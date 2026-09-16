@@ -284,11 +284,12 @@ It has no coalescing key and never cooperatively yields. The denial transaction
 checks the frozen authorization epoch under the group business lock and thread
 row lock, then admits this parent through `enqueueTaskInTx`.
 
-For a mirrored group, that same transaction increments the thread epoch and
-disables federation rounds. The parent enumerates local members and admits
-member-authored forced revocations. For a locally authoritative group, the
-thread epoch and round admission remain unchanged: only members at the denied
-peer and namespace receive group-authored forced revocations.
+For a remotely authoritative mirror, a denial admits no task and changes no
+relationship or round state. The scheduler logs the denial at debug level,
+stops the current round, and waits for a later State Feed push. For a locally
+authoritative group, optional cleanup leaves the thread epoch and round
+admission unchanged: only members at the denied peer and namespace receive
+group-authored forced revocations.
 
 Each child uses `FORCE_REVOKE_GROUP_MEMBER` with the matching `direction` and
 denied source coordinates. It rechecks the frozen epoch inside the existing

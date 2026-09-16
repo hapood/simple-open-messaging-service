@@ -418,9 +418,7 @@ export const durableTask = pgTable(
       .where(sql`${table.status} = 'PENDING'`),
     index('DurableTask_blocking_scope_id_idx')
       .on(table.kind, table.scopeKey, table.id)
-      .where(
-        sql`${table.status} IN ('PENDING', 'PROCESSING')`,
-      ),
+      .where(sql`${table.status} IN ('PENDING', 'PROCESSING')`),
     uniqueIndex('DurableTask_one_processing_per_scope')
       .on(table.kind, table.scopeKey)
       .where(sql`${table.status} = 'PROCESSING'`),
@@ -544,7 +542,9 @@ export const accountThreadState = pgTable(
      * behind end until the manager consumes the pending request list. */
     joinRequestEndFeedId: integer().default(0).notNull(),
     groupInviteEndFeedId: integer().default(0).notNull(),
-    joinRequestReadFeedId: integer().default(0).notNull(),
+    /** Manager read watermark for join applications. -1 disables manager-only
+     * attention for ordinary members; zero is a valid pre-first-request read position. */
+    joinRequestReadFeedId: integer().default(-1).notNull(),
     /** Last group meta feed end id published to this member on the thread feed.
      * Null for P2P conversations; the thread fan-out keeps it at the canonical
      * GroupMeta coordinate. Client-visible: any writer must let the allocation
@@ -1877,12 +1877,11 @@ export const groupMetaMemberFeed = pgTable(
       columns: [table.threadId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
-    uniqueIndex('GroupMetaMemberFeed_member_key')
-      .on(
-        table.threadId,
-        table.memberAccount,
-        table.memberDomain,
-      ),
+    uniqueIndex('GroupMetaMemberFeed_member_key').on(
+      table.threadId,
+      table.memberAccount,
+      table.memberDomain,
+    ),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],

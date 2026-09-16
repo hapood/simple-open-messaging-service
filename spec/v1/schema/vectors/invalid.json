@@ -1168,6 +1168,9 @@
               "domain": "a.example",
               "displayName": "Alice"
             },
+            "profile": {
+              "displayName": "Alice"
+            },
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
             "sentAt": 1
@@ -1176,6 +1179,50 @@
         "children": [],
         "assets": []
       }
+    },
+    {
+      "name": "forward bundle rejects the old shape without a display name",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "value": {
+        "id": 1,
+        "author": {
+          "account": "alice",
+          "domain": "a.example"
+        },
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"hello\"}",
+        "sentAt": 1
+      }
+    },
+    {
+      "name": "forward bundle rejects a partial optional author address",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "values": [
+        {
+          "id": 1,
+          "author": {
+            "account": "alice"
+          },
+          "profile": {
+            "displayName": "Alice"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"hello\"}",
+          "sentAt": 1
+        },
+        {
+          "id": 1,
+          "author": {
+            "domain": "a.example"
+          },
+          "profile": {
+            "displayName": "Alice"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"hello\"}",
+          "sentAt": 1
+        }
+      ]
     },
     {
       "name": "authorized profile parameters reject no-profile sentinel",

@@ -298,10 +298,12 @@ Every runner progress/error line is also appended with a UTC timestamp to
 and terminal errors. This file is written independently of the backend log level and remains
 available when the workload fails. Existing runs cannot recover terminal output that was not saved.
 
-The backend launcher defaults to `FED_LAB_LOG_LEVEL=warn`, so successful requests and ordinary
-business events may be absent. Set `FED_LAB_LOG_LEVEL=info` before starting or restarting the
-backend processes to retain request timing; changing it only for the workload process does
-not affect an already-running backend.
+The backend launcher defaults to `FED_LAB_LOG_LEVEL=debug`, disables per-statement SQL logs, and
+measures every annotated business operation and durable-task execution. This keeps development
+output focused on `execution_measurement` summaries rather than SQL text. Set
+`DATABASE_QUERY_LOG=1` for focused SQL debugging, or
+`EXECUTION_MEASUREMENT_SAMPLE_RATE=0` to benchmark without measurement. These values are captured
+when the backend starts; changing them requires restarting the backend processes.
 
 Each node writes JSON records to `runtime/<node>/data/logs/soms.log` and rotated files in the
 same directory. To follow all three current files from the repository root:

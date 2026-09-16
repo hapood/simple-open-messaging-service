@@ -17,6 +17,7 @@ import {
   requireGroupThreadContentLockUnderGroupInTx,
   type ThreadContentLock,
 } from '../../common/locks/thread-content-lock.js';
+import { lockAccountFeedAllocatorsInTx } from '../../common/locks/account-feed-allocator-lock.js';
 import { captureThreadStateUpdatesInTx } from '../../client-state-feed/capture-thread-state-updates.js';
 import type {
   ClientStateFeedService,
@@ -243,14 +244,11 @@ export class GroupDisbandMembershipRevocationService {
           namespaceId: row.memberNamespaceId,
         },
       ]);
-    const accounts = [
-      ...row.managerIds,
-      ...(row.localMemberId === null ? [] : [row.localMemberId]),
-    ];
-    if (accounts.length > 0)
-      await tx.execute(
-        sql`SELECT id FROM "Account" WHERE id = ANY(${sql.param(accounts)}::integer[]) ORDER BY id FOR NO KEY UPDATE`,
-      );
+    // This child writes only the departing local member's client feed. Manager
+    // request projections allocate no manager-owned feed positions, so locking
+    // every current manager would only widen contention during the sweep.
+    if (row.localMemberId !== null)
+      await lockAccountFeedAllocatorsInTx(tx, [row.localMemberId]);
     return {
       tx,
       threadLock,

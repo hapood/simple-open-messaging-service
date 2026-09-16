@@ -19,15 +19,15 @@ function setup() {
   const progress = {
     read: vi.fn().mockResolvedValue({ phase: 'FEED', afterAccountId: 0 }),
     save: vi.fn().mockResolvedValue(undefined),
-    projectBatch: vi
+    projectActiveAccount: vi
       .fn()
-      .mockImplementation(async (_task, _target, ids: number[]) =>
-        ids.map((userId) => ({
+      .mockImplementation(async (_task, _target, userId: number) => [
+        {
           userId,
           unreadCountChanged: userId !== 2,
           previewChanged: false,
-        })),
-      ),
+        },
+      ]),
     yieldToNewer: vi.fn().mockResolvedValue(false),
   };
   const handler = new ThreadFanoutTaskHandler(
@@ -55,8 +55,8 @@ function setup() {
       messageEndSeq: 10,
       tombstoneEndSeq: 2,
     },
-  // Partial double: the handler only reads identity/scope/payload here; the
-  // row's bookkeeping columns are irrelevant to these paths.
+    // Partial double: the handler only reads identity/scope/payload here; the
+    // row's bookkeeping columns are irrelevant to these paths.
   } as unknown as DurableTask;
   return {
     dispatcher,
@@ -83,11 +83,9 @@ describe('durable thread fanout handler', () => {
         })),
       );
       await h.handler.execute(h.task);
-      expect(h.progress.projectBatch).toHaveBeenCalledTimes(
-        Math.ceil(count / 50),
-      );
+      expect(h.progress.projectActiveAccount).toHaveBeenCalledTimes(count);
       expect(
-        h.progress.projectBatch.mock.calls.flatMap((call) => call[2]),
+        h.progress.projectActiveAccount.mock.calls.map((call) => call[2]),
       ).toEqual(Array.from({ length: count }, (_, i) => i + 1));
       expect(h.progress.yieldToNewer).toHaveBeenCalledTimes(
         Math.ceil(count / 50),
@@ -110,16 +108,16 @@ describe('durable thread fanout handler', () => {
       })),
     );
     await h.handler.execute(h.task);
-    expect(h.progress.projectBatch).toHaveBeenCalledExactlyOnceWith(
-      h.task.id,
-      h.task.payload,
-      [51, 52, 53],
+    expect(h.progress.projectActiveAccount.mock.calls).toEqual(
+      [51, 52, 53].map((userId) => [h.task.id, h.task.payload, userId]),
     );
   });
 
   it('still fails on database projection errors without issuing notification hints', async () => {
     const h = setup();
-    h.progress.projectBatch.mockRejectedValue(new Error('database rollback'));
+    h.progress.projectActiveAccount.mockRejectedValue(
+      new Error('database rollback'),
+    );
     await expect(h.handler.execute(h.task)).rejects.toThrow(
       'database rollback',
     );
@@ -141,13 +139,12 @@ describe('durable thread fanout handler', () => {
         muted: false,
       })),
     );
-    h.progress.projectBatch.mockImplementationOnce(async () => {
+    h.progress.projectActiveAccount.mockImplementationOnce(async () => {
       h.progress.yieldToNewer.mockResolvedValue(true);
       return [];
     });
     await h.handler.execute(h.task);
-    expect(h.progress.projectBatch).toHaveBeenCalledTimes(1);
-    expect(h.progress.projectBatch.mock.calls[0][2]).toHaveLength(50);
+    expect(h.progress.projectActiveAccount).toHaveBeenCalledTimes(50);
     expect(h.progress.save).not.toHaveBeenCalled();
   });
 
@@ -163,9 +160,11 @@ describe('durable thread fanout handler', () => {
     const h = setup();
     h.progress.read.mockResolvedValue({ phase: 'FEED', afterAccountId: 1 });
     await h.handler.execute(h.task);
-    expect(h.progress.projectBatch).toHaveBeenCalledWith(1n, h.task.payload, [
+    expect(h.progress.projectActiveAccount).toHaveBeenCalledWith(
+      1n,
+      h.task.payload,
       2,
-    ]);
+    );
     expect(h.progress.save).toHaveBeenLastCalledWith(1n, {
       phase: 'DONE',
       afterAccountId: 0,
@@ -187,11 +186,22 @@ describe('durable thread fanout handler', () => {
 
   it('sends every projection to SSE and only count or preview changes to Push', async () => {
     const h = setup();
-    h.progress.projectBatch.mockResolvedValue([
-      { userId: 1, unreadCountChanged: false, previewChanged: false },
-      { userId: 2, unreadCountChanged: true, previewChanged: false },
-      { userId: 3, unreadCountChanged: false, previewChanged: true },
-    ]);
+    h.participants.getActiveParticipantUserIds.mockResolvedValue(
+      [1, 2, 3].map((userId) => ({
+        userId,
+        blocked: false,
+        muted: false,
+      })),
+    );
+    h.progress.projectActiveAccount.mockImplementation(
+      async (_task, _target, userId: number) => [
+        {
+          userId,
+          unreadCountChanged: userId === 2,
+          previewChanged: userId === 3,
+        },
+      ],
+    );
     await h.handler.execute(h.task);
     await vi.waitFor(() =>
       expect(h.feed.notifyFeedUpdates).toHaveBeenCalledTimes(3),

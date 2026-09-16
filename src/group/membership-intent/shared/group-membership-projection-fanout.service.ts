@@ -8,18 +8,17 @@ import {
 import { DatabaseService } from '../../../database/database.service.js';
 import { saveTaskCheckpointInTx } from '../../../durable-task/task-checkpoint.js';
 import type { DurableTask } from '../../../durable-task/durable-task.types.js';
+import { lockAccountFeedAllocatorsInTx } from '../../../common/locks/account-feed-allocator-lock.js';
 import { requireThreadContentLockInTx } from '../../../common/locks/thread-content-lock.js';
 
-const MANAGER_PAGE_SIZE = 10;
-
-interface MembershipProjectionPageEffect {
+interface MembershipProjectionManagerEffect {
   processed: boolean;
   clientUpdates: PendingClientStateFeedUpdate[];
 }
 
 /** Syncs one group's join-request projection watermark and unread head for
  * each current local manager under the thread content lock. Reconciles the
- * latest source state per page and never moves a watermark backwards, so a
+ * latest source state per manager and never moves a watermark backwards, so a
  * superseded worker and successor runs stay safe. */
 @Injectable()
 export class GroupMembershipProjectionFanoutService {
@@ -33,16 +32,16 @@ export class GroupMembershipProjectionFanoutService {
     payload: { threadId: number },
   ): Promise<void> {
     for (;;) {
-      const effect = await this.processNextPage(task, payload.threadId);
+      const effect = await this.processNextManager(task, payload.threadId);
       if (!effect.processed) return;
       this.clientStateFeed.notifyFeedUpdates(effect.clientUpdates);
     }
   }
 
-  private async processNextPage(
+  private async processNextManager(
     task: DurableTask,
     threadId: number,
-  ): Promise<MembershipProjectionPageEffect> {
+  ): Promise<MembershipProjectionManagerEffect> {
     return this.database.db.transaction(async (tx) => {
       // Request lists move under this thread's content lock; acquire it before
       // even the task row so watermark sync serializes with the decisions that
@@ -79,11 +78,11 @@ export class GroupMembershipProjectionFanoutService {
         `)
       ).rows[0];
       // A newer task starts from the first manager and reconciles the latest
-      // watermark. Yield only at a page boundary so this task never abandons
-      // an open transaction.
+      // watermark. Every transaction is already a manager boundary, so this
+      // task can yield without abandoning a projection page.
       if (successor) return emptyEffect();
       const afterManagerId = readCursor(current.afterManagerId);
-      const page = await tx.execute<{ userId: number }>(sql`
+      const next = await tx.execute<{ userId: number }>(sql`
         SELECT owner.id AS "userId" FROM "GroupMetaMemberFeed" fact
         JOIN "Account" owner ON fact."memberDomain" = 'local'
           AND owner.account = fact."memberAccount"
@@ -93,28 +92,20 @@ export class GroupMembershipProjectionFanoutService {
           AND fact.operation = 'UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')
           AND owner.id > ${afterManagerId}
         ORDER BY owner.id
-        LIMIT ${MANAGER_PAGE_SIZE}
+        LIMIT 1
       `);
-      if (page.rows.length === 0) return emptyEffect();
+      const manager = next.rows[0];
+      if (!manager) return emptyEffect();
       const [application] = (
         await tx.execute<{
           groupAccount: string;
           applicationEndId: number;
-          latestRequestAt: string;
         }>(sql`
         SELECT thread."groupAccount" AS "groupAccount",
-          meta."applicationEndId" AS "applicationEndId",
-          COALESCE(floor(extract(epoch FROM MAX(projection."requestedAt")) * 1000)::bigint, 0)::text
-            AS "latestRequestAt"
+          meta."applicationEndId" AS "applicationEndId"
         FROM "MessageThread" thread
         JOIN "GroupMeta" meta ON meta."threadId" = thread.id
-        LEFT JOIN "GroupRequestProjection" projection
-          ON projection."threadId" = thread.id
-          AND projection.direction = 'APPLICATION'
-          AND projection.status = 'REQUESTED'
-          AND projection."expiresAt" > CURRENT_TIMESTAMP
         WHERE thread.id = ${threadId}
-        GROUP BY thread."groupAccount", meta."applicationEndId"
       `)
       ).rows;
       if (!application || !application.groupAccount)
@@ -124,6 +115,9 @@ export class GroupMembershipProjectionFanoutService {
       // invitations onto groupInviteEndFeedId. Summing the two would advance
       // the application cursor on invitation events and erase the direction.
       // The forward-only guard publishes only bigger ids over smaller ones.
+      // Account owns both allocators advanced below. Acquire it after the
+      // thread lock and before AccountThreadState or client-feed writes.
+      await lockAccountFeedAllocatorsInTx(tx, [manager.userId]);
       const updated = await tx.execute<{ accountId: number }>(sql`
         WITH ends AS (
           SELECT g."applicationEndId", g."invitationEndId"
@@ -136,7 +130,7 @@ export class GroupMembershipProjectionFanoutService {
           "updatedAt" = CURRENT_TIMESTAMP
         FROM ends
         WHERE s."threadId" = ${threadId}
-          AND s."accountId" = ANY(${sql.param(page.rows.map((row) => row.userId))}::integer[])
+          AND s."accountId" = ${manager.userId}
           AND (s."joinRequestEndFeedId" < ends."applicationEndId"
             OR s."groupInviteEndFeedId" < ends."invitationEndId")
         RETURNING s."accountId" AS "accountId"
@@ -147,23 +141,8 @@ export class GroupMembershipProjectionFanoutService {
             updated.rows.map((row) => row.accountId),
           )
         : [];
-      if (application.applicationEndId > 0) {
-        for (const manager of page.rows) {
-          const feedId =
-            await this.clientStateFeed.writeGroupJoinRequestHeadInTx(tx, {
-              userId: manager.userId,
-              account: application.groupAccount,
-              domain: 'local',
-              threadId,
-              latestFeedId: application.applicationEndId,
-              latestRequestAt: Number(application.latestRequestAt),
-            });
-          if (feedId !== null)
-            clientUpdates.push({ userId: manager.userId, feedId });
-        }
-      }
       await saveTaskCheckpointInTx(tx, task.id, {
-        afterManagerId: String(page.rows.at(-1)!.userId),
+        afterManagerId: String(manager.userId),
       });
       return { processed: true, clientUpdates };
     });
@@ -176,6 +155,6 @@ function readCursor(value: string | null): bigint {
   return BigInt(value);
 }
 
-function emptyEffect(): MembershipProjectionPageEffect {
+function emptyEffect(): MembershipProjectionManagerEffect {
   return { processed: false, clientUpdates: [] };
 }

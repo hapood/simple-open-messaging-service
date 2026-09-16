@@ -105,6 +105,13 @@ export class ConversationListService {
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
 
+  markJoinRequestsReadLocally(
+    threadId: number,
+    joinRequestReadFeedId: number,
+  ): void {
+    this.repo.markJoinRequestsReadLocally(threadId, joinRequestReadFeedId);
+  }
+
   /** Frozen unread boundary captured before this open session advances any local/server read cursor. */
   unreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
     return this.unreadEntryBoundaries.get(threadId);

@@ -328,46 +328,41 @@
 
   @if (selectedRequest(); as req) {
     <section class="request-detail">
-      <div class="detail-profile">
-        <app-user-avatar
-          [type]="
-            req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
-          "
-          [name]="req.name ?? ''"
-          [identityId]="req.peerId"
-          [account]="req.account"
-          [src]="req.avatar"
-          [federatedDomain]="
-            req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
-          "
-        />
-        <div class="detail-profile-copy">
-          <app-user-identity-label
-            [name]="req.name ?? ('friend.invalidUser' | transloco)"
-            [domain]="
-              req.kind === 'GROUP'
-                ? req.sourceLabel
-                : req.domain !== 'local'
-                  ? req.domain
-                  : null
+      <mat-card appearance="outlined" class="detail-profile">
+        @if (req.account) {
+          <div
+            class="profile-meta"
+            [attr.title]="req.account + '@' + (req.domain || 'local')"
+          >
+            {{ req.account }}&#64;{{ req.domain || 'local' }}
+          </div>
+        }
+        <div class="detail-profile-row">
+          <app-user-avatar
+            [type]="
+              req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
+            "
+            [name]="req.name ?? ''"
+            [identityId]="req.peerId"
+            [account]="req.account"
+            [src]="req.avatar"
+            [federatedDomain]="
+              req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
             "
           />
-          <div class="detail-date">
-            {{ relativeDate(req.date) }} · {{ absoluteDate(req.date) }}
-          </div>
+          <span class="profile-copy">
+            <strong>{{
+              req.name ?? ('friend.invalidUser' | transloco)
+            }}</strong>
+            <span class="profile-description">
+              {{ req.reqMessage || ('friend.noMessage' | transloco) }}
+            </span>
+            <span class="detail-date">
+              {{ relativeDate(req.date) }} · {{ absoluteDate(req.date) }}
+            </span>
+          </span>
         </div>
-      </div>
-      <div class="detail-message">
-        <div class="detail-label">
-          {{
-            (req.kind === 'GROUP'
-              ? 'group.groupDescription'
-              : 'friend.requestMessage'
-            ) | transloco
-          }}
-        </div>
-        <div>{{ req.reqMessage || ('friend.noMessage' | transloco) }}</div>
-      </div>
+      </mat-card>
       <div class="detail-actions">
         @if (selectedDirection() === 'INCOMING') {
           <button

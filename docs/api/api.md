@@ -332,8 +332,10 @@ under `/group/*` because the group, rather than the current user, authors that d
 - **Body**: `{ after: number, through?: number, take?: number, previewCount?: number }`; feed cursors are
   nonnegative int32, take defaults to 100 and is limited to 1..200.
 - **Data**: `{ threadFeedEndId, through, scannedThrough, hasMore, items }`.
-- Each item is `{ threadId, threadFeedId, messageEndSeq, tombstoneEndSeq, lastReadSeq, unreadCount, lastMentionSeq, previews? }`.
+- Each item is `{ threadId, threadFeedId, messageEndSeq, tombstoneEndSeq, groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId, groupInviteEndFeedId, lastReadSeq, unreadCount, lastMentionSeq, previews? }`.
   `lastMentionSeq` is nullable; clients compare it with their local read position.
+  `joinRequestReadFeedId` is `-1` for non-managers; otherwise a join-request
+  notification is unread when it is smaller than `joinRequestEndFeedId`.
 - `previewCount` defaults to zero and cannot exceed the configured preview limit.
   Previews include sequence, sender, timestamp, and live/retracted/removed status;
   deleted entries contain no original message text.

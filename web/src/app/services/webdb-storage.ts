@@ -258,7 +258,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 19;
+export const CACHE_SCHEMA_VERSION = 20;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 5;
 const IDB_FORMAT_VERSION = 1;
 
@@ -2005,42 +2005,6 @@ export class WebdbStorage {
                   profileRev: body.profileRev,
                 },
               });
-          }
-          continue;
-        }
-        if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
-          const latestFeedId = op.body.latestFeedId;
-          if (latestFeedId > 0) {
-            const setting = await tx
-              .objectStore('settings')
-              .get('groupJoinRequestHeads');
-            const heads =
-              setting?.value && typeof setting.value === 'object'
-                ? { ...(setting.value as Record<string, number>) }
-                : {};
-            const current = Number(heads[String(op.body.threadId)] ?? 0);
-            heads[String(op.body.threadId)] =
-              current >= latestFeedId ? current : latestFeedId;
-            await tx.objectStore('settings').put({
-              key: 'groupJoinRequestHeads',
-              value: heads,
-            });
-            const readSetting = await tx
-              .objectStore('settings')
-              .get('groupJoinRequestReadFeedIds');
-            const reads =
-              readSetting?.value && typeof readSetting.value === 'object'
-                ? { ...(readSetting.value as Record<string, number>) }
-                : {};
-            const currentRead = Number(reads[String(op.body.threadId)] ?? 0);
-            reads[String(op.body.threadId)] =
-              currentRead >= op.body.readFeedId
-                ? currentRead
-                : op.body.readFeedId;
-            await tx.objectStore('settings').put({
-              key: 'groupJoinRequestReadFeedIds',
-              value: reads,
-            });
           }
           continue;
         }

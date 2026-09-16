@@ -25,6 +25,7 @@ import {
 } from './thread-fanout-task.js';
 import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 
 export interface ThreadFanoutProgress {
   phase: 'FEED' | 'DONE';
@@ -117,6 +118,7 @@ export class ThreadFanoutProgressService {
     return this.database.db.transaction(async (tx) => {
       const projected: ThreadFanoutProjection[] = [];
       const lock = await acquireThreadContentLockInTx(tx, target.threadId);
+      if (lock) await lockAccountFeedAllocatorsInTx(tx, [target.accountId]);
       if (
         lock &&
         (await this.visibility.findVisibleByThreadSeq(
@@ -175,40 +177,41 @@ export class ThreadFanoutProgressService {
     });
   }
 
-  /** Relationship and block changes serialize on the same thread lock. The head
-   * writer checks current block state, not the earlier audience snapshot. Feed
-   * writes and the cursor commit together, including skipped blocked recipients. */
-  async projectBatch(
+  /** Relationship and block changes serialize on the same thread lock. Each
+   * account-thread projection owns one short transaction: prepare the account
+   * allocator before touching its participant row, then commit its checkpoint
+   * with the projection, including skipped or blocked recipients. */
+  async projectActiveAccount(
     taskId: bigint,
     target: ThreadFanoutTarget,
-    userIds: number[],
+    userId: number,
   ): Promise<ThreadFanoutProjection[]> {
-    if (userIds.length === 0) return [];
     return this.database.db.transaction(async (tx) => {
       const projected: ThreadFanoutProjection[] = [];
       await requireThreadContentLockInTx(tx, target.threadId);
-      for (const userId of userIds) {
-        if (await isThreadMutuallyAuthorized(tx, userId, target.threadId))
-          projected.push({
-            userId,
-            ...(await ThreadFeedHeadWriter.advanceInTx(tx, userId, target)),
-          });
-      }
+      await lockAccountFeedAllocatorsInTx(tx, [userId]);
+      if (await isThreadMutuallyAuthorized(tx, userId, target.threadId))
+        projected.push({
+          userId,
+          ...(await ThreadFeedHeadWriter.advanceInTx(tx, userId, target)),
+        });
       const metaChanged = await this.advanceGroupMetaCoordinateInTx(
         tx,
         target.threadId,
-        userIds,
+        [userId],
       );
-      for (const userId of metaChanged)
-        if (!projected.some((item) => item.userId === userId))
-          projected.push({
-            userId,
-            unreadCountChanged: false,
-            previewChanged: false,
-          });
+      if (
+        metaChanged.includes(userId) &&
+        !projected.some((item) => item.userId === userId)
+      )
+        projected.push({
+          userId,
+          unreadCountChanged: false,
+          previewChanged: false,
+        });
       await saveTaskCheckpointInTx(tx, taskId, {
         phase: 'FEED',
-        afterAccountId: userIds[userIds.length - 1],
+        afterAccountId: userId,
       });
       return projected;
     });

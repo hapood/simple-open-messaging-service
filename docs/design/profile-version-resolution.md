@@ -251,23 +251,24 @@ promotion dependency, not a database transaction dependency.
 
 ### 4.3 Forward-bundle snapshots
 
-A forward bundle always stores the source author's Address separately from an
-optional frozen display snapshot. Bundle creation reads only the exact durable
-profile version selected by the source message's `profileRev`. It must not read
-the mutable `User.name/avatar` projection and must not substitute the user's
-`defaultProfileRev`.
+A forward bundle always stores a frozen display name. The source author's
+Address is optional and, when present, remains separate from display data.
+Bundle creation reads only the exact durable profile version selected by the
+source message's `profileRev`. It must not read the mutable current/default
+profile.
 
-If that exact version is already durable, the bundle stores `displayName` and,
-when present, the avatar's CAS digest. The existing bundle asset closure owns
-and deduplicates that digest. If the exact version has not been resolved, bundle
-creation omits the entire profile snapshot and continues without waiting for or
-enqueuing remote profile work. A known profile without an avatar still stores
-its display name; only its avatar digest is absent.
+If that exact version is already durable, the bundle stores its `displayName`
+and, when available, the avatar's CAS digest. The existing bundle asset closure
+owns and deduplicates that digest. If the exact version has not been resolved,
+bundle creation continues without waiting for or enqueuing remote profile work
+and uses the immutable creator account captured by the source message as the
+required display-name fallback. A profile without an available avatar still
+stores its display name; only its avatar digest is absent.
 
-The JSONB bundle message already owns this optional snapshot, and the existing
+The JSONB bundle message already owns this required snapshot, and the existing
 bundle-to-asset relation owns its CAS references, so this shape requires no new
 database column or table. Imported and nested bundles preserve the received
-optional snapshot exactly; later resolution does not mutate an immutable
+snapshot exactly; later resolution does not mutate an immutable
 bundle.
 
 ## 5. Shared client SSE and race handling

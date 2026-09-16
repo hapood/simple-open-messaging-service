@@ -55,7 +55,10 @@ interface ForwardChildBundle {
   messages: ForwardBundleMessage[];
 }
 
-type ForwardAuthor = Address;
+interface ForwardAuthor {
+  account?: UserAccount;
+  domain?: Domain;
+}
 
 interface ForwardProfileSnapshot {
   displayName: string;
@@ -65,7 +68,7 @@ interface ForwardProfileSnapshot {
 interface ForwardBundleMessageBase {
   id: PositiveSafeInteger;
   author: ForwardAuthor;
-  profile?: ForwardProfileSnapshot;
+  profile: ForwardProfileSnapshot;
   sentAt: EpochMilliseconds;
   quoteTargetId?: SafeInteger;
 }
@@ -102,19 +105,17 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 
 ## 5. Authors, quotes, and assets
 
-- `author.account/domain` MUST form a valid `UserAccount` address and is always
-  present independently from display data.
-- `profile`, when present, is an untrusted immutable display snapshot. The
-  publisher includes it only when it durably holds the exact snapshot selected
-  by the source message's `profileRev` at bundle creation time.
-- If that exact snapshot is unavailable, the publisher MUST omit `profile`. It
-  MUST NOT substitute the author's default, current, cached-unversioned, or
-  numerically newest profile, and forward creation does not grant authority to
-  fetch an otherwise unavailable profile.
-- A known snapshot with no avatar still carries `profile.displayName` and omits
-  only `profile.avatarDigest`. Absence of `profile` means the complete exact
-  display snapshot was unavailable; it does not mean that the author has no
-  avatar.
+- `profile.displayName` is the required immutable nickname snapshot and contains
+  1–30 Unicode code points. It is untrusted display data, not an authorization
+  coordinate.
+- `author.account` and `author.domain` are optional. They MUST either both be
+  present and form a valid `UserAccount` Address, or both be absent. A consumer
+  MUST NOT infer a missing Address from the nickname.
+- When the exact profile selected by the source message is unavailable, the
+  publisher MUST still provide a stable display name captured from the source
+  message identity; it MUST NOT read or substitute a mutable current/default
+  profile. Forward creation does not grant profile-query authority.
+- A snapshot with no available avatar omits only `profile.avatarDigest`.
 - `profile.avatarDigest`, when present, MUST appear in the parent `assets`.
   The profile snapshot deliberately carries no `profileRev`: it is frozen and
   self-contained inside the bundle and creates no exact-profile query right.
@@ -158,6 +159,9 @@ The following is the complete response data referenced by the card in Section 2.
       "author": {
         "account": "alice",
         "domain": "a.example"
+      },
+      "profile": {
+        "displayName": "Alice"
       },
       "sentAt": 1769990000000,
       "contentType": "PURE_TEXT",

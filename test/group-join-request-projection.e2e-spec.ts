@@ -105,33 +105,37 @@ describe('group join request projection', () => {
     // The projection fan-out advances the manager's request watermark before
     // the read endpoint builds its cosmetic head.
     const joinRequestFeedId = pending.body.data.data[0].feedId as number;
-    await vi.waitFor(async () => {
-      const managerState = await database.db.query.accountThreadState.findFirst({
-        where: and(
-          eq(accountThreadState.accountId, owner.id),
-          eq(accountThreadState.threadId, threadId),
-        ),
-      });
-      expect(managerState?.joinRequestEndFeedId).toBe(joinRequestFeedId);
-    }, { timeout: 10_000 });
+    await vi.waitFor(
+      async () => {
+        const managerState =
+          await database.db.query.accountThreadState.findFirst({
+            where: and(
+              eq(accountThreadState.accountId, owner.id),
+              eq(accountThreadState.threadId, threadId),
+            ),
+          });
+        expect(managerState?.joinRequestEndFeedId).toBe(joinRequestFeedId);
+      },
+      { timeout: 10_000 },
+    );
     const read = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests/read')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        readFeedId: joinRequestFeedId,
+        joinRequestReadFeedId: joinRequestFeedId,
       });
     expect(read.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(async () => {
-      const readHead = await database.db.query.clientStateFeed.findFirst({
+      const readHead = await database.db.query.accountThreadState.findFirst({
         where: and(
-          eq(clientStateFeed.userId, owner.id),
-          eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
+          eq(accountThreadState.accountId, owner.id),
+          eq(accountThreadState.threadId, threadId),
         ),
       });
-      expect(readHead?.body).toMatchObject({
-        latestFeedId: joinRequestFeedId,
-        readFeedId: joinRequestFeedId,
+      expect(readHead).toMatchObject({
+        joinRequestEndFeedId: joinRequestFeedId,
+        joinRequestReadFeedId: joinRequestFeedId,
       });
     });
 

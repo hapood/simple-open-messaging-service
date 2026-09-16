@@ -59,7 +59,9 @@ describe('DurableTaskDispatcherService', () => {
   it('establishes a measured task execution context when sampled', async () => {
     const previousSampleRate = process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE;
     process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE = '1';
-    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+    const log = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => {});
     try {
       const dispatcher = new DurableTaskDispatcherService();
       dispatcher.register({

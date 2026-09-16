@@ -44,18 +44,12 @@ describe('ThreadListComponent', () => {
   let loadSpy: Mock;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let status: ReturnType<typeof signal<ConversationLoadStatus>>;
-  let groupJoinRequestHeads: ReturnType<
-    typeof signal<
-      ReadonlyMap<number, { readFeedId: string; latestFeedId: string }>
-    >
-  >;
 
   beforeEach(() => {
     popupSpy = vi.fn().mockName('popupDlg');
     loadSpy = vi.fn().mockName('load');
     items = signal<ConversationItem[]>([]);
     status = signal<ConversationLoadStatus>(ConversationLoadStatus.LOADING);
-    groupJoinRequestHeads = signal(new Map());
     TestBed.configureTestingModule({
       imports: [ThreadListComponent],
       providers: [
@@ -93,7 +87,6 @@ describe('ThreadListComponent', () => {
           provide: UserService,
           useValue: {
             sessionProfile: () => undefined,
-            groupJoinRequestHeads,
           },
         },
         { provide: RouteService, useValue: { popupDlg: popupSpy } },
@@ -239,9 +232,7 @@ describe('ThreadListComponent', () => {
     expect(row.getAttribute('aria-label')).toContain('remote.example');
     expect(row.getAttribute('aria-label')).toContain(blockedLabel);
     expect(row.getAttribute('aria-label')).toContain('99+');
-    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe(
-      '99+',
-    );
+    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('99+');
     expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(
       blockedLabel,
     );
@@ -325,10 +316,13 @@ describe('ThreadListComponent', () => {
       }),
       role: 'OWNER' as const,
     };
-    groupJoinRequestHeads.set(
-      new Map([[group.threadId, { readFeedId: '4', latestFeedId: '5' }]]),
-    );
-    items.set([group]);
+    items.set([
+      {
+        ...group,
+        joinRequestReadFeedId: 4,
+        joinRequestEndFeedId: 5,
+      },
+    ]);
     status.set(ConversationLoadStatus.READY);
     fixture.detectChanges();
     await fixture.whenStable();

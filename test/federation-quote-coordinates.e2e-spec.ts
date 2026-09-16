@@ -302,6 +302,7 @@ describe('federation quote coordinates across three persisted node views', () =>
         {
           id: 1,
           author: { account: 'user', domain: bravo.domain },
+          profile: { displayName: 'user' },
           contentType: ContentType.PURE_TEXT,
           content: JSON.stringify({ text: 'reply without a target entry' }),
           sentAt: 1,

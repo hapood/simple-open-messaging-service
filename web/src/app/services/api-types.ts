@@ -4228,7 +4228,7 @@ export interface components {
              * @description Highest application projection feed id displayed by the client
              * @example 123
              */
-            readFeedId: number;
+            joinRequestReadFeedId: number;
         };
         DurableTaskAcceptedDto: {
             /**

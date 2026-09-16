@@ -6,6 +6,12 @@ export interface ThreadFeedSnapshot {
   tombstoneEndSeq: number;
   /** Canonical Group Meta coordinate; null for P2P threads. */
   groupMetaFeedEndId: string | null;
+  /** Latest join-application projection coordinate for this manager. */
+  joinRequestEndFeedId: number;
+  /** -1 for non-managers; otherwise the consumed join-application coordinate. */
+  joinRequestReadFeedId: number;
+  /** Latest group-invitation projection coordinate for this manager. */
+  groupInviteEndFeedId: number;
   lastReadSeq: number;
   unreadCount: number;
   lastMentionSeq: number | null;
@@ -48,6 +54,11 @@ export function mergeThreadAttention(
   coordinate(incoming.threadFeedId, 'feed ID');
   coordinate(incoming.messageEndSeq, 'message end');
   coordinate(incoming.tombstoneEndSeq, 'tombstone end');
+  coordinate(incoming.joinRequestEndFeedId, 'join request end');
+  coordinate(incoming.joinRequestReadFeedId, 'join request read', -1);
+  coordinate(incoming.groupInviteEndFeedId, 'group invite end');
+  if (incoming.joinRequestReadFeedId > incoming.joinRequestEndFeedId)
+    throw new Error('Invalid attention join request read position');
   if (
     incoming.groupMetaFeedEndId !== null &&
     !/^(0|[1-9]\d*)$/.test(incoming.groupMetaFeedEndId)

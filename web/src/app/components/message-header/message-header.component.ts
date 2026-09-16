@@ -11,13 +11,13 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { LayoutService } from '../../services/layout.service';
-import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { uuid } from '../../lib/uuid';
 import { ChatContextService } from '../message-thread/chat-context.service';
+import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -44,7 +44,6 @@ export class MessageHeaderComponent {
   readonly searchJump = output<number>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
-  private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
   private readonly callAdapter = inject(CallAdapterService);
   private readonly callEvents = inject(CallEventService);
@@ -156,10 +155,7 @@ export class MessageHeaderComponent {
   });
   readonly hasUnreadJoinRequests = computed(() => {
     const trd = this.userMsgTrd();
-    if (trd?.type !== 'GROUP' || !this.chatContext.canAdministerGroup())
-      return false;
-    const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
-    return !!head && head.readFeedId < head.latestFeedId;
+    return trd?.type === 'GROUP' && hasUnreadGroupJoinRequests(trd);
   });
   toggleMenu(): void {
     this.showThreadInfo();

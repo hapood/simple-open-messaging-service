@@ -21,6 +21,9 @@ interface ThreadFeedState {
   messageEndSeq: number;
   tombstoneEndSeq: number;
   groupMetaFeedEndId: number | null;
+  joinRequestEndFeedId: number;
+  joinRequestReadFeedId: number;
+  groupInviteEndFeedId: number;
   threadProfileRev: number;
   lastReadSeq: number;
   unreadCount: number;
@@ -75,7 +78,8 @@ export class ThreadFeedService {
           ThreadFeedState & Record<string, unknown>
         >(sql`
         SELECT "threadId", "threadFeedId", "messageEndSeq", "tombstoneEndSeq",
-               "groupMetaFeedEndId",
+               "groupMetaFeedEndId", "joinRequestEndFeedId",
+               "joinRequestReadFeedId", "groupInviteEndFeedId",
                "threadProfileRev", "lastReadSeq", "unreadCount", "lastMentionSeq"
         FROM "AccountThreadState" WHERE "accountId" = ${accountId}
           AND "threadFeedId" > ${request.after} AND "threadFeedId" <= ${through}

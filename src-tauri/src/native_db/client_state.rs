@@ -853,7 +853,6 @@ pub(super) fn apply_state_feed_page(
                     )
                     .map_err(|e| format!("save incoming-invitation read watermark: {e}"))?;
             }
-            "GROUP_JOIN_REQUEST_HEAD" => {}
             other => return Err(format!("unknown state-feed event type: {other}")),
         }
     }

@@ -25,12 +25,9 @@ import {
   type PendingClientStateFeedUpdate,
 } from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
-import { BusinessCode } from '../common/business-code.js';
 import { GroupRole } from '../database/enums.js';
 import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
-import { S2sResponseError } from './federation-errors.js';
 import { FederationProfileService } from './federation-profile.service.js';
-import { admitMirrorGroupMembersDisbandInTx } from './mirror-group-disband-admission.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
 import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
 
@@ -100,17 +97,6 @@ export class FederationThreadMetaRoundExecutorService {
         );
         return true;
       }
-      if (isMirrorGroupDenied(error))
-        // The origin refused an authorized read: there is no authorized state
-        // behind a denial, so converge the mirror locally before stopping.
-        await this.database.db.transaction(async (tx) =>
-          admitMirrorGroupMembersDisbandInTx(tx, {
-            groupId: threadId,
-            groupAccount: group.account,
-            peerDomain: group.domain,
-            namespaceId,
-          }),
-        );
       throw error;
     }
     const next = await this.plan(threadId, peerDomain, namespaceId);
@@ -272,11 +258,6 @@ export class FederationThreadMetaRoundExecutorService {
 
 /** The origin refused an authorized read — 'group meta is not visible to this
  * peer'. There is no authorized state behind a denial, so this is terminal. */
-function isMirrorGroupDenied(error: unknown): boolean {
-  return (
-    error instanceof S2sResponseError && error.code === BusinessCode.FORBIDDEN
-  );
-}
 
 function validateItem(
   item: GroupMetaFeedItem,

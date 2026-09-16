@@ -10,6 +10,9 @@
             "account": "alice",
             "domain": "a.example"
           },
+          "profile": {
+            "displayName": "Alice"
+          },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
           "sentAt": 1,
@@ -20,6 +23,9 @@
           "author": {
             "account": "alice",
             "domain": "a.example"
+          },
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -638,9 +644,9 @@
         "messages": [
           {
             "id": 1,
-            "author": {
-              "account": "alice",
-              "domain": "a.example"
+            "author": {},
+            "profile": {
+              "displayName": "Alice"
             },
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
@@ -656,7 +662,7 @@
               "displayName": "Bob"
             },
             "contentType": "PURE_TEXT",
-            "content": "{\"text\":\"profile snapshot is optional\"}",
+            "content": "{\"text\":\"author address is optional\"}",
             "sentAt": 2
           }
         ],

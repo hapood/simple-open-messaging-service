@@ -501,49 +501,71 @@ $danger: var(--app-danger);
 }
 
 .detail-profile {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  overflow: hidden;
+
+  .profile-meta {
+    min-height: 24px;
+    padding: 4px 12px;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    border-bottom: 1px solid $border;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font-size: 11px;
+    font-weight: var(--app-font-weight-medium, 500);
+    line-height: 16px;
+    letter-spacing: 0.02em;
+    overflow-wrap: anywhere;
+  }
+}
+
+.detail-profile-row {
+  min-height: 88px;
+  padding: 12px 14px;
+  display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px;
-  border-radius: var(--app-radius-lg);
-  background: var(--app-bg-muted);
+  gap: 12px;
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--app-text);
 
   app-user-avatar {
     width: 64px;
     height: 64px;
+    flex: 0 0 64px;
   }
 }
 
-.detail-profile-copy {
+.profile-copy {
   min-width: 0;
-}
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 
-.detail-date,
-.detail-label {
-  color: $muted;
-  font-size: 13px;
-  line-height: 18px;
-}
+  strong {
+    color: var(--app-text);
+    font-size: 16px;
+    font-weight: var(--app-font-weight-medium, 500);
+    line-height: 24px;
+    overflow-wrap: anywhere;
+  }
 
-.detail-date {
-  margin-top: 4px;
-}
+  .profile-description {
+    color: var(--app-text-muted);
+    font-size: 14px;
+    font-weight: var(--app-font-weight-regular, 400);
+    line-height: 20px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
 
-.detail-message {
-  margin-top: 16px;
-  padding: 14px;
-  border: 1px solid $border;
-  border-radius: var(--app-radius-md);
-  color: var(--app-text);
-  font-size: 14px;
-  line-height: 20px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.detail-label {
-  margin-bottom: 6px;
+  .detail-date {
+    color: var(--app-text-faint);
+    font-size: 12px;
+    line-height: 16px;
+  }
 }
 
 .detail-actions {

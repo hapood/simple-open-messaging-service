@@ -58,7 +58,6 @@ type ClientStateFeedItem = {
   eventType:
     | 'PROFILE'
     | 'RELATIONSHIP_INTENT'
-    | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
     | 'THREAD_STATE';
   subjectAccount: string;

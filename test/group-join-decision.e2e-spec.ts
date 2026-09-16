@@ -242,11 +242,10 @@ describe('group join decision', () => {
         eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
       ),
     });
-    const head = await database.db.query.clientStateFeed.findFirst({
+    const head = await database.db.query.accountThreadState.findFirst({
       where: and(
-        eq(tables.clientStateFeed.userId, f.owner.id),
-        eq(tables.clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
-        eq(tables.clientStateFeed.account, f.group.account),
+        eq(tables.accountThreadState.accountId, f.owner.id),
+        eq(tables.accountThreadState.threadId, f.group.threadId),
       ),
     });
     return {
@@ -658,14 +657,18 @@ describe('group join decision', () => {
     const f = await fixture();
     const before = await state(f);
     await database.db.transaction(async (tx) => {
-      await deps.clientFeed.writeGroupJoinRequestHeadInTx(tx, {
-        userId: f.owner.id,
-        account: f.group.account,
-        domain: 'local',
-        threadId: f.group.threadId,
-        latestFeedId: before.projection!.feedId,
-        readFeedId: before.projection!.feedId,
-      });
+      await tx
+        .update(tables.accountThreadState)
+        .set({
+          joinRequestEndFeedId: before.projection!.feedId,
+          joinRequestReadFeedId: before.projection!.feedId,
+        })
+        .where(
+          and(
+            eq(tables.accountThreadState.accountId, f.owner.id),
+            eq(tables.accountThreadState.threadId, f.group.threadId),
+          ),
+        );
       await tx.insert(tables.profileTable).values({
         account: f.applicant.account,
         domain: 'local',
@@ -718,23 +721,25 @@ describe('group join decision', () => {
         eq(tables.clientStateFeed.account, f.applicant.account),
       ),
     });
-    const head = await database.db.query.clientStateFeed.findFirst({
+    const head = await database.db.query.accountThreadState.findFirst({
       where: and(
-        eq(tables.clientStateFeed.userId, f.owner.id),
-        eq(tables.clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
-        eq(tables.clientStateFeed.account, f.group.account),
+        eq(tables.accountThreadState.accountId, f.owner.id),
+        eq(tables.accountThreadState.threadId, f.group.threadId),
       ),
     });
-    expect(head?.body).toMatchObject({
-      latestFeedId: after.projection!.feedId,
-      readFeedId: before.projection!.feedId,
+    expect(head).toMatchObject({
+      joinRequestEndFeedId: after.projection!.feedId,
+      joinRequestReadFeedId: before.projection!.feedId,
     });
     // Acceptance does not refresh the manager's profile entry and leaves the
     // projection row's feed position untouched.
     expect(profile).toEqual(seededProfile);
     expect(after.projection!.feedId).toBe(before.projection!.feedId);
-    // Acceptance no longer notifies managers: the legacy head is untouched.
-    expect(after.head).toEqual(seeded.head);
+    // Acceptance leaves the manager's thread-head watermarks untouched.
+    expect(after.head).toMatchObject({
+      joinRequestEndFeedId: seeded.head!.joinRequestEndFeedId,
+      joinRequestReadFeedId: seeded.head!.joinRequestReadFeedId,
+    });
     const metaProfile = await database.db.query.groupMeta.findFirst({
       where: eq(tables.groupMeta.threadId, f.group.threadId),
     });
@@ -1014,13 +1019,11 @@ describe('group join decision', () => {
     });
     expect(ownerAfter?.threadFeedEndId).toBe(ownerBefore!.threadFeedEndId + 1);
     expect(ownerAfter?.clientStateFeedEndId).toBe(
-      ownerBefore!.clientStateFeedEndId + 1,
+      ownerBefore!.clientStateFeedEndId,
     );
-    // One post-commit notification batch carries the thread watermark and
-    // the manager's compacted application head.
+    // One post-commit notification carries the updated thread head.
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0][0]).toEqual([
-      expect.objectContaining({ userId: f.owner.id }),
       expect.objectContaining({ userId: f.owner.id }),
     ]);
     const [counter] = await database.db

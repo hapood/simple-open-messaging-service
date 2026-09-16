@@ -11,11 +11,9 @@ import type {
 } from '../durable-task/durable-task.types.js';
 import {
   readForcedMemberRevokeTask,
-  readMirrorGroupMemberRevokeTask,
   readQueryDeniedGroupMembershipRevocationTask,
 } from './group-disband-task.js';
 import { GroupDisbandMembershipRevocationService } from './disband/group-disband-membership-revocation.service.js';
-import { MirrorGroupDisbandService } from './disband/mirror-group-disband.service.js';
 import { GroupAuthoredMembershipIntentService } from './membership-intent/authored/group-authored-membership-intent.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from './membership-intent/authored/member-authored-group-membership-intent.service.js';
 
@@ -29,7 +27,6 @@ export class ForceRevokeGroupMemberTaskHandler
   constructor(
     private readonly dispatcher: DurableTaskDispatcherService,
     private readonly disbandMembershipRevocations: GroupDisbandMembershipRevocationService,
-    private readonly mirrorDisbands: MirrorGroupDisbandService,
     private readonly groupAuthoredIntents: GroupAuthoredMembershipIntentService,
     private readonly memberAuthoredIntents: MemberAuthoredGroupMembershipIntentService,
   ) {}
@@ -43,14 +40,6 @@ export class ForceRevokeGroupMemberTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
-    // The mirror sweep carries no denial coordinates — only its direction mark,
-    // which must be tested before the peerDomain probe below.
-    if (task.payload.direction === 'MIRROR') {
-      await this.mirrorDisbands.revokeMember(
-        readMirrorGroupMemberRevokeTask(task),
-      );
-      return;
-    }
     if (task.payload.peerDomain !== undefined) {
       const command = readQueryDeniedGroupMembershipRevocationTask(task);
       if (command.direction === 'GROUP')

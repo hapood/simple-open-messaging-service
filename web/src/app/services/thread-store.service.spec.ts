@@ -66,8 +66,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let advanceCursorSpy: Mock;
   let applyRelationshipRequestStateRevisionSpy: Mock;
   let applyRelationshipIntentStateRevisionSpy: Mock;
-  let applyGroupJoinRequestHeadSpy: Mock;
-  let clearGroupJoinRequestHeadSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: Mock;
   let toastWarn: Mock;
@@ -171,13 +169,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
                     },
                   }),
               )),
-            applyGroupJoinRequestHead: (applyGroupJoinRequestHeadSpy = vi
-              .fn()
-              .mockName('applyGroupJoinRequestHead')
-              .mockReturnValue(true)),
-            clearGroupJoinRequestHead: (clearGroupJoinRequestHeadSpy = vi
-              .fn()
-              .mockName('clearGroupJoinRequestHead')),
             queryUserInfo: (queryUserInfoSpy = vi
               .fn()
               .mockName('queryUserInfo')
@@ -316,6 +307,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     messageEndSeq: 8,
     tombstoneEndSeq: 0,
     groupMetaFeedEndId: null,
+    joinRequestEndFeedId: 0,
+    joinRequestReadFeedId: -1,
+    groupInviteEndFeedId: 0,
     lastReadSeq: 0,
     unreadCount: 3,
     lastMentionSeq: 5,
@@ -936,6 +930,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               threadFeedId: feedId,
               messageEndSeq: seq,
               tombstoneEndSeq,
+              groupMetaFeedEndId: null,
+              joinRequestEndFeedId: 0,
+              joinRequestReadFeedId: -1,
+              groupInviteEndFeedId: 0,
               lastReadSeq: 0,
               unreadCount: 0,
               lastMentionSeq: null,
@@ -1147,7 +1145,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].unreadCount).toBe(0);
   });
 
-  it('garbage-collects manager attention when a member feed removes the local manager role', async () => {
+  it('applies a member feed that removes the local manager role', async () => {
     await populate([
       createGroupConversation(
         7,
@@ -1158,7 +1156,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     repo.applyGroupUpdate(7, { role: 'MEMBER' });
 
-    expect(clearGroupJoinRequestHeadSpy).toHaveBeenCalledWith(7);
     expect(repo.items()[0]).toMatchObject({ threadId: 7, role: 'MEMBER' });
   });
 
@@ -1252,89 +1249,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
-
-  it('does not move a thread when a join-request head is only the optimistic read acknowledgement', async () => {
-    await populate([
-      p2p(1, 11, { lastMessageAt: 200 }),
-      p2p(2, 22, { lastMessageAt: 100 }),
-    ]);
-    cursorSignal.set(1);
-    applyGroupJoinRequestHeadSpy.mockReturnValue(false);
-    queryStateFeedSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          mode: 'delta',
-          items: [
-            {
-              feedId: 2,
-              account: '!group',
-              domain: 'local',
-              eventType: 'GROUP_JOIN_REQUEST_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                threadId: 2,
-                latestFeedId: 12,
-                latestRequestAt: 300,
-                readFeedId: 12,
-              },
-            },
-          ],
-          hasMore: false,
-          scannedThrough: 2,
-          stateFeedEndId: 2,
-        },
-      }),
-    );
-
-    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
-    await flush(30);
-
-    expect(repo.items().map((thread) => thread.threadId)).toEqual([1, 2]);
-    expect(repo.items()[1].joinRequestAt).toBeUndefined();
-  });
-
-  it('moves an ordinary thread to the ordinary-tier head for a genuinely new join request', async () => {
-    await populate([
-      p2p(1, 11, { lastMessageAt: 200 }),
-      p2p(2, 22, { lastMessageAt: 100 }),
-    ]);
-    cursorSignal.set(1);
-    queryStateFeedSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          mode: 'delta',
-          items: [
-            {
-              feedId: 2,
-              account: '!group',
-              domain: 'local',
-              eventType: 'GROUP_JOIN_REQUEST_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                threadId: 2,
-                latestFeedId: 13,
-                latestRequestAt: 300,
-                readFeedId: 12,
-              },
-            },
-          ],
-          hasMore: false,
-          scannedThrough: 2,
-          stateFeedEndId: 2,
-        },
-      }),
-    );
-
-    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
-    await flush(30);
-
-    expect(repo.items().map((thread) => thread.threadId)).toEqual([2, 1]);
-    expect(repo.items()[0].joinRequestAt).toBe(300);
-  });
 
   it('hydrates a newly activated zero-message friendship thread from THREAD_STATE', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });

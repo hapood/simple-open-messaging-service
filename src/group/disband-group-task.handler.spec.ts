@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispatcher.service.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { DisbandGroupTaskHandler } from './disband-group-task.handler.js';
-import { DisbandMirrorGroupMembersTaskHandler } from './disband-mirror-group-members-task.handler.js';
 import { ForceRevokeGroupMemberTaskHandler } from './force-revoke-group-member-task.handler.js';
 import { RevokeForbiddenGroupTaskHandler } from './revoke-forbidden-group-task.handler.js';
 import { businessAccountScopeKey } from '../common/locks/account-business-lock.js';
@@ -62,7 +61,6 @@ describe('group disband task handlers', () => {
     const handler = new ForceRevokeGroupMemberTaskHandler(
       new DurableTaskDispatcherService(),
       { execute } as never,
-      {} as never,
       { executeQueryDeniedRevocation } as never,
       {} as never,
     );
@@ -138,7 +136,6 @@ describe('group disband task handlers', () => {
       { execute } as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     handler.onModuleInit();
     const child = {
@@ -157,77 +154,5 @@ describe('group disband task handlers', () => {
       threadId: 12,
       memberAddress: { account: 'member', domain: 'local', namespaceId: 0 },
     });
-  });
-
-  it('routes a mirror sweep child to the mirror disband revocation', async () => {
-    const revokeMember = vi.fn().mockResolvedValue({ transitioned: true });
-    const execute = vi.fn();
-    const handler = new ForceRevokeGroupMemberTaskHandler(
-      new DurableTaskDispatcherService(),
-      { execute } as never,
-      { revokeMember } as never,
-      {} as never,
-      {} as never,
-    );
-    const child = {
-      ...parent,
-      id: 11n,
-      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
-      payload: {
-        threadId: 12,
-        direction: 'MIRROR',
-        memberUserId: 7,
-        expectedAuthorizationEpoch: 10,
-      },
-    } satisfies DurableTask;
-
-    await handler.execute(child);
-
-    expect(revokeMember).toHaveBeenCalledWith({
-      threadId: 12,
-      memberUserId: 7,
-      expectedAuthorizationEpoch: 10,
-    });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it('marks the mirror tombstone, then sweeps local members through the shared cursor', async () => {
-    const dispatcher = new DurableTaskDispatcherService();
-    const markDissolved = vi.fn().mockResolvedValue({ transitioned: true });
-    const insertNextMember = vi
-      .fn()
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
-    const handler = new DisbandMirrorGroupMembersTaskHandler(
-      dispatcher,
-      { markDissolved } as never,
-      { insertNextMember } as never,
-    );
-    handler.onModuleInit();
-    const task = {
-      ...parent,
-      taskType: 'DISBAND_MIRROR_GROUP_MEMBERS',
-      payload: {
-        threadId: 12,
-        groupAccount: '!group',
-        peerDomain: 'peer.test',
-        namespaceId: 5,
-        expectedAuthorizationEpoch: 9,
-      },
-    };
-
-    await dispatcher.execute(task);
-
-    expect(markDissolved).toHaveBeenCalledWith({
-      threadId: 12,
-      groupAccount: '!group',
-      peerDomain: 'peer.test',
-      namespaceId: 5,
-      expectedAuthorizationEpoch: 9,
-    });
-    expect(insertNextMember).toHaveBeenCalledTimes(2);
-    expect(insertNextMember).toHaveBeenCalledWith(task, 12);
-    handler.onModuleDestroy();
-    expect(dispatcher.supportedTaskTypes).toHaveLength(0);
   });
 });

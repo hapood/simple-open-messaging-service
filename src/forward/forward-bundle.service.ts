@@ -2,7 +2,11 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { mintUlid } from '../common/account.js';
+import {
+  isValidSomfpDomain,
+  isValidSomfpUserAccount,
+  mintUlid,
+} from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { dataDirectory } from '../common/data-directory.js';
@@ -43,7 +47,6 @@ import { deriveMessagePreview } from '../../shared/message-preview.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import type {
-  FederationAddress,
   FederationByteDescriptor,
   FederatedMessagePayload,
 } from '../federation/federated-message-types.js';
@@ -60,7 +63,11 @@ export interface ForwardSourceMessage {
   seq: number;
 }
 
-type ForwardAuthor = FederationAddress;
+interface ForwardAuthor {
+  /** Optional stable identity. Account and domain are either both present or both absent. */
+  account?: string;
+  domain?: string;
+}
 
 interface ForwardProfileSnapshot {
   displayName: string;
@@ -71,7 +78,7 @@ export interface ForwardBundleMessage extends FederatedMessagePayload {
   /** Positive identity used only by quotes in this enclosing messages array. */
   id: number;
   author: ForwardAuthor;
-  profile?: ForwardProfileSnapshot;
+  profile: ForwardProfileSnapshot;
   sentAt: number;
   childBundleId?: string;
   quoteTargetId?: number;
@@ -405,14 +412,13 @@ export class ForwardBundleService {
       const avatar = message.creatorProfile?.avatar
         ? await this.snapshotAvatarForMessage(message.creatorProfile.avatar)
         : null;
-      const profile =
-        message.creatorProfile &&
-        (!message.creatorProfile.avatar || avatar !== null)
-          ? {
-              displayName: message.creatorProfile.displayName,
-              ...(avatar ? { avatarDigest: avatar.digest } : {}),
-            }
-          : undefined;
+      const profile = {
+        // Forward display names are mandatory. A missing exact historical profile degrades to the
+        // immutable creator account captured by the source message, never to a mutable profile.
+        displayName:
+          message.creatorProfile?.displayName ?? message.creatorAccount,
+        ...(avatar ? { avatarDigest: avatar.digest } : {}),
+      };
       if (avatar) assets.set(this.assetKey(avatar), avatar);
       const mediaAssets = await this.assetsFromContent(
         message.contentType,
@@ -439,7 +445,7 @@ export class ForwardBundleService {
               ? (process.env.SOMS_DOMAIN ?? 'local')
               : message.creatorDomain,
         },
-        ...(profile ? { profile } : {}),
+        profile,
         contentType: message.contentType,
         content: localizeForwardMediaContent(
           message.contentType,
@@ -694,7 +700,7 @@ export class ForwardBundleService {
       const messages =
         rebuiltById.get(row.id) ?? (row.messages as ForwardBundleMessage[]);
       for (const message of messages) {
-        if (message.profile?.avatarDigest) {
+        if (message.profile.avatarDigest) {
           digests.add(message.profile.avatarDigest);
         }
         extractDigests(message.content).forEach((digest) =>
@@ -812,19 +818,31 @@ export class ForwardBundleService {
           !Number.isSafeInteger(message.id) ||
           message.id < 1 ||
           ids.has(message.id) ||
-          typeof message.author?.account !== 'string' ||
-          typeof message.author?.domain !== 'string' ||
+          message.author === null ||
+          typeof message.author !== 'object' ||
+          Array.isArray(message.author) ||
+          (message.author.account !== undefined &&
+            typeof message.author.account !== 'string') ||
+          (message.author.domain !== undefined &&
+            typeof message.author.domain !== 'string') ||
+          (message.author.account === undefined) !==
+            (message.author.domain === undefined) ||
+          (message.author.account !== undefined &&
+            !isValidSomfpUserAccount(message.author.account)) ||
+          (message.author.domain !== undefined &&
+            !isValidSomfpDomain(message.author.domain)) ||
           Object.keys(message.author).some(
             (key) => key !== 'account' && key !== 'domain',
           ) ||
-          (message.profile !== undefined &&
-            (message.profile === null ||
-              typeof message.profile !== 'object' ||
-              Array.isArray(message.profile) ||
-              typeof message.profile.displayName !== 'string' ||
-              Object.keys(message.profile).some(
-                (key) => key !== 'displayName' && key !== 'avatarDigest',
-              ))) ||
+          message.profile === null ||
+          typeof message.profile !== 'object' ||
+          Array.isArray(message.profile) ||
+          typeof message.profile.displayName !== 'string' ||
+          [...message.profile.displayName].length < 1 ||
+          [...message.profile.displayName].length > 30 ||
+          Object.keys(message.profile).some(
+            (key) => key !== 'displayName' && key !== 'avatarDigest',
+          ) ||
           !Number.isSafeInteger(message.sentAt) ||
           message.sentAt < 0 ||
           !isFederatedContentType(message.contentType) ||
@@ -835,7 +853,7 @@ export class ForwardBundleService {
           throw this.invalidWire('invalid flat forward message');
         }
         ids.add(message.id);
-        if (message.profile?.avatarDigest !== undefined) {
+        if (message.profile.avatarDigest !== undefined) {
           if (!/^[a-f0-9]{64}$/.test(message.profile.avatarDigest))
             throw this.invalidWire('invalid forward profile avatar digest');
           expectedDigests.add(message.profile.avatarDigest);
@@ -1129,7 +1147,7 @@ export class ForwardBundleService {
       toDisplayText,
     );
     return truncateGraphemes(
-      `${message.profile?.displayName ?? message.author.account}：${preview}`,
+      `${message.profile.displayName}：${preview}`,
       FORWARD_SUMMARY_CHARS,
     );
   }

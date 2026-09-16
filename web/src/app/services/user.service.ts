@@ -206,21 +206,6 @@ export type ClientStateFeedItem =
     }
   | {
       feedId: number;
-      account: string;
-      domain: string;
-      namespaceId: number;
-      eventType: 'GROUP_JOIN_REQUEST_HEAD';
-      subjectAccount: '';
-      subjectDomain: 'local';
-      body: {
-        threadId: number;
-        latestFeedId: number;
-        latestRequestAt: number;
-        readFeedId: number;
-      };
-    }
-  | {
-      feedId: number;
       account: '';
       domain: 'local';
       namespaceId: 0;
@@ -326,11 +311,6 @@ export class UserService {
       this.relationshipRequestStateRevision() >
       this.relationshipRequestReadThroughFeedId(),
   );
-  /** Latest application projection coordinate and read watermark, keyed by group thread. */
-  readonly groupJoinRequestHeads = signal<
-    ReadonlyMap<number, { latestFeedId: number; readFeedId: number }>
-  >(new Map());
-
   private readonly webdb = inject(WebdbService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly preferences = inject(PreferenceStore);
@@ -402,7 +382,6 @@ export class UserService {
     this.relationshipRequestStateRevision.set(0);
     this.relationshipIntentStateRevision.set(0);
     this.relationshipRequestReadThroughFeedId.set(0);
-    this.groupJoinRequestHeads.set(new Map());
     this.profileFetch = undefined;
     this.sessionLifecycle.endSession();
   }
@@ -457,14 +436,10 @@ export class UserService {
       await this.webdb.recreateForUser(String(userId));
     }
     checkSession();
-    const [latest, requestReadHead, groupHeads, groupReads] = await Promise.all(
-      [
-        this.webdb.getMeta('relationshipRequestStateRevision'),
-        this.webdb.getMeta('relationshipRequestReadHead'),
-        this.webdb.getMeta('groupJoinRequestHeads'),
-        this.webdb.getMeta('groupJoinRequestReadFeedIds'),
-      ],
-    );
+    const [latest, requestReadHead] = await Promise.all([
+      this.webdb.getMeta('relationshipRequestStateRevision'),
+      this.webdb.getMeta('relationshipRequestReadHead'),
+    ]);
     checkSession();
     this.sessionUserId.set(userId);
     this.relationshipRequestStateRevision.set(
@@ -478,16 +453,6 @@ export class UserService {
       typeof readThroughFeedId === 'number' && readThroughFeedId >= 0
         ? readThroughFeedId
         : 0,
-    );
-    const heads = this.nonNegativeIntegerRecord(groupHeads);
-    const reads = this.nonNegativeIntegerRecord(groupReads);
-    this.groupJoinRequestHeads.set(
-      new Map(
-        Object.entries(heads).map(([threadId, latestFeedId]) => [
-          Number(threadId),
-          { latestFeedId, readFeedId: reads[threadId] ?? 0 },
-        ]),
-      ),
     );
     const lastCleanup = await this.webdb.getMeta(
       'relationshipRequestCleanupAt',
@@ -588,89 +553,6 @@ export class UserService {
   applyRelationshipRequestReadHead(readThroughFeedId: number): void {
     if (readThroughFeedId > this.relationshipRequestReadThroughFeedId())
       this.relationshipRequestReadThroughFeedId.set(readThroughFeedId);
-  }
-
-  applyGroupJoinRequestHead(
-    threadId: number,
-    latestFeedId: number,
-    serverReadFeedId: number,
-  ): boolean {
-    if (latestFeedId < 1) return false;
-    const previous = this.groupJoinRequestHeads().get(threadId);
-    // The panel advances readFeedId optimistically. The server then republishes the compacted head with
-    // the same latestFeedId; that acknowledgement is not new attention and must not move the thread.
-    const hasNewUnread = latestFeedId > (previous?.readFeedId ?? 0);
-    this.groupJoinRequestHeads.update((current) => {
-      const previous = current.get(threadId);
-      const nextLatest = Math.max(previous?.latestFeedId ?? 0, latestFeedId);
-      const nextRead = Math.max(previous?.readFeedId ?? 0, serverReadFeedId);
-      if (
-        previous?.latestFeedId === nextLatest &&
-        previous.readFeedId === nextRead
-      )
-        return current;
-      const next = new Map(current);
-      next.set(threadId, {
-        latestFeedId: nextLatest,
-        readFeedId: nextRead,
-      });
-      return next;
-    });
-    const heads = Object.fromEntries(
-      [...this.groupJoinRequestHeads()].map(([id, value]) => [
-        String(id),
-        value.latestFeedId,
-      ]),
-    );
-    void this.webdb.putMeta('groupJoinRequestHeads', heads);
-    return hasNewUnread;
-  }
-
-  markGroupJoinRequestsRead(threadId: number): void {
-    const current = this.groupJoinRequestHeads().get(threadId);
-    if (!current || current.readFeedId >= current.latestFeedId) return;
-    const next = new Map(this.groupJoinRequestHeads());
-    next.set(threadId, {
-      ...current,
-      readFeedId: current.latestFeedId,
-    });
-    this.groupJoinRequestHeads.set(next);
-    const reads = Object.fromEntries(
-      [...next].map(([id, value]) => [String(id), value.readFeedId]),
-    );
-    void this.webdb.putMeta('groupJoinRequestReadFeedIds', reads);
-  }
-
-  /** Drop manager-only join-request attention after member state removes this user's manager role. */
-  clearGroupJoinRequestHead(threadId: number): void {
-    if (!this.groupJoinRequestHeads().has(threadId)) return;
-    const next = new Map(this.groupJoinRequestHeads());
-    next.delete(threadId);
-    this.groupJoinRequestHeads.set(next);
-    void this.webdb.putMeta(
-      'groupJoinRequestHeads',
-      Object.fromEntries(
-        [...next].map(([id, value]) => [String(id), value.latestFeedId]),
-      ),
-    );
-    void this.webdb.putMeta(
-      'groupJoinRequestReadFeedIds',
-      Object.fromEntries(
-        [...next].map(([id, value]) => [String(id), value.readFeedId]),
-      ),
-    );
-  }
-
-  private nonNegativeIntegerRecord(value: unknown): Record<string, number> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    return Object.fromEntries(
-      Object.entries(value).filter(
-        (entry): entry is [string, number] =>
-          typeof entry[1] === 'number' &&
-          Number.isSafeInteger(entry[1]) &&
-          entry[1] >= 0,
-      ),
-    );
   }
 
   applyStateProfile(u: User): void {

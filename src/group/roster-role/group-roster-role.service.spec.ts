@@ -110,7 +110,7 @@ function createService(tx: ReturnType<typeof createTx>, overrides = {}) {
 }
 
 describe('GroupRosterRoleService', () => {
-  it('transfers ownership: swaps two roster facts, then the system event and fan-outs', async () => {
+  it('transfers ownership: keeps the previous owner as admin, then emits the event and fan-outs', async () => {
     const tx = createTx([
       { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
       { rows: [{ ok: true }] },
@@ -134,7 +134,7 @@ describe('GroupRosterRoleService', () => {
         expect.objectContaining({
           account: 'owner',
           operation: 'UPSERT',
-          body: { role: GroupRole.MEMBER, profileRev: 3 },
+          body: { role: GroupRole.ADMIN, profileRev: 3 },
         }),
         expect.objectContaining({
           account: 'member',
@@ -153,17 +153,28 @@ describe('GroupRosterRoleService', () => {
       },
       { threadLock: { tx, threadId: 10 } },
     );
-    // Both local projections carry the swapped roles.
+    // The previous owner keeps manager capability as ADMIN; the ordinary
+    // target receives a freshly initialized manager projection as OWNER.
     expect(tx.sets).toEqual([
       {
         table: expect.anything(),
-        value: { role: GroupRole.MEMBER, updatedAt: expect.any(Date) },
+        value: {
+          role: GroupRole.ADMIN,
+          updatedAt: expect.any(Date),
+        },
       },
       {
         table: expect.anything(),
-        value: { role: GroupRole.OWNER, updatedAt: expect.any(Date) },
+        value: expect.objectContaining({
+          role: GroupRole.OWNER,
+          updatedAt: expect.any(Date),
+        }),
       },
     ]);
+    const newOwnerProjection = tx.sets[1]!.value as Record<string, unknown>;
+    expect(newOwnerProjection).toHaveProperty('joinRequestEndFeedId');
+    expect(newOwnerProjection).toHaveProperty('joinRequestReadFeedId');
+    expect(newOwnerProjection).toHaveProperty('groupInviteEndFeedId');
     // Facts first, then the system event, then the manager-set fan-out.
     const { admitGroupMembershipProjectionFanoutInTx } = await import(
       '../membership-intent/shared/group-membership-projection-fanout.js'
@@ -177,6 +188,33 @@ describe('GroupRosterRoleService', () => {
       (admitGroupMembershipProjectionFanoutInTx as ReturnType<typeof vi.fn>)
         .mock.invocationCallOrder[0],
     );
+  });
+
+  it('preserves manager watermarks when an administrator becomes owner', async () => {
+    const tx = createTx([
+      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ ok: true }] },
+      { rows: [] },
+      { rows: [authorizedRow({ targetRole: GroupRole.ADMIN })] },
+    ]);
+    const { service } = createService(tx);
+
+    const outcome = await service.execute({
+      threadId: 10,
+      operatorUserId: 1,
+      kind: 'TRANSFER_OWNERSHIP',
+      target: { account: 'member', domain: 'local' },
+    });
+
+    expect(outcome).toEqual({ status: 'APPLIED' });
+    const targetProjection = tx.sets[1]!.value as Record<string, unknown>;
+    expect(targetProjection).toEqual({
+      role: GroupRole.OWNER,
+      updatedAt: expect.any(Date),
+    });
+    expect(targetProjection).not.toHaveProperty('joinRequestEndFeedId');
+    expect(targetProjection).not.toHaveProperty('joinRequestReadFeedId');
+    expect(targetProjection).not.toHaveProperty('groupInviteEndFeedId');
   });
 
   it('grants ADMIN with a single role fact and the granted event', async () => {

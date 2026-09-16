@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { GroupJoinRequest } from './group.service';
 import {
   applyGroupJoinRequestAction,
+  hasUnreadGroupJoinRequests,
   mergeGroupJoinRequestPage,
 } from './group-join-request-state';
 
@@ -25,6 +26,27 @@ function request(
 }
 
 describe('group join request projection state', () => {
+  it('uses -1 as the disabled non-manager sentinel while preserving zero as a valid read position', () => {
+    expect(
+      hasUnreadGroupJoinRequests({
+        joinRequestEndFeedId: 5,
+        joinRequestReadFeedId: -1,
+      }),
+    ).toBe(false);
+    expect(
+      hasUnreadGroupJoinRequests({
+        joinRequestEndFeedId: 1,
+        joinRequestReadFeedId: 0,
+      }),
+    ).toBe(true);
+    expect(
+      hasUnreadGroupJoinRequests({
+        joinRequestEndFeedId: 5,
+        joinRequestReadFeedId: 5,
+      }),
+    ).toBe(false);
+  });
+
   it('retains accepted and rejected history instead of removing the row', () => {
     expect(applyGroupJoinRequestAction(request(1), 'ACCEPT').status).toBe(
       'ACCEPTED',

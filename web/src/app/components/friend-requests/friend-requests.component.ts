@@ -11,6 +11,7 @@ import {
 } from '@angular/core';
 import { Observable, Subject, Subscription, finalize } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
+import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -85,6 +86,7 @@ type RelationshipState =
     UserAvatarComponent,
     FormsModule,
     MatButtonModule,
+    MatCardModule,
     MatProgressBarModule,
     MatTabsModule,
     IconComponent,

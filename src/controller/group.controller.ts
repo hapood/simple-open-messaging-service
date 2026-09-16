@@ -241,7 +241,7 @@ export class GroupController {
     await this.groupService.markJoinRequestsRead(
       req.threadAccess!.threadId,
       req.user.userId,
-      dto.readFeedId,
+      dto.joinRequestReadFeedId,
     );
   }
 

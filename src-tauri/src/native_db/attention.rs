@@ -233,11 +233,21 @@ pub(crate) struct ThreadFeedSnapshot {
     pub(super) message_end_seq: i32,
     pub(super) tombstone_end_seq: i32,
     pub(super) group_meta_feed_end_id: Option<String>,
+    #[serde(default)]
+    pub(super) join_request_end_feed_id: i32,
+    #[serde(default = "disabled_join_request_read_feed_id")]
+    pub(super) join_request_read_feed_id: i32,
+    #[serde(default)]
+    pub(super) group_invite_end_feed_id: i32,
     pub(super) last_read_seq: i32,
     pub(super) unread_count: i32,
     pub(super) last_mention_seq: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) previews: Option<Vec<serde_json::Value>>,
+}
+
+fn disabled_join_request_read_feed_id() -> i32 {
+    -1
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -253,6 +263,10 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
         || state.thread_feed_id < 0
         || state.message_end_seq < 0
         || state.tombstone_end_seq < 0
+        || state.join_request_end_feed_id < 0
+        || state.join_request_read_feed_id < -1
+        || state.join_request_read_feed_id > state.join_request_end_feed_id
+        || state.group_invite_end_feed_id < 0
         || state.last_read_seq < 0
         || state.unread_count < 0
         || state.last_mention_seq.is_some_and(|seq| seq <= 0)
@@ -562,6 +576,9 @@ mod tests {
             message_end_seq: 200,
             tombstone_end_seq: 0,
             group_meta_feed_end_id: None,
+            join_request_end_feed_id: 0,
+            join_request_read_feed_id: -1,
+            group_invite_end_feed_id: 0,
             last_read_seq: seq,
             unread_count: 8,
             last_mention_seq: None,

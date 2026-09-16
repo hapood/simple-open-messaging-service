@@ -40,6 +40,7 @@ import { formatListTime } from '../message-cards/date-format';
 import { playFlipList, snapshotFlipRects } from '../../lib/flip-list';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
+import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
@@ -213,10 +214,7 @@ export class ThreadListComponent implements OnInit {
   }
 
   hasUnreadJoinRequests(t: ConversationItem): boolean {
-    if (t.type !== 'GROUP' || (t.role !== 'OWNER' && t.role !== 'ADMIN'))
-      return false;
-    const head = this.userService.groupJoinRequestHeads().get(t.threadId);
-    return !!head && head.readFeedId < head.latestFeedId;
+    return t.type === 'GROUP' && hasUnreadGroupJoinRequests(t);
   }
 
   // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,

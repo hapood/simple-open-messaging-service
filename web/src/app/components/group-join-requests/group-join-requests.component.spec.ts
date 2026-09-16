@@ -40,7 +40,16 @@ function response(item?: GroupJoinRequest) {
 }
 
 describe('GroupJoinRequestsComponent', () => {
-  function create(queryJoinRequests: ReturnType<typeof vi.fn>) {
+  function create(
+    queryJoinRequests: ReturnType<typeof vi.fn>,
+    unreadApplications = false,
+  ) {
+    const thread = {
+      threadId: 7,
+      joinRequestEndFeedId: 2,
+      joinRequestReadFeedId: unreadApplications ? 0 : 2,
+    };
+    const markJoinRequestsReadLocally = vi.fn();
     const groups = {
       queryJoinRequests,
       queryInvitations: vi.fn(() => of(response())),
@@ -63,15 +72,13 @@ describe('GroupJoinRequestsComponent', () => {
         { provide: GroupService, useValue: groups },
         {
           provide: ConversationListService,
-          useValue: { openThreadId: () => 7 },
-        },
-        {
-          provide: UserService,
           useValue: {
-            groupJoinRequestHeads: () => new Map(),
-            markGroupJoinRequestsRead: vi.fn(),
+            openThreadId: () => 7,
+            items: () => [thread],
+            markJoinRequestsReadLocally,
           },
         },
+        { provide: UserService, useValue: {} },
         { provide: NavStateMachineService, useValue: { back: vi.fn() } },
         { provide: ToastService, useValue: { warn: vi.fn() } },
         {
@@ -85,12 +92,16 @@ describe('GroupJoinRequestsComponent', () => {
         () => new GroupJoinRequestsComponent(),
       ),
       groups,
+      markJoinRequestsReadLocally,
     };
   }
 
   it('loads applications when the application tab opens', async () => {
     const queryJoinRequests = vi.fn(() => of(response(row(2))));
-    const { component } = create(queryJoinRequests);
+    const { component, groups, markJoinRequestsReadLocally } = create(
+      queryJoinRequests,
+      true,
+    );
     component.setTab(1);
     await Promise.resolve();
     expect(queryJoinRequests).toHaveBeenCalledWith({
@@ -99,6 +110,24 @@ describe('GroupJoinRequestsComponent', () => {
       take: 20,
     });
     expect(component.applications()).toEqual([row(2)]);
+    expect(markJoinRequestsReadLocally).toHaveBeenCalledWith(7, 2);
+    expect(groups.markJoinRequestsRead).toHaveBeenCalledWith({
+      groupId: 7,
+      joinRequestReadFeedId: 2,
+    });
+  });
+
+  it('does not mark applications read when the list request fails', async () => {
+    const queryJoinRequests = vi.fn(() =>
+      of({ code: 1, message: 'failed', data: undefined }),
+    );
+    const { groups, markJoinRequestsReadLocally } = create(
+      queryJoinRequests,
+      true,
+    );
+    await Promise.resolve();
+    expect(markJoinRequestsReadLocally).not.toHaveBeenCalled();
+    expect(groups.markJoinRequestsRead).not.toHaveBeenCalled();
   });
 
   it('invites a foreign friend by its address', async () => {

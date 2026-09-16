@@ -156,7 +156,7 @@ export class ReadGroupJoinRequestsDto extends GroupIdDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  readFeedId!: number;
+  joinRequestReadFeedId!: number;
 }
 
 class GroupMemberTargetDto {

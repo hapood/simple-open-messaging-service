@@ -5,7 +5,6 @@ import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import { admitMirrorGroupMembersDisbandInTx } from './mirror-group-disband-admission.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
@@ -29,7 +28,7 @@ export class FederationThreadQueryDenialService {
     | 'P2P_REVOKED'
     | 'P2P_ALREADY_CLOSED'
     | 'GROUP_REVOKE_QUEUED'
-    | 'GROUP_DISBAND_QUEUED'
+    | 'MIRROR_WAITING_FOR_PUSH'
     | 'GROUP_ALREADY_CLOSED'
     | 'STALE'
   > {
@@ -82,6 +81,12 @@ export class FederationThreadQueryDenialService {
             ? ('P2P_ALREADY_CLOSED' as const)
             : ('STALE' as const);
         }
+
+        // A mirror denial is not authoritative membership state. Stop this
+        // round and wait for a later state-feed push instead of converting a
+        // transient or stale denial into local group dissolution.
+        if (groupLocation.groupDomain !== 'local')
+          return 'MIRROR_WAITING_FOR_PUSH' as const;
 
         await this.relationshipIntents.lockGroupBusinessScopeInTx(tx, {
           account: groupLocation.groupAccount,
@@ -147,26 +152,6 @@ export class FederationThreadQueryDenialService {
         if (groupMembers.rows.length === 0)
           return 'GROUP_ALREADY_CLOSED' as const;
 
-        const mirror = groupLocation.groupDomain !== 'local';
-        if (mirror) {
-          // A mirror denied an authorized read has no authorized state behind
-          // it: fence in-flight content rounds now and converge the whole
-          // group through the disband task instead of one member's revocation.
-          await tx.execute(sql`
-            UPDATE "MessageThread"
-            SET "authorizationEpoch" = "authorizationEpoch" + 1,
-              "federationRoundsEnabled" = false,
-              "updatedAt" = CURRENT_TIMESTAMP
-            WHERE id = ${threadId}
-          `);
-          await admitMirrorGroupMembersDisbandInTx(tx, {
-            groupId: threadId,
-            groupAccount: groupLocation.groupAccount,
-            peerDomain: groupLocation.groupDomain,
-            namespaceId,
-          });
-          return 'GROUP_DISBAND_QUEUED' as const;
-        }
         await this.tasks.enqueueTaskInTx(tx, {
           scope: {
             type: 'GROUP',

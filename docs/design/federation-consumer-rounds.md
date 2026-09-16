@@ -282,19 +282,24 @@ query results are retried from durable state. A valid `retryAfter` is honored as
 a minimum delay. Permanent protocol or business failures stop the affected
 task instead of entering an unbounded retry loop.
 
-An authenticated `FORBIDDEN` is handled against the authorization epoch frozen
-before the denied request. The handler locks the canonical USER_PAIR or GROUP
-business scope and MessageThread before comparing that epoch. A changed epoch
-makes the response stale: it writes nothing, leaves the scheduler key open, and
-restarts work from current durable state.
+An authenticated `FORBIDDEN` MUST stop the affected round without advancing its
+cursor or interpreting the denial as an empty page. The receiving peer MAY end
+the corresponding relationship directions that it authors locally, but the
+denial alone does not require that cleanup and MUST NOT be interpreted as an
+authoritative remote-group dissolution.
 
-For a matching epoch, the scheduler stops all three directions for the
-thread-source key and prioritizes a State Feed drain. The ordinary relationship
-commands revoke only directions authored locally: the local user direction for
-P2P; every local member-to-group direction for a remotely owned group; or every
-group-to-member direction for members hosted by the denied peer for a locally
-owned group. The peer-authored directions are never rewritten. A later committed
-thread-head wake may enable the key again.
+When the receiving peer does not perform optional local cleanup, it leaves the
+durable relationship and synchronization state unchanged and waits for a later
+State Feed push. A new thread-head wake may then enable the thread-source key
+and retry from the last committed cursor. This is the mirror-group policy: log
+the denial at debug level, stop the current round, and wait for the next push.
+
+When optional cleanup is performed, it is checked against the authorization
+epoch frozen before the denied request. A changed epoch makes the response
+stale and writes nothing. Cleanup may revoke only directions authored locally;
+peer-authored directions are never rewritten. This implementation performs
+that optional cleanup for P2P and for members hosted by a denied peer of a
+locally authoritative group, but not for a remotely authoritative mirror.
 
 ## 8. Publication invariants
 
