@@ -19,11 +19,11 @@ import {
 import {
   GroupRosterRoleOutcome,
   GroupRosterRoleService,
-} from '../group/business/roster-role/group-roster-role.service.js';
-import { isBusinessRejection } from '../common/business/business-command-result.js';
+} from '../group/roster-role/group-roster-role.service.js';
+import { isBusinessRejection } from '../common/business-command-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { GroupService } from '../group/business/group.service.js';
+import { GroupService } from '../group/group.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { normalizeAccount } from '../common/account.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
@@ -51,11 +51,11 @@ import { DurableTaskAcceptedDto } from '../dto/durable-task.dto.js';
 import {
   GroupAuthoredMembershipIntentService,
   type GroupAuthoredMembershipIntentResult,
-} from '../group/business/membership-intent/authored/group-authored-membership-intent.service.js';
+} from '../group/membership-intent/authored/group-authored-membership-intent.service.js';
 import {
   MemberAuthoredGroupMembershipIntentService,
   type MemberAuthoredGroupMembershipIntentResult,
-} from '../group/business/membership-intent/authored/member-authored-group-membership-intent.service.js';
+} from '../group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 
 @ApiTags('group')
 @Controller()

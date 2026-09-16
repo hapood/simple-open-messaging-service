@@ -23,7 +23,7 @@ import type { FederationThreadResourceResponse } from './federation-thread-resou
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../common/business/locks/thread-content-lock.js';
+} from '../common/locks/thread-content-lock.js';
 
 export interface ReverseMessagePageCommit {
   threadLock?: ThreadContentLock;

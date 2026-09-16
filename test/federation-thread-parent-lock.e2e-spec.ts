@@ -1,4 +1,4 @@
-import { businessAccountScopeKey } from '../src/common/business/locks/account-business-lock.js';
+import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -9,7 +9,7 @@ import {
   groupAccount,
   messageThread,
 } from '../src/database/schema.js';
-import { RelationshipIntentService } from '../src/relationship/business/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { sql } from 'drizzle-orm';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';

@@ -10,11 +10,11 @@ import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { GroupRelationshipMutationService } from '../src/group/business/membership-intent/shared/group-relationship-mutation.service.js';
+import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import {
   RemoteMemberMembershipIntentService,
   type RemoteMemberMembershipIntentDependencies,
-} from '../src/group/business/membership-intent/received/remote-member-membership-intent.service.js';
+} from '../src/group/membership-intent/received/remote-member-membership-intent.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
 const PEER_DOMAIN = `remote-member-${process.pid}.example`;

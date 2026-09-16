@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
@@ -6,7 +6,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { groupMeta } from '../database/schema.js';
-import { readGroupMetaPageInTx } from '../group/business/meta/group-meta-page.js';
+import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 
 @Injectable()

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ThreadPreviewService } from './thread-preview.service.js';
 import { threadPreviewLimit } from './thread-preview-limit.js';
 import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 7 }),
 }));
 vi.mock('./thread-fanout-task.js', () => ({

@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
-import { businessAccountScopeKey } from '../common/business/locks/account-business-lock.js';
-import { requireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
-import { readGroupState } from './business/shared/group-state.js';
+import { businessAccountScopeKey } from '../common/locks/account-business-lock.js';
+import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
+import { readGroupState } from './shared/group-state.js';
 
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 12 }),
 }));
-vi.mock('./business/shared/group-state.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./business/shared/group-state.js')>()),
+vi.mock('./shared/group-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./shared/group-state.js')>()),
   readGroupState: vi
     .fn()
     .mockResolvedValue({ account: '!group', domain: 'local' }),

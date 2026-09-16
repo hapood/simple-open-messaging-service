@@ -10,12 +10,12 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { UserIntentService } from '../user/business/p2p-intent/authored/user-intent.service.js';
+import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { businessEnvelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
-import { isBusinessRejection } from '../common/business/business-command-result.js';
-import type { UserIntentOutcome } from '../user/business/p2p-intent/authored/user-intent.service.js';
+import { isBusinessRejection } from '../common/business-command-result.js';
+import type { UserIntentOutcome } from '../user/p2p-intent/authored/user-intent.service.js';
 import {
   AcceptRelationshipDto,
   ReadRelationshipRequestsDto,
@@ -26,7 +26,7 @@ import { normalizeAccount } from '../common/account.js';
 import {
   MemberAuthoredGroupMembershipIntentService,
   type MemberAuthoredGroupMembershipIntentResult,
-} from '../group/business/membership-intent/authored/member-authored-group-membership-intent.service.js';
+} from '../group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 
 /**
  * Relationship endpoints for user and group membership intents. Every P2P

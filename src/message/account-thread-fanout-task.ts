@@ -5,8 +5,8 @@ import { insertPendingTaskInTx } from '../durable-task/task-admission.js';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../common/business/locks/thread-content-lock.js';
-import { relationshipEndpointMatchesUserSql } from '../relationship/business/shared/relationship-authorization.js';
+} from '../common/locks/thread-content-lock.js';
+import { relationshipEndpointMatchesUserSql } from '../relationship/shared/relationship-authorization.js';
 import {
   localAccountsForTargetsInTx,
   type AccountTarget,

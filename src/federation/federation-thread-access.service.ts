@@ -1,7 +1,7 @@
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -11,7 +11,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import {
   type FederationContext,
   FederationNamespaceService,

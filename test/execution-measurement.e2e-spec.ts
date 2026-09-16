@@ -14,7 +14,7 @@ import { DurableTaskDispatcherService } from '../src/durable-task/durable-task-d
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { DisbandGroupTaskHandler } from '../src/group/disband-group-task.handler.js';
-import { GroupService } from '../src/group/business/group.service.js';
+import { GroupService } from '../src/group/group.service.js';
 import { seedUser } from './seed.js';
 
 describe('execution measurement with PostgreSQL', () => {

@@ -1,7 +1,7 @@
 import {
   groupState as group,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';

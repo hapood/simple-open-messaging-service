@@ -24,12 +24,12 @@ import {
   relationshipPair,
   threadAudience,
 } from '../src/database/schema.js';
-import { setLockedP2PPairActiveInTx } from '../src/relationship/business/shared/p2p-pair-state.js';
-import { lockBusinessAccountsInTx } from '../src/common/business/locks/account-business-lock.js';
+import { setLockedP2PPairActiveInTx } from '../src/relationship/shared/p2p-pair-state.js';
+import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
-import { GroupRelationshipMutationService } from '../src/group/business/membership-intent/shared/group-relationship-mutation.service.js';
-import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
+import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
+import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { truncateTablesForTest } from './support/truncate';
 
 describe('federation thread synchronization state', () => {

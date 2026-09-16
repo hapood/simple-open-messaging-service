@@ -1,4 +1,4 @@
-import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import { accountProfileFields } from '../user/account-profile.js';
 import {
   Injectable,

@@ -18,23 +18,26 @@ under `src/database/`; SQL migrations are under `database/migrations/`. Unit tes
 `*.spec.ts`; PostgreSQL-backed end-to-end tests live in `test/` as
 `*.e2e-spec.ts`.
 
-Organize backend code by domain first. Domain-owned business behavior belongs
-under `src/<domain>/business/`; do not recreate a top-level `src/business/`
-layer that mixes unrelated domains. Put a primitive in `src/common/business/`
-only when it is genuinely shared by multiple domains and has no natural domain
-owner. New business methods must use this layout. Migrate older services
-incrementally with behavior-preserving changes when their area is being worked
-on; a legacy service may remain as a thin facade while callers are transitioned.
+Organize backend code by domain first. Domain-owned behavior belongs directly
+under `src/<domain>/`, using meaningful capability directories such as
+`membership-intent/`, `meta/`, or `shared/` when another level is warranted.
+Do not add a generic `business/` directory under a domain or recreate a
+top-level `src/business/` layer that mixes unrelated domains. Put a primitive
+in `src/common/` only when it is genuinely shared by multiple domains and has
+no natural domain owner. New business methods must use this layout. Migrate
+older services incrementally with behavior-preserving changes when their area
+is being worked on; a legacy service may remain as a thin facade while callers
+are transitioned.
 
 Durable tasks are an execution mechanism, not a replacement for the domain
 model. Keep the generic scheduler, store, dispatcher, and task contracts in
 `src/durable-task/`. Keep task payloads and handlers with their owning domain,
 using a domain-local `task/` directory when their number warrants it. A handler
 should validate and decode the task, coordinate checkpoint/retry semantics, and
-delegate domain decisions to `src/<domain>/business/`. Task-specific durable
-orchestration may remain in the handler, but reusable business rules must not be
-implemented only in a task handler. The generic durable-task infrastructure
-must not import domain implementations.
+delegate domain decisions to the owning `src/<domain>/` capability.
+Task-specific durable orchestration may remain in the handler, but reusable
+business rules must not be implemented only in a task handler. The generic
+durable-task infrastructure must not import domain implementations.
 
 The Angular user client is in `web/`, the Vite administration console in
 `admin-web/`, and Tauri/native code in `src-tauri/`. Deployment templates are

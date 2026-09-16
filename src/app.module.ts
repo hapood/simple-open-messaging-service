@@ -15,7 +15,7 @@ import { UploadModule } from './upload/upload.module.js';
 import { KvStoreModule } from './kv-store/kv-store.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AccountThreadStateModule } from './account-thread-state/account-thread-state.module.js';
-import { RelationshipModule } from './relationship/business/relationship.module.js';
+import { RelationshipModule } from './relationship/relationship.module.js';
 import { RelationshipController } from './controller/relationship.controller.js';
 import { PushModule } from './push/push.module.js';
 import { FederationModule } from './federation/federation.module.js';

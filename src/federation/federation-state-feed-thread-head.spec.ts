@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 
-vi.mock('../common/business/locks/thread-content-lock.js', async (original) => ({
+vi.mock('../common/locks/thread-content-lock.js', async (original) => ({
   ...(await original<
-    typeof import('../common/business/locks/thread-content-lock.js')
+    typeof import('../common/locks/thread-content-lock.js')
   >()),
   acquireThreadContentLockInTx: vi.fn(async () => ({ threadId: 31 })),
 }));

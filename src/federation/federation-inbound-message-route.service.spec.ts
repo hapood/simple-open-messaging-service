@@ -47,6 +47,7 @@ describe('FederationInboundMessageRouteService', () => {
       toAccount: '!group',
       creatorAccount: 'alice',
       creatorDomain: 'peer.test',
+      authority: 'PEER',
       recipients: [],
     });
     const execute = vi
@@ -115,6 +116,7 @@ describe('FederationInboundMessageRouteService', () => {
       toAccount: '!group',
       creatorAccount: 'alice',
       creatorDomain: 'peer.test',
+      authority: 'PEER',
       recipients: [],
     });
 
@@ -128,7 +130,7 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.params).toContain(9);
   });
 
-  it('routes a mirror receipt to its existing origin timeline', async () => {
+  it('routes a mirror receipt by local group and audience before target association', async () => {
     const execute = vi
       .fn()
       .mockResolvedValueOnce({ rows: [] })
@@ -140,13 +142,42 @@ describe('FederationInboundMessageRouteService', () => {
 
     await expect(
       service().resolveMessage(tx, groupReceipt(), 'peer.test', 9),
-    ).resolves.toMatchObject({ threadId: 11, creatorDomain: 'local' });
+    ).resolves.toMatchObject({
+      threadId: 11,
+      creatorDomain: 'local',
+      authority: 'LOCAL',
+    });
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).toContain('target.seq =');
-    expect(query.sql).toContain('target."creatorDomain" =');
+    expect(query.sql).not.toContain('JOIN "Message"');
     expect(query.sql).toContain('pair.active = true');
-    expect(query.params).toContain(3);
   });
+
+  it.each([
+    ['third.test', 'PEER'],
+    ['local.test', 'LOCAL'],
+  ] as const)(
+    'derives %s group-message authority from the author domain, not originSeq',
+    async (authorDomain, authority) => {
+      const execute = vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ threadId: 11, federationVersion: 4, toAccount: '!group' }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await expect(
+        service().resolveMessage(
+          { execute } as unknown as DatabaseTransaction,
+          {
+            ...groupReceipt(),
+            author: { account: 'alice', domain: authorDomain },
+          },
+          'group.test',
+          9,
+        ),
+      ).resolves.toMatchObject({ authority });
+    },
+  );
 
   it('does not authorize the local-origin branch for a forwarded third-party author', async () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });

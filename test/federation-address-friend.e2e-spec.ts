@@ -161,6 +161,10 @@ describe('federated Address friend requests', () => {
       body: expect.objectContaining({
         status: 'REQUESTED',
         direction: 'INCOMING',
+        peer: expect.objectContaining({
+          account: 'address-alice',
+          domain: FED_DOMAIN_A,
+        }),
       }),
     });
     const accepted = await request(appB.baseUrl)

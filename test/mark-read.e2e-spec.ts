@@ -11,8 +11,8 @@ import {
   accountThreadState,
   federationThreadHistoryGap,
 } from '../src/database/schema';
-import { applyReadPositionInTx } from '../src/message/business/thread-read-position.service.js';
-import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
+import { applyReadPositionInTx } from '../src/message/thread-read-position.service.js';
+import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed';
 import { createTestApp } from './support/app';

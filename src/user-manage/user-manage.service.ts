@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';

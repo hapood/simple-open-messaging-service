@@ -5,7 +5,7 @@ import { callHistory, message, messageThread } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { requireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import { enqueueThreadFanoutInTx } from '../message/thread-fanout-task.js';
 import {
   type CallEndedContent,

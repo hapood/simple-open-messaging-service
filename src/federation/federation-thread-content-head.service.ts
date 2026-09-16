@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import {

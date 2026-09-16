@@ -575,13 +575,20 @@ export function compareFederationSnapshot({
           p2p[nodeName].intents.directions.find(
             (intent) => `${intent.author}->${intent.subject}` === key,
           )?.status ?? null;
-        if (read(firstNode.name) !== read(secondNode.name))
+        const firstStatus = read(firstNode.name);
+        const secondStatus = read(secondNode.name);
+        // A receiver may consume a compacted REVOKED fact before it has ever
+        // materialized the pair. In that case it intentionally retains no
+        // peer-authored direction. Both representations are the same inactive
+        // relationship state; positive directions must still match exactly.
+        const comparable = (status) => (status === 'REVOKED' ? null : status);
+        if (comparable(firstStatus) !== comparable(secondStatus))
           failures.push({
             kind: 'P2P_INTENT',
             direction: key,
             values: {
-              [firstNode.name]: read(firstNode.name),
-              [secondNode.name]: read(secondNode.name),
+              [firstNode.name]: firstStatus,
+              [secondNode.name]: secondStatus,
             },
           });
       }

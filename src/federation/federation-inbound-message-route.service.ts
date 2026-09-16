@@ -1,11 +1,11 @@
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
@@ -18,6 +18,7 @@ export interface FederationInboundMessageRoute {
   threadId: number;
   creatorAccount: string;
   creatorDomain: string;
+  authority: 'LOCAL' | 'PEER';
   federationVersion: number;
   recipients: number[];
   toAccount: string;
@@ -60,6 +61,7 @@ export class FederationInboundMessageRouteService {
     namespaceId: number,
   ): Promise<FederationInboundMessageRoute> {
     const author = this.messageAuthor(item, sourceDomain);
+    let authority: FederationInboundMessageRoute['authority'] | undefined;
     let threadRows: Array<{
       threadId: number;
       federationVersion: number;
@@ -84,10 +86,15 @@ export class FederationInboundMessageRouteService {
         FOR SHARE OF thread
       `);
       threadRows = result.rows;
+      if (threadRows.length > 0) {
+        // A remote group owns its accepted timeline except for messages authored
+        // by this server, which return as authoritative-coordinate receipts.
+        authority = author.domain === this.config.domain ? 'LOCAL' : 'PEER';
+      }
       if (threadRows.length === 0 && item.originSeq != null) {
-        // A mirror returns copies of this origin's timeline, including third-party
-        // authors. Bind the receipt to that timeline and a current mirror audience;
-        // the receipt author's own membership is not the mirror's authorization.
+        // A mirror may return any author from this origin's timeline. Resolve only
+        // the local group and current mirror audience here; the consumer associates
+        // the exact author/origin coordinate and warns when its target is absent.
         const receipt = await tx.execute<{
           threadId: number;
           federationVersion: number;
@@ -97,14 +104,10 @@ export class FederationInboundMessageRouteService {
                  group_user.account AS "toAccount"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_user ON group_user.id = thread.id
-          JOIN "Message" target ON target."threadId" = thread.id
           WHERE thread.type = 'GROUP'
             AND group_user.account = ${normalizeAccount(item.thread.account)}
             AND group_user.domain = 'local'
             AND group_user."namespaceId" = 0
-            AND target.seq = ${item.originSeq}
-            AND target."creatorAccount" = ${normalizeAccount(author.account)}
-            AND target."creatorDomain" = ${author.domain === this.config.domain ? 'local' : author.domain}
             AND EXISTS (
               SELECT 1 FROM "RelationshipPair" pair
               WHERE pair."threadId" = thread.id
@@ -122,9 +125,10 @@ export class FederationInboundMessageRouteService {
           LIMIT 1
         `);
         threadRows = receipt.rows;
+        if (threadRows.length > 0) authority = 'LOCAL';
         if (threadRows.length === 0) {
           throw new FederationMessageContextError(
-            'group receipt has no matching published message or mirror audience',
+            'group receipt has no local authoritative group or mirror audience',
           );
         }
       }
@@ -177,9 +181,11 @@ export class FederationInboundMessageRouteService {
           FOR SHARE OF pair, thread
         `);
         threadRows = memberResult.rows;
+        if (threadRows.length > 0) authority = 'PEER';
       }
     } else {
       const selfAuthored = author.domain === this.config.domain;
+      authority = selfAuthored ? 'LOCAL' : 'PEER';
       const expectedAuthorAccount = selfAuthored
         ? item.thread.peerAccount
         : item.thread.account;
@@ -242,6 +248,7 @@ export class FederationInboundMessageRouteService {
         'missed message has no retained local thread',
       );
     }
+    if (!authority) throw new Error('message authority was not resolved');
     const creatorAccount = normalizeAccount(author.account);
     const creatorDomain =
       author.domain === this.config.domain ? 'local' : author.domain;
@@ -268,6 +275,7 @@ export class FederationInboundMessageRouteService {
         );
       return {
         ...route,
+        authority,
         creatorAccount,
         creatorDomain,
         recipients: recipients.filter(
@@ -277,6 +285,7 @@ export class FederationInboundMessageRouteService {
     }
     return {
       ...route,
+      authority,
       creatorAccount,
       creatorDomain,
       recipients,

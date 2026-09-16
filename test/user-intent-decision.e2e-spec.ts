@@ -1,8 +1,8 @@
 import {
   relationshipPairBusinessKey,
   type PairAddressScope,
-} from '../src/common/business/locks/relationship-pair-business-lock.js';
-import { businessAccountScopeKey } from '../src/common/business/locks/account-business-lock.js';
+} from '../src/common/locks/relationship-pair-business-lock.js';
+import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -34,7 +34,7 @@ import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.
 import {
   UserIntentService,
   type UserIntentDependencies,
-} from '../src/user/business/p2p-intent/authored/user-intent.service.js';
+} from '../src/user/p2p-intent/authored/user-intent.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 
 interface UserRef {
@@ -277,8 +277,12 @@ describe('user intent decision', () => {
     expect(after.feeds).toHaveLength(2);
     expect(body(after.feeds[0].body).direction).toBe('OUTGOING');
     expect(body(after.feeds[1].body).direction).toBe('INCOMING');
-    for (const feed of after.feeds)
-      expect(body(feed.body).peer).toMatchObject({ account: bob.account });
+    expect(body(after.feeds[0].body).peer).toMatchObject({
+      account: bob.account,
+    });
+    expect(body(after.feeds[1].body).peer).toMatchObject({
+      account: alice.account,
+    });
     expect(after.audiences).toHaveLength(0);
     expect(after.threadTasks).toHaveLength(0);
   });

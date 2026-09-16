@@ -1,4 +1,4 @@
-import { RelationshipIntentService } from '../relationship/business/relationship-intent.service.js';
+import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
 import { Module } from '@nestjs/common';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 import { ThreadAccessGuard } from './thread-access.guard.js';

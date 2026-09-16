@@ -2,7 +2,7 @@ import {
   groupState as group,
   groupStateFields,
   readGroupState,
-} from '../src/group/business/shared/group-state.js';
+} from '../src/group/shared/group-state.js';
 import type { NamespacedAddress } from '../src/common/client-identity.js';
 import { randomUUID } from 'node:crypto';
 import {

@@ -1,6 +1,6 @@
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
-import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -18,13 +18,13 @@ import {
   messageThread,
   accountThreadState,
 } from '../src/database/schema.js';
-import { RelationshipService } from '../src/relationship/business/relationship.service.js';
-import { RelationshipIntentService } from '../src/relationship/business/relationship-intent.service.js';
+import { RelationshipService } from '../src/relationship/relationship.service.js';
+import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { MessageService } from '../src/message/message.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { ReceivedUserIntentService } from '../src/user/business/p2p-intent/received/received-user-intent.service.js';
-import { UserIntentService } from '../src/user/business/p2p-intent/authored/user-intent.service.js';
+import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
+import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 

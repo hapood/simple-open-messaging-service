@@ -18,7 +18,7 @@ vi.mock('../federation/federation.config.js', () => ({
   loadFederationConfig: () => ({ domain: 'local.test' }),
 }));
 
-vi.mock('../relationship/business/shared/relationship-authorization.js', () => ({
+vi.mock('../relationship/shared/relationship-authorization.js', () => ({
   isThreadMutuallyAuthorized: async (db: { authorized: boolean }) =>
     db.authorized,
 }));

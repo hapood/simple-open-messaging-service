@@ -1,17 +1,17 @@
 import {
   groupStateFields,
   groupStateSql,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import {
   applyDeltaMirrorMetaItemInTx,
   finalizeDeltaMirrorMetaRoundInTx,
-} from '../group/business/meta/apply-delta-mirror-meta-item-in-tx.js';
-import { applyFullMirrorMetaBatchInTx } from '../group/business/meta/apply-full-mirror-meta-batch-in-tx.js';
+} from '../group/meta/apply-delta-mirror-meta-item-in-tx.js';
+import { applyFullMirrorMetaBatchInTx } from '../group/meta/apply-full-mirror-meta-batch-in-tx.js';
 import {
   reopenMirrorMetaRecoveryInTx,
   type MirrorGroupAddress,
   type MirrorMetaReplicatedItem,
-} from '../group/business/meta/mirror-meta-shared.js';
+} from '../group/meta/mirror-meta-shared.js';
 import { MessageService } from '../message/message.service.js';
 import {
   isValidSomfpDomain,
@@ -55,7 +55,7 @@ export interface MetaRoundPlan {
  * (`metaProcessedThroughId` / `metaTargetId`); an open `metaRecoveryThroughId`
  * recovery drain consumes full-snapshot page batches, and delta rounds consume one
  * feed item per transaction. Every state mutation runs through
- * `business/group/meta` — this executor owns the S2S pull, wire validation,
+ * `group/meta` — this executor owns the S2S pull, wire validation,
  * and the round budget only. */
 @Injectable()
 export class FederationThreadMetaRoundExecutorService {

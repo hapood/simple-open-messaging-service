@@ -5,8 +5,8 @@ import { insertPendingTaskInTx } from '../durable-task/task-admission.js';
 import {
   businessAccountScopeKey,
   lockBusinessAccountsInTx,
-} from '../common/business/locks/account-business-lock.js';
-import { groupStateSql } from '../group/business/shared/group-state.js';
+} from '../common/locks/account-business-lock.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import { systemAccountIdInTx } from '../user/system-account.js';
 
 export interface AdmitMirrorGroupMembersDisbandInput {

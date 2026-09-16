@@ -21,13 +21,13 @@ import {
 } from '../src/database/schema.js';
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
-import { GroupMetaFeedService } from '../src/group/business/meta/group-meta-feed.service.js';
+import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { FederationGroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { S2sController } from '../src/federation/s2s.controller.js';
-import { readGroupMetaPageInTx } from '../src/group/business/meta/group-meta-page.js';
+import { readGroupMetaPageInTx } from '../src/group/meta/group-meta-page.js';
 
 describe('canonical Group Meta feed', () => {
   const suffix = Date.now().toString(36);

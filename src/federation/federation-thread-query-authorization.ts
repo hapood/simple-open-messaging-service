@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import { HttpStatus } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';

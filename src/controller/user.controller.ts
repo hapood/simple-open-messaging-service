@@ -42,7 +42,7 @@ import {
   type S2SProfile,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
-import { RelationshipService } from '../relationship/business/relationship.service.js';
+import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';

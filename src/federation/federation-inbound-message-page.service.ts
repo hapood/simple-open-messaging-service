@@ -1,7 +1,7 @@
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -32,7 +32,7 @@ import {
   type FederatedForwardCard,
 } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
-import type { ThreadContentLock } from '../common/business/locks/thread-content-lock.js';
+import type { ThreadContentLock } from '../common/locks/thread-content-lock.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -237,7 +237,7 @@ export class FederationInboundMessagePageService {
           );
         }
 
-        if (item.originSeq !== null || author.domain === this.config.domain) {
+        if (route.authority === 'LOCAL') {
           if (item.originSeq === null || item.originCreatedAt === null) {
             this.logger.error(
               `self-authored message diagnostic is missing source coordinates: ${federatedMessageLogContext(
@@ -369,7 +369,7 @@ export class FederationInboundMessagePageService {
             }
             continue;
           }
-          this.logger.error(
+          this.logger.warn(
             `processing receipt has no matching published message: ${federatedMessageLogContext(
               domain,
               item,
@@ -377,6 +377,13 @@ export class FederationInboundMessagePageService {
             )}`,
           );
           continue;
+        }
+        if (item.originSeq !== null || item.originCreatedAt !== null) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'peer-authoritative message must not carry origin coordinates',
+            HttpStatus.BAD_REQUEST,
+          );
         }
         const existingMessage = await tx.query.message.findFirst({
           where: and(

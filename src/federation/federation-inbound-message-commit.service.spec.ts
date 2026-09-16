@@ -1,7 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn(
     async (tx, threadId, held) => held ?? { tx, threadId },
   ),

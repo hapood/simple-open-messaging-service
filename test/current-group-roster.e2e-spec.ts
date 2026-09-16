@@ -10,7 +10,7 @@ import {
   groupMetaMemberFeed,
   account as user,
 } from '../src/database/schema.js';
-import { readCurrentGroupRosterInTx } from '../src/group/business/meta/current-group-roster.js';
+import { readCurrentGroupRosterInTx } from '../src/group/meta/current-group-roster.js';
 
 describe('current Group Meta roster', () => {
   const suffix = Date.now().toString(36);

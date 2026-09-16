@@ -17,18 +17,18 @@ import {
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../src/message/message.service.js';
-import { mergeMirrorGroupMetaTargetInTx } from '../src/group/business/meta/merge-mirror-meta-target-in-tx.js';
+import { mergeMirrorGroupMetaTargetInTx } from '../src/group/meta/merge-mirror-meta-target-in-tx.js';
 import {
   applyDeltaMirrorMetaItemInTx,
   finalizeDeltaMirrorMetaRoundInTx,
-} from '../src/group/business/meta/apply-delta-mirror-meta-item-in-tx.js';
-import { applyFullMirrorMetaBatchInTx } from '../src/group/business/meta/apply-full-mirror-meta-batch-in-tx.js';
+} from '../src/group/meta/apply-delta-mirror-meta-item-in-tx.js';
+import { applyFullMirrorMetaBatchInTx } from '../src/group/meta/apply-full-mirror-meta-batch-in-tx.js';
 import {
   applyMirrorMetaFactInTx,
   reopenMirrorMetaRecoveryInTx,
   type MirrorGroupAddress,
   type MirrorMetaReplicatedItem,
-} from '../src/group/business/meta/mirror-meta-shared.js';
+} from '../src/group/meta/mirror-meta-shared.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('mirror Group Meta rounds', () => {

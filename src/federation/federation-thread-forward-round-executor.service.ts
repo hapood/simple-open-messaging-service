@@ -12,7 +12,6 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
-import { filterMirrorMessagePage } from './federation-mirror-message-filter.js';
 import { FederationService, S2sResponseError } from './federation.service.js';
 import {
   FederationThreadResourceClient,
@@ -205,10 +204,6 @@ export class FederationThreadForwardRoundExecutorService {
       return { scannedThrough: resumeAfter };
     }
     this.assertMessagePage(source, response.data, params);
-    response = {
-      ...response,
-      data: filterMirrorMessagePage(source, response.data),
-    };
     const closures = await this.prefetchForwardClosures(source, response);
     return {
       scannedThrough: response.data.scannedThrough,

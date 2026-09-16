@@ -11,7 +11,7 @@
 |---|---|---|---|
 | `waitForP2pFriendConvergence` | dev/federation-lab/p2p/audit.mjs | async function | DELETED |
 | `readP2pPairSnapshot` | dev/federation-lab/p2p/audit.mjs | async function | DELETED |
-| `UserIntentLocatorRow` | src/user/business/p2p-intent/authored/user-intent-authorization-sql.ts | interface | DELETED |
+| `UserIntentLocatorRow` | src/user/p2p-intent/authored/user-intent-authorization-sql.ts | interface | DELETED |
 | `FederationV1WireErrorCode` | src/common/business-code.ts | enum | DELETED |
 | `ALL_MENTION_ID` | src/common/message-entity.ts | const | DELETED |
 | `RemoteMessageCursorUnavailableError` | src/federation/federation-feed-cursor-error.ts | class | DELETED |
@@ -88,12 +88,12 @@ knip 报告的这些导出无任何外部导入者;同文件内部有使用的�
 - **src/auth/media-token.ts** (3): `LOGGED_IN_COOKIE`, `LOGGED_IN_COOKIE_OPTIONS`, `MEDIA_COOKIE_OPTIONS`
 - **src/auth/qr-login.service.ts** (1): `QrPollStatus`
 - **src/auth/session-cookie.interceptor.ts** (1): `SessionSlideRequest`
-- **src/group/business/membership-intent/received/mirror-group-membership-intent.service.ts** (2): `InvalidMirrorItemError`, `MirrorGroupMembershipIntentBody`
-- **src/group/business/membership-intent/received/remote-member-membership-intent.service.ts** (1): `RemoteMemberMembershipIntentBody`
-- **src/group/business/meta/group-meta-page.ts** (1): `GroupMetaFeedItem`
-- **src/group/business/meta/mirror-meta-shared.ts** (2): `assertMirrorRosterOwnersInTx`, `readMirrorMetaInTx`
-- **src/common/business/relationship-intent-state.ts** (1): `RelationshipIntentTransition`
-- **src/user/business/p2p-intent/received/received-user-intent.service.ts** (1): `ReceivedUserIntentBody`
+- **src/group/membership-intent/received/mirror-group-membership-intent.service.ts** (2): `InvalidMirrorItemError`, `MirrorGroupMembershipIntentBody`
+- **src/group/membership-intent/received/remote-member-membership-intent.service.ts** (1): `RemoteMemberMembershipIntentBody`
+- **src/group/meta/group-meta-page.ts** (1): `GroupMetaFeedItem`
+- **src/group/meta/mirror-meta-shared.ts** (2): `assertMirrorRosterOwnersInTx`, `readMirrorMetaInTx`
+- **src/common/relationship-intent-state.ts** (1): `RelationshipIntentTransition`
+- **src/user/p2p-intent/received/received-user-intent.service.ts** (1): `ReceivedUserIntentBody`
 - **src/calls/federated-call-protocol.ts** (3): `SdpText`, `SerializedIceCandidate`, `SerializedVideoState`
 - **src/calls/turn-credentials.ts** (1): `TurnRestCredential`
 - **src/common/account.ts** (1): `SOMFP_USER_ACCOUNT_RE`
@@ -182,9 +182,9 @@ spec 文件被 knip 配置排除,这类"仅测试消费"的导出被刻意保留
 - **src/admin/webauthn.config.ts** (1): `loadWebAuthnConfig`
 - **src/auth/throttle.guard.ts** (1): `THROTTLE_KEY`
 - **src/bootstrap.ts** (2): `GLOBAL_PREFIX_EXCLUSIONS`, `uploadCacheControl`
-- **src/group/business/membership-intent/shared/group-membership-projection-fanout.ts** (1): `groupMembershipProjectionFanoutKey`
-- **src/common/business/locks/relationship-pair-business-lock.ts** (1): `relationshipPairBusinessKey`
-- **src/common/business/relationship-intent-state.ts** (1): `deriveRelationshipIntentTransition`
+- **src/group/membership-intent/shared/group-membership-projection-fanout.ts** (1): `groupMembershipProjectionFanoutKey`
+- **src/common/locks/relationship-pair-business-lock.ts** (1): `relationshipPairBusinessKey`
+- **src/common/relationship-intent-state.ts** (1): `deriveRelationshipIntentTransition`
 - **src/calls/federated-call-protocol.ts** (2): `S2S_CALL_OPERATIONS`, `assertS2SCallFrame`
 - **src/calls/turn-credentials.ts** (2): `DEFAULT_TURN_TTL_SECONDS`, `mintTurnCredential`
 - **src/common/account.ts** (2): `GROUP_ACCOUNT_RE`, `isGroupAccount`

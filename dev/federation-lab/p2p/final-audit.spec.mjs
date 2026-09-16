@@ -149,6 +149,43 @@ test('accepts matching final rosters, intents, message coordinates, and bodies',
   assert.deepEqual(result.failures, []);
 });
 
+test('treats an unmaterialized remote revoke as the same inactive P2P direction', () => {
+  const value = fixture();
+  value.p2p.alpha.intents.directions.push({
+    author: alice,
+    subject: bob,
+    status: 'REVOKED',
+  });
+
+  const result = compareFederationSnapshot(value);
+
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.failures, []);
+});
+
+test('still rejects a missing positive P2P direction', () => {
+  const value = fixture();
+  value.p2p.alpha.intents.directions.push({
+    author: alice,
+    subject: bob,
+    status: 'REQUESTED',
+  });
+
+  const result = compareFederationSnapshot(value);
+
+  assert.equal(result.passed, false);
+  assert.deepEqual(
+    result.failures.filter(({ kind }) => kind === 'P2P_INTENT'),
+    [
+      {
+        kind: 'P2P_INTENT',
+        direction: `${alice}->${bob}`,
+        values: { alpha: 'REQUESTED', bravo: null },
+      },
+    ],
+  );
+});
+
 test('business convergence permits lazy profiles but still rejects stale membership', () => {
   const value = fixture();
   value.profiles.bravo.versions.clear();
@@ -820,9 +857,7 @@ test('rejects P2P withdrawal absence without authoritative deletion and complete
       mirror.syncState.activeGapId = 1;
     },
     ({ mirror }) => {
-      mirror.historyGaps = [
-        { startSeq: 1, endSeq: 1, recoverable: true },
-      ];
+      mirror.historyGaps = [{ startSeq: 1, endSeq: 1, recoverable: true }];
     },
     ({ mirror }) => {
       mirror.syncState.deletionRecoveryThroughSeq = 1;

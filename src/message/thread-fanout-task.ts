@@ -9,7 +9,7 @@ import {
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../common/business/locks/thread-content-lock.js';
+} from '../common/locks/thread-content-lock.js';
 
 export interface ThreadFanoutTarget {
   threadId: number;

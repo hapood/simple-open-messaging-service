@@ -9,7 +9,7 @@ import type {
   DurableTask,
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
-import { GroupService } from './business/group.service.js';
+import { GroupService } from './group.service.js';
 import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
 import { readDisbandGroupTask } from './group-disband-task.js';
 

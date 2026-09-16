@@ -4,7 +4,7 @@ import {
 } from '../user/account-address.js';
 import { isValidGroupAccount } from '../common/account.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
-import { businessAccountScopeKey } from '../common/business/locks/account-business-lock.js';
+import { businessAccountScopeKey } from '../common/locks/account-business-lock.js';
 
 export function readDisbandGroupTask(task: DurableTask): {
   actorUserId: number;

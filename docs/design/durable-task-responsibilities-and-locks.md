@@ -26,7 +26,7 @@ The ACCOUNT scope is encoded as:
 ["business-scope", "ACCOUNT", domain.toLowerCase(), account]
 ```
 
-[lockBusinessAccountsInTx](../../src/common/business/locks/account-business-lock.ts) applies
+[lockBusinessAccountsInTx](../../src/common/locks/account-business-lock.ts) applies
 `pg_advisory_xact_lock(hashtextextended(key, 0))`. The lock lasts until the owning
 transaction commits or rolls back. Paginated and asynchronous tasks reacquire
 required locks for each database transaction; no lock is held across HTTP work.
@@ -58,7 +58,7 @@ transaction. They therefore do not appear in the durable task inventory.
 | Task                           | Responsibility                                                                                                                                                                                                                                                                                                                                                         | Business scope during mutation                                   | Execution reference                                                                                                                                                                                                                  |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `DISBAND_GROUP`                | Mark the group dissolved, then admit member-revocation children with a durable pair cursor.                                                                                                                                                                                                                                                                            | Group account in each transaction                                | [Handler](../../src/group/disband-group-task.handler.ts), [child admission](../../src/group/group-revoke-fanout.service.ts)                                                                                                          |
-| `DISBAND_MIRROR_GROUP_MEMBERS` | Record a recoverable mirror dissolution tombstone after the origin denied an authorized read, fence rounds off, then sweep still-active local members with the durable pair cursor. Each child synthesizes the departure boundary the closed generation can no longer deliver (GROUP_LEFT, watermark, client feed row); a later positive intent may reopen the mirror. | Mirror group account at the authority domain in each transaction | [Handler](../../src/group/disband-mirror-group-members-task.handler.ts), [child admission](../../src/group/group-revoke-fanout.service.ts), [per-member statement](../../src/group/business/disband/mirror-group-disband.service.ts) |
+| `DISBAND_MIRROR_GROUP_MEMBERS` | Record a recoverable mirror dissolution tombstone after the origin denied an authorized read, fence rounds off, then sweep still-active local members with the durable pair cursor. Each child synthesizes the departure boundary the closed generation can no longer deliver (GROUP_LEFT, watermark, client feed row); a later positive intent may reopen the mirror. | Mirror group account at the authority domain in each transaction | [Handler](../../src/group/disband-mirror-group-members-task.handler.ts), [child admission](../../src/group/group-revoke-fanout.service.ts), [per-member statement](../../src/group/disband/mirror-group-disband.service.ts) |
 | `REVOKE_FORBIDDEN_GROUP`       | Enumerate members for a captured group authorization denial and admit revocation children; does not itself declare the group dissolved. Origin-side denials only — a mirror's denial now routes to `DISBAND_MIRROR_GROUP_MEMBERS`.                                                                                                                                     | Group account in each child-admission transaction                | [Handler](../../src/group/revoke-forbidden-group-task.handler.ts), [child admission](../../src/group/group-revoke-fanout.service.ts)                                                                                                 |
 | `FORCE_REVOKE_GROUP_MEMBER`    | Revoke one member after dissolution or a federation denial, respecting the applicable captured authorization epoch. Payload `direction: 'MIRROR'` routes to the mirror disband sweep instead.                                                                                                                                                                          | Group account                                                    | [Handler](../../src/group/force-revoke-group-member-task.handler.ts), [denial execution](../../src/federation/federation-thread-query-denial.service.ts)                                                                             |
 
@@ -72,7 +72,7 @@ transaction. They therefore do not appear in the durable task inventory.
 
 ## Membership-intent implementation
 
-The implementation under `src/group/business/membership-intent/` acquires both:
+The implementation under `src/group/membership-intent/` acquires both:
 
 1. The existing group account scope:
    `["business-scope", "ACCOUNT", "local", groupAccount]`.
@@ -83,7 +83,7 @@ The implementation under `src/group/business/membership-intent/` acquires both:
    identities already in hand; the primitive performs no normalization,
    validation, or canonicalization lookup.
 
-[The Pair primitive](../../src/common/business/locks/relationship-pair-business-lock.ts)
+[The Pair primitive](../../src/common/locks/relationship-pair-business-lock.ts)
 is part of the business module. Account scopes are acquired before Pair scopes,
 once per transaction, followed by Thread Content and implicit row/allocator
 locks. Both local and federated applicants acquire their own member Pair lock.

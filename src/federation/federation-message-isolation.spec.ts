@@ -1,7 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   lockThreadContentInTx: vi.fn().mockResolvedValue(true),
   requireThreadContentLockInTx: vi.fn(
     async (tx, threadId, held) => held ?? { tx, threadId },
@@ -109,6 +109,7 @@ describe('federation message context isolation', () => {
         threadId: 9,
         creatorAccount: 'alice',
         creatorDomain: 'peer.test',
+        authority: 'PEER',
       });
       Object.assign(service, { resolveMissedThreadInTransaction: resolve });
       const bad = item(reverse ? '71' : '69');
@@ -436,17 +437,19 @@ describe('federation message context isolation', () => {
     expect(publishSatisfiedQuoteDependencies).toHaveBeenCalledWith([]);
   });
 
-  it('records a self-authored feed item as a delivery receipt without inserting a duplicate', async () => {
+  it('records a receipt against a deleted local-authority message without warning', async () => {
     const service = createMessagePageService();
     const update = vi.fn();
+    const warn = vi.fn();
     const receiptValues = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       config: { domain: 'local.test' },
-      logger: { error: vi.fn() },
+      logger: { error: vi.fn(), warn },
       assertPeerResponseWritable: vi.fn(),
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorId: 7,
+        authority: 'LOCAL',
         federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
@@ -459,6 +462,7 @@ describe('federation message context isolation', () => {
           findFirst: vi.fn().mockResolvedValue({
             id: 1n,
             createdAt: new Date(1_700_000_000_000),
+            isDeleted: true,
           }),
         },
         federationMessageReceipt: {
@@ -482,6 +486,74 @@ describe('federation message context isolation', () => {
       peerSeq: 1,
       messageId: 1n,
     });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns and skips a local-authority receipt whose origin target is absent', async () => {
+    const service = createMessagePageService();
+    const warn = vi.fn();
+    Object.assign(service, {
+      logger: { error: vi.fn(), warn },
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorAccount: 'bob',
+        creatorDomain: 'local',
+        authority: 'LOCAL',
+        federationVersion: 0,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+      query: {
+        message: { findFirst: vi.fn().mockResolvedValue(undefined) },
+      },
+    };
+
+    await expect(
+      service.apply(tx as never, 'peer.test', [item('7')], {
+        namespaceId: 9,
+      } as never),
+    ).resolves.toEqual([]);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('LOCAL_SOURCE_MESSAGE_NOT_FOUND'),
+    );
+    expect(
+      (service.inboundMessageStore as { store: ReturnType<typeof vi.fn> })
+        .store,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('rejects origin coordinates on a peer-authoritative message', async () => {
+    const service = createMessagePageService();
+    const warn = vi.fn();
+    Object.assign(service, {
+      logger: { error: vi.fn(), warn },
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorAccount: 'alice',
+        creatorDomain: 'peer.test',
+        authority: 'PEER',
+        federationVersion: 0,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
+
+    await expect(
+      service.apply(tx as never, 'peer.test', [item('7')], {
+        namespaceId: 9,
+      } as never),
+    ).resolves.toEqual([]);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'peer-authoritative message must not carry origin coordinates',
+      ),
+    );
   });
 
   it('records a reverse receipt without rewriting the local message source', async () => {
@@ -495,6 +567,7 @@ describe('federation message context isolation', () => {
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorId: 7,
+        authority: 'LOCAL',
         federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
@@ -563,6 +636,7 @@ describe('federation message context isolation', () => {
         creatorId: 7,
         creatorAccount: 'bob',
         creatorDomain: 'peer.test',
+        authority: 'PEER',
         federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
@@ -633,6 +707,7 @@ describe('federation message context isolation', () => {
       .mockResolvedValueOnce({
         threadId: 9,
         creatorId: 7,
+        authority: 'LOCAL',
         federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',

@@ -240,7 +240,7 @@ presentation concerns and cannot affect membership.
 - An expired incoming request is a no-op for the authoritative pair and every projection.
 
 Relevant implementation entry points are
-[`RelationshipIntentService`](../../src/relationship/business/relationship-intent.service.ts),
-[`deriveRelationshipIntentTransition`](../../src/common/business/relationship-intent-state.ts), and the client
+[`RelationshipIntentService`](../../src/relationship/relationship-intent.service.ts),
+[`deriveRelationshipIntentTransition`](../../src/common/relationship-intent-state.ts), and the client
 request projection in
 [`FriendRequestProjection`](../../web/src/app/services/friend-request-state.ts).

@@ -12,7 +12,7 @@ import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispa
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
-import { requireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import {
   parseThreadFanoutTarget,
   threadFanoutScope,

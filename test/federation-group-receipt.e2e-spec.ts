@@ -10,7 +10,7 @@ import { FederationInboundMessageValidatorService } from '../src/federation/fede
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationThreadAccessService } from '../src/federation/federation-thread-access.service.js';
 import type { FederationMessageFeedMessage } from '../src/federation/federation-message-feed.service.js';
-import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 

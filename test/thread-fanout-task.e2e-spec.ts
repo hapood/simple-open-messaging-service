@@ -21,7 +21,7 @@ import {
 } from '../src/database/schema.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
-import { acquireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
+import { acquireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import {
   enqueueThreadFanoutInTx,
   enqueueMessageFanoutsInTx,

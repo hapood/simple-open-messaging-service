@@ -10,7 +10,7 @@ import {
 } from '../src/database/schema.js';
 import { SseService } from '../src/gateway/sse.service.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
-import { ThreadReadPositionService } from '../src/message/business/thread-read-position.service.js';
+import { ThreadReadPositionService } from '../src/message/thread-read-position.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';

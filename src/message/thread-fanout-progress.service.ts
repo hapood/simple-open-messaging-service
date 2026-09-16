@@ -10,11 +10,11 @@ import { durableTask } from '../database/schema.js';
 import {
   acquireThreadContentLockInTx,
   requireThreadContentLockInTx,
-} from '../common/business/locks/thread-content-lock.js';
+} from '../common/locks/thread-content-lock.js';
 import {
   hasEstablishedThreadRelationship,
   isThreadMutuallyAuthorized,
-} from '../relationship/business/shared/relationship-authorization.js';
+} from '../relationship/shared/relationship-authorization.js';
 import {
   ThreadFeedHeadWriter,
   type ThreadProjectionChange,

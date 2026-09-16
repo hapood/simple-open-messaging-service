@@ -7,8 +7,8 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   groupState as group,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
-import { readGroupMetaPageInTx } from '../group/business/meta/group-meta-page.js';
+} from '../group/shared/group-state.js';
+import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
 import { loadFederationConfig } from './federation.config.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 

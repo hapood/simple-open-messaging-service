@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   lockThreadContentInTx: vi.fn().mockResolvedValue(true),
   requireThreadContentLockInTx: vi.fn(
     async (tx, threadId, held) => held ?? { tx, threadId },

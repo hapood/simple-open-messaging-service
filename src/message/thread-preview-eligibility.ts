@@ -1,5 +1,5 @@
 import { sql, type SQLWrapper } from 'drizzle-orm';
-import { relationshipEndpointMatchesUserSql } from '../relationship/business/shared/relationship-authorization.js';
+import { relationshipEndpointMatchesUserSql } from '../relationship/shared/relationship-authorization.js';
 
 /** One owner predicate for startup and explicit initialization; retained history is not active membership. */
 export function eligiblePreviewOwnerSql(

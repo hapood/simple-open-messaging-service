@@ -7,7 +7,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { MessageService } from '../message/message.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 

@@ -36,7 +36,7 @@ import {
   type MapFederationOriginSequence,
 } from './federation-message-sequence-policy.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
-import type { ThreadContentLock } from '../common/business/locks/thread-content-lock.js';
+import type { ThreadContentLock } from '../common/locks/thread-content-lock.js';
 import {
   storeFederationQuote,
   type FederationQuoteTarget,

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import type {
@@ -182,45 +181,6 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       expect(h.publishTombstone).not.toHaveBeenCalled();
     },
   );
-  it('skips an unexpected mirror author before closure fetch and still commits the following message and cursor', async () => {
-    const warn = vi
-      .spyOn(Logger.prototype, 'warn')
-      .mockImplementation(() => {});
-    const h = harness(true);
-    const bad = {
-      thread: { account: '!group' },
-      seq: 11,
-      author: { account: 'third', domain: 'third.test' },
-      contentType: 'FORWARD',
-      content: 'invalid closure',
-    };
-    const good = {
-      thread: { account: '!group' },
-      seq: 12,
-      author: { account: 'member', domain: 'origin.test' },
-      contentType: 'GALLERY',
-    };
-    h.threadResources.fetch.mockResolvedValueOnce(
-      response({ messages: [bad, good], scannedThrough: 100, hasMore: false }),
-    );
-    await h.executor.runMessages(31, 'origin.test', 7, 50);
-    expect(h.threadResources.fetch).toHaveBeenCalledTimes(1);
-    expect(
-      h.federation.applyForwardMessagePageInTransaction,
-    ).toHaveBeenCalledWith(
-      h.tx,
-      expect.objectContaining({
-        threadLock: await h.epochLock.mock.results[0].value,
-        response: expect.objectContaining({
-          data: expect.objectContaining({ messages: [good] }),
-        }),
-      }),
-    );
-    expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('FEDERATION_MALFORMED'),
-    );
-  });
   it('includes mirror receipts alongside submissions when the local group is authoritative', async () => {
     const h = harness(true);
     h.threadResources.fetch.mockResolvedValueOnce(

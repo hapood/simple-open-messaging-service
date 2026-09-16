@@ -2,7 +2,7 @@ import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
 import {
   groupState as group,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import {
   forwardMessage,
   mediaAsset,
@@ -21,7 +21,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../common/business/locks/thread-content-lock.js';
+} from '../common/locks/thread-content-lock.js';
 import {
   and,
   asc,
@@ -60,7 +60,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import {
   parseMessageEntities,
   toDisplayText,

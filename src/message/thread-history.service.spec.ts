@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadHistoryService } from './thread-history.service.js';
-vi.mock('../common/business/locks/thread-content-lock.js', () => ({
+vi.mock('../common/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 9 }),
 }));
 

@@ -1,9 +1,9 @@
 import type { FederationLocalSystemMessage } from './federation-local-system-message-publisher.service.js';
-import { groupStateSql } from '../group/business/shared/group-state.js';
+import { groupStateSql } from '../group/shared/group-state.js';
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../group/business/shared/group-state.js';
+} from '../group/shared/group-state.js';
 import { localAccountsForTargetsInTx } from '../user/account-address.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
@@ -14,8 +14,8 @@ import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-s
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import { readCurrentGroupRosterInTx } from '../group/business/meta/current-group-roster.js';
-import { acquireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
+import { readCurrentGroupRosterInTx } from '../group/meta/current-group-roster.js';
+import { acquireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import type { FederationThreadAddress } from './federation-message-feed.service.js';
 import {
   type FederationStateEventType,
@@ -24,15 +24,15 @@ import {
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
-import { ReceivedUserIntentService } from '../user/business/p2p-intent/received/received-user-intent.service.js';
-import { RemoteMemberMembershipIntentService } from '../group/business/membership-intent/received/remote-member-membership-intent.service.js';
-import { MirrorGroupMembershipIntentService } from '../group/business/membership-intent/received/mirror-group-membership-intent.service.js';
-import { mergeMirrorGroupMetaTargetInTx } from '../group/business/meta/merge-mirror-meta-target-in-tx.js';
+import { ReceivedUserIntentService } from '../user/p2p-intent/received/received-user-intent.service.js';
+import { RemoteMemberMembershipIntentService } from '../group/membership-intent/received/remote-member-membership-intent.service.js';
+import { MirrorGroupMembershipIntentService } from '../group/membership-intent/received/mirror-group-membership-intent.service.js';
+import { mergeMirrorGroupMetaTargetInTx } from '../group/meta/merge-mirror-meta-target-in-tx.js';
 import {
   InvalidReceivedIntentError,
   validateReceivedIntentBody,
   type ReceivedIntentBodyShape,
-} from '../group/business/membership-intent/received/received-membership-body.js';
+} from '../group/membership-intent/received/received-membership-body.js';
 
 class PermanentFederationItemError extends Error {
   constructor(message: string) {

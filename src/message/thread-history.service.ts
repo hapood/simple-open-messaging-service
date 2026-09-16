@@ -3,7 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { requireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import { messageThread } from '../database/schema.js';
 import { ThreadFeedHeadWriter } from './thread-feed-head.writer.js';
 

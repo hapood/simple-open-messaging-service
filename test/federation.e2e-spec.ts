@@ -1,7 +1,7 @@
 import {
   groupState as group,
   groupStateFields,
-} from '../src/group/business/shared/group-state.js';
+} from '../src/group/shared/group-state.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -88,7 +88,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readCurrentGroupMemberByAddressInTx } from '../src/group/business/meta/current-group-roster.js';
+import { readCurrentGroupMemberByAddressInTx } from '../src/group/meta/current-group-roster.js';
 import { encodeFederationResourceComponent } from '../src/federation/federation-resource-request.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 
