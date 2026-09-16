@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
@@ -17,6 +13,8 @@ import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 import { AdminRole } from '../src/database/enums.js';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * Admin security invariants e2e — the regression anchor for the RBAC + opaque-session revocation +
@@ -40,28 +38,19 @@ import { AdminRole } from '../src/database/enums.js';
  * business errors) are what the audit trail captures.
  */
 describe('Admin RBAC + revocation + audit', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let adminAuth: AdminAuthService;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     adminAuth = app.get(AdminAuthService);
   });
 
   beforeEach(async () => {
     // CASCADE clears Admin, AdminSession, AdminActionLog (all FK-reachable from User), so each
     // case starts from an empty admin set.
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -165,9 +154,12 @@ describe('Admin RBAC + revocation + audit', () => {
     const logout = await post(viewer.cookie, 'admin/logout');
     expect(logout.status).toBe(200);
     expect(logout.body.code).toBe(BusinessCode.OK);
-    expect(logout.headers['set-cookie']?.join(';')).toContain(
-      `${ADMIN_SESSION_COOKIE}=;`,
-    );
+    // supertest types set-cookie as string, but node delivers an array of cookie strings.
+    expect(
+      (logout.headers['set-cookie'] as unknown as string[] | undefined)?.join(
+        ';',
+      ),
+    ).toContain(`${ADMIN_SESSION_COOKIE}=;`);
 
     const after = await post(viewer.cookie, 'admin/me');
     expect(after.status).toBe(401);

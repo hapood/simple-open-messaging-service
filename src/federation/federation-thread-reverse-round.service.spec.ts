@@ -16,7 +16,6 @@ function harness(window: FederationReverseWindow = WINDOW) {
     require: vi.fn().mockResolvedValue({
       authorizationEpoch: window.authorizationEpoch,
       activeGapId: window.gapId,
-      historyBoundaryReached: window.gapId === null,
     }),
   };
   const driver = {

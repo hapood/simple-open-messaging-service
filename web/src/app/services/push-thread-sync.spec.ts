@@ -21,6 +21,7 @@ describe('Push thread-feed synchronization', () => {
       threadFeedId: feed,
       messageEndSeq: 7,
       tombstoneEndSeq: 1,
+      groupMetaFeedEndId: null,
       lastReadSeq: 0,
       unreadCount: 7,
       lastMentionSeq: 7,

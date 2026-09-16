@@ -18,7 +18,7 @@ export interface NativeComposerContext {
   theme: 'light' | 'dark' | 'system';
 }
 
-export interface NativeComposerBounds {
+interface NativeComposerBounds {
   version: 1;
   contextId: number;
   left: number;
@@ -127,7 +127,7 @@ export type NativeComposerEvent =
       selection?: import('./native-upload.service').NativeUploadSelection;
     };
 
-export interface NativeComposerMention {
+interface NativeComposerMention {
   start: number;
   end: number;
   kind: 'user' | 'all';
@@ -135,13 +135,13 @@ export interface NativeComposerMention {
   label: string;
 }
 
-export interface NativeComposerLinkMarker {
+interface NativeComposerLinkMarker {
   href: string;
   start: number;
   end: number;
 }
 
-export interface NativeMentionCandidate {
+interface NativeMentionCandidate {
   kind: 'user' | 'all';
   id: string;
   label: string;

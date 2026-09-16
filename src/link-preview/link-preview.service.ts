@@ -352,7 +352,7 @@ const MAX_DESC_LEN = 500;
 const MAX_TITLE_LEN = 300;
 const GENERATION_TTL_MS = 5 * 60 * 1000;
 
-export type LinkCardGenerationStatus = 'pending' | 'succeeded' | 'failed';
+type LinkCardGenerationStatus = 'pending' | 'succeeded' | 'failed';
 
 interface LinkCardGeneration {
   id: string;
@@ -410,7 +410,7 @@ function assetFormat(buf: Buffer): string {
 
 const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
 
-export class LinkPreviewGenerationError extends Error {
+class LinkPreviewGenerationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'LinkPreviewGenerationError';

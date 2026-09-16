@@ -9,7 +9,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { and, eq, gt, or, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, or, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -25,6 +25,7 @@ import {
   S2sResponseError,
 } from './federation-errors.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
+import { FederationThreadMetaRoundExecutorService } from './federation-thread-meta-round-executor.service.js';
 import {
   FEDERATION_THREAD_ROUND_WAKE,
   type FederationThreadRoundWake,
@@ -39,7 +40,7 @@ import { FederationThreadSyncStateService } from './federation-thread-sync-state
 import { FederationService } from './federation.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
 
-type Direction = 'message' | 'tombstone' | 'reverse';
+type Direction = 'message' | 'tombstone' | 'reverse' | 'meta';
 
 interface DirectionQueue {
   active: number;
@@ -57,6 +58,7 @@ interface DirectionQueue {
 const DEFAULT_MESSAGE_LIMIT = 4;
 const DEFAULT_TOMBSTONE_LIMIT = 4;
 const DEFAULT_REVERSE_LIMIT = 2;
+const DEFAULT_META_LIMIT = 2;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 60_000;
 
@@ -72,11 +74,13 @@ export class FederationThreadRoundSchedulerService
     message: this.createQueue(),
     tombstone: this.createQueue(),
     reverse: this.createQueue(),
+    meta: this.createQueue(),
   };
   private readonly limits: Record<Direction, number> = {
     message: DEFAULT_MESSAGE_LIMIT,
     tombstone: DEFAULT_TOMBSTONE_LIMIT,
     reverse: DEFAULT_REVERSE_LIMIT,
+    meta: DEFAULT_META_LIMIT,
   };
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -105,7 +109,7 @@ export class FederationThreadRoundSchedulerService
   ): Promise<void> {
     if (!(await this.isNamespaceActive(peerDomain, namespaceId))) return;
     await this.sources.resolve(threadId, peerDomain, namespaceId);
-    for (const direction of ['message', 'tombstone', 'reverse'] as const)
+    for (const direction of ['message', 'tombstone', 'reverse', 'meta'] as const)
       await this.wakeCaptured(threadId, peerDomain, namespaceId, direction);
   }
 
@@ -114,6 +118,7 @@ export class FederationThreadRoundSchedulerService
     private readonly states: FederationThreadSyncStateService,
     private readonly forward: FederationThreadForwardRoundExecutorService,
     private readonly reverse: FederationThreadReverseRoundExecutorService,
+    private readonly meta: FederationThreadMetaRoundExecutorService,
     private readonly federation: FederationService,
     private readonly sources: FederationThreadSourceService,
   ) {}
@@ -150,8 +155,7 @@ export class FederationThreadRoundSchedulerService
           federationThreadSyncState.messageProcessedThroughSeq,
         deletionProcessedThroughSeq:
           federationThreadSyncState.deletionProcessedThroughSeq,
-        historyBoundaryReached:
-          federationThreadSyncState.historyBoundaryReached,
+        activeGapId: federationThreadSyncState.activeGapId,
       })
       .from(federationThreadSyncState)
       .innerJoin(
@@ -188,7 +192,7 @@ export class FederationThreadRoundSchedulerService
               federationThreadSyncState.deletionTargetSeq,
               federationThreadSyncState.deletionProcessedThroughSeq,
             ),
-            eq(federationThreadSyncState.historyBoundaryReached, false),
+            isNotNull(federationThreadSyncState.activeGapId),
           ),
         ),
       );
@@ -226,7 +230,7 @@ export class FederationThreadRoundSchedulerService
           'tombstone',
         );
       }
-      if (!state.historyBoundaryReached)
+      if (state.activeGapId !== null)
         void this.wakeCaptured(
           state.threadId,
           state.peerDomain,
@@ -234,6 +238,30 @@ export class FederationThreadRoundSchedulerService
           'reverse',
         );
     }
+    // Mirrored Group Meta progress lives on GroupMeta, not on the thread sync
+    // state, so its pending rounds recover from their own query.
+    const metaRows = await this.database.db.execute<{
+      threadId: number;
+      peerDomain: string;
+      namespaceId: number;
+    }>(sql`
+      SELECT feed."threadId", ns.domain AS "peerDomain", ns.id AS "namespaceId"
+      FROM "GroupMeta" feed
+      JOIN "MessageThread" thread ON thread.id = feed."threadId"
+      JOIN "IdentityNamespace" ns ON ns.id = thread."authorityNamespaceId"
+      JOIN "FederatedPeer" peer
+        ON peer.domain = ns.domain AND peer."activeNamespaceId" = ns.id
+      WHERE feed."metaProcessedThroughId" < feed."metaTargetId"
+        AND thread."federationRoundsEnabled" = true
+        ${peerDomain === undefined ? sql`` : sql`AND ns.domain = ${peerDomain}`}
+    `);
+    for (const row of metaRows.rows)
+      void this.wakeCaptured(
+        row.threadId,
+        row.peerDomain,
+        row.namespaceId,
+        'meta',
+      );
   }
 
   @OnEvent(FEDERATION_THREAD_ROUND_WAKE)
@@ -245,6 +273,15 @@ export class FederationThreadRoundSchedulerService
     );
     if (this.inactiveThreads.has(key)) return;
     this.blockedThreads.delete(key);
+    if (event.direction === 'meta') {
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'meta',
+      );
+      return;
+    }
     if (event.direction === 'both') {
       void this.wakeCaptured(
         event.threadId,
@@ -504,6 +541,7 @@ export class FederationThreadRoundSchedulerService
     const queue = this.queues[direction];
     const workKey = this.workKey(threadId, peerDomain, namespaceId);
     queue.dirtyThreads.delete(workKey);
+    let shouldContinue: boolean;
     if (direction === 'message') {
       await this.forward.runMessages(
         threadId,
@@ -511,6 +549,8 @@ export class FederationThreadRoundSchedulerService
         namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
+      const state = await this.states.require(threadId, namespaceId);
+      shouldContinue = state.messageProcessedThroughSeq < state.messageTargetSeq;
     } else if (direction === 'tombstone') {
       await this.forward.runTombstones(
         threadId,
@@ -518,6 +558,11 @@ export class FederationThreadRoundSchedulerService
         namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
+      const state = await this.states.require(threadId, namespaceId);
+      shouldContinue =
+        state.deletionProcessedThroughSeq < state.deletionTargetSeq;
+    } else if (direction === 'meta') {
+      shouldContinue = await this.meta.run(threadId, peerDomain, namespaceId);
     } else {
       await this.reverse.run(
         threadId,
@@ -525,16 +570,11 @@ export class FederationThreadRoundSchedulerService
         namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
+      const state = await this.states.require(threadId, namespaceId);
+      shouldContinue = state.activeGapId !== null;
     }
     this.clearRetry(threadId, peerDomain, namespaceId, direction);
     const dirty = queue.dirtyThreads.delete(workKey);
-    const state = await this.states.require(threadId, namespaceId);
-    const shouldContinue =
-      direction === 'message'
-        ? state.messageProcessedThroughSeq < state.messageTargetSeq
-        : direction === 'tombstone'
-          ? state.deletionProcessedThroughSeq < state.deletionTargetSeq
-          : !state.historyBoundaryReached;
     return shouldContinue || dirty;
   }
 
@@ -617,6 +657,19 @@ export class FederationThreadRoundSchedulerService
     const wrapped =
       error instanceof FederationThreadRoundRemoteError ? error : null;
     const cause = wrapped?.remoteCause ?? error;
+    if (
+      direction === 'meta' &&
+      cause instanceof S2sResponseError &&
+      cause.code === BusinessCode.FORBIDDEN
+    ) {
+      // A denied meta read already converged the mirror locally inside the
+      // executor; content rounds stay separately authorized, so this lane
+      // simply stops.
+      this.logger.debug(
+        `meta round forbidden for thread ${threadId} from ${peerDomain}`,
+      );
+      return false;
+    }
     if (
       cause instanceof S2sResponseError &&
       cause.code === BusinessCode.FORBIDDEN

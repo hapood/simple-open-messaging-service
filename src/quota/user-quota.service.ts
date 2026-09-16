@@ -27,7 +27,7 @@ type UserQuotaCategory = Exclude<QuotaCategory, 'signals'>;
 /**
  * Daily-quota enforcement for LOCAL user accounts, scoped per `userId`. Mirrors the federated {@link QuotaService}
  * shape: a 3-dimension circuit breaker (msg cnt / file cnt / file total size) with an in-memory tripped flag that
- * pauses ONLY this user's sends + uploads, plus the legacy `requests` anti-spam counter. Foreign/group accounts are
+ * pauses ONLY this user's sends and uploads, plus the `requests` anti-spam counter. Foreign/group accounts are
  * rejected (personal quota is local-accounts only). The breaker flag is a cache over persisted daily counters and
  * self-heals lazily (the next overshooting tick re-marks it after a restart); file claims are always gated by the
  * authoritative {@link preCheckFile} read.
@@ -710,11 +710,7 @@ export interface UserQuotaState {
   };
 }
 
-export type UserQuotaSummaryStatus =
-  | 'healthy'
-  | 'warning'
-  | 'exhausted'
-  | 'disabled';
+type UserQuotaSummaryStatus = 'healthy' | 'warning' | 'exhausted' | 'disabled';
 
 export interface UserQuotaSummary {
   status: UserQuotaSummaryStatus;

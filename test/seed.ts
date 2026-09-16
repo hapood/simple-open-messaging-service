@@ -1,7 +1,7 @@
 import {
   groupState as group,
   readGroupState,
-} from '../src/group/group-state.js';
+} from '../src/business/group/shared/group-state.js';
 import {
   accountAddressInTx,
   type AccountTarget,

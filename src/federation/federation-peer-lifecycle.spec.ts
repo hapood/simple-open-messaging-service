@@ -28,15 +28,14 @@ function subject(peer: Record<string, unknown> | undefined) {
   };
 }
 
-describe('FederationPeerLifecycle directional gates', () => {
+describe('FederationPeerLifecycle recognition and reachability gates', () => {
   it('reports complete recognition independently of degraded reachability', async () => {
     const { lifecycle } = subject({
       trustLevel: 'degraded',
       activeNamespaceId: 7,
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
+      peerAcceptanceConfirmed: true,
     });
 
     await expect(
@@ -44,14 +43,13 @@ describe('FederationPeerLifecycle directional gates', () => {
     ).resolves.toBe(true);
   });
 
-  it('does not report complete recognition when either direction is missing', async () => {
+  it('does not report complete recognition while peer acceptance is unproven', async () => {
     const { lifecycle } = subject({
-      trustLevel: 'available',
+      trustLevel: 'establishing',
       activeNamespaceId: 7,
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: false,
+      peerAcceptanceConfirmed: false,
     });
 
     await expect(
@@ -65,8 +63,7 @@ describe('FederationPeerLifecycle directional gates', () => {
       activeNamespaceId: 7,
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
+      peerAcceptanceConfirmed: true,
     });
 
     await expect(
@@ -75,14 +72,13 @@ describe('FederationPeerLifecycle directional gates', () => {
     expect(recognition.recognize).not.toHaveBeenCalled();
   });
 
-  it('rejects without starting recognition when the outbound direction is missing', async () => {
+  it('rejects without starting recognition while peer acceptance is unproven', async () => {
     const { lifecycle, recognition } = subject({
-      trustLevel: 'available',
+      trustLevel: 'establishing',
       activeNamespaceId: 7,
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: false,
-      inboundRecognitionConfirmed: true,
+      peerAcceptanceConfirmed: false,
     });
 
     await expect(
@@ -94,31 +90,25 @@ describe('FederationPeerLifecycle directional gates', () => {
     expect(recognition.recognize).not.toHaveBeenCalled();
   });
 
-  it('rejects without starting recognition when the inbound direction is missing', async () => {
+  it('allows outbound traffic when acceptance and reachability are proven', async () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'available',
       activeNamespaceId: 7,
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: false,
+      peerAcceptanceConfirmed: true,
     });
 
     await expect(
       lifecycle.checkOutboundReady('peer.example'),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-      status: 401,
-    });
+    ).resolves.toBeUndefined();
     expect(recognition.recognize).not.toHaveBeenCalled();
   });
 
-  it('explicitly retries reverse recognition for an available peer', async () => {
+  it('retries recognition only for an establishing peer', async () => {
     const { lifecycle, recognition } = subject({
-      trustLevel: 'available',
-      outboundRecognitionConfirmed: false,
-      inboundRecognitionConfirmed: true,
-      reverseRecognitionPending: true,
+      trustLevel: 'establishing',
+      peerAcceptanceConfirmed: false,
     });
 
     await lifecycle.recoverPeerRecognition('peer.example');
@@ -128,18 +118,18 @@ describe('FederationPeerLifecycle directional gates', () => {
     );
   });
 
-  it('retries recognition when only the inbound direction is missing', async () => {
+  it('does not retry recognition for an available peer', async () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'available',
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: false,
-      reverseRecognitionPending: false,
+      peerAcceptanceConfirmed: true,
     });
 
-    await lifecycle.recoverPeerRecognition('peer.example');
-
-    expect(recognition.recognize).toHaveBeenCalledExactlyOnceWith(
-      'peer.example',
-    );
+    await expect(
+      lifecycle.recoverPeerRecognition('peer.example'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
+      status: 409,
+    });
+    expect(recognition.recognize).not.toHaveBeenCalled();
   });
 });

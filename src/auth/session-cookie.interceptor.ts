@@ -11,7 +11,7 @@ import { refreshSessionCookies } from './media-token.js';
 /** Request field the {@link SessionAuthGuard} (in session-auth.guard.ts) sets when the request's session
  *  slid its server deadline AND it was a cookie-authed PERSISTENT web/desktop session — the signal +
  *  cookie value this interceptor needs to re-issue the browser cookie. */
-export interface SessionSlideRequest {
+interface SessionSlideRequest {
   sessionSlideToken?: string;
 }
 

@@ -8,9 +8,9 @@ import { BusinessCode } from '../common/business-code.js';
 
 /**
  * Role gate for group routes decorated with @Roles(...). Reads the caller's role from
- * `req.threadAccess.participant` (populated by ThreadAccessGuard — GroupAccessGuard is folded into
- * it now that groups are `!`-User threads) and rejects with GROUP_FORBIDDEN when it is absent or
- * not in the allowed set. Runs strictly AFTER ThreadAccessGuard in the guard chain.
+ * `req.threadAccess.participant`, populated by ThreadAccessGuard, and rejects with
+ * GROUP_FORBIDDEN when it is absent or not in the allowed set. Runs strictly after
+ * ThreadAccessGuard in the guard chain.
  *
  * Must be combined as: `@UseGuards(ThreadAccessGuard, RolesGuard)` + `@Roles(...)` (JWT auth is global).
  */

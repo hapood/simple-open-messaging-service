@@ -35,7 +35,7 @@ async function readNodeGroupRows(client) {
                thread."id" AS "threadId"
         FROM "MessageThread" thread
         LEFT JOIN "GroupAccount" account ON account."id" = thread."groupAccountId"
-        LEFT JOIN "GroupMetaProfileFeed" meta ON meta."threadId" = thread."id"
+        LEFT JOIN "GroupMeta" meta ON meta."threadId" = thread."id"
         LEFT JOIN "Profile" profile ON profile."account" = thread."groupAccount"
           AND profile."domain" = thread."groupDomain"
           AND profile."namespaceId" = thread."authorityNamespaceId"
@@ -44,19 +44,14 @@ async function readNodeGroupRows(client) {
         ORDER BY thread."id"
       `);
   const roster = await client.query(`
-        SELECT latest."threadId", latest."account", latest."domain",
-               latest."namespaceId", latest."role", latest."profileRev"
-        FROM (
-          SELECT DISTINCT ON (fact."threadId", fact."memberDomain", fact."memberAccount")
-            fact."threadId", fact."memberAccount" AS "account", fact."memberDomain" AS "domain",
-            fact."memberNamespaceId" AS "namespaceId", fact."operation",
-            fact."body" ->> 'role' AS "role",
-            (fact."body" ->> 'profileRev')::integer AS "profileRev",
-            fact."feedId"
-          FROM "GroupMetaMemberFeed" fact
-          ORDER BY fact."threadId", fact."memberDomain", fact."memberAccount", fact."feedId" DESC
-        ) latest
-        WHERE latest."operation" = 'UPSERT'
+        SELECT fact."threadId", fact."memberAccount" AS "account",
+          fact."memberDomain" AS "domain",
+          group_meta_member_namespace(fact."threadId", fact."memberAccount",
+            fact."memberDomain") AS "namespaceId",
+          fact."body" ->> 'role' AS "role",
+          (fact."body" ->> 'profileRev')::integer AS "profileRev"
+        FROM "GroupMetaMemberFeed" fact
+        WHERE fact."operation" = 'UPSERT'
       `);
   const relationships = await client.query(`
         SELECT pair."id"::text, pair."active", pair."threadId",
@@ -69,13 +64,11 @@ async function readNodeGroupRows(client) {
         ORDER BY pair."id", intent."authorSide"
       `);
   const requests = await client.query(`
-        SELECT projection."threadId", projection."direction", projection."requestId"::text,
+        SELECT projection."threadId", projection."direction", projection."feedId",
                projection."status", projection."expiresAt",
-               manager."account" AS "managerAccount", manager."domain" AS "managerDomain",
                projection."memberAccount", projection."memberDomain"
         FROM "GroupRequestProjection" projection
-        INNER JOIN "Account" manager ON manager."id" = projection."managerUserId"
-        ORDER BY projection."threadId", projection."requestId"
+        ORDER BY projection."threadId", projection."direction", projection."feedId"
       `);
   const users = await client.query(`
         SELECT local_account."id", identity."account", identity."domain"
@@ -183,14 +176,11 @@ function normalizeNode(node, rows, p2pNode) {
     if (!group) continue;
     group.requests.push({
       direction: request.direction,
-      requestId: request.requestId,
+      feedId: request.feedId,
+      memberAccount: request.memberAccount,
+      memberDomain: request.memberDomain,
       status: request.status,
       expiresAt: request.expiresAt,
-      managerAddress: normalizeAddress(
-        node,
-        request.managerAccount,
-        request.managerDomain,
-      ),
       memberAddress: normalizeAddress(
         node,
         request.memberAccount,
@@ -261,9 +251,12 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
     (relationship?.active === true ||
       (relationship === undefined && me?.role === 'OWNER'));
   const memberRole = membershipActive ? (me?.role ?? null) : null;
-  const requests = (group?.requests ?? []).filter(
-    ({ managerAddress }) => managerAddress === user.address,
-  );
+  // Request rows are group-scoped: every OWNER/ADMIN observes (and can act on)
+  // all of them — the projection no longer attributes rows to one manager.
+  const requests =
+    memberRole === 'OWNER' || memberRole === 'ADMIN'
+      ? (group?.requests ?? [])
+      : [];
   const pendingApplications = requests.filter(
     (request) => request.direction === 'APPLICATION' && activeRequest(request),
   );

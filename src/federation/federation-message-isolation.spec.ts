@@ -23,7 +23,10 @@ import { FederationInboundMessagePageService } from './federation-inbound-messag
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 
-const item = (sequence: string): FederationMessageFeedMessage => ({
+/** Always the thread-author feed member; assignments below rely on it. */
+const item = (
+  sequence: string,
+): Extract<FederationMessageFeedMessage, { authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT' }> => ({
   thread: {
     account: 'alice',
     peerAccount: 'bob',
@@ -219,7 +222,7 @@ describe('federation message context isolation', () => {
       ).mockResolvedValue({} as never);
       const publishMessage = vi
         .spyOn(ThreadFeedHeadWriter, 'advanceInTx')
-        .mockResolvedValue(undefined);
+        .mockResolvedValue({} as never);
 
       await service.store(tx as never, {
         threadId: 9,
@@ -228,7 +231,7 @@ describe('federation message context isolation', () => {
         namespaceId: 12,
         message: {
           originSeq: 70,
-          clientMessageId: null,
+          profileRev: 0,
           contentType: media ? 'FILE' : 'PURE_TEXT',
           content: JSON.stringify(
             media
@@ -262,7 +265,10 @@ describe('federation message context isolation', () => {
         }),
       );
       expect(publishMessage).not.toHaveBeenCalled();
-      expect(service.enqueueFanout).toHaveBeenCalledTimes(reverse ? 0 : 1);
+      expect(
+        (service as unknown as { enqueueFanout: { mock: { calls: unknown[][] } } })
+          .enqueueFanout.mock.calls,
+      ).toHaveLength(reverse ? 0 : 1);
     },
   );
 

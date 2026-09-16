@@ -60,9 +60,7 @@ function target() {
   };
   const groupMeta = {
     serve: vi.fn().mockResolvedValue({}),
-    resolveAllocatedMemberProfile: vi
-      .fn()
-      .mockResolvedValue({ memberNamespaceId: 12 }),
+    resolveAllocatedMemberProfile: vi.fn().mockResolvedValue(3),
   };
   const controller = new S2sController(
     federation as never,
@@ -397,9 +395,9 @@ describe('S2sController group-meta modes', () => {
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'full',
-      0n,
+      0,
       25,
-      40n,
+      40,
     );
 
     const deltaReq = {
@@ -421,7 +419,7 @@ describe('S2sController group-meta modes', () => {
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'delta',
-      7n,
+      7,
       undefined,
       undefined,
     );
@@ -584,7 +582,7 @@ describe('S2sController group member profiles', () => {
     expect(federation.getStoredProfile).toHaveBeenCalledWith(
       'alice',
       'member.example',
-      12,
+      3,
       4,
     );
   });

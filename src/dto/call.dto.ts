@@ -23,7 +23,6 @@ import {
  * address every signaling frame carries. The shape is enforced at the DTO
  * boundary so a malformed/garbage id can never reach the in-memory map or become a clientMessageId.
  */
-export { CALL_SID_RE } from '../calls/federated-call-protocol.js';
 
 /** Caller initiates a call. `callSid` is the client-generated idempotency key + stable signaling
  *  address (mirrors Message.clientMessageId); a retried initiate with the same value re-rings the
@@ -58,7 +57,7 @@ export class InitiateCallDto {
 }
 
 /** Address a call by its callSid (the callee learns it from the incoming ring; the caller minted it). */
-export class CallSidDto {
+class CallSidDto {
   @ApiProperty({ description: 'The callSid addressing the call.' })
   @IsString()
   @MaxLength(36)

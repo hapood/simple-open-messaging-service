@@ -23,9 +23,9 @@ type GroupMetaMode = 'full' | 'delta';
 
 - `account` MUST be an origin-owned `GroupAccount`.
 - `mode` MUST be `full` or `delta`.
-- `after` is an optional exclusive non-negative `DecimalString` feed cursor.
+- `after` is an optional exclusive non-negative integer feed cursor.
 - `take` is an optional positive safe-integer suggestion.
-- `through` is an optional inclusive `DecimalString` upper bound and MUST be at
+- `through` is an optional inclusive non-negative integer upper bound and MUST be at
   least `after`.
 - Unknown, duplicate, or invalid parameters return `400 FEDERATION_MALFORMED`.
 
@@ -43,7 +43,7 @@ committed `scannedThrough`.
 The authenticated peer MUST have at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to that
 peer. One effective direction authorizes passive Group Meta querying, but the
-source MUST NOT publish a Group Meta head or wake hint until the relationship is
+source MUST NOT publish a thread head carrying Group Meta progress until the relationship is
 confirmed. For GROUP, at least one member hosted by that peer MUST remain
 confirmed. Otherwise the source returns
 `FORBIDDEN`. A departing peer converges the leave through
@@ -51,7 +51,7 @@ confirmed. Otherwise the source returns
 authorization segment has a delta visibility floor in the canonical group
 coordinate space. A newly authorized
 or reauthorized peer MUST NOT use delta mode to enumerate changes committed
-before that floor; full mode exposes only the current roster at its fixed
+before that floor; full mode scans only current facts at or below its fixed
 boundary.
 
 The visibility floor applies differently to the two modes. A delta request
@@ -70,13 +70,13 @@ interface GroupMetaFeedPage {
   account: GroupAccount;
   mode: GroupMetaMode;
   items: GroupMetaItem[];
-  scannedThrough: DecimalString;
-  groupMetaFeedEndId: DecimalString;
+  scannedThrough: SafeInteger;
+  groupMetaFeedEndId: SafeInteger;
   hasMore: boolean;
 }
 
 interface GroupMetaMemberItemBase {
-  feedId: PositiveDecimalString;
+  feedId: PositiveSafeInteger;
   account: UserAccount;
   domain: Domain;
 }
@@ -91,7 +91,7 @@ interface GroupMetaDepartItem extends GroupMetaMemberItemBase {
 }
 
 interface GroupMetaProfileItem {
-  feedId: PositiveDecimalString;
+  feedId: PositiveSafeInteger;
   operation: 'GROUP_PROFILE';
   body: {
     profileRev: SafeInteger;
@@ -111,8 +111,8 @@ interface GroupMetaMemberBody {
 
 `feedId` is the item coordinate in the origin-owned group's one canonical feed.
 It is strictly increasing, never reused, and independent of every other group.
-`GROUP_META_FEED_HEAD.groupMetaFeedEndId`, `after`, `through`, `scannedThrough`, and
-`groupMetaFeedEndId` use this same exact-decimal coordinate space.
+`THREAD_CONTENT_HEAD.groupMetaFeedEndId`, `after`, `through`, `scannedThrough`, and
+`groupMetaFeedEndId` use this same non-negative safe-integer coordinate space.
 Closing and later restoring one peer's authorization does not reset the group
 coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
@@ -163,9 +163,11 @@ Items MUST be strictly increasing by `feedId` and lie in
 different finite page size. The consumer commits page effects and
 `scannedThrough` atomically.
 
-Exactly one current member has role `OWNER` in every non-empty roster. The
-receiver derives the owner from that role and derives its local active state by
-whether one of its own users remains in the roster. Non-member-derived settings
+Exactly one current member has role `OWNER` in every non-empty origin roster.
+A clipped full drain may temporarily omit that owner's newer coordinate; the
+receiver derives the displayed owner when its current projection has that
+role. Its local authorization remains governed by the confirmed local
+relationship, not by Group Meta rows. Non-member-derived settings
 are local policy and are not federated facts.
 
 Only `UPSERT` carries role and profile reference state. `DEPART` is a distinct
@@ -182,21 +184,23 @@ used as a profile revision or message coordinate.
 
 ## 3. Full mode
 
-Full mode is an authoritative snapshot of the current roster at the fixed
-`through`. It returns exactly one `UPSERT` for each member whose latest
-operation at or below `through` is `UPSERT`, using that operation's `feedId`.
-It MUST NOT return `DEPART` items or members whose latest operation at that
-boundary is `DEPART`. It also returns exactly one `GROUP_PROFILE`: the newest
-such item at or below `through`.
+Full mode scans Group Meta with a fixed upper coordinate `through`. It returns
+at most one `UPSERT` per member at or below that boundary.
+It MUST NOT return `DEPART` items or members whose current operation is
+`DEPART`. It returns the current `GROUP_PROFILE` item when its coordinate is
+at or below `through`.
 
 The consumer accumulates the bounded full drain and applies it atomically. On
-successful completion it deletes every mirror member absent from the snapshot.
+successful completion it deletes every mirror member absent from the scan.
 A failed or incomplete full drain MUST NOT alter the committed roster or
 cursor.
 
-The source MUST retain the latest `UPSERT` needed to reproduce every current
-member and the latest `GROUP_PROFILE` needed to reproduce the current group
-profile reference for an active bounded full drain. The group origin retains
+Compaction during a drain MAY remove an item formerly visible at or below
+`through`, but MUST NOT introduce a new item at or below that fixed boundary.
+Repeating a page after a failure may therefore return fewer items, never an
+additional item. The subsequent delta drain from `through` observes the
+newest replacement above that boundary and restores eventual roster
+convergence. The group origin retains
 the exact complete member profile snapshots separately for Group Member Profile; Group
 Meta has no historical-message-author obligation.
 
@@ -209,8 +213,10 @@ cursor atomically. `DEPART` deletes the mirror's current member projection.
 Items at or below the committed feed cursor are already applied and MUST NOT be
 replayed.
 
-The source MAY compact an older `DEPART` after it is no longer required by an
-active bounded drain or by the current roster result. Message-author profile
+The source replaces the previous operation for a stable member key when it
+allocates a new coordinate. Consequently, a delta page may omit compacted
+intermediate operations but MUST carry the newest operation after the cursor.
+Message-author profile
 retention is independent of Group Meta and is defined by
 [Message Author Profile](./message-author-profile.md). If `after` is below the
 audience visibility floor or the feed's delta retention floor, the source MUST return
@@ -223,19 +229,20 @@ replacement full drain succeeds atomically.
 ## 5. State-feed dependency
 
 The origin commits a canonical Group Meta item once, then asynchronously
-publishes `GROUP_META_FEED_HEAD { groupMetaFeedEndId }` to each currently
-authorized audience. The hint's `groupMetaFeedEndId` MUST identify a committed
-position in the canonical group feed at publication time. The
-receiver first commits relationship and group identity dependencies, drains
-Group Meta until its committed cursor is at least `groupMetaFeedEndId`, and only then
-commits that state-feed item. The hint is not roster data and cannot itself add
-or remove a member.
+replaces each authorized audience's `THREAD_CONTENT_HEAD`. Its
+`groupMetaFeedEndId` MUST identify a committed position in the canonical group
+feed at publication time. The
+receiver first commits relationship and group identity dependencies and
+durably admits a Group Meta drain through `groupMetaFeedEndId` with the
+state-feed item. It MUST NOT expose dependent group content until that drain has
+committed. The coordinate is not roster data and cannot itself add or remove a
+member.
 
 Before an origin makes a newly accepted group message queryable or publishes
 its `THREAD_CONTENT_HEAD`, the author's Address and role projection MUST
-already be committed in Group Meta. The corresponding `GROUP_META_FEED_HEAD`
-MUST precede the thread-content item in State Feed. A later lightweight
-`feed-heads` hint advertises a `stateFeedEndId` covering both items. The
+already be committed in Group Meta. The same `THREAD_CONTENT_HEAD` carries the
+Group Meta coordinate and the message/tombstone bounds atomically. A later lightweight
+`feed-heads` hint advertises a `stateFeedEndId` covering that item. The
 consumer drains that state and Group Meta dependency while reconciling the
 corresponding message interval. The author's display data is not a Group Meta
 dependency and is fetched using the exact message coordinate when needed.

@@ -24,7 +24,7 @@ const validFrame = (patch: Partial<S2SCallFrame> = {}): unknown => {
 };
 
 describe('Federation v1 call frame validation', () => {
-  it('maps operation at the wire boundary and rejects the legacy op field', () => {
+  it('maps operation at the closed wire boundary and rejects unknown fields', () => {
     const internal = validFrame() as S2SCallFrame;
     const wire = toS2SCallWireFrame(internal);
 
@@ -40,7 +40,12 @@ describe('Federation v1 call frame validation', () => {
       parseS2SCallWireFrame({ ...wire, callSid: wire.callId }),
     ).toThrow();
     expect(() =>
-      parseS2SCallWireFrame({ ...wire, callType: wire.mediaType }),
+      parseS2SCallWireFrame({
+        ...wire,
+        // The incoming wire frame always carries mediaType; the union type
+        // can't see it, so read it through the one field that matters here.
+        callType: (wire as { mediaType: string }).mediaType,
+      }),
     ).toThrow();
     expect(() =>
       parseS2SCallWireFrame({
@@ -124,7 +129,12 @@ describe('Federation v1 call frame validation', () => {
     expect(() => assertS2SCallFrame(validFrame({ op: 'ended' }))).toThrow();
     expect(() =>
       assertS2SCallFrame(
-        validFrame({ op: 'video-upgraded', callType: 'AUDIO' }),
+        // Deliberately invalid: video-upgraded frames carry no callType —
+        // the audio/video discriminator belongs to offer/answer/incoming only.
+        validFrame({
+          op: 'video-upgraded',
+          callType: 'AUDIO',
+        } as Partial<S2SCallFrame>),
       ),
     ).toThrow();
   });

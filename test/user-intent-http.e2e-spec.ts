@@ -1,40 +1,28 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import * as tables from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { findP2PRelationship, seedUserWithSession } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * HTTP contract of the synchronous P2P user-intent family (business): the
- * controller answer, the client state-feed deltas, and the error codes. This is
- * the ported badge/renewal/rejection semantics of the retired legacy flow specs.
+ * controller answer, the client state-feed deltas, and the error codes.
  */
 describe('User intent HTTP contract e2e', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -138,7 +126,7 @@ describe('User intent HTTP contract e2e', () => {
     );
   });
 
-  it('rejects a self-directed acceptance with the legacy invite code', async () => {
+  it('rejects a self-directed acceptance with the stable invite code', async () => {
     const http = app.getHttpServer();
     const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
     const invitee = await seedUserWithSession(app, 'invitee', { name: 'B' });
@@ -204,8 +192,7 @@ describe('User intent HTTP contract e2e', () => {
     );
     // Compaction: the pair's projection for the reader carries the acceptance
     // fact — an ACCEPTED, established row exists beside the per-direction
-    // views (the same shape the legacy baseline writes, merged client-side
-    // by direction and feed id).
+    // views, merged client-side by direction and feed id.
     // Table columns name the PEER as `account` and the reader as `subject`.
     const intents = await database.db.query.clientStateFeed.findMany({
       where: and(
@@ -216,16 +203,20 @@ describe('User intent HTTP contract e2e', () => {
       ),
     });
     expect(intents.length).toBeGreaterThan(0);
+    // `body` is a jsonb column, so drizzle infers `{}` — read it as the
+    // RELATIONSHIP_INTENT payload shape the writer emits.
+    const bodyOf = (intent: (typeof intents)[number]) =>
+      intent.body as { status?: string; established?: boolean } | null;
     expect(
       intents.some(
         (intent) =>
-          intent.body?.status === 'ACCEPTED' &&
-          intent.body?.established === true,
+          bodyOf(intent)?.status === 'ACCEPTED' &&
+          bodyOf(intent)?.established === true,
       ),
     ).toBe(true);
   });
 
-  it('keeps the legacy FRIEND_NOT_FOUND code for a stranger revocation', async () => {
+  it('returns FRIEND_NOT_FOUND for a stranger revocation', async () => {
     const http = app.getHttpServer();
     const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
     const stranger = await seedUserWithSession(app, 'stranger', { name: 'C' });
@@ -365,5 +356,34 @@ describe('User intent HTTP contract e2e', () => {
       namespaceId: 0,
     });
     expect(activated.pair?.active).toBe(true);
+  });
+
+  it('returns an expired-intent business result instead of throwing the command', async () => {
+    const http = app.getHttpServer();
+    const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
+    await seedUserWithSession(app, 'invitee', { name: 'B' });
+    await request(http)
+      .post('/api/v1/relationship/request')
+      .set(auth(inviter.token))
+      .send({ account: 'invitee', domain: 'local' });
+    const { pair } = await findP2PRelationship(database.db, inviter.id, {
+      account: 'invitee',
+      domain: 'local',
+      namespaceId: 0,
+    });
+    await database.db
+      .update(tables.relationshipIntent)
+      .set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(tables.relationshipIntent.pairId, pair!.id));
+
+    const response = await request(http)
+      .post('/api/v1/relationship/revoke')
+      .set(auth(inviter.token))
+      .send({ account: 'invitee', domain: 'local' });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      code: BusinessCode.INVITE_EXPIRED,
+      data: { status: 'REJECTED', reason: 'INTENT_EXPIRED' },
+    });
   });
 });

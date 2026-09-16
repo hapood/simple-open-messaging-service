@@ -1,4 +1,3 @@
-import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task.js';
 import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
@@ -17,10 +16,11 @@ import {
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
+import { toFederationWireDomain } from './federation-wire-domain.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
 /** The `/s2s/v1` route is the schema version; bodies contain business state only. */
-export type PeerStateBody = Record<string, unknown>;
+type PeerStateBody = Record<string, unknown>;
 
 interface PeerStateFeedWriteBase {
   peerDomain: string;
@@ -38,17 +38,13 @@ export type PeerStateFeedWrite = PeerStateFeedWriteBase &
         body: PeerStateBody & { status: unknown; profileRev: number };
       }
     | {
-        eventType: 'GROUP_META_FEED_HEAD';
-        body: PeerStateBody & { groupMetaFeedEndId: string };
-      }
-    | {
         eventType: 'THREAD_CONTENT_HEAD';
         body: PeerStateBody & {
           messageEndSeq: number;
           tombstoneEndSeq: number;
-          /** Group meta head carried by group-authored heads only; P2P heads
+          /** Group Meta coordinate carried by group-authored heads only; P2P heads
            * must omit it. Part of the snapshot revision below. */
-          groupMetaFeedEndId?: string;
+          groupMetaFeedEndId?: number;
         };
       }
   );
@@ -77,21 +73,18 @@ const MAX_TAKE = 200;
 const snapshotRevision = (
   eventType: PeerStateEventType,
   body: PeerStateBody,
-): number | string | undefined => {
-  if (eventType === 'GROUP_META_FEED_HEAD')
-    return typeof body.groupMetaFeedEndId === 'string' &&
-      /^(0|[1-9]\d*)$/.test(body.groupMetaFeedEndId)
-      ? body.groupMetaFeedEndId
-      : undefined;
+): string | undefined => {
   if (eventType === 'THREAD_CONTENT_HEAD') {
     const messageEndSeq = body.messageEndSeq;
     const tombstoneEndSeq = body.tombstoneEndSeq;
-    // The optional meta head is part of the progress coordinate: a meta-only
+    // The optional Group Meta value is part of the progress coordinate: a meta-only
     // advance is legitimate progress and must allocate a new feed position.
     const metaFeedEndId = body.groupMetaFeedEndId;
     const metaRevision =
-      typeof metaFeedEndId === 'string' && /^(0|[1-9]\d*)$/.test(metaFeedEndId)
-        ? metaFeedEndId
+      typeof metaFeedEndId === 'number' &&
+      Number.isSafeInteger(metaFeedEndId) &&
+      metaFeedEndId >= 0
+        ? String(metaFeedEndId)
         : '0';
     return Number.isSafeInteger(messageEndSeq) &&
       Number(messageEndSeq) >= 0 &&
@@ -108,6 +101,32 @@ const snapshotRevision = (
 @Injectable()
 export class PeerStateFeedService {
   constructor(private readonly database: DatabaseService) {}
+
+  /** Translate an internal account domain at the outbound protocol boundary. */
+  toWireDomain(domain: string): string {
+    return toFederationWireDomain(domain);
+  }
+
+  private normalizeAddressDomains<
+    T extends {
+      domain: string;
+      eventType: PeerStateEventType;
+      subjectAccount: string;
+      subjectDomain: string;
+    },
+  >(write: T): T {
+    const directionalSubject =
+      write.eventType === 'RELATIONSHIP_INTENT' || write.subjectAccount !== '';
+    return {
+      ...write,
+      domain: this.toWireDomain(write.domain),
+      // Empty subjects on non-directional heads use `local` as a protocol
+      // sentinel, not as an account address.
+      subjectDomain: directionalSubject
+        ? this.toWireDomain(write.subjectDomain)
+        : write.subjectDomain,
+    };
+  }
 
   /**
    * Acquires outbound namespace allocators in their global order. This is a
@@ -146,25 +165,6 @@ export class PeerStateFeedService {
     }
   }
 
-  async deleteProjectionInTx(
-    tx: DatabaseTransaction,
-    key: Omit<PeerStateFeedWrite, 'body'>,
-  ): Promise<void> {
-    await tx
-      .delete(peerStateFeed)
-      .where(
-        and(
-          eq(peerStateFeed.peerDomain, key.peerDomain),
-          eq(peerStateFeed.namespaceId, key.namespaceId),
-          eq(peerStateFeed.account, key.account),
-          eq(peerStateFeed.domain, key.domain),
-          eq(peerStateFeed.eventType, key.eventType),
-          eq(peerStateFeed.subjectAccount, key.subjectAccount),
-          eq(peerStateFeed.subjectDomain, key.subjectDomain),
-        ),
-      );
-  }
-
   private async readRelationshipHeadInTx(
     tx: DatabaseTransaction,
     write: PeerStateFeedWrite,
@@ -198,8 +198,11 @@ export class PeerStateFeedService {
   /** Writes are ordered by peer and allocate a rev only when the compacted key advances. */
   async writeManyInTx(
     tx: DatabaseTransaction,
-    writes: readonly PeerStateFeedWrite[],
+    inputWrites: readonly PeerStateFeedWrite[],
   ): Promise<Map<string, bigint>> {
+    const writes = inputWrites.map((write) =>
+      this.normalizeAddressDomains(write),
+    );
     const result = new Map<string, bigint>();
     const ordered = [...writes].sort(
       (a, b) =>
@@ -327,15 +330,6 @@ export class PeerStateFeedService {
         });
       result.set(write.peerDomain, allocated.feedId);
     }
-    for (const [peerDomain, feedId] of result) {
-      const target = writes.find((write) => write.peerDomain === peerDomain)!;
-      await enqueueStateFeedFanoutInTx(tx, {
-        target: 'PEER',
-        peerDomain,
-        namespaceId: target.namespaceId,
-        feedId: feedId.toString(),
-      });
-    }
     return result;
   }
 
@@ -343,8 +337,11 @@ export class PeerStateFeedService {
    * A changed body is written normally; an unchanged body receives a new feed position. */
   async writeAcceptanceConfirmationsInTx(
     tx: DatabaseTransaction,
-    writes: readonly PeerStateFeedWrite[],
+    inputWrites: readonly PeerStateFeedWrite[],
   ): Promise<Map<string, bigint>> {
+    const writes = inputWrites.map((write) =>
+      this.normalizeAddressDomains(write),
+    );
     if (
       writes.some(
         (write) =>
@@ -403,12 +400,6 @@ export class PeerStateFeedService {
         .set({ feedId: allocated.feedId, updatedAt: new Date() })
         .where(key);
       result.set(write.peerDomain, allocated.feedId);
-      await enqueueStateFeedFanoutInTx(tx, {
-        target: 'PEER',
-        peerDomain: write.peerDomain,
-        namespaceId: write.namespaceId,
-        feedId: allocated.feedId.toString(),
-      });
     }
     return result;
   }

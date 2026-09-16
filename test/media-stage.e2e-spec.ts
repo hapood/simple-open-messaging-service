@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
 import { and, count, eq, inArray, or } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
@@ -19,10 +15,12 @@ import {
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
+import { UserIntentService } from '../src/business/user/p2p-intent/authored/user-intent.service';
+import { userQuotaDailyUsage } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
-import { RelationshipService } from '../src/relationship/relationship.service';
 import type { OutboundFilePayload } from '../src/upload/file-content';
 import { seedAcceptedRelationship } from './seed';
+import { createTestApp } from './support/app';
 
 /**
  * Local media send staging (Phase 7 barrier model): a media message is NOT committed as a Message until
@@ -34,11 +32,11 @@ import { seedAcceptedRelationship } from './seed';
  * cleanup is owned by the corresponding transfer lifecycle.
  */
 describe('Local media send staging (PendingMedia, Phase 7)', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let messages: MessageService;
   let userQuota: UserQuotaService;
-  let relationships: RelationshipService;
+  let userIntents: UserIntentService;
 
   let threadId: number;
   let userId: number;
@@ -46,17 +44,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
   let inviteTargetIds: number[];
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     messages = app.get(MessageService);
     userQuota = app.get(UserQuotaService);
-    relationships = app.get(RelationshipService);
+    userIntents = app.get(UserIntentService);
 
     const now = new Date();
     const [createdUser] = await database.db
@@ -135,130 +126,68 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .where(eq(pendingMedia.id, rows[0].id));
   });
 
-  it('charges only a newly-created friend request, not a pending duplicate', async () => {
-    await userQuota.setPolicy(userId, { dailyRequestLimit: 1 });
-    const writeAndCharge = async (
-      tx: Parameters<UserQuotaService['tick']>[2],
-      created: boolean,
-    ) => {
-      if (created) await userQuota.tick(userId, 'requests', tx);
-      await relationships.writeLocalP2PIntentInTx(
-        tx,
-        userId,
-        inviteTargetIds[0],
-        true,
-        '',
-      );
-    };
-
-    expect(
-      await relationships.createRelationshipRequest(
-        userId,
-        inviteTargetIds[0],
-        '',
-        writeAndCharge,
-      ),
-    ).toMatchObject({ status: 'created' });
-    expect(
-      await relationships.createRelationshipRequest(
-        userId,
-        inviteTargetIds[0],
-        'updated',
-        writeAndCharge,
-      ),
-    ).toMatchObject({ status: 'already-pending' });
-    await expect(
-      relationships.createRelationshipRequest(
-        userId,
-        inviteTargetIds[1],
-        '',
-        async (tx, created) => {
-          if (created) await userQuota.tick(userId, 'requests', tx);
-          await relationships.writeLocalP2PIntentInTx(
-            tx,
-            userId,
-            inviteTargetIds[1],
-            true,
-            '',
-          );
+  it('admits the request inside the intent transaction: fresh and refreshed requests charge, exhaustion rolls back', async () => {
+    await userQuota.setPolicy(userId, { dailyRequestLimit: 2 });
+    const targetAccounts: string[] = [];
+    for (const id of inviteTargetIds.slice(0, 2)) {
+      const target = await database.db.query.account.findFirst({
+        where: eq(user.id, id),
+        columns: { account: true, domain: true },
+      });
+      if (!target) throw new Error('invite target is missing');
+      targetAccounts.push(target.account);
+    }
+    const requestWithAdmission = (targetAccount: string, note: string) =>
+      userIntents.execute(
+        {
+          userId,
+          decision: 'REQUESTED',
+          target: { account: targetAccount, domain: 'local' },
+          note,
         },
-      ),
+        { admissionInTx: (tx) => userQuota.tick(userId, 'requests', tx) },
+      );
+
+    // The fresh request consumes the daily tick...
+    await expect(
+      requestWithAdmission(targetAccounts[0], ''),
+    ).resolves.toMatchObject({ status: 'APPLIED' });
+    // ...and so does a refreshed duplicate: admission runs whenever the
+    // composed statement applies (the legacy created-only slot is retired).
+    await expect(
+      requestWithAdmission(targetAccounts[0], 'updated'),
+    ).resolves.toMatchObject({ status: 'APPLIED' });
+    // The next admission exceeds the limit and rolls the intent back together
+    // with its tick.
+    await expect(
+      requestWithAdmission(targetAccounts[1], ''),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
-    const target = await database.db.query.account.findFirst({
-      where: eq(user.id, inviteTargetIds[1]),
-      columns: { account: true, domain: true },
+    const usage = await database.db.query.userQuotaDailyUsage.findFirst({
+      where: and(eq(userQuotaDailyUsage.userId, userId), eq(userQuotaDailyUsage.category, 'requests')),
     });
-    if (!target) throw new Error('invite target is missing');
-    expect(
-      await database.db.query.relationshipPair.findFirst({
-        where: or(
-          and(
-            eq(relationshipPair.endpointAType, 'USER'),
-            eq(relationshipPair.endpointAAccount, userAccount),
-            eq(relationshipPair.endpointADomain, 'local'),
-            eq(relationshipPair.endpointBType, 'USER'),
-            eq(relationshipPair.endpointBAccount, target.account),
-            eq(relationshipPair.endpointBDomain, target.domain),
-          ),
-          and(
-            eq(relationshipPair.endpointAType, 'USER'),
-            eq(relationshipPair.endpointAAccount, target.account),
-            eq(relationshipPair.endpointADomain, target.domain),
-            eq(relationshipPair.endpointBType, 'USER'),
-            eq(relationshipPair.endpointBAccount, userAccount),
-            eq(relationshipPair.endpointBDomain, 'local'),
-          ),
+    expect(usage?.count).toBe(2);
+    const rolledBackPair = await database.db.query.relationshipPair.findFirst({
+      where: or(
+        and(
+          eq(relationshipPair.endpointAType, 'USER'),
+          eq(relationshipPair.endpointAAccount, userAccount),
+          eq(relationshipPair.endpointADomain, 'local'),
+          eq(relationshipPair.endpointBType, 'USER'),
+          eq(relationshipPair.endpointBAccount, targetAccounts[1]),
+          eq(relationshipPair.endpointBDomain, 'local'),
         ),
-      }),
-    ).toBeUndefined();
-  });
-
-  it('persists failure and only an explicit retry moves failed back to pending', async () => {
-    const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
-    await messages.failStaged(userId, cid, 'file too large');
-
-    let [stage] = await database.db
-      .select()
-      .from(pendingMedia)
-      .where(eq(pendingMedia.clientMessageId, cid))
-      .limit(1);
-    expect(stage?.status).toBe('failed');
-    expect(stage?.failReason).toBe('file too large');
-    // A failed stage is not promotable.
-    const digest = 'f'.repeat(64);
-    expect(
-      await messages.markOutboundFileSucceeded(
-        cid,
-        randomUUID(),
-        0,
-        digest,
-        filePayload(digest),
-        userId,
+        and(
+          eq(relationshipPair.endpointAType, 'USER'),
+          eq(relationshipPair.endpointAAccount, targetAccounts[1]),
+          eq(relationshipPair.endpointADomain, 'local'),
+          eq(relationshipPair.endpointBType, 'USER'),
+          eq(relationshipPair.endpointBAccount, userAccount),
+          eq(relationshipPair.endpointBDomain, 'local'),
+        ),
       ),
-    ).toBeNull();
-
-    // An ordinary duplicate stage is a no-op; it must not silently retry a failed send.
-    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
-    [stage] = await database.db
-      .select()
-      .from(pendingMedia)
-      .where(eq(pendingMedia.clientMessageId, cid))
-      .limit(1);
-    expect(stage?.status).toBe('failed');
-
-    await messages.stageMedia(userId, threadId, ContentType.FILE, cid, 1, true);
-    [stage] = await database.db
-      .select()
-      .from(pendingMedia)
-      .where(eq(pendingMedia.clientMessageId, cid))
-      .limit(1);
-    expect(stage?.status).toBe('pending');
-    expect(stage?.failReason).toBeNull();
-    await database.db
-      .delete(pendingMedia)
-      .where(eq(pendingMedia.clientMessageId, cid));
+    });
+    expect(rolledBackPair).toBeUndefined();
   });
 
   it('does not let another user fail or promote a staged send by clientMessageId', async () => {

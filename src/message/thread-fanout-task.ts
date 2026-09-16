@@ -15,6 +15,9 @@ export interface ThreadFanoutTarget {
   threadId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  /** Counterpart profile revision carried by the landed message. P2P inbound
+   * commits set it; group writers leave it to the canonical GroupMeta row. */
+  profileRev?: number;
 }
 
 export type ThreadFanoutTaskType =
@@ -36,6 +39,31 @@ export async function enqueueMessageFanoutsInTx(
   );
 }
 
+/** Re-publish the current complete thread head after metadata-only changes. */
+export async function enqueueCurrentThreadFanoutsInTx(
+  tx: DatabaseTransaction,
+  lock: ThreadContentLock,
+): Promise<void> {
+  await requireThreadContentLockInTx(tx, lock.threadId, lock);
+  const head = await tx.execute<{
+    messageEndSeq: number;
+    tombstoneEndSeq: number;
+  }>(sql`
+    SELECT COALESCE(MAX(message.seq), 0)::integer AS "messageEndSeq",
+           thread."tombstoneEndSeq" AS "tombstoneEndSeq"
+    FROM "MessageThread" thread
+    LEFT JOIN "Message" message ON message."threadId" = thread.id
+    WHERE thread.id = ${lock.threadId}
+    GROUP BY thread.id, thread."tombstoneEndSeq"
+  `);
+  const current = head.rows[0];
+  if (!current) throw new Error(`thread ${lock.threadId} does not exist`);
+  await enqueueMessageFanoutsInTx(tx, lock, {
+    threadId: lock.threadId,
+    ...current,
+  });
+}
+
 export function threadFanoutScope(
   taskType: ThreadFanoutTaskType,
   threadId: number,
@@ -48,7 +76,7 @@ export function threadFanoutScope(
   ]);
 }
 
-export function mergeThreadFanoutTargets(
+function mergeThreadFanoutTargets(
   previous: ThreadFanoutTarget,
   next: ThreadFanoutTarget,
 ): ThreadFanoutTarget {
@@ -58,6 +86,7 @@ export function mergeThreadFanoutTargets(
     threadId: next.threadId,
     messageEndSeq: Math.max(previous.messageEndSeq, next.messageEndSeq),
     tombstoneEndSeq: Math.max(previous.tombstoneEndSeq, next.tombstoneEndSeq),
+    profileRev: Math.max(previous.profileRev ?? 0, next.profileRev ?? 0),
   };
 }
 
@@ -76,10 +105,17 @@ export function parseThreadFanoutTarget(
   ) {
     throw new Error('Invalid thread fanout target');
   }
+  let profileRev: number | undefined;
+  if (value.profileRev !== undefined) {
+    if (!integer(value.profileRev, 0))
+      throw new Error('Invalid thread fanout target');
+    profileRev = value.profileRev;
+  }
   return {
     threadId: value.threadId,
     messageEndSeq: value.messageEndSeq,
     tombstoneEndSeq: value.tombstoneEndSeq,
+    ...(profileRev === undefined ? {} : { profileRev }),
   };
 }
 

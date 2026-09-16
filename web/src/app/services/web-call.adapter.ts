@@ -35,12 +35,12 @@ interface StagedSignaling {
   ice: Array<{ id: string; payload: string }>;
 }
 
-export const WEB_RECONNECT_BACKSTOP_MS = 15_000;
-export const WEB_RECONNECT_BACKSTOP_SHORT_MS = 10_000;
-export const WEB_CALLEE_RECONNECT_BACKSTOP_MS = 30_000;
+const WEB_RECONNECT_BACKSTOP_MS = 15_000;
+const WEB_RECONNECT_BACKSTOP_SHORT_MS = 10_000;
+const WEB_CALLEE_RECONNECT_BACKSTOP_MS = 30_000;
 export const CALL_SESSION_ENDING_EVENT = 'soms-call-session-ending';
 
-export type WebReconnectAction = 'restart' | 'fail';
+type WebReconnectAction = 'restart' | 'fail';
 export type CallMediaErrorStep =
   | 'media-permission-denied'
   | 'media-device-not-found'
@@ -48,7 +48,7 @@ export type CallMediaErrorStep =
   | 'media-device-lost'
   | 'media-failed';
 
-export type LocalTrackEndAction = 'end-call' | 'disable-video';
+type LocalTrackEndAction = 'end-call' | 'disable-video';
 
 export function localTrackEndAction(
   kind: MediaStreamTrack['kind'],

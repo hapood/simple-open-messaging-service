@@ -58,7 +58,6 @@ export class S2sRecognitionController {
     );
     const context = await this.recognition.acceptInbound(domain, doc);
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
-    this.recognition.dispatchReverse(domain);
     return { ok: true } as const;
   }
 

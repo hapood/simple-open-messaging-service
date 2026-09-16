@@ -19,6 +19,10 @@ export interface S2sProxy {
   armGetFileTruncation: () => void;
   /** One-shot: return HTTP 503 for the next request whose pathname exactly matches. */
   armServiceUnavailable: (pathname: string) => void;
+  /** While blocked, every relayed request is destroyed at the socket — a transport-level
+   *  "peer unreachable" with no process stop. Destroyed requests are not resumed on unblock;
+   *  the client's retry policy re-issues them. */
+  blockRelays: (blocked: boolean) => void;
   /** How many media `bytes=0-` requests appB has issued through the proxy. The resume test asserts
    *  this is ≥2 (initial + the retry after the truncation) → appB re-requested the SAME range (resume). */
   firstRangeGetFileCount: () => number;
@@ -65,6 +69,9 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     // One-shot truncation flag — set by the resume test, cleared after it fires once.
     let truncateNextGetFile = false;
     let serviceUnavailablePath: string | null = null;
+    // Sticky partition flag — while set, every relayed request is destroyed instead
+    // of forwarded (the "peer unreachable" arm; no process lifecycle involved).
+    let relaysBlocked = false;
     // Running count of media first-range requests seen (initial + any retries).
     let firstRangeCount = 0;
     // Total requests relayed (debug).
@@ -93,6 +100,15 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
 
     const server = http.createServer((req, res) => {
       totalCount++;
+      if (relaysBlocked) {
+        requests.push({
+          method: req.method ?? 'GET',
+          path: req.url ?? '/',
+          status: 0,
+        });
+        res.destroy();
+        return;
+      }
       const range = req.headers['range'];
       const isGetFileFirstRange =
         typeof req.url === 'string' &&
@@ -343,6 +359,9 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         },
         armServiceUnavailable: (pathname: string) => {
           serviceUnavailablePath = pathname;
+        },
+        blockRelays: (blocked: boolean) => {
+          relaysBlocked = blocked;
         },
         firstRangeGetFileCount: () => firstRangeCount,
         totalRequestCount: () => totalCount,

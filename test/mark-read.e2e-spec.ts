@@ -1,42 +1,25 @@
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
-import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
-import { ThreadFeedService } from '../src/message/thread-feed.service.js';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
-import { DurableAsyncTaskSchedulerService } from '../src/durable-task/durable-async-task-scheduler.service.js';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   message,
   messageThread,
   accountThreadState,
   federationThreadHistoryGap,
-  durableTask,
 } from '../src/database/schema';
-import {
-  applyReadPositionInTx,
-  resolveReadPositionInTx,
-} from '../src/message/thread-read-position.js';
+import { applyReadPositionInTx } from '../src/business/message/thread-read-position.service.js';
 import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('POST /thread/mark-read authoritative state', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let token: string;
   let viewerId: number;
@@ -45,26 +28,16 @@ describe('POST /thread/mark-read authoritative state', () => {
   let viewerParticipantId: number;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     // This suite claims read tasks explicitly. Background fanout must not race
     // the next test's TRUNCATE or conceal an accidentally admitted read task.
     await app.get(DurableTaskSchedulerService).stop();
-    await app.get(DurableAsyncTaskSchedulerService).stop();
   });
 
   afterAll(async () => app.close());
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
     const viewer = await seedUser(app, 'reader', { name: 'Reader' });
     const peer = await seedUser(app, 'peer', { name: 'Peer' });
     viewerId = viewer.id;
@@ -134,7 +107,7 @@ describe('POST /thread/mark-read authoritative state', () => {
       .send({ threadId, localReadHwm });
   }
 
-  it('does not read earlier peer messages or enqueue a read task when sending', async () => {
+  it('does not read earlier peer messages when sending', async () => {
     const before = await database.db.query.accountThreadState.findFirst({
       where: eq(accountThreadState.id, viewerParticipantId),
     });
@@ -153,22 +126,11 @@ describe('POST /thread/mark-read authoritative state', () => {
         where: eq(accountThreadState.id, viewerParticipantId),
       }),
     ).toMatchObject({ lastReadSeq: 0, unreadCount: 1004 });
-    expect(
-      await database.db
-        .select({ id: durableTask.id })
-        .from(durableTask)
-        .where(
-          and(
-            eq(durableTask.actorUserId, viewerId),
-            eq(durableTask.taskType, 'COMMIT_THREAD_READ_POSITION'),
-          ),
-        ),
-    ).toEqual([]);
   });
 
   it('validates mapped recoverable gaps, clipped to visible history, using the shared read path', async () => {
     await database.db.transaction(async (tx) => {
-      await requireThreadContentLockInTx(tx, threadId);
+      const threadLock = await requireThreadContentLockInTx(tx, threadId);
       const [gap] = await tx
         .insert(federationThreadHistoryGap)
         .values({
@@ -179,17 +141,9 @@ describe('POST /thread/mark-read authoritative state', () => {
           messageSeqOffset: 500,
         })
         .returning();
-      const validate = (seq: number) =>
-        resolveReadPositionInTx(tx, viewerId, {
-          threadId,
-          localReadHwm: seq,
-          force: true,
-        });
       // Existing rows do not prove that the declared missing interval is complete.
-      await expect(validate(519)).resolves.toBe(520);
-      await expect(validate(520)).resolves.toBe(520);
       await expect(
-        applyReadPositionInTx(tx, viewerId, {
+        applyReadPositionInTx(tx, threadLock, viewerId, {
           threadId,
           localReadHwm: 519,
           force: true,
@@ -199,11 +153,8 @@ describe('POST /thread/mark-read authoritative state', () => {
         .update(accountThreadState)
         .set({ messageVisibleThroughSeq: 510 })
         .where(eq(accountThreadState.id, viewerParticipantId));
-      await expect(validate(509)).resolves.toBe(510);
-      await expect(validate(510)).resolves.toBe(510);
-      await expect(validate(1006)).resolves.toBe(510);
       await expect(
-        applyReadPositionInTx(tx, viewerId, {
+        applyReadPositionInTx(tx, threadLock, viewerId, {
           threadId,
           localReadHwm: 1006,
           force: true,
@@ -213,28 +164,23 @@ describe('POST /thread/mark-read authoritative state', () => {
         .update(federationThreadHistoryGap)
         .set({ recoverable: false })
         .where(eq(federationThreadHistoryGap.id, gap.id));
-      await expect(validate(0)).resolves.toBe(0);
+      await expect(
+        applyReadPositionInTx(tx, threadLock, viewerId, {
+          threadId,
+          localReadHwm: 0,
+          force: true,
+        }),
+      ).resolves.toBe(0);
     });
   });
 
-  it('accepts a durable read and exposes exact committed state through attention-delta', async () => {
+  it('commits synchronously and exposes exact state through attention-delta', async () => {
     const accepted = await commit(1000);
     expect(accepted.body.code).toBe(0);
-    expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
-    expect(accepted.body.data.taskId).toMatch(/^\d+$/);
-    const taskId = BigInt(accepted.body.data.taskId);
-    const store = app.get(DurableTaskStoreService);
-    const claimed = await store.claim(taskId);
-    if (claimed) await app.get(ThreadFeedService).executeTask(claimed);
-    await vi.waitFor(
-      async () => {
-        const current = await database.db.query.accountThreadState.findFirst({
-          where: eq(accountThreadState.id, viewerParticipantId),
-        });
-        expect(current?.lastReadSeq).toBe(1000);
-      },
-      { timeout: 10000 },
-    );
+    expect(accepted.body.data).toEqual({
+      status: 'APPLIED',
+      lastReadSeq: 1000,
+    });
     const page = await request(app.getHttpServer())
       .post('/api/v1/thread/feed-delta')
       .set('Authorization', `Bearer ${token}`)

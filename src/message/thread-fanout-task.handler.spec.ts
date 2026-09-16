@@ -55,7 +55,9 @@ function setup() {
       messageEndSeq: 10,
       tombstoneEndSeq: 2,
     },
-  } as DurableTask;
+  // Partial double: the handler only reads identity/scope/payload here; the
+  // row's bookkeeping columns are irrelevant to these paths.
+  } as unknown as DurableTask;
   return {
     dispatcher,
     participants,

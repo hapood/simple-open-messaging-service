@@ -192,7 +192,7 @@
             }
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -213,7 +213,7 @@
             }
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -234,7 +234,7 @@
             }
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -258,7 +258,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -277,7 +277,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -296,7 +296,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         }
@@ -321,7 +321,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -340,7 +340,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -359,7 +359,7 @@
               }
             }
           ],
-          "scannedThrough": "1",
+          "scannedThrough": 1,
           "stateFeedEndId": "1",
           "hasMore": false
         }
@@ -383,7 +383,7 @@
             }
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -901,7 +901,7 @@
             }
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "stateFeedEndId": "1",
         "hasMore": false
       }

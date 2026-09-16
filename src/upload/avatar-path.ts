@@ -9,7 +9,7 @@ export const AVATAR_URL_RE =
   /^\/uploads\/avatars\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpg|gif|webp)$/;
 
 /** True iff `value` is a server avatar URL or the empty-string clear sentinel. */
-export function isAvatarUrlOrEmpty(value: unknown): boolean {
+function isAvatarUrlOrEmpty(value: unknown): boolean {
   return (
     typeof value === 'string' && (value === '' || AVATAR_URL_RE.test(value))
   );

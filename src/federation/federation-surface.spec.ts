@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { RequestMethod } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';

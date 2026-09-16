@@ -1,61 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadFeedService } from './thread-feed.service.js';
 import { mentionsAccount } from './thread-feed-head.writer.js';
-import type { DurableTask } from '../durable-task/durable-task.types.js';
-
-describe('read-position notifications', () => {
-  it.each([false, true])(
-    'publishes only after a successful commit (rollback: %s)',
-    async (rollback) => {
-      let committed = false;
-      const onThreadFeedUpdated = vi.fn(() => expect(committed).toBe(true));
-      const tx = {
-        execute: vi
-          .fn()
-          .mockResolvedValue({ rows: [{ status: 'PROCESSING' }] }),
-      };
-      const database = {
-        db: {
-          transaction: async (run: (tx: unknown) => Promise<unknown>) => {
-            const result = await run(tx);
-            expect(onThreadFeedUpdated).not.toHaveBeenCalled();
-            if (rollback) throw new Error('commit rejected');
-            committed = true;
-            return result;
-          },
-        },
-      };
-      const service = new ThreadFeedService(database as never, {} as never);
-      Object.assign(service, { sse: { onThreadFeedUpdated } });
-      vi.spyOn(service, 'applyReadPositionInTx').mockResolvedValue(4);
-      const readEndId = vi
-        .spyOn(service, 'readEndId')
-        .mockImplementation(async () => {
-          expect(committed).toBe(true);
-          return 8;
-        });
-      const task = {
-        id: 1n,
-        taskType: 'COMMIT_THREAD_READ_POSITION',
-        scopeType: 'ACCOUNT_THREAD',
-        actorUserId: 7,
-        payload: { threadId: 9, localReadHwm: 4 },
-      } as DurableTask;
-      if (rollback) {
-        await expect(service.executeTask(task)).rejects.toThrow(
-          'commit rejected',
-        );
-        expect(readEndId).not.toHaveBeenCalled();
-        expect(onThreadFeedUpdated).not.toHaveBeenCalled();
-      } else {
-        await service.executeTask(task);
-        expect(onThreadFeedUpdated).toHaveBeenCalledExactlyOnceWith(7, {
-          threadFeedEndId: 8,
-        });
-      }
-    },
-  );
-});
 
 describe('thread feed database previews', () => {
   function setup() {
@@ -96,7 +41,7 @@ describe('thread feed database previews', () => {
     const db = {
       db: { transaction: (run: (tx: unknown) => unknown) => run({ execute }) },
     };
-    const service = new ThreadFeedService(db as never, {} as never);
+    const service = new ThreadFeedService(db as never);
     Object.assign(service, { previews: { limit: 5, readInTx: read } });
     return { service, read, execute };
   }

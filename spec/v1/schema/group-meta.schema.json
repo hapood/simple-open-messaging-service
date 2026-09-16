@@ -29,7 +29,7 @@
       "required": ["feedId", "account", "domain", "operation"],
       "properties": {
         "feedId": {
-          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
         "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
@@ -59,7 +59,7 @@
           "required": ["feedId", "operation", "body"],
           "properties": {
             "feedId": {
-              "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
             "operation": { "const": "GROUP_PROFILE" },
             "body": { "$ref": "#/$defs/profileBody" }
@@ -82,9 +82,9 @@
     "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
     "mode": { "enum": ["full", "delta"] },
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+    "scannedThrough": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
     "groupMetaFeedEndId": {
-      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },
     "hasMore": { "type": "boolean" }
   },

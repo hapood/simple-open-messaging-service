@@ -3611,7 +3611,17 @@ export interface components {
              * @description Content type
              * @enum {string}
              */
-            contentType: "PURE_TEXT" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CONTACT_CARD" | "FORWARD" | "GALLERY" | "SYSTEM";
+            contentType:
+                | "PURE_TEXT"
+                | "IMAGE"
+                | "VIDEO"
+                | "FILE"
+                | "AUDIO"
+                | "LINK"
+                | "CONTACT_CARD"
+                | "FORWARD"
+                | "GALLERY"
+                | "SYSTEM";
             /**
              * @description Message content
              * @example hello
@@ -3629,7 +3639,9 @@ export interface components {
              *       "domain": "local"
              *     }
              */
-            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
+            creator:
+                | components["schemas"]["MessageAuthorAddressResponseDto"]
+                | null;
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
@@ -4227,17 +4239,24 @@ export interface components {
             /** @enum {string} */
             status: "PENDING";
         };
+        ThreadReadPositionResultDto: {
+            /** @enum {string} */
+            status: "APPLIED" | "REJECTED";
+            /** @example THREAD_NOT_FOUND */
+            reason?: string;
+            /** @example 42 */
+            lastReadSeq?: number;
+        };
         HandleGroupJoinRequestDto: {
             /**
              * @description Group id
              * @example 12
              */
             groupId: number;
-            /**
-             * @description RelationshipIntent id (stringified BigInt)
-             * @example 123456789
-             */
-            requestId: string;
+            /** @description Member account */
+            account: string;
+            /** @description Member home domain */
+            domain: string;
         };
         GroupIdDto: {
             /**
@@ -5027,7 +5046,14 @@ export interface components {
             /** @description Substring over task type or scope key */
             search?: string;
             /** @enum {string} */
-            status?: "PENDING" | "PROCESSING" | "ASYNC_PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED" | "SUPERSEDED";
+            status?:
+                | "PENDING"
+                | "PROCESSING"
+                | "ASYNC_PROCESSING"
+                | "SUCCEEDED"
+                | "REJECTED"
+                | "FAILED"
+                | "SUPERSEDED";
         };
     };
     responses: never;
@@ -5308,7 +5334,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["ThreadReadPositionResultDto"];
+                    };
+                };
             };
         };
     };
@@ -9278,24 +9308,27 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    /** @enum {string} */
-                    type: "EXACT";
-                    account: string;
-                    domain: string;
-                    rev: number;
-                } | {
-                    /** @enum {string} */
-                    type: "MESSAGE_AUTHOR";
-                    threadId: number;
-                    messageSeq: number;
-                } | {
-                    /** @enum {string} */
-                    type: "GROUP_MEMBER";
-                    threadId: number;
-                    memberAccount: string;
-                    memberDomain: string;
-                };
+                "application/json":
+                    | {
+                          /** @enum {string} */
+                          type: "EXACT";
+                          account: string;
+                          domain: string;
+                          rev: number;
+                      }
+                    | {
+                          /** @enum {string} */
+                          type: "MESSAGE_AUTHOR";
+                          threadId: number;
+                          messageSeq: number;
+                      }
+                    | {
+                          /** @enum {string} */
+                          type: "GROUP_MEMBER";
+                          threadId: number;
+                          memberAccount: string;
+                          memberDomain: string;
+                      };
             };
         };
         responses: {
@@ -9304,24 +9337,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        status: "READY";
-                        profile: {
-                            namespaceId: number;
-                            account: string;
-                            domain: string;
-                            rev: number;
-                            name: string;
-                            bio: string;
-                            avatarBase64: string | null;
-                        };
-                    } | {
-                        /** @enum {string} */
-                        status: "PENDING";
-                        /** Format: uuid */
-                        requestId: string;
-                    };
+                    "application/json":
+                        | {
+                              /** @enum {string} */
+                              status: "READY";
+                              profile: {
+                                  namespaceId: number;
+                                  account: string;
+                                  domain: string;
+                                  rev: number;
+                                  name: string;
+                                  bio: string;
+                                  avatarBase64: string | null;
+                              };
+                          }
+                        | {
+                              /** @enum {string} */
+                              status: "PENDING";
+                              /** Format: uuid */
+                              requestId: string;
+                          };
                 };
             };
         };

@@ -26,6 +26,7 @@ describe('shared background storage', () => {
             threadFeedId: 1,
             messageEndSeq: 2,
             tombstoneEndSeq: 0,
+            groupMetaFeedEndId: null,
             lastReadSeq: 0,
             unreadCount: 2,
             lastMentionSeq: null,

@@ -63,7 +63,10 @@ export class FederationResetService {
         ), remote_group_meta_facts AS (
           SELECT member_fact."threadId"
           FROM "GroupMetaMemberFeed" member_fact
-          WHERE member_fact."memberNamespaceId" = ${namespaceId}
+          JOIN "MessageThread" group_thread
+            ON group_thread.id = member_fact."threadId"
+          WHERE group_thread."authorityNamespaceId" = ${namespaceId}
+            OR member_fact."memberDomain" = ${normalized}
         ), affected_threads AS (
           SELECT pair."threadId"
           FROM "RelationshipPair" pair
@@ -136,14 +139,9 @@ export class FederationResetService {
             "haltCode" = NULL,
             "haltReason" = NULL,
             "recognizesPeer" = false,
-            "outboundRecognitionConfirmed" = false,
-            "inboundRecognitionConfirmed" = false,
-            "lightweightInboundReady" = false,
+            "peerAcceptanceConfirmed" = false,
             "localServiceAvailable" = false,
             "remoteServiceReachable" = false,
-            "reverseRecognitionPending" = false,
-            "outboundRecognizedAt" = NULL,
-            "inboundRecognizedAt" = NULL,
             "resetAt" = CURRENT_TIMESTAMP
         WHERE domain = ${normalized}
       `);

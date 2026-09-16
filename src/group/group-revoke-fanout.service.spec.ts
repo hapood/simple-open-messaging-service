@@ -3,12 +3,13 @@ import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
 import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
 import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
+import { readGroupState } from '../business/group/shared/group-state.js';
 
 vi.mock('../business/shared/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 12 }),
 }));
-vi.mock('./group-state.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./group-state.js')>()),
+vi.mock('../business/group/shared/group-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../business/group/shared/group-state.js')>()),
   readGroupState: vi
     .fn()
     .mockResolvedValue({ account: '!group', domain: 'local' }),
@@ -130,6 +131,134 @@ describe('GroupRevokeFanoutService', () => {
     expect(childValues.mock.invocationCallOrder[0]).toBeLessThan(
       checkpointSet.mock.invocationCallOrder[0],
     );
+  });
+
+  it('stops a mirror member sweep when its tombstone epoch changed', async () => {
+    vi.mocked(readGroupState).mockResolvedValueOnce({
+      account: '!group',
+      domain: 'peer.test',
+      namespaceId: 5,
+      dissolvedAt: new Date(),
+    } as never);
+    const task = {
+      ...parent,
+      scopeKey: businessAccountScopeKey({
+        account: '!group',
+        domain: 'peer.test',
+      }),
+      taskType: 'DISBAND_MIRROR_GROUP_MEMBERS',
+      payload: {
+        threadId: 12,
+        groupAccount: '!group',
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    } satisfies DurableTask;
+    const tx = {
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 10n,
+              status: 'PROCESSING',
+              taskType: task.taskType,
+              afterPairId: '0',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 10 }] }),
+      update: vi.fn(),
+    };
+    const enqueueTaskInTx = vi.fn();
+    const service = new GroupRevokeFanoutService(
+      {
+        db: {
+          transaction: (run: (value: typeof tx) => unknown) => run(tx),
+        },
+      } as never,
+      { enqueueTaskInTx } as never,
+    );
+
+    await expect(service.insertNextMember(task, 12)).resolves.toBe(false);
+    expect(enqueueTaskInTx).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('passes the tombstone generation to a mirror member child', async () => {
+    vi.mocked(readGroupState).mockResolvedValueOnce({
+      account: '!group',
+      domain: 'peer.test',
+      namespaceId: 5,
+      dissolvedAt: new Date(),
+    } as never);
+    const task = {
+      ...parent,
+      scopeKey: businessAccountScopeKey({
+        account: '!group',
+        domain: 'peer.test',
+      }),
+      taskType: 'DISBAND_MIRROR_GROUP_MEMBERS',
+      payload: {
+        threadId: 12,
+        groupAccount: '!group',
+        peerDomain: 'peer.test',
+        namespaceId: 5,
+        expectedAuthorizationEpoch: 8,
+      },
+    } satisfies DurableTask;
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 10n,
+            status: 'PROCESSING',
+            taskType: task.taskType,
+            afterPairId: '0',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 9 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { pairId: '41', account: 'member', domain: 'local', namespaceId: 0 },
+        ],
+      });
+    const enqueueTaskInTx = vi.fn();
+    const checkpointWhere = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ id: task.id }]),
+    }));
+    const checkpointSet = vi.fn().mockReturnValue({ where: checkpointWhere });
+    const tx = {
+      execute,
+      update: vi.fn().mockReturnValue({ set: checkpointSet }),
+    };
+    const service = new GroupRevokeFanoutService(
+      {
+        db: {
+          transaction: (run: (value: typeof tx) => unknown) => run(tx),
+        },
+      } as never,
+      { enqueueTaskInTx } as never,
+    );
+
+    await expect(service.insertNextMember(task, 12)).resolves.toBe(true);
+    expect(enqueueTaskInTx).toHaveBeenCalledWith(tx, {
+      scope: {
+        type: 'GROUP',
+        address: { account: '!group', domain: 'peer.test' },
+      },
+      taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      actorUserId: 7,
+      payload: {
+        threadId: 12,
+        direction: 'MIRROR',
+        expectedAuthorizationEpoch: 9,
+        memberUserId: { account: 'member', domain: 'local', namespaceId: 0 },
+      },
+    });
   });
 
   it('does not advance the cursor when no active relationship remains', async () => {

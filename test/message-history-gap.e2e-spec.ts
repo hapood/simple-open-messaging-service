@@ -1,11 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { Test, type TestingModule } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/bootstrap.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federationThreadHistoryGap,
@@ -17,23 +13,18 @@ import {
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
 import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('client message history gaps', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let sessionToken: string;
   let threadId: number;
   let viewerId: number;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   afterAll(async () => {
@@ -41,9 +32,7 @@ describe('client message history gaps', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
     const viewer = await seedUser(app, 'viewer');
     const peer = await seedUser(app, 'peer');
     viewerId = viewer.id;

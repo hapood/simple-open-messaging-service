@@ -20,7 +20,7 @@ import { isUniqueViolation } from '../database/database-error.js';
 export const USER_ACCOUNT_RE = /^[a-z0-9][a-z0-9._-]{0,29}$/i;
 
 /** Already-normalized SOMFP wire form. Unlike USER_ACCOUNT_RE, uppercase input is rejected. */
-export const SOMFP_USER_ACCOUNT_RE = /^[a-z0-9][a-z0-9._-]{0,29}$/;
+const SOMFP_USER_ACCOUNT_RE = /^[a-z0-9][a-z0-9._-]{0,29}$/;
 
 const SOMFP_DOMAIN_RE =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;

@@ -29,9 +29,9 @@ export const CALL_SIGNAL_TYPES = [
 export type S2SCallOperation = (typeof S2S_CALL_OPERATIONS)[number];
 export type CallSignalType = (typeof CALL_SIGNAL_TYPES)[number];
 export type CallEndReason = 'completed' | 'timeout' | 'failed';
-export type SdpText = string;
-export type SerializedIceCandidate = string;
-export type SerializedVideoState = string;
+type SdpText = string;
+type SerializedIceCandidate = string;
+type SerializedVideoState = string;
 export type CallSignalPayload =
   | {
       signalId: string;
@@ -214,28 +214,31 @@ export function assertS2SCallFrame(
 /** Parse the complete, closed POST /s2s/v1/call wire shape. */
 export function parseS2SCallWireFrame(value: unknown): S2SCallFrame {
   if (!isRecord(value)) malformed('call frame must be an object');
-  if ('op' in value) malformed('call frame contains legacy op field');
-  if ('callSid' in value) malformed('call frame contains legacy callSid field');
-
-  if ('callType' in value)
-    malformed('call frame contains legacy callType field');
-
+  const wireOperation = value.operation;
+  const wireConditionalKeys =
+    typeof wireOperation === 'string' &&
+    ['incoming', 'signal', 'ended'].includes(wireOperation)
+      ? ['payload']
+      : [];
+  if (
+    !hasExactlyKeys(value, [
+      'callId',
+      'operation',
+      ...wireConditionalKeys,
+      ...(wireOperation === 'incoming' ? ['mediaType'] : []),
+    ])
+  ) {
+    malformed('call frame contains fields not allowed for its operation');
+  }
   const { callId, operation, mediaType, payload, ...frame } = value;
   let internalPayload = payload;
   if (operation === 'incoming' && isRecord(payload)) {
-    if ('fromAccount' in payload || 'toAccount' in payload) {
-      malformed('incoming payload contains legacy account fields');
-    }
     const { callerAccount, calleeAccount, ...incomingPayload } = payload;
     internalPayload = {
       ...incomingPayload,
       fromAccount: callerAccount,
       toAccount: calleeAccount,
     };
-  } else if (operation === 'signal' && isRecord(payload)) {
-    if ('id' in payload) malformed('signal payload contains legacy id field');
-    if ('kind' in payload)
-      malformed('signal payload contains legacy kind field');
   }
   const internalFrame = {
     ...frame,

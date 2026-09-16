@@ -29,17 +29,19 @@ function row(targetType: string | null, targetId: string | null) {
 
 describe('AuditTargetLabelService.resolve', () => {
   function setup() {
+    // Typed as row-producing mocks (not bare vi.fn()) so the where() builder can call them; tests
+    // override the resolved rows per query via mockResolvedValue.
     const queries = {
-      user: vi.fn(),
-      admin: vi.fn(),
-      sessionToken: vi.fn(),
-      adminSession: vi.fn(),
-      loginCode: vi.fn(),
-      pushToken: vi.fn(),
-      webAuthnCredential: vi.fn(),
+      user: vi.fn(async () => [] as unknown[]),
+      admin: vi.fn(async () => [] as unknown[]),
+      sessionToken: vi.fn(async () => [] as unknown[]),
+      adminSession: vi.fn(async () => [] as unknown[]),
+      loginCode: vi.fn(async () => [] as unknown[]),
+      pushToken: vi.fn(async () => [] as unknown[]),
+      webAuthnCredential: vi.fn(async () => [] as unknown[]),
     };
     for (const query of Object.values(queries)) query.mockResolvedValue([]);
-    const byTable = new Map<unknown, ReturnType<typeof vi.fn>>([
+    const byTable = new Map<unknown, (typeof queries)['user']>([
       [user, queries.user],
       [admin, queries.admin],
       [sessionToken, queries.sessionToken],

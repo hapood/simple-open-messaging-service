@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SeededRandom } from './scenario.mjs';
 import { LabApiError } from './api-actors.mjs';
+import { admitOperation } from './operations.mjs';
 import {
-  admitOperation,
   chooseRandomRound,
   chooseStateWindow,
   scheduledAdmissionAt,
@@ -960,8 +960,10 @@ test('uploads an avatar before a unary group profile update', async () => {
 test('does not resubmit group requests while their earlier decision is pending or completed', () => {
   const request = {
     direction: 'APPLICATION',
-    requestId: '48',
-    expiresAt: '2026-09-14T13:15:16.696Z',
+    feedId: 48,
+    memberAddress: 'friend@bravo.test',
+    memberAccount: 'friend',
+    memberDomain: 'bravo.test',
   };
   const operation = {
     group: groupAddress,
@@ -986,8 +988,8 @@ test('does not resubmit group requests while their earlier decision is pending o
   }
   const completed = { ...operation, status: 'SUCCEEDED' };
   for (const candidate of [
-    { ...request, requestId: '49' },
-    { ...request, expiresAt: '2026-09-15T13:15:16.696Z' },
+    { ...request, feedId: 49 },
+    { ...request, memberAddress: 'other@bravo.test' },
     { ...request, direction: 'INVITATION' },
   ])
     assert.deepEqual(

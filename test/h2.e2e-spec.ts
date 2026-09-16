@@ -13,6 +13,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { seedUserWithSession } from './seed';
+import { truncateTablesForTest } from './support/truncate';
 
 // Verifies the HTTP/2-over-TLS path itself: boots the app on a FastifyAdapter({http2,https})
 // with a self-signed cert and drives it with node's http2 client. This is the one feature the
@@ -107,9 +108,7 @@ describe('HTTP/2 over TLS', () => {
     database = app.get(DatabaseService);
     port = (app.getHttpServer().address() as { port: number }).port;
 
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
     // Seed a user + session directly (registration is closed; the server is TLS-only so supertest can't
     // reach it anyway). The token drives the h2 SSE test below.
     token = (await seedUserWithSession(app, 'h2user', { name: 'H2 User' }))

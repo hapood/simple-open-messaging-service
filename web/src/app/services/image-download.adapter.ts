@@ -31,7 +31,7 @@ export interface ImageDownloadAdapter {
 
 /** Browser/PWA transport: XHR-backed HttpClient events provide byte progress; unsubscribe aborts it. */
 @Injectable({ providedIn: 'root' })
-export class WebImageDownloadAdapter implements ImageDownloadAdapter {
+class WebImageDownloadAdapter implements ImageDownloadAdapter {
   private readonly http = inject(HttpClient);
 
   download(path: string): Observable<ImageDownloadEvent> {

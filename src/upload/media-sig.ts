@@ -17,7 +17,7 @@
  *    header is accepted; the frontend <video>/<audio> degrades gracefully (error event → placeholder).
  */
 
-export type MediaFamily = 'image' | 'video' | 'audio';
+type MediaFamily = 'image' | 'video' | 'audio';
 
 export interface DetectedMedia {
   family: MediaFamily;

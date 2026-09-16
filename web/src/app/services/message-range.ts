@@ -1,10 +1,10 @@
-export const MESSAGE_RANGE_STATES = [
+const MESSAGE_RANGE_STATES = [
   'LOCAL_COVERED',
   'SERVER_PENDING',
   'SERVER_UNAVAILABLE',
 ] as const;
 
-export type MessageRangeState = (typeof MESSAGE_RANGE_STATES)[number];
+type MessageRangeState = (typeof MESSAGE_RANGE_STATES)[number];
 
 export interface MessageInterval {
   left: number;

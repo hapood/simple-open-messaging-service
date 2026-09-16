@@ -8,12 +8,12 @@ export class RemoteFeedCursorUnavailableError extends Error {
   }
 }
 
-export class RemoteMessageCursorUnavailableError extends Error {
+export class RemoteGroupMetaCursorUnavailableError extends Error {
   constructor(
     public readonly resumeAfter: number,
     public readonly resumeBefore: number,
   ) {
-    super('remote message cursor is unavailable');
-    this.name = 'RemoteMessageCursorUnavailableError';
+    super('remote group-meta cursor is unavailable');
+    this.name = 'RemoteGroupMetaCursorUnavailableError';
   }
 }

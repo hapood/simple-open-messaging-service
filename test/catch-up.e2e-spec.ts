@@ -8,18 +8,16 @@ import {
   beforeEach,
   vi,
 } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { message, messageThread } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * ClientStateFeed + /notification-feed/query e2e:
@@ -31,7 +29,7 @@ import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
  * insertion order (Alice → Bob → Carol) so message ids strictly increase → deterministic.
  */
 describe('client state feed + notification feed', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let sessionToken: string;
   let recipientId: number;
@@ -41,14 +39,7 @@ describe('client state feed + notification feed', () => {
   const base = Date.UTC(2026, 0, 1);
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   afterAll(async () => {
@@ -70,9 +61,7 @@ describe('client state feed + notification feed', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
     const recipient = await seedUser(app, 'recip', { name: 'Recip' });
     recipientId = recipient.id;
     sessionToken = await seedSession(app, recipientId, 'app');

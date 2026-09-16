@@ -49,7 +49,9 @@ type LiveSlot = MessageSlotIdentity & {
 
 /** One merge for page commits and individual writes. Deletions win, identity can arrive later. */
 export function mergeMessageSlot<T extends LiveSlot>(
-  current: T | MessageDeletionMarker | undefined,
+  // NoInfer: the slot type is determined by the incoming message alone —
+  // current may legitimately be a tomb (or absent), which must not constrain T.
+  current: NoInfer<T> | MessageDeletionMarker | undefined,
   incoming: T | MessageTomb,
 ): T | MessageTomb {
   if (incoming.isDeleted && incoming.contentType !== 'TOMB')

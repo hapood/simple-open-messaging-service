@@ -1,17 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import type { IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { SHELL_DIR } from '../src/shell/shell.service';
 import { BusinessCode } from '../src/common/business-code';
+import { createTestApp } from './support/app';
 
 /**
  * Shell dynamic-update surface — the unauthenticated routes (`GET /shell/compat`, `/shell/web-manifest`,
@@ -28,7 +25,7 @@ import { BusinessCode } from '../src/common/business-code';
  * so neither is a sound fixture source.
  */
 describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let shellDir: string;
 
   const webVersion = '0.0.1';
@@ -47,18 +44,9 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
       JSON.stringify({ webVersion, sha256 }),
     );
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SHELL_DIR)
-      .useValue(shellDir)
-      .compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    // configureApp before listen(): sets the global prefix (must precede route registration, which
-    // listen() performs) + registers multipart/static/cookie. Mirrors test/fastify.e2e-spec.ts.
-    await configureApp(app, adapter);
-    await app.listen(0);
+    ({ app } = await createTestApp((builder) => {
+      builder.overrideProvider(SHELL_DIR).useValue(shellDir);
+    }));
   });
 
   afterAll(async () => {
@@ -107,12 +95,14 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/shell/web-bundle')
       .buffer(true)
-      .parse((stream: IncomingMessage, cb) => {
+      // supertest 7's .parse union type mismatches the (stream, cb) parser it
+      // actually calls at runtime; the cast documents that, nothing more.
+      .parse(((stream: IncomingMessage, cb: (err: Error | null, body: unknown) => void) => {
         const chunks: Buffer[] = [];
         stream.on('data', (c: Buffer) => chunks.push(c));
         stream.on('end', () => cb(null, Buffer.concat(chunks)));
         stream.on('error', cb);
-      });
+      }) as never);
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/gzip');
     expect(res.headers['content-disposition']).toBe(

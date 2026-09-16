@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { isAndroidNative, listenEvent } from './runtime';
 import { uuid } from '../lib/uuid';
 
-export type NativeUploadKind = 'image' | 'video' | 'file';
+type NativeUploadKind = 'image' | 'video' | 'file';
 export type NativeUploadErrorCategory =
   | 'network'
   | 'http'

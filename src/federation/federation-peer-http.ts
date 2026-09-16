@@ -1,8 +1,9 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { DiscoveryService } from './discovery.service.js';
 import {
   FederationTransportError,
+  parsePeerErrorBody,
   S2sResponseError,
 } from './federation-errors.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
@@ -12,12 +13,6 @@ import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
 export interface FederationPostOptions {
   signatureExpiresAtSec?: number;
-}
-
-export interface FederationPeerHttpLifecycle {
-  isFatalPeerCode(code: unknown): code is number;
-  markContactSuccess(domain: string): Promise<void>;
-  markPeerHalted(domain: string, code: number, message: unknown): Promise<void>;
 }
 
 /** Signed JSON transport shared by federation control-plane and feed requests. */
@@ -30,6 +25,8 @@ export class FederationPeerHttp {
     private readonly transportConfig: FederationTransportConfigService,
     private readonly lifecycle: FederationPeerLifecycle,
   ) {}
+
+  private readonly logger = new Logger(FederationPeerHttp.name);
 
   async post(
     path: string,
@@ -102,30 +99,12 @@ export class FederationPeerHttp {
         return;
       }
 
-      const errorBody = await response.json().catch(() => undefined);
-      const code =
-        typeof errorBody?.code === 'number' ? errorBody.code : undefined;
-      if (status === HttpStatus.SERVICE_UNAVAILABLE) {
-        await this.recognition.markTransportDegraded(
-          peerDomain,
-          `POST HTTP ${status}`,
-          operationStartedAt,
-        );
-      } else if (
-        status === HttpStatus.CONFLICT &&
-        this.lifecycle.isFatalPeerCode(code)
-      ) {
-        await this.lifecycle.markPeerHalted(
-          peerDomain,
-          code,
-          errorBody?.message,
-        );
-      }
-      throw new S2sResponseError(
-        `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
+      await this.throwRejectedResponse(
+        `POST to ${peerDomain}`,
+        peerDomain,
         status,
-        code,
-        errorBody?.data,
+        response,
+        operationStartedAt,
       );
     } finally {
       release();
@@ -169,31 +148,12 @@ export class FederationPeerHttp {
       }
 
       if (!response.ok) {
-        const status = response.status;
-        const errorBody = await response.json().catch(() => undefined);
-        const code =
-          typeof errorBody?.code === 'number' ? errorBody.code : undefined;
-        if (status === HttpStatus.SERVICE_UNAVAILABLE) {
-          await this.recognition.markTransportDegraded(
-            peerDomain,
-            `GET ${path} HTTP ${status}`,
-            operationStartedAt,
-          );
-        } else if (
-          status === HttpStatus.CONFLICT &&
-          this.lifecycle.isFatalPeerCode(code)
-        ) {
-          await this.lifecycle.markPeerHalted(
-            peerDomain,
-            code,
-            errorBody?.message,
-          );
-        }
-        throw new S2sResponseError(
-          `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
-          status,
-          code,
-          errorBody?.data,
+        await this.throwRejectedResponse(
+          `GET ${path} from ${peerDomain}`,
+          peerDomain,
+          response.status,
+          response,
+          operationStartedAt,
         );
       }
 
@@ -221,6 +181,54 @@ export class FederationPeerHttp {
     } finally {
       release();
     }
+  }
+
+  /** Shared non-2xx handling: parse the peer's best-effort error body, record
+   * transport degradation or a fatal peer halt, and throw. `where` renders the
+   * request in log and error prose, e.g. `POST to ${peerDomain}`. */
+  private async throwRejectedResponse(
+    where: string,
+    peerDomain: string,
+    status: number,
+    response: Response,
+    operationStartedAt: Date,
+  ): Promise<never> {
+    let raw: unknown;
+    let bodyNote = 'an absent error body';
+    try {
+      raw = await response.json();
+      bodyNote = `an error body without a numeric code: ${JSON.stringify(raw).slice(0, 200)}`;
+    } catch (error) {
+      bodyNote = `an unparsable error body: ${(error as Error).message}`;
+    }
+    const errorBody = parsePeerErrorBody(raw);
+    if (errorBody.code === undefined) {
+      // The protocol requires `code` on every non-2xx body; warn so a peer
+      // serving HTML error pages or junk stays diagnosable.
+      this.logger.warn(`S2S ${where} returned HTTP ${status} with ${bodyNote}`);
+    }
+    if (status === HttpStatus.SERVICE_UNAVAILABLE) {
+      await this.recognition.markTransportDegraded(
+        peerDomain,
+        `${where} HTTP ${status}`,
+        operationStartedAt,
+      );
+    } else if (
+      status === HttpStatus.CONFLICT &&
+      this.lifecycle.isFatalPeerCode(errorBody.code)
+    ) {
+      await this.lifecycle.markPeerHalted(
+        peerDomain,
+        errorBody.code,
+        errorBody.message,
+      );
+    }
+    throw new S2sResponseError(
+      `S2S ${where} rejected: HTTP ${status}`,
+      status,
+      errorBody.code,
+      errorBody.data,
+    );
   }
 
   private async readBody(

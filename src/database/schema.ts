@@ -76,12 +76,12 @@ export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
 ]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
   'RELATIONSHIP_INTENT',
-  'GROUP_META_FEED_HEAD',
   'THREAD_CONTENT_HEAD',
 ]);
 export const groupMetaMemberOperation = pgEnum('GroupMetaMemberOperation', [
   'UPSERT',
   'DEPART',
+  'GROUP_PROFILE',
 ]);
 export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'REQUESTED',
@@ -93,7 +93,6 @@ export const durableTaskKind = pgEnum('DurableTaskKind', [
   'PROJECTION',
 ]);
 export const durableTaskScopeType = pgEnum('DurableTaskScopeType', [
-  'STATE_FEED',
   'THREAD',
   'USER_PAIR',
   'GROUP',
@@ -102,7 +101,6 @@ export const durableTaskScopeType = pgEnum('DurableTaskScopeType', [
 export const durableTaskStatus = pgEnum('DurableTaskStatus', [
   'PENDING',
   'PROCESSING',
-  'ASYNC_PROCESSING',
   'SUCCEEDED',
   'REJECTED',
   'FAILED',
@@ -421,11 +419,11 @@ export const durableTask = pgTable(
     index('DurableTask_blocking_scope_id_idx')
       .on(table.kind, table.scopeKey, table.id)
       .where(
-        sql`${table.status} IN ('PENDING', 'PROCESSING', 'ASYNC_PROCESSING')`,
+        sql`${table.status} IN ('PENDING', 'PROCESSING')`,
       ),
     uniqueIndex('DurableTask_one_processing_per_scope')
       .on(table.kind, table.scopeKey)
-      .where(sql`${table.status} IN ('PROCESSING', 'ASYNC_PROCESSING')`),
+      .where(sql`${table.status} = 'PROCESSING'`),
     index('DurableTask_pending_coalescing_key_idx')
       .on(table.coalescingKey, table.id)
       .where(
@@ -463,7 +461,7 @@ export const durableTask = pgTable(
         AND ${table.startedAt} IS NULL
         AND ${table.completedAt} IS NULL
       ) OR (
-        ${table.status} IN ('PROCESSING', 'ASYNC_PROCESSING')
+        ${table.status} = 'PROCESSING'
         AND ${table.startedAt} IS NOT NULL
         AND ${table.completedAt} IS NULL
       ) OR (
@@ -549,9 +547,13 @@ export const accountThreadState = pgTable(
     joinRequestReadFeedId: integer().default(0).notNull(),
     /** Last group meta feed end id published to this member on the thread feed.
      * Null for P2P conversations; the thread fan-out keeps it at the canonical
-     * GroupMeta head. Client-visible: any writer must let the allocation
+     * GroupMeta coordinate. Client-visible: any writer must let the allocation
      * trigger see the change. */
-    groupMetaFeedEndId: bigint({ mode: 'bigint' }),
+    groupMetaFeedEndId: integer(),
+    /** Profile revision of this conversation's counterpart (P2P peer or group)
+     * last published to this member on the thread feed. Client-visible: any
+     * writer must let the allocation trigger see the change. */
+    threadProfileRev: integer().default(0).notNull(),
     muted: boolean().default(false).notNull(),
     /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
     blocked: boolean().default(false).notNull(),
@@ -604,6 +606,10 @@ export const accountThreadState = pgTable(
     check(
       'AccountThreadState_lastReadSeq_check',
       sql`${table.lastReadSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_threadProfileRev_check',
+      sql`${table.threadProfileRev} >= 0`,
     ),
     check(
       'AccountThreadState_lastMentionSeq_check',
@@ -726,7 +732,7 @@ export const threadAudience = pgTable(
      *  a greater thread sequence. It advances when a closed relationship is reauthorized. */
     messageAccessAfterSeq: integer().default(0).notNull(),
     /** Exclusive Group Meta delta visibility floor in the group's canonical coordinate space. */
-    groupMetaVisibleAfter: bigint({ mode: 'bigint' })
+    groupMetaVisibleAfter: integer()
       .default(sql`0`)
       .notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1595,11 +1601,10 @@ export const clientStateFeed = pgTable(
   ],
 );
 
-/** Manager-facing request side effects for USER→GROUP applications and GROUP→USER invitations. */
+/** Shared authoritative request projection for USER→GROUP applications and GROUP→USER invitations. */
 export const groupRequestProjection = pgTable(
   'GroupRequestProjection',
   {
-    managerUserId: integer().notNull(),
     threadId: integer().notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
@@ -1607,7 +1612,6 @@ export const groupRequestProjection = pgTable(
     memberProfileRev: integer().notNull(),
     direction: varchar({ length: 15 }).notNull(),
     feedId: integer().notNull(),
-    requestId: bigint({ mode: 'bigint' }).notNull(),
     status: varchar({ length: 15 }).notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     requestedAt: timestamp({
@@ -1620,41 +1624,27 @@ export const groupRequestProjection = pgTable(
       withTimezone: true,
       mode: 'date',
     }).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
   },
   (table) => [
     primaryKey({
       columns: [
-        table.managerUserId,
         table.threadId,
         table.memberAccount,
         table.memberDomain,
-        table.memberNamespaceId,
         table.direction,
       ],
       name: 'GroupRequestProjection_pkey',
     }),
-    uniqueIndex('GroupRequestProjection_manager_feed_key').on(
-      table.managerUserId,
+    uniqueIndex('GroupRequestProjection_direction_feed_key').on(
+      table.threadId,
       table.direction,
       table.feedId,
     ),
     index('GroupRequestProjection_thread_feed_idx').on(
-      table.managerUserId,
       table.threadId,
       table.feedId,
     ),
     index('GroupRequestProjection_expiry_idx').on(table.expiresAt),
-    foreignKey({
-      columns: [table.managerUserId],
-      foreignColumns: [account.id],
-      name: 'GroupRequestProjection_managerUserId_fkey',
-    }).onDelete('cascade'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -1729,22 +1719,9 @@ export const federatedPeer = pgTable(
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     recognizesPeer: boolean().default(false).notNull(),
-    outboundRecognitionConfirmed: boolean().default(false).notNull(),
-    inboundRecognitionConfirmed: boolean().default(false).notNull(),
-    lightweightInboundReady: boolean().default(false).notNull(),
+    peerAcceptanceConfirmed: boolean().default(false).notNull(),
     localServiceAvailable: boolean().default(false).notNull(),
     remoteServiceReachable: boolean().default(false).notNull(),
-    reverseRecognitionPending: boolean().default(false).notNull(),
-    outboundRecognizedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
-    inboundRecognizedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
     resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
@@ -1814,8 +1791,7 @@ export const peerStateFeed = pgTable(
     check(
       'PeerStateFeed_subject_check',
       sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '')
-        OR (${table.eventType} = 'THREAD_CONTENT_HEAD' AND ((${table.account} LIKE '!%' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local') OR (${table.account} NOT LIKE '!%' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} = ${table.peerDomain})))
-        OR (${table.eventType} = 'GROUP_META_FEED_HEAD' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
+        OR (${table.eventType} = 'THREAD_CONTENT_HEAD' AND ((${table.account} LIKE '!%' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local') OR (${table.account} NOT LIKE '!%' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} = ${table.peerDomain})))`,
     ),
   ],
 );
@@ -1825,10 +1801,20 @@ export const groupMeta = pgTable(
   'GroupMeta',
   {
     threadId: integer().primaryKey().notNull(),
-    /** Origin allocation end or mirror's last completely applied round cursor. */
-    metaEndId: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
+    /** Origin allocation end or mirror's last completely applied round cursor.
+     * The compacted GROUP_PROFILE item always occupies this end coordinate. */
+    metaEndId: integer().default(0).notNull(),
+    /** Profile revision carried by the GROUP_PROFILE item at the end coordinate.
+     * Zero while the group has no profile revision yet. */
+    profileRev: integer().default(0).notNull(),
+    /** Greatest meta feed end merged from committed State Feed items. */
+    metaTargetId: integer().default(0).notNull(),
+    /** Greatest source meta feed id durably scanned by meta rounds. */
+    metaProcessedThroughId: integer().default(0).notNull(),
+    /** Fixed through of the currently open full-snapshot recovery drain. NULL
+     * selects delta rounds; only writers that also zero the processed cursor
+     * reopen the drain, and the drain's final transaction closes it. */
+    metaRecoveryThroughId: integer(),
     /** Group-scoped request number streams. Applications and invitations
      * advance independently, so every manager copies the same event number and
      * GC deletions can never reuse one. */
@@ -1845,6 +1831,19 @@ export const groupMeta = pgTable(
       name: 'GroupMeta_threadId_fkey',
     }).onDelete('cascade'),
     check('GroupMeta_metaEndId_check', sql`${table.metaEndId} >= 0`),
+    check('GroupMeta_profileRev_check', sql`${table.profileRev} >= 0`),
+    check('GroupMeta_metaTargetId_check', sql`${table.metaTargetId} >= 0`),
+    check(
+      'GroupMeta_metaProcessedThroughId_check',
+      sql`${table.metaProcessedThroughId} >= 0
+        AND ${table.metaProcessedThroughId} <= ${table.metaTargetId}`,
+    ),
+    check(
+      'GroupMeta_metaRecovery_check',
+      sql`${table.metaRecoveryThroughId} IS NULL OR (
+        ${table.metaProcessedThroughId} < ${table.metaRecoveryThroughId}
+        AND ${table.metaRecoveryThroughId} <= ${table.metaTargetId})`,
+    ),
     check(
       'GroupMeta_applicationEndId_check',
       sql`${table.applicationEndId} >= 0`,
@@ -1856,19 +1855,16 @@ export const groupMeta = pgTable(
   ],
 );
 
-/** Canonical or mirrored Group Meta member operations in remote-visible coordinate order. */
+/** One current Group Meta operation per stable key on origins and mirrors. */
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
     threadId: integer().notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
+    feedId: integer().notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
-    memberNamespaceId: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
-    /** Local mirror bookkeeping only; never serialized. */
-    fullSyncRunId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1881,74 +1877,25 @@ export const groupMetaMemberFeed = pgTable(
       columns: [table.threadId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
-    index('GroupMetaMemberFeed_member_feed_idx').on(
-      table.threadId,
-      table.memberAccount,
-      table.memberDomain,
-      table.memberNamespaceId,
-      table.feedId,
-    ),
-    index('GroupMetaMemberFeed_full_sync_idx').on(
-      table.threadId,
-      table.fullSyncRunId,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.memberNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'GroupMetaMemberFeed_memberNamespaceId_fkey',
-    }).onDelete('restrict'),
+    uniqueIndex('GroupMetaMemberFeed_member_key')
+      .on(
+        table.threadId,
+        table.memberAccount,
+        table.memberDomain,
+      ),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'GroupMetaMemberFeed_threadId_fkey',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.fullSyncRunId],
-      foreignColumns: [durableTask.id],
-      name: 'GroupMetaMemberFeed_fullSyncRunId_fkey',
-    }).onDelete('restrict'),
     check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'GroupMetaMemberFeed_body_check',
       sql`jsonb_typeof(${table.body}) = 'object'
         AND ((${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb)
-          OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb))`,
-    ),
-  ],
-);
-
-/** The single compacted GROUP_PROFILE item in one group's coordinate space. */
-export const groupMetaProfileFeed = pgTable(
-  'GroupMetaProfileFeed',
-  {
-    threadId: integer().primaryKey().notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
-    profileRev: integer().notNull(),
-    /** Local mirror bookkeeping only; never serialized. */
-    fullSyncRunId: bigint({ mode: 'bigint' }),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'GroupMetaProfileFeed_threadId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.fullSyncRunId],
-      foreignColumns: [durableTask.id],
-      name: 'GroupMetaProfileFeed_fullSyncRunId_fkey',
-    }).onDelete('restrict'),
-    check('GroupMetaProfileFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'GroupMetaProfileFeed_profileRev_check',
-      sql`${table.profileRev} >= 0`,
+          OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb)
+          OR (${table.operation} = 'GROUP_PROFILE'
+            AND ${table.body} <> '{}'::jsonb))`,
     ),
   ],
 );
@@ -2188,7 +2135,6 @@ export const federationThreadSyncState = pgTable(
     authorizationEpoch: integer().default(0).notNull(),
     /** Recoverable historical interval currently selected for reverse reconstruction. */
     activeGapId: bigint({ mode: 'bigint' }),
-    historyBoundaryReached: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2239,10 +2185,6 @@ export const federationThreadSyncState = pgTable(
           AND ${table.deletionRecoveryThroughSeq} <= ${table.deletionTargetSeq}
           AND ${table.deletionRecoveryMaxMessageSeq} >= 0
         )`,
-    ),
-    check(
-      'FederationThreadSyncState_history_check',
-      sql`NOT (${table.historyBoundaryReached} AND ${table.activeGapId} IS NOT NULL)`,
     ),
   ],
 );

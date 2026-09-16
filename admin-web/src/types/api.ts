@@ -88,7 +88,7 @@ export interface User {
   quota: UserQuotaSummary | null;
 }
 
-export interface UserQuotaSummary {
+interface UserQuotaSummary {
   status: 'healthy' | 'warning' | 'exhausted' | 'disabled';
   hasOverrides: boolean;
 }
@@ -134,7 +134,7 @@ export interface IssuedLoginCode extends LoginCodeView {
 }
 
 // System-wide active session overview entry (POST /admin/sessions; joins user for the account)
-export interface SessionListItem {
+interface SessionListItem {
   id: number;
   userId: number;
   client: string;
@@ -155,7 +155,7 @@ export interface SessionListResult {
 }
 
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
-export interface AdminSessionListItem {
+interface AdminSessionListItem {
   adminId: number;
   id: string;
   userAgent: string | null;
@@ -192,7 +192,7 @@ export interface ReuseAlert {
 }
 
 // Online SSE connection (POST /admin/connections, aggregated by user; since = that user's earliest connect time in ms)
-export interface ConnectionClient {
+interface ConnectionClient {
   userId: number;
   account: string | null;
   connections: number;
@@ -252,9 +252,7 @@ export interface FederatedPeer {
   haltReason: string | null;
   activeNamespaceId: number | null;
   recognizesPeer: boolean;
-  outboundRecognitionConfirmed: boolean;
-  inboundRecognitionConfirmed: boolean;
-  lightweightInboundReady: boolean;
+  peerAcceptanceConfirmed: boolean;
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
 }
@@ -276,7 +274,7 @@ export interface QuotaOverrides {
 }
 
 /** Today's usage for one category (count against the effective limit). */
-export interface QuotaCategoryUsage {
+interface QuotaCategoryUsage {
   count: number;
   limit: number;
 }
@@ -317,7 +315,7 @@ export interface ContinueQuotaInput {
 
 // One trust-lifecycle transition (POST /admin/federation/peers/:domain/events) — the admin timeline
 // that shows the trust → connection-loss process.
-export type FederationPeerEventType =
+type FederationPeerEventType =
   | 'discovered'
   | 'trusted'
   | 'degraded'
@@ -346,7 +344,7 @@ export type SelfCheckGroup =
   | 'crypto'
   | 'clock';
 
-export interface SelfCheckSummary {
+interface SelfCheckSummary {
   ok: number;
   warn: number;
   fail: number;
@@ -475,7 +473,7 @@ export interface MeResult {
 }
 
 // ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
-export interface UserDetailUser {
+interface UserDetailUser {
   id: number;
   account: string;
   name: string;
@@ -489,7 +487,7 @@ export interface UserDetailUser {
   updatedAt: number;
 }
 
-export interface UserDetailGroup {
+interface UserDetailGroup {
   threadId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   joinedAt: number;
@@ -497,7 +495,7 @@ export interface UserDetailGroup {
   thread: { group: { account: string; name: string } | null };
 }
 
-export interface UserDetailPushToken {
+interface UserDetailPushToken {
   id: number;
   platform: 'ANDROID' | 'WEB' | 'IOS';
   deviceId: string | null;
@@ -533,7 +531,7 @@ export interface DashboardFederation {
   halted: number;
 }
 
-export interface DashboardAction {
+interface DashboardAction {
   id: string;
   action: string;
   targetType: string | null;
@@ -561,7 +559,7 @@ export interface DashboardSummary {
 }
 
 // ── Durable task history (POST /admin/durable-tasks) ────────────────────────
-export type DurableTaskKind = 'MUTATION' | 'PROJECTION';
+type DurableTaskKind = 'MUTATION' | 'PROJECTION';
 export type DurableTaskStatus =
   | 'PENDING'
   | 'PROCESSING'
@@ -571,7 +569,7 @@ export type DurableTaskStatus =
   | 'FAILED'
   | 'SUPERSEDED';
 
-export interface DurableTaskEntry {
+interface DurableTaskEntry {
   id: string;
   kind: DurableTaskKind;
   scopeType: 'USER_PAIR' | 'GROUP';
@@ -626,7 +624,7 @@ export interface AdminListResult {
 }
 
 // ── Groups/threads (POST /admin/groups) ──────────────────────────────────────
-export interface GroupRow {
+interface GroupRow {
   id: number;
   createdAt: number;
   originDomain: string | null;
@@ -642,7 +640,7 @@ export interface GroupListResult {
 
 // ── Settings (POST /admin/settings/*) ────────────────────────────────────────
 /** Stored VAPID config as seen by the admin read view. privateKey is intentionally absent (write-only). */
-export interface VapidDescriptor {
+interface VapidDescriptor {
   configured: boolean;
   subject?: string;
   publicKey?: string;
@@ -676,7 +674,7 @@ export interface ServerKeyStatus {
  *  operator's data/google-services.json on disk; apiKey is intentionally absent (not
  *  needed for the admin display — parallel to the VAPID descriptor omitting privateKey).
  *  projectId/appId/gcmSenderId are shown as proof of which Firebase project is configured. */
-export interface FirebaseConfigDescriptor {
+interface FirebaseConfigDescriptor {
   configured: boolean;
   projectId?: string;
   appId?: string;

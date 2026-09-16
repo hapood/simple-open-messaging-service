@@ -6,7 +6,7 @@ import {
   SerializeInterceptor,
   serializeBody,
 } from './serialize.interceptor.js';
-import { envelope, type ApiResult } from './api-result.js';
+import { businessEnvelope, envelope, type ApiResult } from './api-result.js';
 import { BusinessCode } from './business-code.js';
 
 describe('serializeBody', () => {
@@ -74,7 +74,7 @@ describe('serializeBody', () => {
   it('circular references do not overflow the stack (hits seen and returns the original reference)', () => {
     const a: { id: bigint; self?: unknown } = { id: 1n };
     a.self = a;
-    const out = serializeBody(a) as { id: string; self: unknown };
+    const out = serializeBody(a) as unknown as { id: string; self: unknown };
     expect(out.id).toBe('1');
     expect(out.self).toBe(a); // the circular point returns the original reference
   });
@@ -148,6 +148,21 @@ describe('SerializeInterceptor — envelope wrapping', () => {
     expect(out.data).toEqual({ a: 1 });
     expect(out.messageKey).toBe('friend.msg.sent');
     expect(out.hasMore).toBe(true);
+  });
+
+  it('serializes an expected business refusal without an exception', () => {
+    const out = run(
+      makeInterceptor(false),
+      businessEnvelope(BusinessCode.INVITE_EXPIRED, 'request has expired', {
+        status: 'REJECTED',
+        reason: 'INTENT_EXPIRED',
+      }),
+    ) as ApiResult;
+    expect(out).toMatchObject({
+      code: BusinessCode.INVITE_EXPIRED,
+      message: 'request has expired',
+      data: { status: 'REJECTED', reason: 'INTENT_EXPIRED' },
+    });
   });
 
   it('does NOT wrap a @Raw handler return — serializeBody only', () => {

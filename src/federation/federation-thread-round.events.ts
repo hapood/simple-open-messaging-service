@@ -5,5 +5,5 @@ export interface FederationThreadRoundWake {
   threadId: number;
   peerDomain: string;
   namespaceId: number;
-  direction: 'forward' | 'reverse' | 'both';
+  direction: 'forward' | 'reverse' | 'meta' | 'both';
 }

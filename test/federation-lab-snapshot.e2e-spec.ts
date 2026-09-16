@@ -24,20 +24,18 @@ beforeAll(async () => {
              ('!mirror', 'bravo.test', 91, 2, 'Mirror group', 'Mirror bio'),
              ('remote', 'bravo.test', 91, 1, 'Direct profile', ''),
              ('remote', 'bravo.test', 92, 1, 'Relayed profile', '');
-    INSERT INTO "GroupMetaProfileFeed" ("threadId", "feedId", "profileRev") VALUES (302, 1, 2);
-    INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", "memberNamespaceId", operation, body)
-      VALUES (301, 1, 'owner', 'local', 0, 'UPSERT', '{"role":"OWNER","profileRev":1}'),
-             (302, 1, 'remote', 'bravo.test', 91, 'UPSERT', '{"role":"MEMBER","profileRev":1}'),
-             (302, 2, 'departed', 'bravo.test', 91, 'UPSERT', '{"role":"MEMBER","profileRev":1}'),
-             (302, 3, 'departed', 'bravo.test', 91, 'DEPART', '{}');
+    INSERT INTO "GroupMeta" ("threadId", "metaEndId", "profileRev") VALUES (301, 1, 1), (302, 1, 2);
+    INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
+      VALUES (301, 1, 'owner', 'local', 'UPSERT', '{"role":"OWNER","profileRev":1}'),
+             (302, 1, 'remote', 'bravo.test', 'UPSERT', '{"role":"MEMBER","profileRev":1}');
     INSERT INTO "RelationshipPair" (id, kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
       "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", "threadId", active)
       VALUES (401, 'P2P', 'USER', 'owner', 'local', 0, 'USER', 'remote', 'bravo.test', 91, 303, true);
     INSERT INTO "RelationshipIntent" ("pairId", "authorSide", status, "profileRev", "requestedAt", "messageEndSeq", "tombstoneEndSeq")
       VALUES (401, 'B', 'ACCEPTED', 1, now(), 0, 0);
-    INSERT INTO "GroupRequestProjection" ("managerUserId", "threadId", "memberAccount", "memberDomain", "memberNamespaceId",
-      "memberProfileRev", direction, "feedId", "requestId", status, "requestedAt", "expiresAt")
-      VALUES (101, 301, 'remote', 'bravo.test', 91, 1, 'APPLICATION', 1, 501, 'REQUESTED', now(), now() + interval '1 day');
+    INSERT INTO "GroupRequestProjection" ("threadId", "memberAccount", "memberDomain", "memberNamespaceId",
+      "memberProfileRev", direction, "feedId", status, "requestedAt", "expiresAt")
+      VALUES (301, 'remote', 'bravo.test', 91, 1, 'APPLICATION', 1, 'REQUESTED', now(), now() + interval '1 day');
     INSERT INTO "Message" ("threadId", seq, "contentType", content, "updatedAt", "creatorAccount", "creatorDomain", "creatorNamespaceId", "profileRev")
       VALUES (302, 1, 'PURE_TEXT', '{"text":"group"}', now(), 'remote', 'bravo.test', 91, 1),
              (303, 1, 'PURE_TEXT', '{"text":"p2p"}', now(), 'owner', 'local', 0, 1);
@@ -67,9 +65,8 @@ it('reads local groups, mirrors, addressed members and separate P2P evidence on 
     defaultProfileRev: 1,
     requests: [
       {
-        managerAddress: 'owner@alpha.test',
         memberAddress: 'remote@bravo.test',
-        requestId: '501',
+        feedId: 1,
       },
     ],
   });

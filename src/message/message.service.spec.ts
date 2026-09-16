@@ -1,6 +1,7 @@
 // Unit tests for MessageService.attachMediaStatus — the bulk readiness decision that backs the
 // query-messages mediaStatus field + mounted-message media-status endpoint. Drizzle is mocked.
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   derivePreview,
   MessageService,
@@ -27,19 +28,19 @@ describe('derivePreview', () => {
 });
 
 function databaseMock(queries: {
-  message?: ReturnType<typeof vi.fn>;
-  mediaMessage?: ReturnType<typeof vi.fn>;
-  mediaAsset?: ReturnType<typeof vi.fn>;
-  pendingMedia?: ReturnType<typeof vi.fn>;
-  user?: ReturnType<typeof vi.fn>;
-  execute?: ReturnType<typeof vi.fn>;
+  message?: Mock<(...args: unknown[]) => unknown>;
+  mediaMessage?: Mock<(...args: unknown[]) => unknown>;
+  mediaAsset?: Mock<(...args: unknown[]) => unknown>;
+  pendingMedia?: Mock<(...args: unknown[]) => unknown>;
+  user?: Mock<(...args: unknown[]) => unknown>;
+  execute?: Mock<(...args: unknown[]) => unknown>;
 }) {
   return {
     db: {
       query: {
         profileTable: {
           findMany: async () => {
-            const rows = queries.user
+            const rows = (queries.user
               ? await queries.user()
               : [
                   {
@@ -48,7 +49,7 @@ function databaseMock(queries: {
                     namespaceId: 0,
                     name: 'Alice',
                   },
-                ];
+                ]) as Array<{ name: string }>;
             return rows.map((row: { name: string }) => ({
               ...row,
               displayName: row.name,
@@ -355,7 +356,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -378,7 +378,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -415,7 +414,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -486,7 +484,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -512,7 +509,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -557,7 +553,6 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -606,7 +601,7 @@ describe('MessageService quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
+        message: store.message.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -650,7 +645,7 @@ describe('MessageService quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: store.message?.findMany,
+        message: store.message.findMany,
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,

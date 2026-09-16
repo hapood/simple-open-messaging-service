@@ -4,6 +4,7 @@ import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseService } from '../database/database.service.js';
+import type { AdminAuditMetadata } from './audit.decorator.js';
 import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
 
 describe('AdminAuditInterceptor', () => {
@@ -15,7 +16,9 @@ describe('AdminAuditInterceptor', () => {
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
   const reflector = {
-    getAllAndOverride: vi.fn(() => ({
+    // Pinned to the real metadata type so per-test mockReturnValueOnce values aren't
+    // excess-property-checked against whatever the default implementation happens to return.
+    getAllAndOverride: vi.fn((): AdminAuditMetadata | undefined => ({
       action: 'user.disable',
       options: { targetType: 'user', targetParam: 'id' },
     })),

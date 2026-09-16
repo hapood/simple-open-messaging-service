@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { uploadCacheControl } from './bootstrap';
+import { uploadCacheControl } from './bootstrap.js';
 
 describe('uploadCacheControl', () => {
   it.each(['jpg', 'jpeg', 'png', 'gif', 'webp'])(

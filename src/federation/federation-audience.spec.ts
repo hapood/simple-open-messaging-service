@@ -35,7 +35,7 @@ describe('openFederatedAudienceInTx history access', () => {
     const { tx, values } = transaction();
 
     await expect(
-      openFederatedAudienceInTx(tx, 'peer.test', 11, 9n),
+      openFederatedAudienceInTx(tx, 'peer.test', 11, 9),
     ).resolves.toBe(true);
 
     expect(values).toHaveBeenCalledWith(
@@ -44,7 +44,7 @@ describe('openFederatedAudienceInTx history access', () => {
         targetDomain: 'peer.test',
         targetNamespaceId: 7,
         messageAccessAfterSeq: 0,
-        groupMetaVisibleAfter: 9n,
+        groupMetaVisibleAfter: 9,
       }),
     );
   });

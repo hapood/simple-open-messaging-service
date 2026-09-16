@@ -1,10 +1,9 @@
-import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../business/relationship/relationship-intent.service.js';
 import { Module } from '@nestjs/common';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 import { ThreadAccessGuard } from './thread-access.guard.js';
 import { MessageModule } from '../message/message.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
-import { EndFriendshipTaskHandler } from './end-friendship-task.handler.js';
 
 @Module({
   // ThreadAccessGuard injects AccountThreadStateService to resolve the caller's membership; export it
@@ -15,7 +14,6 @@ import { EndFriendshipTaskHandler } from './end-friendship-task.handler.js';
     RelationshipIntentService,
     AccountThreadStateService,
     ThreadAccessGuard,
-    EndFriendshipTaskHandler,
   ],
   exports: [AccountThreadStateService, ThreadAccessGuard],
 })

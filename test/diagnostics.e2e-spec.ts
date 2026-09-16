@@ -1,23 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { diagnosticsReport } from '../src/database/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUserWithSession } from './seed';
+import { createTestApp } from './support/app';
 import {
   DiagnosticsService,
   DIAGNOSTICS_DIR,
 } from '../src/diagnostics/diagnostics.service';
 import { DiagnosticsGcService } from '../src/diagnostics/diagnostics-gc.service';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * End-to-end coverage for the diagnostics-reporting feature:
@@ -31,21 +29,14 @@ import { DiagnosticsGcService } from '../src/diagnostics/diagnostics-gc.service'
  * uses unique content (→ unique sha256 filename) and records what it creates for afterAll cleanup.
  */
 describe('diagnostics reporting e2e', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let diag: DiagnosticsService;
   let gc: DiagnosticsGcService;
   const createdFiles: string[] = [];
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     diag = app.get(DiagnosticsService);
     gc = app.get(DiagnosticsGcService);
     mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
@@ -53,10 +44,9 @@ describe('diagnostics reporting e2e', () => {
 
   beforeEach(async () => {
     // CASCADE on User clears FK-linked rows; both listed for a clean slate per test.
-    await database.db.execute(
-      sql.raw(
-        'TRUNCATE TABLE "DiagnosticsReport", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-      ),
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "DiagnosticsReport", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
   });
 

@@ -79,7 +79,6 @@ export enum BusinessCode {
   THREAD_FEED_CURSOR_INVALID = 30007, // attention range is ahead of the current account feed
 
   // 40xxx group domain
-  GROUP_NOT_FRIEND = 40002, // non-friend cannot be invited
   GROUP_INVALID_TOKEN = 40003, // invalid invite token
   GROUP_OWNER_MUST_TRANSFER = 40004, // owner must transfer before leaving
   GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
@@ -133,38 +132,4 @@ export enum BusinessCode {
   CALL_TERMINATED = 70008, // a federated call already reached another terminal outcome; stop dependent frames.
   // Thrown by the caller's server when the S2S `incoming` POST fails; the `unreachable` terminal
   // bubble is already written before this surfaces to the caller's client.
-}
-
-/**
- * Exact Federation v1 wire registry. BusinessCode also contains local-client and internal diagnostic
- * values which MUST NOT cross the S2S boundary; keeping the protocol subset as an enum lets the
- * conformance CLI compare code, normative Markdown, and error.schema.json without heuristics.
- */
-export enum FederationV1WireErrorCode {
-  VALIDATION_FAILED = BusinessCode.VALIDATION_FAILED,
-  NOT_FOUND = BusinessCode.NOT_FOUND,
-  FORBIDDEN = BusinessCode.FORBIDDEN,
-  RATE_LIMITED = BusinessCode.RATE_LIMITED,
-  INTERNAL = BusinessCode.INTERNAL,
-  FEDERATION_RECOGNITION_REQUIRED = BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-  FEDERATION_BAD_SIGNATURE = BusinessCode.FEDERATION_BAD_SIGNATURE,
-  FEDERATION_BINDING_VIOLATION = BusinessCode.FEDERATION_BINDING_VIOLATION,
-  FEDERATION_MALFORMED = BusinessCode.FEDERATION_MALFORMED,
-  FEDERATION_PEER_BLOCKED = BusinessCode.FEDERATION_PEER_BLOCKED,
-  FEDERATION_GROUP_AUTHOR_LEFT = BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT,
-  FEDERATION_QUOTA_EXCEEDED = BusinessCode.FEDERATION_QUOTA_EXCEEDED,
-  FEDERATION_PAYLOAD_TOO_LARGE = BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
-  FEDERATION_CAPABILITY_DISABLED = BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-  FEDERATION_LOCAL_IDENTITY_LOST = BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
-  FEDERATION_IDENTITY_MISMATCH = BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-  FEDERATION_FEED_CURSOR_UNAVAILABLE = BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-  FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
-  FEDERATION_RANGE_NOT_SATISFIABLE = BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
-  FEDERATION_PROFILE_NOT_DISCLOSED = BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-  FEDERATION_MESSAGE_QUERY_RATE_LIMITED = BusinessCode.FEDERATION_MESSAGE_QUERY_RATE_LIMITED,
-  FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = BusinessCode.FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE,
-  CALL_NOT_ALLOWED = BusinessCode.CALL_NOT_ALLOWED,
-  CALL_BUSY = BusinessCode.CALL_BUSY,
-  CALL_CANCELLED = BusinessCode.CALL_CANCELLED,
-  CALL_TERMINATED = BusinessCode.CALL_TERMINATED,
 }

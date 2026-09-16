@@ -85,7 +85,13 @@ function harness(localGroupAuthority = false) {
           authorizationEpoch: 4,
           targetSeq,
         });
-        return { targetSeq, maxMessageSeq, processed: true };
+        // maxMessageSeq is optional in the real round result; the fake keeps
+        // the optional form so the "omits maxMessageSeq" test can drop it.
+        return { targetSeq, maxMessageSeq, processed: true } as {
+          targetSeq: number;
+          maxMessageSeq?: number;
+          processed: boolean;
+        };
       },
     ),
   };
@@ -274,19 +280,21 @@ describe('FederationThreadForwardRoundExecutorService', () => {
   it('omits maxMessageSeq after the recovery drain is complete', async () => {
     const h = harness();
     h.rounds.runTombstones.mockImplementationOnce(
+      // The real 5th parameter is optional (requestedTake?) — a mock that
+      // requires it would not be assignable under strictFunctionTypes.
       async (
         threadId: number,
         peerDomain: string,
         _namespaceId: number,
         driver: FederationThreadForwardTombstoneRoundDriver,
-        take: number,
+        take?: number,
       ) => {
         await driver.process({
           threadId,
           peerDomain,
           after: 9,
           through: 12,
-          take,
+          take: take!,
         });
         return { targetSeq: 12, processed: true };
       },

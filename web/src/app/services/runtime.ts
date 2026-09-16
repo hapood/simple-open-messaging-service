@@ -537,7 +537,7 @@ export const apiOriginSecondary = signal<string | null>(
 
 /** Custom URI scheme the Tauri Rust side registers (see `src-tauri/src/lib.rs`) to proxy
  *  `/uploads/*` media with a Bearer header. */
-export const MEDIA_SCHEME = 'media';
+const MEDIA_SCHEME = 'media';
 const MEDIA_HOST = 'localhost';
 
 /**
@@ -716,7 +716,7 @@ export async function setApiOriginSecondary(
 
 /** Sync {@link apiOriginSecondary} from an authoritative value WITHOUT re-persisting to Rust (the value is
  *  already in the Rust config — the self-heal path). */
-export function syncApiOriginSecondarySignal(origin: string | null): void {
+function syncApiOriginSecondarySignal(origin: string | null): void {
   const canonical = origin ? canonicalOrigin(origin) : null;
   apiOriginSecondary.set(canonical);
   secureStore.setApiOriginSecondary(canonical);

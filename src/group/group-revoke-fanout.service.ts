@@ -4,11 +4,15 @@ import { DatabaseService } from '../database/database.service.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
 import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
-import { groupStateFields, readGroupState } from './group-state.js';
+import { groupStateFields, readGroupState } from '../business/group/shared/group-state.js';
 import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
+import { enqueueDepartureFanoutsInTx } from '../message/account-thread-fanout-task.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
-import { readForbiddenGroupTask } from './group-disband-task.js';
+import {
+  readForbiddenGroupTask,
+  readDisbandMirrorGroupMembersTask,
+} from './group-disband-task.js';
 
 @Injectable()
 export class GroupRevokeFanoutService {
@@ -26,8 +30,12 @@ export class GroupRevokeFanoutService {
       parent.taskType === DurableTaskType.REVOKE_FORBIDDEN_GROUP
         ? readForbiddenGroupTask(parent)
         : null;
+    const mirror =
+      parent.taskType === DurableTaskType.DISBAND_MIRROR_GROUP_MEMBERS
+        ? readDisbandMirrorGroupMembersTask(parent)
+        : null;
     return this.database.db.transaction(async (tx) => {
-      await requireThreadContentLockInTx(tx, threadId);
+      const threadLock = await requireThreadContentLockInTx(tx, threadId);
       const group = await readGroupState(tx, eq(groupStateFields.id, threadId));
       if (!group || businessAccountScopeKey(group) !== parent.scopeKey)
         throw new Error('revocation task belongs to another group');
@@ -49,6 +57,7 @@ export class GroupRevokeFanoutService {
         current.status !== 'PROCESSING' ||
         current.taskType !== parent.taskType ||
         (current.taskType !== DurableTaskType.DISBAND_GROUP &&
+          current.taskType !== DurableTaskType.DISBAND_MIRROR_GROUP_MEMBERS &&
           current.taskType !== DurableTaskType.REVOKE_FORBIDDEN_GROUP)
       ) {
         throw new Error('revocation parent is not checkpointable');
@@ -70,19 +79,38 @@ export class GroupRevokeFanoutService {
         )
           return false;
       }
+      if (
+        mirror &&
+        (group.domain !== mirror.peerDomain ||
+          group.namespaceId !== mirror.namespaceId)
+      )
+        return false;
+      if (mirror) {
+        const epoch = await tx.execute<{ authorizationEpoch: number }>(sql`
+          SELECT "authorizationEpoch" FROM "MessageThread" WHERE id = ${threadId}
+        `);
+        if (
+          group.dissolvedAt === null ||
+          epoch.rows[0]?.authorizationEpoch !==
+            mirror.expectedAuthorizationEpoch + 1
+        )
+          return false;
+      }
       const next = await tx.execute<{
         pairId: string;
         account: string;
         domain: string;
         namespaceId: number;
+        active: boolean;
       }>(sql`
         SELECT pair.id AS "pairId", pair."endpointBAccount" AS account,
           pair."endpointBDomain" AS domain,
+          pair.active AS active,
           CASE WHEN pair."endpointBDomain" = 'local' THEN 0 ELSE pair."endpointBNamespaceId" END AS "namespaceId"
         FROM "RelationshipPair" pair
         WHERE pair."threadId" = ${threadId}
           AND pair.kind = 'GROUP_MEMBER'
-          AND pair.active = true
+          ${denial ? sql`AND pair.active = true` : sql``}
           AND pair.id > ${afterPairId}
           ${
             denial
@@ -91,7 +119,12 @@ export class GroupRevokeFanoutService {
             AND pair."endpointANamespaceId" = ${denial.namespaceId}
             AND pair."endpointBNamespaceId" = ${denial.namespaceId}
           `
-              : sql``
+              : mirror
+                ? sql`
+            -- A mirror's membership pairs are its local accounts only.
+            AND pair."endpointBDomain" = 'local'
+          `
+                : sql``
           }
         ORDER BY pair.id
         LIMIT 1
@@ -99,6 +132,54 @@ export class GroupRevokeFanoutService {
       const member = next.rows[0];
       if (!member) return false;
       const pairId = BigInt(member.pairId);
+
+      // The parent already wrote GROUP_DISSOLVED. Bind its seq to this active
+      // local relationship and admit a directed head before the revoke child
+      // can make the ordinary fanout's active-audience check skip the member.
+      if (
+        parent.taskType === DurableTaskType.DISBAND_GROUP &&
+        member.active &&
+        member.domain === 'local'
+      ) {
+        const boundary = await tx.execute<{
+          seq: number;
+          tombstoneEndSeq: number;
+          accountId: number;
+        }>(sql`
+          SELECT message.seq, thread."tombstoneEndSeq",
+            local.id AS "accountId"
+          FROM "MessageThread" thread
+          JOIN "Message" message ON message."threadId" = thread.id
+          JOIN "Account" local ON local.account = ${member.account}
+            AND local.domain = 'local' AND local."namespaceId" = 0
+          WHERE thread.id = ${threadId}
+            AND message."contentType" = 'SYSTEM'
+            AND message.content::jsonb->>'type' = 'GROUP_DISSOLVED'
+          ORDER BY message.seq DESC LIMIT 1
+        `);
+        const final = boundary.rows[0];
+        if (!final)
+          throw new Error('active dissolved member has no final system message');
+        await tx.execute(sql`
+          UPDATE "AccountThreadState" state
+          SET "messageVisibleThroughSeq" = ${final.seq},
+            "updatedAt" = CURRENT_TIMESTAMP
+          WHERE state."threadId" = ${threadId}
+            AND state."accountId" = ${final.accountId}
+            AND state."messageVisibleThroughSeq" IS DISTINCT FROM ${final.seq}
+        `);
+        await enqueueDepartureFanoutsInTx(
+          tx,
+          threadLock,
+          {
+            threadId,
+            messageEndSeq: final.seq,
+            tombstoneEndSeq: final.tombstoneEndSeq,
+          },
+          'GROUP',
+          { account: member.account, domain: 'local', namespaceId: 0 },
+        );
+      }
 
       await this.tasks.enqueueTaskInTx(tx, {
         scope: {
@@ -113,10 +194,21 @@ export class GroupRevokeFanoutService {
           threadId,
           ...(denial
             ? {
-                ...denial,
+                peerDomain: denial.peerDomain,
+                namespaceId: denial.namespaceId,
+                expectedAuthorizationEpoch: denial.expectedAuthorizationEpoch,
                 direction: group.domain === 'local' ? 'GROUP' : 'MEMBER',
+                groupAccount: group.account,
+                groupDomain: group.domain,
+                groupNamespaceId: group.namespaceId,
               }
-            : {}),
+            : mirror
+              ? {
+                  direction: 'MIRROR',
+                  expectedAuthorizationEpoch:
+                    mirror.expectedAuthorizationEpoch + 1,
+                }
+              : {}),
           memberUserId: {
             account: member.account,
             domain: member.domain,

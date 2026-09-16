@@ -118,17 +118,7 @@
       ],
       "additionalProperties": false
     },
-    "groupMetaFeedHeadBody": {
-      "type": "object",
-      "required": ["groupMetaFeedEndId"],
-      "properties": {
-        "groupMetaFeedEndId": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        }
-      },
-      "additionalProperties": false
-    },
-    "threadContentHeadBody": {
+    "p2pThreadContentHeadBody": {
       "type": "object",
       "required": ["messageEndSeq", "tombstoneEndSeq"],
       "properties": {
@@ -137,6 +127,22 @@
         },
         "tombstoneEndSeq": {
           "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        }
+      },
+      "additionalProperties": false
+    },
+    "groupThreadContentHeadBody": {
+      "type": "object",
+      "required": ["messageEndSeq", "tombstoneEndSeq"],
+      "properties": {
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "groupMetaFeedEndId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
@@ -181,21 +187,6 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
-            },
-            "eventType": {
-              "const": "GROUP_META_FEED_HEAD"
-            },
-            "body": {
-              "$ref": "#/$defs/groupMetaFeedHeadBody"
-            }
-          },
-          "unevaluatedProperties": false
-        },
-        {
-          "$ref": "#/$defs/itemBase",
-          "properties": {
-            "account": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "eventType": {
@@ -205,7 +196,7 @@
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "body": {
-              "$ref": "#/$defs/threadContentHeadBody"
+              "$ref": "#/$defs/p2pThreadContentHeadBody"
             }
           },
           "required": ["peerAccount"],
@@ -221,7 +212,7 @@
               "const": "THREAD_CONTENT_HEAD"
             },
             "body": {
-              "$ref": "#/$defs/threadContentHeadBody"
+              "$ref": "#/$defs/groupThreadContentHeadBody"
             }
           },
           "unevaluatedProperties": false

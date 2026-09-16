@@ -88,7 +88,7 @@ export function selectedMessagesCopyText(
     .join('\n\n');
 }
 
-export function formatCopyTimestamp(ms: number): string {
+function formatCopyTimestamp(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;

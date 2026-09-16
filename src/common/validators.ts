@@ -3,7 +3,7 @@ import { Transform } from 'class-transformer';
 import { IsString, Length } from 'class-validator';
 
 /** Max length for a display name (kept aligned with the historical UpdateProfileDto cap). */
-export const DISPLAY_NAME_MAX = 30;
+const DISPLAY_NAME_MAX = 30;
 
 /**
  * C0 (U+0000-U+001F) + C1 (U+007F-U+009F) control characters. Built from a string via new RegExp so

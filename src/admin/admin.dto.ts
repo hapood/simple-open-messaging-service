@@ -570,7 +570,6 @@ export class AdminDurableTaskQueryDto {
     enum: [
       'PENDING',
       'PROCESSING',
-      'ASYNC_PROCESSING',
       'SUCCEEDED',
       'REJECTED',
       'FAILED',
@@ -581,7 +580,6 @@ export class AdminDurableTaskQueryDto {
   @IsIn([
     'PENDING',
     'PROCESSING',
-    'ASYNC_PROCESSING',
     'SUCCEEDED',
     'REJECTED',
     'FAILED',
@@ -590,7 +588,6 @@ export class AdminDurableTaskQueryDto {
   status?:
     | 'PENDING'
     | 'PROCESSING'
-    | 'ASYNC_PROCESSING'
     | 'SUCCEEDED'
     | 'REJECTED'
     | 'FAILED'

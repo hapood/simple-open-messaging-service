@@ -103,7 +103,7 @@ async function readNodeIntentRows(client) {
   return result.rows;
 }
 
-export function normalizeNodeIntentRows(node, rows, users) {
+function normalizeNodeIntentRows(node, rows, users) {
   const cohort = users instanceof Set ? users : new Set(users);
   const directions = new Map();
   const duplicates = [];
@@ -188,16 +188,6 @@ export async function closeP2pAuditDatabases(connections) {
   await Promise.allSettled(
     [...connections.values()].map(({ client }) => client.end()),
   );
-}
-
-export async function readP2pPairSnapshot(connections, users) {
-  const entries = await Promise.all(
-    [...connections.values()].map(async ({ node, client }) => {
-      const rows = await readNodeRows(client);
-      return [node.name, normalizeNodePairRows(node, rows, users)];
-    }),
-  );
-  return Object.fromEntries(entries);
 }
 
 export async function readP2pConsistencySnapshot(connections, users) {
@@ -293,45 +283,4 @@ export function compareFinalP2pFriends(snapshot, users) {
   }
   if (mismatches.length > 0) passed = false;
   return { passed, crossNodePairs, finalFriends, mismatches, nodes };
-}
-
-export async function waitForP2pFriendConvergence({
-  connections,
-  users,
-  timeoutMs,
-  intervalMs,
-  stableSamples,
-  onProgress = console.log,
-}) {
-  const deadline = Date.now() + timeoutMs;
-  let passingSamples = 0;
-  let sample = 0;
-  let latest;
-  let comparison;
-  while (Date.now() < deadline) {
-    sample += 1;
-    latest = await readP2pPairSnapshot(connections, users);
-    comparison = compareFinalP2pFriends(latest, users);
-    passingSamples = comparison.passed ? passingSamples + 1 : 0;
-    const activeCount = Object.values(latest).reduce(
-      (total, node) => total + node.active.length,
-      0,
-    );
-    onProgress(
-      `[p2p][oracle] sample=${sample} pass=${comparison.passed} ` +
-        `stable=${passingSamples}/${stableSamples} active=${activeCount} ` +
-        `finalFriends=${comparison.finalFriends} ` +
-        `activeMismatch=${comparison.mismatches.length}`,
-    );
-    if (passingSamples >= stableSamples) {
-      return { snapshot: latest, comparison, samples: sample };
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  const error = new Error(
-    `P2P final friends did not converge for ${stableSamples} consecutive samples within ${timeoutMs}ms`,
-  );
-  error.snapshot = latest;
-  error.comparison = comparison;
-  throw error;
 }

@@ -42,7 +42,7 @@ import {
   type S2SProfile,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
-import { RelationshipService } from '../relationship/relationship.service.js';
+import { RelationshipService } from '../business/relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
@@ -58,7 +58,6 @@ type ClientStateFeedItem = {
   eventType:
     | 'PROFILE'
     | 'RELATIONSHIP_INTENT'
-    | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
     | 'THREAD_STATE';
@@ -282,14 +281,21 @@ export class UserController {
         'exactly one of threadId or account is required',
         HttpStatus.BAD_REQUEST,
       );
-    const parseCursor = (value: string, name: string): bigint => {
+    const parseCursor = (value: string, name: string): number => {
       if (!/^(0|[1-9]\d*)$/.test(value))
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
           `${name} must be a non-negative integer`,
           HttpStatus.BAD_REQUEST,
         );
-      return BigInt(value);
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} must be a non-negative safe integer`,
+          HttpStatus.BAD_REQUEST,
+        );
+      return parsed;
     };
     const mode = modeParam ?? 'delta';
     if (mode !== 'full' && mode !== 'delta')

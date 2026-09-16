@@ -8,7 +8,7 @@ export interface RelationshipIntentSnapshot {
   expiresAt: Date | null;
 }
 
-export interface RelationshipIntentTransition {
+interface RelationshipIntentTransition {
   state: 'CONFIRMED' | 'UNCONFIRMED';
   promoteLocalRequest: boolean;
 }

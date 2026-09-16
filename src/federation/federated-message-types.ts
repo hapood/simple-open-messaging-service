@@ -1,6 +1,6 @@
 import type { ContentType } from '../database/enums.js';
 
-export type FederatedContentType = Exclude<ContentType, 'SYSTEM'>;
+type FederatedContentType = Exclude<ContentType, 'SYSTEM'>;
 
 export interface FederationAddress {
   account: string;

@@ -23,6 +23,7 @@ type MentionProjectionState = {
   lastMentionSeq: number | null;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  threadProfileRev: number;
   blocked: boolean;
   clearedSeq: number | null;
   messageVisibleThroughSeq: number | null;
@@ -85,7 +86,7 @@ export class ThreadFeedHeadWriter {
   ) {
     const result = await tx.execute<MentionProjectionState>(sql`
       SELECT a.account, s."unreadCount", s."previewSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
-        s."tombstoneEndSeq", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
+        s."tombstoneEndSeq", s."threadProfileRev", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
       FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
       JOIN "MessageThread" t ON t.id = s."threadId"
       WHERE s."accountId" = ${accountId} AND s."threadId" = ${threadId}
@@ -206,45 +207,56 @@ export class ThreadFeedHeadWriter {
     }
   }
 
-  /** Publish the group meta head to members whose stored copy is behind, even
-   * when no content head moved — meta-only mutations advance no message
-   * sequence. Blocked recipients stay stale; unblocking re-reads the head.
-   * Caller holds the thread lock and runs this after the content-head writes;
-   * the allocation trigger numbers each changed row for the thread feed. */
-  static async advanceGroupMetaHeadsInTx(
+  /** Publish the Group Meta coordinate and its end-anchored profile revision to
+   * members whose stored copy is behind, even when no content head moved —
+   * meta-only mutations advance no message sequence. Blocked recipients stay
+   * stale; unblocking re-reads the head. Caller holds the thread lock and runs
+   * this after the content-head writes; the allocation trigger numbers each
+   * changed row for the thread feed. */
+  static async advanceGroupMetaCoordinatesInTx(
     tx: DatabaseTransaction,
     input: {
       threadId: number;
       userIds: readonly number[];
-      groupMetaFeedEndId: bigint;
+      groupMetaFeedEndId: number;
+      profileRev: number;
     },
-  ): Promise<void> {
-    if (input.userIds.length === 0) return;
-    await tx.execute(sql`
+  ): Promise<number[]> {
+    if (input.userIds.length === 0) return [];
+    const changed = await tx.execute<{ accountId: number }>(sql`
       UPDATE "AccountThreadState" s
       SET "groupMetaFeedEndId" = GREATEST(
-        COALESCE(s."groupMetaFeedEndId", 0::bigint), ${input.groupMetaFeedEndId}::bigint)
+        COALESCE(s."groupMetaFeedEndId", 0), ${input.groupMetaFeedEndId}),
+        "threadProfileRev" = GREATEST(s."threadProfileRev", ${input.profileRev})
       FROM unnest(${sql.param([...input.userIds])}::integer[]) AS u(id)
       WHERE s."threadId" = ${input.threadId} AND s."accountId" = u.id
         AND s.blocked = false
-        AND COALESCE(s."groupMetaFeedEndId", 0::bigint) < ${input.groupMetaFeedEndId}::bigint`);
+        AND (COALESCE(s."groupMetaFeedEndId", 0) < ${input.groupMetaFeedEndId}
+          OR s."threadProfileRev" < ${input.profileRev})
+      RETURNING s."accountId" AS "accountId"`);
+    return changed.rows.map(({ accountId }) => accountId);
   }
 
-  /** Read the canonical group meta head and catch the given members up in one
-   * lock scope. No-op for threads without a meta feed (P2P). */
-  static async reconcileGroupMetaHeadInTx(
+  /** Read the canonical Group Meta coordinate with its end-anchored profile
+   * revision and catch the given members up in one lock scope. No-op for
+   * threads without a meta feed (P2P). */
+  static async reconcileGroupMetaCoordinateInTx(
     tx: DatabaseTransaction,
     input: { threadId: number; userIds: readonly number[] },
-  ): Promise<void> {
-    const result = await tx.execute<{ metaEndId: string }>(sql`
-      SELECT "metaEndId"::text AS "metaEndId" FROM "GroupMeta"
+  ): Promise<number[]> {
+    const result = await tx.execute<{
+      metaEndId: number;
+      profileRev: number;
+    }>(sql`
+      SELECT "metaEndId", "profileRev" FROM "GroupMeta"
       WHERE "threadId" = ${input.threadId} LIMIT 1`);
     const head = result.rows[0];
-    if (!head?.metaEndId) return;
-    await this.advanceGroupMetaHeadsInTx(tx, {
+    if (!head?.metaEndId) return [];
+    return this.advanceGroupMetaCoordinatesInTx(tx, {
       threadId: input.threadId,
       userIds: input.userIds,
-      groupMetaFeedEndId: BigInt(head.metaEndId),
+      groupMetaFeedEndId: head.metaEndId,
+      profileRev: head.profileRev,
     });
   }
 
@@ -256,6 +268,7 @@ export class ThreadFeedHeadWriter {
       threadId: number;
       messageEndSeq: number;
       tombstoneEndSeq: number;
+      profileRev?: number;
     },
   ): Promise<ThreadProjectionChange> {
     const unchanged = { unreadCountChanged: false, previewChanged: false };
@@ -341,7 +354,12 @@ export class ThreadFeedHeadWriter {
         "unreadCount" = ${unreadCount},
         "lastMentionSeq" = ${lastMentionSeq},
         "messageEndSeq" = GREATEST("messageEndSeq", ${target.messageEndSeq}),
-        "tombstoneEndSeq" = GREATEST("tombstoneEndSeq", ${target.tombstoneEndSeq})
+        "tombstoneEndSeq" = GREATEST("tombstoneEndSeq", ${target.tombstoneEndSeq}),
+        "threadProfileRev" = GREATEST("threadProfileRev", ${target.profileRev ?? 0}, meta_head."profileRev")
+      FROM (
+        SELECT COALESCE(MAX("profileRev"), 0) AS "profileRev" FROM "GroupMeta"
+        WHERE "threadId" = ${target.threadId}
+      ) meta_head
       WHERE "accountId" = ${accountId} AND "threadId" = ${target.threadId}
         AND blocked = false
         AND ("messageEndSeq" < ${target.messageEndSeq}

@@ -801,7 +801,6 @@
       "messageEmpty": "消息内容为空",
       "threadNotApproved": "会话尚未建立",
       "threadNotFound": "会话不存在",
-      "groupNotFriend": "只能邀请好友",
       "groupInvalidToken": "邀请无效或已过期",
       "groupForbidden": "你没有权限进行此操作",
       "groupTargetNotMember": "该成员已不在群中",

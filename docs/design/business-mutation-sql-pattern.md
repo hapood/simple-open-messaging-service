@@ -18,6 +18,27 @@ Keep domain SQL beside its use case and established reusable fragments under
 Migrate one complete business entry at a time. Once an entry uses this standard,
 remove its old writer instead of retaining a compatibility path or dual write.
 
+## Command results and failures
+
+A business command returns a discriminated result. `APPLIED` means it committed
+the requested transition; `NO_OP` means the requested end state was already
+satisfied; `REJECTED` carries a stable reason, business code, and safe message
+for an expected refusal such as a missing or expired intent, a dissolved group,
+capacity, or authorization. These outcomes do not use exceptions as control
+flow.
+
+HTTP handlers serialize `REJECTED` as the existing HTTP-200 business envelope.
+Durable-task handlers return `REJECTED` to the scheduler, which persists the
+task with that terminal status and `resultCode`. They do not throw merely to
+reach the rejected terminal state.
+
+Throw only when continuing the operation or advancing an input stream would be
+unsafe: malformed or unauthorized wire input, a lost lock capability, a row
+that disappeared despite its protecting lock, conflicting immutable content,
+database/transport failure, or another violated implementation invariant. A
+durable task records these unexpected exceptions as `FAILED`; a federation
+consumer applies its documented permanent-item or retry policy.
+
 ## Transaction ownership and locks
 
 One outer entry owns the write transaction, business locks, authorization,
@@ -27,11 +48,11 @@ transactions or reacquire the same business/relationship lock set.
 
 Use exactly three explicit business-lock names and responsibilities:
 
-| Name | Protected business state |
-| --- | --- |
-| Account State Lock | Mutable business state owned by one acting user or group account. It never grants authority to change another account's owned state. |
+| Name                   | Protected business state                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account State Lock     | Mutable business state owned by one acting user or group account. It never grants authority to change another account's owned state.        |
 | Relationship Pair Lock | The relationship between two canonical endpoints, including both authored Intents and relationship-derived projections for either endpoint. |
-| Thread Content Lock | Message and deletion sequences, thread content state, and content-derived projections for one thread. |
+| Thread Content Lock    | Message and deletion sequences, thread content state, and content-derived projections for one thread.                                       |
 
 Account State and Relationship Pair locks are exclusive transaction-scoped
 advisory locks acquired with
@@ -117,12 +138,12 @@ into one ordinary SQL statement and assume its snapshot refreshes after waiting.
 
 ## Four business phases
 
-| Phase | Responsibility |
-| --- | --- |
+| Phase                   | Responsibility                                                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1. Authorize and select | One SQL validates the actor, target, request/intent validity, current business state, and update feasibility. Return the local/federated branch and its required identities. |
-| 2. Apply | One composed SQL performs the branch's canonical writes and immediate projections. Return the business result and directly affected peer, if any. |
-| 3. Admit | One SQL determines whether new fanout work is required and replaces eligible PENDING work under the existing task contract. |
-| 4. Insert | Insert one task row when required; skip when unnecessary. Do not create a task for every recipient. |
+| 2. Apply                | One composed SQL performs the branch's canonical writes and immediate projections. Return the business result and directly affected peer, if any.                            |
+| 3. Admit                | One SQL determines whether new fanout work is required and replaces eligible PENDING work under the existing task contract.                                                  |
+| 4. Insert               | Insert one task row when required; skip when unnecessary. Do not create a task for every recipient.                                                                          |
 
 Complete required allocator preparation before writes or triggers allocate feed
 positions. Transaction control and necessary identity/lock preparation are
@@ -167,9 +188,9 @@ For group join acceptance specifically:
 - The business SQL writes Group Meta once and authors the group's ACK in the
   relationship intent. It also writes the directed ACK into the applicant
   peer's state feed. It does not author the applicant's intent.
-- Admit `FAN_OUT_GROUP_META_HEAD` with `{ threadId }`. The existing executor
-  reads the latest canonical Meta head and allocates each audience's state feed
-  position for its `GROUP_META_FEED_HEAD` entry.
+- Admit the local and federation thread fan-out tasks with the complete current
+  message and tombstone coordinates. Their executors attach the latest
+  canonical Meta coordinate to the thread head.
 - The directed ACK and the group-wide Meta projection have different targets.
   The approval's immediate peer target is only the applicant's peer. Local
   acceptance has no peer target.

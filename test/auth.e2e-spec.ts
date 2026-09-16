@@ -1,15 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import { pushToken, account as user } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUser, seedSession } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * Session-management e2e — the device-list / revoke / logout-all surface, exercised through the real HTTP
@@ -19,29 +17,20 @@ import { seedUser, seedSession } from './seed';
  * qr-login.e2e-spec.ts. This spec seeds sessions DIRECTLY (registration is closed and password login is
  * disabled under APP_OTP_AND_QR) and pins: the device list + isCurrent flag, single-session revoke +
  * ownership check, logout-all revocation (and the KV-cache-lag reality it depends on), and the two
- * policy gates that close the legacy flows — self-registration and password login.
+ * policy gates for self-registration and password login.
  */
 describe('Session management + login-policy e2e', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   beforeEach(async () => {
     // CASCADE on User also clears SessionToken (FK→User); both listed so a stray session can't leak
     // between tests even if the on-delete weren't CASCADE.
-    await database.pool.query(
-      'TRUNCATE TABLE "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {

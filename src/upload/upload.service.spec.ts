@@ -240,7 +240,7 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     const { payload, overrideContentType } = await svc.savePart(
       PNG,
       ContentType.IMAGE,
-      { filename: 'photo.png', declaredMime: 'image/png', w: 10, h: 20 },
+      { filename: 'photo.png', declaredMime: 'image/png' },
     );
     expect(payload.family).toBe('IMAGE');
     expect(payload.size).toBe(PNG.length);
@@ -274,7 +274,6 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     const { payload } = await svc.savePart(EBML, ContentType.AUDIO, {
       filename: 'voice.webm',
       declaredMime: 'audio/webm',
-      duration: 3,
     });
     expect(payload.family).toBe('AUDIO');
     expect(payload.mimeType).toBe('audio/webm');
@@ -361,30 +360,22 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const firstOffsets: number[] = [];
 
     await expect(
-      service.saveCasFromStream(
-        'bin',
-        (offset) => {
-          firstOffsets.push(offset);
-          return (async function* () {
-            yield body.subarray(0, 10);
-            throw new Error('network dropped');
-          })();
-        },
-        digest,
-      ),
+      service.saveCasFromStream((offset) => {
+        firstOffsets.push(offset);
+        return (async function* () {
+          yield body.subarray(0, 10);
+          throw new Error('network dropped');
+        })();
+      }, digest),
     ).rejects.toThrow('network dropped');
 
     const resumedOffsets: number[] = [];
-    const saved = await service.saveCasFromStream(
-      'bin',
-      (offset) => {
-        resumedOffsets.push(offset);
-        return (async function* () {
-          yield body.subarray(offset);
-        })();
-      },
-      digest,
-    );
+    const saved = await service.saveCasFromStream((offset) => {
+      resumedOffsets.push(offset);
+      return (async function* () {
+        yield body.subarray(offset);
+      })();
+    }, digest);
     expect(firstOffsets).toEqual([0]);
     expect(resumedOffsets).toEqual([10]);
     expect(
@@ -412,7 +403,6 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
     await expect(
       service.saveCasFromStream(
-        'bin',
         () =>
           (async function* () {
             yield body.subarray(0, 6);
@@ -429,16 +419,12 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     await writeFile(partPath, corrupt);
 
     const offsets: number[] = [];
-    await service.saveCasFromStream(
-      'bin',
-      (offset) => {
-        offsets.push(offset);
-        return (async function* () {
-          yield body.subarray(offset);
-        })();
-      },
-      digest,
-    );
+    await service.saveCasFromStream((offset) => {
+      offsets.push(offset);
+      return (async function* () {
+        yield body.subarray(offset);
+      })();
+    }, digest);
 
     expect(offsets).toEqual([6]);
     expect(
@@ -462,21 +448,17 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const offsets: number[] = [];
     let removed = false;
 
-    await service.saveCasFromStream(
-      'bin',
-      (offset) => {
-        offsets.push(offset);
-        return (async function* () {
-          if (!removed) {
-            yield body.subarray(offset, 8);
-            await rm(partPath);
-            removed = true;
-          }
-          yield body.subarray(removed && offset !== 0 ? offset : 0);
-        })();
-      },
-      digest,
-    );
+    await service.saveCasFromStream((offset) => {
+      offsets.push(offset);
+      return (async function* () {
+        if (!removed) {
+          yield body.subarray(offset, 8);
+          await rm(partPath);
+          removed = true;
+        }
+        yield body.subarray(removed && offset !== 0 ? offset : 0);
+      })();
+    }, digest);
 
     expect(offsets).toEqual([0, 0]);
     expect(
@@ -499,7 +481,6 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const expected = createHash('sha256').update('expected').digest('hex');
     await expect(
       service.saveCasFromStream(
-        'bin',
         () =>
           (async function* () {
             yield Buffer.from('corrupt');

@@ -1,20 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
+import { createTestApp } from './support/app';
 import {
   waitForAcceptedDurableTask,
   waitForLocalRelationshipRequest,
 } from './durable-task-helpers.js';
 import { findP2PRelationship } from './seed.js';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * LINK message send contract (single instance). The client sends only the URL; the server rebuilds the
@@ -25,7 +23,7 @@ import { findP2PRelationship } from './seed.js';
  * and the auto authz row (the federated receiver's localizeMedia relies on that same digest).
  */
 describe('LINK message send (single instance)', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let baseUrl: string;
 
@@ -47,21 +45,15 @@ describe('LINK message send (single instance)', () => {
   } = CARD;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(LinkPreviewService)
-      .useValue({
-        consumeGeneration: () => ({ ...generatedCard }),
-        buildCardContent: async () => ({ ...generatedCard }),
-        finishGeneration: () => undefined,
-      })
-      .compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp((builder) => {
+      builder
+        .overrideProvider(LinkPreviewService)
+        .useValue({
+          consumeGeneration: () => ({ ...generatedCard }),
+          buildCardContent: async () => ({ ...generatedCard }),
+          finishGeneration: () => undefined,
+        });
+    }));
     const address = (
       app.getHttpServer() as { address: () => { port: number } | string | null }
     ).address();
@@ -70,9 +62,7 @@ describe('LINK message send (single instance)', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {

@@ -2,7 +2,7 @@ import {
   groupState as groupStateTable,
   readGroupState,
   groupStateFields,
-} from '../group/group-state.js';
+} from '../business/group/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -214,10 +214,10 @@ export class FederationProfileService {
                 ),
               )
               .leftJoin(
-                tables.groupMetaProfileFeed,
+                tables.groupMeta,
                 and(
-                  eq(tables.groupMetaProfileFeed.threadId, groupStateTable.id),
-                  eq(tables.groupMetaProfileFeed.profileRev, rev),
+                  eq(tables.groupMeta.threadId, groupStateTable.id),
+                  eq(tables.groupMeta.profileRev, rev),
                 ),
               )
               .where(
@@ -226,7 +226,7 @@ export class FederationProfileService {
                   eq(groupStateFields.domain, 'local'),
                   eq(groupStateFields.namespaceId, 0),
                   sql`(
-                  ${tables.groupMetaProfileFeed.threadId} IS NOT NULL
+                  ${tables.groupMeta.threadId} IS NOT NULL
                   OR EXISTS (
                     SELECT 1
                     FROM "RelationshipIntent" intent
@@ -346,6 +346,36 @@ export class FederationProfileService {
     throw new BusinessException(
       BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
       'profile revision is not disclosed to this peer',
+    );
+  }
+
+  /** Pull and materialize one exact remote group profile revision. A mirror's
+   * meta round calls this after a GROUP_PROFILE item advances the applied
+   * revision, because the feed item carries the revision only, not the content.
+   * The origin discloses it through the Group Meta end coordinate. */
+  async pullRemoteGroupProfile(
+    address: S2SAddress,
+    rev: number,
+    namespaceId: number,
+  ): Promise<void> {
+    const profile = await this.peerHttp.get<S2SProfile>(
+      `/s2s/v1/profiles/${encodeFederationResourceComponent(address.account)}?rev=${rev}`,
+      address.domain,
+    );
+    if (
+      profile.account !== address.account ||
+      profile.domain !== address.domain ||
+      profile.profileRev !== rev
+    )
+      throw new S2sResponseError(
+        `S2S profile from ${address.domain} is not ${address.account}@${rev}`,
+        HttpStatus.OK,
+        BusinessCode.FEDERATION_MALFORMED,
+      );
+    await this.materializeExactForeignProfile(
+      profile,
+      address.domain,
+      namespaceId,
     );
   }
 

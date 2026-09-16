@@ -23,7 +23,7 @@ import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
-export type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
+type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
 
 export interface UploadPartIdentity {
   clientMessageId: string;
@@ -42,7 +42,7 @@ interface ResumableUploadState {
   result?: Record<string, unknown>;
 }
 
-export interface MessageHistoryGap {
+interface MessageHistoryGap {
   startSeq: number;
   endSeq: number;
   recoverable: boolean;
@@ -60,7 +60,7 @@ export interface MessageQueryCursorData {
   resumeBefore: number;
 }
 
-export type MessageHistoryBackendData =
+type MessageHistoryBackendData =
   | MessageQueryPage
   | MessageQueryCursorData;
 

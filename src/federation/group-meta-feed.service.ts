@@ -1,37 +1,19 @@
-import { groupState as group, groupStateFields } from '../group/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { isDeepStrictEqual } from 'node:util';
-import { and, asc, eq, or, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
+import { groupMeta, threadAudience } from '../database/schema.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
-  groupMeta,
-  groupMetaMemberFeed,
-  groupMetaProfileFeed,
-  threadAudience,
-} from '../database/schema.js';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
-import { readGroupMetaPageInTx } from '../group-meta/group-meta-page.js';
+  groupState as group,
+  groupStateFields,
+} from '../business/group/shared/group-state.js';
+import { readGroupMetaPageInTx } from '../business/group/meta/group-meta-page.js';
 import { loadFederationConfig } from './federation.config.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
-export interface GroupMetaMemberWrite {
-  namespaceId: number;
-  account: string;
-  domain: string;
-  body: Record<string, unknown>;
-}
-
-export interface GroupMetaMemberChange extends GroupMetaMemberWrite {
-  operation: 'UPSERT' | 'DEPART';
-}
-
 interface GroupMetaFeedItemBase {
-  feedId: string;
+  feedId: number;
   account: string;
   domain: string;
 }
@@ -43,7 +25,7 @@ export type GroupMetaFeedItem =
     })
   | (GroupMetaFeedItemBase & { operation: 'DEPART' })
   | {
-      feedId: string;
+      feedId: number;
       operation: 'GROUP_PROFILE';
       body: { profileRev: number };
     };
@@ -52,19 +34,15 @@ export interface GroupMetaFeedPage {
   account: string;
   mode: 'full' | 'delta';
   items: GroupMetaFeedItem[];
-  scannedThrough: string;
-  groupMetaFeedEndId: string;
+  scannedThrough: number;
+  groupMetaFeedEndId: number;
   hasMore: boolean;
 }
 
 const DEFAULT_TAKE = 100;
 
-function memberKey(member: { domain: string; account: string }): string {
-  return JSON.stringify([member.domain, member.account]);
-}
-
 @Injectable()
-export class GroupMetaFeedService {
+export class FederationGroupMetaFeedService {
   private readonly ourDomain = loadFederationConfig().domain;
 
   constructor(private readonly database: DatabaseService) {}
@@ -76,7 +54,7 @@ export class GroupMetaFeedService {
     memberAccount: string,
     memberDomain: string,
     profileRev: number,
-  ): Promise<{ memberNamespaceId: number } | null> {
+  ): Promise<number | null> {
     try {
       return await this.database.db.transaction(
         async (tx) => {
@@ -102,21 +80,18 @@ export class GroupMetaFeedService {
           if (!source) return null;
           const storedMemberDomain =
             memberDomain === this.ourDomain ? 'local' : memberDomain;
-          const rows = await tx.execute<{ memberNamespaceId: number }>(sql`
-          SELECT latest."memberNamespaceId"
-          FROM (
-            SELECT member_fact."memberNamespaceId", member_fact.operation, member_fact.body
+          const rows = await tx.execute<{ namespaceId: number }>(sql`
+            SELECT group_meta_member_namespace(member_fact."threadId",
+              member_fact."memberAccount", member_fact."memberDomain") AS "namespaceId"
             FROM "GroupMetaMemberFeed" member_fact
             WHERE member_fact."threadId" = ${source.groupId}
               AND member_fact."memberAccount" = ${memberAccount}
               AND member_fact."memberDomain" = ${storedMemberDomain}
-            ORDER BY member_fact."feedId" DESC
+              AND member_fact.operation = 'UPSERT'
+              AND member_fact.body ->> 'profileRev' = ${profileRev.toString()}
             LIMIT 1
-          ) latest
-          WHERE latest.operation = 'UPSERT'
-            AND latest.body ->> 'profileRev' = ${profileRev.toString()}
-        `);
-          return rows.rows[0] ?? null;
+          `);
+          return rows.rows[0]?.namespaceId ?? null;
         },
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
       );
@@ -130,223 +105,14 @@ export class GroupMetaFeedService {
     }
   }
 
-  async reconcileMembersInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-    members: readonly GroupMetaMemberChange[],
-  ): Promise<bigint> {
-    if (members.length === 0)
-      throw new Error('group meta member projection is empty');
-    let metaEndId = await this.lockFeedInTx(tx, groupId);
-    const history = await tx
-      .select({
-        account: groupMetaMemberFeed.memberAccount,
-        domain: groupMetaMemberFeed.memberDomain,
-        namespaceId: groupMetaMemberFeed.memberNamespaceId,
-        operation: groupMetaMemberFeed.operation,
-        body: groupMetaMemberFeed.body,
-        feedId: groupMetaMemberFeed.feedId,
-      })
-      .from(groupMetaMemberFeed)
-      .where(
-        and(
-          eq(groupMetaMemberFeed.threadId, groupId),
-          or(
-            ...members.map((member) =>
-              and(
-                eq(groupMetaMemberFeed.memberDomain, member.domain),
-                eq(groupMetaMemberFeed.memberAccount, member.account),
-              ),
-            ),
-          ),
-        ),
-      )
-      .orderBy(asc(groupMetaMemberFeed.feedId));
-    const current = new Map(
-      history.map((item) => [memberKey(item), item] as const),
-    );
-    const changes = members
-      .map((member) => ({
-        ...member,
-        body:
-          member.operation === 'DEPART'
-            ? {}
-            : (serializeBody(member.body) as Record<string, unknown>),
-      }))
-      .filter((member) => {
-        const previous = current.get(memberKey(member));
-        return (
-          previous?.namespaceId !== member.namespaceId ||
-          previous?.operation !== member.operation ||
-          !isDeepStrictEqual(previous.body, member.body)
-        );
-      })
-      .sort(compareMembers);
-    if (changes.length === 0) return metaEndId;
-    await tx.insert(groupMetaMemberFeed).values(
-      changes.map((change) => ({
-        threadId: groupId,
-        feedId: ++metaEndId,
-        memberAccount: change.account,
-        memberDomain: change.domain,
-        memberNamespaceId: change.namespaceId,
-        operation: change.operation,
-        body: change.body,
-        updatedAt: new Date(),
-      })),
-    );
-    await this.advanceFeedInTx(tx, groupId, metaEndId);
-    return metaEndId;
-  }
-
-  async reconcileProfileInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-    profileRev: number,
-  ): Promise<bigint> {
-    let metaEndId = await this.lockFeedInTx(tx, groupId);
-    const [current] = await tx
-      .select({ profileRev: groupMetaProfileFeed.profileRev })
-      .from(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.threadId, groupId))
-      .limit(1);
-    if (current?.profileRev === profileRev) return metaEndId;
-    metaEndId += 1n;
-    await tx
-      .insert(groupMetaProfileFeed)
-      .values({ threadId: groupId, feedId: metaEndId, profileRev })
-      .onConflictDoUpdate({
-        target: groupMetaProfileFeed.threadId,
-        set: { feedId: metaEndId, profileRev, updatedAt: new Date() },
-      });
-    await this.advanceFeedInTx(tx, groupId, metaEndId);
-    return metaEndId;
-  }
-
-  async reconcileInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-    profileRev: number,
-    members: readonly GroupMetaMemberWrite[],
-  ): Promise<bigint> {
-    let metaEndId = await this.lockFeedInTx(tx, groupId);
-    const history = await tx
-      .select({
-        account: groupMetaMemberFeed.memberAccount,
-        domain: groupMetaMemberFeed.memberDomain,
-        namespaceId: groupMetaMemberFeed.memberNamespaceId,
-        operation: groupMetaMemberFeed.operation,
-        body: groupMetaMemberFeed.body,
-      })
-      .from(groupMetaMemberFeed)
-      .where(eq(groupMetaMemberFeed.threadId, groupId))
-      .orderBy(asc(groupMetaMemberFeed.feedId));
-    const current = new Map(
-      history.map((item) => [memberKey(item), item] as const),
-    );
-    const desired = new Map(
-      members.map((member) => [
-        memberKey(member),
-        {
-          ...member,
-          body: serializeBody(member.body) as Record<string, unknown>,
-        },
-      ]),
-    );
-    const changes: GroupMetaMemberChange[] = [];
-    for (const [key, member] of desired) {
-      const previous = current.get(key);
-      if (
-        previous?.operation === 'UPSERT' &&
-        previous.namespaceId === member.namespaceId &&
-        isDeepStrictEqual(previous.body, member.body)
-      )
-        continue;
-      changes.push({ ...member, operation: 'UPSERT' });
-    }
-    for (const previous of current.values()) {
-      if (previous.operation !== 'UPSERT' || desired.has(memberKey(previous)))
-        continue;
-      changes.push({
-        account: previous.account,
-        domain: previous.domain,
-        namespaceId: previous.namespaceId,
-        operation: 'DEPART',
-        body: {},
-      });
-    }
-    changes.sort(compareMembers);
-    if (changes.length > 0) {
-      await tx.insert(groupMetaMemberFeed).values(
-        changes.map((change) => ({
-          threadId: groupId,
-          feedId: ++metaEndId,
-          memberAccount: change.account,
-          memberDomain: change.domain,
-          memberNamespaceId: change.namespaceId,
-          operation: change.operation,
-          body: change.operation === 'DEPART' ? {} : change.body,
-          updatedAt: new Date(),
-        })),
-      );
-    }
-    const [currentProfile] = await tx
-      .select({ profileRev: groupMetaProfileFeed.profileRev })
-      .from(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.threadId, groupId))
-      .limit(1);
-    if (currentProfile?.profileRev !== profileRev) {
-      metaEndId += 1n;
-      await tx
-        .insert(groupMetaProfileFeed)
-        .values({ threadId: groupId, feedId: metaEndId, profileRev })
-        .onConflictDoUpdate({
-          target: groupMetaProfileFeed.threadId,
-          set: { feedId: metaEndId, profileRev, updatedAt: new Date() },
-        });
-    }
-    await this.advanceFeedInTx(tx, groupId, metaEndId);
-    return metaEndId;
-  }
-
-  private async lockFeedInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-  ): Promise<bigint> {
-    await tx
-      .insert(groupMeta)
-      .values({ threadId: groupId })
-      .onConflictDoNothing({ target: groupMeta.threadId });
-    const locked = await tx.execute<{ metaEndId: string }>(sql`
-      SELECT "metaEndId"
-      FROM "GroupMeta"
-      WHERE "threadId" = ${groupId}
-      FOR NO KEY UPDATE
-    `);
-    const feed = locked.rows[0];
-    if (!feed) throw new Error('group meta feed is missing');
-    return BigInt(feed.metaEndId);
-  }
-
-  private async advanceFeedInTx(
-    tx: DatabaseTransaction,
-    groupId: number,
-    metaEndId: bigint,
-  ): Promise<void> {
-    await tx
-      .update(groupMeta)
-      .set({ metaEndId, updatedAt: new Date() })
-      .where(eq(groupMeta.threadId, groupId));
-  }
-
   async serve(
     peerDomain: string,
     namespaceId: number,
     account: string,
     mode: 'full' | 'delta',
-    after: bigint | undefined,
+    after: number | undefined,
     take = DEFAULT_TAKE,
-    through?: bigint,
+    through?: number,
   ): Promise<GroupMetaFeedPage> {
     return this.database.db.transaction(
       async (tx) => {
@@ -403,8 +169,8 @@ export class GroupMetaFeedService {
           after,
           take,
           through,
-          end: feed?.metaEndId ?? 0n,
-          visibleAfter: audience?.visibleAfter ?? 0n,
+          end: feed?.metaEndId ?? 0,
+          visibleAfter: audience?.visibleAfter ?? 0,
         });
         return {
           ...page,
@@ -418,14 +184,4 @@ export class GroupMetaFeedService {
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
   }
-}
-
-function compareMembers(
-  left: { domain: string; account: string },
-  right: { domain: string; account: string },
-): number {
-  return (
-    left.domain.localeCompare(right.domain) ||
-    left.account.localeCompare(right.account)
-  );
 }

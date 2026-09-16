@@ -8,7 +8,7 @@ import {
 } from '../database/database.service.js';
 import { MessageDeleteType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import { type ForwardWireBundle } from '../forward/forward-bundle.service.js';
+import { type InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import {
@@ -31,7 +31,7 @@ export interface ReverseMessagePageCommit {
   before: number;
   through?: number;
   messageSeqOffset: number;
-  prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
+  prefetchedForwardClosures?: ReadonlyMap<number, InboundForwardWireBundle>;
 }
 
 export interface ForwardMessagePageCommit {
@@ -39,7 +39,7 @@ export interface ForwardMessagePageCommit {
   response: FederationThreadResourceResponse<FederationMessageQueryPage>;
   after: number;
   frozenTargetSeq: number;
-  prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
+  prefetchedForwardClosures?: ReadonlyMap<number, InboundForwardWireBundle>;
 }
 
 export interface ForwardTombstonePageCommit {

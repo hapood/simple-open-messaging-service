@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { relationshipPair } from '../../../database/schema.js';
-import { BusinessCode } from '../../../common/business-code.js';
-import { BusinessException } from '../../../common/business.exception.js';
 import type {
   DatabaseService,
   DatabaseTransaction,
@@ -29,7 +27,7 @@ import type { PeerStateFeedService } from '../../../federation/peer-state-feed.s
 import {
   groupMembershipStateSql,
   type GroupMembershipStateRow,
-} from '../shared/group-membership-state-sql.js';
+} from '../membership-intent/shared/group-membership-state-sql.js';
 import {
   groupDisbandMembershipRevocationLocatorSql,
   groupDisbandMembershipRevocationSql,
@@ -37,12 +35,13 @@ import {
 } from './group-disband-membership-revocation-sql.js';
 
 /** One command: the disband sweep's per-member departure. The DISBAND_GROUP
- * task commits the terminal group fact and its cursor fans out one
- * FORCE_REVOKE_GROUP_MEMBER child per still-active membership pair; this
- * service is what a child executes. The member arrives as the sweep's task
- * payload — a local Account.id or a wire-level address; the caller is the
- * system, the dissolved group itself is the authority, so there is no manager
- * or role gate. */
+ * task commits the terminal group fact plus its single GROUP_DISSOLVED message
+ * and its cursor fans out one FORCE_REVOKE_GROUP_MEMBER child per membership
+ * pair — active or pending alike; this service is what a child executes. The
+ * member arrives as the sweep's task payload — a local Account.id or a
+ * wire-level address; the caller is the system, the dissolved group itself is
+ * the authority, so there is no manager or role gate. The child is silent:
+ * no departure message, watermark, or thread fan-out. */
 export interface GroupDisbandMembershipRevocationCommand {
   threadId: number;
   memberAddress: AccountTarget;
@@ -54,6 +53,14 @@ export interface GroupDisbandMembershipRevocationDependencies {
   peerFeed: PeerStateFeedService;
   federation: FederationService;
 }
+
+export type GroupDisbandMembershipRevocationResult =
+  | { status: 'APPLIED'; transitioned: true }
+  | {
+      status: 'NO_OP';
+      reason: 'GROUP_NOT_FOUND' | 'PAIR_NOT_FOUND' | 'ALREADY_REVOKED';
+      transitioned: false;
+    };
 
 /** Lexical capability, created only after locks and authorization. */
 interface ValidatedRevocation {
@@ -77,33 +84,38 @@ export class GroupDisbandMembershipRevocationService {
 
   async execute(
     params: GroupDisbandMembershipRevocationCommand,
-  ): Promise<{ transitioned: boolean }> {
+  ): Promise<GroupDisbandMembershipRevocationResult> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const peers = await this.deps.database.db.transaction(async (tx) => {
       const context = await this.lockAndValidateInTx(tx, params);
-      if (!context) return undefined;
-      return this.applyInTx(context, clientUpdates);
+      if ('status' in context) return context;
+      return {
+        status: 'APPLIED' as const,
+        transitioned: true as const,
+        peers: await this.applyInTx(context, clientUpdates),
+      };
     });
-    if (!peers) return { transitioned: false };
+    if (!('peers' in peers)) return peers;
     try {
       if (clientUpdates.length > 0)
         this.deps.clientFeed.notifyFeedUpdates(clientUpdates);
     } catch (error) {
       this.logger.warn('dissolve revocation client-state wake failed', error);
     }
-    if (peers.size === 0) return { transitioned: true };
+    if (peers.peers.size === 0)
+      return { status: 'APPLIED', transitioned: true };
     void this.deps.federation
-      .pushStateFeedDomains(peers.keys())
+      .pushStateFeedDomains(peers.peers.keys())
       .catch((error: unknown) =>
         this.logger.warn('dissolve revocation state-feed wake failed', error),
       );
-    return { transitioned: true };
+    return { status: 'APPLIED', transitioned: true };
   }
 
   private async lockAndValidateInTx(
     tx: DatabaseTransaction,
     params: GroupDisbandMembershipRevocationCommand,
-  ): Promise<ValidatedRevocation | undefined> {
+  ): Promise<ValidatedRevocation | GroupDisbandMembershipRevocationResult> {
     // The sweep's payload names the member as a local Account.id or an
     // address; every downstream statement uses the canonical address form.
     const member: NamespacedAddress = await accountAddressInTx(
@@ -112,8 +124,8 @@ export class GroupDisbandMembershipRevocationService {
     );
     // One pre-lock locator: the group's address and, when it exists, the
     // member's pair name the business scopes. It authorizes nothing; every
-    // mutable state is re-read after the locks it names. The gates keep the
-    // legacy order — group, dissolution, then the member.
+    // mutable state is re-read after the locks it names. The gates evaluate
+    // group existence, dissolution, and then member state.
     const located = (
       await tx.execute<{
         groupAccount: string;
@@ -129,7 +141,11 @@ export class GroupDisbandMembershipRevocationService {
       )
     ).rows[0];
     if (!located)
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      return {
+        status: 'NO_OP',
+        reason: 'GROUP_NOT_FOUND',
+        transitioned: false,
+      };
     await lockBusinessAccountsInTx(tx, [
       { account: located.groupAccount, domain: located.groupDomain },
     ]);
@@ -172,23 +188,13 @@ export class GroupDisbandMembershipRevocationService {
     if (!current.dissolvedAt)
       throw new Error('group member fan-out requires a dissolved group');
     if (!current.pairId) {
-      // The legacy sweep's lock chain mints the canonical pair when the
-      // address never joined, then departs it; reproduce that contract so a
-      // replayed child never fails for lack of a pair.
-      const relationshipNamespaceId = member.namespaceId;
-      const minted = await tx.execute<{ id: string }>(sql`
-        INSERT INTO "RelationshipPair"
-          (kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-           "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", "threadId")
-        VALUES ('GROUP_MEMBER', 'GROUP', ${located.groupAccount}, ${located.groupDomain},
-          ${relationshipNamespaceId}, 'USER', ${member.account}, ${member.domain},
-          ${relationshipNamespaceId}, ${params.threadId})
-        ON CONFLICT ("endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-          "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId")
-        DO UPDATE SET "threadId" = EXCLUDED."threadId", "updatedAt" = CURRENT_TIMESTAMP
-        RETURNING id
-      `);
-      current.pairId = minted.rows[0]!.id;
+      // The full sweep only addresses pairs that exist; a pair gone between
+      // cursor and child means there is nothing left to revoke.
+      return {
+        status: 'NO_OP',
+        reason: 'PAIR_NOT_FOUND',
+        transitioned: false,
+      };
     }
     const pairId = BigInt(current.pairId);
     const [lockedPair] = await tx
@@ -199,20 +205,9 @@ export class GroupDisbandMembershipRevocationService {
     if (!lockedPair) throw new Error('disband revocation pair not found');
     if (lockedPair.threadId !== params.threadId)
       throw new Error('disband revocation pair changed');
-    const pairWasActive = lockedPair.active;
     await tx.execute(
       sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
     );
-    // The member's own AccountThreadState row is the one participant row the
-    // composed statement writes (the departure watermark).
-    if (current.localMemberId !== null)
-      await tx.execute(
-        sql`SELECT participant.id FROM "AccountThreadState" participant
-          WHERE participant."threadId" = ${params.threadId}
-            AND participant."accountId" = ${current.localMemberId}
-          ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant
-        `,
-      );
     // The membership authorization binds `authorized` to a calling member
     // account; a system caller has none, so the bind is a constant and the
     // column goes unconsumed. Everything else the composed statement needs —
@@ -233,9 +228,14 @@ export class GroupDisbandMembershipRevocationService {
     ).rows[0];
     if (!row || row.domain !== 'local' || row.namespaceId !== 0)
       throw new Error('disband revocation requires an authoritative group');
-    // Legacy transition gate: the side B intent being REVOKED already is the
-    // idempotent no-op; a missing intent row still departs.
-    if (row.memberIntentStatus === 'REVOKED') return undefined;
+    // A side B intent already at REVOKED is the idempotent no-op; a missing
+    // intent row still departs.
+    if (row.memberIntentStatus === 'REVOKED')
+      return {
+        status: 'NO_OP',
+        reason: 'ALREADY_REVOKED',
+        transitioned: false,
+      };
     if (row.memberDomain !== 'local')
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
@@ -270,9 +270,7 @@ export class GroupDisbandMembershipRevocationService {
         memberDomain: row.memberDomain,
         memberNamespaceId: row.memberNamespaceId,
         localMemberId: row.localMemberId,
-        managerIds: row.managerIds,
         projectionDirections: row.projectionDirections,
-        pairWasActive,
       },
     };
   }
@@ -285,8 +283,6 @@ export class GroupDisbandMembershipRevocationService {
       intentChanged: boolean;
       pairChanged: boolean;
       audienceChanged: boolean;
-      departureInserted: boolean;
-      systemMessageSeq: number | null;
       recipientUserId: number | null;
       recipientFeedId: string | null;
     }>(groupDisbandMembershipRevocationSql(context.input));

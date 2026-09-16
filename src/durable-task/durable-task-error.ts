@@ -9,7 +9,7 @@ export function safeUnexpectedTaskError(error: unknown): string {
     : `Unexpected task error (${name})`;
 }
 
-export interface UnexpectedTaskDatabaseDiagnostics {
+interface UnexpectedTaskDatabaseDiagnostics {
   code: string;
   severity?: string;
   schema?: string;
@@ -23,7 +23,7 @@ export interface UnexpectedTaskDatabaseDiagnostics {
   where?: string;
 }
 
-export interface UnexpectedTaskErrorCauseDiagnostics {
+interface UnexpectedTaskErrorCauseDiagnostics {
   name: string;
   message: string;
   code?: string;

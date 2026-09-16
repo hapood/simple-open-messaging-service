@@ -59,6 +59,15 @@ const fromB64 = (value: string): Uint8Array =>
   Uint8Array.from(Buffer.from(value, 'base64'));
 const normalizeDomain = (domain: string): string =>
   domain.trim().toLowerCase().replace(/\.+$/, '');
+const hasExactlyKeys = (
+  value: unknown,
+  allowed: readonly string[],
+): value is Record<string, unknown> =>
+  !!value &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === allowed.length &&
+  Object.keys(value).every((key) => allowed.includes(key));
 
 /**
  * Owns this installation's immutable S2S root identity and active signing key.
@@ -104,7 +113,6 @@ export class KeypairService implements OnApplicationBootstrap {
         this.keyFile = this.createFresh(path);
       } else {
         this.keyFile = this.readAndValidate(path);
-        this.keyFile = this.separateLegacySigningKey(path, this.keyFile);
       }
 
       const keyFile = this.keyFile;
@@ -282,44 +290,6 @@ export class KeypairService implements OnApplicationBootstrap {
     return keyFile;
   }
 
-  /**
-   * The pre-certificate implementation reused the root key as its HTTP signing key. Preserve the
-   * immutable root while replacing that obsolete signing role before this node publishes a v1
-   * discovery document. Old signing material is intentionally not carried forward: it never had a
-   * v1 root-authorized certificate and the removed handshake is not a compatibility surface.
-   */
-  private separateLegacySigningKey(
-    path: string,
-    keyFile: StoredKeyFileV1,
-  ): StoredKeyFileV1 {
-    const active = keyFile.signingKeys.find((key) => key.status === 'active')!;
-    if (active.publicKey !== keyFile.rootKey.publicKey) return keyFile;
-
-    const privateKey = ed25519.utils.randomSecretKey();
-    const domain = normalizeDomain(keyFile.domain);
-    let sequence = 1;
-    const existingIds = new Set(keyFile.signingKeys.map((key) => key.keyId));
-    while (existingIds.has(`${domain}/key-${sequence}`)) sequence += 1;
-    const upgraded: StoredKeyFileV1 = {
-      ...keyFile,
-      signingKeys: [
-        {
-          keyId: `${domain}/key-${sequence}`,
-          publicKey: b64(ed25519.getPublicKey(privateKey)),
-          privateKey: b64(privateKey),
-          createdAt: Date.now(),
-          status: 'active',
-        },
-      ],
-    };
-    this.validateKeyFile(upgraded);
-    this.writeAtomically(path, upgraded);
-    this.logger.warn(
-      'Separated the legacy root/signing key roles while preserving the root identity',
-    );
-    return upgraded;
-  }
-
   private readAndValidate(path: string): StoredKeyFileV1 {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
     const keyFile = this.requireV1(raw);
@@ -329,44 +299,34 @@ export class KeypairService implements OnApplicationBootstrap {
   }
 
   private requireV1(value: unknown): StoredKeyFileV1 {
-    if (!value || typeof value !== 'object')
+    if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new Error('key file must be an object');
     const candidate = value as Partial<StoredKeyFileV1>;
     if (candidate.version !== 1)
       throw new Error('unsupported key file version');
-    const keyFile = candidate as StoredKeyFileV1;
-    if (!keyFile.rootKey || !Array.isArray(keyFile.signingKeys)) return keyFile;
-    return {
-      ...keyFile,
-      rootKey: this.normalizeStoredKeyTimestamp(keyFile.rootKey),
-      signingKeys: keyFile.signingKeys.map((key) =>
-        this.normalizeStoredKeyTimestamp(key),
-      ),
-    };
-  }
-
-  /** v1 key files originally stored ISO timestamps. Normalize them at the persistence boundary so
-   * all runtime and newly written metadata uses epoch milliseconds without rotating key material. */
-  private normalizeStoredKeyTimestamp<T extends StoredIdentityKey>(key: T): T {
-    const raw = (key as { createdAt?: unknown }).createdAt;
-    const createdAt =
-      typeof raw === 'string' && Number.isFinite(Date.parse(raw))
-        ? Date.parse(raw)
-        : raw;
-    return { ...key, createdAt } as T;
+    return candidate as StoredKeyFileV1;
   }
 
   private validateKeyFile(keyFile: StoredKeyFileV1): void {
     if (
+      !hasExactlyKeys(keyFile, [
+        'version',
+        'domain',
+        'rootKey',
+        'signingKeys',
+      ]) ||
       typeof keyFile.domain !== 'string' ||
+      keyFile.domain !== normalizeDomain(keyFile.domain) ||
+      keyFile.domain.length === 0 ||
       !keyFile.rootKey ||
       !Array.isArray(keyFile.signingKeys) ||
       keyFile.signingKeys.length === 0
     ) {
       throw new Error('invalid S2S key file structure');
     }
-    this.validateKey(keyFile.rootKey, 'root');
-    for (const key of keyFile.signingKeys) this.validateKey(key, 'signing');
+    this.validateKey(keyFile.rootKey, 'root', false);
+    for (const key of keyFile.signingKeys)
+      this.validateKey(key, 'signing', true);
     if (
       keyFile.signingKeys.filter((key) => key.status === 'active').length !== 1
     ) {
@@ -378,13 +338,33 @@ export class KeypairService implements OnApplicationBootstrap {
     ) {
       throw new Error('S2S signing key IDs must be unique');
     }
+    if (
+      keyFile.signingKeys.some(
+        (key) => key.publicKey === keyFile.rootKey.publicKey,
+      )
+    ) {
+      throw new Error('S2S root and signing keys must be distinct');
+    }
   }
 
-  private validateKey(key: StoredIdentityKey, label: string): void {
+  private validateKey(
+    key: StoredIdentityKey,
+    label: string,
+    signing: boolean,
+  ): void {
     if (
+      !hasExactlyKeys(
+        key,
+        signing
+          ? ['keyId', 'publicKey', 'privateKey', 'createdAt', 'status']
+          : ['keyId', 'publicKey', 'privateKey', 'createdAt'],
+      ) ||
       typeof key.keyId !== 'string' ||
       !Number.isSafeInteger(key.createdAt) ||
-      key.createdAt < 0
+      key.createdAt < 0 ||
+      (signing &&
+        key.status !== 'active' &&
+        key.status !== 'published')
     ) {
       throw new Error(`invalid ${label} key metadata`);
     }

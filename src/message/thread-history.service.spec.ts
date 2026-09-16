@@ -7,7 +7,7 @@ vi.mock('../business/shared/locks/thread-content-lock.js', () => ({
 describe('ThreadHistoryService.clear', () => {
   function setup(curSeq: number) {
     const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn(() => ({ where }));
+    const set = vi.fn((_values: Record<string, unknown>) => ({ where }));
     const database = {
       db: {
         execute: vi

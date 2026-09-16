@@ -22,7 +22,7 @@ import { FederationMessageFeedService } from './federation-message-feed.service.
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
-import { GroupMetaFeedService } from './group-meta-feed.service.js';
+import { FederationGroupMetaFeedService } from './group-meta-feed.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
@@ -65,7 +65,7 @@ export class S2sController {
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
-    private readonly groupMeta: GroupMetaFeedService,
+    private readonly groupMeta: FederationGroupMetaFeedService,
   ) {}
 
   @Get('group-meta')
@@ -103,7 +103,7 @@ export class S2sController {
     const after =
       afterParam === undefined
         ? undefined
-        : this.parseCursorBigInt(afterParam, 'after');
+        : this.parseCursorSafeInteger(afterParam, 'after');
     const take =
       takeParam === undefined
         ? undefined
@@ -111,7 +111,7 @@ export class S2sController {
     const through =
       throughParam === undefined
         ? undefined
-        : this.parseCursorBigInt(throughParam, 'through');
+        : this.parseCursorSafeInteger(throughParam, 'through');
     return this.groupMeta.serve(
       this.signerDomain(req),
       req.peer!.namespaceId,
@@ -422,7 +422,7 @@ export class S2sController {
       memberDomain,
       rev,
     );
-    if (!allocation) {
+    if (allocation === null) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
         'member profile revision is not allocated to this peer',
@@ -431,7 +431,7 @@ export class S2sController {
     const profile = await this.federation.getStoredProfile(
       memberAccount,
       memberDomain,
-      allocation.memberNamespaceId,
+      allocation,
       rev,
     );
     if (!profile) {
@@ -565,6 +565,28 @@ export class S2sController {
         HttpStatus.BAD_REQUEST,
       );
     }
+  }
+
+  private parseCursorSafeInteger(
+    value: string | undefined,
+    name: string,
+  ): number {
+    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a canonical non-negative decimal integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a non-negative safe integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return parsed;
   }
 
   private parseCursorBigInt(value: string | undefined, name: string): bigint {

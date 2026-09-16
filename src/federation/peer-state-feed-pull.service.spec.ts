@@ -67,9 +67,13 @@ describe('PeerStateFeedPullService atomic item application', () => {
         items: [
           {
             account: '!group',
-            eventType: 'GROUP_META_FEED_HEAD',
+            eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
-            body: { groupMetaFeedEndId: '1' },
+            body: {
+              messageEndSeq: 0,
+              tombstoneEndSeq: 0,
+              groupMetaFeedEndId: '1',
+            },
           },
         ],
       }),
@@ -88,7 +92,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           items: [
             {
               account: '!group',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
               body: {},
             },
@@ -115,9 +119,13 @@ describe('PeerStateFeedPullService atomic item application', () => {
         items: [
           {
             account: '!group',
-            eventType: 'GROUP_META_FEED_HEAD',
+            eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
-            body: { groupMetaFeedEndId: '8' },
+            body: {
+              messageEndSeq: 0,
+              tombstoneEndSeq: 0,
+              groupMetaFeedEndId: '8',
+            },
           },
         ],
       }),
@@ -145,13 +153,13 @@ describe('PeerStateFeedPullService atomic item application', () => {
           items: [
             {
               account: '!group-a',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
               body: {},
             },
             {
               account: '!group-b',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
               body: {},
             },
@@ -183,13 +191,13 @@ describe('PeerStateFeedPullService atomic item application', () => {
           items: [
             {
               account: '!group-a',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
               body: {},
             },
             {
               account: '!group-b',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
               body: {},
             },
@@ -209,13 +217,13 @@ describe('PeerStateFeedPullService atomic item application', () => {
       items: [
         {
           account: '!group-b',
-          eventType: 'GROUP_META_FEED_HEAD' as const,
+          eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '2',
           body: {},
         },
         {
           account: '!group-c',
-          eventType: 'GROUP_META_FEED_HEAD' as const,
+          eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '3',
           body: {},
         },
@@ -256,7 +264,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           items: [
             {
               account: 'a',
-              eventType: 'GROUP_META_FEED_HEAD',
+              eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
               body: {},
             },

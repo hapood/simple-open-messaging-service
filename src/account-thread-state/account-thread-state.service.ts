@@ -1,8 +1,7 @@
-import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
-import { enqueueReverseP2PRevokeInTx } from '../relationship/reverse-revoke-task.js';
-import { writeP2PClientRelationshipInTx } from '../relationship/p2p-client-relationship.js';
-import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  groupState as group,
+  groupStateFields,
+} from '../business/group/shared/group-state.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -10,55 +9,32 @@ import {
 import {
   addressRelation,
   p2pPeerRelation,
-} from '../relationship/relationship-address.js';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+} from '../business/relationship/shared/relationship-address.js';
+import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
   accountThreadState,
   messageThread,
   account as user,
 } from '../database/schema.js';
-import { rawBigInt } from '../database/raw-result.js';
 import { MessageThreadType } from '../database/enums.js';
-import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
-import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
 import {
   isThreadMutuallyAuthorized,
-  relationshipEndpointMatchesUserSql,
   relationshipPairMatchesUsersSql,
-} from '../relationship/relationship-authorization.js';
-import {
-  MessageService,
-  type PublicMessage,
-} from '../message/message.service.js';
-import { SystemMessageType } from '../message/system-message.js';
-import {
-  requireP2PThreadContentLockUnderPairInTx,
-  requireThreadContentLockInTx,
-} from '../business/shared/locks/thread-content-lock.js';
-import { lockBusinessAccountsInTx } from '../business/shared/locks/account-business-lock.js';
-import { setLockedP2PPairActiveInTx } from '../relationship/p2p-pair-state.js';
+} from '../business/relationship/shared/relationship-authorization.js';
+import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { ThreadPreviewService } from '../message/thread-preview.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
 export class AccountThreadStateService {
-  @Inject(RelationshipIntentService)
-  private readonly relationshipIntents!: RelationshipIntentService;
   @Inject(ThreadPreviewService)
   private readonly previews!: ThreadPreviewService;
-  @Inject(DurableTaskQueueService)
-  private readonly tasks!: DurableTaskQueueService;
   constructor(
     private database: DatabaseService,
-    private readonly stateFeed: PeerStateFeedService,
     private readonly clientStateFeed: ClientStateFeedService,
-    @Optional() private readonly messages?: MessageService,
   ) {}
 
   async findParticipant(userId: number, threadId: number) {
@@ -145,7 +121,7 @@ export class AccountThreadStateService {
 
   async setBlocked(userId: number, threadId: number, blocked: boolean) {
     const pending = await this.database.db.transaction(async (tx) => {
-      await requireThreadContentLockInTx(tx, threadId);
+      const threadLock = await requireThreadContentLockInTx(tx, threadId);
       const current = await tx.execute<{ blocked: boolean }>(sql`
           SELECT blocked FROM "AccountThreadState"
           WHERE "accountId" = ${userId} AND "threadId" = ${threadId} FOR NO KEY UPDATE`);
@@ -163,10 +139,15 @@ export class AccountThreadStateService {
         .returning({ id: accountThreadState.id });
       if (!participant) throw new Error('thread participant is missing');
       if (!blocked) {
-        await this.previews.initializeReadWindowsInTx(tx, threadId, [userId]);
+        await this.previews.initializeReadWindowsInTx(
+          tx,
+          threadId,
+          [userId],
+          threadLock,
+        );
         // A blocked member missed every fan-out; resuming publishes the
-        // current group meta head with the reopened read windows.
-        await ThreadFeedHeadWriter.reconcileGroupMetaHeadInTx(tx, {
+        // current Group Meta coordinate with the reopened read windows.
+        await ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
           threadId,
           userIds: [userId],
         });
@@ -326,183 +307,6 @@ export class AccountThreadStateService {
     return result.rows[0]?.threadId ?? null;
   }
 
-  async softLeaveP2PBoth(threadId: number): Promise<void> {
-    void threadId;
-  }
-
-  async endP2P(
-    threadId: number,
-    callerUserId: number,
-    expectedAuthorizationEpoch?: number,
-    initiator: AccountTarget = callerUserId,
-  ): Promise<{
-    transitioned: boolean;
-    statePeers: string[];
-    systemMessage: PublicMessage | null;
-  }> {
-    const pendingClientUpdates: Array<{ userId: number; feedId: number }> = [];
-    const now = new Date();
-    const result = await this.database.db.transaction(async (tx) => {
-      let endpoints = await this.readP2PEndpointsInTx(
-        tx,
-        threadId,
-        callerUserId,
-      );
-      if (!endpoints) throw new Error('P2P endpoints are missing');
-      let { mine, peer } = endpoints;
-      await lockBusinessAccountsInTx(tx, [mine, peer]);
-      endpoints = await this.readP2PEndpointsInTx(tx, threadId, callerUserId);
-      if (!endpoints) throw new Error('P2P endpoints are missing');
-      ({ mine, peer } = endpoints);
-      const { callerSide, pairId } = endpoints;
-      const pair = await tx.execute<{ id: string; active: boolean }>(sql`
-        SELECT id, active FROM "RelationshipPair"
-        WHERE id = ${pairId} AND "threadId" = ${threadId} AND kind = 'P2P'
-        FOR NO KEY UPDATE
-      `);
-      if (
-        pair.rows[0] === undefined ||
-        rawBigInt(pair.rows[0].id, 'RelationshipPair.id') !== pairId
-      )
-        throw new Error('P2P relationship pair is missing');
-      const wasActive = pair.rows[0].active;
-      const threadLock = await requireP2PThreadContentLockUnderPairInTx(
-        tx,
-        pairId,
-        threadId,
-      );
-      if (expectedAuthorizationEpoch !== undefined) {
-        const thread = await tx.query.messageThread.findFirst({
-          where: eq(messageThread.id, threadId),
-          columns: { authorizationEpoch: true },
-        });
-        if (thread?.authorizationEpoch !== expectedAuthorizationEpoch)
-          return { transitioned: false, statePeers: [], systemMessage: null };
-      }
-      await tx.execute(sql`
-        SELECT id FROM "RelationshipIntent"
-        WHERE "pairId" = ${pairId}
-        ORDER BY "authorSide"
-        FOR NO KEY UPDATE
-      `);
-      await tx.execute(sql`
-        SELECT id FROM "AccountThreadState"
-        WHERE "threadId" = ${threadId}
-        ORDER BY "accountId"
-        FOR NO KEY UPDATE
-      `);
-      const outgoing = await tx.execute<{ status: string }>(sql`
-        SELECT status FROM "RelationshipIntent"
-        WHERE "pairId" = ${pairId} AND "authorSide" = ${callerSide}
-      `);
-      const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
-      const localHistoryUserIds = [mine, peer]
-        .filter((identity) => identity.domain === 'local')
-        .map((identity) => identity.userId)
-        .filter((id): id is number => id !== null);
-      let systemMessage: PublicMessage | null = null;
-      const statePeers: string[] = [];
-      if (!transitioned) return { transitioned, statePeers, systemMessage };
-
-      if (peer.domain !== 'local')
-        await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-          { peerDomain: peer.domain, namespaceId: peer.namespaceId! },
-        ]);
-
-      if (wasActive && this.messages) {
-        systemMessage = (
-          await this.messages.writeSystemMessageInTx(
-            tx,
-            threadId,
-            { type: SystemMessageType.FRIEND_REMOVED, initiator },
-            { threadLock },
-          )
-        ).message;
-        if (localHistoryUserIds.length > 0)
-          await tx
-            .update(accountThreadState)
-            .set({
-              messageVisibleThroughSeq: systemMessage.seq,
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(accountThreadState.threadId, threadId),
-                inArray(accountThreadState.accountId, localHistoryUserIds),
-              ),
-            );
-      }
-      if (wasActive) {
-        await tx.execute(sql`
-          DELETE FROM "ThreadAudience"
-          WHERE "threadId" = ${threadId} AND "targetDomain" = 'local'
-        `);
-        if (peer.domain !== 'local')
-          await closeFederatedAudienceInTx(tx, peer.domain, threadId);
-      }
-
-      const request = await tx.execute<{ profileRev: number }>(sql`
-        INSERT INTO "RelationshipIntent" (
-          "pairId", "authorSide", status, note, "messageEndSeq", "tombstoneEndSeq",
-          "requestedAt", "expiresAt", "updatedAt"
-        ) VALUES (${pairId}, ${callerSide}, 'REVOKED', '', 0, 0, NULL, NULL, CURRENT_TIMESTAMP)
-        ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
-          status = 'REVOKED', note = '', "requestedAt" = NULL,
-          "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "RelationshipIntent".status <> 'REVOKED'
-        RETURNING "profileRev"
-      `);
-      if (wasActive && peer.domain === 'local')
-        await enqueueReverseP2PRevokeInTx(
-          tx,
-          this.tasks,
-          peer.userId!,
-          mine.userId,
-        );
-      await setLockedP2PPairActiveInTx(tx, pairId, false);
-      pendingClientUpdates.push(
-        ...(await writeP2PClientRelationshipInTx(
-          tx,
-          mine,
-          peer,
-          this.relationshipIntents,
-          this.clientStateFeed,
-        )),
-      );
-      if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {
-        const profileRev = request.rows[0]?.profileRev;
-        if (profileRev === undefined)
-          throw new Error('revoked friend intent disappeared');
-        const localDomain = process.env.SOMS_DOMAIN;
-        if (!localDomain)
-          throw new Error('SOMS_DOMAIN is required for federation state');
-        await this.stateFeed.writeManyInTx(tx, [
-          {
-            peerDomain: peer.domain,
-            namespaceId: peer.namespaceId!,
-            account: mine.account,
-            domain: localDomain,
-            subjectAccount: peer.account,
-            subjectDomain: peer.domain,
-            eventType: 'RELATIONSHIP_INTENT',
-            body: {
-              status: 'REVOKED',
-              profileRev,
-              note: '',
-              requestedAt: null,
-              expiresAt: null,
-            },
-          },
-        ]);
-        statePeers.push(peer.domain);
-      }
-      return { transitioned, statePeers, systemMessage };
-    });
-    if (pendingClientUpdates.length)
-      this.clientStateFeed.notifyFeedUpdates(pendingClientUpdates);
-    return result;
-  }
-
   async areFriends(userX: number, userY: number) {
     return (await this.findP2PThreadBetween(userX, userY)) !== null;
   }
@@ -519,75 +323,6 @@ export class AccountThreadStateService {
         AND thread.type = ${MessageThreadType.P2P}
     `);
     return result.rows.map((row) => row.userId);
-  }
-
-  private async readP2PEndpointsInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-    callerUserId: number,
-  ): Promise<{
-    pairId: bigint;
-    callerSide: 'A' | 'B';
-    mine: {
-      userId: number;
-      account: string;
-      domain: string;
-      namespaceId: number;
-    };
-    peer: {
-      userId: number | null;
-      account: string;
-      domain: string;
-      namespaceId: number;
-    };
-  } | null> {
-    const result = await tx.execute<{
-      pairId: string;
-      callerSide: 'A' | 'B';
-      mineUserId: number;
-      mineAccount: string;
-      mineDomain: string;
-      mineNamespaceId: number;
-      peerUserId: number | null;
-      peerAccount: string;
-      peerDomain: string;
-      peerNamespaceId: number;
-    }>(sql`
-      SELECT pair.id AS "pairId",
-        CASE
-          WHEN ${relationshipEndpointMatchesUserSql(sql`pair`, 'A', sql`mine`)} THEN 'A'
-          ELSE 'B'
-        END AS "callerSide",
-        mine.id AS "mineUserId", mine.account AS "mineAccount",
-        mine.domain AS "mineDomain", mine."namespaceId" AS "mineNamespaceId",
-        local_peer.id AS "peerUserId", peer.account AS "peerAccount",
-        peer.domain AS "peerDomain", peer."namespaceId" AS "peerNamespaceId"
-      FROM "RelationshipPair" pair
-      JOIN "Account" mine ON mine.id = ${callerUserId}
-      JOIN ${p2pPeerRelation(sql`pair`, sql`mine`)} peer ON true
-      LEFT JOIN "Account" local_peer ON peer.domain = 'local' AND local_peer.account = peer.account
-      WHERE pair.kind = 'P2P' AND pair."threadId" = ${threadId}
-        AND ${relationshipPairMatchesUsersSql(sql`pair`, sql`mine`, sql`peer`)}
-      LIMIT 1
-    `);
-    const row = result.rows[0];
-    if (!row) return null;
-    return {
-      pairId: rawBigInt(row.pairId, 'RelationshipPair.id'),
-      callerSide: row.callerSide,
-      mine: {
-        userId: row.mineUserId,
-        account: row.mineAccount,
-        domain: row.mineDomain,
-        namespaceId: row.mineNamespaceId,
-      },
-      peer: {
-        userId: row.peerUserId,
-        account: row.peerAccount,
-        domain: row.peerDomain,
-        namespaceId: row.peerNamespaceId,
-      },
-    };
   }
 
   private async updateParticipant(

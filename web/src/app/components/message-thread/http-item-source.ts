@@ -83,7 +83,7 @@ import { isTauri } from '../../services/runtime';
  */
 const MAX_PAGE = 50;
 
-export class MessagePageLoadError extends Error {
+class MessagePageLoadError extends Error {
   constructor() {
     super('message page load failed; edge remains retryable');
     this.name = 'MessagePageLoadError';

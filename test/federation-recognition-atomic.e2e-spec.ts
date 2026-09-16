@@ -90,9 +90,7 @@ describe('FederationRecognitionService atomic commit', () => {
       }),
     ).toMatchObject({
       trustLevel: 'available',
-      inboundRecognitionConfirmed: true,
-      lightweightInboundReady: true,
-      reverseRecognitionPending: true,
+      peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
     });
     expect(
@@ -144,6 +142,118 @@ describe('FederationRecognitionService atomic commit', () => {
     ).toEqual([]);
   });
 
+  it('keeps outbound recognition establishing until a retry receives OK', async () => {
+    const request = vi.fn();
+    const discovery = {
+      resolveBase: vi.fn().mockResolvedValue('https://atomic-recognition.test'),
+      fetchWellKnown: vi.fn().mockResolvedValue(document),
+      cacheDocument: vi.fn().mockResolvedValue(undefined),
+      acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
+      request,
+    };
+    const recognition = new FederationRecognitionService(
+      database,
+      discovery as never,
+      { signOutbound: vi.fn().mockResolvedValue({}) } as never,
+      { get: () => ({ callTimeoutSec: 12 }) } as never,
+      new FederationNamespaceService(database),
+      { emit: () => undefined } as never,
+    );
+    request.mockImplementationOnce(async () => {
+      expect(
+        await database.db.query.federatedPeer.findFirst({
+          where: eq(federatedPeer.domain, domain),
+        }),
+      ).toMatchObject({
+        trustLevel: 'establishing',
+        recognizesPeer: true,
+        peerAcceptanceConfirmed: false,
+      });
+      throw new Error('temporary connection failure');
+    });
+
+    await expect(recognition.recognize(domain)).rejects.toThrow(
+      'temporary connection failure',
+    );
+    expect(
+      await database.db.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, domain),
+      }),
+    ).toMatchObject({
+      trustLevel: 'establishing',
+      peerAcceptanceConfirmed: false,
+      remoteServiceReachable: false,
+    });
+
+    request.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    await recognition.recognize(domain);
+    expect(
+      await database.db.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, domain),
+      }),
+    ).toMatchObject({
+      trustLevel: 'available',
+      peerAcceptanceConfirmed: true,
+      remoteServiceReachable: true,
+    });
+  });
+
+  it.each(['available', 'degraded'] as const)(
+    'accepts positive Health %s instead of a lost Recognize OK',
+    async (status) => {
+      const [namespace] = await database.db
+        .insert(identityNamespace)
+        .values({
+          domain,
+          rootPublicKey,
+          rootKeyFingerprint: 'test-fingerprint',
+          identityPinnedAt: new Date(),
+        })
+        .returning({ id: identityNamespace.id });
+      await database.db.insert(federatedPeer).values({
+        domain,
+        activeNamespaceId: namespace!.id,
+        trustLevel: 'establishing',
+        recognizesPeer: true,
+        peerAcceptanceConfirmed: false,
+        localServiceAvailable: true,
+        remoteServiceReachable: false,
+      });
+      const discovery = {
+        resolveBase: vi
+          .fn()
+          .mockResolvedValue('https://atomic-recognition.test'),
+        acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
+        request: vi
+          .fn()
+          .mockResolvedValue(
+            new Response(JSON.stringify({ status }), { status: 200 }),
+          ),
+      };
+      const recognition = new FederationRecognitionService(
+        database,
+        discovery as never,
+        { signOutbound: vi.fn().mockResolvedValue({}) } as never,
+        { get: () => ({ callTimeoutSec: 12 }) } as never,
+        new FederationNamespaceService(database),
+        { emit: () => undefined } as never,
+      );
+
+      await expect(recognition.checkHealth(domain)).resolves.toBe(status);
+      expect(
+        await database.db.query.federatedPeer.findFirst({
+          where: eq(federatedPeer.domain, domain),
+        }),
+      ).toMatchObject({
+        trustLevel: 'available',
+        peerAcceptanceConfirmed: true,
+        remoteServiceReachable: true,
+      });
+    },
+  );
+
   it('counts and logs only the available to degraded transition', async () => {
     const [namespace] = await database.db
       .insert(identityNamespace)
@@ -159,8 +269,7 @@ describe('FederationRecognitionService atomic commit', () => {
       activeNamespaceId: namespace!.id,
       trustLevel: 'available',
       recognizesPeer: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
+      peerAcceptanceConfirmed: true,
       localServiceAvailable: true,
       remoteServiceReachable: true,
     });

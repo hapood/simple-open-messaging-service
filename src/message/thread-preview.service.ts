@@ -4,12 +4,15 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
+import {
+  requireThreadContentLockInTx,
+  type ThreadContentLock,
+} from '../business/shared/locks/thread-content-lock.js';
 import {
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../user/account-address.js';
-import { applyReadPositionInTx } from './thread-read-position.js';
+import { applyReadPositionInTx } from '../business/message/thread-read-position.service.js';
 import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
 import { threadPreviewLimit } from './thread-preview-limit.js';
 import type { MessageDeleteType } from '../database/enums.js';
@@ -25,7 +28,9 @@ export class ThreadPreviewService {
     tx: DatabaseTransaction,
     threadId: number,
     targets: readonly AccountTarget[],
+    threadLock?: ThreadContentLock,
   ): Promise<void> {
+    const lock = await requireThreadContentLockInTx(tx, threadId, threadLock);
     if (targets.length === 0) return;
     const accounts = await localAccountsForTargetsInTx(tx, targets);
     if (accounts.length === 0) return;
@@ -44,7 +49,7 @@ export class ThreadPreviewService {
         AND a.domain = 'local' AND a."namespaceId" = 0 AND a.availability = 'AVAILABLE'
       ORDER BY a.id`);
     for (const owner of owners.rows) {
-      await applyReadPositionInTx(tx, owner.accountId, {
+      await applyReadPositionInTx(tx, lock, owner.accountId, {
         threadId,
         localReadHwm: owner.lastReadSeq,
       });

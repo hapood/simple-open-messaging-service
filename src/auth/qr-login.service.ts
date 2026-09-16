@@ -30,7 +30,7 @@ export interface QrCreateResult {
   expiresAt: number;
 }
 
-export type QrPollStatus = 'pending' | 'scanned' | 'confirmed' | 'expired';
+type QrPollStatus = 'pending' | 'scanned' | 'confirmed' | 'expired';
 export interface QrPollResult {
   status: QrPollStatus;
   sessionToken?: string;

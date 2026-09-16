@@ -1,7 +1,7 @@
 import { parseCallEndedContent } from './call-ended-content.js';
 import { parseTextMessageContent } from './text-message-content.js';
 
-export const MESSAGE_PREVIEW_MAX_LENGTH = 200;
+const MESSAGE_PREVIEW_MAX_LENGTH = 200;
 
 type DisplayText = (text: string) => string;
 
@@ -28,7 +28,9 @@ export function deriveMessagePreview(
     case 'IMAGE':
       return '[Photo]';
     case 'SYSTEM':
-      return parseCallEndedContent(content) ? callPreview(content) : '[System message]';
+      return parseCallEndedContent(content)
+        ? callPreview(content)
+        : '[System message]';
     case 'VIDEO':
       return '[Video]';
     case 'FILE':

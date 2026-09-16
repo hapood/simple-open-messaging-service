@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { toFederationWireDomain } from '../../../federation/federation-wire-domain.js';
 
 /** Relationship-intent client feed writes → body dedupe, one allocation block per recipient, upsert,
  * result. `candidate_bodies` must select "userId", "namespaceId", ordinal,
@@ -48,6 +49,8 @@ export function peerIntentFeedWriteSql(params: {
   resultName?: string;
 }): SQL {
   const resultName = params.resultName ?? 'recipient_result';
+  const selfDomain = toFederationWireDomain(params.selfDomain);
+  const wireLocalDomain = toFederationWireDomain('local');
   return sql`
     peer_alloc AS (
       UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)
@@ -56,8 +59,10 @@ export function peerIntentFeedWriteSql(params: {
     ), peer_feed AS (
       INSERT INTO "PeerStateFeed"
         ("peerDomain", "namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain", "feedId", body)
-      SELECT ${params.peerDomain}, ${params.namespaceId}, ${params.selfAccount}, ${params.selfDomain},
-        'RELATIONSHIP_INTENT', c."subjectAccount", c."subjectDomain",
+      SELECT ${params.peerDomain}, ${params.namespaceId}, ${params.selfAccount}, ${selfDomain},
+        'RELATIONSHIP_INTENT', c."subjectAccount",
+        CASE WHEN c."subjectDomain" = 'local' THEN ${wireLocalDomain}
+          ELSE c."subjectDomain" END,
         a."allocatedThrough" - (SELECT count(*) FROM peer_changes) + c.position, c.body
       FROM peer_changes c CROSS JOIN peer_alloc a
       ON CONFLICT ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain") DO UPDATE SET

@@ -8,7 +8,10 @@ test('group invitations submit public addresses even when a snapshot contains a 
     node: { name: 'charlie', domain: 'charlie.test' },
     async post(endpoint, body) {
       requests.push({ endpoint, body });
-      return { tasks: [{ taskId: '1', status: 'PENDING' }], skipped: [] };
+      return {
+        invited: [{ account: 'friend', domain: 'bravo.test' }],
+        skipped: [],
+      };
     },
   };
   await admitOperation(
@@ -36,6 +39,42 @@ test('group invitations submit public addresses even when a snapshot contains a 
         groupId: 2,
         users: [{ account: 'friend', domain: 'bravo.test' }],
       },
+    },
+  ]);
+});
+
+test('group request decisions submit the projection member address', async () => {
+  const requests = [];
+  const actor = {
+    node: { name: 'charlie', domain: 'charlie.test' },
+    async post(endpoint, body) {
+      requests.push({ endpoint, body });
+      return { status: 'APPLIED' };
+    },
+  };
+  await admitOperation(
+    {
+      id: 'op-504',
+      type: 'REJECT_GROUP_APPLICATION',
+      actor: 'owner@charlie.test',
+      group: '!group@charlie.test',
+      groupThreadId: 2,
+      observedFacts: { group: { account: '!group', domain: 'charlie.test' } },
+      target: {
+        direction: 'APPLICATION',
+        feedId: 7,
+        memberAddress: 'friend@bravo.test',
+        memberAccount: 'friend',
+        memberDomain: 'bravo.test',
+      },
+    },
+    { user: () => actor },
+    1000,
+  );
+  assert.deepEqual(requests, [
+    {
+      endpoint: '/group/join-request/reject',
+      body: { groupId: 2, account: 'friend', domain: 'bravo.test' },
     },
   ]);
 });

@@ -1,7 +1,7 @@
 import { federationLabNodes } from '../topology.mjs';
 import { parseContent } from './message-operations.mjs';
 
-export function messageAuthor(node, message) {
+function messageAuthor(node, message) {
   return (
     message.creatorAddress ??
     `${message.creatorAccount}@${message.creatorDomain === 'local' ? node.domain : message.creatorDomain}`

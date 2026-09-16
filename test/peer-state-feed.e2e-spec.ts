@@ -18,7 +18,7 @@ import {
   account as user,
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/business/relationship/relationship-intent.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
@@ -27,7 +27,6 @@ describe('per-peer state feed', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let feed: PeerStateFeedService;
-  let membership: RelationshipIntentService;
   const namespaceIds = new Map<string, number>();
 
   async function seedPeer(domain: string): Promise<number> {
@@ -63,7 +62,6 @@ describe('per-peer state feed', () => {
     }).compile();
     database = mod.get(DatabaseService);
     feed = mod.get(PeerStateFeedService);
-    membership = mod.get(RelationshipIntentService);
     for (const domain of DOMAINS) await seedPeer(domain);
   });
 
@@ -77,7 +75,7 @@ describe('per-peer state feed', () => {
     await mod.close();
   });
 
-  it('keeps group metadata and thread content independently indexed', async () => {
+  it('indexes Group Meta and content as one complete thread head', async () => {
     const peerDomain = 'fresh-snapshot.test';
     await seedPeer(peerDomain);
     const account = '!fresh-snapshot';
@@ -114,7 +112,11 @@ describe('per-peer state feed', () => {
         {
           ...key,
           eventType: 'THREAD_CONTENT_HEAD',
-          body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 0,
+          },
         },
       ]);
       await tx.insert(message).values({
@@ -135,8 +137,12 @@ describe('per-peer state feed', () => {
       await feed.writeManyInTx(tx, [
         {
           ...key,
-          eventType: 'GROUP_META_FEED_HEAD',
-          body: { groupMetaFeedEndId: '1' },
+          eventType: 'THREAD_CONTENT_HEAD',
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 1,
+          },
         },
       ]);
     });
@@ -148,11 +154,14 @@ describe('per-peer state feed', () => {
           eq(peerStateFeed.account, account),
           eq(peerStateFeed.namespaceId, namespaceId(peerDomain)),
         ),
-      );
+    );
     const head = rows.find((row) => row.eventType === 'THREAD_CONTENT_HEAD')!;
-    const meta = rows.find((row) => row.eventType === 'GROUP_META_FEED_HEAD')!;
-    expect(head.body).toMatchObject({ messageEndSeq: 0, tombstoneEndSeq: 0 });
-    expect(head.feedId < meta.feedId).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(head.body).toMatchObject({
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
+      groupMetaFeedEndId: 1,
+    });
     await database.db.transaction((tx) =>
       feed.writeManyInTx(tx, [
         {
@@ -185,10 +194,14 @@ describe('per-peer state feed', () => {
           namespaceId: namespaceId(DOMAINS[0]),
           account: '!group-a',
           domain: 'local.test',
-          eventType: 'GROUP_META_FEED_HEAD',
+          eventType: 'THREAD_CONTENT_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { groupMetaFeedEndId: '1' },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 1,
+          },
         },
       ]);
       await feed.writeManyInTx(tx, [
@@ -197,10 +210,15 @@ describe('per-peer state feed', () => {
           namespaceId: namespaceId(DOMAINS[0]),
           account: '!group-a',
           domain: 'local.test',
-          eventType: 'GROUP_META_FEED_HEAD',
+          eventType: 'THREAD_CONTENT_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { groupMetaFeedEndId: '2', updatedAt: wireTime },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 2,
+            updatedAt: wireTime,
+          },
         },
       ]);
       await feed.writeManyInTx(tx, [
@@ -209,10 +227,15 @@ describe('per-peer state feed', () => {
           namespaceId: namespaceId(DOMAINS[0]),
           account: '!group-a',
           domain: 'local.test',
-          eventType: 'GROUP_META_FEED_HEAD',
+          eventType: 'THREAD_CONTENT_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { groupMetaFeedEndId: '2', updatedAt: wireTime },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 2,
+            updatedAt: wireTime,
+          },
         },
       ]);
     });
@@ -223,7 +246,7 @@ describe('per-peer state feed', () => {
       {
         feedId: '2',
         body: {
-          groupMetaFeedEndId: '2',
+          groupMetaFeedEndId: 2,
           updatedAt: wireTime.getTime(),
         },
       },
@@ -336,10 +359,14 @@ describe('per-peer state feed', () => {
           namespaceId: namespaceId(DOMAINS[1]),
           account: '!private-to-b',
           domain: 'local.test',
-          eventType: 'GROUP_META_FEED_HEAD',
+          eventType: 'THREAD_CONTENT_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { groupMetaFeedEndId: '1' },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 1,
+          },
         },
       ]);
     });
@@ -347,7 +374,7 @@ describe('per-peer state feed', () => {
     const b = await feed.serve(DOMAINS[1], namespaceId(DOMAINS[1]), 0n);
     expect(a.items.map((x) => x.peerAccount)).toEqual(['bob', 'carol']);
     expect(b.items).toHaveLength(1);
-    expect(b.items[0].body).toMatchObject({ groupMetaFeedEndId: '1' });
+    expect(b.items[0].body).toMatchObject({ groupMetaFeedEndId: 1 });
   });
 
   it('serves an older after without maintaining a source-side peer cursor', async () => {
@@ -368,10 +395,14 @@ describe('per-peer state feed', () => {
             namespaceId: namespaceId(DOMAINS[1]),
             account: '!rollback',
             domain: 'local.test',
-            eventType: 'GROUP_META_FEED_HEAD',
+            eventType: 'THREAD_CONTENT_HEAD',
             subjectAccount: '',
             subjectDomain: 'local',
-            body: { groupMetaFeedEndId: '1' },
+            body: {
+              messageEndSeq: 0,
+              tombstoneEndSeq: 0,
+              groupMetaFeedEndId: 1,
+            },
           },
         ]);
         throw new Error('rollback');
@@ -399,10 +430,14 @@ describe('per-peer state feed', () => {
           namespaceId: testNamespaceId,
           account: '!group-cascade',
           domain: 'local.test',
-          eventType: 'GROUP_META_FEED_HEAD',
+          eventType: 'THREAD_CONTENT_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { groupMetaFeedEndId: '1' },
+          body: {
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+            groupMetaFeedEndId: 1,
+          },
         },
       ]),
     );
@@ -412,83 +447,4 @@ describe('per-peer state feed', () => {
     expect(await feed.readFeedEndId(testNamespaceId)).toBe(1n);
   });
 
-  it('applies a later received group direction snapshot', async () => {
-    const suffix = Date.now().toString(36);
-    const [thread] = await database.db
-      .insert(messageThread)
-      .values({
-        type: MessageThreadType.GROUP,
-        groupAccount: `!rev-${suffix}`,
-        groupDomain: DOMAINS[0],
-        authorityNamespaceId: namespaceId(DOMAINS[0]),
-        updatedAt: new Date(),
-      })
-      .returning({ id: messageThread.id });
-    const [memberUser] = await database.db
-      .insert(user)
-      .values({
-        account: `rev-${suffix}`,
-        domain: 'local',
-        updatedAt: new Date(),
-      })
-      .returning({ id: user.id });
-
-    try {
-      await database.db.transaction((tx) =>
-        membership.applyRemoteGroupIntentInTx(tx, {
-          messageEndSeq: 0,
-          tombstoneEndSeq: 0,
-          groupId: thread.id,
-          memberUserId: memberUser.id,
-          threadId: thread.id,
-          author: 'GROUP',
-          status: 'REQUESTED',
-          profileRev: 7,
-          note: 'first',
-          requestedAt: new Date('2026-01-01T00:00:00Z'),
-          expiresAt: new Date('2026-01-08T00:00:00Z'),
-        }),
-      );
-      const pair = await database.db.query.relationshipPair.findFirst({
-        where: eq(relationshipPair.threadId, thread.id),
-      });
-      const before = await database.db.query.relationshipIntent.findFirst({
-        where: and(
-          eq(relationshipIntent.pairId, pair!.id),
-          eq(relationshipIntent.authorSide, 'A'),
-        ),
-      });
-
-      const replay = await database.db.transaction((tx) =>
-        membership.applyRemoteGroupIntentInTx(tx, {
-          messageEndSeq: 0,
-          tombstoneEndSeq: 0,
-          groupId: thread.id,
-          memberUserId: memberUser.id,
-          threadId: thread.id,
-          author: 'GROUP',
-          status: 'REVOKED',
-          profileRev: 7,
-          note: 'must not overwrite',
-          requestedAt: null,
-          expiresAt: null,
-        }),
-      );
-      const after = await database.db.query.relationshipIntent.findFirst({
-        where: and(
-          eq(relationshipIntent.pairId, pair!.id),
-          eq(relationshipIntent.authorSide, 'A'),
-        ),
-      });
-
-      expect(replay.changed).toBe(true);
-      expect(after).not.toEqual(before);
-      expect(after?.status).toBe('REVOKED');
-    } finally {
-      await database.db
-        .delete(messageThread)
-        .where(eq(messageThread.id, thread.id));
-      await database.db.delete(user).where(eq(user.id, memberUser.id));
-    }
-  });
 });

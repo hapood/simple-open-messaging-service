@@ -1,8 +1,5 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BusinessException } from '../common/business.exception.js';
-import { DurableAsyncTaskDispatcherService } from './durable-async-task-dispatcher.service.js';
-import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler.service.js';
 import { DurableTaskDispatcherService } from './durable-task-dispatcher.service.js';
 import { DurableTaskSchedulerService } from './durable-task-scheduler.service.js';
 import type { DurableTaskStoreService } from './durable-task-store.service.js';
@@ -63,18 +60,10 @@ function createStore(tasks: DurableTask[]) {
     }
     task.status = 'SUCCEEDED';
   });
-  const markAsyncProcessing = vi.fn(async (id: bigint) => {
-    const task = tasks.find((candidate) => candidate.id === id);
-    if (!task || task.status !== 'PROCESSING') {
-      throw new Error('task could not hand off async');
-    }
-    task.status = 'ASYNC_PROCESSING';
-    return task;
-  });
   const markRejected = vi.fn(async (id: bigint) => {
     tasks.find((task) => task.id === id)!.status = 'REJECTED';
   });
-  const markFailed = vi.fn(async (id: bigint) => {
+  const markFailed = vi.fn(async (id: bigint, _reason: string) => {
     tasks.find((task) => task.id === id)!.status = 'FAILED';
   });
   return {
@@ -82,23 +71,14 @@ function createStore(tasks: DurableTask[]) {
       findCheckpointedProcessing,
       findEligible,
       claim,
-      markAsyncProcessing,
       markSucceeded,
       markRejected,
       markFailed,
     } as unknown as DurableTaskStoreService,
     markSucceeded,
-    markAsyncProcessing,
     markRejected,
     markFailed,
   };
-}
-
-function createAsyncScheduler(store: DurableTaskStoreService) {
-  return new DurableAsyncTaskSchedulerService(
-    new DurableAsyncTaskDispatcherService(),
-    store,
-  );
 }
 
 const savedConcurrency = process.env.DURABLE_TASK_MAX_CONCURRENCY;
@@ -124,7 +104,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
     await scheduler.wake();
     const idleQueries = vi.mocked(harness.store.findEligible).mock.calls.length;
@@ -158,7 +137,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
     const pump = scheduler.wake();
     await vi.waitFor(() =>
@@ -190,7 +168,6 @@ describe('DurableTaskSchedulerService', () => {
       const scheduler = new DurableTaskSchedulerService(
         harness.store,
         dispatcher,
-        createAsyncScheduler(harness.store),
       );
       await scheduler.wake();
       expect(harness.store[method]).toHaveBeenCalledOnce();
@@ -214,7 +191,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       new DurableTaskDispatcherService(),
-      createAsyncScheduler(harness.store),
     );
     await scheduler.wake();
     expect(vi.getTimerCount()).toBe(1);
@@ -228,7 +204,7 @@ describe('DurableTaskSchedulerService', () => {
     process.env.DURABLE_TASK_MAX_CONCURRENCY = '1';
     const tasks = [1n, 2n, 3n].map((id) => ({
       ...makeTask(id),
-      taskType: 'FAN_OUT_GROUP_META_HEAD',
+      taskType: 'FAN_OUT_THREAD_CONTENT',
       status: 'PROCESSING' as const,
     }));
     const harness = createStore(tasks);
@@ -237,11 +213,10 @@ describe('DurableTaskSchedulerService', () => {
     const execute = vi.fn(
       (task: DurableTask) => gates[Number(task.id) - 1].promise,
     );
-    dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
+    dispatcher.register({ taskType: 'FAN_OUT_THREAD_CONTENT', execute });
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
     await scheduler.wake();
     expect(execute).toHaveBeenCalledTimes(1);
@@ -272,7 +247,6 @@ describe('DurableTaskSchedulerService', () => {
       const scheduler = new DurableTaskSchedulerService(
         harness.store,
         dispatcher,
-        createAsyncScheduler(harness.store),
       );
       await scheduler.wake();
       await vi.waitFor(() =>
@@ -287,7 +261,7 @@ describe('DurableTaskSchedulerService', () => {
   );
 
   it('does not scan locally executing tasks for recovery on subsequent wakes', async () => {
-    const task = { ...makeTask(1n), taskType: 'FAN_OUT_GROUP_META_HEAD' };
+    const task = { ...makeTask(1n), taskType: 'FAN_OUT_THREAD_CONTENT' };
     const harness = createStore([task]);
     const gate = deferred();
     const dispatcher = new DurableTaskDispatcherService();
@@ -296,7 +270,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
     await scheduler.wake();
     await scheduler.wake();
@@ -322,7 +295,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
     await scheduler.wake();
 
@@ -358,7 +330,7 @@ describe('DurableTaskSchedulerService', () => {
       const projection = {
         ...makeTask(2n, 'other-group-key'),
         kind: 'PROJECTION',
-        taskType: 'FAN_OUT_GROUP_META_HEAD',
+        taskType: 'FAN_OUT_THREAD_CONTENT',
         status: 'PROCESSING',
         startedAt: new Date(),
       } satisfies DurableTask;
@@ -366,11 +338,10 @@ describe('DurableTaskSchedulerService', () => {
       const dispatcher = new DurableTaskDispatcherService();
       const execute = vi.fn().mockResolvedValue(undefined);
       dispatcher.register({ taskType, execute });
-      dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
+      dispatcher.register({ taskType: 'FAN_OUT_THREAD_CONTENT', execute });
       const scheduler = new DurableTaskSchedulerService(
         harness.store,
         dispatcher,
-        createAsyncScheduler(harness.store),
       );
 
       await scheduler.wake();
@@ -394,7 +365,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
 
     await scheduler.wake();
@@ -422,7 +392,7 @@ describe('DurableTaskSchedulerService', () => {
     const projection = {
       ...makeTask(2n, 'shared-group'),
       kind: 'PROJECTION',
-      taskType: 'FAN_OUT_GROUP_META_HEAD',
+      taskType: 'FAN_OUT_THREAD_CONTENT',
     } satisfies DurableTask;
     const tasks = [mutation, projection];
     const harness = createStore(tasks);
@@ -430,11 +400,10 @@ describe('DurableTaskSchedulerService', () => {
     const gates = new Map(tasks.map(({ id }) => [id, deferred()]));
     const execute = vi.fn((task: DurableTask) => gates.get(task.id)!.promise);
     dispatcher.register({ taskType: 'TEST_COMMAND', execute });
-    dispatcher.register({ taskType: 'FAN_OUT_GROUP_META_HEAD', execute });
+    dispatcher.register({ taskType: 'FAN_OUT_THREAD_CONTENT', execute });
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
 
     await scheduler.wake();
@@ -447,7 +416,7 @@ describe('DurableTaskSchedulerService', () => {
     );
   });
 
-  it('maps business refusals and sanitized unexpected failures to terminal states', async () => {
+  it('maps returned business refusals and sanitized unexpected failures to terminal states', async () => {
     const tasks = [makeTask(1n), makeTask(2n), makeTask(3n)];
     const harness = createStore(tasks);
     const dispatcher = new DurableTaskDispatcherService();
@@ -455,7 +424,7 @@ describe('DurableTaskSchedulerService', () => {
       taskType: 'TEST_COMMAND',
       execute: async ({ id }) => {
         if (id === 2n) {
-          throw new BusinessException(20010, 'invite missing');
+          return { status: 'REJECTED' as const, resultCode: 20010 };
         }
         if (id === 3n) {
           throw Object.assign(new Error('secret remote response'), {
@@ -468,7 +437,6 @@ describe('DurableTaskSchedulerService', () => {
     const scheduler = new DurableTaskSchedulerService(
       harness.store,
       dispatcher,
-      createAsyncScheduler(harness.store),
     );
 
     await scheduler.wake();
@@ -482,77 +450,4 @@ describe('DurableTaskSchedulerService', () => {
     expect(harness.markFailed.mock.calls[0][1]).not.toContain('secret');
   });
 
-  it('hands async work off durably and releases the ordinary execution slot', async () => {
-    process.env.DURABLE_TASK_MAX_CONCURRENCY = '1';
-    const asyncTask = makeTask(1n, 'async-group');
-    const followingTask = makeTask(2n, 'other-group');
-    const harness = createStore([asyncTask, followingTask]);
-    const dispatcher = new DurableTaskDispatcherService();
-    dispatcher.register({
-      taskType: 'TEST_COMMAND',
-      execute: async ({ id }) =>
-        id === asyncTask.id ? { status: 'ASYNC_PROCESSING' } : undefined,
-    });
-    const executeAsync = vi.fn().mockResolvedValue(undefined);
-    const asyncDispatcher = new DurableAsyncTaskDispatcherService();
-    asyncDispatcher.register({
-      taskType: 'TEST_COMMAND',
-      execute: executeAsync,
-    });
-    const asyncScheduler = new DurableAsyncTaskSchedulerService(
-      asyncDispatcher,
-      harness.store,
-    );
-    const scheduler = new DurableTaskSchedulerService(
-      harness.store,
-      dispatcher,
-      asyncScheduler,
-    );
-
-    await scheduler.wake();
-    await vi.waitFor(() => expect(executeAsync).toHaveBeenCalledOnce());
-    await vi.waitFor(() =>
-      expect(harness.markSucceeded).toHaveBeenCalledWith(followingTask.id),
-    );
-
-    expect(harness.markAsyncProcessing).toHaveBeenCalledWith(asyncTask.id);
-    expect(executeAsync).toHaveBeenCalledWith(asyncTask);
-    expect(asyncTask.status).toBe('ASYNC_PROCESSING');
-    expect(harness.markSucceeded).not.toHaveBeenCalledWith(asyncTask.id);
-  });
-
-  it('resumes an async-capable task that stopped before durable handoff', async () => {
-    const task = {
-      ...makeTask(1n),
-      status: 'PROCESSING',
-      startedAt: new Date(),
-    } satisfies DurableTask;
-    const harness = createStore([task]);
-    const dispatcher = new DurableTaskDispatcherService();
-    const execute = vi.fn().mockResolvedValue({
-      status: 'ASYNC_PROCESSING' as const,
-    });
-    dispatcher.register({ taskType: 'TEST_COMMAND', execute });
-    const executeAsync = vi.fn().mockResolvedValue(undefined);
-    const asyncDispatcher = new DurableAsyncTaskDispatcherService();
-    asyncDispatcher.register({
-      taskType: 'TEST_COMMAND',
-      execute: executeAsync,
-    });
-    const asyncScheduler = new DurableAsyncTaskSchedulerService(
-      asyncDispatcher,
-      harness.store,
-    );
-    const scheduler = new DurableTaskSchedulerService(
-      harness.store,
-      dispatcher,
-      asyncScheduler,
-    );
-
-    await scheduler.wake();
-    await vi.waitFor(() => expect(executeAsync).toHaveBeenCalledWith(task));
-
-    expect(execute).toHaveBeenCalledWith(task);
-    expect(harness.markAsyncProcessing).toHaveBeenCalledWith(task.id);
-  });
 });

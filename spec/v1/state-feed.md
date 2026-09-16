@@ -3,8 +3,8 @@
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. `GET /s2s/v1/state-feed` is the
-per-peer compacted feed for relationship facts, group-meta feed-head hints,
-and per-thread message and deletion query heads. It carries no user or group
+per-peer compacted feed for relationship facts and per-thread message,
+deletion, and Group Meta query heads. It carries no user or group
 profile display data; Relationship Intent carries an authorization snapshot and an exact revision
 reference. Message-author display data is resolved only through the exact-message
 [Message Author Profile](./message-author-profile.md) operation.
@@ -54,10 +54,7 @@ Reading is not acknowledgement and the source stores no consumer cursor.
 ## 3. Items
 
 ```ts
-type StateEventType =
-  | 'RELATIONSHIP_INTENT'
-  | 'GROUP_META_FEED_HEAD'
-  | 'THREAD_CONTENT_HEAD';
+type StateEventType = 'RELATIONSHIP_INTENT' | 'THREAD_CONTENT_HEAD';
 
 interface StateFeedItemBase {
   account: Account;
@@ -69,12 +66,6 @@ interface RelationshipIntentItem extends StateFeedItemBase {
   eventType: 'RELATIONSHIP_INTENT';
   peerAccount: Account;
   body: RelationshipIntentBody;
-}
-
-interface GroupMetaFeedHeadItem extends StateFeedItemBase {
-  account: GroupAccount;
-  eventType: 'GROUP_META_FEED_HEAD';
-  body: GroupMetaFeedHeadBody;
 }
 
 interface P2PThreadContentHeadItem extends StateFeedItemBase {
@@ -92,7 +83,6 @@ interface GroupThreadContentHeadItem extends StateFeedItemBase {
 
 type StateFeedItem =
   | RelationshipIntentItem
-  | GroupMetaFeedHeadItem
   | P2PThreadContentHeadItem
   | GroupThreadContentHeadItem;
 ```
@@ -100,8 +90,8 @@ type StateFeedItem =
 `eventType` discriminates the item union; it is not part of an event's business
 stable key. Within one authenticated source feed, each event type defines its
 own stable key: `RELATIONSHIP_INTENT` uses the directed pair
-`(account, peerAccount)`, `GROUP_META_FEED_HEAD` uses the group `account`,
-and `THREAD_CONTENT_HEAD` uses the Thread Address defined in Section 6. The
+`(account, peerAccount)`, and `THREAD_CONTENT_HEAD` uses the Thread Address
+defined in Section 5. The
 source domain is the authenticated publisher and is not repeated in an item.
 Only relationship and P2P thread-content items carry `peerAccount`. Unknown
 event types or fields are malformed.
@@ -116,18 +106,19 @@ interface RelationshipIntentFields {
   expiresAt: EpochMilliseconds | null;
 }
 
-type RelationshipIntentBody = RelationshipIntentFields & (
-  | {
-      status: 'REQUESTED' | 'ACCEPTED';
-      messageEndSeq: ThreadSequence;
-      tombstoneEndSeq: ThreadSequence;
-    }
-  | {
-      status: 'REVOKED';
-      messageEndSeq?: ThreadSequence;
-      tombstoneEndSeq?: ThreadSequence;
-    }
-);
+type RelationshipIntentBody = RelationshipIntentFields &
+  (
+    | {
+        status: 'REQUESTED' | 'ACCEPTED';
+        messageEndSeq: ThreadSequence;
+        tombstoneEndSeq: ThreadSequence;
+      }
+    | {
+        status: 'REVOKED';
+        messageEndSeq?: ThreadSequence;
+        tombstoneEndSeq?: ThreadSequence;
+      }
+  );
 ```
 
 This item is one source-authored user/user or user/group direction.
@@ -248,6 +239,19 @@ the relationship by publishing `REVOKED` for its direction. Re-establishment
 requires a new effective request flow; an old or replayed `ACCEPTED` cannot
 override a newer negative fact.
 
+When a node receives a peer-authored `REVOKED` and its own direction is still
+an effective `REQUESTED` or valid `ACCEPTED`, it MUST publish `REVOKED` for its
+own direction as part of the same atomic relationship transition. This also
+concludes a pending request without granting departure effects to a pair that
+was never confirmed. A receiver whose own direction is already `REVOKED` MUST
+NOT republish it. Either author MAY later start a new flow by publishing a new
+`REQUESTED` revision from its own `REVOKED` direction.
+
+Receiving such an `ACCEPTED` while the receiver's own direction is already
+`REVOKED` is a no-op. The receiver does not republish the unchanged revoke:
+the original durable change remains the convergence source and is delivered
+according to the normal State Feed cursor/retry rules.
+
 A `REQUESTED` direction loses all authorization at its absolute `expiresAt`,
 independently of background processing. After that boundary, the author MAY
 atomically materialize the direction as `REVOKED` and allocate the resulting
@@ -256,40 +260,13 @@ snapshot, the receiver retains the expired `REQUESTED` as an ineffective
 authored fact. `REVOKED` is a current compacted fact, not a group-member
 deletion.
 
-## 5. GROUP_META_FEED_HEAD
-
-```ts
-interface GroupMetaFeedHeadBody {
-  groupMetaFeedEndId: DecimalString;
-}
-```
-
-The item account MUST be a group owned by the authenticated source domain.
-`groupMetaFeedEndId` is a committed `feedId` in the origin-owned group's one
-canonical Group Meta feed. It MUST NOT contain a roster, member display data, owner, active flag,
-dissolution flag, group setting, or other meta fact.
-
-The origin commits each canonical group-meta mutation once before allocating
-this item for an authorized audience. On first synchronization the receiver requests `group-meta` in
-`full` mode. Later synchronizations use `delta` from the last atomically committed
-Group Meta feed cursor. If delta history is unavailable, the receiver returns to
-`full`. The receiver MUST commit a Group Meta cursor greater than or equal to
-`groupMetaFeedEndId` before committing this state item; a later projection may
-legitimately overtake the feed-head hint while the consumer is fetching it.
-The State Feed item is audience-specific; the Group Meta coordinate it names is
-not. A newly authorized or reauthorized audience cannot use that common
-coordinate to bypass its Group Meta delta visibility floor.
-
-The group owner is derived from the member carrying role `OWNER`; membership
-and active local participation are derived from current member keys.
-Non-member-derived settings are not federated.
-
-## 6. THREAD_CONTENT_HEAD
+## 5. THREAD_CONTENT_HEAD
 
 ```ts
 interface ThreadContentHeadBody {
   messageEndSeq: ThreadSequence;
   tombstoneEndSeq: ThreadSequence;
+  groupMetaFeedEndId?: SafeInteger;
 }
 ```
 
@@ -298,6 +275,16 @@ the stable key `(account, peerAccount)`: `account` is the source-hosted user and
 `peerAccount` is the receiver-hosted user. A group item uses its globally unique
 group `account`, and `peerAccount` MUST be absent. The authenticated exchange
 supplies both domains, so neither is repeated in the body.
+
+For a group owned by the authenticated source, `groupMetaFeedEndId` is required
+and identifies a committed position in that group's canonical Group Meta feed.
+For P2P threads and for a mirrored group reporting member-authored content back
+to its origin, the field MUST be absent. It is a synchronization coordinate,
+not roster data, and cannot itself add or remove a member. The receiver MUST
+durably admit synchronization through at least this coordinate when it commits
+the thread head, and MUST NOT expose dependent group content until that Group
+Meta progress has committed. A later Group Meta projection may legitimately
+overtake the advertised coordinate while it is being fetched.
 
 `messageEndSeq` is the inclusive upper bound currently committed and queryable
 through `/messages`. It is a non-negative JSON integer no greater than
@@ -325,30 +312,30 @@ publication: the positive intent already carries the latest sequence pair.
 If the publisher later recreates a removed thread-content projection, it MUST
 allocate a new, greater `feedId`, even when both coordinates are unchanged.
 
-## 7. Ordering, recovery, and authorization
+## 6. Ordering, recovery, and authorization
 
-A source commits a relationship direction before dependent
-`GROUP_META_FEED_HEAD` items become visible. It MUST allocate every
-`THREAD_CONTENT_HEAD` after the current State Feed projections required to
-identify and authorize that thread. For a group, the required
-`GROUP_META_FEED_HEAD` precedes the thread-content item.
+A source commits a relationship direction before a dependent
+`THREAD_CONTENT_HEAD` becomes visible. It MUST allocate every thread head after
+the current State Feed projections required to identify and authorize that
+thread. For an origin-owned group, the canonical Group Meta mutation named by
+the combined head MUST already be committed.
 
 An effective one-way `REQUESTED` authorizes the passive queries defined by the
 message, tombstone, and profile operations, but it does not make these dependent
 head projections visible. The source MUST wait until the derived relationship is
-confirmed before allocating or publishing `GROUP_META_FEED_HEAD` or
-`THREAD_CONTENT_HEAD` for that peer. For GROUP, at least one member hosted by
+confirmed before allocating or publishing `THREAD_CONTENT_HEAD` for that peer.
+For GROUP, at least one member hosted by
 that peer MUST remain confirmed.
 
 A relationship change alone does not require creating or reindexing a
 thread-content item: its positive intent already provides the latest sequence
 pair. For a complete rebuild, the consumer applies current relationship facts
 before selecting thread targets; an older head must not replace a newer
-authorization snapshot. If a required Group Meta projection moves to a greater
-`feedId`, the publisher MUST reindex an existing dependent thread-content item
-at a still greater `feedId`, sampling a fresh latest sequence pair. The consumer
-applies relationship and roster dependencies before accepting their
-thread-content targets, regardless of placement within one fetched page.
+authorization snapshot. If the canonical Group Meta coordinate moves to a
+greater `feedId`, the publisher MUST replace the existing combined thread head
+at a greater State Feed `feedId`, sampling a fresh latest sequence pair. The
+consumer applies relationship and roster dependencies before exposing content
+from their thread targets, regardless of placement within one fetched page.
 
 A malformed item is isolated according to the common permanent-item rules. A
 failed group-meta fetch or page transaction does not advance the state cursor.

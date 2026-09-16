@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
-import { PATH_METADATA } from '@nestjs/common/constants';
+import { PATH_METADATA } from '@nestjs/common/constants.js';
 import { IS_PUBLIC } from '../common/public.decorator.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { NotificationController } from './notification.controller.js';

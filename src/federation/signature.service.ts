@@ -22,8 +22,8 @@ const SIGNED_COMPONENTS = [
 const SIGNATURE_PARAMS = ['created', 'expires', 'keyid', 'alg'] as const;
 
 export const SIGNATURE_LIFETIME_SEC = 300;
-export const ALLOWED_PAST_SKEW_SEC = 300;
-export const ALLOWED_FUTURE_SKEW_SEC = 60;
+const ALLOWED_PAST_SKEW_SEC = 300;
+const ALLOWED_FUTURE_SKEW_SEC = 60;
 
 export interface SignedRequest {
   method: string;

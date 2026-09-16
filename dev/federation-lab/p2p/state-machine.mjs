@@ -195,8 +195,7 @@ export function groupDecisionOptions(facts) {
         ? {
             targetCount: targets.length,
             targets: targets.map(
-              (target) =>
-                target.address ?? target.memberAddress ?? target.requestId,
+              (target) => target.address ?? target.memberAddress,
             ),
           }
         : {}),

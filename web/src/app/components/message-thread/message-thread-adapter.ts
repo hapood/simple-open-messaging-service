@@ -168,7 +168,7 @@ export abstract class MessageThreadAdapter {
 }
 
 @Injectable({ providedIn: 'root' })
-export class ProductionMessageThreadAdapter extends MessageThreadAdapter {
+class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   private readonly repository = inject(MessageRepository);
   private readonly users = inject(UserService);
   private readonly outbox = inject(ThreadSendOutbox);

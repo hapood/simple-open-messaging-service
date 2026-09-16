@@ -45,7 +45,7 @@ const ARCHIVE_SUFFIX = '.log';
 const CURRENT_BASENAME = 'soms.log';
 
 /** The stable current-day log path; rfs always writes here, rotation renames it away to a dated archive. */
-export const CURRENT_LOG_FILE = join(LOG_DIR, CURRENT_BASENAME);
+const CURRENT_LOG_FILE = join(LOG_DIR, CURRENT_BASENAME);
 
 const pad = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
 
@@ -148,9 +148,4 @@ export function listLogFiles(): string[] {
   } catch {
     return [];
   }
-}
-
-/** The configured log directory (read by the history viewer to label files). */
-export function getLogDir(): string {
-  return LOG_DIR;
 }

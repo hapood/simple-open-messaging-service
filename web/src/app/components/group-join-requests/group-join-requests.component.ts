@@ -133,20 +133,32 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     void this.loadCandidates(true);
   }
 
-  async handleApplication(requestId: string, accept: boolean): Promise<void> {
+  async handleApplication(
+    application: GroupJoinRequest,
+    accept: boolean,
+  ): Promise<void> {
     const groupId = this.conversations.openThreadId();
-    if (groupId === undefined || this.acting().has(requestId)) return;
-    this.addActing(requestId);
+    const key = this.candidateKey(application);
+    if (groupId === undefined || this.acting().has(key)) return;
+    this.addActing(key);
     try {
       const res = await firstValueFrom(
         accept
-          ? this.groups.acceptJoinRequest({ groupId, requestId })
-          : this.groups.rejectJoinRequest({ groupId, requestId }),
+          ? this.groups.acceptJoinRequest({
+              groupId,
+              account: application.account,
+              domain: application.domain,
+            })
+          : this.groups.rejectJoinRequest({
+              groupId,
+              account: application.account,
+              domain: application.domain,
+            }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
       this.applications.update((rows) =>
         rows.map((row) =>
-          row.id === requestId
+          this.candidateKey(row) === key
             ? applyGroupJoinRequestAction(row, accept ? 'ACCEPT' : 'REJECT')
             : row,
         ),
@@ -154,37 +166,42 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     } catch {
       this.showNetworkError();
     } finally {
-      this.removeActing(requestId);
+      this.removeActing(key);
     }
   }
 
-  async revokeInvitation(requestId: string): Promise<void> {
+  async revokeInvitation(invitation: GroupJoinRequest): Promise<void> {
     const groupId = this.conversations.openThreadId();
-    if (groupId === undefined || this.acting().has(requestId)) return;
-    const invitation = this.invitations().find((row) => row.id === requestId);
-    this.addActing(requestId);
+    const key = this.candidateKey(invitation);
+    if (groupId === undefined || this.acting().has(key)) return;
+    this.addActing(key);
     try {
       const res = await firstValueFrom(
-        this.groups.revokeInvitation({ groupId, requestId }),
+        this.groups.revokeInvitation({
+          groupId,
+          account: invitation.account,
+          domain: invitation.domain,
+        }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
       this.invitations.update((rows) =>
         rows.map((row) =>
-          row.id === requestId ? { ...row, status: 'REVOKED' } : row,
+          this.candidateKey(row) === key
+            ? { ...row, status: 'REVOKED' }
+            : row,
         ),
       );
-      if (invitation)
-        this.candidates.update((rows) =>
-          rows.map((row) =>
-            this.candidateKey(row) === this.candidateKey(invitation)
-              ? { ...row, state: 'AVAILABLE' }
-              : row,
-          ),
-        );
+      this.candidates.update((rows) =>
+        rows.map((row) =>
+          this.candidateKey(row) === key
+            ? { ...row, state: 'AVAILABLE' }
+            : row,
+        ),
+      );
     } catch {
       this.showNetworkError();
     } finally {
-      this.removeActing(requestId);
+      this.removeActing(key);
     }
   }
 
@@ -210,7 +227,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      if (!res.data?.tasks.length || res.data.skipped.length) {
+      if (!res.data?.invited.length || res.data.skipped.length) {
         this.toast.warn(this.transloco.translate('group.inviteUnavailable'));
         return;
       }

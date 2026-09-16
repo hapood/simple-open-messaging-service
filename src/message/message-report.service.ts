@@ -5,7 +5,7 @@ import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import {
   message,
   messageReport,

@@ -3,14 +3,13 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseService } from '../src/database/database.service.js';
 import { durableTask } from '../src/database/schema.js';
-import { DurableAsyncTaskDispatcherService } from '../src/durable-task/durable-async-task-dispatcher.service.js';
-import { DurableAsyncTaskSchedulerService } from '../src/durable-task/durable-async-task-scheduler.service.js';
 import { DurableTaskDispatcherService } from '../src/durable-task/durable-task-dispatcher.service.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
 import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { DurableTaskWakeService } from '../src/durable-task/durable-task-wake.service.js';
 import type { DurableTask } from '../src/durable-task/durable-task.types.js';
+import { truncateTablesForTest } from './support/truncate';
 
 function deferred() {
   let resolve!: () => void;
@@ -25,13 +24,8 @@ describe('durable task committed wake and drain', () => {
   let queue: DurableTaskQueueService;
   let store: DurableTaskStoreService;
   let scheduler: DurableTaskSchedulerService;
-  let asyncScheduler: DurableAsyncTaskSchedulerService;
-  let asyncDispatcher: DurableAsyncTaskDispatcherService;
   let listener: DurableTaskWakeService;
-  const execute =
-    vi.fn<
-      (task: DurableTask) => Promise<void | { status: 'ASYNC_PROCESSING' }>
-    >();
+  const execute = vi.fn<(task: DurableTask) => Promise<void>>();
   const input = (payload: Record<string, unknown> = {}) => ({
     scope: {
       type: 'GROUP' as const,
@@ -57,31 +51,20 @@ describe('durable task committed wake and drain', () => {
 
   beforeEach(async () => {
     database = new DatabaseService();
-    await database.pool.query(
-      'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE');
     store = new DurableTaskStoreService(database);
     queue = new DurableTaskQueueService(database);
     const dispatcher = new DurableTaskDispatcherService();
     execute.mockReset().mockResolvedValue(undefined);
     dispatcher.register({ taskType: 'TEST_COMMAND', execute });
-    asyncDispatcher = new DurableAsyncTaskDispatcherService();
-    asyncScheduler = new DurableAsyncTaskSchedulerService(
-      asyncDispatcher,
-      store,
-    );
-    scheduler = new DurableTaskSchedulerService(
-      store,
-      dispatcher,
-      asyncScheduler,
-    );
+    scheduler = new DurableTaskSchedulerService(store, dispatcher);
     listener = new DurableTaskWakeService(database, scheduler);
     vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
     await listener.onModuleDestroy();
-    await Promise.all([scheduler.stop(), asyncScheduler.stop()]);
+    await scheduler.stop();
     await database.onApplicationShutdown();
     vi.restoreAllMocks();
   });
@@ -144,38 +127,6 @@ describe('durable task committed wake and drain', () => {
       following.taskId,
     ]);
   });
-
-  it.each([false, true])(
-    'async completion releases its lane (failure: %s)',
-    async (fail) => {
-      const gate = deferred();
-      execute.mockImplementation(async (task) =>
-        task.payload.async ? { status: 'ASYNC_PROCESSING' } : undefined,
-      );
-      asyncDispatcher.register({
-        taskType: 'TEST_COMMAND',
-        execute: async (task) => {
-          await gate.promise;
-          if (fail) throw new Error('expected async failure');
-          await store.markAsyncSucceeded(task.id);
-        },
-      });
-      await listener.onApplicationBootstrap();
-      const first = await queue.enqueueTask(input({ async: true }));
-      const second = await queue.enqueueTask(input());
-      try {
-        await waitForStatus(first.taskId, 'ASYNC_PROCESSING');
-        await scheduler.wake();
-        expect(await status(second.taskId)).toBe('PENDING');
-        expect(execute).toHaveBeenCalledOnce();
-      } finally {
-        gate.resolve();
-      }
-      await waitForStatus(first.taskId, fail ? 'FAILED' : 'SUCCEEDED');
-      await waitForStatus(second.taskId, 'SUCCEEDED');
-      expect(execute).toHaveBeenCalledTimes(2);
-    },
-  );
 
   it('rescans work committed while the listener is disconnected', async () => {
     await listener.onApplicationBootstrap();

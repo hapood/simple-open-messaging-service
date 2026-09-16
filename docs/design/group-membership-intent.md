@@ -1,334 +1,173 @@
 # Group membership intent architecture
 
-Status: migration implementation. Production handlers are switched one business entry at a time.
+Status: current business-layer architecture and federation receive behavior.
+The normative directed-intent state machine is defined by
+[Federation v1 State Feed](../../spec/v1/state-feed.md). This document describes
+the local implementation and does not extend the wire protocol.
 
-[GroupAuthoredMembershipIntentService](../../src/business/group/membership-intent/group-authored-membership-intent.service.ts)
-exposes `handleJoinRequest` for acceptance and rejection of applications to authoritative
-local groups, including applicants hosted by another server. It is not a Nest provider,
-HTTP endpoint, or durable-task handler. The
-[PostgreSQL comparison suite](../../test/group-join-decision-experiment.e2e-spec.ts)
-constructs it explicitly from application services.
+## Scope and ownership
 
-## Approved development contract
+Every group/member relationship is one `GROUP_MEMBER` pair with two independently
+authored directions:
 
-The target business-lock terminology is **Account Meta Lock** and
-**Relationship Pair Lock**. This implementation still uses the legacy, broader group
-ACCOUNT scope to protect roster and other aggregate effects. References to its
-group lock below describe that current implementation, not a rule that all group
-operations require an Account Meta Lock. Narrowing this scope requires a separate
-review of cross-Pair invariants and coexistence with legacy writers.
-
-Follow the [business mutation SQL standard](./business-mutation-sql-pattern.md)
-for subsequent flows. This document records the acceptance-specific implementation
-and measurements.
-
-The first implementation is group join-request acceptance (group ACK against an
-applicant's effective REQ/ACK). The command-specific request must still be valid;
-only the group-authored intent is changed. Keep the existing command entry and
-handler on their current implementation until the implementation is reviewed and
-explicitly approved for rollout. Temporary migration adapters are allowed.
-
-The scope ends at fanout task admission. Refactor authorization, business writes,
-pending-task decisions, and the single task insertion. Recipient selection,
-notification coverage, delivery, pagination, and execution checkpoints belong to
-the existing fanout implementation and are not redesigned in this implementation.
-Do not introduce a new fanout executor or scan feeds/request projections to build
-notification recipient lists in the approval flow.
-
-Reuse parameterized Drizzle `sql` fragments with named CTE input/output contracts.
-Compose local-member and federated-member branches from those fragments; do not
-build a general-purpose SQL orchestration framework. SQL values remain bound
-parameters. A fragment's position is not an execution-order guarantee: express
-write dependencies through `RETURNING`, and avoid modifying a row twice in sibling
-CTEs. Drizzle continues to own the connection and transaction.
-
-The implementation lives under `src/business/group/membership-intent/`, with its shared
-SQL and Pair lock primitive under `src/business/shared/`. Only implemented
-code and its direct dependencies are moved; other business flows are not included.
-
-Group-authored approval acquires the **group Account State scope**, encoded as
-`["business-scope", "ACCOUNT", "local", groupAccount]`, followed by the **Pair
-scope** for the group and applicant. Member-authored commands instead acquire
-the local member's Account State scope before the same Pair scope; referencing
-the group does not acquire its Account State scope. The Pair key is derived from
-complete lowercase endpoint addresses (`account@domain`) that the caller
-composes from identities already in hand; the lock primitive performs no
-normalization, validation, or canonicalization lookup. Explicit locks are
-acquired once, before thread/Pair/Intent/allocator row locks. The old production
-lock helpers and handlers remain unchanged.
-See the [per-task responsibility and lock index](./durable-task-responsibilities-and-locks.md).
-
-## Transaction and phase boundaries
-
-One outer write transaction owns all locks, source writes, feed projections, and
-outbox admission. Acquire business locks before the authorization statement:
-waiting for an advisory lock inside that same statement would not refresh its
-MVCC snapshot. Preserve the established business/row/allocator lock ordering.
-
-After business-lock acquisition, organize the command into four phases:
-
-1. One authorization/feasibility SQL statement validates the manager, pending
-   request, effective applicant intent, authoritative group, and branch identities.
-   It returns the local/federated branch and data needed by the update. Complete
-   required allocator locks before source writes or triggers allocate feed IDs.
-2. One composed business SQL statement writes the group intent, pair, Group Meta,
-   branch-specific member/read/synchronization state, audience, manager projections,
-   and recipient feed state. It returns the business result needed for task admission.
-3. One task-admission SQL statement decides whether this group needs a new fanout
-   task and supersedes replaceable PENDING work. It does not merge notification
-   payloads or checkpoints. A worker winning a claim must cause conditional
-   updates to fail safely and preserve the need for a successor task.
-4. One single-row INSERT persists the existing independent fanout task when
-   needed. This is not a batch insertion or one task per notification recipient.
-
-"Cancel itself" means suppressing a redundant fanout insertion; it never means
-canceling the approval command. Running tasks
-must not be overwritten.
-
-Four phase statements are a design target, not a claim of four total network
-round trips. Count transaction control, identity location, and lock acquisition
-separately and report them rather than hiding them in the measurement.
-
-After commit, a federated acceptance passes its single applicant peer to the
-existing `pushStateFeedDomains` notification path, which routes through the
-existing peer push scheduling/throttling mechanism. The target comes from the
-validated applicant identity and the written ACK feed result; no recipient scan
-or additional SQL is needed. Local acceptance has no peer target. A notification
-failure does not roll back committed business state.
-
-Transport wake-ups happen only after commit. Any failure before commit, including
-task admission or insertion, rolls back the entire command. No new handler is registered.
-
-## Fanout task admission principles
-
-These rules govern admission only. Preserve the existing fanout task's identity,
-payload contract, replacement scope, and initial checkpoint format.
-
-- Admission inserts at most one fanout task for the approval, never a batch or
-  one task per recipient.
-- Replace eligible older PENDING work by marking it SUPERSEDED and inserting
-  the new task in the same transaction. Do not merge notification ranges,
-  recipient lists, or execution progress.
-- Initialize the replacement as a new task using the existing task contract.
-  Do not inherit the replaced task's execution checkpoint.
-- Do not overwrite or supersede PROCESSING work. When new work is needed,
-  insert a PENDING successor. A concurrent worker claim must not cause the
-  new task requirement to be lost.
-- Skip insertion when the existing admission semantics determine that no new
-  fanout task is needed. The presence of a PROCESSING task alone is not proof
-  that new work can be suppressed.
-
-How the executor discovers recipients, covers notifications, handles a successor,
-paginates, or resumes execution remains its responsibility. Those mechanisms are
-outside this change; do not add new requirements for them to justify pending
-replacement. Admission tests should verify task state, payload, initialization,
-claim races, and atomic rollback without introducing a new delivery design.
-
-## Meta head carried by thread fan-out
-
-Status: owner-approved requirements change for this implementation, recorded before
-implementation.
-
-This change supersedes the meta-head admission above: the implementation stops admitting
-`FAN_OUT_GROUP_META_HEAD` and stops publishing the standalone
-`GROUP_META_FEED_HEAD` state-feed item. The group meta feed end id instead
-travels with the thread's own publications as an optional field — a union type.
-Client thread feed items carry it for GROUP threads only; federated
-`THREAD_CONTENT_HEAD` bodies carry it for group-authored heads only, and a P2P
-head carrying the field is a permanent protocol violation. The field joins the
-peer item's snapshot revision, so the compaction guard's "changed without
-advancing" invariant stays unreachable for legitimate progress. Legacy flows
-outside this implementation (role and profile mutations, dissolution, the membership
-finalizer, and the mirror round's local publication) keep the existing item and
-task untouched. Both channels publish the same canonical `GroupMeta.metaEndId`,
-so the mixed period stays additive on the client.
-
-### Authoritative write side
-
-- Admission rule: every implementation transaction that advances `GroupMeta.metaEndId`
-  admits thread fan-out. Acceptance admits `FAN_OUT_THREAD_CONTENT` and
-  `FAN_OUT_FEDERATION_THREAD_CONTENT` — the federation task is admitted for
-  every roster change, not only a peer-hosted member, because the inline peer
-  write covers just the new member's peer; it no-ops through its route scan
-  when the group has no federated audiences. A kick adds the federation task to
-  its existing local fan-outs. Rejection and invitation admit nothing (no meta
-  change), as before. The gate is `canonicalRosterChanged || audienceChanged`;
-  the `recipientFeedId` component is dropped because it states a one-person
-  notification fact whose only previous role was letting the meta-head task's
-  wake sweep carry the applicant. The applicant's wake becomes an explicit
-  post-commit notify built from the returned `recipientUserId` and
-  `recipientFeedId`, exactly like the revocation branch.
-- Acceptance writes its `GROUP_JOINED` system message inline, symmetric with
-  the revocation path's `GROUP_LEFT`, and inserts the new member's
-  `AccountThreadState` row with the current meta head in the same statement.
-  The member's initial read boundary remains the pre-message `curSeq`
-  (`join_source` is materialized first), matching the legacy post-commit
-  publication where the join message stays unread.
-- Assignment is execution-time. The fan-out executor reads the canonical head —
-  the fan-out payload contract is unchanged — and writes
-  `GREATEST(stored, canonical)` only when the stored value is behind,
-  independent of content-head progress, because meta-only changes advance no
-  message sequence. A concurrent legacy meta mutation holds no thread lock, so
-  the executor may observe a pre-commit head; the `GREATEST` guard keeps the
-  column monotonic and the next fan-out reconciles.
-
-### Mirror side
-
-The `THREAD_CONTENT_HEAD` consumer branch validates the optional field and
-starts the group meta sync task; the legacy `GROUP_META_FEED_HEAD` branch
-remains for old-version interop. Once the sync applies facts, the mirror fans
-out to its local users only: join and leave facts already enqueue the client
-fan-out through their system message, so the sync task admits the local thread
-fan-out explicitly only for meta-only facts that write no message. A mirror
-never enqueues the federation fan-out for origin-driven meta changes: the route
-query's mirror branch would re-publish origin facts back to the origin.
-
-### Schema and trigger contract
-
-`AccountThreadState` gains a nullable `groupMetaFeedEndId` (NULL for P2P). The
-`thread_feed_before_write` allocation condition list gains the column with a
-NULL-safe `IS DISTINCT FROM` check. This is not optional: the thread feed delta
-scans a `threadFeedId` range, so a changed row without a freshly allocated id is
-silently invisible, and the column changes alone — meta-only mutations advance
-no content head to fall back on. Writers inside SQL cannot allocate in
-application code, so the trigger remains the single allocation mechanism; any
-new client-visible column must join its condition list. No backfill:
-environments reset their data, and rows converge on the next fan-out.
-
-### Edge behavior
-
-- The fan-out skips blocked recipients. Unblocking assigns the current head in
-  the same lock scope (`setBlocked`), so a long-blocked member does not resume
-  with a stale roster and no hint.
-- Legacy-only mutations keep publishing the old item during the mixed period;
-  duplicated wake-ups across the two channels are harmless.
-
-### Verification updates
-
-The admission test that asserts exactly one inserted task changes to the new
-task set with no meta-head task. Measured statement counts change with the
-inline system message and the added admission statement.
-
-## Branch rules
-
-Local-member activation initializes the read boundary and clears preview/mention
-state without adding a join-time history visibility floor. Preserve monotonic read
-positions, unrelated preferences, and existing source coordinates on re-entry.
-
-Federated-member activation initializes or advances the appropriate namespace's
-synchronization state, preserving processed coordinates and epoch/recovery rules.
-The history-access setting remains effective and is read in the business SQL:
-allowing history chooses floor zero, otherwise a new audience starts at the current
-thread tail. Existing audience boundaries remain unchanged.
-
-The initial rejection experiment remains separate from acceptance's composed
-SQL no longer: per the owner-approved requirements change recorded in the
-[unified group intent decision](./unified-group-intent-decision.md), both
-commands share one authorization statement and REVOKED gained a composed
-statement covering rejection and kick alike, plus the ACK entry states for a
-pending application and an already-acked invitation. The same authorization
-statement now also carries the operator/target roster roles and the server
-capacity count, so kick rank/dissolved gates and the capacity gate stay
-inside the single post-lock feasibility read; the unified decision document
-records those gates.
-
-## Verification and rollout
-
-Run:
-
-```sh
-DATABASE_QUERY_LOG=0 npm run test:e2e -- test/group-join-decision-experiment.e2e-spec.ts
+```text
+side A: group  -> member
+side B: member -> group
 ```
 
-The suite exercises the existing and new paths against PostgreSQL,
-checks local and remote membership effects, measures application-issued SQL
-statements, and tests authorization, expiry, late failure rollback, and competing
-withdrawal, manager authorization removal, dissolution, and duplicate approvals.
-History-setting tests cover the default, disabled history, and an existing audience
-boundary that must be preserved. Admission tests verify the existing task contract, one-row insertion, pending
-replacement, suppression, and a competing worker claim. Pair-lock tests verify
-group-before-pair ordering, one acquisition of each, direction-independent keys,
-and waiting for a competing Pair lock before the ACK is written. Schedulers are not started,
-so committed tasks remain available for inspection.
+The group origin owns side A and canonical Group Meta. The member's home owns
+side B. A mirror stores received side A, its local member's authored side B,
+and derived local projections; it never becomes roster authority.
 
-Statement counts include transaction boundaries. They exclude SQL executed
-internally by PostgreSQL triggers and are not latency benchmarks. The fixtures
-are small and do not reproduce a loaded multi-server federation lab.
+The implementation is split by authorship and ingress:
 
-Keep this implementation bounded to join decisions. Before any production switch, compare
-it in the federation workload, expand shared behavioral coverage as needed, and
-review the lock and SQL boundaries. Wiring handlers and deleting the old path
-are separate changes; neither is part of this implementation.
+- `authored/group-authored-membership-intent.service.ts` handles invitation,
+  application decision, invitation cancellation, and kick for an authoritative
+  local group.
+- `authored/member-authored-group-membership-intent.service.ts` handles apply,
+  invitation acceptance/decline, withdrawal, and leave for a local member.
+- `received/remote-member-membership-intent.service.ts` applies a peer member's
+  side B to an authoritative local group.
+- `received/mirror-group-membership-intent.service.ts` applies a peer group's
+  side A to a local mirror.
+- `shared/` owns composed acceptance/revocation SQL, pair state, projection
+  fan-out, and pair minting used by more than one side.
 
-## Member-authored family
+Files under `authored/` may author only a locally owned direction. Files under
+`received/` validate and persist a peer-owned wire snapshot; they must not
+relabel it as local authorship. Shared SQL accepts an explicit received-writer
+fragment only at that boundary.
 
-[MemberAuthoredGroupMembershipIntentService](../../src/business/group/membership-intent/member-authored-group-membership-intent.service.ts)
-extends the implementation to the reverse authority: a local user acting on their
-own membership pair. The command set is REQUESTED (apply to an authoritative
-local group — pair minted when absent, no friendship precondition, seven-day
-TTL), ACCEPTED (complete an outstanding invitation), and REVOKED (withdraw a
-pending application, decline an outstanding invitation, or leave the roster).
+## Command result contract
 
-Reuse over new SQL: the application statement mirrors the invitation's shape
-against the `applicationEndId` stream with the applicant as the sole inline
-recipient; the member's ACCEPTED reuses `groupJoinAcceptanceSql` with
-`projectionDirections: ['INVITATION']` and `authorMemberSide` — the statement
-authors side B as well (the family's only side B ACCEPTED writer) and reads the
-written row back through `join_source`; REVOKED reuses `groupIntentRevocationSql`
-with `authorSide: 'B'`, collapsing to the rejection shape unless the member is
-rostered. Manager authorization and the outrank gate have no member-side
-equivalent: the actor is the pair's own endpoint B. Manager notification is
-never an in-process wake — the application's `FAN_OUT_GROUP_PROJECTION`
-admission and the executor's per-direction watermark advance own it (see the
-[notification policy](./group-intent-wake-and-notification-policy.md)).
+Authored command entries return a discriminated result:
 
-## Review entry points
+| Status     | Meaning                                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `APPLIED`  | The requested transition and all atomic side effects committed.                                                           |
+| `NO_OP`    | The requested end state was already satisfied. A stable reason identifies the idempotent branch.                          |
+| `REJECTED` | An expected business condition refused the command. The result carries a stable reason, `BusinessCode`, and safe message. |
 
-- [Transaction owner](../../src/business/group/membership-intent/group-authored-membership-intent.service.ts):
-  acquire the group and Pair business locks once each, validate, select the address branch, and
-  execute the business update and task admission in the same transaction.
-- [Authorization SQL](../../src/business/group/membership-intent/group-authored-membership-authorization-sql.ts):
-  read the request, manager authorization, group profile, and branch identities
-  in one statement after business-lock acquisition; the invitation variant keys
-  on the target address and the minted pair.
-- [Business SQL](../../src/business/group/membership-intent/group-membership-acceptance-sql.ts):
-  compose shared relationship/roster/manager fragments with local or remote
-  membership and recipient-feed writes.
-- [Task admission](../../src/business/group/membership-intent/group-join-fanout.ts):
-  decide and replace PENDING work in one statement, then insert at most one
-  `FAN_OUT_GROUP_META_HEAD` task using the existing payload and checkpoint.
-  No executor is added or modified. (Superseded for this implementation by the approved
-  "Meta head carried by thread fan-out" change above, pending implementation.)
+Missing or expired intents, missing targets, a dissolved group, capacity, and
+role authorization are `REJECTED`; they do not throw. HTTP handlers serialize
+this as the existing HTTP-200 business envelope. Durable-task handlers return
+it to the scheduler, which persists `REJECTED + resultCode`.
 
-## Measured statement counts
+Throws are reserved for malformed or unauthorized federation input and
+implementation failures that make continuation unsafe: a lost lock capability,
+a protected row disappearing, invalid internal identity/namespace data,
+conflicting immutable heads, or database/transport failure. A durable task maps
+those unexpected exceptions to `FAILED`.
 
-PostgreSQL comparison run on 2026-09-11 (35 tests passed), grouped by command:
+Received feed entries return a routing result instead. Ordinary divergence is a
+route (`mismatch`, `rejection`, `conclusion`, or `noop:*`), so a valid but stale
+peer item cannot freeze the namespace cursor. Invalid wire items use
+`InvalidReceivedIntentError` and are handled by the consumer's permanent-item
+policy.
 
-| Command   | Scenario                                  | Existing path | Experiment | Reduction |
-| --------- | ----------------------------------------- | ------------: | ---------: | --------: |
-| ACK       | Accept a local applicant                  |           131 |         15 |       116 |
-| ACK       | Accept a remote applicant                 |           141 |         18 |       123 |
-| ACK       | Complete an acked invitation              |             — |         15 |         — |
-| REVOKE    | Reject a local applicant                  |            82 |         13 |        69 |
-| REVOKE    | Kick a local member                       |             — |         13 |         — |
-| REVOKE    | Kick a remote member                      |             — |         15 |         — |
-| REQUESTED | Invite a fresh local member               |             — |         15 |         — |
-| REQUESTED | Invite a fresh remote member              |             — |         17 |         — |
-| REQUESTED | Collapse into ACK: pending application    |             — |         15 |         — |
-| REQUESTED | Collapse into ACK: outstanding invitation |             — |         15 |         — |
+## Entry-state rules
 
-The unified kick runs the same composed statement as rejection: every roster,
-system-message, fan-out, and reverse-task effect is gated on roster presence
-inside that one statement, so removing a member costs nothing beyond what a
-rejection costs. The two REQUESTED collapses dispatch into the ACK path with
-the authorization row already in hand, so they cost exactly what the
-corresponding ACK costs. A fresh invitation carries the same shape — intent,
-projection row, invitee recipient, projection fan-out admission — with no
-roster or system-message effects.
+An effective request is `REQUESTED` with `expiresAt > now`; `ACCEPTED` remains
+effective until its author revokes it.
 
-The implementation acquires one group business lock and one Pair business lock, then locks
-the existing pending Pair without a redundant insert or threadId update. Authorization, business writes, admission, and task insertion each use one
-statement. The remaining statements are transaction control, identity location,
-and existing lock/allocator preparation. They are deliberately included in the
-reported totals; this is not yet four total transaction round trips. These counts
-support a reduction in round trips, not a measured production latency improvement.
+| Input                | Relevant reverse/local state                 | Result                                                                                                                         |
+| -------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `REQUESTED`          | no effective opposite direction              | write or refresh the request                                                                                                   |
+| `REQUESTED`          | effective opposite `REQUESTED` or `ACCEPTED` | collapse through acceptance                                                                                                    |
+| `ACCEPTED`           | matching effective request                   | activate or complete membership                                                                                                |
+| `ACCEPTED`           | no matching effective request                | authored command: `REJECTED`; received item: persist mismatch as required and enqueue the locally authored negative conclusion |
+| `REVOKED`            | active relationship pair                     | deactivate, publish departure effects, and conclude the opposite authored direction when required                              |
+| `REVOKED`            | live pending request                         | reject, decline, or withdraw without departure effects                                                                         |
+| any positive command | dissolved authoritative group                | `REJECTED/GROUP_DISSOLVED`                                                                                                     |
+
+A dissolved mirror is recoverable local state, not authority. A successfully
+authored local-member `REQUESTED` or `ACCEPTED` clears the mirror dissolution
+marker and resumes federation rounds. Dissolution of a locally authoritative
+group is permanent and every positive command remains rejected.
+
+The capacity gate applies only when a command would add a new authorized member
+or outstanding invitation. Existing capacity-set membership retains its slot.
+Manager removal requires strict role outranking: owner outranks admin, admin
+outranks member, and peers never outrank one another.
+
+## Received mismatch and conclusion
+
+A peer `ACCEPTED` that cannot be honored is an expected convergence case, not
+an exception. The receiver persists the peer-authored fact and, on a real local
+transition, authors the required local `REVOKED` conclusion in the same business
+transaction. Replays do not duplicate the conclusion.
+
+A peer `REVOKED` against an active pair performs the departure boundary and
+authors the receiver-owned opposite revoke. Against a pending request or a
+dangling local `ACCEPTED`, it also concludes the receiver-owned positive
+direction as `REVOKED`; pair-transition-gated departure effects remain off.
+The author can later publish a new `REQUESTED` revision to reapply.
+
+The received direction is never published as the receiver's own direction.
+For example, a remote member's application creates only member-authored side B
+on the group origin. Withdrawal updates that side-B mirror without creating or
+publishing side A. If the origin has already authored an effective side-A
+invitation or acceptance, it separately concludes and publishes side A as
+`REVOKED`. Only an active-to-inactive pair transition produces departure effects.
+
+On either ingress, a late peer `ACCEPTED` after the local direction is already
+`REVOKED` and the pair is inactive retains the peer-authored snapshot but is
+`noop:dropped-ack` for membership and local authorship. The existing local
+revoke remains at its original feed coordinate; the ACK does not publish it
+again.
+
+For P2P, a received `ACCEPTED` against an already locally authored `REVOKED` is
+`noop:dropped-ack`. The already-persisted authored `REVOKED` feed item remains
+the convergence source; the ACK does not reindex or resend it.
+
+## Transaction and lock shape
+
+Each command owns one outer transaction. Locks follow the global order from
+[Business mutation SQL pattern](./business-mutation-sql-pattern.md):
+
+```text
+Account State -> Relationship Pair -> Thread Content -> row/allocator locks
+```
+
+The pre-lock locator names scopes only. Mutable authorization and state are
+re-read after the locks. Account and pair advisory keys use complete normalized
+addresses. The pair lock protects both intents and pair-derived state; an
+account lock is acquired only for account-owned state that the command mutates.
+
+The composed statement makes authored intent, pair activation, roster/meta,
+audience, system message, projections, client/peer feed rows, and task admission
+atomic. SQL CTE order is expressed by data dependencies and `RETURNING`, never
+by textual position. A missing result row after validated locks is an invariant
+failure.
+
+## Projection and wake ownership
+
+- A local recipient feed row is written in the business transaction and woken
+  directly after commit.
+- A peer relationship-intent row is written in the same transaction; the peer
+  domain is returned for a post-commit wake.
+- Manager application/invitation projections use the durable membership
+  projection fan-out. Its executor advances direction watermarks and owns the
+  manager wake.
+- Roster/meta changes admit normal thread-content fan-out. A mirror never
+  republishes origin-owned Group Meta.
+- Best-effort wake failure never rolls back committed state; durable feed heads
+  remain discoverable on reconnect.
+
+## Mirror dissolution
+
+An origin denial can terminate a mirror without a final Group Meta page. The
+mirror disband parent records `groupDissolvedAt`, disables federation rounds,
+and advances the authorization epoch. A durable pair-cursor sweep then revokes
+each still-active local member, writes the local `GROUP_LEFT` boundary and
+client projection, and performs no Group Meta or peer-intent publication.
+Repeated parent and child execution is idempotent.
+
+## Verification
+
+PostgreSQL-backed suites cover authored and received directions, crossed
+requests, expiry, capacity, dissolution, role gates, rollback, replay,
+concurrent pair mutation, mirror mismatch/conclusion, projection fan-out, and
+local/remote wake ownership. Lock-order tests verify that a waiter re-reads
+state after acquiring the pair lock. Protocol documentation tests keep the
+wire schema and normative state machine aligned.

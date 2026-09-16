@@ -23,7 +23,7 @@ import {
   accountThreadState,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,
@@ -48,22 +48,21 @@ import type {
   FederatedMessagePayload,
 } from '../federation/federated-message-types.js';
 
-export const FORWARD_MAX_MESSAGES = 500;
-export const FORWARD_MAX_ASSETS = 500;
-export const FORWARD_SUMMARY_LINES = 2;
-export const FORWARD_SUMMARY_CHARS = 100;
-export const FORWARD_QUOTE_PREVIEW_CHARS = 100;
+const FORWARD_MAX_MESSAGES = 500;
+const FORWARD_MAX_ASSETS = 500;
+const FORWARD_SUMMARY_LINES = 2;
+const FORWARD_SUMMARY_CHARS = 100;
 export const FORWARD_MAX_WIRE_JSON_BYTES = 2 * 1024 * 1024;
-export const FORWARD_MAX_CLOSURE_BUNDLES = 500;
+const FORWARD_MAX_CLOSURE_BUNDLES = 500;
 
 export interface ForwardSourceMessage {
   threadId: number;
   seq: number;
 }
 
-export type ForwardAuthor = FederationAddress;
+type ForwardAuthor = FederationAddress;
 
-export interface ForwardProfileSnapshot {
+interface ForwardProfileSnapshot {
   displayName: string;
   avatarDigest?: string;
 }
@@ -78,7 +77,7 @@ export interface ForwardBundleMessage extends FederatedMessagePayload {
   quoteTargetId?: number;
 }
 
-export interface ForwardWireChild {
+interface ForwardWireChild {
   id: string;
   messages: ForwardBundleMessage[];
 }
@@ -88,6 +87,19 @@ export interface ForwardWireBundle {
   messages: ForwardBundleMessage[];
   children: ForwardWireChild[];
   assets: FederationByteDescriptor[];
+}
+
+/**
+ * A forward bundle exactly as received off the wire — no field is trusted yet. Peer input
+ * enters the system with this type; only importClosure's runtime validation (envelope shape,
+ * field ranges, digest agreement) stands between it and ForwardWireBundle. Bundles we build
+ * ourselves (buildClosure) are ForwardWireBundle from birth and never pass through here.
+ */
+export interface InboundForwardWireBundle {
+  id: unknown;
+  messages: unknown;
+  children: unknown;
+  assets: unknown;
 }
 
 /** Browser-facing bundle response. The carrier authorizes every snapshot asset URL in the closure. */
@@ -741,10 +753,14 @@ export class ForwardBundleService {
    * Validate and localize a peer's complete flat bundle. Every wire id is replaced with a fresh local
    * ULID. Only the queryable parent id participates in cross-request import idempotency; child ids are
    * scoped to this one parent document and must never become global source identities.
+   *
+   * This is the trust boundary for peer bundles: `closure` is deliberately
+   * InboundForwardWireBundle (untrusted), and the runtime checks below — not the parameter
+   * type — are what make it a ForwardWireBundle.
    */
   async importClosure(
     sourceDomain: string,
-    closure: ForwardWireBundle,
+    closure: InboundForwardWireBundle,
     transaction?: DatabaseTransaction,
   ): Promise<{ localRootBundleId: string }> {
     if (
@@ -883,19 +899,24 @@ export class ForwardBundleService {
       throw this.invalidWire('flat forward counts or assets do not match');
     }
 
+    // Every runtime check above passed: the wire bundle now satisfies ForwardWireBundle.
+    // This is the single untrusted→trusted crossing; everything below rests on the
+    // validation, not on the parameter type.
+    const wire = closure as ForwardWireBundle;
+
     const client = transaction ?? this.database.db;
     const existing = await client.query.forwardBundle.findFirst({
       where: and(
         eq(forwardBundle.sourceDomain, sourceDomain),
-        eq(forwardBundle.sourceBundleId, closure.id),
+        eq(forwardBundle.sourceBundleId, wire.id),
       ),
       columns: { id: true },
     });
     if (existing) return { localRootBundleId: existing.id };
 
     const idMap = new Map<string, string>([
-      [closure.id, mintUlid()],
-      ...closure.children.map((child) => [child.id, mintUlid()] as const),
+      [wire.id, mintUlid()],
+      ...wire.children.map((child) => [child.id, mintUlid()] as const),
     ]);
     const localizeMessages = (
       messages: ForwardBundleMessage[],
@@ -921,11 +942,11 @@ export class ForwardBundleService {
             }
           : {}),
       }));
-    const localRootId = idMap.get(closure.id)!;
+    const localRootId = idMap.get(wire.id)!;
     const persist = async (tx: DatabaseTransaction): Promise<void> => {
       const flat = [
-        { remoteId: closure.id, messages: closure.messages, root: true },
-        ...closure.children.map((child) => ({
+        { remoteId: wire.id, messages: wire.messages, root: true },
+        ...wire.children.map((child) => ({
           remoteId: child.id,
           messages: child.messages,
           root: false,
@@ -938,29 +959,26 @@ export class ForwardBundleService {
           id: localId,
           messages: localMessages,
           messageCount: item.root ? actualMessageCount : localMessages.length,
-          assetCount: item.root ? closure.assets.length : 0,
+          assetCount: item.root ? wire.assets.length : 0,
           totalBytes: item.root
-            ? closure.assets.reduce(
-                (sum, asset) => sum + BigInt(asset.bytes),
-                0n,
-              )
+            ? wire.assets.reduce((sum, asset) => sum + BigInt(asset.bytes), 0n)
             : 0n,
           sourceDomain,
-          sourceBundleId: item.root ? closure.id : null,
+          sourceBundleId: item.root ? wire.id : null,
         });
       }
-      if (closure.children.length > 0) {
+      if (wire.children.length > 0) {
         await tx.insert(forwardBundleDependency).values(
-          closure.children.map((child, ordinal) => ({
+          wire.children.map((child, ordinal) => ({
             parentBundleId: localRootId,
             childBundleId: idMap.get(child.id)!,
             ordinal,
           })),
         );
       }
-      if (closure.assets.length > 0) {
+      if (wire.assets.length > 0) {
         await tx.insert(forwardBundleAsset).values(
-          closure.assets.map((asset, ordinal) => ({
+          wire.assets.map((asset, ordinal) => ({
             bundleId: localRootId,
             ordinal,
             digest: asset.digest,
@@ -998,54 +1016,46 @@ export class ForwardBundleService {
       return result;
     }
     if (!isForwardDirectMedia(contentType)) return [];
-    let meta: { size?: number } = {};
-    try {
-      meta = JSON.parse(content) as typeof meta;
-    } catch {
-      // IMAGE legacy content may not be JSON; digest extraction remains authoritative.
-    }
-    const result: FederationByteDescriptor[] = [];
-    for (const { digest } of extractDigestEntries(content)) {
-      const row = await this.database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, digest),
-      });
-      result.push({
-        digest,
-        bytes: Math.max(1, meta.size ?? Number(row?.bytes ?? 1n)),
-      });
-    }
-    return result;
+    return extractDigestEntries(content).map(({ digest, size }) => {
+      if (size === undefined || !Number.isSafeInteger(size) || size < 1) {
+        throw new Error('Stored media content has an invalid size');
+      }
+      return { digest, bytes: size };
+    });
   }
 
-  /** Build one digest/byte descriptor per GALLERY item. Digest comes from the item's CAS url; bytes fall back to the live
-   *  MediaAsset row when the item omits size. */
+  /** Build one digest/byte descriptor per current-schema GALLERY item. */
   private async galleryAssetsFromContent(
     content: string,
   ): Promise<FederationByteDescriptor[]> {
-    let items: Array<Record<string, unknown>> = [];
-    try {
-      const parsed = JSON.parse(content) as { items?: unknown };
-      if (Array.isArray(parsed.items)) {
-        items = parsed.items as Array<Record<string, unknown>>;
+    const parsed = JSON.parse(content) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      !Array.isArray((parsed as { items?: unknown }).items)
+    ) {
+      throw new Error('Stored gallery content is malformed');
+    }
+    return (parsed as { items: unknown[] }).items.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error('Stored gallery item is malformed');
       }
-    } catch {
-      // malformed gallery content → no assets
-    }
-    const result: FederationByteDescriptor[] = [];
-    for (const item of items) {
-      const url = typeof item['url'] === 'string' ? item['url'] : undefined;
-      const digest = url ? extractDigests(url)[0] : undefined;
-      if (!digest) continue;
-      const size = typeof item['size'] === 'number' ? item['size'] : undefined;
-      const row = await this.database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, digest),
-      });
-      result.push({
-        digest,
-        bytes: Math.max(1, size ?? Number(row?.bytes ?? 1n)),
-      });
-    }
-    return result;
+      const record = item as Record<string, unknown>;
+      const digest =
+        typeof record.url === 'string'
+          ? extractDigests(record.url)[0]
+          : undefined;
+      if (
+        !digest ||
+        typeof record.size !== 'number' ||
+        !Number.isSafeInteger(record.size) ||
+        record.size < 1
+      ) {
+        throw new Error('Stored gallery item has invalid media metadata');
+      }
+      return { digest, bytes: record.size };
+    });
   }
 
   async snapshotAvatarForMessage(
@@ -1270,29 +1280,36 @@ export function localizeForwardMediaContent(
   content: string,
   assets: FederationByteDescriptor[],
 ): string {
-  // GALLERY: rebind every item's url to the canonical CAS path from its digest (only for items whose
-  // digest is bound to a bundle asset — unbound items are left untouched).
+  // GALLERY: rebind every item's URL to the canonical CAS path from its bound asset.
   if (contentType === ContentType.GALLERY) {
-    try {
-      const value = JSON.parse(content) as { items?: unknown };
-      if (!Array.isArray(value.items)) return content;
-      const bound = new Set(assets.map((a) => a.digest));
-      const items = (value.items as Array<Record<string, unknown>>).map(
-        (item) => {
-          const url =
-            typeof item['url'] === 'string' ? (item['url'] as string) : '';
-          const digest = url ? extractDigests(url)[0] : undefined;
-          if (!digest || !bound.has(digest)) return item;
-          return {
-            ...item,
-            url: `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
-          };
-        },
-      );
-      return JSON.stringify({ ...value, items });
-    } catch {
-      return content;
+    const value = JSON.parse(content) as unknown;
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      !Array.isArray((value as { items?: unknown }).items)
+    ) {
+      throw new Error('Forward gallery content is malformed');
     }
+    const bound = new Set(assets.map((asset) => asset.digest));
+    const items = (value as { items: unknown[] }).items.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error('Forward gallery item is malformed');
+      }
+      const record = item as Record<string, unknown>;
+      const digest =
+        typeof record.url === 'string'
+          ? extractDigests(record.url)[0]
+          : undefined;
+      if (!digest || !bound.has(digest)) {
+        throw new Error('Forward gallery item has no bound asset');
+      }
+      return {
+        ...record,
+        url: `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
+      };
+    });
+    return JSON.stringify({ ...(value as Record<string, unknown>), items });
   }
   if (!isForwardDirectMedia(contentType)) return content;
   const digests = extractDigests(content);
@@ -1300,17 +1317,13 @@ export function localizeForwardMediaContent(
     digests.length === 1
       ? assets.find((candidate) => candidate.digest === digests[0])
       : undefined;
-  if (!asset) return content;
-  try {
-    const value = JSON.parse(content) as unknown;
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return content;
-    }
-    return JSON.stringify({
-      ...(value as Record<string, unknown>),
-      url: `/uploads/msg-assets/${asset.digest.slice(0, 2)}/${asset.digest.slice(2, 4)}/${asset.digest}`,
-    });
-  } catch {
-    return content;
+  if (!asset) throw new Error('Forward media content has no bound asset');
+  const value = JSON.parse(content) as unknown;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Forward media content is malformed');
   }
+  return JSON.stringify({
+    ...(value as Record<string, unknown>),
+    url: `/uploads/msg-assets/${asset.digest.slice(0, 2)}/${asset.digest.slice(2, 4)}/${asset.digest}`,
+  });
 }

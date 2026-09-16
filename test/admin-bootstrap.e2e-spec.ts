@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, type TestingModule } from '@nestjs/testing';
-import { type INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
-import { DatabaseService } from '../src/database/database.service';
 import { AdminRole } from '../src/database/enums.js';
 import { admin, account as user } from '../src/database/schema.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * AdminBootstrapService e2e — boots the REAL AppModule against a real Postgres and asserts the
@@ -42,24 +38,15 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await cleanup.query(
+  await truncateTablesForTest(
+    cleanup,
     'TRUNCATE TABLE "Account", "Profile" RESTART IDENTITY CASCADE',
   );
 });
 
 /** Boot a fresh AppModule+Fastify app (OnApplicationBootstrap fires during listen). */
-async function bootApp(): Promise<{
-  app: INestApplication;
-  database: DatabaseService;
-}> {
-  const module: TestingModule = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
-  const adapter = new FastifyAdapter();
-  const app = module.createNestApplication(adapter);
-  await configureApp(app, adapter);
-  await app.listen(0);
-  return { app, database: app.get(DatabaseService) };
+function bootApp() {
+  return createTestApp();
 }
 
 describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on boot)', () => {

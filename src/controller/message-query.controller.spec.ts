@@ -47,6 +47,7 @@ function setup(rows: Array<{ seq: number }> = []) {
     { queryThread: vi.fn().mockResolvedValue([]) } as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   const req = {
     user: { userId: 1 },
@@ -180,6 +181,7 @@ describe('MessageController group mention resolution', () => {
       {} as never,
       {} as never,
       { resolveActiveMember } as never,
+      {} as never,
     );
     const req = {
       threadAccess: {
@@ -249,6 +251,7 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     const req = { user: { userId: 7 } } as unknown as FastifyRequest;
 
@@ -286,6 +289,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         {} as never,
         {} as never,
         { assertCanSend, tick } as never,
+        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -333,6 +337,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

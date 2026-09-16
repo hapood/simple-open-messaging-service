@@ -1,3 +1,25 @@
+/** Best-effort JSON body a peer returns alongside a non-2xx response, with
+ * fields narrowed at the parse boundary so callers can trust the types. */
+export interface PeerErrorBody {
+  code?: number;
+  message?: string;
+  data?: unknown;
+}
+
+/** Normalize any parsed JSON payload — object, `null`, primitive, or absent —
+ * into a `PeerErrorBody`; ill-typed or absent fields yield `undefined`. */
+export const parsePeerErrorBody = (value: unknown): PeerErrorBody => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const raw = value as Record<string, unknown>;
+  return {
+    code: typeof raw.code === 'number' ? raw.code : undefined,
+    message: typeof raw.message === 'string' ? raw.message : undefined,
+    data: raw.data,
+  };
+};
+
 /** A failed S2S HTTP response or an HTTP 200 business result. */
 export class S2sResponseError extends Error {
   readonly status: number;

@@ -10,7 +10,6 @@ import {
   groupAccount as groupAccountTable,
   groupMeta,
   groupMetaMemberFeed,
-  groupMetaProfileFeed,
   messageThread,
   message,
   peerStateFeed,
@@ -22,12 +21,13 @@ import {
 } from '../src/database/schema.js';
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
-import { GroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
+import { GroupMetaFeedService } from '../src/business/group/meta/group-meta-feed.service.js';
+import { FederationGroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { S2sController } from '../src/federation/s2s.controller.js';
-import { readGroupMetaPageInTx } from '../src/group-meta/group-meta-page.js';
+import { readGroupMetaPageInTx } from '../src/business/group/meta/group-meta-page.js';
 
 describe('canonical Group Meta feed', () => {
   const suffix = Date.now().toString(36);
@@ -41,6 +41,7 @@ describe('canonical Group Meta feed', () => {
   let module: TestingModule;
   let database: DatabaseService;
   let feed: GroupMetaFeedService;
+  let publisher: FederationGroupMetaFeedService;
   let groupId: number;
   let threadId: number;
   let ownerUserId: number;
@@ -50,10 +51,11 @@ describe('canonical Group Meta feed', () => {
   beforeAll(async () => {
     module = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [GroupMetaFeedService],
+      providers: [GroupMetaFeedService, FederationGroupMetaFeedService],
     }).compile();
     database = module.get(DatabaseService);
     feed = module.get(GroupMetaFeedService);
+    publisher = module.get(FederationGroupMetaFeedService);
     peerNamespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
     otherPeerNamespaceId = await seedFederatedPeerNamespace(
       database.db,
@@ -88,6 +90,20 @@ describe('canonical Group Meta feed', () => {
       .returning();
     groupId = threadId = thread.id;
 
+    await database.db.insert(relationshipPair).values({
+      kind: 'GROUP_MEMBER',
+      endpointAType: 'GROUP',
+      endpointAAccount: groupAccount,
+      endpointADomain: 'local',
+      endpointANamespaceId: 0,
+      endpointBType: 'USER',
+      endpointBAccount: ownerAccount,
+      endpointBDomain: 'local',
+      endpointBNamespaceId: 0,
+      threadId,
+      active: true,
+    });
+
     await authorizePeer(peerDomain, peerNamespaceId, memberAccount);
     await authorizePeer(otherPeerDomain, otherPeerNamespaceId, observerAccount);
   });
@@ -96,9 +112,6 @@ describe('canonical Group Meta feed', () => {
     await database.db
       .delete(groupMetaMemberFeed)
       .where(eq(groupMetaMemberFeed.threadId, groupId));
-    await database.db
-      .delete(groupMetaProfileFeed)
-      .where(eq(groupMetaProfileFeed.threadId, groupId));
     await database.db.delete(groupMeta).where(eq(groupMeta.threadId, groupId));
   });
 
@@ -409,24 +422,44 @@ describe('canonical Group Meta feed', () => {
   });
 
   const owner = () => ({
-    namespaceId: 0,
     account: ownerAccount,
     domain: 'local',
     body: { role: GroupRole.OWNER, profileRev: 1 },
   });
 
   const member = () => ({
-    namespaceId: peerNamespaceId,
     account: memberAccount,
     domain: peerDomain,
     body: { role: GroupRole.MEMBER, profileRev: 1 },
   });
 
+  async function reconcileDesired(
+    tx: Parameters<GroupMetaFeedService['reconcileMembersInTx']>[0],
+    members: readonly {
+      account: string;
+      domain: string;
+      body: Record<string, unknown>;
+    }[],
+  ): Promise<number> {
+    await feed.reconcileMembersInTx(tx, groupId, [
+      { ...owner(), operation: 'UPSERT' },
+      members.some((item) => item.account === memberAccount)
+        ? { ...member(), operation: 'UPSERT' }
+        : {
+            account: memberAccount,
+            domain: peerDomain,
+            body: {},
+            operation: 'DEPART',
+          },
+    ]);
+    return feed.reconcileProfileInTx(tx, groupId, 1);
+  }
+
   it.each(['full', 'delta'] as const)(
     'includes client member namespaces and compact profile references in %s pages',
     async (mode) => {
       await database.db.transaction((tx) =>
-        feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+        reconcileDesired(tx, [owner(), member()]),
       );
       const [head] = await database.db
         .select()
@@ -437,10 +470,10 @@ describe('canonical Group Meta feed', () => {
           groupId,
           account: groupAccount,
           mode,
-          after: 0n,
+          after: 0,
           take: 100,
           end: head.metaEndId,
-          visibleAfter: 0n,
+          visibleAfter: 0,
           client: { localDomain },
         }),
       );
@@ -475,49 +508,47 @@ describe('canonical Group Meta feed', () => {
 
   it('returns only the current roster in full and a bodyless DEPART in delta', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
-    await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner()]),
-    );
+    await database.db.transaction((tx) => reconcileDesired(tx, [owner()]));
 
-    const full = await feed.serve(
+    const full = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'full',
-      0n,
+      0,
     );
     expect(full).toMatchObject({
-      groupMetaFeedEndId: '4',
-      scannedThrough: '4',
+      groupMetaFeedEndId: 4,
+      scannedThrough: 4,
       hasMore: false,
     });
     expect(full.items).toEqual([
       {
-        feedId: '2',
+        feedId: 2,
         account: ownerAccount,
         domain: localDomain,
         operation: 'UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },
       {
-        feedId: '3',
+        feedId: 3,
         operation: 'GROUP_PROFILE',
         body: { profileRev: 1 },
       },
     ]);
 
-    const delta = await feed.serve(
+    const delta = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
-      3n,
+      3,
     );
     expect(delta.items).toEqual([
       {
-        feedId: '4',
+        feedId: 4,
         account: memberAccount,
         domain: peerDomain,
         operation: 'DEPART',
@@ -527,81 +558,147 @@ describe('canonical Group Meta feed', () => {
 
   it('resumes a bounded delta one feed item at a time', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
 
-    const first = await feed.serve(
+    const first = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
-      0n,
+      0,
       1,
-      3n,
+      3,
     );
-    expect(first).toMatchObject({ scannedThrough: '1', hasMore: true });
-    expect(first.items.map((item) => item.feedId)).toEqual(['1']);
+    expect(first).toMatchObject({ scannedThrough: 1, hasMore: true });
+    expect(first.items.map((item) => item.feedId)).toEqual([1]);
 
-    const second = await feed.serve(
+    const second = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
-      1n,
       1,
-      3n,
+      1,
+      3,
     );
-    expect(second).toMatchObject({ scannedThrough: '2', hasMore: true });
-    expect(second.items.map((item) => item.feedId)).toEqual(['2']);
+    expect(second).toMatchObject({ scannedThrough: 2, hasMore: true });
+    expect(second.items.map((item) => item.feedId)).toEqual([2]);
 
-    const third = await feed.serve(
+    const third = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
-      2n,
+      2,
       1,
-      3n,
+      3,
     );
-    expect(third).toMatchObject({ scannedThrough: '3', hasMore: false });
-    expect(third.items.map((item) => item.feedId)).toEqual(['3']);
+    expect(third).toMatchObject({ scannedThrough: 3, hasMore: false });
+    expect(third.items.map((item) => item.feedId)).toEqual([3]);
   });
 
   it('requires a cursor but has no retained-history boundary', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
 
     await expect(
-      feed.serve(peerDomain, peerNamespaceId, groupAccount, 'full', undefined),
+      publisher.serve(
+        peerDomain,
+        peerNamespaceId,
+        groupAccount,
+        'full',
+        undefined,
+      ),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '0', resumeBefore: '4' },
+      data: { resumeAfter: 0, resumeBefore: 4 },
     });
   });
 
-  it('appends a new UPSERT when a departed member rejoins', async () => {
+  it('truncates an older full boundary after compaction and converges through delta', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
+    const first = await publisher.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      0,
+      1,
+      3,
+    );
+    expect(first.hasMore).toBe(true);
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner()]),
+      feed.appendMemberTransitionInTx(tx, groupId, {
+        ...member(),
+        operation: 'UPSERT',
+        body: { role: GroupRole.ADMIN, profileRev: 1 },
+      }),
     );
-    await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+    const continued = await publisher.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      first.scannedThrough,
+      100,
+      3,
     );
-
-    const delta = await feed.serve(
+    expect(
+      continued.items.some(
+        (item) => 'account' in item && item.account === memberAccount,
+      ),
+    ).toBe(false);
+    const retried = await publisher.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      0,
+      100,
+      3,
+    );
+    expect(retried.items.length).toBeLessThan(3);
+    const delta = await publisher.serve(
       peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
-      4n,
+      3,
+    );
+    expect(delta.items).toEqual([
+      expect.objectContaining({
+        feedId: 4,
+        account: memberAccount,
+        operation: 'UPSERT',
+        body: { role: GroupRole.ADMIN, profileRev: 1 },
+      }),
+    ]);
+  });
+
+  it('appends a new UPSERT when a departed member rejoins', async () => {
+    await database.db.transaction((tx) =>
+      reconcileDesired(tx, [owner(), member()]),
+    );
+    await database.db.transaction((tx) => reconcileDesired(tx, [owner()]));
+    await database.db.transaction((tx) =>
+      reconcileDesired(tx, [owner(), member()]),
+    );
+
+    const delta = await publisher.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'delta',
+      4,
     );
     expect(delta.items).toEqual([
       {
-        feedId: '5',
+        feedId: 5,
         account: memberAccount,
         domain: peerDomain,
         operation: 'UPSERT',
@@ -612,17 +709,17 @@ describe('canonical Group Meta feed', () => {
 
   it('serves the same canonical coordinate space to every authorized peer', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
 
     const [first, second] = await Promise.all([
-      feed.serve(peerDomain, peerNamespaceId, groupAccount, 'full', 0n),
-      feed.serve(
+      publisher.serve(peerDomain, peerNamespaceId, groupAccount, 'full', 0),
+      publisher.serve(
         otherPeerDomain,
         otherPeerNamespaceId,
         groupAccount,
         'full',
-        0n,
+        0,
       ),
     ]);
     expect(second).toEqual(first);
@@ -630,23 +727,33 @@ describe('canonical Group Meta feed', () => {
 
   it('does not allocate a new item when the canonical facts are unchanged', async () => {
     const initial = await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
     const unchanged = await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
 
-    expect(initial).toBe(3n);
+    expect(initial).toBe(3);
     expect(unchanged).toBe(initial);
   });
 
   it('maps a public local-member address back to canonical storage for profile authorization', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, groupId, 1, [owner(), member()]),
+      reconcileDesired(tx, [owner(), member()]),
     );
 
+    await database.db
+      .update(relationshipPair)
+      .set({ active: false })
+      .where(
+        and(
+          eq(relationshipPair.threadId, threadId),
+          eq(relationshipPair.endpointBAccount, ownerAccount),
+        ),
+      );
+
     await expect(
-      feed.resolveAllocatedMemberProfile(
+      publisher.resolveAllocatedMemberProfile(
         peerDomain,
         peerNamespaceId,
         groupAccount,
@@ -654,6 +761,15 @@ describe('canonical Group Meta feed', () => {
         localDomain,
         1,
       ),
-    ).resolves.toEqual({ memberNamespaceId: 0 });
+    ).resolves.toBe(0);
+    await database.db
+      .update(relationshipPair)
+      .set({ active: true })
+      .where(
+        and(
+          eq(relationshipPair.threadId, threadId),
+          eq(relationshipPair.endpointBAccount, ownerAccount),
+        ),
+      );
   });
 });

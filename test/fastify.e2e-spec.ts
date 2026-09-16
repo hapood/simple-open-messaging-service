@@ -1,13 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import {
   DatabaseService,
   type Database,
@@ -23,6 +19,8 @@ import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
 import { seedAcceptedRelationship, seedUserWithSession } from './seed';
 import { MediaMetadataService } from '../src/upload/media-metadata.service';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
 // not cover: Swagger UI on Fastify, the @fastify/multipart upload path (UploadService.consumeImage)
@@ -103,7 +101,7 @@ async function authorizeDigest(
 }
 
 describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let token: string;
   let token2: string;
@@ -113,43 +111,32 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   let port: number;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(MediaMetadataService)
-      .useValue({
-        fromBuffer: vi.fn(
-          async (
-            _input: Buffer,
-            intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
-          ) =>
-            intent === 'IMAGE'
-              ? { w: 1, h: 1 }
-              : intent === 'VIDEO'
-                ? { w: 1, h: 1, duration: 1 }
-                : intent === 'AUDIO'
-                  ? { duration: 1 }
-                  : {},
-        ),
-      })
-      .compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    // configureApp before listen(): it sets the global prefix (must precede route registration,
-    // which listen() performs) and registers the multipart parser + static mounts. listen() then
-    // runs init + Fastify ready() (initializing route-context lifecycle hooks).
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp((builder) => {
+      builder
+        .overrideProvider(MediaMetadataService)
+        .useValue({
+          fromBuffer: vi.fn(
+            async (
+              _input: Buffer,
+              intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+            ) =>
+              intent === 'IMAGE'
+                ? { w: 1, h: 1 }
+                : intent === 'VIDEO'
+                  ? { w: 1, h: 1, duration: 1 }
+                  : intent === 'AUDIO'
+                    ? { duration: 1 }
+                    : {},
+          ),
+        });
+    }));
     port = (app.getHttpServer().address() as { port: number }).port;
 
     // Seed two local users + sessions directly (registration is closed; the spec needs authenticated
     // users, not the login flow). userAId is the member for the per-object media-authz tests.
-    await database.pool.query(
-      'TRUNCATE TABLE "Account" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account" RESTART IDENTITY CASCADE');
     // MediaAsset (CAS ref counts) — start clean so dedup assertions are predictable.
-    await database.pool.query('TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
     const userA = await seedUserWithSession(app, 'fastify', {
       name: 'Fastify',
     });

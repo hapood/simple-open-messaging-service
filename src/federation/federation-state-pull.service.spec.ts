@@ -124,6 +124,7 @@ describe('FederationStatePullService drain window', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await expect(service.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);

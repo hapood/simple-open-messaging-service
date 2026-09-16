@@ -17,7 +17,7 @@ export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
  * background-image (image) / <video> first-frame (video) / download anchor (audio). `kind` drives
  * the render branch; size/duration/name feed the bottom meta bar + overlay.
  */
-export interface AlbumMedia {
+interface AlbumMedia {
   kind: 'image' | 'video' | 'audio' | 'file';
   /** /uploads/... URL (image / video / audio). */
   src: string;
@@ -163,7 +163,7 @@ export interface SystemMessageItem extends ChatMessageBase {
 
 export type ChatMsgData = AuthoredMessageItem | SystemMessageItem;
 
-export type ChatTextSegment =
+type ChatTextSegment =
   | { kind: 'text'; text: string }
   | {
       kind: 'mention';

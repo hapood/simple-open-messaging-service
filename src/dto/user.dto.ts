@@ -146,18 +146,3 @@ export class QueryUsersDto {
   @Type(() => UserAddressDto)
   addresses!: UserAddressDto[];
 }
-
-/** Pull compacted client-state feed items in (afterFeedId, targetFeedId]. */
-export class StateFeedDto {
-  @ApiProperty({ example: 0, description: 'Last scanned feed id (exclusive)' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  afterFeedId!: number;
-
-  @ApiProperty({ example: 5, description: 'Fixed feed target (inclusive)' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  targetFeedId!: number;
-}

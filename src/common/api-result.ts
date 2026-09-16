@@ -7,7 +7,7 @@ import {
 } from '@nestjs/swagger';
 
 /**
- * Unified response envelope. See docs/api/api.md for the public response contract.
+ * Unified public response envelope.
  * - code: 0 = success; non-zero = business error code, segmented by domain (see src/common/business-code.ts).
  *   Business failures always return HTTP 200 + business code; only unauthenticated (401) / not-found (404) /
  *   conflict (409) / server-error (500) retain their HTTP status.
@@ -93,17 +93,16 @@ export function ApiResultResponse<T>(model: Type<T>, isArray = false) {
 }
 
 /**
- * Branded carrier for handlers that need to set envelope fields beyond `data` (`messageKey` / `hasMore`).
- * Built by {@link envelope} and recognized by `SerializeInterceptor` (via {@link isApiEnvelope}), which
- * unwraps it into `{ code: 0, message: 'successful', data, messageKey?, hasMore? }`. The `Symbol` brand
- * means no plain domain object can be mistaken for a carrier (unlike a shape heuristic). Used by handlers
- * whose data alone does not carry the i18n key / pagination flag (e.g. the friend-request `messageKey`
- * variants, the paginated message endpoints' `hasMore`).
+ * Branded carrier for handlers that need to set envelope fields beyond `data`.
+ * Built by {@link envelope} or {@link businessEnvelope} and recognized by
+ * `SerializeInterceptor` (via {@link isApiEnvelope}). The `Symbol` brand means
+ * no plain domain object can be mistaken for a carrier.
  */
 export const API_ENVELOPE = Symbol('apiEnvelope');
 
 export interface ApiEnvelope<T = unknown> {
   readonly [API_ENVELOPE]: true;
+  code?: number;
   data: T;
   message?: string;
   messageKey?: string;
@@ -123,6 +122,17 @@ export function envelope<T>(
   },
 ): ApiEnvelope<T> {
   return { [API_ENVELOPE]: true, data, ...opts };
+}
+
+/** Encode an expected business refusal without throwing through Nest's
+ * exception pipeline. The HTTP status remains 200 and clients keep branching
+ * on the stable top-level business code. */
+export function businessEnvelope<T>(
+  code: number,
+  message: string,
+  data: T,
+): ApiEnvelope<T> {
+  return { [API_ENVELOPE]: true, code, message, data };
 }
 
 /** Type guard: true when `value` is an {@link envelope} carrier (carries the `API_ENVELOPE` brand). */

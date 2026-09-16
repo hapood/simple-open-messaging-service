@@ -222,12 +222,7 @@ test('coalesces concurrent administrator session renewal', async () => {
     assert.equal(activity.pendingCount, 0);
     assert.equal(activity.failedCount, 0);
     assert.deepEqual(activity.failed, []);
-    for (const status of [
-      'PENDING',
-      'PROCESSING',
-      'ASYNC_PROCESSING',
-      'FAILED',
-    ]) {
+    for (const status of ['PENDING', 'PROCESSING', 'FAILED']) {
       assert.ok(Number.isInteger(activity.queryMs[status]));
       assert.ok(activity.queryMs[status] >= 0);
     }
@@ -235,7 +230,7 @@ test('coalesces concurrent administrator session renewal', async () => {
     assert.equal(loginCount, 2);
     assert.equal(
       calls.filter(([url]) => url.endsWith('/admin/durable-tasks')).length,
-      8,
+      6,
     );
   } finally {
     globalThis.fetch = originalFetch;

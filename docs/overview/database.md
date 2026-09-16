@@ -157,7 +157,8 @@ from the replicated Group Meta for a remote group.
 Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
 there is no JSON merge and no polymorphic `Invite` table.
 
-`GroupRequestProjection` is the non-authoritative manager-facing request index. Its
+`GroupRequestProjection` is the shared request projection, keyed by the group thread,
+member address, namespace, and direction rather than a manager or request id. Its
 `direction` is `APPLICATION` for member-authored join requests and `INVITATION` for group-authored
 invitations waiting for the member. Both directions share one schema, status vocabulary, paging
 coordinate, retention policy, and API response shape.
@@ -222,7 +223,7 @@ short final transaction advances `feedEndId`. Delta and full application
 serialize per mirrored group. There is no local read gate during the round.
 
 On an origin, `feedEndId` is the allocation end. On a mirror, it is the last
-completely applied round cursor. A State Feed Group Meta head supplies the
+completely applied round cursor. A State Feed thread head supplies the Group Meta
 sub-round target through its durable task payload; progress remains in the task
 checkpoint. The State Feed item commits only after `feedEndId` reaches its
 target, and no Group Meta network read occurs inside that item transaction.
@@ -298,7 +299,7 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `outboundRecognitionConfirmed` records delivery of this node's Recognize notification. `inboundRecognitionConfirmed` records evidence that the peer recognizes this node, supplied by either its Recognize notification or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; the successful Health states both confirm recognition while distinguishing current reachability quality. Per-peer daily-quota overrides remain domain-scoped.
+- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Per-peer daily-quota overrides remain domain-scoped.
 - **IdentityNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).

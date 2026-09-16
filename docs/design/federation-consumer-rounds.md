@@ -116,17 +116,27 @@ A larger remote hint that arrives while the round is active becomes a later
 round. Wakes remain hints; durable state remains authoritative, and unsolicited
 local reads during a round may observe already committed intermediate facts.
 
-A `GROUP_META_FEED_HEAD` item supplies the fixed target for a resumable Group
-Meta sub-round. Network requests and bounded roster-page transactions occur
-outside the State Feed item transaction. The item transaction creates or
-merges `SYNC_GROUP_META`, advances the State Feed cursor, and continues with
-later items without waiting. The durable task fixes its `through`, applies
-bounded pages, and advances the mirror's `feedEndId` only in its final
-transaction. That final transaction also applies derived local projections and
-writes their compacted client State Feed heads. Task completion publishes only
-the corresponding post-commit hints; it does not wake or replay the already
-consumed State Feed item. Fetching all Meta pages into memory and applying the
-combined result in one transaction is prohibited.
+A `THREAD_CONTENT_HEAD.groupMetaFeedEndId` coordinate supplies the fixed target for a resumable Group
+Meta round on the scheduler's `meta` lane — at most one in-flight round per
+mirror thread, with later heads coalesced as a dirty mark. Network requests and
+bounded roster-page transactions occur outside the State Feed item transaction.
+The item transaction merges the target into `GroupMeta.metaTargetId`, wakes the
+lane, advances the State Feed cursor, and continues with later items without
+waiting. A delta round freezes its `through` at the current `metaTargetId` in
+scheduler memory and consumes one feed item per transaction, each committing
+the replica fact, its transition system message or a direct local fan-out
+admission, and the durable cursor to that item's feed id. An open
+`metaRecoveryThroughId` selects a full-snapshot recovery drain of page
+batches: the batch starting at a zero cursor clears the roster first and
+never clears again inside the drain, and each batch commits its facts plus
+the durable cursor. The drain's final transaction advances `metaEndId`,
+closes the drain (`metaRecoveryThroughId` to null), applies derived local
+projections, and writes their compacted client State Feed heads. Round
+completion publishes only the corresponding post-commit hints; it does not
+wake or replay the already consumed State Feed item. While the drain is open
+a partially applied roster is observable; a resume with a positive cursor
+continues without clearing, since the resumed fetch never re-delivers a
+deleted prefix.
 
 ## 4. Forward rounds
 
@@ -294,7 +304,7 @@ thread-head wake may enable the key again.
 - State Feed item transactions emit no scheduler or client notification from
   inside the transaction. Each successfully committed item invokes its
   after-commit publication boundary before the next item is applied.
-- A Group Meta head item atomically creates or merges its asynchronous durable
+- A thread head carrying Group Meta progress atomically creates or merges its asynchronous durable
   task before the State Feed cursor advances. No State Feed database transaction
   contains a network request or roster-page transaction.
 - Forward message and tombstone pages commit independently with their own
@@ -322,7 +332,7 @@ thread-head wake may enable the key again.
   its greatest `feedId` hint. Its in-process high watermark remains monotonic
   after the window expires, while a different client's feed owns a separate
   timer and cannot be delayed by that window.
-- The first attempt at a Group Meta head atomically admits its dependency but
+- The first attempt at a thread head with Group Meta progress atomically admits its dependency but
   advances no State Feed cursor and publishes no item effect. The resumed item
   commits only after `feedEndId` reaches its target, and no network request
   occurs inside either item transaction.

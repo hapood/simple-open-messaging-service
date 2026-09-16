@@ -23,6 +23,7 @@ describe('thread notification presentation', () => {
         threadFeedId: 9,
         messageEndSeq: 8,
         tombstoneEndSeq: 1,
+        groupMetaFeedEndId: null,
         lastReadSeq: 1,
         unreadCount: 103,
         lastMentionSeq: null,

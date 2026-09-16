@@ -29,7 +29,7 @@ export interface KeyboardInsetAnimation {
   target: number;
   durationMs: number;
 }
-export interface ImeGeometryEvent {
+interface ImeGeometryEvent {
   phase: 'prepare' | 'start' | 'progress' | 'end' | 'change';
   currentPx: number;
   targetPx: number | null;

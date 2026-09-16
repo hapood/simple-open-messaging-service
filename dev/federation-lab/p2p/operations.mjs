@@ -190,12 +190,12 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       body,
       `invite ${operation.target.address}`,
     );
-    if (result.tasks?.length !== 1 || result.skipped?.length !== 0) {
+    if (result.invited?.length !== 1 || result.skipped?.length !== 0) {
       throw new Error(
-        `${operation.id}: group invite was not admitted: ${JSON.stringify(result)}`,
+        `${operation.id}: group invite was not applied: ${JSON.stringify(result)}`,
       );
     }
-    accepted = result.tasks[0];
+    accepted = result;
   } else if (
     operation.type === 'ACCEPT_GROUP_APPLICATION' ||
     operation.type === 'REJECT_GROUP_APPLICATION' ||
@@ -206,7 +206,11 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       REJECT_GROUP_APPLICATION: '/group/join-request/reject',
       REVOKE_GROUP_INVITATION: '/group/invitation/revoke',
     }[operation.type];
-    body = { groupId: threadId, requestId: operation.target.requestId };
+    body = {
+      groupId: threadId,
+      account: operation.target.memberAccount,
+      domain: operation.target.memberDomain,
+    };
     accepted = await actor.post(
       endpoint,
       body,

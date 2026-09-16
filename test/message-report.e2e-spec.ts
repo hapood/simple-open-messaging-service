@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { BusinessException } from '../src/common/business.exception.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -20,6 +20,7 @@ import { MessageReportService } from '../src/message/message-report.service.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { MessageService } from '../src/message/message.service.js';
 import { seedAcceptedRelationship } from './seed.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('message report workflow', () => {
   let mod: TestingModule;
@@ -51,10 +52,9 @@ describe('message report workflow', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await database.db.execute(
-      sql.raw(
-        'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
-      ),
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
     const now = new Date();
     const users = await database.db

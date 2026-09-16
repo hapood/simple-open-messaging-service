@@ -32,7 +32,7 @@ export const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
 export const MAX_FILE_NAME_LEN = 100;
 
 /** A FILE message's stored content (JSON-stringified in Message.content). */
-export interface FileContent {
+interface FileContent {
   /** Server-relative CAS URL (`/uploads/msg-assets/<2hex>/<2hex>/<sha256>`). */
   url: string;
   /** Sanitized original filename for display. */
@@ -42,29 +42,6 @@ export interface FileContent {
   /** Display mimetype (the client-declared Content-Type, or application/octet-stream). Display-only
    *  — serving forces Content-Disposition: attachment for non-images regardless of this value. */
   mimeType: string;
-}
-
-/** A VIDEO message's stored content (JSON-stringified in Message.content). w/h/duration are
- *  client-probed (<video> loadedmetadata) and server-untrusted — the server validated only the
- *  container family, not the codec/dimensions. They drive layout + the duration badge, nothing more. */
-export interface VideoContent {
-  url: string;
-  name: string;
-  size: number;
-  mimeType: string;
-  w: number;
-  h: number;
-  duration: number; // seconds
-}
-
-/** An AUDIO message's stored content. duration is client-probed (<audio> loadedmetadata),
- *  server-untrusted — display only. */
-export interface AudioContent {
-  url: string;
-  name: string;
-  size: number;
-  mimeType: string;
-  duration: number; // seconds
 }
 
 /** Max stored length of a LINK card's display fields. LinkPreviewService caps these at the source
@@ -116,7 +93,7 @@ const CAS_UPLOAD_URL_RE =
 /** Whether a url is an accepted server-served upload path — a CAS shard URL. Rejects traversal
  *  ('..'), query/fragment, and any shape saveCas() would never emit. Shared by parseFileContent and
  *  the VIDEO/AUDIO content validators. */
-export function isUploadUrl(url: string): boolean {
+function isUploadUrl(url: string): boolean {
   if (url.includes('..')) return false;
   const match = CAS_UPLOAD_URL_RE.exec(url);
   return Boolean(
@@ -142,40 +119,33 @@ export function extractDigests(content: string): string[] {
   return [...out];
 }
 
-/** Compatibility shape used by federation callers. `ext` is presentation metadata only and is no
- * longer recovered from or written into the CAS URL/path. */
 export function extractDigestEntries(
   content: string,
-): Array<{ digest: string; ext: string; size?: number }> {
+): Array<{ digest: string; size?: number }> {
   const sizes = new Map<string, number>();
-  try {
-    const visit = (value: unknown): void => {
-      if (Array.isArray(value)) {
-        value.forEach(visit);
-        return;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const item = value as Record<string, unknown>;
+    if (typeof item.url === 'string') {
+      const match = CAS_UPLOAD_URL_RE.exec(item.url);
+      if (
+        match &&
+        typeof item.size === 'number' &&
+        Number.isSafeInteger(item.size) &&
+        item.size >= 0
+      ) {
+        sizes.set(match[3], Math.max(sizes.get(match[3]) ?? 0, item.size));
       }
-      if (!value || typeof value !== 'object') return;
-      const item = value as Record<string, unknown>;
-      if (typeof item.url === 'string') {
-        const match = CAS_UPLOAD_URL_RE.exec(item.url);
-        if (
-          match &&
-          typeof item.size === 'number' &&
-          Number.isSafeInteger(item.size) &&
-          item.size >= 0
-        ) {
-          sizes.set(match[3], Math.max(sizes.get(match[3]) ?? 0, item.size));
-        }
-      }
-      Object.values(item).forEach(visit);
-    };
-    visit(JSON.parse(content));
-  } catch {
-    // The caller separately validates message content. Keep digest extraction useful for legacy shapes.
-  }
+    }
+    Object.values(item).forEach(visit);
+  };
+  visit(JSON.parse(content));
   return extractDigests(content).map((digest) => ({
     digest,
-    ext: '',
     size: sizes.get(digest),
   }));
 }
@@ -199,6 +169,60 @@ export function resolveFileType(
         ? declaredMime
         : 'application/octet-stream',
   };
+}
+
+/** Validate the stored LINK card after its owned preview generation completes.
+ * Page URLs are HTTP(S); thumbnails must be this server's CAS assets. Reject
+ * unknown keys so client-authored metadata cannot silently enter storage. */
+export function parseLinkContent(content: string): LinkContent | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const card = value as Record<string, unknown>;
+  if (
+    Object.keys(card).some(
+      (key) =>
+        ![
+          'url',
+          'title',
+          'description',
+          'siteName',
+          'image',
+          'favicon',
+        ].includes(key),
+    ) ||
+    typeof card.url !== 'string' ||
+    !/^https?:\/\//i.test(card.url) ||
+    typeof card.title !== 'string' ||
+    card.title.length > MAX_LINK_TITLE_LEN ||
+    typeof card.description !== 'string' ||
+    card.description.length > MAX_LINK_DESC_LEN ||
+    ('siteName' in card &&
+      (typeof card.siteName !== 'string' ||
+        card.siteName.length > MAX_LINK_SITE_NAME_LEN)) ||
+    ('image' in card &&
+      (typeof card.image !== 'string' || !isUploadUrl(card.image))) ||
+    ('favicon' in card &&
+      (typeof card.favicon !== 'string' || !isUploadUrl(card.favicon)))
+  )
+    return null;
+  try {
+    const page = new URL(card.url);
+    if (
+      !['http:', 'https:'].includes(page.protocol) ||
+      !page.hostname ||
+      page.username ||
+      page.password
+    )
+      return null;
+  } catch {
+    return null;
+  }
+  return card as unknown as LinkContent;
 }
 
 /**
@@ -233,140 +257,6 @@ export function parseFileContent(content: string): FileContent | null {
   if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
   return { url, name, size, mimeType };
 }
-
-/** Coerce an unknown value to a finite positive number within (0, max], else null. Used for the
- *  client-probed w/h/duration fields on VIDEO/AUDIO content — accept any reasonable value, reject
- *  non-numbers / NaN / absurd sizes (defensive against a malformed or hostile payload). */
-function parseFinitePos(value: unknown, max: number): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  if (value <= 0 || value > max) return null;
-  return value;
-}
-
-/**
- * Validate + parse a VIDEO message's content. Mirrors parseFileContent's contract (server-served url,
- * bounded size, non-empty name/mime) and additionally accepts the client-probed w/h/duration as
- * display-only numbers within sane bounds. Returns null on any shape violation — the controller maps
- * that to a 400 so a client cannot forge arbitrary content under the VIDEO type.
- */
-export function parseVideoContent(content: string): VideoContent | null {
-  let obj: unknown;
-  try {
-    obj = JSON.parse(content);
-  } catch {
-    return null;
-  }
-  if (typeof obj !== 'object' || obj === null) return null;
-  const { url, name, size, mimeType, w, h, duration } = obj as Record<
-    string,
-    unknown
-  >;
-  if (
-    typeof url !== 'string' ||
-    typeof name !== 'string' ||
-    typeof size !== 'number' ||
-    typeof mimeType !== 'string'
-  ) {
-    return null;
-  }
-  const wv = parseFinitePos(w, 100000); // 100k px — well past 8K, rejects absurd values
-  const hv = parseFinitePos(h, 100000);
-  const dv = parseFinitePos(duration, 86400); // 24h cap on a single clip
-  if (wv === null || hv === null || dv === null) return null;
-  if (!isUploadUrl(url)) return null;
-  if (mimeType.length === 0) return null;
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_VIDEO_BYTES)
-    return null;
-  if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
-  return { url, name, size, mimeType, w: wv, h: hv, duration: dv };
-}
-
-/**
- * Validate + parse an AUDIO message's content. Same contract as parseVideoContent minus w/h.
- */
-export function parseAudioContent(content: string): AudioContent | null {
-  let obj: unknown;
-  try {
-    obj = JSON.parse(content);
-  } catch {
-    return null;
-  }
-  if (typeof obj !== 'object' || obj === null) return null;
-  const { url, name, size, mimeType, duration } = obj as Record<
-    string,
-    unknown
-  >;
-  if (
-    typeof url !== 'string' ||
-    typeof name !== 'string' ||
-    typeof size !== 'number' ||
-    typeof mimeType !== 'string'
-  ) {
-    return null;
-  }
-  const dv = parseFinitePos(duration, 86400);
-  if (dv === null) return null;
-  if (!isUploadUrl(url)) return null;
-  if (mimeType.length === 0) return null;
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_AUDIO_BYTES)
-    return null;
-  if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
-  return { url, name, size, mimeType, duration: dv };
-}
-
-/**
- * Validate + parse a LINK message's content string. A FORM check only — no network. `url` must be an
- * http(s) URL, and `image` (if present) MUST be a server-served CAS shard (`isUploadUrl`):
- * LinkPreviewService localizes og:image into CAS, so any non-upload image URL here is a forged
- * payload that would render a cross-origin / `javascript:` image. The real SSRF screening of the
- * target page happens at fetch time in SafeFetchService; this guard only ensures a persisted LINK
- * row can never carry an unsafe URL. Returns the typed content, or null on any shape violation.
- */
-export function parseLinkContent(content: string): LinkContent | null {
-  let obj: unknown;
-  try {
-    obj = JSON.parse(content);
-  } catch {
-    return null;
-  }
-  if (typeof obj !== 'object' || obj === null) return null;
-  const record = obj as Record<string, unknown>;
-  const allowed = new Set([
-    'url',
-    'title',
-    'description',
-    'siteName',
-    'image',
-    'favicon',
-  ]);
-  if (Object.keys(record).some((key) => !allowed.has(key))) return null;
-  const { url, title, description, siteName, image, favicon } = record;
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
-  if (typeof title !== 'string' || typeof description !== 'string') return null;
-  if (title.length > MAX_LINK_TITLE_LEN) return null;
-  if (description.length > MAX_LINK_DESC_LEN) return null;
-  if (
-    siteName !== undefined &&
-    (typeof siteName !== 'string' || siteName.length > MAX_LINK_SITE_NAME_LEN)
-  )
-    return null;
-  if (image !== undefined && (typeof image !== 'string' || !isUploadUrl(image)))
-    return null;
-  if (
-    favicon !== undefined &&
-    (typeof favicon !== 'string' || !isUploadUrl(favicon))
-  )
-    return null;
-  return {
-    url,
-    title,
-    description,
-    siteName: siteName || undefined,
-    image: image || undefined,
-    favicon: favicon || undefined,
-  };
-}
-
 // ─── Phase 7: type-agnostic outbound upload (design doc §12.3) ───────────────────────────────
 
 /** The server-detected family of one uploaded file, derived from magic bytes (isImage/detectMedia).
@@ -406,7 +296,7 @@ export function familyToFileSyncKind(
 
 /** One element of a GALLERY message's `items` array. `kind` self-describes so the renderer picks the
  *  right row component — a GALLERY may mix image/video/file/audio items. */
-export interface GalleryItem {
+interface GalleryItem {
   kind: OutboundFileFamily;
   url: string;
   size: number;
@@ -420,9 +310,7 @@ export interface GalleryItem {
 /**
  * Assemble the final message content JSON for an outbound batch from its per-file payloads.
  *
- * Single-file (IMAGE/FILE/VIDEO/AUDIO): the unchanged per-type object shape, so rendering is identical
- * to the legacy typed-upload path — the payload already carries every display field the client used to
- * send at stage time (now it rides with the upload part).
+ * Single-file (IMAGE/FILE/VIDEO/AUDIO): the payload carries every display field captured at stage time.
  *
  * GALLERY: `{ items: [...] }`, digest-sorted so the same batch always assembles the same message
  * regardless of which parallel upload request landed last. Returns the JSON string; the caller runs

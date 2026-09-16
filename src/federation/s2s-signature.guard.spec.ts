@@ -3,17 +3,13 @@ import { BusinessCode } from '../common/business-code.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 
 function subject(overrides?: {
-  outboundRecognitionConfirmed?: boolean;
-  inboundRecognitionConfirmed?: boolean;
+  trustLevel?: string;
+  recognizesPeer?: boolean;
 }) {
   const peer = {
-    trustLevel: 'available',
+    trustLevel: overrides?.trustLevel ?? 'available',
     activeNamespaceId: 9,
-    recognizesPeer: true,
-    outboundRecognitionConfirmed:
-      overrides?.outboundRecognitionConfirmed ?? true,
-    inboundRecognitionConfirmed: overrides?.inboundRecognitionConfirmed ?? true,
-    lightweightInboundReady: true,
+    recognizesPeer: overrides?.recognizesPeer ?? true,
     localServiceAvailable: true,
     haltCode: null,
     haltReason: null,
@@ -56,7 +52,7 @@ function subject(overrides?: {
 }
 
 describe('S2sSignatureGuard recognition and reachability ordering', () => {
-  it('admits ordinary data when the peer recognition notification exists', async () => {
+  it('admits ordinary data after local recognition', async () => {
     const { guard, context, request, recognition } = subject();
 
     await expect(guard.canActivate(context as never)).resolves.toBe(true);
@@ -72,9 +68,9 @@ describe('S2sSignatureGuard recognition and reachability ordering', () => {
     });
   });
 
-  it('does not require outbound reverse-notification delivery for inbound data', async () => {
+  it('does not require peer acceptance for inbound data', async () => {
     const { guard, context, verify, recognition } = subject({
-      outboundRecognitionConfirmed: false,
+      trustLevel: 'establishing',
     });
 
     await expect(guard.canActivate(context as never)).resolves.toBe(true);
@@ -83,9 +79,9 @@ describe('S2sSignatureGuard recognition and reachability ordering', () => {
     expect(recognition.markReachable).toHaveBeenCalledOnce();
   });
 
-  it('refreshes reachability before rejecting a missing peer notification', async () => {
+  it('rejects missing local recognition before key fetch', async () => {
     const { guard, context, verify, recognition } = subject({
-      inboundRecognitionConfirmed: false,
+      recognizesPeer: false,
     });
 
     await expect(guard.canActivate(context as never)).rejects.toMatchObject({
@@ -93,8 +89,8 @@ describe('S2sSignatureGuard recognition and reachability ordering', () => {
       status: 401,
     });
 
-    expect(verify.fetchAndVerify).toHaveBeenCalledOnce();
-    expect(recognition.markReachable).toHaveBeenCalledOnce();
+    expect(verify.fetchAndVerify).not.toHaveBeenCalled();
+    expect(recognition.markReachable).not.toHaveBeenCalled();
   });
 
   it('refreshes reachability before a later resource-binding rejection', async () => {

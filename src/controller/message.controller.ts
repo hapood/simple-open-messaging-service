@@ -14,7 +14,11 @@ import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { ApiResultResponse, envelope } from '../common/api-result.js';
+import {
+  ApiResultResponse,
+  businessEnvelope,
+  envelope,
+} from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -22,12 +26,12 @@ import {
   MessageResponseDto,
   MessageTombstoneQueryPageDto,
   ThreadFeedDeltaPageDto,
+  ThreadReadPositionResultDto,
 } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
-import { GroupService } from '../group/group.service.js';
+import { GroupService } from '../business/group/group.service.js';
 import { ThreadFeedService } from '../message/thread-feed.service.js';
-import { DurableTaskAcceptedDto } from '../dto/durable-task.dto.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
@@ -64,6 +68,8 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportDto } from '../message/message-report.dto.js';
+import { ThreadReadPositionService } from '../business/message/thread-read-position.service.js';
+import { isBusinessRejection } from '../business/shared/business-command-result.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -87,6 +93,7 @@ export class MessageController {
     private readonly messageReports: MessageReportService,
     private readonly users: UserService,
     private readonly groups: GroupService,
+    private readonly readPositions: ThreadReadPositionService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -810,7 +817,7 @@ export class MessageController {
     return { threadId };
   }
 
-  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard)
   @ResourceId<MarkReadDto>('threadId')
   @Throttle('thread.mark-read')
   @ApiBearerAuth()
@@ -819,9 +826,15 @@ export class MessageController {
   @ApiOperation({
     summary: 'Commit a local read HWM',
   })
-  @ApiResultResponse(DurableTaskAcceptedDto)
+  @ApiResultResponse(ThreadReadPositionResultDto)
   async markRead(@Request() req: FastifyRequest, @Body() dto: MarkReadDto) {
-    return this.attention.enqueueReadPosition(req.user.userId, dto);
+    const outcome = await this.readPositions.execute(req.user.userId, dto);
+    if (isBusinessRejection(outcome))
+      return businessEnvelope(outcome.code, outcome.message, {
+        status: outcome.status,
+        reason: outcome.reason,
+      });
+    return outcome;
   }
 
   @UseGuards(ThrottleGuard)

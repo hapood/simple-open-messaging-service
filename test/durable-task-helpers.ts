@@ -32,6 +32,8 @@ export async function waitForAcceptedDurableTask(
   database: Database,
   responseBody: unknown,
 ): Promise<void> {
+  const data = readResponseData(responseBody);
+  if (data.status === 'APPLIED' || data.status === 'NO_OP' || data.status === 'OK') return;
   const taskId = readTaskId(responseBody);
   await waitForDurableTask(database, taskId);
 }
@@ -41,6 +43,9 @@ export async function waitForAcceptedDurableTasks(
   responseBody: unknown,
 ): Promise<void> {
   const data = readResponseData(responseBody);
+  // Group invitations commit synchronously and report invited/skipped targets.
+  // Their federation delivery is observed by the caller through peer state.
+  if (Array.isArray(data.invited) && Array.isArray(data.skipped)) return;
   if (!Array.isArray(data.tasks)) {
     throw new Error('accepted response does not contain tasks');
   }

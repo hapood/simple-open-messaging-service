@@ -1,9 +1,9 @@
 # Fan-out Execution
 
 Status: Group Meta and thread-content fan-out use durable tasks and cooperative
-yielding. Committed state-feed delivery uses durable watermark tasks with
-best-effort transport hints. Group dissolution retains exhaustive child
-admission and mandatory forced-revocation work.
+yielding. Committed state-feed delivery is a best-effort post-commit wake; the
+feed head itself is durable and reads reconcile over HTTP. Group dissolution
+retains exhaustive child admission and mandatory forced-revocation work.
 
 This document defines application execution policy. It does not define
 federation authorization or wire behavior; those remain under
@@ -75,9 +75,9 @@ its targets against current audience. A yielding task emits no additional
 completion notification: its earlier pages have already been notified, and its
 successor publishes the newest head while rescanning from cursor zero.
 
-Group Meta head fan-out follows this policy. Its pages lock and revalidate
-selected audience rows, then filter wake hints against current audience after
-commit.
+Group Meta-only changes use the same local and federation thread fan-out policy.
+Each projection revalidates the current audience before replacing the complete
+thread head.
 
 ## 4. Message wake fan-out
 
@@ -138,13 +138,14 @@ for those children to execute.
 
 ## Committed state feed delivery
 
-`FAN_OUT_STATE_FEED` durably admits delivery of an already committed client or
-peer feed watermark. Feed writes, acceptance-confirmation reindexing, and task
-admission share the source transaction. Delivery never rewrites feed rows.
-Each task addresses one recipient feed, and pending replacement merges its
-watermark with MAX. At the delivery boundary a running task can hand that
-watermark to a pending successor and finish successfully. The final SSE or
-federation wake remains best effort; reconnect reads the persisted feed head.
+Feed writes, acceptance-confirmation reindexing, and their feed ID allocation
+share the source transaction; the committed feed head is the durable fact.
+There is no state-feed delivery task. After the source transaction commits,
+the same call path emits best-effort process-local wakes: throttled
+`STATE_FEED_UPDATED` / `THREAD_FEED_UPDATED` SSE hints for client feeds and
+the `FEDERATION_STATE_FEED_PUSH` event for peer feeds. A lost wake costs only
+latency — SSE reconnect (`Last-Event-ID`) and the cursor-based feed reads
+reconcile from the persisted feed head.
 
 Group metadata updates advance only their own compacted head. They do not
 refresh or reindex an unchanged thread content head to impose cross-stream

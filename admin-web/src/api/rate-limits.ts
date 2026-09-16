@@ -2,7 +2,7 @@ import { request } from '@/api/client';
 
 export type RateLimitMode = 'disabled' | 'shadow' | 'enforce';
 
-export interface RateLimitStats {
+interface RateLimitStats {
   policy: string;
   mode: RateLimitMode;
   evaluated: number;
@@ -13,7 +13,7 @@ export interface RateLimitStats {
   maxRetryAfterMs: number;
 }
 
-export interface RateLimitSample extends RateLimitStats {
+interface RateLimitSample extends RateLimitStats {
   startedAt: number;
   endedAt: number;
 }

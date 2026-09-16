@@ -1,11 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { BusinessCode } from '../src/common/business-code';
+import { createTestApp } from './support/app';
 
 // Verifies the public liveness probe GET /api/v1/health end-to-end through the Fastify bootstrap: a 200
 // envelope carrying the liveness marker, server version, server time, and — the addition under test —
@@ -14,16 +11,10 @@ import { BusinessCode } from '../src/common/business-code';
 // DatabaseService.onModuleInit connect-with-retry path against a live Postgres.
 
 describe('Public liveness probe GET /api/v1/health', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
+    ({ app } = await createTestApp());
   });
 
   afterAll(async () => {

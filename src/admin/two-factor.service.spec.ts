@@ -27,13 +27,17 @@ function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: 'unused-see-per-call-secret' });
   const store = {
     twoFactorBackupCode: {
-      findFirst: vi.fn(async () => null),
+      findFirst: vi.fn(async (..._args: unknown[]) => null),
       findMany: vi.fn(async () => [] as unknown[]),
-      updateMany: vi.fn(async () => ({ count: 0 })),
+      updateMany: vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+        count: 0,
+      })),
       deleteMany: vi.fn(async () => ({ count: 0 })),
-      createMany: vi.fn(async () => ({ count: 0 })),
+      createMany: vi.fn(async (_args: { data: unknown }) => ({ count: 0 })),
     },
-    admin: { update: vi.fn(async () => ({})) },
+    admin: {
+      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
+    },
     // signChallenge creates a single-use challenge row; consumeChallenge flips consumedAt (count 1 = first
     // consume wins, count 0 = replay). Individual tests override updateMany to test replay.
     adminLoginChallenge: {
@@ -89,7 +93,7 @@ function makeService(overrides: Record<string, unknown> = {}) {
             Promise.resolve(undefined)),
     }),
     insert: (table: unknown) => ({
-      values: (data: unknown) =>
+      values: (data: { jti: string; adminId: number }) =>
         table === adminLoginChallenge
           ? (store.adminLoginChallenge.create?.({ data }) ??
             Promise.resolve(undefined))
@@ -293,7 +297,7 @@ describe('TwoFactorService', () => {
   // ── enable / disable / regenerate (atomic Admin-row state) ─────────────────────
 
   it('enableWithBackupCodes atomically enables, bumps tokenVersion, and replaces backup codes', async () => {
-    const adminUpdate = vi.fn(async () => ({}));
+    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
     const deleteMany = vi.fn(async () => ({ count: 0 }));
     const created: Array<{ adminId: number; codeHash: string }> = [];
     const createMany = vi.fn(async (args: { data: typeof created }) => {
@@ -361,7 +365,7 @@ describe('TwoFactorService', () => {
   });
 
   it('disable atomically clears the secret + flags and drops backup codes', async () => {
-    const adminUpdate = vi.fn(async () => ({}));
+    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
     const deleteMany = vi.fn(async () => ({ count: 0 }));
     const { svc } = makeService({
       admin: { update: adminUpdate },
@@ -383,7 +387,7 @@ describe('TwoFactorService', () => {
     const createMany = vi.fn(async (args: { data: unknown[] }) => ({
       count: args.data.length,
     }));
-    const adminUpdate = vi.fn(async () => ({}));
+    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
     const { svc } = makeService({
       admin: { update: adminUpdate },
       twoFactorBackupCode: { deleteMany, createMany },

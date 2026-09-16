@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { LinkPreviewService } from './link-preview.service.js';
 
 function serviceWith(
@@ -10,6 +11,18 @@ function serviceWith(
     safeFetch as never,
     { parse: vi.fn().mockReturnValue(meta) } as never,
     { saveGeneratedWebp } as never,
+  );
+}
+
+/** Spy on the private thumbnail step; the cast keeps the service's public surface untouched. */
+function spyThumbnail(
+  service: LinkPreviewService,
+): Mock<(buf: Buffer, asset?: 'image' | 'favicon') => Promise<Buffer>> {
+  return vi.spyOn(
+    service as unknown as {
+      thumbnail: (buf: Buffer, asset?: 'image' | 'favicon') => Promise<Buffer>;
+    },
+    'thumbnail',
   );
 }
 
@@ -62,7 +75,7 @@ describe('LinkPreviewService card generation', () => {
       },
       saveGeneratedWebp,
     );
-    vi.spyOn(service as never, 'thumbnail').mockResolvedValue(
+    spyThumbnail(service).mockResolvedValue(
       Buffer.from('webp'),
     );
 
@@ -90,7 +103,7 @@ describe('LinkPreviewService card generation', () => {
         favicon: 'https://static.example.com/favicon.ico',
       },
     );
-    vi.spyOn(service as never, 'thumbnail').mockRejectedValue(
+    spyThumbnail(service).mockRejectedValue(
       new Error('unsupported image'),
     );
     const warn = vi.spyOn(
@@ -123,7 +136,7 @@ describe('LinkPreviewService card generation', () => {
       { favicon: 'https://example.com/favicon.ico' },
       vi.fn().mockRejectedValue(new Error('disk unavailable')),
     );
-    vi.spyOn(service as never, 'thumbnail').mockResolvedValue(
+    spyThumbnail(service).mockResolvedValue(
       Buffer.from('webp'),
     );
     const warn = vi.spyOn(
@@ -221,7 +234,7 @@ describe('LinkPreviewService card generation', () => {
         url: `/uploads/msg-assets/aa/aa/${digest}`,
       }),
     );
-    vi.spyOn(service as never, 'thumbnail').mockResolvedValue(
+    spyThumbnail(service).mockResolvedValue(
       Buffer.from('webp'),
     );
 

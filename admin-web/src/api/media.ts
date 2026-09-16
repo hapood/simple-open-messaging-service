@@ -19,7 +19,7 @@ export interface ResumableUploadSession {
   updatedAt: number;
 }
 
-export interface FederationDownloadFile {
+interface FederationDownloadFile {
   id: string;
   digest: string;
   kind: string;

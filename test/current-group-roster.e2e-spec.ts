@@ -10,7 +10,7 @@ import {
   groupMetaMemberFeed,
   account as user,
 } from '../src/database/schema.js';
-import { readCurrentGroupRosterInTx } from '../src/group-meta/current-group-roster.js';
+import { readCurrentGroupRosterInTx } from '../src/business/group/meta/current-group-roster.js';
 
 describe('current Group Meta roster', () => {
   const suffix = Date.now().toString(36);
@@ -67,25 +67,14 @@ describe('current Group Meta roster', () => {
         feedId: 1n,
         memberAccount: `owner-${suffix}`,
         memberDomain: 'local',
-        memberNamespaceId: 0,
         operation: 'UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
-      },
-      {
-        threadId: groupId,
-        feedId: 2n,
-        memberAccount: `departed-${suffix}`,
-        memberDomain: 'local',
-        memberNamespaceId: 0,
-        operation: 'UPSERT',
-        body: { role: GroupRole.MEMBER, profileRev: 1 },
       },
       {
         threadId: groupId,
         feedId: 3n,
         memberAccount: `departed-${suffix}`,
         memberDomain: 'local',
-        memberNamespaceId: 0,
         operation: 'DEPART',
         body: {},
       },

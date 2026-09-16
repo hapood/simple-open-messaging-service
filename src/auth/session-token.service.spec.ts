@@ -221,6 +221,8 @@ describe('SessionTokenService', () => {
         revokedAt: Date | null;
         lastSeenAt: Date;
         autoTerminateDays: 7 | 30 | 90 | 180 | 365;
+        /** Not a drizzle column — the fake's account select reads it to build the principal. */
+        user: { mustChangePassword: boolean } | null;
       }> = {},
     ) {
       return {

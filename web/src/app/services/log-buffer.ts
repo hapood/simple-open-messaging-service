@@ -205,7 +205,7 @@ export function getConsoleEntries(): readonly ConsoleEntry[] {
  * subsequent report reflects the cleared trace — the file is the bundle's source, so the live view and the
  * report must clear together. No effect on the real `console.*` (still installed + forwarding).
  */
-export function clearConsoleBuffer(): void {
+function clearConsoleBuffer(): void {
   buffer.length = 0;
   pending.length = 0;
   void invokeLogJs([], true);

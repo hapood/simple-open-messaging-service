@@ -83,7 +83,8 @@ describe('FederationThreadReverseRoundExecutorService', () => {
         .spyOn(FederationThreadSyncStateService, 'commitReverseBatchInTx')
         .mockImplementation(async (actualTx, params) => {
           expect(actualTx).toBe(tx);
-          await params.applyDependencies(threadLock as never);
+          // The executor always supplies applyDependencies for batch commits.
+          await params.applyDependencies!(threadLock as never);
           events.push('progress');
         });
       const failure = new Error('rollback reverse batch');

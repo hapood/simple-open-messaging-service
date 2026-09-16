@@ -192,10 +192,7 @@ describe('FederationMediaLocalizationService', () => {
     })();
     mediaRanges.fetch.mockReturnValue(chunks);
     upload.saveCasFromStream.mockImplementation(
-      async (
-        _ext: string,
-        fetchChunks: (offset: number) => AsyncIterable<Buffer>,
-      ) => {
+      async (fetchChunks: (offset: number) => AsyncIterable<Buffer>) => {
         expect(fetchChunks(32)).toBe(chunks);
       },
     );
@@ -208,7 +205,6 @@ describe('FederationMediaLocalizationService', () => {
     });
 
     expect(upload.saveCasFromStream).toHaveBeenCalledExactlyOnceWith(
-      'bin',
       expect.any(Function),
       missing,
     );

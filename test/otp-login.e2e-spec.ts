@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
@@ -15,6 +11,8 @@ import {
 import { OtpLoginService } from '../src/auth/otp-login.service';
 import { BusinessCode } from '../src/common/business-code';
 import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * OTP-login e2e — the admin-issued one-time-code login path, exercised through the real HTTP surface
@@ -27,7 +25,7 @@ import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service'
  * concern); what is under test is the /auth/otp/login endpoint and the multi-session coexistence rule.
  */
 describe('OTP login e2e', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let otp: OtpLoginService;
 
@@ -40,26 +38,18 @@ describe('OTP login e2e', () => {
       ...policy,
       mode: 'disabled' as const,
     }));
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(RateLimitModeService)
-      .useValue(new RateLimitModeService(undefined, disabledConfiguration))
-      .compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp((builder) => {
+      builder
+        .overrideProvider(RateLimitModeService)
+        .useValue(new RateLimitModeService(undefined, disabledConfiguration));
+    }));
     otp = app.get(OtpLoginService);
   });
 
   beforeEach(async () => {
     // CASCADE on User also clears SessionToken + LoginCode (both FK→User). All three are listed so a stray
     // row can't leak between tests even if an on-delete weren't CASCADE.
-    await database.pool.query(
-      'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {

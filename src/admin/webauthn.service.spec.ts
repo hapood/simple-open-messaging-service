@@ -36,20 +36,24 @@ function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: jwtConstants.adminSecret });
   const store = {
     webAuthnCredential: {
-      findMany: vi.fn(async () => [] as unknown[]),
-      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+      findUnique: vi.fn(async (..._args: unknown[]) => null),
       create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
         id: 1n,
         ...args.data,
       })),
-      updateMany: vi.fn(async () => ({ count: 1 })),
-      update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+        count: 1,
+      })),
+      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
       deleteMany: vi.fn(async () => ({ count: 1 })),
       count: vi.fn(async () => 0),
     },
     admin: {
-      update: vi.fn(async () => ({})),
-      updateMany: vi.fn(async () => ({ count: 1 })),
+      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
+      updateMany: vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+        count: 1,
+      })),
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn(store),
@@ -162,7 +166,9 @@ describe('WebAuthnService', () => {
         ...args.data,
       }),
     );
-    const adminUpdate = vi.fn(async () => ({ count: 1 }));
+    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+      count: 1,
+    }));
     const { svc } = makeService({
       webAuthnCredential: {
         create: credCreate,
@@ -338,13 +344,15 @@ describe('WebAuthnService', () => {
 
   it('removeCredential flips webauthnEnabled off when the last credential is deleted', async () => {
     const deleteMany = vi.fn(async () => ({ count: 1 }));
-    const adminUpdate = vi.fn(async () => ({ count: 1 }));
+    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+      count: 1,
+    }));
     const remaining = 0; // the delete leaves zero credentials
     const { svc } = makeService({
       webAuthnCredential: { deleteMany, count: vi.fn(async () => remaining) },
       admin: { update: vi.fn(async () => ({})), updateMany: adminUpdate },
     });
-    const r = await svc.removeCredential(7, 42n);
+    const r = await svc.removeCredential(7, 42);
     expect(r).toEqual({ remaining: 0 });
     expect(deleteMany).toHaveBeenCalled();
     expect(adminUpdate).toHaveBeenCalledWith({
@@ -357,7 +365,7 @@ describe('WebAuthnService', () => {
     const { svc } = makeService({
       webAuthnCredential: { deleteMany, count: vi.fn(async () => 2) },
     });
-    await expect(svc.removeCredential(7, 42n)).rejects.toMatchObject({
+    await expect(svc.removeCredential(7, 42)).rejects.toMatchObject({
       bizCode: BusinessCode.NOT_FOUND,
     });
   });

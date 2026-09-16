@@ -10,10 +10,11 @@ import {
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DiscoveryService, type WellKnownDoc } from './discovery.service.js';
+import { parsePeerErrorBody } from './federation-errors.js';
 import {
-  FEDERATION_PEER_HEALTH_RECOVERED,
-  type FederationPeerHealthRecovered,
-} from './federation-health.events.js';
+  FEDERATION_PEER_AVAILABLE,
+  type FederationPeerAvailable,
+} from './federation-peer.events.js';
 import { loadFederationConfig } from './federation.config.js';
 import { SignatureService } from './signature.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
@@ -113,24 +114,22 @@ export class FederationRecognitionService {
       columns: {
         activeNamespaceId: true,
         recognizesPeer: true,
-        outboundRecognitionConfirmed: true,
-        inboundRecognitionConfirmed: true,
+        peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
       },
     });
-    // Health cannot prepare or pin a peer and cannot replace the OK for our outbound Recognize. Once
-    // prepared, however, a positive Health result is the peer's recognition acknowledgement.
+    // Health can confirm peer acceptance only after local identity preparation.
     if (
       peer?.activeNamespaceId == null ||
       !peer.recognizesPeer ||
-      !peer.outboundRecognitionConfirmed ||
-      !peer.inboundRecognitionConfirmed ||
       !peer.localServiceAvailable
     ) {
       await this.recognize(domain);
       return;
     }
-    await this.checkHealth(domain);
+    const status = await this.checkHealth(domain);
+    if (status === 'unavailable' && !peer.peerAcceptanceConfirmed)
+      await this.recognize(domain);
   }
 
   async checkHealth(peerDomain: string): Promise<FederationHealthStatus> {
@@ -149,7 +148,16 @@ export class FederationRecognitionService {
   private async runHealthCheck(
     domain: string,
   ): Promise<FederationHealthStatus> {
-    const base = await this.discovery.resolveBase(domain);
+    let base: string;
+    try {
+      base = await this.discovery.resolveBase(domain);
+    } catch (error) {
+      await this.markTransportDegraded(
+        domain,
+        `Health discovery: ${(error as Error).message}`,
+      );
+      throw error;
+    }
     const url = new URL(`${base}/s2s/v1/health`);
     const body = '';
     const release = await this.discovery.acquireRequestSlot(domain);
@@ -234,8 +242,7 @@ export class FederationRecognitionService {
         ...peer,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
         recognizesPeer: true,
-        inboundRecognitionConfirmed: true,
-        lightweightInboundReady: true,
+        peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
         remoteServiceReachable: true,
       };
@@ -246,12 +253,9 @@ export class FederationRecognitionService {
           domain: normalized,
           trustLevel: 'available',
           recognizesPeer: true,
-          inboundRecognitionConfirmed: true,
-          inboundRecognizedAt: now,
-          lightweightInboundReady: true,
+          peerAcceptanceConfirmed: true,
           localServiceAvailable: true,
           remoteServiceReachable: true,
-          reverseRecognitionPending: !peer?.outboundRecognitionConfirmed,
           trustedAt: now,
           lastSuccessAt: now,
         })
@@ -259,12 +263,9 @@ export class FederationRecognitionService {
           target: tables.federatedPeer.domain,
           set: {
             recognizesPeer: true,
-            inboundRecognitionConfirmed: true,
-            inboundRecognizedAt: peer?.inboundRecognizedAt ?? now,
-            lightweightInboundReady: true,
+            peerAcceptanceConfirmed: true,
             localServiceAvailable: true,
             remoteServiceReachable: true,
-            reverseRecognitionPending: !peer?.outboundRecognitionConfirmed,
             lastSuccessAt: now,
             degradedAt: null,
             degradationReason: null,
@@ -291,18 +292,8 @@ export class FederationRecognitionService {
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
+    this.emitPeerAvailable(normalized);
     return mismatch.context;
-  }
-
-  /** Prepare the reverse direction durably, then dispatch it outside the inbound HTTP transaction. */
-  dispatchReverse(domain: string): void {
-    setImmediate(() => {
-      void this.recognize(domain).catch((error) =>
-        this.logger.debug(
-          `reverse Recognize ${domain} remains pending: ${(error as Error).message}`,
-        ),
-      );
-    });
   }
 
   async queryHealth(domain: string): Promise<FederationHealthStatus> {
@@ -318,7 +309,7 @@ export class FederationRecognitionService {
     ) {
       return 'unavailable';
     }
-    return peer.trustLevel === 'available' ? 'available' : 'degraded';
+    return peer.remoteServiceReachable ? 'available' : 'degraded';
   }
 
   async hasPreparedPeer(domain: string): Promise<boolean> {
@@ -362,18 +353,15 @@ export class FederationRecognitionService {
       const now = new Date();
       const next = {
         ...peer,
-        inboundRecognitionConfirmed: true,
-        lightweightInboundReady: true,
+        peerAcceptanceConfirmed: true,
         remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
-      recovered = peer.trustLevel === 'degraded' && trustLevel === 'available';
+      recovered = peer.trustLevel !== 'available' && trustLevel === 'available';
       await tx
         .update(tables.federatedPeer)
         .set({
-          inboundRecognitionConfirmed: true,
-          inboundRecognizedAt: peer.inboundRecognizedAt ?? now,
-          lightweightInboundReady: true,
+          peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
           lastSuccessAt: now,
           degradedAt: null,
@@ -386,12 +374,8 @@ export class FederationRecognitionService {
         })
         .where(eq(tables.federatedPeer.domain, normalized));
     });
-    // Emitted post-commit: degraded blocks outbound S2S, so head hints and pulls stop for the
-    // whole degradation window; recovery is the moment the missed state has to be drained.
-    if (recovered)
-      this.events.emit(FEDERATION_PEER_HEALTH_RECOVERED, {
-        peerDomain: normalized,
-      } satisfies FederationPeerHealthRecovered);
+    // Emitted post-commit when Health restores reachability or first proves peer acceptance.
+    if (recovered) this.emitPeerAvailable(normalized);
   }
 
   async markReachable(domain: string): Promise<void> {
@@ -524,24 +508,24 @@ export class FederationRecognitionService {
         await this.markTransportDegraded(domain, 'Recognize malformed OK');
         throw new Error(`Recognize ${domain} returned malformed OK`);
       }
+      let becameAvailable = false;
       await this.database.db.transaction(async (tx) => {
         const peer = await this.lockPeer(tx, domain);
         if (!peer) return;
         const now = new Date();
         const next = {
           ...peer,
-          outboundRecognitionConfirmed: true,
+          peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
-          reverseRecognitionPending: false,
         };
         const trustLevel = this.lifecycle(next);
+        becameAvailable =
+          peer.trustLevel !== 'available' && trustLevel === 'available';
         await tx
           .update(tables.federatedPeer)
           .set({
-            outboundRecognitionConfirmed: true,
-            outboundRecognizedAt: peer.outboundRecognizedAt ?? now,
+            peerAcceptanceConfirmed: true,
             remoteServiceReachable: true,
-            reverseRecognitionPending: false,
             lastSuccessAt: now,
             degradedAt: null,
             degradationReason: null,
@@ -553,6 +537,7 @@ export class FederationRecognitionService {
           })
           .where(eq(tables.federatedPeer.domain, domain));
       });
+      if (becameAvailable) this.emitPeerAvailable(domain);
     } finally {
       release();
     }
@@ -586,7 +571,7 @@ export class FederationRecognitionService {
         .insert(tables.federatedPeer)
         .values({
           domain,
-          trustLevel: 'degraded',
+          trustLevel: 'establishing',
           recognizesPeer: true,
           localServiceAvailable: true,
         })
@@ -705,25 +690,39 @@ export class FederationRecognitionService {
     }
     if (!peer.identityPinnedAt) return 'unrecognized';
     if (!peer.recognizesPeer || !peer.localServiceAvailable)
-      return 'establishing';
+      return 'unrecognized';
+    if (!peer.peerAcceptanceConfirmed) return 'establishing';
     return peer.remoteServiceReachable ? 'available' : 'degraded';
+  }
+
+  private emitPeerAvailable(domain: string): void {
+    this.events.emit(FEDERATION_PEER_AVAILABLE, {
+      peerDomain: domain,
+    } satisfies FederationPeerAvailable);
   }
 
   private async handleRecognizeHttpFailure(
     domain: string,
     response: Response,
   ): Promise<never> {
-    const value = (await response.json().catch(() => undefined)) as
-      | { code?: unknown; message?: unknown }
-      | undefined;
-    const code = typeof value?.code === 'number' ? value.code : undefined;
+    const body = parsePeerErrorBody(
+      await response.json().catch(() => undefined),
+    );
+    if (body.code === undefined) {
+      // The protocol requires `code` on every non-2xx body; warn so a peer
+      // serving HTML error pages or junk stays diagnosable.
+      this.logger.warn(
+        `Recognize ${domain} returned HTTP ${response.status} without a numeric code in its error body`,
+      );
+    }
     const message =
-      typeof value?.message === 'string'
-        ? value.message
-        : `Recognize ${domain} returned HTTP ${response.status}`;
-    if (response.status === HttpStatus.CONFLICT && this.isFatalCode(code)) {
-      await this.markHalted(domain, code, message);
-      throw new BusinessException(code, message, HttpStatus.CONFLICT);
+      body.message ?? `Recognize ${domain} returned HTTP ${response.status}`;
+    if (
+      response.status === HttpStatus.CONFLICT &&
+      this.isFatalCode(body.code)
+    ) {
+      await this.markHalted(domain, body.code, message);
+      throw new BusinessException(body.code, message, HttpStatus.CONFLICT);
     }
     if (response.status === HttpStatus.SERVICE_UNAVAILABLE) {
       await this.markTransportDegraded(

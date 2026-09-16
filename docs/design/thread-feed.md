@@ -1,12 +1,7 @@
 # Unified Thread Feed
 
-Preview storage and lifecycle are specified by [Transactional Thread Preview Sequences](thread-preview-storage.md).
-
-Status: backend unified feed, differential counts, and database preview references
-are implemented. Migrations have only been applied to isolated test databases.
-Client tomb storage/query cutover is implemented. The latest lifecycle and desktop
-notification changes still await build and end-to-end verification; do not deploy
-with old clients.
+The backend unified feed, differential counts, database preview references, and
+client tomb storage/query contract are implemented.
 
 The backend exposes `/thread/feed-delta` and `THREAD_FEED_UPDATED`. The old
 notification query route and split content-head writer are removed. Mentions,
@@ -18,16 +13,16 @@ writer. State feed still carries relationships and other non-content events.
 One `AccountThreadState` row per account/thread is the compacted feed. There is
 no append-only thread-feed table. The row stores a bounded previewSeqs array.
 
-| Existing field or index | Target |
-| --- | --- |
-| `Account.attentionFeedEndId` | `threadFeedEndId`, nonnegative integer, default 0 |
-| `AccountThreadState.attentionFeedId` | `threadFeedId`, positive integer for published rows |
-| Content-head JSON `messageEndSeq` | `AccountThreadState.messageEndSeq`, nonnegative integer, default 0 |
-| Content-head JSON `tombstoneEndSeq` | `AccountThreadState.tombstoneEndSeq`, nonnegative integer, default 0 |
-| Unique `(accountId, attentionFeedId)` index | Unique `(accountId, threadFeedId)` index |
-| `unreadCount`, `lastReadSeq`, `lastMentionSeq` | Unchanged |
-| Web `attentionStates` / native `attention_states` | `threadStates` / `thread_states` |
-| Local `attentionFeedCursor` | `threadFeedCursor` |
+| Existing field or index                           | Target                                                               |
+| ------------------------------------------------- | -------------------------------------------------------------------- |
+| `Account.attentionFeedEndId`                      | `threadFeedEndId`, nonnegative integer, default 0                    |
+| `AccountThreadState.attentionFeedId`              | `threadFeedId`, positive integer for published rows                  |
+| Content-head JSON `messageEndSeq`                 | `AccountThreadState.messageEndSeq`, nonnegative integer, default 0   |
+| Content-head JSON `tombstoneEndSeq`               | `AccountThreadState.tombstoneEndSeq`, nonnegative integer, default 0 |
+| Unique `(accountId, attentionFeedId)` index       | Unique `(accountId, threadFeedId)` index                             |
+| `unreadCount`, `lastReadSeq`, `lastMentionSeq`    | Unchanged                                                            |
+| Web `attentionStates` / native `attention_states` | `threadStates` / `thread_states`                                     |
+| Local `attentionFeedCursor`                       | `threadFeedCursor`                                                   |
 
 Local rows hold the complete server snapshot plus independent `localReadSeq`,
 not submission state. All feed/sequence coordinates remain int32. Allocation
@@ -49,9 +44,10 @@ caches, without old-cache imports, runtime fallbacks, or dual writes.
   feed ID atomically with its checkpoint. Resolve against locked current state,
   never overwrite concurrent count/read changes with an earlier snapshot. Head changes are monotonic;
   no-op retries allocate nothing.
-- Read tasks retain their independent transactions, resolving the mention pointer
-  and signed count delta with the read position and allocating from the same account feed.
-  Count intervals stop at the published message end and include tomb slots.
+- The synchronous read-position business command resolves the mention pointer and
+  signed count delta with the read position in one transaction, allocating from
+  the same account feed. Count intervals stop at the published message end and
+  include tomb slots.
 - Own messages and retractions of already-read messages publish changed heads
   even when unread count is unchanged. Do not gate publication on count changes.
 - Visibility/relationship boundaries stay in their existing source transactions;
@@ -98,6 +94,7 @@ interface ThreadFeedState {
   threadFeedId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  groupMetaFeedEndId: string | null;
   unreadCount: number;
   lastReadSeq: number;
   lastMentionSeq: number | null;
@@ -132,6 +129,11 @@ of latest other-sender entries, ordered by seq ascending. Own messages never
 occupy slots. Retractions retain stored slots; queries attach current deletion facts. Deleted text
 is localized by the client; no original text is returned. Avatars are supplied
 only by client-side profiles or the agreed logo/account fallback.
+
+`previewSeqs` contains unique, positive thread-local message sequences in strict
+descending order, bounded by `THREAD_PREVIEW_LIMIT`. It stores references only,
+never copied content, authors, timestamps, or deletion status. Read advancement
+prunes references; a forced backwards read may select earlier eligible slots.
 
 SSE `THREAD_FEED_UPDATED` carries `{ threadFeedEndId }`. HELLO includes both
 `stateFeedEndId` and `threadFeedEndId`. Remove `ATTENTION_FEED_UPDATED` and the old

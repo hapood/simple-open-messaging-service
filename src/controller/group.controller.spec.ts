@@ -3,25 +3,13 @@ import { GroupController } from './group.controller.js';
 
 describe('group invitation admission', () => {
   it('normalizes the local public domain and deduplicates equivalent addresses', async () => {
-    const resolve = vi.fn().mockResolvedValue({
-      account: 'friend',
-      domain: 'local',
-      namespaceId: 0,
-      threadId: 50,
-    });
-    const enqueueTask = vi.fn().mockResolvedValue({ taskId: 1n });
+    const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
     const controller = Object.create(
       GroupController.prototype,
     ) as GroupController;
     Object.assign(controller, {
-      groupService: {
-        findGroupByThreadId: async () => ({
-          group: { account: '!group', domain: 'local' },
-        }),
-      },
       federationService: { ourDomain: 'local.test' },
-      participantService: { findP2PFriendByAddress: resolve },
-      durableTasks: { enqueueTask },
+      groupIntents: { execute },
     });
     const result = await controller.inviteUsers(
       {
@@ -36,68 +24,126 @@ describe('group invitation admission', () => {
         ],
       },
     );
-    expect(resolve).toHaveBeenCalledExactlyOnceWith(3, {
-      account: 'friend',
-      domain: 'local',
+    expect(execute).toHaveBeenCalledExactlyOnceWith({
+      threadId: 7,
+      managerUserId: 3,
+      decision: 'REQUESTED',
+      target: { account: 'friend', domain: 'local' },
     });
-    expect(enqueueTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: {
-          threadId: 7,
-          targetUserId: { account: 'friend', domain: 'local', namespaceId: 0 },
-        },
-      }),
-    );
     expect(result).toEqual({
       invited: [{ account: 'friend', domain: 'local' }],
-      tasks: [
-        { account: 'friend', domain: 'local', taskId: '1', status: 'PENDING' },
-      ],
       skipped: [],
+    });
+  });
+
+  it('returns an expected invitation refusal as target data', async () => {
+    const controller = Object.create(
+      GroupController.prototype,
+    ) as GroupController;
+    Object.assign(controller, {
+      federationService: { ourDomain: 'local.test' },
+      groupIntents: {
+        execute: vi.fn().mockResolvedValue({
+          status: 'REJECTED',
+          reason: 'GROUP_DISSOLVED',
+          code: 'GROUP_DISSOLVED',
+          message: 'group has been dissolved',
+        }),
+      },
+    });
+    await expect(
+      controller.inviteUsers(
+        {
+          user: { userId: 3 },
+          threadAccess: { threadId: 7, participant: { role: 'OWNER' } },
+        } as never,
+        { groupId: 7, users: [{ account: 'friend', domain: 'local' }] },
+      ),
+    ).resolves.toEqual({
+      invited: [],
+      skipped: [
+        {
+          account: 'friend',
+          domain: 'local',
+          reason: 'GROUP_DISSOLVED',
+          code: 'GROUP_DISSOLVED',
+          message: 'group has been dissolved',
+        },
+      ],
     });
   });
 });
 
 describe('group revocation admission', () => {
+  it('accepts an existing invitation in the member-authored transaction', async () => {
+    const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
+    const controller = Object.create(
+      GroupController.prototype,
+    ) as GroupController;
+    Object.assign(controller, { memberIntents: { execute } });
+
+    await expect(
+      controller.joinRequestedGroup({ user: { userId: 3 } } as never, {
+        groupId: 10,
+      }),
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(execute).toHaveBeenCalledExactlyOnceWith({
+      threadId: 10,
+      memberUserId: 3,
+      decision: 'ACCEPTED',
+    });
+  });
+
+  it('executes join-request acceptance in the group-authored transaction', async () => {
+    const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
+    const controller = Object.create(
+      GroupController.prototype,
+    ) as GroupController;
+    Object.assign(controller, { groupIntents: { execute } });
+
+    await expect(
+      controller.acceptJoinRequest(
+        { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
+        { account: 'member', domain: 'peer.test' } as never,
+      ),
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(execute).toHaveBeenCalledExactlyOnceWith({
+      threadId: 10,
+      target: { account: 'member', domain: 'peer.test' },
+      scope: 'APPLICATION',
+      managerUserId: 3,
+      decision: 'ACCEPTED',
+    });
+  });
+
   it.each([
-    ['rejectJoinRequest', 'REJECT_REQUEST'],
-    ['revokeInvitation', 'REVOKE_INVITATION'],
-    ['kickMember', 'KICK'],
+    ['rejectJoinRequest', 'APPLICATION'],
+    ['revokeInvitation', 'INVITATION'],
+    ['kickMember', 'MEMBER'],
   ] as const)(
-    'records the operator separately from the group author for %s',
-    async (method, operation) => {
-      const enqueueTask = vi.fn().mockResolvedValue({ taskId: 1n });
+    'executes the group-authored business transaction directly for %s',
+    async (method, scope) => {
+      const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
       const controller = Object.create(
         GroupController.prototype,
       ) as GroupController;
       Object.assign(controller, {
-        groupService: {
-          resolveGroupCommandScope: vi
-            .fn()
-            .mockResolvedValue({ account: '!group', domain: 'local' }),
-          resolveGroupRequestCommandScope: vi
-            .fn()
-            .mockResolvedValue({ memberUserId: 7 }),
-          resolveActiveMember: vi.fn().mockResolvedValue(7),
-        },
-        durableTasks: { enqueueTask },
+        groupIntents: { execute },
       });
-      await controller[method](
+      const result = await controller[method](
         { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
-        { requestId: '12' } as never,
+        { account: ' Member ', domain: ' PEER.TEST ' } as never,
       );
-      expect(enqueueTask).toHaveBeenCalledWith({
-        scope: {
-          type: 'GROUP',
-          address: { account: '!group', domain: 'local' },
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        {
+          threadId: 10,
+          managerUserId: 3,
+          decision: 'REVOKED',
+          scope,
+          target: { account: 'member', domain: 'peer.test' },
         },
-        taskType: 'REVOKE_GROUP_RELATIONSHIP',
-        actorUserId: 3,
-        payload:
-          operation === 'KICK'
-            ? { threadId: 10, targetUserId: 7, operation }
-            : { threadId: 10, memberUserId: 7, requestId: '12', operation },
-      });
+      );
+      expect(result).toEqual({ status: 'APPLIED' });
     },
   );
 });

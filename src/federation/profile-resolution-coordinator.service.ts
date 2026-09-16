@@ -2,7 +2,7 @@ import {
   isProfileSelector,
   type ProfileSelector as Selector,
 } from '../../shared/profile-selector.js';
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -12,7 +12,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
@@ -207,14 +207,15 @@ export class ProfileResolutionCoordinatorService {
         SELECT group_state.account AS "groupAccount",
                group_state.domain AS "publisherDomain",
                group_state."namespaceId" AS "publisherNamespaceId",
-               latest."memberNamespaceId",
+               group_meta_member_namespace(group_state.id,
+                 ${normalizeAccount(selector.memberAccount)},
+                 ${memberDomain === this.config.domain ? 'local' : memberDomain}) AS "memberNamespaceId",
                (latest.body ->> 'profileRev')::integer AS "profileRev"
         FROM "MessageThread" thread
         JOIN ${groupStateSql} group_state ON group_state.id = thread.id
         JOIN "Account" viewer_identity ON viewer_identity.id = ${userId}
         JOIN LATERAL (
-          SELECT member_fact."memberNamespaceId",
-                 member_fact.operation,
+          SELECT member_fact.operation,
                  member_fact.body
           FROM "GroupMetaMemberFeed" member_fact
           WHERE member_fact."threadId" = group_state.id
@@ -338,7 +339,6 @@ export class ProfileResolutionCoordinatorService {
               WHERE member_fact."threadId" = local_group.id
                 AND member_fact."memberAccount" = self.account
                 AND member_fact."memberDomain" = 'local'
-                AND member_fact."memberNamespaceId" = 0
               ORDER BY member_fact."feedId" DESC
               LIMIT 1
             ) manager ON true

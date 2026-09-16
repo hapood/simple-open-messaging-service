@@ -19,7 +19,7 @@ import {
 
 /** The `key` suffix under the `nav.*` i18n namespace. Typed as a finite union so the
  *  `t(\`nav.${key}\`)` template literal resolves to a known key (the typed t() rejects `string`). */
-export type NavKey =
+type NavKey =
   | 'dashboard'
   | 'users'
   | 'groups'
@@ -37,7 +37,7 @@ export type NavKey =
   | 'messageReports';
 
 /** Full i18n key for a group header (under nav.group.*). */
-export type NavGroupKey =
+type NavGroupKey =
   | 'nav.group.overview'
   | 'nav.group.access'
   | 'nav.group.system'

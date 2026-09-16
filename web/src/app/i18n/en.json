@@ -801,7 +801,6 @@
       "messageEmpty": "Message is empty",
       "threadNotApproved": "Conversation is not active",
       "threadNotFound": "Conversation not found",
-      "groupNotFriend": "Only friends can be invited",
       "groupInvalidToken": "This invite is invalid or expired",
       "groupForbidden": "You don't have permission for this action",
       "groupTargetNotMember": "That member is no longer in the group",

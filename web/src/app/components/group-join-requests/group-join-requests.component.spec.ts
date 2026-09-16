@@ -15,7 +15,6 @@ import { UserService } from '../../services/user.service';
 function row(feedId: number, status: GroupJoinRequest['status'] = 'REQUESTED') {
   return {
     feedId,
-    id: String(feedId),
     status,
     namespaceId: 0,
     profileRev: 1,
@@ -56,7 +55,7 @@ describe('GroupJoinRequestsComponent', () => {
       rejectJoinRequest: vi.fn(() => of({ code: 0 })),
       revokeInvitation: vi.fn(() => of({ code: 0 })),
       inviteUsers: vi.fn(() =>
-        of({ code: 0, data: { invited: [], tasks: [], skipped: [] } }),
+        of({ code: 0, data: { invited: [], skipped: [] } }),
       ),
     };
     TestBed.configureTestingModule({
@@ -121,14 +120,6 @@ describe('GroupJoinRequestsComponent', () => {
         code: 0,
         data: {
           invited: [{ account: 'friend', domain: 'peer.test' }],
-          tasks: [
-            {
-              account: 'friend',
-              domain: 'peer.test',
-              taskId: '1',
-              status: 'PENDING',
-            },
-          ],
           skipped: [],
         },
       }) as never,
@@ -142,7 +133,7 @@ describe('GroupJoinRequestsComponent', () => {
   });
 
   it('re-enables a foreign candidate by address after revoking its invitation', async () => {
-    const { component } = create(vi.fn(() => of(response())));
+    const { component, groups } = create(vi.fn(() => of(response())));
     component.candidates.set([
       {
         threadId: 12,
@@ -159,14 +150,24 @@ describe('GroupJoinRequestsComponent', () => {
     component.invitations.set([
       { ...row(12), account: 'friend', domain: 'peer.test' },
     ]);
-    await component.revokeInvitation('12');
+    await component.revokeInvitation(component.invitations()[0]);
+    expect(groups.revokeInvitation).toHaveBeenCalledWith({
+      groupId: 7,
+      account: 'friend',
+      domain: 'peer.test',
+    });
     expect(component.candidates()[0].state).toBe('AVAILABLE');
   });
 
   it('retains a rejected application as a terminal record', async () => {
-    const { component } = create(vi.fn(() => of(response())));
+    const { component, groups } = create(vi.fn(() => of(response())));
     component.applications.set([row(1)]);
-    await component.handleApplication('1', false);
+    await component.handleApplication(component.applications()[0], false);
+    expect(groups.rejectJoinRequest).toHaveBeenCalledWith({
+      groupId: 7,
+      account: 'user-1',
+      domain: 'local',
+    });
     expect(component.applications()[0].status).toBe('REVOKED');
   });
 });

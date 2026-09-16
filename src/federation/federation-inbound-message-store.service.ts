@@ -10,6 +10,7 @@ import * as tables from '../database/schema.js';
 import {
   ForwardBundleService,
   type ForwardWireBundle,
+  type InboundForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
 import { enqueueMessageFanoutsInTx } from '../message/thread-fanout-task.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
@@ -41,7 +42,7 @@ import {
   type FederationQuoteTarget,
 } from './federation-quote-target.js';
 
-export type S2SQuoteTarget = FederationQuoteTarget;
+type S2SQuoteTarget = FederationQuoteTarget;
 
 export interface FederatedForwardCard {
   bundleId: string;
@@ -64,7 +65,8 @@ export interface FederationInboundMessageStoreParams {
   expectedFederationVersion: number;
   incomingText: ReturnType<typeof parseTextMessageContent>;
   forwardCard?: FederatedForwardCard;
-  forwardClosure?: ForwardWireBundle;
+  /** Raw peer bundle — untrusted until importClosure validates it inside store(). */
+  forwardClosure?: InboundForwardWireBundle;
   originTime: Date;
   hasUnavailableAssets?: boolean;
   assetBytes?: ReadonlyMap<string, number>;
@@ -222,7 +224,8 @@ export class FederationInboundMessageStoreService {
         .returning({ id: tables.message.id });
       // Mapped reverse history occupies reserved slots below the read boundary.
       // It is not a new unread interval, including when media arrives as a stub.
-      if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
+      if (!sequencePolicy)
+        await this.enqueueFanout(tx, threadLock, threadId, incoming.profileRev);
       await tx.insert(tables.pendingMedia).values({
         messageId: stub.id,
         direction: 'INBOUND',
@@ -255,6 +258,9 @@ export class FederationInboundMessageStoreService {
 
     let storedContent = incoming.content;
     let localForwardBundleId: string | undefined;
+    // Set iff importClosure accepted the closure below; the card builder and the
+    // file-quota tick read the closure only through it.
+    let validatedClosure: ForwardWireBundle | undefined;
     if (forwardClosure && forwardCard) {
       const imported = await this.forwardBundles.importClosure(
         fetchedFromDomain,
@@ -262,8 +268,11 @@ export class FederationInboundMessageStoreService {
         tx,
       );
       localForwardBundleId = imported.localRootBundleId;
+      // Every runtime check in importClosure passed (or the bundle was already
+      // imported): this is the untrusted→trusted crossing.
+      validatedClosure = forwardClosure as ForwardWireBundle;
       storedContent = this.forwardBundles.localCardContent(
-        forwardClosure,
+        validatedClosure,
         localForwardBundleId,
       );
     }
@@ -316,7 +325,8 @@ export class FederationInboundMessageStoreService {
           ),
         );
     }
-    if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
+    if (!sequencePolicy)
+      await this.enqueueFanout(tx, threadLock, threadId, incoming.profileRev);
     if (localForwardBundleId) {
       await tx.insert(tables.forwardMessage).values({
         messageId: message.id,
@@ -324,12 +334,12 @@ export class FederationInboundMessageStoreService {
       });
     }
     await this.quota.tickLax(fetchedFromDomain, 'messages', tx, 1);
-    if (forwardClosure) {
+    if (validatedClosure) {
       await this.quota.tickLax(
         fetchedFromDomain,
         'files',
         tx,
-        forwardClosure.children.length + 1,
+        validatedClosure.children.length + 1,
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
@@ -339,16 +349,20 @@ export class FederationInboundMessageStoreService {
     tx: DatabaseTransaction,
     lock: ThreadContentLock,
     threadId: number,
+    profileRev: number,
   ): Promise<void> {
     const head = await tx.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
-      columns: { curSeq: true, tombstoneEndSeq: true },
+      columns: { curSeq: true, tombstoneEndSeq: true, type: true },
     });
     if (!head) throw new Error('Inbound message thread disappeared');
     await enqueueMessageFanoutsInTx(tx, lock, {
       threadId,
       messageEndSeq: head.curSeq,
       tombstoneEndSeq: head.tombstoneEndSeq,
+      // Only a P2P counterpart's revision decorates the thread feed; group
+      // members carry their own revisions inside roster facts.
+      ...(head.type === 'P2P' && profileRev > 0 ? { profileRev } : {}),
     });
   }
 

@@ -52,13 +52,12 @@ export class FederationPeerLifecycle {
       existing?.activeNamespaceId != null &&
       existing.recognizesPeer &&
       existing.localServiceAvailable &&
-      existing.outboundRecognitionConfirmed &&
-      existing.inboundRecognitionConfirmed
+      existing.peerAcceptanceConfirmed
     )
       return;
     throw new BusinessException(
       BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-      `${domain} recognition directions are incomplete`,
+      `${domain} peer acceptance is not established`,
       HttpStatus.UNAUTHORIZED,
     );
   }
@@ -67,20 +66,9 @@ export class FederationPeerLifecycle {
   async recoverPeerRecognition(domain: string): Promise<void> {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
-      columns: {
-        trustLevel: true,
-        outboundRecognitionConfirmed: true,
-        inboundRecognitionConfirmed: true,
-        reverseRecognitionPending: true,
-      },
+      columns: { trustLevel: true },
     });
-    if (
-      peer?.trustLevel === 'halted' ||
-      (peer?.trustLevel === 'available' &&
-        peer.outboundRecognitionConfirmed &&
-        peer.inboundRecognitionConfirmed &&
-        !peer.reverseRecognitionPending)
-    ) {
+    if (peer?.trustLevel !== 'establishing') {
       throw new BusinessException(
         BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
         `${domain} is not eligible for automatic recovery`,
@@ -101,8 +89,7 @@ export class FederationPeerLifecycle {
       existing?.activeNamespaceId != null &&
       existing.recognizesPeer &&
       existing.localServiceAvailable &&
-      existing.outboundRecognitionConfirmed &&
-      existing.inboundRecognitionConfirmed
+      existing.peerAcceptanceConfirmed
     );
   }
 
@@ -148,10 +135,6 @@ export class FederationPeerLifecycle {
     }
   }
 
-  async markRecovered(domain: string): Promise<void> {
-    await this.recognition.markReachable(domain);
-  }
-
   isFatalCode(code: unknown): code is number {
     return [
       BusinessCode.FEDERATION_PEER_BLOCKED,
@@ -167,12 +150,9 @@ export class FederationPeerLifecycle {
   async markHalted(
     domain: string,
     code: number,
-    message: unknown,
+    message: string | undefined,
   ): Promise<void> {
-    const reason =
-      typeof message === 'string'
-        ? message
-        : `peer returned fatal federation code ${code}`;
+    const reason = message ?? `peer returned fatal federation code ${code}`;
     await this.database.db
       .update(tables.federatedPeer)
       .set({
@@ -189,7 +169,7 @@ export class FederationPeerLifecycle {
   async markPeerHalted(
     domain: string,
     code: number,
-    message: unknown,
+    message: string | undefined,
   ): Promise<void> {
     await this.markHalted(domain, code, message);
   }
@@ -241,10 +221,12 @@ export class FederationPeerLifecycle {
       existing.activeNamespaceId === null
         ? 'unrecognized'
         : existing.recognizesPeer && existing.localServiceAvailable
-          ? existing.remoteServiceReachable
-            ? 'available'
-            : 'degraded'
-          : 'establishing';
+          ? !existing.peerAcceptanceConfirmed
+            ? 'establishing'
+            : existing.remoteServiceReachable
+              ? 'available'
+              : 'degraded'
+          : 'unrecognized';
     await this.database.db
       .update(tables.federatedPeer)
       .set({
@@ -298,7 +280,10 @@ export class FederationPeerLifecycle {
   async manuallyRecoverPinnedIdentity(
     peerDomain: string,
     confirmDomain: string,
-  ): Promise<{ domain: string; trustLevel: 'degraded' }> {
+  ): Promise<{
+    domain: string;
+    trustLevel: 'unrecognized' | 'establishing' | 'degraded';
+  }> {
     const domain = peerDomain.trim().toLowerCase().replace(/\.+$/, '');
     if (confirmDomain.trim().toLowerCase().replace(/\.+$/, '') !== domain) {
       throw new BusinessException(
@@ -352,12 +337,15 @@ export class FederationPeerLifecycle {
     }
 
     await this.discovery.cacheDocument(domain, peer.activeNamespaceId, doc);
-    await this.database.db.transaction(async (tx) => {
+    const trustLevel = await this.database.db.transaction(async (tx) => {
       const [locked] = await tx
         .select({
           trustLevel: tables.federatedPeer.trustLevel,
           haltCode: tables.federatedPeer.haltCode,
           activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+          recognizesPeer: tables.federatedPeer.recognizesPeer,
+          localServiceAvailable: tables.federatedPeer.localServiceAvailable,
+          peerAcceptanceConfirmed: tables.federatedPeer.peerAcceptanceConfirmed,
         })
         .from(tables.federatedPeer)
         .where(eq(tables.federatedPeer.domain, domain))
@@ -374,10 +362,16 @@ export class FederationPeerLifecycle {
           HttpStatus.CONFLICT,
         );
       }
+      const trustLevel =
+        !locked.recognizesPeer || !locked.localServiceAvailable
+          ? 'unrecognized'
+          : locked.peerAcceptanceConfirmed
+            ? 'degraded'
+            : 'establishing';
       await tx
         .update(tables.federatedPeer)
         .set({
-          trustLevel: 'degraded',
+          trustLevel,
           remoteServiceReachable: false,
           haltedAt: null,
           haltCode: null,
@@ -392,8 +386,9 @@ export class FederationPeerLifecycle {
         type: 'recovered',
         reason: 'administrator verified the original pinned identity',
       });
+      return trustLevel;
     });
-    return { domain, trustLevel: 'degraded' };
+    return { domain, trustLevel };
   }
 
   private async logEvent(

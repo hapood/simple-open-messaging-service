@@ -3,7 +3,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
-import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
 import { GroupController } from '../src/controller/group.controller.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { eq } from 'drizzle-orm';
@@ -62,23 +61,13 @@ describe('group invitations by public address', () => {
       endpointBDomain: direct.domain,
       endpointBNamespaceId: directNs,
     });
-    const queue = { enqueueTask: vi.fn().mockResolvedValue({ taskId: 7n }) };
+    const executeIntent = vi.fn().mockResolvedValue({ status: 'APPLIED' });
     const controller = Object.create(
       GroupController.prototype,
     ) as GroupController;
     Object.assign(controller, {
-      groupService: {
-        findGroupByThreadId: async () => ({
-          group: { account: '!group', domain: 'local' },
-        }),
-      },
-      participantService: new AccountThreadStateService(
-        database,
-        {} as never,
-        {} as never,
-      ),
       federationService: { ourDomain: 'inviter.test' },
-      durableTasks: queue,
+      groupIntents: { execute: executeIntent },
     });
     const req = {
       user: { userId: local.id },
@@ -89,35 +78,32 @@ describe('group invitations by public address', () => {
       groupId: 9,
       users: [address, address],
     } as never);
+    // The controller dedupes addresses and delegates each unique one to the
+    // group intent family, which owns friend resolution under its locks.
     expect(result.invited).toEqual([address]);
-    expect(queue.enqueueTask).toHaveBeenCalledTimes(1);
-    expect(queue.enqueueTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: { threadId: 9, targetUserId: direct },
-      }),
-    );
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(executeIntent).toHaveBeenCalledWith({
+      threadId: 9,
+      managerUserId: local.id,
+      decision: 'REQUESTED',
+      target: address,
+    });
     expect(decoy.namespaceId).not.toBe(direct.namespaceId);
-    const unknown = await controller.inviteUsers(req, {
-      groupId: 9,
-      users: [{ account: 'unknown', domain: direct.domain }],
-    } as never);
-    expect(unknown.tasks).toEqual([]);
-    expect(queue.enqueueTask).toHaveBeenCalledTimes(1);
-    expect(
-      await database.db.select({ id: tables.account.id }).from(tables.account),
-    ).toHaveLength(1);
-    await database.db
-      .update(tables.relationshipPair)
-      .set({ active: false })
-      .where(eq(tables.relationshipPair.threadId, thread.id));
+
+    const rejection = {
+      status: 'REJECTED',
+      reason: 'NOT_FRIEND',
+      code: 40400,
+      message: 'not a friend or no conversation',
+    };
+    executeIntent.mockResolvedValueOnce(rejection);
     const inactive = await controller.inviteUsers(req, {
       groupId: 9,
       users: [address],
     });
     expect(inactive.invited).toEqual([]);
     expect(inactive.skipped).toEqual([
-      { ...address, reason: 'not a friend or no conversation' },
+      { ...address, reason: rejection.reason, code: rejection.code, message: rejection.message },
     ]);
-    expect(queue.enqueueTask).toHaveBeenCalledTimes(1);
   });
 });

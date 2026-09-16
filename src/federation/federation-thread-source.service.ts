@@ -1,4 +1,4 @@
-import { groupState as group, groupStateFields } from '../group/group-state.js';
+import { groupState as group, groupStateFields } from '../business/group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';

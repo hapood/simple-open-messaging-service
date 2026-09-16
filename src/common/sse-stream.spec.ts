@@ -177,6 +177,8 @@ describe('formatSseFrame', () => {
     // SSE and HTTP share serializeBody, so a Date yields the IDENTICAL epoch-ms on both buses.
     const d = new Date('2026-06-24T00:00:00Z');
     const fromFrame = payloadOf(formatSseFrame('x', { t: d })) as { t: number };
-    expect(fromFrame.t).toBe((serializeBody({ t: d }) as { t: number }).t);
+    expect(fromFrame.t).toBe(
+      (serializeBody({ t: d }) as unknown as { t: number }).t,
+    );
   });
 });

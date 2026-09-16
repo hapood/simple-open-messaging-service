@@ -5,7 +5,7 @@ export interface MessageTarget {
   seq: number;
 }
 
-export interface MessageReportListItem extends MessageTarget {
+interface MessageReportListItem extends MessageTarget {
   isDeleted: boolean;
   createdAt: number;
   updatedAt: number;
@@ -38,7 +38,7 @@ export function dismissMessageReport(params: MessageTarget): Promise<unknown> {
   return request('/admin/message-reports/delete', params);
 }
 
-export function deleteMessage(
+function deleteMessage(
   params: MessageTarget,
 ): Promise<{ threadId: number; messageSeq: number; deletionSeq: number }> {
   return request('/admin/messages/delete', params);

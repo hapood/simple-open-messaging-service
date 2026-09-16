@@ -315,6 +315,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     threadFeedId: 1,
     messageEndSeq: 8,
     tombstoneEndSeq: 0,
+    groupMetaFeedEndId: null,
     lastReadSeq: 0,
     unreadCount: 3,
     lastMentionSeq: 5,
@@ -427,6 +428,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       threadFeedId: 2,
       messageEndSeq: 9,
       tombstoneEndSeq: 3,
+      groupMetaFeedEndId: null,
       lastMentionSeq: null,
       previews: [
         {
@@ -442,6 +444,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       mentionUnread: [],
       lastMessageSeq: 9,
       tombstoneEndSeq: 3,
+      groupMetaFeedEndId: null,
       lastMessagePreview: '[Message removed by administrator]',
     });
     await publishThreadState({
@@ -1382,221 +1385,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         lastMessageSeq: null,
       }),
     ]);
-  });
-
-  it('retains the group-meta cursor across read-only and re-establishment snapshots', async () => {
-    const group = createGroupConversation(12, {
-      id: 12,
-      account: '!dev',
-      domain: 'local',
-      namespaceId: 0,
-      ownerId: 1,
-      name: 'Dev',
-    });
-    group.group.groupMetaFeedId = '20';
-    group.defaultProfile = {
-      account: '!dev',
-      domain: 'local',
-      namespaceId: 0,
-      profileRev: 0,
-    };
-    group.establishedAt = 1;
-    repo['upsertThread'](group);
-    const query = TestBed.inject(UserService).queryGroupMeta as Mock;
-    query.mockClear();
-    const state = threadStateEvent(5, 12, {
-      type: 'GROUP',
-      establishedAt: 30,
-      profile: group.defaultProfile,
-    });
-    expect(
-      await repo['prefetchGroupMeta']([
-        { ...state, body: { ...state.body, conversationState: 'READ_ONLY' } },
-      ]),
-    ).toEqual([]);
-    expect(query).not.toHaveBeenCalled();
-    query.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          account: '!dev',
-          mode: 'delta',
-          items: [],
-          scannedThrough: '21',
-          groupMetaFeedEndId: '21',
-          hasMore: false,
-        },
-      }),
-    );
-    await repo['prefetchGroupMeta']([state]);
-    expect(query).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 12, mode: 'delta', after: '20' }),
-    );
-    query.mockReset();
-    query.mockReturnValueOnce(
-      of({ code: 30006, data: { resumeAfter: '0', resumeBefore: '11' } }),
-    );
-    query.mockImplementationOnce(() => {
-      expect(
-        repo.items().find((thread) => thread.threadId === 12),
-      ).toMatchObject({ group: { memberCount: 0, groupMetaFeedId: '0' } });
-      return of({ code: 1, message: 'pull interrupted' });
-    });
-    await expect(repo['prefetchGroupMeta']([state])).rejects.toThrow(
-      'group-meta pull failed',
-    );
-    expect(
-      (await webdb.getThreads()).find((thread) => thread.threadId === 12),
-    ).toMatchObject({ group: { memberCount: 0, groupMetaFeedId: '0' } });
-    query.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          account: '!dev',
-          mode: 'full',
-          items: [],
-          scannedThrough: '10',
-          groupMetaFeedEndId: '10',
-          hasMore: false,
-        },
-      }),
-    );
-    const rebuilt = await repo['prefetchGroupMeta']([state]);
-    expect(query).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: 'full', after: '0' }),
-    );
-    expect(rebuilt[0].page.mode).toBe('full');
-  });
-
-  it('commits group profile and member references without fetching message previews', async () => {
-    emitHello({ userId: 1, stateFeedEndId: 0 });
-    await flush(20);
-    cursorSignal.set(1);
-    (TestBed.inject(UserService).queryGroupMeta as Mock).mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          account: '!dev',
-          mode: 'full',
-          scannedThrough: '2',
-          groupMetaFeedEndId: '2',
-          hasMore: false,
-          items: [
-            {
-              feedId: '1',
-              operation: 'GROUP_PROFILE',
-              body: { profileRev: 2 },
-            },
-            {
-              feedId: '2',
-              operation: 'UPSERT',
-              account: 'alice',
-              domain: 'local',
-              namespaceId: 0,
-              body: { role: 'OWNER', profileRev: 1 },
-            },
-          ],
-        },
-      }),
-    );
-    vi.spyOn(
-      TestBed.inject(ProfileResolutionService),
-      'resolve',
-    ).mockReturnValue(
-      of({
-        namespaceId: 0,
-        account: '!dev',
-        domain: 'local',
-        rev: 2,
-        name: 'Resolved dev',
-        bio: '',
-        avatarBase64: null,
-      }),
-    );
-    vi.spyOn(
-      TestBed.inject(MessageRepository),
-      'queryBrowserMessageHistory',
-    ).mockResolvedValue({
-      failed: false,
-      hasOlder: false,
-      hasNewer: false,
-      items: [
-        {
-          kind: 'message',
-          message: {
-            threadId: 12,
-            seq: 1,
-            contentType: 'PURE_TEXT',
-            content: JSON.stringify({ text: 'group preview' }),
-            creator: { account: 'alice', domain: 'local', namespaceId: 0 },
-            createdAt: 1,
-            updatedAt: 1,
-            isDeleted: false,
-          } as Message,
-        },
-      ],
-    });
-    const group = {
-      account: '!dev',
-      domain: 'local',
-      isLocal: true,
-      name: 'dev',
-      avatar: '',
-      description: '',
-      profileRev: 1,
-      namespaceId: 0,
-    };
-    queryStateFeedSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          mode: 'delta',
-          items: [
-            threadStateEvent(2, 12, {
-              type: 'GROUP',
-              role: 'OWNER',
-              profile: {
-                account: '!dev',
-                domain: 'local',
-                namespaceId: 0,
-                profileRev: 2,
-              },
-            }),
-            {
-              feedId: 4,
-              account: '!dev',
-              domain: 'local',
-              namespaceId: 0,
-              eventType: 'GROUP_META_FEED_HEAD',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: { groupMetaFeedEndId: '2' },
-            },
-          ],
-          hasMore: false,
-          scannedThrough: 5,
-          stateFeedEndId: 5,
-        },
-      }),
-    );
-
-    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 5 } });
-    await flush(30);
-
-    expect(toastWarn).not.toHaveBeenCalled();
-    expect(repo.items()).toEqual([
-      expect.objectContaining({
-        threadId: 12,
-        type: 'GROUP',
-        lastMessagePreview: null,
-        group: expect.objectContaining({
-          account: '!dev',
-          name: 'Resolved dev',
-          profileRev: 2,
-        }),
-      }),
-    ]);
-    expect(await webdb.getMeta('stateFeedId')).toBe(5);
   });
 
   it('publishes one friend-intent revision only after draining through the committed feed HWM', async () => {

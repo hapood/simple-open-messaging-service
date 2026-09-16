@@ -5,7 +5,7 @@ import { ContentType } from '../database/enums.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
-  type ForwardWireBundle,
+  type InboundForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
 import {
   encodeFederationResourceComponent,
@@ -35,7 +35,7 @@ interface BufferedForwardMessagePage {
   response: FederationThreadResourceResponse<FederationMessageQueryPage>;
   after: number;
   frozenTargetSeq: number;
-  prefetchedForwardClosures: ReadonlyMap<number, ForwardWireBundle>;
+  prefetchedForwardClosures: ReadonlyMap<number, InboundForwardWireBundle>;
 }
 
 interface BufferedForwardTombstonePage {
@@ -380,9 +380,9 @@ export class FederationThreadForwardRoundExecutorService {
   private async prefetchForwardClosures(
     source: FederationReverseThreadSource,
     response: FederationThreadResourceResponse<FederationMessageQueryPage>,
-  ): Promise<ReadonlyMap<number, ForwardWireBundle>> {
-    const result = new Map<number, ForwardWireBundle>();
-    const byBundleId = new Map<string, ForwardWireBundle>();
+  ): Promise<ReadonlyMap<number, InboundForwardWireBundle>> {
+    const result = new Map<number, InboundForwardWireBundle>();
+    const byBundleId = new Map<string, InboundForwardWireBundle>();
     for (const [index, item] of response.data.messages.entries()) {
       if (item.contentType !== ContentType.FORWARD) continue;
       let bundleId: string;
@@ -403,7 +403,7 @@ export class FederationThreadForwardRoundExecutorService {
       }
       let closure = byBundleId.get(bundleId);
       if (!closure) {
-        const dependency = await this.threadResources.fetch<ForwardWireBundle>(
+        const dependency = await this.threadResources.fetch<InboundForwardWireBundle>(
           source.threadId,
           `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
           source.peerDomain,

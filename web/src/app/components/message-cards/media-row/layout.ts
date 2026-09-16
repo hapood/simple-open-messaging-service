@@ -33,7 +33,7 @@ export interface AlbumImageLike {
   duration?: number;
 }
 
-export interface AlbumRect {
+interface AlbumRect {
   /** left/width: percentage relative to the grid container width (adapts on narrow screens). */
   xPct: number;
   wPct: number;
@@ -59,8 +59,8 @@ export const ALBUM_W = 280;
  *  virtual-scroll anchor). Integer px per the project's CSS integer-pixel rule. */
 export const VOICE_BAR_W = 188;
 export const VOICE_BAR_H = 44;
-export const VOICE_BAR_MIN_W = 172;
-export const VOICE_BAR_MAX_W = 240;
+const VOICE_BAR_MIN_W = 172;
+const VOICE_BAR_MAX_W = 240;
 
 const ALBUM_GAP = 2;
 /** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */

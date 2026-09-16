@@ -224,7 +224,7 @@ absolute `expiresAt`; an `ACCEPTED` remains effective until superseded.
 
 The source MUST have established the stable thread and query state before
 publishing the positive intent. A one-way grant authorizes passive querying but
-MUST NOT publish `THREAD_CONTENT_HEAD`, Group Meta head, or another content wake
+MUST NOT publish `THREAD_CONTENT_HEAD` or another content wake
 until the applicable relationship is confirmed. For GROUP, at least one member
 hosted by that peer MUST remain confirmed.
 `REQUESTED` and `ACCEPTED` grant identical query permission for the same stable
@@ -250,7 +250,7 @@ trigger a profile request. A forward
 consumer MAY fetch a bounded message interval concurrently with its bounded authoritative
 tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit
-the required role-and-profile-reference Group Meta head. If Group Meta has not converged, the
+the required role-and-profile-reference Group Meta coordinate. If Group Meta has not converged, the
 stable author Address remains valid, the consumer MUST continue Group Meta
 drain, and it MUST NOT infer a role or current-membership state. The consumer
 MAY fetch display data using [Message Author Profile](./message-author-profile.md)

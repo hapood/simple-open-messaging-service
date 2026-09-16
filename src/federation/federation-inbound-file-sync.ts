@@ -148,7 +148,6 @@ export class FederationInboundFileSync {
         await this.claim(progressId, declaredBytes);
         let lastWrite = 0;
         await this.upload.saveCasFromStream(
-          '',
           (offset) => this.checkedChunks(progressId, fetchChunks(offset)),
           digest,
           {

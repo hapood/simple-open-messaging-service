@@ -2,7 +2,10 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "target": "ES2022",
+    // ES2023: no new syntax over ES2022 — the bump is effectively the ES2023
+    // stdlib (Array.prototype.findLastIndex & co.); Node 24 has it natively.
+    "target": "ES2023",
+    "lib": ["ES2023"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "experimentalDecorators": true,
@@ -25,5 +28,20 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true
-  }
+  },
+  // This is the config the editor's TS server loads for every `src/**` file, so the sibling
+  // frontend packages must be bounded here, not only in tsconfig.build.json — without an exclude
+  // the default file set is `**/*`, which drags admin-web / web (Vite, bundler resolution, JSX)
+  // and the Tauri guest-js into the backend program under NodeNext settings. `test` is likewise
+  // its own project (test/tsconfig.json): vitest resolves extensionless imports vite-style, not
+  // NodeNext. `dev`, `scripts` and the root `shared/` (imported by `src` via `../../shared/*`)
+  // stay in the program.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",
+    "web",
+    "admin-web",
+    "src-tauri"
+  ]
 }

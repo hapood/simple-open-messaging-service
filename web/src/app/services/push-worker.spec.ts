@@ -40,6 +40,7 @@ describe('Push Service Worker entry', () => {
                 threadFeedId: 1,
                 messageEndSeq: 1,
                 tombstoneEndSeq: 0,
+                groupMetaFeedEndId: null,
                 lastReadSeq: 0,
                 unreadCount: 1,
                 lastMentionSeq: null,

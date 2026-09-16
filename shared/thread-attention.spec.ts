@@ -12,6 +12,7 @@ const snapshot = {
   threadFeedId: 1,
   messageEndSeq: 200,
   tombstoneEndSeq: 0,
+  groupMetaFeedEndId: null,
   lastReadSeq: 100,
   unreadCount: 8,
   lastMentionSeq: 104,
@@ -22,9 +23,21 @@ const initial = () =>
 describe('shared attention reconciliation', () => {
   it('bounds corrections by the published message head, even when local history is newer', () => {
     const state = advanceLocalAttentionRead(initial(), 250);
-    expect(attentionCountRange(state)).toEqual({threadId:7,afterSeq:100,throughSeq:200});
-    const beyond = mergeThreadAttention(state, {...snapshot,threadFeedId:2,lastReadSeq:240});
-    expect(attentionCountRange(beyond)).toEqual({threadId:7,afterSeq:200,throughSeq:200});
+    expect(attentionCountRange(state)).toEqual({
+      threadId: 7,
+      afterSeq: 100,
+      throughSeq: 200,
+    });
+    const beyond = mergeThreadAttention(state, {
+      ...snapshot,
+      threadFeedId: 2,
+      lastReadSeq: 240,
+    });
+    expect(attentionCountRange(beyond)).toEqual({
+      threadId: 7,
+      afterSeq: 200,
+      throughSeq: 200,
+    });
     expect(projectThreadAttention(beyond, 0)?.lastReadSeq).toBe(250);
   });
   it('initializes the local position only once', () => {
@@ -58,6 +71,7 @@ describe('shared attention reconciliation', () => {
       threadFeedId: 2,
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
+      groupMetaFeedEndId: null,
       lastReadSeq: 103,
       unreadCount: 6,
     });
@@ -72,6 +86,7 @@ describe('shared attention reconciliation', () => {
       threadFeedId: 2,
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
+      groupMetaFeedEndId: null,
       lastReadSeq: 110,
       unreadCount: 2,
       lastMentionSeq: 108,
@@ -88,6 +103,7 @@ describe('shared attention reconciliation', () => {
       threadFeedId: 2,
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
+      groupMetaFeedEndId: null,
       lastReadSeq: 95,
       unreadCount: 12,
     });
@@ -119,6 +135,7 @@ describe('shared attention reconciliation', () => {
       threadFeedId: 2,
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
+      groupMetaFeedEndId: null,
       lastReadSeq: 110,
     });
     const next = advanceLocalAttentionRead(state, 105);

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 
-vi.mock('../relationship/relationship-authorization.js', () => ({
+vi.mock('../business/relationship/shared/relationship-authorization.js', () => ({
   isThreadMutuallyAuthorized: vi.fn(),
 }));
 

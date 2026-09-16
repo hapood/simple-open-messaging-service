@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
@@ -6,7 +6,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { groupMeta } from '../database/schema.js';
-import { readGroupMetaPageInTx } from '../group-meta/group-meta-page.js';
+import { readGroupMetaPageInTx } from '../business/group/meta/group-meta-page.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 
 @Injectable()
@@ -51,9 +51,9 @@ export class ClientGroupMetaFeedService {
     groupId: number,
     account: string,
     mode: 'full' | 'delta',
-    after: bigint,
+    after: number,
     take: number,
-    through?: bigint,
+    through?: number,
   ) {
     return this.database.db.transaction(async (tx) => {
       const authorized = await tx.execute<{ groupId: number }>(sql`
@@ -89,8 +89,8 @@ export class ClientGroupMetaFeedService {
         after,
         take,
         through,
-        end: feed?.metaEndId ?? 0n,
-        visibleAfter: 0n,
+        end: feed?.metaEndId ?? 0,
+        visibleAfter: 0,
         client: { localDomain: loadFederationConfig().domain },
       });
     });

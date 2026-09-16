@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
@@ -15,6 +11,8 @@ import {
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { BusinessCode } from '../src/common/business-code';
 import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * QR-login e2e — the desktop/web → 2-week sliding session flow confirmed by an already-logged-in phone,
@@ -26,7 +24,7 @@ import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service'
  * scanner's account. Users are inserted via Drizzle (admin-provisioned model: self-registration is closed).
  */
 describe('QR login e2e', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let sessionTokens: SessionTokenService;
 
@@ -39,24 +37,16 @@ describe('QR login e2e', () => {
       ...policy,
       mode: 'disabled' as const,
     }));
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(RateLimitModeService)
-      .useValue(new RateLimitModeService(undefined, disabledConfiguration))
-      .compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp((builder) => {
+      builder
+        .overrideProvider(RateLimitModeService)
+        .useValue(new RateLimitModeService(undefined, disabledConfiguration));
+    }));
     sessionTokens = app.get(SessionTokenService);
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {

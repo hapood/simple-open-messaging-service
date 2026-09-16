@@ -25,6 +25,7 @@ import type { FederationQuoteTarget } from '../src/federation/federation-quote-t
 import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
 import { resolveStoredQuotes } from '../src/message/quote-reference.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
+import { truncateTablesForTest } from './support/truncate';
 
 type Message = typeof tables.message.$inferSelect;
 type View = {
@@ -71,9 +72,7 @@ describe('federation quote coordinates across three persisted node views', () =>
   });
   afterAll(async () => mod.close());
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "MessageThread", "GroupAccount", "Profile" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "MessageThread", "GroupAccount", "Profile" RESTART IDENTITY CASCADE');
     const views: View[] = [];
     for (const [domain, namespaceId] of namespaces) {
       const authorityNamespaceId =
@@ -185,7 +184,6 @@ describe('federation quote coordinates across three persisted node views', () =>
         message: {
           originSeq: seq,
           profileRev: 0,
-          clientMessageId: null,
           contentType: 'PURE_TEXT',
           content: JSON.stringify({ text: 'reply' }),
           ts: 1_700_000_000_000,
@@ -360,7 +358,6 @@ describe('federation quote coordinates across three persisted node views', () =>
       namespaceId: alpha.namespaceId,
       messageTargetSeq: 51,
       messageProcessedThroughSeq: 51,
-      historyBoundaryReached: true,
     });
     const [absent] = await resolveStoredQuotes(database.db, [reply]);
     expect(JSON.parse(absent.content).quote.status).toBe('NOT_FOUND');

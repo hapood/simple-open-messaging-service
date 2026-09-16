@@ -1,7 +1,7 @@
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../group/group-state.js';
+} from '../business/group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -11,7 +11,7 @@ import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import type { ForwardWireBundle } from '../forward/forward-bundle.service.js';
+import type { InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { type Message } from '../message/message.service.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
@@ -54,14 +54,14 @@ export type FederationMessagePageEffect = FederationMessagePageEffectContext &
         kind: 'message';
         message: Message;
         deletionSeq?: number;
-        forwardClosure?: ForwardWireBundle;
+        forwardClosure?: InboundForwardWireBundle;
         remoteForwardBundleId?: string;
         localForwardBundleId?: string;
       }
   );
 
 export interface FederationMessagePageApplyOptions {
-  prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
+  prefetchedForwardClosures?: ReadonlyMap<number, InboundForwardWireBundle>;
   isolateMissingContext?: boolean;
   sequencePolicy?: MapFederationOriginSequence;
   expectedThreadId?: number;
@@ -404,7 +404,7 @@ export class FederationInboundMessagePageService {
         }
 
         let forwardCard: FederatedForwardCard | undefined;
-        let forwardClosure: ForwardWireBundle | undefined;
+        let forwardClosure: InboundForwardWireBundle | undefined;
         if (item.contentType === ContentType.FORWARD) {
           try {
             forwardCard = JSON.parse(item.content) as FederatedForwardCard;

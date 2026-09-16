@@ -1,7 +1,7 @@
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../group/group-state.js';
+} from '../business/group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -68,7 +68,6 @@ export class FederationMediaLocalizationService {
         });
         if (have) continue;
         await this.upload.saveCasFromStream(
-          'bin',
           (offset) =>
             this.mediaRanges.fetch(
               peerDomain,
@@ -216,7 +215,7 @@ export class FederationMediaLocalizationService {
     sourceSeq: number,
     expectedFederationVersion: number,
   ): Promise<void> {
-    for (const { digest, ext } of extractDigestEntries(msg.content)) {
+    for (const { digest } of extractDigestEntries(msg.content)) {
       try {
         const have = await this.database.db.query.mediaAsset.findFirst({
           where: and(
@@ -227,7 +226,6 @@ export class FederationMediaLocalizationService {
         });
         if (!have) {
           await this.upload.saveCasFromStream(
-            ext,
             (offset) =>
               this.mediaRanges.fetch(
                 peerDomain,

@@ -9,13 +9,9 @@ import {
   it,
   vi,
 } from 'vitest';
-import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, desc, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/bootstrap.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -23,33 +19,22 @@ import {
   message,
   accountThreadState,
 } from '../src/database/schema.js';
-import { readCurrentGroupMemberInTx } from '../src/group-meta/current-group-roster.js';
+import { readCurrentGroupMemberInTx } from '../src/business/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
-import {
-  waitForAcceptedDurableTask,
-  waitForAcceptedDurableTasks,
-  waitForLocalRelationshipRequest,
-} from './durable-task-helpers.js';
+import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('group membership re-entry and ownership transfer', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
 
   beforeAll(async () => {
-    const fixture = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = fixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => app.close());
@@ -107,13 +92,11 @@ describe('group membership re-entry and ownership transfer', () => {
       invited.body.data.invited,
       JSON.stringify(invited.body),
     ).toContainEqual({ account: member.account, domain: 'local' });
-    await waitForAcceptedDurableTasks(database.db, invited.body);
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId });
     expect(joined.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, joined.body);
   }
 
   async function currentMember(threadId: number, userId: number) {
@@ -129,7 +112,6 @@ describe('group membership re-entry and ownership transfer', () => {
         eq(groupMetaMemberFeed.threadId, threadId),
         eq(groupMetaMemberFeed.memberAccount, member.account),
         eq(groupMetaMemberFeed.memberDomain, member.domain),
-        eq(groupMetaMemberFeed.memberNamespaceId, member.namespaceId),
       ),
       orderBy: desc(groupMetaMemberFeed.feedId),
     });
@@ -161,7 +143,6 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId, account: member.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, kicked.body);
     expect(await currentMember(groupId, member.id)).toBeUndefined();
     const departed = await latestMemberFact(groupId, member.id);
     expect(departed).toMatchObject({ operation: 'DEPART', body: {} });
@@ -223,7 +204,6 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${oldOwner.token}`)
       .send({ groupId, account: newOwner.account, domain: 'local' });
     expect(transferred.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, transferred.body);
     expect(await currentMember(groupId, oldOwner.id)).toMatchObject({
       role: 'MEMBER',
     });
@@ -249,7 +229,6 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${newOwner.token}`)
       .send({ groupId, account: oldOwner.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, kicked.body);
     expect(await currentMember(groupId, oldOwner.id)).toBeUndefined();
     expect(await latestMemberFact(groupId, oldOwner.id)).toMatchObject({
       operation: 'DEPART',

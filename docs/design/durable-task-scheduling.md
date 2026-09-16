@@ -1,8 +1,8 @@
 # Durable Task Scheduling
 
-Status: Durable Task naming, persistence, mutation and asynchronous schedulers,
-checkpointed group-dissolution fan-out, mirrored `SYNC_GROUP_META` rounds,
-canonical Group Meta head fan-out, authoritative membership-fact folding, and
+Status: Durable Task naming, persistence, mutation schedulers,
+checkpointed group-dissolution fan-out, scheduler-driven mirror Group Meta
+rounds, Group Meta publication through thread fan-out, authoritative membership-fact folding, and
 final audience/task admission for membership mutations are implemented. Group
 profile mutation integration and pending group-member intent slots are also
 implemented. Friend-intent supersession remains separate work.
@@ -27,7 +27,7 @@ two task kinds:
 Application code uses task terminology throughout: `DurableTaskQueueService`,
 `DurableTaskSchedulerService`, `DurableTaskDispatcherService`, and
 `DurableTaskHandler`. A service that directly changes domain state is named for
-that operation, such as `FederationRelationshipMutationService`; it is not
+that operation, such as `GroupRelationshipMutationService`; it is not
 called a task unless it represents durable queued work.
 
 `scope` identifies the serialization boundary of a task. It replaces the old
@@ -121,12 +121,11 @@ target predicate plus the pending-state guard and sets the completion timestamp.
 These operations never open transactions or acquire business locks themselves.
 
 Domain admission methods retain validation, lock ordering, scope selection and
-merge policy: relationship direction replacement, independent two-head fanout
-MAX merges, read-position force barriers, Group Meta head replacement and Group
-Meta sync dependency coverage. A thread fanout losing a claim race appends work;
-read-position and Group Meta sync admission already lock their pending rows and
-reject an unexpected lost update. Running-task handoff and terminal transitions
-remain execution operations, not pending admission updates.
+merge policy, including independent two-head fanout MAX merges, combined
+thread-head replacement, and Group Meta sync dependency coverage. A thread
+fanout losing a claim race appends work; Group Meta sync admission locks its
+pending row and rejects an unexpected lost update. Running-task handoff and
+terminal transitions remain execution operations, not pending admission updates.
 
 ## 4. Current mutation execution
 
@@ -299,223 +298,42 @@ The parent saves `afterPairId` with each child admission and completes once all
 children are admitted. Both parent and forced children support startup recovery;
 neither needs a parent link or waits for downstream delivery.
 
-## 6. Group Meta head fan-out
+## 6. Group Meta through thread fan-out
 
-Canonical Group Meta mutations are authoritative O(1) writes in the group
-transaction, not projection work. There is exactly one group projection task:
+Canonical Group Meta mutations remain O(1) authoritative writes. In the same
+transaction, a metadata change admits the existing local and federation thread
+fan-out tasks with the current complete message and tombstone coordinates. The
+tasks read `GroupMeta.metaEndId` during execution and publish it as part of the
+thread head; there is no standalone Group Meta projection task.
 
-| Task type                 | Desired state written                                                         |
-| ------------------------- | ----------------------------------------------------------------------------- |
-| `FAN_OUT_GROUP_META_HEAD` | Compacted client and peer State Feed heads for the latest canonical group end |
+The two task types are:
 
-An invitation or join request does not append a canonical member item or create
-head fan-out merely because the request was created, accepted by one side,
-rejected, or revoked. A task is created only after a canonical membership,
-role, ownership, or group profile item commits. Group dissolution creates no
-projection cleanup: it revokes relationships while retaining historical Group
-Meta and State Feed data.
+- `FAN_OUT_THREAD_CONTENT` for local `AccountThreadState` snapshots.
+- `FAN_OUT_FEDERATION_THREAD_CONTENT` for peer `THREAD_CONTENT_HEAD` items.
 
-User-profile changes do not enter this queue. They create an immutable profile
-version and advance `defaultProfileRev` in constant work. Receivers discover the
-revision from later messages or relationship flows. The initial member
-`profileRev` comes from the effective member-authored join intent. A default
-user-profile update does not rewrite it.
+Both coalesce by thread and preserve the maximum message and tombstone targets.
+A Meta-only mutation can therefore reuse unchanged content coordinates while the
+latest canonical Meta coordinate still makes the complete snapshot advance.
+Each executor holds the thread content lock, revalidates its current audience or
+route, and emits only a best-effort wake after the durable projection commits.
+A rollback persists neither the canonical mutation nor either fan-out admission.
 
-The authority/mirror ownership model is defined in
-[Canonical Group Meta and Asymmetric Mirrors](./canonical-group-meta.md).
-
-### 6.1 Mutation transaction boundary
-
-The authoritative mutation and creation of its projection task are one database
-transaction:
-
-```text
-take the normal group mutation locks
-fold relationship and authorization state
-append one canonical UPSERT, DEPART, or GROUP_PROFILE when state changed
-write AccountThreadState and final ThreadAudience state
-insert or coalesce FAN_OUT_GROUP_META_HEAD
-commit the mutation
-```
-
-The projection is inserted only after the final `ThreadAudience` state has been
-written. If the mutation rolls back, the projection task rolls back with it. The
-transaction does not enumerate listeners or write audience-specific Group Meta
-rows. The canonical item is part of the mutation; only State Feed head fan-out
-is deferred. After commit, the mutation can finish independently of projection
-execution because `MUTATION` and `PROJECTION` use separate scheduler lanes.
-
-No separate member table duplicates a group roster. A mirror retains the
-validated Group Meta pages once as its group-scoped replica. It does not author
-canonical Group Meta.
-
-Both delta and full synchronization may require multiple pages. Every page
-transaction persists replica facts and its round checkpoint but writes no local
-head and emits no wake hint. A full round additionally marks observed rows and
-removes unobserved rows in bounded cleanup pages. After the fixed-through round
-is complete, one short transaction advances the mirror's committed end and
-completes `SYNC_GROUP_META`. A local completion wake retries the blocked State
-Feed item, whose transaction derives client-visible effects from the committed
-replica. Full and delta consumers serialize in the same per-group lane. No read
-gate is added; clients follow head-driven pulling, and unsolicited reads during
-a round may observe intermediate facts.
-
-`DurableTaskQueueService` exposes a transaction-only admission method for Group
-Meta head fan-out. It requires the caller's existing
-transaction, reacquires the canonical group advisory lock in that transaction,
-and cannot accidentally commit independently of the authoritative mutation.
-
-### 6.2 Payload and coalescing keys
-
-The payload identifies only the locally authoritative thread whose latest
-canonical Group Meta end must be published. Mirrors do not run this task; they
-publish client state while retrying the ordered State Feed item after
-`SYNC_GROUP_META` completes. The payload embeds no member IDs, listener snapshot,
-feed end, revision, or precomputed body:
-
-```json
-{ "threadId": 42 }
-```
-
-Membership and group-profile changes therefore collapse into the same pending
-desired-state task.
-
-The canonical coalescing keys are JSON tuples:
-
-```text
-["FAN_OUT_GROUP_META_HEAD", threadId]
-```
-
-The task uses the group's canonical `GROUP` scope. A processing task remains
-immutable; a later mutation inserts or replaces one pending successor starting
-at audience cursor zero. Internal integer IDs are payload locators only and
-never replace the externally stable group address in `scopeKey`.
-
-### 6.3 Audience pagination and page transaction
-
-The task scans the current `ThreadAudience` of one group thread using the
-monotonic `ThreadAudience.id` as a keyset cursor. The initial and subsequently
-committed checkpoint is:
-
-```json
-{
-  "afterAudienceId": "0"
-}
-```
-
-The bigint cursor is encoded as a decimal string so JSON round-trips exactly.
-There is no separate expansion table and no phase that first materializes every
-listener. One bounded audience page is one transaction:
-
-```text
-lock and re-read the PROCESSING DurableTask row
-stop at this page boundary if a newer pending task has the same coalescing key
-read ThreadAudience where threadId = payload.threadId
-  and id > checkpoint.afterAudienceId, ordered by id, limited to one page
-read the latest locally serviceable groupMetaFeedEndId
-lock and revalidate every selected audience row
-write only compacted client or peer GROUP_META_FEED_HEAD state projections
-advance afterAudienceId to the last scanned row, including skipped rows
-commit
-revalidate current audience and publish coalesced local and peer wake hints
-```
-
-The page writes no canonical or replica Group Meta member or profile
-row. It does not take the group business advisory lock. The bounded current
-audience rows and State Feed allocator rows are locked in stable target order
-only while the page writes its monotonically increasing feed IDs.
-
-Audience-row locking gives the two legal commit orders:
-
-```text
-projection locks the audience and commits -> audience removal commits
-audience removal commits                  -> projection revalidation skips it
-```
-
-After the page commits, wake hints are filtered once more against current
-audience. The first order may leave a historical compacted projection if the
-audience is removed immediately afterwards, but serving still checks current
-authorization and the removed target receives no departure notification. The
-page lock is bounded and a mutation never waits for the whole projection task
-or for network notification.
-
-A target deleted before it is selected is absent and receives no departure
-notification. A leaving member learns the local client effect from the
-relationship authorization cut; the origin does not encode a federation leave
-notification for that member. Every serving endpoint still enforces current
-authorization independently because neither a projection nor a hint is an
-authorization source.
-
-Repeated projection writes must be idempotent: if the target already references
-the same canonical end, no new State Feed ID is allocated.
-Wake-ups are lightweight post-commit hints and are coalesced to the highest
-committed feed ID per local account or peer namespace.
-
-An audience row inserted concurrently always receives a greater ID. It is
-therefore either observed by the current scan or covered by the successor task
-created by the inserting mutation. At the next page boundary, a running task
-that sees such a pending successor ends successfully. The successor starts at
-cursor zero and reconciles both the new audience and every target already
-passed by the old cursor against the latest canonical end. Correctness never
-relies on changing the checkpoint of a running task.
-
-### 6.4 Projection execution state machine
-
-Unlike an ordinary mutation, a projection is safe to resume because every page
-commits its effects and checkpoint atomically and every write reconciles desired
-state:
-
-```text
-PENDING
-  | conditional claim
-  v
-PROCESSING -- page commit --> PROCESSING with a greater afterAudienceId
-  |                                |
-  | no remaining audience          | newer pending successor
-  v                                v
-SUCCEEDED                    SUCCEEDED (yielded at page boundary)
-
-PROCESSING -- unexpected handled error --> FAILED
-PENDING    -- replaced before claim ----> SUPERSEDED
-```
-
-On restart, the scheduler may resume `PROCESSING` projection tasks. Every page
-transaction locks and re-reads the task row before reading its checkpoint, so
-multiple application processes cannot claim the same page. A runner that finds
-the task already terminal stops without writing. Detecting the empty final page
-and the terminal transition must be coordinated with the locked task state so a
-second recovery runner cannot reopen completed work.
-
-An unexpected error marks the task `FAILED` and releases later tasks in that
-group's `PROJECTION` lane. The failed row and its checkpoint remain available
-for investigation. Automatic task retry/backoff and failed-task operator actions
-remain separate operational design work.
-
-This task continues to use `DurableTask.checkpoint` and needs no task-specific
-expansion table. The canonical Group Meta storage migration is a separate
-database change. Separate membership/profile projection admission and handlers
-are replaced by this task and must be removed rather than retained as
-compatibility paths.
+Mirrors never publish an origin-owned Meta coordinate back to the origin. After
+a mirror Group Meta round commits, local thread fan-out advances the mirror users’
+thread snapshots; the compacted group profile remains a client state-feed fact.
 
 ## 7. Pending group-member intent slots
 
 Selected group membership mutations represent the latest desired value of one
 authored intent. Their coalescing key is directional:
 
-```text
-["GROUP_MEMBER_INTENT", "MEMBER", localMemberUserId]
-["GROUP_MEMBER_INTENT", "GROUP", targetMemberUserId]
-```
+Authored membership commands execute synchronously and do not occupy durable
+mutation slots. The directional group-member key remains for mandatory cleanup
+such as `FORCE_REVOKE_GROUP_MEMBER`; member-side and group-side cleanup remain
+separate.
 
-Member-authored request, invitation acceptance, addressed invitation
-acceptance, revoke, and leave tasks share the member-side slot. Group-authored
-invite, join-request acceptance/rejection, invitation revoke, and kick tasks
-share the group-side slot. Opposite directions never replace each other. Role,
-ownership-transfer, dissolution, and projection tasks are outside these
-mutation slots.
-
-Admission takes the normal business-scope lock and evaluates only rows in the
-same `GROUP` mutation lane:
+Admission takes the normal business-scope lock and evaluates only existing
+cleanup rows in the same `GROUP` mutation lane:
 
 | Existing state                                                                        | New request                        | Admission result                                                                                |
 | ------------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -531,51 +349,20 @@ same `GROUP` mutation lane:
 successors. Claimed task inputs remain immutable.
 Pending replacement represents the latest desired state for that direction and does
 not preserve ordering relative to intervening opposite-direction or other group
-commands. Different directions remain separate. Task names follow the intent author:
-`REVOKE_USER_RELATIONSHIP` covers user-authored friendship revocation, request
-cancellation, and group departure, for both local and remote targets.
-`REVOKE_GROUP_RELATIONSHIP` covers group-authored invitation revocation, application
-rejection, and member removal. The administrator is the operator, not the author.
-Both types share the author's existing directional intent slot with request and
-acknowledgement tasks. Earlier task handlers remain registered to drain persisted
-work; new admissions use the author-based names.
+commands. Different directions remain separate. User-authored revocation, group
+departure, invitation revocation, application rejection, and member removal execute
+synchronously in their authored business transactions. The remaining directional
+task slots are used by mandatory cleanup tasks such as
+`FORCE_REVOKE_GROUP_MEMBER`. A captured P2P query denial calls the authored P2P
+revoke business transaction directly; that transaction validates the captured
+thread authorization epoch after acquiring its normal business locks.
 
-The existing `SUPERSEDED` lifecycle remains used by replace-by-successor
-projection tasks. Group-member mutation slots deliberately retain the pending
-row instead, as requested by their latest-value semantics.
-
-Projection tasks may be superseded only at a committed page boundary by a newer
-projection that reconciles the latest authoritative state. A running projection
-is never edited or superseded. Its successor repairs targets that the running
-cursor may already have passed.
-
-The projection enqueue state machine, evaluated inside the authoritative
-mutation transaction while holding the normal group mutation lock, is:
-
-| Existing task with the same coalescing key | Enqueue action                                                                |
-| ------------------------------------------ | ----------------------------------------------------------------------------- |
-| None or terminal only                      | Insert one new `PENDING` task                                                 |
-| One `PENDING` task                         | Insert the `threadId`-only replacement, then mark the older task `SUPERSEDED` |
-| One `PROCESSING` task                      | Leave it unchanged and insert one `PENDING` successor                         |
-| `PROCESSING` plus `PENDING`                | Leave the running task unchanged and replace the pending successor            |
-
-The replacement row and the older row's `SUPERSEDED` transition commit
-atomically. The group mutation lock serializes this admission decision, so at
-most one pending task exists for each projection coalescing key after commit.
-Every `FAN_OUT_GROUP_META_HEAD` replacement retains only `threadId`; canonical
-feed mutations are already durable and therefore require no payload union.
-
-This yields the following desired-state flow:
-
-```text
-mutation A commits -> projection A PROCESSING at audience cursor 100
-mutation B commits -> projection B PENDING (projection A is untouched)
-mutation C commits -> projection C PENDING, projection B SUPERSEDED
-projection A ends  -> projection C scans from audience cursor 0
-```
-
-Projection admission implements this separate state machine. Friend-intent
-supersession remains a separate code-review stage.
+Thread fan-out merges maximum message and tombstone coordinates into an
+existing `PENDING` row. A claimed task remains immutable; later work creates a
+pending successor. At a page boundary, the running executor may yield only
+after that successor covers both of its content coordinates. Meta progress is
+read from canonical storage during execution, so it needs no payload field or
+separate supersession state machine.
 
 ## 8. Projection verification matrix
 
@@ -587,9 +374,9 @@ feed cursors, not only handler return values.
 
 - A committed membership entry, departure, role change, ownership transfer, or
   group-profile change first appends its canonical Group Meta item and then
-  creates `FAN_OUT_GROUP_META_HEAD` in the same transaction.
-- Every payload contains only `threadId`; it contains no member, audience, feed,
-  or profile snapshot.
+  admits local and federation thread fan-out in the same transaction.
+- Every payload contains only the thread and current message/tombstone
+  coordinates; it contains no member, audience, or Meta snapshot.
 - A mutation rollback persists neither its authoritative changes nor its
   projection task.
 - A business no-op creates no projection task.
@@ -841,31 +628,10 @@ always use `$system@local` as their sender and describe event participants with
 event-specific content fields; they do not copy the task actor into a generic
 message actor. See [system messages](system-messages.md).
 
-## State feed fanout
+State feed delivery is not a durable task. Source transactions commit feed
+heads and the call path emits best-effort post-commit wakes; see
+[fan-out execution](./fan-out-execution.md).
 
-`FAN_OUT_STATE_FEED` fans out committed feed high watermarks to local clients
-and federation peers. Source transactions write or reindex their feed rows and
-admit the fanout task atomically. The task does not rewrite state, allocate feed
-IDs, or carry an instruction to force reindexing. `FEDERATION_STATE_FEED_PUSH`
-is a post-commit wake hint emitted by delivery, not the durable source of work.
-
-One task targets one client account or one captured peer namespace. Its
-`STATE_FEED` scope and coalescing key identify that recipient feed; payloads
-contain the recipient and committed `feedId`. Pending admission merges feed IDs
-with MAX. A processing task can yield to a pending successor after transferring
-its watermark coverage atomically. Independent feeds keep independent tasks,
-so replacement never loses a departed member or another recipient. Feed IDs are
-already committed when delivery executes. Reconnect reads the durable feed head
-if a best-effort wake is lost.
-
-Acceptance confirmation may republish an unchanged `ACCEPTED` relationship
-snapshot at a new feed position so the peer can observe the confirmation after
-its existing cursor. This is an explicit source-side operation. Group metadata
-updates do not reindex or refresh thread content heads: the two streams advance
-independently and consumers must not rely on metadata preceding content by feed
-ID. No `forceReindex` flag is part of the write or task contract.
-
-`FAN_OUT_GROUP_META_HEAD` retains combined local and federation audiences.
 `FAN_OUT_THREAD_CONTENT`, `FAN_OUT_ACCOUNT_THREAD_CONTENT`, and
 `FAN_OUT_FEDERATION_THREAD_CONTENT` retain their separate delivery scopes and
 reuse internal projection helpers. Only thread content needs the federation

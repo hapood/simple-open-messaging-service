@@ -28,8 +28,8 @@ read-only conversations, and removes old `THREAD_BLOCK` snapshots. Full state
 queries include unblocked conversations. Existing state-feed wakes remain in
 use. Business transactions capture the state and thread heads affected by
 conversation changes, then publish them through the existing SSE notification
-methods and per-account throttles after commit. Read-position tasks also publish
-their thread head after commit. There is no periodic head query or database
+methods and per-account throttles after commit. The synchronous read-position
+business command also publishes its committed thread head. There is no periodic head query or database
 notification listener for these feeds; SSE reconnects recover via `HELLO`.
 
 ## Independent feed consumption
@@ -59,7 +59,9 @@ replace a newer persisted state-feed snapshot.
 Clients call the existing profile-resolution endpoint with:
 
 ```ts
-{ type: 'EXACT', account, domain, rev }
+{
+  type: 'EXACT', account, domain, rev;
+}
 ```
 
 The endpoint authorizes the exact reference against a matching `THREAD_STATE`

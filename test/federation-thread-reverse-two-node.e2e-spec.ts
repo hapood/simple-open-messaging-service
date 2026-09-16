@@ -2,7 +2,7 @@ import {
   groupState as group,
   groupStateFields,
   readGroupState,
-} from '../src/group/group-state.js';
+} from '../src/business/group/shared/group-state.js';
 import type { NamespacedAddress } from '../src/common/client-identity.js';
 import { randomUUID } from 'node:crypto';
 import {
@@ -288,7 +288,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
             where: eq(federationThreadSyncState.threadId, mirrorThreadId),
           });
         expect(state).toMatchObject({
-          historyBoundaryReached: true,
           activeGapId: null,
         });
         return reply!;
@@ -722,7 +721,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
             where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state?.activeGapId).not.toBeNull();
-        expect(state?.historyBoundaryReached).toBe(false);
         const gap =
           await appB.database.query.federationThreadHistoryGap.findFirst({
             where: eq(federationThreadHistoryGap.id, state!.activeGapId!),
@@ -801,7 +799,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           });
         expect(state).toMatchObject({
           activeGapId: null,
-          historyBoundaryReached: true,
         });
         const mirrored = await appB.database.query.message.findMany({
           where: and(
@@ -988,7 +985,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           });
         expect(state).toMatchObject({
           activeGapId: null,
-          historyBoundaryReached: true,
         });
         expect(state!.messageProcessedThroughSeq).toBe(state!.messageTargetSeq);
         const historicalMessage = await appB.database.query.message.findFirst({
@@ -1239,7 +1235,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           deletionRecoveryThroughSeq: null,
           deletionRecoveryMaxMessageSeq: null,
           activeGapId: null,
-          historyBoundaryReached: true,
         });
         expect(state!.deletionProcessedThroughSeq).toBe(mergedDeletionTarget);
         expect(state!.deletionTargetSeq).toBe(mergedDeletionTarget);
@@ -1342,7 +1337,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           deletionRecoveryThroughSeq: null,
           deletionRecoveryMaxMessageSeq: null,
           activeGapId: null,
-          historyBoundaryReached: true,
         });
       },
       { timeout: 20_000, interval: 100 },
@@ -1430,7 +1424,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
         ]);
         expect(state).toMatchObject({
           activeGapId: null,
-          historyBoundaryReached: true,
         });
         expect(unavailableGap).toMatchObject({ recoverable: false });
       },

@@ -127,7 +127,7 @@ export type ConsumedMedia =
     };
 
 /** One buffered file part collected by {@link UploadService.consumeParts} (Phase 7 type-agnostic upload). */
-export interface ConsumedPartFile {
+interface ConsumedPartFile {
   mimetype: string;
   buffer: Buffer;
   filename?: string;
@@ -490,13 +490,13 @@ export class UploadService {
    * promote assembles message content from.
    *
    * `intent` is the staged message-level contentType (NOT a transport concern) and is used only to gate
-   * family mismatches the way the legacy typed routes did: an IMAGE intent whose bytes are not an
+   * family mismatches according to the declared upload intent: an IMAGE intent whose bytes are not an
    * inline-renderable image (HEIC/AVIF/…) is stored as a downloadable FILE and signals an
    * `overrideContentType: FILE` so the message lands as FILE; a VIDEO/AUDIO intent rejects a
    * non-matching container; AUDIO accepts the recorder-shared webm/mp4 containers (mapped to audio);
    * GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
    *
-   * Collapses the legacy save/saveFile/saveMedia trio into one type-agnostic writer.
+   * Provides one type-agnostic writer for all upload kinds.
    */
   async savePart(
     buf: Buffer,
@@ -898,7 +898,6 @@ export class UploadService {
    * Per-digest FIFO locking prevents concurrent writers; only a whole-file SHA-256 match is published.
    */
   async saveCasFromStream(
-    ext: string,
     chunksFromOffset: (offset: number) => AsyncIterable<Buffer>,
     expectedDigest: string,
     opts?: {

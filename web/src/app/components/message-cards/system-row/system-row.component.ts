@@ -200,6 +200,7 @@ export class SystemRowComponent {
             { count: body.count },
           );
       }
+      return this.fallback('unknown system message type');
     } catch (error) {
       return this.fallback('failed to render system message', error);
     }

@@ -147,18 +147,6 @@ export class QueryGroupJoinRequestsDto extends GroupIdDto {
   take?: number;
 }
 
-export class HandleGroupJoinRequestDto extends GroupIdDto {
-  @ApiProperty({
-    example: '123456789',
-    description: 'RelationshipIntent id (stringified BigInt)',
-  })
-  @IsString()
-  @Matches(/^[1-9]\d*$/, {
-    message: 'requestId must be a positive integer string',
-  })
-  requestId!: string;
-}
-
 export class ReadGroupJoinRequestsDto extends GroupIdDto {
   @ApiProperty({
     example: 123,
@@ -190,6 +178,8 @@ class GroupMemberTargetDto {
   @MaxLength(63)
   domain!: string;
 }
+
+export class HandleGroupJoinRequestDto extends GroupMemberTargetDto {}
 
 export class KickGroupDto extends GroupMemberTargetDto {}
 

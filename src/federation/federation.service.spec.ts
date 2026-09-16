@@ -2,7 +2,6 @@ vi.mock('../user/system-account.js', () => ({
   systemAccountIdInTx: vi.fn().mockResolvedValue(99),
 }));
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import * as groupStateHelpers from '../group/group-state.js';
 afterEach(() => vi.restoreAllMocks());
 import { createHash } from 'node:crypto';
 
@@ -36,7 +35,6 @@ import { FederationInboundMessageValidatorService } from './federation-inbound-m
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
-import { FederationGroupLeaveHintService } from './federation-group-leave-hint.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 
 describe('federated contact-card avatar limits', () => {
@@ -100,35 +98,28 @@ describe('thread-query FORBIDDEN convergence', () => {
         },
       },
     };
-    const allocated = new Map([['peer.test', 9n]]);
-    const relationshipIntents = {
-      readP2PRelationshipInTx: vi.fn().mockResolvedValue({
-        pair: {
-          active: true,
-          threadId: 31,
-          endpointA: { account: 'local-user', domain: 'local' },
-          endpointB: { account: 'remote-user', domain: 'peer.test' },
-        },
-        firstIntent: { status: 'ACCEPTED' },
-        secondIntent: { status: 'ACCEPTED' },
-      }),
-    };
-    const relationshipMutations = {
-      writeP2PIntentInTx: vi.fn().mockResolvedValue(allocated),
-    };
+    const relationshipIntents = {};
+    const relationshipMutations = {};
     const clientStateFeed = { notifyFeedUpdates: vi.fn() };
     const tasks = {
       enqueueTaskInTx: vi.fn().mockResolvedValue({ taskId: 12n }),
+    };
+    const userIntents = {
+      execute: vi
+        .fn()
+        .mockResolvedValue(
+          epoch === 7
+            ? { status: 'APPLIED' }
+            : { status: 'NO_OP', reason: 'STALE_AUTHORIZATION' },
+        ),
     };
     const service = new FederationThreadQueryDenialService(
       {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
       } as never,
       relationshipIntents as never,
-      relationshipMutations as never,
-      clientStateFeed as never,
-      { emit: vi.fn() } as never,
       tasks as never,
+      userIntents as never,
     );
     return {
       service,
@@ -137,6 +128,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       relationshipMutations,
       clientStateFeed,
       tasks,
+      userIntents,
     };
   }
 
@@ -150,6 +142,9 @@ describe('thread-query FORBIDDEN convergence', () => {
       memberDomain?: string;
     }>,
   ) {
+    const insertedValues = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ taskId: 77n }]),
+    }));
     const tx = {
       execute: vi
         .fn()
@@ -163,7 +158,16 @@ describe('thread-query FORBIDDEN convergence', () => {
           ],
         })
         .mockResolvedValueOnce({ rows: [{ authorizationEpoch: epoch }] })
-        .mockResolvedValueOnce({ rows: members }),
+        .mockResolvedValueOnce({ rows: members })
+        // Mirror-branch extras: the rounds fence bump, then the disband
+        // admission's advisory lock, mirror read, and blocker scan.
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [{ dissolvedAt: null, authorizationEpoch: epoch + 1 }],
+        })
+        .mockResolvedValueOnce({ rows: [] }),
+      insert: vi.fn(() => ({ values: insertedValues })),
       query: {
         messageThread: {
           findFirst: vi.fn().mockResolvedValue({
@@ -192,14 +196,13 @@ describe('thread-query FORBIDDEN convergence', () => {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
       } as never,
       relationshipIntents as never,
-      relationshipMutations as never,
-      clientStateFeed as never,
-      { emit: vi.fn() } as never,
       tasks as never,
+      {} as never,
     );
     return {
       service,
       tx,
+      insertedValues,
       relationshipIntents,
       relationshipMutations,
       clientStateFeed,
@@ -207,32 +210,30 @@ describe('thread-query FORBIDDEN convergence', () => {
     };
   }
 
-  it('queues the existing friendship-ending task under the frozen epoch', async () => {
+  it('runs the authored revoke business transaction under the frozen epoch', async () => {
     const harness = forbiddenHarness(7);
 
     await expect(
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
-    ).resolves.toBe('P2P_REVOKE_QUEUED');
-    expect(
-      harness.relationshipMutations.writeP2PIntentInTx,
-    ).not.toHaveBeenCalled();
-    expect(harness.tasks.enqueueTaskInTx).toHaveBeenCalledWith(harness.tx, {
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'local-user', domain: 'local' },
-          { account: 'remote-user', domain: 'peer.test' },
-        ],
+    ).resolves.toBe('P2P_REVOKED');
+    expect(harness.userIntents.execute).toHaveBeenCalledExactlyOnceWith(
+      {
+        userId: 1,
+        decision: 'REVOKED',
+        target: {
+          account: 'remote-user',
+          domain: 'peer.test',
+          namespaceId: 5,
+        },
       },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
-      actorUserId: 99,
-      payload: {
-        threadId: 31,
-        expectedAuthorizationEpoch: 7,
-        intentAuthorUserId: 1,
+      {
+        expectedAuthorization: {
+          threadId: 31,
+          epoch: 7,
+        },
       },
-    });
-    expect(harness.clientStateFeed.notifyFeedUpdates).not.toHaveBeenCalled();
+    );
+    expect(harness.tasks.enqueueTaskInTx).not.toHaveBeenCalled();
   });
 
   it('does not let an old denied round revoke a newer authorization epoch', async () => {
@@ -242,12 +243,10 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('STALE');
     expect(harness.tasks.enqueueTaskInTx).not.toHaveBeenCalled();
-    expect(
-      harness.relationshipMutations.writeP2PIntentInTx,
-    ).not.toHaveBeenCalled();
+    expect(harness.userIntents.execute).toHaveBeenCalledOnce();
   });
 
-  it('queues mirror cleanup and closes round admission atomically', async () => {
+  it('queues mirror dissolution and closes round admission atomically', async () => {
     const harness = groupForbiddenHarness(7, [
       { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
       { groupId: 4, groupDomain: 'peer.test', memberUserId: 3 },
@@ -255,7 +254,7 @@ describe('thread-query FORBIDDEN convergence', () => {
 
     await expect(
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
-    ).resolves.toBe('GROUP_REVOKE_QUEUED');
+    ).resolves.toBe('GROUP_DISBAND_QUEUED');
     expect(
       harness.relationshipMutations.lockGroupMutationInTx,
     ).not.toHaveBeenCalled();
@@ -268,21 +267,29 @@ describe('thread-query FORBIDDEN convergence', () => {
     expect(
       harness.relationshipMutations.writeMemberRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
-    expect(harness.tasks.enqueueTaskInTx).toHaveBeenCalledWith(harness.tx, {
-      scope: {
-        type: 'GROUP',
-        address: { account: '!group', domain: 'peer.test' },
-      },
-      taskType: 'REVOKE_FORBIDDEN_GROUP',
-      actorUserId: 99,
-      payload: {
-        threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 5,
-        expectedAuthorizationEpoch: 8,
-      },
-    });
-    expect(harness.tx.execute).toHaveBeenCalledTimes(5);
+    // The per-member revocation parent is gone from the mirror branch; the
+    // disband parent carries the convergence instead.
+    expect(harness.tasks.enqueueTaskInTx).not.toHaveBeenCalled();
+    // Pair miss, group read, epoch lock, member scan, rounds fence, admission
+    // advisory lock, admission mirror read, admission blocker scan.
+    expect(harness.tx.execute).toHaveBeenCalledTimes(8);
+    expect(harness.insertedValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'MUTATION',
+        scopeType: 'GROUP',
+        taskType: 'DISBAND_MIRROR_GROUP_MEMBERS',
+        actorUserId: 99,
+        payload: {
+          threadId: 31,
+          groupAccount: '!group',
+          peerDomain: 'peer.test',
+          namespaceId: 5,
+          expectedAuthorizationEpoch: 8,
+        },
+        coalescingKey: JSON.stringify(['DISBAND_MIRROR_GROUP_MEMBERS', 31]),
+        status: 'PENDING',
+      }),
+    );
     expect(
       harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
@@ -466,149 +473,6 @@ describe('FederationProfileService resource path', () => {
   });
 });
 
-describe('federated group join request', () => {
-  it.each([false, true])(
-    'checks dissolution before writing a request (dissolved: %s)',
-    async (dissolved) => {
-      vi.spyOn(groupStateHelpers, 'isGroupDissolvedInTx').mockResolvedValue(
-        dissolved,
-      );
-      const { svc, database } = makeStubs();
-      const fetchRemoteAccount = vi.fn();
-      const ensureShell = vi.fn().mockResolvedValue({
-        groupId: 17,
-        threadId: 23,
-      });
-      const writeIntent = vi
-        .fn()
-        .mockResolvedValue(new Map([['peer.test', 5n]]));
-      const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
-      database.db.transaction = vi.fn(async (operation) => operation({}));
-      const target = svc as unknown as {
-        fetchRemoteAccount: typeof fetchRemoteAccount;
-        stateFeedConsumer: {
-          ensureFederatedGroupRequestShellInTx: typeof ensureShell;
-        };
-        relationshipMutations: {
-          writeMemberRelationshipIntentInTx: typeof writeIntent;
-        };
-        clientStateFeed: { notifyFeedUpdates: () => void };
-        pushStateFeedDomains: typeof pushStateFeedDomains;
-      };
-      target.fetchRemoteAccount = fetchRemoteAccount;
-      target.stateFeedConsumer = {
-        ensureFederatedGroupRequestShellInTx: ensureShell,
-      };
-      target.relationshipMutations = {
-        writeMemberRelationshipIntentInTx: writeIntent,
-      };
-      target.clientStateFeed = { notifyFeedUpdates: vi.fn() };
-      target.pushStateFeedDomains = pushStateFeedDomains;
-
-      const beforeWrite = vi.fn().mockResolvedValue(undefined);
-      await svc.requestFederatedGroupJoin(
-        11,
-        { account: '!group', domain: 'peer.test' },
-        'hello',
-        {
-          displayName: 'Remote Group',
-          avatar: 'group-avatar',
-        },
-        beforeWrite,
-      );
-
-      if (dissolved) {
-        expect(beforeWrite).not.toHaveBeenCalled();
-        expect(writeIntent).not.toHaveBeenCalled();
-        expect(pushStateFeedDomains).not.toHaveBeenCalled();
-        expect(target.clientStateFeed.notifyFeedUpdates).not.toHaveBeenCalled();
-        return;
-      }
-
-      expect(fetchRemoteAccount).not.toHaveBeenCalled();
-      expect(ensureShell).toHaveBeenCalledWith(
-        expect.anything(),
-        '!group',
-        'peer.test',
-        1,
-      );
-      expect(writeIntent).toHaveBeenCalledWith(
-        expect.anything(),
-        23,
-        11,
-        'REQUESTED',
-        expect.any(Array),
-        'hello',
-        {
-          displayName: 'Remote Group',
-          avatar: 'group-avatar',
-        },
-      );
-      expect(pushStateFeedDomains).toHaveBeenCalledWith(
-        expect.objectContaining({ [Symbol.iterator]: expect.any(Function) }),
-      );
-    },
-  );
-
-  it('delegates remote-group revocation without a second client-feed write', async () => {
-    const { svc, database } = makeStubs();
-    const tx = {
-      select: () => ({
-        from: () => ({ where: () => ({ limit: async () => [{ id: 23 }] }) }),
-      }),
-      query: {
-        group: {
-          findFirst: vi.fn().mockResolvedValue({ id: 17 }),
-        },
-        messageThread: {
-          findFirst: vi.fn().mockResolvedValue({ id: 23 }),
-        },
-      },
-    };
-    const writeIntent = vi.fn().mockResolvedValue(new Map([['peer.test', 6n]]));
-    const notifyFeedUpdates = vi.fn();
-    const writeClientFeed = vi.fn();
-    const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
-    database.db.transaction = vi.fn(async (operation) => operation(tx));
-    const target = svc as unknown as {
-      relationshipMutations: {
-        writeMemberRelationshipIntentInTx: typeof writeIntent;
-      };
-      clientStateFeed: {
-        notifyFeedUpdates: typeof notifyFeedUpdates;
-        writeInTx: typeof writeClientFeed;
-      };
-      pushStateFeedDomains: typeof pushStateFeedDomains;
-    };
-    target.relationshipMutations = {
-      writeMemberRelationshipIntentInTx: writeIntent,
-    };
-    target.clientStateFeed = {
-      notifyFeedUpdates,
-      writeInTx: writeClientFeed,
-    };
-    target.pushStateFeedDomains = pushStateFeedDomains;
-
-    await svc.revokeGroupJoinRequest(11, {
-      account: '!group',
-      domain: 'peer.test',
-    });
-
-    expect(writeIntent).toHaveBeenCalledWith(
-      tx,
-      23,
-      11,
-      'REVOKED',
-      expect.any(Array),
-    );
-    expect(writeClientFeed).not.toHaveBeenCalled();
-    expect(notifyFeedUpdates).toHaveBeenCalledWith(expect.any(Array));
-    expect(pushStateFeedDomains).toHaveBeenCalledWith(
-      expect.objectContaining({ [Symbol.iterator]: expect.any(Function) }),
-    );
-  });
-});
-
 /** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
  *  construction, not the Nest DI container). */
 function makeStubs() {
@@ -649,6 +513,8 @@ function makeStubs() {
   };
   const database = {
     db: {
+      // Rewired per scenario (some tests swap in their own transaction runner).
+      transaction: vi.fn(),
       execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
       select: vi.fn(() => {
         let source: unknown;
@@ -668,8 +534,11 @@ function makeStubs() {
             return [
               ...new Set(
                 (await store.accountThreadState.findMany())
-                  .map((participant) => participant.user.domain)
-                  .filter((domain) => domain !== 'local'),
+                  .map(
+                    (participant: { user: { domain: string } }) =>
+                      participant.user.domain,
+                  )
+                  .filter((domain: string) => domain !== 'local'),
               ),
             ].map((domain) => ({ domain }));
           return [];
@@ -703,10 +572,12 @@ function makeStubs() {
         },
         message: {
           findMany: async (...args: unknown[]) =>
-            (await store.message.findMany(...args)).map((row) => ({
-              ...row,
-              user: row.creatorItem,
-            })),
+            (await store.message.findMany(...args)).map(
+              (row: Record<string, unknown>) => ({
+                ...row,
+                user: row.creatorItem,
+              }),
+            ),
         },
         mediaAsset: {
           findFirst: store.mediaAsset.findFirst,
@@ -780,8 +651,6 @@ function makeStubs() {
     database as never,
     upload as never,
     peerHttp,
-    threadAccess,
-    users,
   );
   const mediaLocalization = new FederationMediaLocalizationService(
     database as never,
@@ -821,17 +690,11 @@ function makeStubs() {
     deletedMessages as never,
     inboundMediaBatches,
   );
-  const groupLeaveHints = new FederationGroupLeaveHintService(
-    database as never,
-    eventEmitter as never,
-  );
   const threadQueryDenials = new FederationThreadQueryDenialService(
     database as never,
     {} as never, // relationshipIntents
-    {} as never, // relationshipMutations
-    {} as never, // clientStateFeed
-    eventEmitter as never,
     {} as never, // durableTasks
+    {} as never, // userIntents
   );
   const svc = new FederationService(
     database as never,
@@ -850,7 +713,6 @@ function makeStubs() {
     {} as never, // localSystemMessages
     peerResources,
     inboundMessageCommits,
-    groupLeaveHints,
     threadQueryDenials,
     upload as never,
     participantService as never,
@@ -864,8 +726,6 @@ function makeStubs() {
     {} as never, // relationshipIntents
     {} as never, // groupRelationships
     {} as never, // relationshipMutations
-    namespaces as never,
-    {} as never, // stateFeedConsumer
   );
   return {
     svc,
@@ -885,7 +745,6 @@ function makeStubs() {
     statePull,
     peerResources,
     inboundMessageCommits,
-    groupLeaveHints,
     threadQueryDenials,
     upload,
   };

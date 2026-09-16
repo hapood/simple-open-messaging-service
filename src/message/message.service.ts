@@ -1,5 +1,8 @@
 import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
-import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  groupState as group,
+  groupStateFields,
+} from '../business/group/shared/group-state.js';
 import {
   forwardMessage,
   mediaAsset,
@@ -57,7 +60,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import {
   parseMessageEntities,
   toDisplayText,
@@ -94,7 +97,6 @@ interface ReplyPreview {
   imageShape?: 'thumbnail' | 'avatar';
 }
 
-export type UnreadMentionState = Array<'all' | 'me'>;
 export type Message = typeof message.$inferSelect;
 export interface MessageAuthorAddress {
   account: string;
@@ -116,7 +118,7 @@ export interface MessageQueryParams {
 }
 
 /** Query-only immutable slot; deleted bodies and media metadata never leave the server. */
-export type ClientMessageTomb = Pick<
+type ClientMessageTomb = Pick<
   PublicMessage,
   'threadId' | 'seq' | 'creator' | 'profileRev' | 'createdAt' | 'updatedAt'
 > & { contentType: 'TOMB'; isDeleted: true; deletionType: MessageDeleteType };
@@ -1439,8 +1441,8 @@ export class MessageService {
           ? { image: firstUrl, imageShape: 'thumbnail' }
           : {};
       }
-    } catch {
-      // Malformed legacy content degrades to a text-only reply summary.
+    } catch (error) {
+      throw new Error('Stored message content is malformed', { cause: error });
     }
     return {};
   }

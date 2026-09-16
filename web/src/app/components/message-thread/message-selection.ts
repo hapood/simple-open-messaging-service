@@ -1,7 +1,7 @@
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData } from '../message-cards/chat-item';
 
-export type MessageSelectionState = 'none' | 'some' | 'all';
+type MessageSelectionState = 'none' | 'some' | 'all';
 
 export function messageMemberIds(item: CbItem<ChatItemData>): number[] {
   return (item.ids?.length ?? 0) > 1 ? [...item.ids!] : [item.id];

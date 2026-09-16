@@ -9,7 +9,7 @@ import {
   groupAccount,
   messageThread,
 } from '../src/database/schema.js';
-import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/business/relationship/relationship-intent.service.js';
 import { sql } from 'drizzle-orm';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';

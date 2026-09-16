@@ -1,9 +1,9 @@
-export interface MessageTextSegment {
+interface MessageTextSegment {
   kind: 'text';
   text: string;
 }
 
-export interface MessageEntitySegment {
+interface MessageEntitySegment {
   kind: 'entity';
   raw: string;
   sigil: '@';
@@ -12,7 +12,7 @@ export interface MessageEntitySegment {
   entityId: string;
 }
 
-export type MessageSegment = MessageTextSegment | MessageEntitySegment;
+type MessageSegment = MessageTextSegment | MessageEntitySegment;
 
 export const ALL_MENTION_ID = 'somfp:audience:all';
 

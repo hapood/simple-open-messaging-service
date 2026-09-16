@@ -73,7 +73,8 @@ describe('OtpLoginService', () => {
               limit: async () =>
                 table === loginCode
                   ? store.loginCode.findMany()
-                  : await store.user.findUnique().then((row) =>
+                  : await store.user.findUnique().then(
+                      (row: Record<string, unknown> | null) =>
                       row
                         ? [
                             {

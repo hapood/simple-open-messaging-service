@@ -10,7 +10,6 @@ export interface GrpCreateInfo {
 
 export interface GroupJoinRequest {
   feedId: number;
-  id: string;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
   namespaceId: number;
   profileRev: number;
@@ -35,6 +34,18 @@ export interface GroupInviteCandidate {
   state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
 }
 
+type MembershipIntentResult =
+  | { status: 'APPLIED' }
+  | {
+      status: 'NO_OP';
+      reason: 'ALREADY_MEMBER' | 'ALREADY_REVOKED' | 'ALREADY_SATISFIED';
+    };
+
+type GroupRosterRoleResult =
+  | { status: 'APPLIED' }
+  | { status: 'NO_OP'; reason: 'ROLE_UNCHANGED' }
+  | { status: 'REJECTED'; reason: string };
+
 @Injectable({
   providedIn: 'root',
 })
@@ -49,7 +60,7 @@ export class GroupService {
     );
   }
 
-  /** Batch invite acceptance. Each validated target receives a durable GROUP command. */
+  /** Invite each target through the manager-authored membership transaction. */
   inviteUsers(params: {
     users: { account: string; domain: string }[];
     groupId: number;
@@ -57,13 +68,13 @@ export class GroupService {
     return this.http.post<
       StandardResponse<{
         invited: { account: string; domain: string }[];
-        tasks: Array<{
+        skipped: Array<{
           account: string;
           domain: string;
-          taskId: string;
-          status: 'PENDING';
+          reason: string;
+          code: string;
+          message: string;
         }>;
-        skipped: { account: string; domain: string; reason: string }[];
       }>
     >(`${apiPrefix()}/group/invite`, params);
   }
@@ -84,9 +95,10 @@ export class GroupService {
   }
 
   leaveGroup(params: { groupId: number }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/leave`, params);
+    return this.http.post<StandardResponse<MembershipIntentResult>>(
+      `${apiPrefix()}/group/leave`,
+      params,
+    );
   }
 
   dissolveGroup(params: { groupId: number }) {
@@ -96,9 +108,10 @@ export class GroupService {
   }
 
   kickMember(params: { groupId: number; account: string; domain: string }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/kick`, params);
+    return this.http.post<StandardResponse<MembershipIntentResult>>(
+      `${apiPrefix()}/group/kick`,
+      params,
+    );
   }
 
   transferOwnership(params: {
@@ -106,9 +119,10 @@ export class GroupService {
     account: string;
     domain: string;
   }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/transfer`, params);
+    return this.http.post<StandardResponse<GroupRosterRoleResult>>(
+      `${apiPrefix()}/group/transfer`,
+      params,
+    );
   }
 
   /** role is ADMIN or MEMBER; ownership changes use transferOwnership. */
@@ -118,9 +132,10 @@ export class GroupService {
     domain: string;
     role: 'ADMIN' | 'MEMBER';
   }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/set-role`, params);
+    return this.http.post<StandardResponse<GroupRosterRoleResult>>(
+      `${apiPrefix()}/group/set-role`,
+      params,
+    );
   }
 
   updateGroup(params: {
@@ -170,21 +185,24 @@ export class GroupService {
     );
   }
 
-  acceptJoinRequest(params: { groupId: number; requestId: string }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/join-request/accept`, params);
+  acceptJoinRequest(params: { groupId: number; account: string; domain: string }) {
+    return this.http.post<StandardResponse<MembershipIntentResult>>(
+      `${apiPrefix()}/group/join-request/accept`,
+      params,
+    );
   }
 
-  rejectJoinRequest(params: { groupId: number; requestId: string }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/join-request/reject`, params);
+  rejectJoinRequest(params: { groupId: number; account: string; domain: string }) {
+    return this.http.post<StandardResponse<MembershipIntentResult>>(
+      `${apiPrefix()}/group/join-request/reject`,
+      params,
+    );
   }
 
-  revokeInvitation(params: { groupId: number; requestId: string }) {
-    return this.http.post<
-      StandardResponse<{ taskId: string; status: 'PENDING' }>
-    >(`${apiPrefix()}/group/invitation/revoke`, params);
+  revokeInvitation(params: { groupId: number; account: string; domain: string }) {
+    return this.http.post<StandardResponse<MembershipIntentResult>>(
+      `${apiPrefix()}/group/invitation/revoke`,
+      params,
+    );
   }
 }

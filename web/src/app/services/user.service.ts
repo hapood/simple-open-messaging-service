@@ -45,17 +45,29 @@ export type FederatedResolveFailure =
   | 'UNREACHABLE'
   | 'UNKNOWN';
 
-type DurableTaskAccepted = {
-  taskId: string;
-  status: 'PENDING';
+type RelationshipIntentApplied = {
+  status: 'OK';
+  threadId?: number;
 };
 
+type RelationshipBusinessRejection = {
+  status: 'REJECTED';
+  reason: string;
+  threadId?: never;
+};
+
+type MembershipIntentApplied =
+  | { status: 'APPLIED' }
+  | { status: 'NO_OP'; reason: string };
+
+type ThreadReadPositionResult =
+  | { status: 'APPLIED'; lastReadSeq: number }
+  | { status: 'REJECTED'; reason: string };
+
 type RequestRelationshipResponse = StandardResponse<
-  Partial<DurableTaskAccepted> & {
-    threadId?: number;
-    account?: string;
-    domain?: string;
-  }
+  | RelationshipIntentApplied
+  | RelationshipBusinessRejection
+  | MembershipIntentApplied
 >;
 
 export class FederatedResolveError extends Error {
@@ -65,7 +77,7 @@ export class FederatedResolveError extends Error {
   }
 }
 
-export interface ClientIntentUser {
+interface ClientIntentUser {
   id: number;
   account: string;
   name: string;
@@ -218,16 +230,6 @@ export type ClientStateFeedItem =
       body: {
         readThroughFeedId: number;
       };
-    }
-  | {
-      feedId: number;
-      account: string;
-      domain: string;
-      namespaceId: number;
-      eventType: 'GROUP_META_FEED_HEAD';
-      subjectAccount: '';
-      subjectDomain: 'local';
-      body: { groupMetaFeedEndId: string };
     }
   | {
       feedId: number;
@@ -1136,7 +1138,11 @@ export class UserService {
   /** Accept a stored user relationship request or group invitation. */
   acceptRelationship(params: { account: string; domain: string }) {
     return this.http.post<
-      StandardResponse<Partial<DurableTaskAccepted> & { threadId?: number }>
+      StandardResponse<
+        | RelationshipIntentApplied
+        | RelationshipBusinessRejection
+        | MembershipIntentApplied
+      >
     >(`${apiPrefix()}/relationship/accept`, params);
   }
 
@@ -1145,23 +1151,25 @@ export class UserService {
   }
 
   joinGroupRequest(params: { groupId: number }) {
-    return this.http.post<StandardResponse<DurableTaskAccepted>>(
-      `${apiPrefix()}/group/join-request`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<MembershipIntentApplied | RelationshipBusinessRejection>
+    >(`${apiPrefix()}/group/join-request`, params);
   }
 
   /** Revoke the current user relationship or pending request toward one exact Address. */
   revokeRelationship(params: { account: string; domain: string }) {
-    return this.http.post<StandardResponse<DurableTaskAccepted>>(
-      `${apiPrefix()}/relationship/revoke`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<
+        | RelationshipIntentApplied
+        | MembershipIntentApplied
+        | RelationshipBusinessRejection
+      >
+    >(`${apiPrefix()}/relationship/revoke`, params);
   }
 
   /** Commit the viewport's local read HWM. SSE wakes the client to pull the compacted attention feed. */
   markRead(params: { threadId: number; localReadHwm: number }) {
-    return this.http.post<StandardResponse>(
+    return this.http.post<StandardResponse<ThreadReadPositionResult>>(
       `${apiPrefix()}/thread/mark-read`,
       params,
     );

@@ -2,7 +2,7 @@
  *  The hysteresis prevents small finger tremors around one threshold from flipping the outcome. */
 export const CANCEL_ENTER_PX = 48;
 export const CANCEL_EXIT_PX = 32;
-export const MIN_VOICE_RECORD_MS = 500;
+const MIN_VOICE_RECORD_MS = 500;
 
 export function nextVoiceCancelState(
   currentlyCancelled: boolean,

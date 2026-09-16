@@ -32,12 +32,12 @@ import { DurableTaskDispatcherService } from '../src/durable-task/durable-task-d
 import { seedFederatedPeerNamespace } from './seed.js';
 import { ThreadFanoutProgressService } from '../src/message/thread-fanout-progress.service.js';
 import { MessageService } from '../src/message/message.service.js';
-import { SystemMessageType } from '../src/message/system-message.js';
 import { account, message, peerStateFeed } from '../src/database/schema.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { FederationThreadContentHeadService } from '../src/federation/federation-thread-content-head.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('transactional thread fanout queue', () => {
   const database = new DatabaseService();
@@ -51,9 +51,7 @@ describe('transactional thread fanout queue', () => {
   beforeAll(() => database.onModuleInit());
   afterAll(() => database.onApplicationShutdown());
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
@@ -132,13 +130,12 @@ describe('transactional thread fanout queue', () => {
   }
   async function depart(users: Array<{ id: number }>) {
     await database.db.transaction(async (tx) => {
-      const boundary = await messages.writeSystemMessageInTx(
-        tx,
-        threadId,
-        SystemMessageType.FRIEND_REMOVED,
-        users[1].id,
-        { actorUserId: users[0].id },
-      );
+      // The event carries its own participants: the initiator (users[0]) is
+      // the content fact; the departing users[1] needs no separate argument.
+      const boundary = await messages.writeSystemMessageInTx(tx, threadId, {
+        type: 'FRIEND_REMOVED',
+        initiator: users[0].id,
+      });
       await tx
         .update(accountThreadState)
         .set({ messageVisibleThroughSeq: boundary.message.seq })
@@ -235,13 +232,10 @@ describe('transactional thread fanout queue', () => {
     const users = await departingPair();
     await expect(
       database.db.transaction(async (tx) => {
-        await messages.writeSystemMessageInTx(
-          tx,
-          threadId,
-          SystemMessageType.FRIEND_REMOVED,
-          users[1].id,
-          {},
-        );
+        await messages.writeSystemMessageInTx(tx, threadId, {
+          type: 'FRIEND_REMOVED',
+          initiator: users[0].id,
+        });
         throw new Error('departure rollback');
       }),
     ).rejects.toThrow('departure rollback');
@@ -283,11 +277,10 @@ describe('transactional thread fanout queue', () => {
     await database.db
       .insert(accountThreadState)
       .values({ accountId: member.id, threadId });
-    await messages.writeSystemMessage(
-      threadId,
-      SystemMessageType.GROUP_LEFT,
-      member.id,
-    );
+    await messages.writeSystemMessage(threadId, {
+      type: 'GROUP_LEFT',
+      member: member.id,
+    });
     const [first] = (await database.db.select().from(durableTask)).filter(
       (task) => task.taskType === directedType,
     );
@@ -307,13 +300,10 @@ describe('transactional thread fanout queue', () => {
       .set({ active: true })
       .where(eq(relationshipPair.id, pair.id));
     await database.db.transaction(async (tx) => {
-      const boundary = await messages.writeSystemMessageInTx(
-        tx,
-        threadId,
-        SystemMessageType.GROUP_LEFT,
-        member.id,
-        {},
-      );
+      const boundary = await messages.writeSystemMessageInTx(tx, threadId, {
+        type: 'GROUP_LEFT',
+        member: member.id,
+      });
       await tx
         .update(accountThreadState)
         .set({ messageVisibleThroughSeq: boundary.message.seq })
@@ -349,6 +339,7 @@ describe('transactional thread fanout queue', () => {
         threadId,
         messageEndSeq: 6,
         tombstoneEndSeq: 3,
+        profileRev: 0,
       });
       expect(task.scopeKey).toBe(
         threadFanoutScope(task.taskType as typeof federationType, threadId),
@@ -485,14 +476,15 @@ describe('transactional thread fanout queue', () => {
   });
 
   it('admits system-message fanout in its source transaction and coalesces repeated notices', async () => {
-    await messages.writeSystemMessage(threadId, SystemMessageType.FRIEND_ADDED);
-    await messages.writeSystemMessage(threadId, SystemMessageType.FRIEND_ADDED);
+    await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
+    await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
     const queued = await database.db.select().from(durableTask);
     expect(queued).toHaveLength(1);
     expect(queued[0].payload).toEqual({
       threadId,
       messageEndSeq: 2,
       tombstoneEndSeq: 0,
+      profileRev: 0,
     });
     expect(queued[0].status).toBe('PENDING');
   });
@@ -500,11 +492,9 @@ describe('transactional thread fanout queue', () => {
   it('does not leak system-message fanout after a relationship transaction rolls back', async () => {
     await expect(
       database.db.transaction(async (tx) => {
-        await messages.writeSystemMessageInTx(
-          tx,
-          threadId,
-          SystemMessageType.FRIEND_ADDED,
-        );
+        await messages.writeSystemMessageInTx(tx, threadId, {
+          type: 'FRIEND_ADDED',
+        });
         throw new Error('relationship rollback');
       }),
     ).rejects.toThrow('relationship rollback');
@@ -559,10 +549,7 @@ describe('transactional thread fanout queue', () => {
         .update(messageThread)
         .set({ curSeq: 1 })
         .where(eq(messageThread.id, threadId));
-      await messages.writeSystemMessage(
-        threadId,
-        SystemMessageType.FRIEND_ADDED,
-      );
+      await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
       await enqueueBoth(2);
       const task = (await database.db.select().from(durableTask)).find(
         (row) => row.taskType === federationType,
@@ -607,6 +594,7 @@ describe('transactional thread fanout queue', () => {
       threadId,
       messageEndSeq: 5,
       tombstoneEndSeq: 2,
+      profileRev: 0,
     });
   });
 
@@ -641,6 +629,7 @@ describe('transactional thread fanout queue', () => {
       threadId,
       messageEndSeq: 6,
       tombstoneEndSeq: 3,
+      profileRev: 0,
     });
     expect(successor?.checkpoint).toEqual({});
     expect(

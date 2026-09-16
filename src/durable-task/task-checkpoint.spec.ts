@@ -12,17 +12,14 @@ describe('saveTaskCheckpointInTx', () => {
     return { tx, set, where };
   }
 
-  it.each(['PROCESSING', 'ASYNC_PROCESSING'] as const)(
-    'writes only while the task is in the expected %s state',
-    async (status) => {
-      const h = harness([{ id: 7n }]);
-      await saveTaskCheckpointInTx(h.tx as never, 7n, { after: '10' }, status);
-      expect(h.set).toHaveBeenCalledWith({ checkpoint: { after: '10' } });
-      expect(
-        new PgDialect().sqlToQuery(h.where.mock.calls[0][0]).params,
-      ).toEqual([7n, status]);
-    },
-  );
+  it('writes only while the task is processing', async () => {
+    const h = harness([{ id: 7n }]);
+    await saveTaskCheckpointInTx(h.tx as never, 7n, { after: '10' });
+    expect(h.set).toHaveBeenCalledWith({ checkpoint: { after: '10' } });
+    expect(
+      new PgDialect().sqlToQuery(h.where.mock.calls[0][0]).params,
+    ).toEqual([7n, 'PROCESSING']);
+  });
 
   it('preserves synchronous state checking by default', async () => {
     const h = harness([{ id: 7n }]);
@@ -32,13 +29,10 @@ describe('saveTaskCheckpointInTx', () => {
     );
   });
 
-  it.each(['PROCESSING', 'ASYNC_PROCESSING'] as const)(
-    'fails instead of silently losing a checkpoint when %s no longer matches',
-    async (status) => {
-      const h = harness([]);
-      await expect(
-        saveTaskCheckpointInTx(h.tx as never, 7n, {}, status),
-      ).rejects.toThrow('Task is not processing');
-    },
-  );
+  it('fails instead of silently losing a checkpoint when the task is no longer processing', async () => {
+    const h = harness([]);
+    await expect(
+      saveTaskCheckpointInTx(h.tx as never, 7n, { after: 1 }),
+    ).rejects.toThrow('Task is not processing');
+  });
 });

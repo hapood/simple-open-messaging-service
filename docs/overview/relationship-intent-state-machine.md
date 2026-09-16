@@ -63,6 +63,11 @@ An explicit acceptance is valid only while the reverse direction is effective. A
 request is stored as `ACK` when its reverse is already effective. This is crossed-request promotion;
 it does not add another state or protocol round.
 
+Receiving the peer's `REV` concludes an effective local `REQ` or `ACK` as a
+locally authored `REV` in the same relationship transaction. An already local
+`REV` is left unchanged. A later new request starts from `REV` and publishes a
+new directional revision.
+
 ## Pair folding
 
 A direction is effective when it is `ACK`, or when it is `REQ` before expiry. The pair algebra is:
@@ -229,10 +234,13 @@ presentation concerns and cannot affect membership.
   and replay make timestamp comparison invalid for state transitions.
 - Federation transports authored facts. A receiver applies valid, unexpired facts idempotently and
   performs the same pair fold locally.
+- A received `ACK` against the receiver's current authored `REV` is a no-op.
+  The existing authored `REV` feed item remains responsible for convergence;
+  consuming the ACK does not reindex or resend it.
 - An expired incoming request is a no-op for the authoritative pair and every projection.
 
 Relevant implementation entry points are
-[`RelationshipIntentService`](../../src/relationship/relationship-intent.service.ts),
-[`deriveRelationshipIntentTransition`](../../src/relationship/relationship-intent-state.ts), and the client
+[`RelationshipIntentService`](../../src/business/relationship/relationship-intent.service.ts),
+[`deriveRelationshipIntentTransition`](../../src/business/shared/relationship-intent-state.ts), and the client
 request projection in
 [`FriendRequestProjection`](../../web/src/app/services/friend-request-state.ts).

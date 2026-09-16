@@ -12,10 +12,7 @@ export {
   parseSystemMessageContent,
   stringifySystemMessageContent,
 } from '../../shared/system-message-content.js';
-export type {
-  SystemMessageContent,
-  OrdinarySystemMessageContent,
-} from '../../shared/system-message-content.js';
+export type { OrdinarySystemMessageContent } from '../../shared/system-message-content.js';
 export type SystemMessageInput = OrdinarySystemMessageContent<AccountTarget>;
 
 export async function resolveSystemMessageInTx(

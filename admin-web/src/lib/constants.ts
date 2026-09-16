@@ -35,7 +35,7 @@ export const PASSWORD_REGEX = /^([a-zA-Z0-9.@!#$%^&*()]){6,20}$/;
 // Login-method policy advertised by the backend GET /config (mirrors src/config/public-config.ts).
 // A `const` object + derived type (not an enum): cleaner runtime output than an enum's IIFE, and the
 // consumer web uses the same shape for its BusinessCode.
-export const LoginMode = {
+const LoginMode = {
   ALL: 1, // password everywhere; OTP on Android; QR on desktop/web
   APP_OTP_AND_QR: 2, // password disabled; Android logs in via OTP; desktop/web via QR
   PASSWORD_ONLY: 3, // password only on every client

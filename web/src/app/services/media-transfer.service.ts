@@ -3,7 +3,7 @@ import { ReplaySubject, type Observable } from 'rxjs';
 import { isTauri, tauriInvoke } from './runtime';
 
 export type MediaTransferKind = 'image' | 'file' | 'video' | 'audio';
-export type MediaTransferStatus = 'uploading' | 'failed' | 'completed';
+type MediaTransferStatus = 'uploading' | 'failed' | 'completed';
 
 export interface MediaTransferTask {
   clientMessageId: string;

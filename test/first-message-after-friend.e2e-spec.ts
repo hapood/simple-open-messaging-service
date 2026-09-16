@@ -7,12 +7,8 @@ import {
   beforeEach,
   vi,
 } from 'vitest';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
@@ -22,13 +18,16 @@ import {
   accountThreadState,
   threadAudience,
 } from '../src/database/schema';
-import { RelationshipService } from '../src/relationship/relationship.service';
+import { ReceivedUserIntentService } from '../src/business/user/p2p-intent/received/received-user-intent.service.js';
+import { UserIntentService } from '../src/business/user/p2p-intent/authored/user-intent.service.js';
 import {
   registerAndLogin,
   openSse,
   waitForSseEvent,
 } from './federation-test-helpers';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -45,19 +44,12 @@ import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
  * federation-test-helpers HTTP/SSE helpers by wrapping the app with its base URL and database handle.
  */
 describe('First message after friend-add is delivered (single instance)', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let baseUrl: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     // Resolve the OS-assigned port so the helpers can reach the app over real HTTP/SSE (mirrors the
     // federation subprocess harness, which reaches apps at http://127.0.0.1:<port>).
     const address = (
@@ -69,9 +61,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
   beforeEach(async () => {
     // Truncating User CASCADE-clears threads, messages, invites, etc. — a fresh graph per test.
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -325,26 +315,38 @@ describe('First message after friend-add is delivered (single instance)', () => 
     );
     const foreignBob = { account: 'bob', domain: 'peer.test', namespaceId };
 
-    const relationships = app.get(RelationshipService);
+    const userIntents = app.get(UserIntentService);
+    const receivedUserIntents = app.get(ReceivedUserIntentService);
     await database.db.transaction(async (tx) => {
-      await relationships.writeLocalP2PIntentInTx(
+      await userIntents.executeInTx(
         tx,
-        alice.id,
-        foreignBob,
-        true,
+        {
+          userId: alice.id,
+          decision: 'REQUESTED',
+          target: {
+            account: foreignBob.account,
+            domain: foreignBob.domain,
+            namespaceId: foreignBob.namespaceId,
+          },
+        },
+        [],
       );
-      await relationships.applyRemoteP2PIntentInTx(tx, {
-        messageEndSeq: 0,
-        tombstoneEndSeq: 0,
-        localUserId: alice.id,
-        peerUserId: foreignBob,
-        status: 'REQUESTED',
-        profileRev: 0,
-        note: '',
-        requestedAt: new Date(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        origin: foreignBob.domain,
-      });
+      await receivedUserIntents.applyInTx(
+        tx,
+        {
+          localUserId: alice.id,
+          peer: foreignBob,
+          body: {
+            status: 'REQUESTED',
+            profileRev: 0,
+            note: '',
+            requestedAt: Date.now(),
+            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          },
+        },
+        [],
+        new Set(),
+      );
     });
     const friendship = (
       await findP2PRelationship(database.db, alice.id, foreignBob)
@@ -385,23 +387,40 @@ describe('First message after friend-add is delivered (single instance)', () => 
       domain: 'strict-peer.test',
       namespaceId,
     };
-    const relationships = app.get(RelationshipService);
+    const userIntents = app.get(UserIntentService);
+    const receivedUserIntents = app.get(ReceivedUserIntentService);
     await database.db.transaction((tx) =>
-      relationships.writeLocalP2PIntentInTx(tx, alice.id, foreignBob, true),
+      userIntents.executeInTx(
+        tx,
+        {
+          userId: alice.id,
+          decision: 'REQUESTED',
+          target: {
+            account: foreignBob.account,
+            domain: foreignBob.domain,
+            namespaceId: foreignBob.namespaceId,
+          },
+        },
+        [],
+      ),
     );
     await database.db.transaction((tx) =>
-      relationships.applyRemoteP2PIntentInTx(tx, {
-        messageEndSeq: 0,
-        tombstoneEndSeq: 0,
-        localUserId: alice.id,
-        peerUserId: foreignBob,
-        status: 'REQUESTED',
-        profileRev: 1,
-        note: 'crossed request',
-        requestedAt: new Date(),
-        expiresAt: new Date(Date.now() + 60_000),
-        origin: 'strict-peer.test',
-      }),
+      receivedUserIntents.applyInTx(
+        tx,
+        {
+          localUserId: alice.id,
+          peer: foreignBob,
+          body: {
+            status: 'REQUESTED',
+            profileRev: 1,
+            note: 'crossed request',
+            requestedAt: Date.now(),
+            expiresAt: Date.now() + 60_000,
+          },
+        },
+        [],
+        new Set(),
+      ),
     );
 
     const afterCrossedRequest = (
@@ -411,18 +430,24 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(afterCrossedRequest?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
-      relationships.applyRemoteP2PIntentInTx(tx, {
-        messageEndSeq: 0,
-        tombstoneEndSeq: 0,
-        localUserId: alice.id,
-        peerUserId: foreignBob,
-        status: 'ACCEPTED',
-        profileRev: 1,
-        note: 'crossed request',
-        requestedAt: new Date(),
-        expiresAt: null,
-        origin: 'strict-peer.test',
-      }),
+      receivedUserIntents.applyInTx(
+        tx,
+        {
+          localUserId: alice.id,
+          peer: foreignBob,
+          body: {
+            status: 'ACCEPTED',
+            profileRev: 1,
+            note: 'crossed request',
+            requestedAt: Date.now(),
+            expiresAt: null,
+            messageEndSeq: 0,
+            tombstoneEndSeq: 0,
+          },
+        },
+        [],
+        new Set(),
+      ),
     );
 
     const afterConfirmation = (

@@ -109,6 +109,8 @@ export class ThreadFeedStateDto {
 
   @ApiProperty({ minimum: 0 }) messageEndSeq!: number;
   @ApiProperty({ minimum: 0 }) tombstoneEndSeq!: number;
+  @ApiProperty({ type: String, nullable: true, example: '42' })
+  groupMetaFeedEndId!: number | null;
 
   @ApiProperty({
     example: 42,
@@ -310,6 +312,17 @@ export class MessageTombstoneQueryPageDto {
 
   @ApiProperty({ example: false })
   hasMore!: boolean;
+}
+
+export class ThreadReadPositionResultDto {
+  @ApiProperty({ enum: ['APPLIED', 'REJECTED'], example: 'APPLIED' })
+  status!: 'APPLIED' | 'REJECTED';
+
+  @ApiProperty({ required: false, example: 'THREAD_NOT_FOUND' })
+  reason?: string;
+
+  @ApiProperty({ required: false, example: 42 })
+  lastReadSeq?: number;
 }
 
 /**

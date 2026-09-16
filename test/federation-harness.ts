@@ -9,10 +9,8 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import sharp from 'sharp';
-import {
-  databaseSchema,
-  type Database,
-} from '../src/database/database.service.js';
+import { databaseSchema } from '../src/database/database-schema.js';
+import type { Database } from '../src/database/database.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';

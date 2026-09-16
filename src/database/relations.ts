@@ -17,7 +17,6 @@ import {
   groupAccount,
   groupMeta,
   groupMetaMemberFeed,
-  groupMetaProfileFeed,
   loginCode,
   sessionToken,
   twoFactorBackupCode,
@@ -134,7 +133,6 @@ export const messageThreadRelations = relations(
       references: [groupAccount.id],
     }),
     groupMeta: one(groupMeta),
-    groupProfile: one(groupMetaProfileFeed),
     groupMembers: many(groupMetaMemberFeed),
     messageAssets: many(messageAsset),
     messages: many(message),
@@ -263,15 +261,6 @@ export const groupMetaMemberFeedRelations = relations(
   }),
 );
 
-export const groupMetaProfileFeedRelations = relations(
-  groupMetaProfileFeed,
-  ({ one }) => ({
-    thread: one(messageThread, {
-      fields: [groupMetaProfileFeed.threadId],
-      references: [messageThread.id],
-    }),
-  }),
-);
 
 export const loginCodeRelations = relations(loginCode, ({ one }) => ({
   account: one(account, {

@@ -8,13 +8,15 @@ import {
   account,
   groupAccount,
   groupMeta,
-  groupMetaProfileFeed,
   messageThread,
   profileTable,
 } from '../src/database/schema.js';
-import { GroupService } from '../src/group/group.service.js';
-import { groupState, readGroupState } from '../src/group/group-state.js';
-import { AuthoritativeGroupMetaMutationService } from '../src/federation/authoritative-group-meta-mutation.service.js';
+import { GroupService } from '../src/business/group/group.service.js';
+import {
+  groupState,
+  readGroupState,
+} from '../src/business/group/shared/group-state.js';
+import { GroupMetaFeedService } from '../src/business/group/meta/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
 describe('account controls and exact profiles', () => {
@@ -107,10 +109,7 @@ describe('account controls and exact profiles', () => {
       eq(groupState.id, created.threadId),
     );
     const publish = vi
-      .spyOn(
-        app.get(AuthoritativeGroupMetaMutationService),
-        'applyProfileFactInTx',
-      )
+      .spyOn(app.get(GroupMetaFeedService), 'reconcileProfileInTx')
       .mockRejectedValueOnce(new Error('publication failed'));
     try {
       await expect(
@@ -159,10 +158,7 @@ describe('account controls and exact profiles', () => {
     });
     await database.db
       .insert(groupMeta)
-      .values({ threadId: thread.id, metaEndId: 1n });
-    await database.db
-      .insert(groupMetaProfileFeed)
-      .values({ threadId: thread.id, feedId: 2n, profileRev: 2 });
+      .values({ threadId: thread.id, metaEndId: 1n, profileRev: 2 });
     expect(
       await readGroupState(database.db, eq(groupState.id, thread.id)),
     ).toMatchObject({ name: 'Received name', profileRev: 2, namespaceId });

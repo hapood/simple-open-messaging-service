@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  extractDigestEntries,
   parseFileContent,
   parseFileExt,
   parseLinkContent,
@@ -121,7 +122,7 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ mimeType: '' }))).toBeNull();
   });
 
-  it('rejects a legacy flat (pre-CAS) upload URL — a CAS shard URL is the only accepted shape', () => {
+  it('rejects upload URLs outside the current CAS shard shape', () => {
     expect(
       parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345.pdf' })),
     ).toBeNull();
@@ -142,6 +143,22 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ name: '' }))).toBeNull();
     expect(parseFileContent(ok({ name: 'x'.repeat(101) }))).toBeNull();
     expect(parseFileContent(ok({ name: 'x'.repeat(100) }))).not.toBeNull(); // boundary inclusive
+  });
+});
+
+describe('extractDigestEntries', () => {
+  it('extracts current CAS references and their declared sizes', () => {
+    expect(extractDigestEntries(ok())).toEqual([
+      {
+        digest:
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        size: 12345,
+      },
+    ]);
+  });
+
+  it('rejects malformed stored content instead of silently degrading it', () => {
+    expect(() => extractDigestEntries('not json')).toThrow(SyntaxError);
   });
 });
 

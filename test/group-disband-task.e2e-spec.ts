@@ -16,10 +16,8 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
-import {
-  waitForAcceptedDurableTasks,
-  waitForDurableTask,
-} from './durable-task-helpers.js';
+import { waitForDurableTask } from './durable-task-helpers.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('group disband task fan-out', () => {
   let app: NestFastifyApplication;
@@ -37,9 +35,7 @@ describe('group disband task fan-out', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => app?.close());
@@ -73,13 +69,11 @@ describe('group disband task fan-out', () => {
         users: [{ account: member.account, domain: 'local' }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTasks(database.db, invited.body);
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(joined.body.code).toBe(BusinessCode.OK);
-    await waitForDurableTask(database.db, joined.body.data.taskId);
     const [threadBeforeDissolve] = await database.db
       .select({ groupId: messageThread.groupAccountId })
       .from(messageThread)

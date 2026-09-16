@@ -169,7 +169,7 @@ type ClientRelationshipIntentItem = Extract<
  *  `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
  *  The thread-list revision cursor stays in-memory in UserService (seeded from /user/my-profile each boot) —
  *  it does NOT live here. */
-export interface MetaRecord {
+interface MetaRecord {
   key: string;
   value: unknown;
 }
@@ -177,9 +177,9 @@ export interface MetaRecord {
 type CachedMessageBody = Message;
 
 /** A deletion learned before its message body. It deliberately has no synthetic content or creator. */
-export type CachedMessageTombstone = MessageDeletionMarker | MessageTomb;
+type CachedMessageTombstone = MessageDeletionMarker | MessageTomb;
 
-export type CachedMessage = CachedMessageBody | CachedMessageTombstone;
+type CachedMessage = CachedMessageBody | CachedMessageTombstone;
 
 function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
@@ -1504,6 +1504,20 @@ export class WebdbStorage {
     });
   }
 
+  /** Commit Group Meta pages discovered through thread heads without moving the state-feed cursor. */
+  async applyGroupMetaPages(
+    groupMeta: readonly ClientGroupMetaApply[],
+  ): Promise<void> {
+    if (groupMeta.length === 0) return;
+    const cursor = await this.getMeta('stateFeedId');
+    await this.applyStateFeedPage(
+      [],
+      typeof cursor === 'number' && cursor >= 0 ? cursor : 0,
+      groupMeta,
+      false,
+    );
+  }
+
   private applyStateFeedPageInWorker(
     userId: string,
     items: ClientStateFeedItem[],
@@ -2203,12 +2217,10 @@ export class WebdbStorage {
       }
       const thread = await tx.objectStore('threads').get(threadId);
       if (thread?.type === 'GROUP')
-        await tx
-          .objectStore('threads')
-          .put({
-            ...thread,
-            group: { ...thread.group, memberCount: 0, groupMetaFeedId: '0' },
-          });
+        await tx.objectStore('threads').put({
+          ...thread,
+          group: { ...thread.group, memberCount: 0, groupMetaFeedId: '0' },
+        });
       await tx.done;
     });
   }

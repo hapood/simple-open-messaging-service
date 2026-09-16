@@ -99,13 +99,12 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       endpointBType: 'USER',
       endpointBAccount: account,
       endpointBDomain: 'local',
-      endpointBNamespaceId: ns,
+      endpointBNamespaceId: 0,
     });
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId,
       memberAccount: account,
       memberDomain: 'local',
-      memberNamespaceId: 0,
       operation: 'UPSERT',
       feedId: 1n,
       body: { role: 'MEMBER', profileRev: 1 },

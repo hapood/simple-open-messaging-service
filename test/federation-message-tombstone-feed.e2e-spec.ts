@@ -18,6 +18,7 @@ import {
 import { FederationMessageTombstoneFeedService } from '../src/federation/federation-message-tombstone-feed.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedAcceptedRelationship } from './seed.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('FederationMessageTombstoneFeedService query', () => {
   let mod: TestingModule;
@@ -34,16 +35,12 @@ describe('FederationMessageTombstoneFeedService query', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
     service = new FederationMessageTombstoneFeedService(database);
   });
 
   afterAll(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
     await mod.close();
   });
 

@@ -1,11 +1,11 @@
 export type FriendRequestIntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-export type FriendRequestProjectionStatus = FriendRequestIntentStatus;
-export type FriendRequestBucket = 'RECEIVED' | 'SENT';
+type FriendRequestProjectionStatus = FriendRequestIntentStatus;
+type FriendRequestBucket = 'RECEIVED' | 'SENT';
 export type FriendRequestDirection = 'INCOMING' | 'OUTGOING';
 
 export const FRIEND_INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-export interface FriendRequestPeer {
+interface FriendRequestPeer {
   id: number;
   account: string;
   name: string;

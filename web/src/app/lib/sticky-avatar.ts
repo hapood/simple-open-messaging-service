@@ -1,9 +1,9 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
 
-export const STICKY_AVATAR_TOP_GAP_PX = 12;
-export const STICKY_AVATAR_SIZE_PX = 40;
+const STICKY_AVATAR_TOP_GAP_PX = 12;
+const STICKY_AVATAR_SIZE_PX = 40;
 
-export interface StickyAvatarRow {
+interface StickyAvatarRow {
   readonly creator: string;
   readonly side: 'self' | 'other';
   readonly top: number;
@@ -12,7 +12,7 @@ export interface StickyAvatarRow {
   readonly naturalAvatarTop?: number;
 }
 
-export interface StickyAvatarPlacement {
+interface StickyAvatarPlacement {
   readonly rowIndex: number;
   readonly groupStartIndex: number;
   readonly groupEndIndex: number;

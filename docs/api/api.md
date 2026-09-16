@@ -54,7 +54,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 | `10xxx` | General         | `10000` validation · `10001` not found · `10002` already exists · `10003` unauthenticated · `10004` forbidden · `10005` rate-limited/IP-banned · `10007` session revoked · `10008` quota exceeded · `10009` invalid credentials · `10010` registration disabled · `10011` login method disabled · `10012-10016` OTP/QR invalid/expired/consumed · `10017` password not set · `10018` must change password · `10019-10025` admin 2FA / WebAuthn · `10999` server error |
 | `20xxx` | Friend · Invite | `20001` friend self · `20002` friend not found · `20004` invalid target (e.g. a group account) · `20010` invite not found · `20011` invite expired · `20012` invite not yours · `20013` invite already handled                                                                                                                                                                                                                                                        |
 | `30xxx` | Message         | `30001` empty content · `30002` thread not approved · `30003` thread not found                                                                                                                                                                                                                                                                                                                                                                                        |
-| `40xxx` | Group           | `40002` non-friend · `40003` invalid invite token · `40004` owner must transfer · `40005` role forbidden · `40006` target not a member                                                                                                                                                                                                                                                                                                                                |
+| `40xxx` | Group           | `40003` invalid invite token · `40004` owner must transfer · `40005` role forbidden · `40006` target not a member                                                                                                                                                                                                                                                                                                                                                     |
 | `50xxx` | Federation      | `50011` peer daily-quota exceeded (HTTP 429)                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `70xxx` | Call            | `70001` not allowed (not friends) · `70002` call not found · `70003` not a participant · `70004` busy · `70005` invalid state transition                                                                                                                                                                                                                                                                                                                              |
 
@@ -182,7 +182,7 @@ Federation profile endpoints keep their existing wire format and authorization r
 
 ## Relationship API
 
-> Controller: [src/controller/relationship.controller.ts](../../src/controller/relationship.controller.ts) · Service: [src/relationship/relationship.service.ts](../../src/relationship/relationship.service.ts)
+> Controller: [src/controller/relationship.controller.ts](../../src/controller/relationship.controller.ts) · Service: [src/business/relationship/relationship.service.ts](../../src/business/relationship/relationship.service.ts)
 
 Friend and group requests use the same directed facts. `RelationshipIntent(A,B)` and
 `RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,
@@ -199,8 +199,9 @@ the complete transition, pair-folding, and projection-side-effect rules.
   `local` for a local account. For a federated Address, `displayName` is required and `avatar` is an
   optional untrusted request-card snapshot obtained by the preceding temporary resolve. Database user
   ids are not part of the client identity contract.
-- **Response data**: `{ taskId: string, status: "PENDING" }`. Success means the task was durably accepted,
-  not that the relationship transaction has completed. Completion arrives through the Client State Feed.
+- **Response data**: user intents return `{ status: "OK", threadId? }`; group-member intents return
+  `{ status: "APPLIED" }` or an idempotent `{ status: "NO_OP", reason }`. Expected refusal is an
+  HTTP-200 business envelope whose data is `{ status: "REJECTED", reason }`.
 - Execution upserts the caller's directed request. A new request expires after seven days; an explicit
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
@@ -208,10 +209,10 @@ the complete transition, pair-folding, and projection-side-effect rules.
   resolver; there is no separate `PROFILE` State Feed event. A stable foreign identity shell and its
   immutable `ProfileVersion` may be materialized by that resolution without changing relationship
   authorization.
-- The federated request endpoint and its DurableTask perform no peer discovery, recognition, or other
-  network operation. The preceding exact-address resolve must already have established an active peer
-  namespace. If it has not, the local transaction fails and creates no relationship request or State
-  Feed item.
+- The federated request transaction performs no peer discovery, recognition, or inline network
+  operation. The preceding exact-address resolve must already have established an active peer namespace.
+  If it has not, the command returns a business rejection and creates no relationship request or State
+  Feed item. Peer delivery is awakened only after commit.
 - No federated request id is exposed. A group account is accepted only for a federated group-join
   request; a local group relationship still requires an existing invitation.
 
@@ -222,7 +223,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
   relationship. The conversation history is retained.
 - For a federated group Address, revokes only the caller's pending group-join request. Leaving an
   active group remains a separate membership operation.
-- **Response data**: `{ taskId: string, status: "PENDING" }`.
+- **Response data** follows the synchronous business-result contract above.
 
 ### POST `/relationship/accept` — Accept an incoming relationship request
 
@@ -232,11 +233,11 @@ the complete transition, pair-folding, and projection-side-effect rules.
   active only when both directed intents are effective.
 - For a group invitation, the group mirror becomes active only after the origin's state snapshot
   confirms membership.
-- **Response data**: `{ taskId: string, status: "PENDING" }` for durable operations.
+- **Response data** follows the synchronous business-result contract above.
 
 There are no separate public reject, request-revoke, or delete-friend routes. All three user-facing
-actions use `/relationship/revoke` with the counterparty Address; the server resolves the current
-relationship state and dispatches the corresponding internal task. A USER→GROUP federated join
+actions use `/relationship/revoke` with the counterparty Address; the authored business transaction
+resolves and validates current state under its locks. A USER→GROUP federated join
 application likewise uses `/relationship/request`. GROUP→USER invitation administration remains
 under `/group/*` because the group, rather than the current user, authors that direction.
 
@@ -283,8 +284,7 @@ under `/group/*` because the group, rather than the current user, authors that d
   retaining `threadId`, `seq`, `creator`, `profileRev`, `createdAt`, and `updatedAt`.
   It contains no original body, quote, media metadata, or internal ID. Tombs occupy
   their original sequence slot and count toward page size in both directions.
-  `TOMB` is not accepted as a sendable content type. Client/federation consumption
-  cutover remains pending; this intermediate contract is not compatible with old clients.
+  `TOMB` is not accepted as a sendable content type.
 - **Body**: `{ threadId, after?, before?, through?, take? }`. `after` and `before` are mutually exclusive
   non-negative integer cursors. Forward pages cover `(after, through]` in ascending order; reverse pages cover
   `[through, before)` in descending order. `through` is an inclusive fixed boundary.
@@ -316,16 +316,16 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 - Per-`AccountThreadState` mutations: the P2P thread lookup, read watermark advance, mute, pin, and per-thread alias. `search-messages` does in-chat search.
 
-`mark-read` accepts a durable viewport read mutation:
+`mark-read` synchronously commits a viewport read mutation:
 
 - **Body**: `{ threadId, localReadHwm, force?: boolean }`; position is a nonnegative int32.
-- **Data**: `{ taskId: string, status: 'PENDING' }`. Acceptance is not read confirmation.
-- Ordinary pending requests merge by maximum position. `force: true` permits rollback
-  and forms an ordering barrier; ordinary clients omit it.
-- Execution atomically adjusts the exact persisted unread count and read position.
+- **Data**: `{ status: 'APPLIED', lastReadSeq: number }`; an unavailable account-thread
+  relationship returns the normal business result `{ status: 'REJECTED', reason: 'THREAD_NOT_FOUND' }`.
+- Ordinary requests preserve a monotonic cursor. `force: true` permits rollback;
+  ordinary clients omit it.
+- The HTTP business transaction atomically adjusts the exact persisted unread count and read position.
   No count cap applies; `999+` is a client presentation choice.
-- Committed state arrives through the thread feed. Task failures and
-  supersession follow the durable-task lifecycle.
+- After commit, the server publishes an SSE hint for clients to pull the thread feed.
 
 ### POST `/thread/feed-delta`
 
@@ -363,24 +363,24 @@ task coalescing, and optimistic client correction semantics.
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, users: [{ account, domain }] }` — enqueue one GROUP invitation per
-  valid existing friend. The server resolves each address to the current authoritative
-  identity and verifies the active P2P relationship. Resolution never creates a User
-  or selects an identity copied from another peer's group. `local` and this server's
-  public domain both identify local users. Duplicate normalized addresses are coalesced.
-  The response contains `invited: [{ account, domain }]`,
-  `tasks: [{ account, domain, taskId, status: "PENDING" }]`, and
-  `skipped: [{ account, domain, reason }]`. Client-side profile lookup and candidate
-  listing are optional presentation steps, not prerequisites for admission.
+- **Body**: `{ groupId, users: [{ account, domain }] }` — author one GROUP invitation per
+  valid addressed user. Friendship is not an invitation prerequisite. The server resolves each
+  address to the current authoritative identity; resolution never selects an identity copied from
+  another peer's group. `local` and this server's public domain both identify local users. Duplicate
+  normalized addresses are coalesced. The synchronous response contains
+  `invited: [{ account, domain }]` and
+  `skipped: [{ account, domain, reason, code, message }]`.
 
 ### Group request projections
 
 - `POST /group/join-requests` and `POST /group/invitations` use the same newest-first request-page
-  contract: `{ groupId, before?, take? }`.
+  contract: `{ groupId, before?, take? }`. The caller must be an active OWNER or ADMIN;
+  rows carry the member address and `feedId` rather than a request id.
 - `POST /group/join-request/{accept,reject}` acts on a member-authored application.
 - `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
-- These mutation routes return `{ taskId: string, status: "PENDING" }` after
-  validation and durable acceptance.
+- Each manager action uses `{ groupId, account, domain }` to identify the current member relationship.
+- These mutation routes execute their authored business transaction synchronously and return
+  `APPLIED`, an idempotent `NO_OP`, or an HTTP-200 business rejection.
 - These lists are backend projections written after the corresponding intent fact and relationship
   fold commit. They are not membership authority.
 
@@ -388,9 +388,8 @@ task coalescing, and optimistic client correction semantics.
 
 - `leave` (`40004` owner must transfer first) · `kick` (`40005` forbidden,
   `40006` target not a member) · `transfer` (ownership) · `set-role`
-  (ADMIN/MEMBER) return durable task acceptance. `update`
-  (name/avatar/bio) remains synchronous because it is not a relationship
-  mutation.
+  (ADMIN/MEMBER) execute synchronously and return business results. `update`
+  (name/avatar/bio) is also synchronous.
 
 ### POST `/group/dissolve`
 

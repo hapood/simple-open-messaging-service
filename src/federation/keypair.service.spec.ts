@@ -102,16 +102,16 @@ describe('KeypairService identity continuity', () => {
     expect(service.getSigningKeyCertificates()).toHaveLength(1);
   });
 
-  it('refuses the obsolete unversioned file instead of silently rewriting it', async () => {
+  it('refuses an unsupported unversioned file without rewriting it', async () => {
     const privateKey = ed25519.utils.randomSecretKey();
     const publicKey = ed25519.getPublicKey(privateKey);
-    const legacy = {
+    const unsupported = {
       keyId: 'node-a.example/key-1',
       publicKey: Buffer.from(publicKey).toString('base64'),
       privateKey: Buffer.from(privateKey).toString('base64'),
       createdAt: '2025-01-01T00:00:00.000Z',
     };
-    writeFileSync(keyPath, JSON.stringify(legacy), { mode: 0o600 });
+    writeFileSync(keyPath, JSON.stringify(unsupported), { mode: 0o600 });
     const fake = fakeDatabase();
     const service = new KeypairService(fake.database, keyPath);
 
@@ -121,7 +121,49 @@ describe('KeypairService identity continuity', () => {
       available: false,
       reason: expect.stringContaining('unsupported key file version'),
     });
-    expect(JSON.parse(readFileSync(keyPath, 'utf8'))).toEqual(legacy);
+    expect(JSON.parse(readFileSync(keyPath, 'utf8'))).toEqual(unsupported);
+  });
+
+  it('refuses a v1 file that reuses the root key for request signing', async () => {
+    const fake = fakeDatabase();
+    const first = new KeypairService(fake.database, keyPath);
+    await first.initialize();
+    const invalid = JSON.parse(readFileSync(keyPath, 'utf8')) as {
+      rootKey: { publicKey: string; privateKey: string };
+      signingKeys: Array<{ publicKey: string; privateKey: string }>;
+    };
+    invalid.signingKeys[0].publicKey = invalid.rootKey.publicKey;
+    invalid.signingKeys[0].privateKey = invalid.rootKey.privateKey;
+    writeFileSync(keyPath, JSON.stringify(invalid), { mode: 0o600 });
+
+    const service = new KeypairService(fake.database, keyPath);
+    await service.initialize();
+
+    expect(service.getStatus()).toMatchObject({
+      available: false,
+      reason: expect.stringContaining('root and signing keys must be distinct'),
+    });
+    expect(JSON.parse(readFileSync(keyPath, 'utf8'))).toEqual(invalid);
+  });
+
+  it('refuses unknown fields in the current key-file schema', async () => {
+    const fake = fakeDatabase();
+    const first = new KeypairService(fake.database, keyPath);
+    await first.initialize();
+    const invalid = JSON.parse(readFileSync(keyPath, 'utf8')) as {
+      rootKey: Record<string, unknown>;
+    };
+    invalid.rootKey.extra = true;
+    writeFileSync(keyPath, JSON.stringify(invalid), { mode: 0o600 });
+
+    const service = new KeypairService(fake.database, keyPath);
+    await service.initialize();
+
+    expect(service.getStatus()).toMatchObject({
+      available: false,
+      reason: expect.stringContaining('invalid root key metadata'),
+    });
+    expect(JSON.parse(readFileSync(keyPath, 'utf8'))).toEqual(invalid);
   });
 
   it('does not generate a replacement when federation history exists', async () => {

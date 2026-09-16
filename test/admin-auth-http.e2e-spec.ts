@@ -1,11 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { INestApplication } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request, { type Response } from 'supertest';
 import { Secret, TOTP } from 'otpauth';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { admin } from '../src/database/schema';
 import { AdminRole } from '../src/database/enums';
@@ -15,6 +11,8 @@ import { BusinessCode } from '../src/common/business-code';
 import { KvStoreService } from '../src/kv-store/kv-store.service';
 import { FixedWindowPolicyService } from '../src/rate-limit/fixed-window-policy.service';
 import { seedUser } from './seed';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 const PASSWORD = 'Admin-http-e2e-password-1!';
 
@@ -36,7 +34,7 @@ function totpFor(secret: string): string {
 }
 
 describe('Admin authentication HTTP security', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let twoFactor: TwoFactorService;
   let kv: KvStoreService;
@@ -44,23 +42,14 @@ describe('Admin authentication HTTP security', () => {
 
   beforeAll(async () => {
     delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = moduleFixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
     twoFactor = app.get(TwoFactorService);
     kv = app.get(KvStoreService);
     fixedWindowPolicies = app.get(FixedWindowPolicyService);
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
     // Each case starts a fresh fixed-window budget. Cover the address spellings Fastify can use for
     // an in-process request without reaching into KvStoreService's private maps.
     await kv.del(

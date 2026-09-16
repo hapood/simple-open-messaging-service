@@ -139,6 +139,7 @@ mod tests {
                 thread_feed_id: 8,
                 message_end_seq: 10,
                 tombstone_end_seq: 4,
+                group_meta_feed_end_id: None,
                 last_read_seq: 2,
                 unread_count: 8,
                 last_mention_seq: Some(5),

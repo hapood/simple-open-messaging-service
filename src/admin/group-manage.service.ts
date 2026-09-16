@@ -1,4 +1,7 @@
-import { groupState as group, groupStateFields } from '../group/group-state.js';
+import {
+  groupState as group,
+  groupStateFields,
+} from '../business/group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
@@ -27,16 +30,8 @@ export class GroupManageService {
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const memberCount = sql<number>`(
-      SELECT count(*)::int
-      FROM (
-        SELECT DISTINCT ON (member_fact."memberDomain", member_fact."memberAccount")
-          member_fact.operation
-        FROM "GroupMetaMemberFeed" member_fact
-        WHERE member_fact."threadId" = ${group.id}
-        ORDER BY member_fact."memberDomain", member_fact."memberAccount",
-          member_fact."feedId" DESC
-      ) latest
-      WHERE latest.operation = 'UPSERT'
+      SELECT count(*)::int FROM "GroupMetaMemberFeed" fact
+      WHERE fact."threadId" = ${group.id} AND fact.operation = 'UPSERT'
     )`;
     const base = this.database.db
       .select({

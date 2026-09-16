@@ -136,7 +136,10 @@ changes state owned by that account.
 
 The group account scope applies whenever the group aggregate is updated. Current entry
 points include requests and invitations to join, acceptance, rejection or
-revocation, member leave and removal, and equivalent inbound federation
+revocation, member leave and removal, owner-managed roster role changes
+(`SET_ROLE` and ownership transfer mutate canonical Group Meta facts and take
+no member Pair lock; the GroupMeta allocator row orders them against both
+authored directions), and equivalent inbound federation
 transitions. Local and federated entry points use the same locking primitive;
 the source of an intent only determines which canonical author-side row may be
 changed.

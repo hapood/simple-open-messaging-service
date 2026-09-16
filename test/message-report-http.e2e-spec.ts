@@ -1,12 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { Test, type TestingModule } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/bootstrap.js';
 import { AdminAuthService } from '../src/admin/admin-auth.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -21,29 +17,22 @@ import {
   messageThread,
 } from '../src/database/schema.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
+import { createTestApp } from './support/app';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('message report HTTP workflow', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
   let adminAuth: AdminAuthService;
 
   beforeAll(async () => {
-    const fixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = fixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
+    ({ app, database } = await createTestApp());
     await app.get(DurableTaskSchedulerService).stop();
-    database = app.get(DatabaseService);
     adminAuth = app.get(AdminAuthService);
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => app.close());

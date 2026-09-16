@@ -29,18 +29,18 @@ contain exactly `account` and `domain`; local participants use `domain: local`
 and remote participants retain their home domain. Internal user IDs are resolved
 before content is persisted.
 
-| Type                            | Content fields besides `type`                                 |
-| ------------------------------- | ------------------------------------------------------------- |
-| `FRIEND_ADDED`                  | None                                                          |
-| `FRIEND_REMOVED`                | Required `initiator` address                                  |
-| `GROUP_JOINED`                  | `member` address                                              |
-| `GROUP_LEFT`                    | `member` address                                              |
-| `GROUP_ADMIN_GRANTED`           | `member` address                                              |
-| `GROUP_ADMIN_REVOKED`           | `member` address                                              |
-| `GROUP_OWNER_TRANSFERRED`       | `previousOwner` and `newOwner` addresses                      |
-| `MESSAGE_WITHDRAWN`             | `author` address                                              |
-| `MESSAGES_MODERATED`            | Positive integer `count`                                      |
-| `CALL_ENDED`                    | The independent [call-history content](local-call-history.md) |
+| Type                      | Content fields besides `type`                                 |
+| ------------------------- | ------------------------------------------------------------- |
+| `FRIEND_ADDED`            | None                                                          |
+| `FRIEND_REMOVED`          | Required `initiator` address                                  |
+| `GROUP_JOINED`            | `member` address                                              |
+| `GROUP_LEFT`              | `member` address                                              |
+| `GROUP_ADMIN_GRANTED`     | `member` address                                              |
+| `GROUP_ADMIN_REVOKED`     | `member` address                                              |
+| `GROUP_OWNER_TRANSFERRED` | `previousOwner` and `newOwner` addresses                      |
+| `MESSAGE_WITHDRAWN`       | `author` address                                              |
+| `MESSAGES_MODERATED`      | Positive integer `count`                                      |
+| `CALL_ENDED`              | The independent [call-history content](local-call-history.md) |
 
 Do not store viewer-relative `isSelf` or incoming/outgoing fields. Both local
 endpoints read the same notification. The renderer compares the event's
@@ -74,17 +74,30 @@ terminal snapshot with the same sender invariant. The database constraint
 rejects a normal user as a SYSTEM sender, `$system` as an authored-message sender,
 and nonzero system profile/source coordinates.
 
-Departures commit the notification, history visibility boundary, and ordinary
-plus directed account fanout atomically with the relationship transition. Group
-directed fanout uses the event member; P2P directed fanout uses the relationship
-endpoints, independently of its initiator. Best-effort roster notices
-remain post-commit decorations and do not grant authorization.
+Authoritative-group departures commit the notification, history visibility
+boundary, and ordinary plus directed account fanout atomically with the
+relationship transition. Group directed fanout uses the event member; P2P
+directed fanout uses the relationship endpoints, independently of its initiator.
+Group Meta is the authoritative group's roster projection, not its membership
+truth. An active-to-inactive pair transition produces the authoritative
+`GROUP_LEFT`; an inactive-to-active transition produces `GROUP_JOINED`.
 
-Mirror group joins are observed from committed Group Meta deltas. An initial
-`UPSERT` or an `UPSERT` following `DEPART` creates `GROUP_JOINED` for either a
-local or remote member; repeated `UPSERT` profile/role updates do not. Full
+Mirror group joins and third-party departures are triggered by committed Group
+Meta deltas. An initial `UPSERT` or an `UPSERT` following `DEPART` creates
+`GROUP_JOINED` for either a local or remote member; repeated `UPSERT`
+profile/role updates do not. Full
 snapshots establish a baseline without replaying historical joins. Mirror invite
-acceptance defers its notification to this authoritative delta path.
+acceptance does not mint a notice from the intent. If the accepted member first
+appears in a full snapshot, that snapshot establishes the member as baseline
+without a join notice; a later delta join can mint one. The mirror stores
+relationships only between its local members and the group. A local member's
+delta join requires its pair to be active. Its `GROUP_LEFT` is written in the
+transaction that changes its relationship pair from active to inactive while
+authoring or consuming a `REVOKED` intent. That transaction sets the departing
+member's readable boundary through the notice and admits ordinary and directed
+account fan-out. A later Meta `DEPART` updates the replica fact without replaying
+the local notice. Other members' Meta items describe their departures; active
+local pairs determine who can observe them.
 
 The delta finalizer calls the existing transactional system-message writer,
 which reuses `enqueueThreadFanoutInTx` to admit `FAN_OUT_THREAD_CONTENT`.

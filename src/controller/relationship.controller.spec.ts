@@ -1,27 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 import { RelationshipController } from './relationship.controller.js';
 
-/** Constructor order: userService, relationships, federation, durableTasks,
- * clientStateFeed, userIntents, userQuota. */
+/** Constructor order: federation, clientStateFeed, userIntents, userQuota, memberIntents. */
 function build(overrides: {
-  userService?: unknown;
-  relationships?: unknown;
   federation?: unknown;
-  durableTasks?: unknown;
   clientStateFeed?: unknown;
   userIntents?: unknown;
   userQuota?: unknown;
+  memberIntents?: unknown;
 }): RelationshipController {
   return new RelationshipController(
-    (overrides.userService ?? {}) as never,
-    (overrides.relationships ?? {}) as never,
     (overrides.federation ?? {}) as never,
-    (overrides.durableTasks ?? {}) as never,
     (overrides.clientStateFeed ?? {}) as never,
     (overrides.userIntents ?? {}) as never,
     (overrides.userQuota ?? {}) as never,
+    (overrides.memberIntents ?? {}) as never,
   );
 }
 
@@ -47,52 +41,32 @@ describe('RelationshipController.markRelationshipRequestsRead', () => {
 
 describe('RelationshipController.acceptRelationship', () => {
   it('resolves an addressed group invitation from its relationship intent', async () => {
-    const federationService = {
-      resolveAddressedGroupInvitationCommandScope: vi.fn().mockResolvedValue({
-        account: '!remote-group',
-        domain: 'peer.test',
-      }),
+    const memberIntents = {
+      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 93n }),
-    };
-    const controller = build({ federation: federationService, durableTasks });
+    const controller = build({ memberIntents });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
         domain: 'peer.test',
       }),
-    ).resolves.toEqual({ taskId: '93', status: 'PENDING' });
-    expect(
-      federationService.resolveAddressedGroupInvitationCommandScope,
-    ).toHaveBeenCalledWith(7, {
-      account: '!remote-group',
-      domain: 'peer.test',
-    });
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'GROUP',
-        address: { account: '!remote-group', domain: 'peer.test' },
-      },
-      taskType: 'ACCEPT_ADDRESSED_GROUP_INVITATION',
-      actorUserId: 7,
-      payload: { account: '!remote-group', domain: 'peer.test' },
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+      memberUserId: 7,
+      target: { account: '!remote-group', domain: 'peer.test' },
+      decision: 'ACCEPTED',
     });
   });
 
   it('activates a known local P2P request synchronously through the intent service', async () => {
-    const relationships = {
-      resolveP2PRequestCommandScope: vi.fn().mockResolvedValue({
-        local: { account: 'alice', domain: 'local' },
-        remote: { account: 'bob', domain: 'local' },
-        peerUserId: 9,
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({
+        status: 'APPLIED',
+        threadId: 12,
       }),
     };
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({ threadId: 12 }),
-    };
-    const controller = build({ relationships, userIntents });
+    const controller = build({ userIntents });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
@@ -100,12 +74,6 @@ describe('RelationshipController.acceptRelationship', () => {
         domain: 'local',
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 12 });
-    expect(relationships.resolveP2PRequestCommandScope).toHaveBeenCalledWith(
-      7,
-      'bob',
-      'local',
-      'INCOMING',
-    );
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'ACCEPTED',
@@ -113,36 +81,47 @@ describe('RelationshipController.acceptRelationship', () => {
     });
   });
 
-  it('keeps the addressed remote acceptance durable-task based', async () => {
-    const relationships = {
-      resolveP2PRequestCommandScope: vi.fn().mockResolvedValue({
-        local: { account: 'alice', domain: 'local' },
-        remote: { account: 'bob', domain: 'peer.test' },
-        peerUserId: null,
+  it('accepts an address-only remote request synchronously through the intent service', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({
+        status: 'APPLIED',
+        threadId: 21,
       }),
     };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 95n }),
-    };
-    const controller = build({ relationships, durableTasks });
+    const controller = build({ userIntents });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         domain: 'peer.test',
       }),
-    ).resolves.toEqual({ taskId: '95', status: 'PENDING' });
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'peer.test' },
-        ],
-      },
-      taskType: 'ACCEPT_ADDRESSED_RELATIONSHIP_REQUEST',
-      actorUserId: 7,
-      payload: { account: 'bob', domain: 'peer.test' },
+    ).resolves.toEqual({ status: 'OK', threadId: 21 });
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'ACCEPTED',
+      target: { account: 'bob', domain: 'peer.test' },
+    });
+  });
+
+  it('preserves the invite-specific API code for a missing P2P intent', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({
+        status: 'REJECTED',
+        reason: 'INTENT_NOT_FOUND',
+        code: BusinessCode.NOT_FOUND,
+        message: 'request not found',
+      }),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.acceptRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'local',
+      }),
+    ).resolves.toMatchObject({
+      code: BusinessCode.INVITE_NOT_FOUND,
+      data: { status: 'REJECTED', reason: 'INTENT_NOT_FOUND' },
     });
   });
 });
@@ -186,82 +165,96 @@ describe('RelationshipController.revokeRelationship', () => {
     });
   });
 
-  it('maps the stale-revocation NOT_FOUND onto the legacy FRIEND_NOT_FOUND code', async () => {
+  it('maps stale-revocation NOT_FOUND onto the public FRIEND_NOT_FOUND code', async () => {
     const userIntents = {
-      execute: vi
-        .fn()
-        .mockRejectedValue(
-          new BusinessException(BusinessCode.NOT_FOUND, 'request not found'),
-        ),
+      execute: vi.fn().mockResolvedValue({
+        status: 'REJECTED',
+        reason: 'INTENT_NOT_FOUND',
+        code: BusinessCode.NOT_FOUND,
+        message: 'request not found',
+      }),
     };
     const controller = build({ userIntents });
 
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
+    const result = await controller.revokeRelationship(
+      { user: { userId: 7 } } as never,
+      {
         account: 'bob',
         domain: 'local',
-      }),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.FRIEND_NOT_FOUND });
+      },
+    );
+    expect(result).toMatchObject({
+      code: BusinessCode.FRIEND_NOT_FOUND,
+      data: { status: 'REJECTED', reason: 'INTENT_NOT_FOUND' },
+    });
   });
 
-  it('keeps the addressed group revocation durable-task based', async () => {
-    const federationService = {
-      resolveGroupJoinRequestCommandScope: vi
-        .fn()
-        .mockResolvedValue({ account: '!remote-group', domain: 'peer.test' }),
+  it('revokes an addressed group application synchronously', async () => {
+    const memberIntents = {
+      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 96n }),
-    };
-    const controller = build({ federation: federationService, durableTasks });
+    const controller = build({ memberIntents });
 
     await expect(
       controller.revokeRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
         domain: 'peer.test',
       }),
-    ).resolves.toEqual({ taskId: '96', status: 'PENDING' });
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'GROUP',
-        address: { account: '!remote-group', domain: 'peer.test' },
-      },
-      taskType: 'REVOKE_USER_RELATIONSHIP',
-      actorUserId: 7,
-      payload: { account: '!remote-group', domain: 'peer.test' },
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+      memberUserId: 7,
+      target: { account: '!remote-group', domain: 'peer.test' },
+      decision: 'REVOKED',
     });
   });
 });
 
 describe('RelationshipController.requestRelationship', () => {
-  it('runs the local request synchronously with in-transaction quota admission', async () => {
-    const userService = {
-      findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue([
-        {
-          id: 7,
-          account: 'alice',
-          domain: 'local',
-          availability: 'AVAILABLE',
-          disabledAt: null,
-        },
-        {
-          id: 9,
-          account: 'bob',
-          domain: 'local',
-          availability: 'AVAILABLE',
-          disabledAt: null,
-        },
-      ]),
+  it('authors an addressed remote-group application directly', async () => {
+    const admissionTx = { admission: true };
+    const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
+    const memberIntents = {
+      executeAddressed: vi.fn().mockImplementation(async (params) => {
+        await params.admissionInTx(admissionTx);
+        return { status: 'APPLIED' };
+      }),
     };
+    const controller = build({
+      federation: { ourDomain: 'us.test' },
+      userQuota,
+      memberIntents,
+    });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: '!remote-group',
+        domain: 'peer.test',
+        displayName: 'Remote Group',
+        avatar: 'avatar',
+        note: 'let me in',
+      }),
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+      memberUserId: 7,
+      target: { account: '!remote-group', domain: 'peer.test' },
+      decision: 'REQUESTED',
+      note: 'let me in',
+      snapshot: { displayName: 'Remote Group', avatar: 'avatar' },
+      admissionInTx: expect.any(Function),
+    });
+    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+  });
+
+  it('runs the local request synchronously with in-transaction quota admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const admissionTx = { admission: true };
     const userIntents = {
       execute: vi.fn().mockImplementation(async (_params, options) => {
         await options?.admissionInTx?.(admissionTx);
-        return {};
+        return { status: 'APPLIED' };
       }),
     };
-    const controller = build({ userService, userIntents, userQuota });
+    const controller = build({ userIntents, userQuota });
 
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
@@ -270,10 +263,6 @@ describe('RelationshipController.requestRelationship', () => {
         note: 'hello',
       }),
     ).resolves.toEqual({ status: 'OK' });
-    expect(userService.findRelationshipAdmissionAccounts).toHaveBeenCalledWith(
-      7,
-      'bob',
-    );
     expect(userIntents.execute).toHaveBeenCalledWith(
       {
         userId: 7,
@@ -287,28 +276,13 @@ describe('RelationshipController.requestRelationship', () => {
   });
 
   it('returns the active thread when the request collapses into acceptance', async () => {
-    const userService = {
-      findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue([
-        {
-          id: 7,
-          account: 'alice',
-          domain: 'local',
-          availability: 'AVAILABLE',
-          disabledAt: null,
-        },
-        {
-          id: 9,
-          account: 'bob',
-          domain: 'local',
-          availability: 'AVAILABLE',
-          disabledAt: null,
-        },
-      ]),
-    };
     const userIntents = {
-      execute: vi.fn().mockResolvedValue({ threadId: 33 }),
+      execute: vi.fn().mockResolvedValue({
+        status: 'APPLIED',
+        threadId: 33,
+      }),
     };
-    const controller = build({ userService, userIntents });
+    const controller = build({ userIntents });
 
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
@@ -318,23 +292,20 @@ describe('RelationshipController.requestRelationship', () => {
     ).resolves.toEqual({ status: 'OK', threadId: 33 });
   });
 
-  it('keeps the federated request durable-task based', async () => {
-    const userService = {
-      findUniqueUser: vi.fn().mockResolvedValue({
-        id: 7,
-        account: 'alice',
-        domain: 'local',
-        availability: 'AVAILABLE',
+  it('runs the addressed request synchronously with in-transaction quota admission', async () => {
+    const federationService = { ourDomain: 'us.test' };
+    const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
+    const admissionTx = { admission: true };
+    const userIntents = {
+      execute: vi.fn().mockImplementation(async (_params, options) => {
+        await options?.admissionInTx?.(admissionTx);
+        return { status: 'APPLIED' };
       }),
     };
-    const federationService = { ourDomain: 'us.test' };
-    const durableTasks = {
-      enqueueTask: vi.fn().mockResolvedValue({ taskId: 82n }),
-    };
     const controller = build({
-      userService,
-      federationService,
-      durableTasks,
+      federation: federationService,
+      userIntents,
+      userQuota,
     });
 
     await expect(
@@ -342,71 +313,97 @@ describe('RelationshipController.requestRelationship', () => {
         account: 'bob',
         domain: 'peer.test',
         displayName: 'Bob',
+        note: 'across servers',
       }),
-    ).resolves.toEqual({ taskId: '82', status: 'PENDING' });
-    expect(durableTasks.enqueueTask).toHaveBeenCalledWith({
-      scope: {
-        type: 'USER_PAIR',
-        endpoints: [
-          { account: 'alice', domain: 'local' },
-          { account: 'bob', domain: 'peer.test' },
-        ],
+    ).resolves.toEqual({ status: 'OK' });
+    expect(userIntents.execute).toHaveBeenCalledWith(
+      {
+        userId: 7,
+        decision: 'REQUESTED',
+        target: { account: 'bob', domain: 'peer.test' },
+        note: 'across servers',
       },
-      taskType: 'SEND_FEDERATED_RELATIONSHIP_REQUEST',
-      actorUserId: 7,
-      payload: {
+      expect.objectContaining({ admissionInTx: expect.any(Function) }),
+    );
+    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+  });
+
+  it('rejects an addressed request toward our own domain', async () => {
+    const userIntents = { execute: vi.fn() };
+    const controller = build({
+      federation: { ourDomain: 'us.test' },
+      userIntents,
+    });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'us.test',
+        displayName: 'Bob',
+      }),
+    ).resolves.toMatchObject({
+      code: BusinessCode.VALIDATION_FAILED,
+      data: { status: 'REJECTED', reason: 'INVALID_TARGET' },
+    });
+    expect(userIntents.execute).not.toHaveBeenCalled();
+  });
+
+  it('returns an unavailable actor as a business rejection', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({
+        status: 'REJECTED',
+        reason: 'ACTOR_NOT_FOUND',
+        code: BusinessCode.UNAUTHENTICATED,
+        message: 'authenticated user does not exist',
+      }),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         domain: 'peer.test',
-        note: '',
         displayName: 'Bob',
-      },
+      }),
+    ).resolves.toMatchObject({
+      code: BusinessCode.UNAUTHENTICATED,
+      data: { status: 'REJECTED', reason: 'ACTOR_NOT_FOUND' },
     });
   });
 
   it.each([
     {
       name: 'missing target',
-      target: null,
-      expectedCode: 10001,
+      reason: 'TARGET_NOT_FOUND',
+      expectedCode: BusinessCode.NOT_FOUND,
     },
     {
       name: 'self target',
-      target: {
-        id: 7,
-        account: 'alice',
-        domain: 'local',
-        availability: 'AVAILABLE',
-      },
-      expectedCode: 20001,
+      reason: 'SELF_TARGET',
+      expectedCode: BusinessCode.FRIEND_SELF,
     },
   ])(
-    'rejects $name before the intent runs',
-    async ({ target, expectedCode }) => {
-      const userService = {
-        findRelationshipAdmissionAccounts: vi.fn().mockResolvedValue(
-          target === null
-            ? [
-                {
-                  id: 7,
-                  account: 'alice',
-                  domain: 'local',
-                  availability: 'AVAILABLE',
-                  disabledAt: null,
-                },
-              ]
-            : [target],
-        ),
+    'serializes $name returned by the intent service',
+    async ({ reason, expectedCode }) => {
+      const userIntents = {
+        execute: vi.fn().mockResolvedValue({
+          status: 'REJECTED',
+          reason,
+          code: expectedCode,
+          message: 'business rejection',
+        }),
       };
-      const userIntents = { execute: vi.fn() };
-      const controller = build({ userService, userIntents });
+      const controller = build({ userIntents });
 
       await expect(
         controller.requestRelationship({ user: { userId: 7 } } as never, {
-          account: target === null ? 'bob' : 'alice',
+          account: reason === 'SELF_TARGET' ? 'alice' : 'bob',
           domain: 'local',
         }),
-      ).rejects.toMatchObject({ bizCode: expectedCode });
-      expect(userIntents.execute).not.toHaveBeenCalled();
+      ).resolves.toMatchObject({
+        code: expectedCode,
+        data: { status: 'REJECTED', reason },
+      });
     },
   );
 });

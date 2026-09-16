@@ -12,7 +12,7 @@ import { createHmac } from 'node:crypto';
  * - credential = HMAC-SHA1(secret, username), base64 — coturn's expected algorithm for REST creds.
  */
 
-export interface TurnRestCredential {
+interface TurnRestCredential {
   username: string;
   credential: string;
 }

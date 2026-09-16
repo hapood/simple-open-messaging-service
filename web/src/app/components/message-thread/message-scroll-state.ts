@@ -2,7 +2,7 @@ import type { CbScrollInfo } from '../../lib/chat-box/chat-box-scroller';
 
 /** UI-level bottom proximity. The kernel's `atBottom` uses a much wider prefetch edge, so it is unsuitable
  * for deciding whether the user can still see the newest messages. */
-export const MESSAGE_BOTTOM_THRESHOLD_PX = 96;
+const MESSAGE_BOTTOM_THRESHOLD_PX = 96;
 
 export function isMessageViewportAtBottom(
   info: Pick<CbScrollInfo, 'scrollTop' | 'scrollHeight' | 'viewportHeight'>,

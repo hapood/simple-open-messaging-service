@@ -1,4 +1,4 @@
-export interface ForwardAssetDocument {
+interface ForwardAssetDocument {
   digest: string;
   kind: 'avatar' | 'image' | 'file' | 'video' | 'audio' | 'link';
   extension: string;

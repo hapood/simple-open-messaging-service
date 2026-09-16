@@ -26,6 +26,7 @@ import { requireThreadContentLockInTx } from '../src/business/shared/locks/threa
 import { MessageService } from '../src/message/message.service.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('federated message deletion transaction ordering', () => {
   let mod: TestingModule;
@@ -56,9 +57,7 @@ describe('federated message deletion transaction ordering', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE');
     const now = new Date();
     const [existingNamespace] = await database.db
       .select({ id: identityNamespace.id })
@@ -154,7 +153,6 @@ describe('federated message deletion transaction ordering', () => {
             message: {
               originSeq,
               profileRev: 0,
-              clientMessageId: null,
               contentType: media ? 'FILE' : 'PURE_TEXT',
               content: media
                 ? JSON.stringify({
@@ -222,6 +220,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           messageEndSeq: reverse ? 8 : 2,
           tombstoneEndSeq: 1,
+          profileRev: 0,
         });
     },
   );
@@ -236,14 +235,22 @@ describe('federated message deletion transaction ordering', () => {
       'USER_RETRACTION',
     );
     const tasks = await database.db.query.durableTask.findMany();
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].payload).toEqual({
+    // Both fan-out channels are admitted: the client projection and the
+    // federation one coalesce independently on the same thread scope.
+    expect(tasks.map(({ taskType }) => taskType).sort()).toEqual([
+      'FAN_OUT_FEDERATION_THREAD_CONTENT',
+      'FAN_OUT_THREAD_CONTENT',
+    ]);
+    expect(
+      tasks.find(({ taskType }) => taskType === 'FAN_OUT_THREAD_CONTENT')!
+        .payload,
+    ).toEqual({
       threadId,
       messageEndSeq: stored.seq,
       tombstoneEndSeq: result!.deletionSeq,
     });
     expect(await apply(9)).toBeNull();
-    expect(await database.db.query.durableTask.findMany()).toHaveLength(1);
+    expect(await database.db.query.durableTask.findMany()).toHaveLength(2);
   });
 
   /** The transaction core used by FederationService.storePulledMessage for the stable identity race.
@@ -460,14 +467,20 @@ describe('federated message deletion transaction ordering', () => {
       'USER_RETRACTION',
     );
     const tasks = await database.db.query.durableTask.findMany();
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].payload).toEqual({
+    expect(tasks.map(({ taskType }) => taskType).sort()).toEqual([
+      'FAN_OUT_FEDERATION_THREAD_CONTENT',
+      'FAN_OUT_THREAD_CONTENT',
+    ]);
+    expect(
+      tasks.find(({ taskType }) => taskType === 'FAN_OUT_THREAD_CONTENT')!
+        .payload,
+    ).toEqual({
       threadId,
       messageEndSeq: 1,
       tombstoneEndSeq: 1,
     });
     await deletions.withdraw(author.id, threadId, 1);
-    expect(await database.db.query.durableTask.findMany()).toHaveLength(1);
+    expect(await database.db.query.durableTask.findMany()).toHaveLength(2);
     expect(await database.db.query.deletedMessage.findMany()).toHaveLength(1);
   });
 

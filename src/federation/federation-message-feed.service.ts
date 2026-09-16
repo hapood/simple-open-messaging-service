@@ -56,13 +56,13 @@ export type {
   FederationThreadQuery,
 } from './federation-thread-query-authorization.js';
 
-export const FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE = 100;
-export const FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE = 200;
+const FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE = 100;
+const FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE = 200;
 export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
   ContentType,
 ).filter((type) => type !== ContentType.SYSTEM);
 
-export type FederationMessageFeedAsset = FederationByteDescriptor;
+type FederationMessageFeedAsset = FederationByteDescriptor;
 
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
@@ -447,7 +447,7 @@ export class FederationMessageFeedService {
           federatedContentDigests(row.contentType, content),
         );
       } catch (error) {
-        // One malformed legacy row must not poison the peer's entire page forever. The page cursor is
+        // One malformed stored row must not poison the peer's entire page. The page cursor is
         // based on scanned source seqs rather than returned item count, so omitting this row advances
         // past it while valid rows in the same page remain deliverable.
         this.logger.warn(

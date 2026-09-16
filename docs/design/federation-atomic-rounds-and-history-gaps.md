@@ -127,11 +127,13 @@ and reorder the local timeline.
 
 Creating a reverse gap locks MessageThread and reads its allocated local tail.
 If the gap starts at `S`, ends at `E - 1`, and the locked local tail is `L`, the
-transaction stores `messageSeqOffset = L + 1 - S` and reserves the local
-allocator through `(E - 1) + messageSeqOffset`. Equivalently, the newest item
-left to the forward path is allocated at
-`forwardStartSeq = E - S + L + 1`. Local relationship system messages are
-therefore never overwritten by a later reverse reconstruction.
+transaction stores `messageSeqOffset = max(0, L + 1 - S)` and reserves the local
+allocator through `(E - 1) + messageSeqOffset`. If a retained remote cursor
+leads the local tail on re-entry, offset zero aligns the new gap with source
+coordinates and the reservation jumps over the empty local interval. The
+newest item left to the forward path starts at
+`forwardStartSeq = E + messageSeqOffset`. Local relationship system messages
+are therefore never overwritten by a later reverse reconstruction.
 
 A returned item with non-null `originSeq` whose reconstructed author domain is
 the consumer's real domain is a processing receipt. It creates no STUB. The
@@ -246,7 +248,7 @@ watermark for each feed; different feeds never share that timer or high
 watermark. The design does not block unsolicited reads of facts committed by an
 incomplete round.
 
-`GROUP_META_FEED_HEAD` supplies a fixed Group Meta sub-round target. The
+`THREAD_CONTENT_HEAD.groupMetaFeedEndId` supplies a fixed Group Meta sub-round target. The
 consumer runs its HTTP and bounded member-page work outside the State Feed item
 transaction. The item transaction durably creates or merges that work, advances
 its own cursor, and may continue consuming later items immediately. Group Meta
@@ -395,9 +397,8 @@ STUBs, applies the profiles and tombstones, and shrinks the active gap through
 the response's `scannedThrough` boundary. If the current interval closes, the
 same transaction removes that completed gap and selects the next recoverable
 gap. It derives `before=endSeq+1` and `through=startSeq` directly from the next
-gap and stores the selected row as `activeGapId`.
-`historyBoundaryReached` becomes true only when the current segment is closed and
-no recoverable gap remains.
+gap and stores the selected row as `activeGapId`. Reverse history is complete
+exactly when no recoverable gap remains and `activeGapId` is null.
 
 Reverse history insertion does not publish a client `THREAD_CONTENT_HEAD` and does not
 emit SSE: it fills older coordinates rather than advancing the conversation
@@ -434,8 +435,8 @@ No buffered fact or synchronization cursor from the failed round commits.
 When the publisher can no longer serve a reverse interval, the corresponding
 gap remains durable with `recoverable=false`. The scheduler then selects the next
 recoverable gap. An unrecoverable gap is retained for local history diagnostics
-but does not prevent `historyBoundaryReached=true` after all recoverable work is
-closed.
+but does not prevent the reverse history from completing once all recoverable
+work is closed and `activeGapId` clears.
 
 ## 7. Lock order
 

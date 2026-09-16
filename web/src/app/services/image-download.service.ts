@@ -17,7 +17,7 @@ import {
   type ImageDownloadArtifact,
 } from './image-download.adapter';
 
-export type ImageDownloadStatus =
+type ImageDownloadStatus =
   | 'downloading'
   | 'loaded'
   | 'saving'

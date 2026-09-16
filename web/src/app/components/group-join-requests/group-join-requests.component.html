@@ -17,7 +17,7 @@
         } @else if (invitations().length === 0) {
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
-          @for (request of invitations(); track request.id) {
+          @for (request of invitations(); track request.account + '@' + request.domain + ':' + request.namespaceId) {
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -38,11 +38,11 @@
                 <button
                   mat-button
                   type="button"
-                  [disabled]="acting().has(request.id)"
-                  (click)="revokeInvitation(request.id)"
+                  [disabled]="acting().has(candidateKey(request))"
+                  (click)="revokeInvitation(request)"
                 >
                   {{
-                    (acting().has(request.id)
+                    (acting().has(candidateKey(request))
                       ? 'group.revokingInvitation'
                       : 'group.revokeInvitation'
                     ) | transloco
@@ -81,7 +81,7 @@
         } @else if (applications().length === 0) {
           <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
         } @else {
-          @for (request of applications(); track request.id) {
+          @for (request of applications(); track request.account + '@' + request.domain + ':' + request.namespaceId) {
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -106,8 +106,8 @@
                   <button
                     mat-button
                     type="button"
-                    [disabled]="acting().has(request.id)"
-                    (click)="handleApplication(request.id, false)"
+                    [disabled]="acting().has(candidateKey(request))"
+                    (click)="handleApplication(request, false)"
                   >
                     {{ 'friend.decline' | transloco }}
                   </button>
@@ -115,8 +115,8 @@
                     mat-flat-button
                     color="primary"
                     type="button"
-                    [disabled]="acting().has(request.id)"
-                    (click)="handleApplication(request.id, true)"
+                    [disabled]="acting().has(candidateKey(request))"
+                    (click)="handleApplication(request, true)"
                   >
                     {{ 'friend.approve' | transloco }}
                   </button>

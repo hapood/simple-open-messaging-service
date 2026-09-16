@@ -1,11 +1,10 @@
-import { relationshipTaskAuthorUserId } from '../relationship/relationship-task-author.js';
 import {
   readAccountTarget,
   type AccountTarget,
 } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { account, durableTask } from '../database/schema.js';
 import {
   DatabaseService,
@@ -23,7 +22,7 @@ import {
   supersedePendingTasksInTx,
 } from './task-admission.js';
 
-export type DurableTaskScope =
+type DurableTaskScope =
   | {
       type: 'USER_PAIR';
       endpoints: readonly [BusinessScopeAddress, BusinessScopeAddress];
@@ -42,11 +41,6 @@ export interface EnqueueDurableTaskInput {
 
 export interface EnqueueDurableTaskResult {
   taskId: bigint;
-}
-
-export interface EnqueueGroupMetaHeadFanoutInput {
-  group: BusinessScopeAddress;
-  threadId: number;
 }
 
 @Injectable()
@@ -108,7 +102,7 @@ export class DurableTaskQueueService {
         if (
           existing.taskType === taskType &&
           existing.actorUserId === actorUserId &&
-          sameTaskBehavior(taskType, existing.payload, payload)
+          sameTaskBehavior(existing.payload, payload)
         )
           return { taskId: existing.id };
 
@@ -143,18 +137,18 @@ export class DurableTaskQueueService {
             eq(durableTask.kind, 'MUTATION'),
             eq(durableTask.scopeKey, scopeKey),
             eq(durableTask.coalescingKey, coalescingKey),
-            inArray(durableTask.status, ['PROCESSING', 'ASYNC_PROCESSING']),
+            eq(durableTask.status, 'PROCESSING'),
           ),
         )
         .orderBy(desc(durableTask.id))
         .limit(1);
       if (
         latest &&
-        ['PROCESSING', 'ASYNC_PROCESSING'].includes(latest.status) &&
+        latest.status === 'PROCESSING' &&
         latest.coalescingKey === coalescingKey &&
         latest.taskType === taskType &&
         latest.actorUserId === actorUserId &&
-        sameTaskBehavior(taskType, latest.payload, payload)
+        sameTaskBehavior(latest.payload, payload)
       )
         return { taskId: latest.id };
     }
@@ -203,69 +197,6 @@ export class DurableTaskQueueService {
       .for('no key update')
       .limit(1);
     return task ?? null;
-  }
-
-  async enqueueGroupMetaHeadFanoutInTx(
-    tx: DatabaseTransaction,
-    input: EnqueueGroupMetaHeadFanoutInput,
-  ): Promise<EnqueueDurableTaskResult> {
-    const threadId = validatePositiveInteger(input.threadId, 'thread ID');
-    validateAddress(input.group);
-    const scopeKey = businessAccountScopeKey(input.group);
-    if (scopeKey.length > 512) {
-      throw new TypeError('durable task scope key exceeds 512 characters');
-    }
-    const coalescingKey = JSON.stringify([
-      DurableTaskType.FAN_OUT_GROUP_META_HEAD,
-      threadId,
-    ]);
-    await lockBusinessAccountsInTx(tx, [input.group]);
-
-    const pending = await tx
-      .select({ id: durableTask.id, payload: durableTask.payload })
-      .from(durableTask)
-      .where(
-        and(
-          eq(durableTask.kind, 'PROJECTION'),
-          eq(durableTask.scopeType, 'GROUP'),
-          eq(durableTask.scopeKey, scopeKey),
-          eq(durableTask.taskType, DurableTaskType.FAN_OUT_GROUP_META_HEAD),
-          eq(durableTask.coalescingKey, coalescingKey),
-          eq(durableTask.status, 'PENDING'),
-        ),
-      )
-      .orderBy(asc(durableTask.id))
-      .for('no key update');
-
-    for (const task of pending) {
-      if (
-        task.payload.threadId !== threadId ||
-        Object.keys(task.payload).length !== 1
-      )
-        throw new Error('invalid pending Group Meta head fan-out payload');
-    }
-    const inserted = await insertPendingTaskInTx(tx, {
-      kind: 'PROJECTION',
-      scopeType: 'GROUP',
-      scopeKey,
-      taskType: DurableTaskType.FAN_OUT_GROUP_META_HEAD,
-      actorUserId: null,
-      payload: { threadId },
-      checkpoint: { afterAudienceId: '0' },
-      coalescingKey,
-    });
-
-    if (pending.length > 0) {
-      await supersedePendingTasksInTx(
-        tx,
-        inArray(
-          durableTask.id,
-          pending.map((task) => task.id),
-        ),
-      );
-    }
-
-    return inserted;
   }
 }
 
@@ -343,96 +274,30 @@ function validateActorUserId(actorUserId: number | undefined): number | null {
   return actorUserId;
 }
 
-function validatePositiveInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(
-      `durable projection ${label} must be a positive integer`,
-    );
-  }
-  return value;
-}
-
 function resolveMutationCoalescingKey(input: {
   scopeType: 'USER_PAIR' | 'GROUP';
   taskType: string;
   actorUserId: number | null;
   payload: Record<string, unknown>;
 }): string | null {
-  if (input.taskType === DurableTaskType.APPLY_FEDERATED_RELATIONSHIP_INTENT) {
-    const item = input.payload.item as
-      | { account?: unknown; peerAccount?: unknown }
-      | undefined;
-    if (
-      !Number.isSafeInteger(input.payload.namespaceId) ||
-      Number(input.payload.namespaceId) <= 0 ||
-      typeof item?.account !== 'string' ||
-      typeof item.peerAccount !== 'string'
-    )
-      throw new TypeError('invalid remote relationship task identity');
-    return JSON.stringify([
-      'REMOTE_INTENT',
-      input.payload.namespaceId,
-      item.account,
-      item.peerAccount,
-    ]);
-  }
   if (input.scopeType === 'USER_PAIR') {
     switch (input.taskType) {
-      case DurableTaskType.REJECT_RELATIONSHIP_REQUEST:
-      case DurableTaskType.REVOKE_RELATIONSHIP_REQUEST:
-      case DurableTaskType.SEND_FEDERATED_RELATIONSHIP_REQUEST:
-      case DurableTaskType.ACCEPT_ADDRESSED_RELATIONSHIP_REQUEST:
-      case DurableTaskType.REVOKE_ADDRESSED_RELATIONSHIP_REQUEST:
-      case DurableTaskType.REVOKE_USER_RELATIONSHIP:
-      case DurableTaskType.END_FRIENDSHIP:
-        if (input.actorUserId === null)
-          throw new TypeError('replaceable pair intent task requires an actor');
-        return JSON.stringify([
-          'P2P_INTENT',
-          relationshipTaskAuthorUserId(input),
-        ]);
       default:
         return null;
     }
   }
   switch (input.taskType) {
-    case DurableTaskType.REVOKE_USER_RELATIONSHIP:
-    case DurableTaskType.LEAVE_GROUP:
-    case DurableTaskType.ACCEPT_GROUP_INVITATION:
-    case DurableTaskType.REQUEST_FEDERATED_GROUP_JOIN:
-    case DurableTaskType.REVOKE_FEDERATED_GROUP_JOIN:
-    case DurableTaskType.ACCEPT_ADDRESSED_GROUP_INVITATION:
-      if (input.actorUserId === null)
-        throw new TypeError('replaceable member intent task requires an actor');
-      return mutationCoalescingKey(
-        'MEMBER',
-        relationshipTaskAuthorUserId(input),
-      );
-    case DurableTaskType.REVOKE_GROUP_RELATIONSHIP:
-      return mutationCoalescingKey(
-        'GROUP',
-        readAccountTarget(
-          input.payload.memberUserId ?? input.payload.targetUserId,
-        ),
-      );
-    case DurableTaskType.INVITE_GROUP_MEMBER:
-    case DurableTaskType.KICK_GROUP_MEMBER:
-      return mutationCoalescingKey(
-        'GROUP',
-        readAccountTarget(input.payload.targetUserId),
-      );
-    case DurableTaskType.ACCEPT_GROUP_JOIN_REQUEST:
-    case DurableTaskType.REJECT_GROUP_JOIN_REQUEST:
-    case DurableTaskType.REVOKE_GROUP_INVITATION:
-      return mutationCoalescingKey(
-        'GROUP',
-        readAccountTarget(input.payload.memberUserId),
-      );
     case DurableTaskType.FORCE_REVOKE_GROUP_MEMBER:
       return mutationCoalescingKey(
         input.payload.direction === 'MEMBER' ? 'MEMBER' : 'GROUP',
         readAccountTarget(input.payload.memberUserId),
       );
+    case DurableTaskType.DISBAND_GROUP:
+      // One dissolve per group: a repeat request collapses into the pending
+      // parent and returns its id instead of queueing a second sweep.
+      if (!Number.isSafeInteger(input.payload.threadId))
+        throw new TypeError('disband task requires a thread id');
+      return JSON.stringify(['DISBAND_GROUP', input.payload.threadId]);
     default:
       return null;
   }
@@ -508,18 +373,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** Transport cursor movement does not create a new business command. */
 function sameTaskBehavior(
-  taskType: string,
   left: Record<string, unknown>,
   right: Record<string, unknown>,
 ): boolean {
-  if (taskType !== DurableTaskType.APPLY_FEDERATED_RELATIONSHIP_INTENT)
-    return isDeepStrictEqual(left, right);
-  const normalize = (value: Record<string, unknown>) => {
-    const { feedId: _feedId, ...item } = value.item as Record<string, unknown>;
-    void _feedId;
-    return { ...value, item };
-  };
-  return isDeepStrictEqual(normalize(left), normalize(right));
+  return isDeepStrictEqual(left, right);
 }

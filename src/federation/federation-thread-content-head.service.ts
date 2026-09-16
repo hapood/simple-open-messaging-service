@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import {
@@ -7,7 +7,6 @@ import {
 } from '../database/database.service.js';
 import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
-import { loadFederationConfig } from './federation.config.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 
 interface ThreadContentProjection {
@@ -15,15 +14,13 @@ interface ThreadContentProjection {
   peerAccount?: string;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  /** The group's canonical meta head, carried by group-authored heads only.
-   * A mirror reporting back to its origin must not publish a meta head. */
-  groupMetaFeedEndId?: string;
+  /** The group's canonical Meta coordinate, carried by group-authored heads only.
+   * A mirror reporting back to its origin must not publish this coordinate. */
+  groupMetaFeedEndId?: number;
 }
 
 @Injectable()
 export class FederationThreadContentHeadService {
-  private readonly localDomain = loadFederationConfig().domain;
-
   constructor(
     private readonly database: DatabaseService,
     private readonly stateFeed: PeerStateFeedService,
@@ -76,7 +73,7 @@ export class FederationThreadContentHeadService {
         peerDomain,
         namespaceId,
         account: projection.account,
-        domain: this.localDomain,
+        domain: 'local',
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: projection.peerAccount ?? '',
         subjectDomain: projection.peerAccount ? peerDomain : 'local',
@@ -166,22 +163,26 @@ export class FederationThreadContentHeadService {
     if (thread.threadType === 'GROUP') {
       if (!thread.groupAccount)
         throw new Error(`group thread ${threadId} has no group address`);
-      // Only an authoritative local group authors the meta head; a mirror's
+      // Only an authoritative local group authors the Meta coordinate; a mirror's
       // head must not hand the origin its own applied cursor.
       const groupAuthored =
         thread.groupDomain === 'local' && thread.groupNamespaceId === 0;
-      const metaHead = groupAuthored
+      const metaCoordinate = groupAuthored
         ? (
-            await tx.execute<{ metaEndId: string }>(sql`
-              SELECT "metaEndId"::text AS "metaEndId" FROM "GroupMeta"
+            await tx.execute<{ metaEndId: number }>(sql`
+              SELECT "metaEndId" FROM "GroupMeta"
               WHERE "threadId" = ${threadId} LIMIT 1`)
           ).rows[0]
         : undefined;
+      if (groupAuthored && !metaCoordinate)
+        throw new Error(
+          `authoritative group ${threadId} has no Meta coordinate`,
+        );
       return {
         account: thread.groupAccount,
         messageEndSeq,
         tombstoneEndSeq,
-        groupMetaFeedEndId: metaHead?.metaEndId,
+        groupMetaFeedEndId: metaCoordinate?.metaEndId,
       };
     }
     if (!route.account || !route.peerAccount)

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
+import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
 import type { GroupMetaFeedPage } from './group-meta-feed.service.js';
@@ -27,8 +27,8 @@ function harness(result: GroupMetaFeedPage | Error) {
 const request = {
   account: '!group',
   mode: 'delta' as const,
-  after: 3n,
-  through: 8n,
+  after: 3,
+  through: 8,
 };
 
 describe('FederationGroupMetaClient', () => {
@@ -38,15 +38,15 @@ describe('FederationGroupMetaClient', () => {
       mode: 'delta',
       items: [
         {
-          feedId: '5',
+          feedId: 5,
           account: 'alice',
           domain: 'peer.test',
           operation: 'UPSERT',
           body: { role: 'MEMBER', profileRev: 1 },
         },
       ],
-      scannedThrough: '5',
-      groupMetaFeedEndId: '10',
+      scannedThrough: 5,
+      groupMetaFeedEndId: 10,
       hasMore: true,
     };
     const { client, get, runWithRetry } = harness(page);
@@ -67,15 +67,15 @@ describe('FederationGroupMetaClient', () => {
         'cursor unavailable',
         200,
         BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-        { resumeAfter: '2', resumeBefore: '11' },
+        { resumeAfter: 2, resumeBefore: 11 },
       ),
     );
 
     const error = await client
       .fetchPage('peer.test', request)
       .catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(RemoteFeedCursorUnavailableError);
-    expect(error).toMatchObject({ resumeAfter: 2n, resumeBefore: 11n });
+    expect(error).toBeInstanceOf(RemoteGroupMetaCursorUnavailableError);
+    expect(error).toMatchObject({ resumeAfter: 2, resumeBefore: 11 });
   });
 
   it('rejects invalid page boundaries and unordered items', async () => {
@@ -84,19 +84,19 @@ describe('FederationGroupMetaClient', () => {
       mode: 'delta',
       items: [
         {
-          feedId: '5',
+          feedId: 5,
           account: 'alice',
           domain: 'peer.test',
           operation: 'DEPART',
         },
         {
-          feedId: '4',
+          feedId: 4,
           operation: 'GROUP_PROFILE',
           body: { profileRev: 1 },
         },
       ],
-      scannedThrough: '5',
-      groupMetaFeedEndId: '8',
+      scannedThrough: 5,
+      groupMetaFeedEndId: 8,
       hasMore: true,
     });
 
@@ -111,7 +111,7 @@ describe('FederationGroupMetaClient', () => {
         'cursor unavailable',
         200,
         BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-        { resumeAfter: '5', resumeBefore: '5' },
+        { resumeAfter: 5, resumeBefore: 5 },
       ),
     );
 

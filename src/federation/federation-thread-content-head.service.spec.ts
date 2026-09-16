@@ -67,6 +67,7 @@ describe('FederationThreadContentHeadService', () => {
         peerDomain: 'peer.test',
         namespaceId: 7,
         account: 'alice',
+        domain: 'local',
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: 'bob',
         subjectDomain: 'peer.test',

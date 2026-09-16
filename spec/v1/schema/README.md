@@ -15,7 +15,7 @@ normative text prevails and the release package must be corrected.
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
-- `state-feed.schema.json`: compacted relationship/profile-reference, Group Meta head, and combined thread-content head items.
+- `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
 - `group-meta.schema.json`: full and delta group-member role/profile-reference and compacted group-profile-reference projections.
 - `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
 - `group-member-profile.schema.json`: complete profile snapshot served by the group origin and selected by an exact current canonical Group Meta member reference.

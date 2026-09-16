@@ -12,7 +12,7 @@ export const MEDIA_TOKEN_COOKIE = 'media_token';
  *  JS-unreadable (XSS-safe); sameSite:'strict' blocks cross-site sending while same-origin <img>/<a>
  *  still attach it automatically. The one-year cookie is only a credential carrier; the authoritative
  *  inactivity deadline remains the server-side SessionToken.expiresAt. */
-export const MEDIA_COOKIE_OPTIONS = {
+const MEDIA_COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'strict' as const,
   secure: 'auto' as const,
@@ -26,9 +26,9 @@ export const MEDIA_COOKIE_OPTIONS = {
  *  session exists after a refresh. Carries no secret; same SameSite/secure/maxAge as the token cookie so
  *  its lifetime tracks the real session. Read by the web client's `AuthService.isLoggedIn()` (browser
  *  build only; native builds hold the raw token and don't use it). */
-export const LOGGED_IN_COOKIE = 'logged_in';
+const LOGGED_IN_COOKIE = 'logged_in';
 
-export const LOGGED_IN_COOKIE_OPTIONS = {
+const LOGGED_IN_COOKIE_OPTIONS = {
   httpOnly: false,
   sameSite: 'strict' as const,
   secure: 'auto' as const,

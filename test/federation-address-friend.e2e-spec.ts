@@ -5,11 +5,11 @@ import {
   messageThread,
   clientStateFeed,
   federationThreadSyncState,
-  durableTask,
   message,
   accountThreadState,
   account as user,
   identityNamespace,
+  peerStateFeed,
   relationshipIntent,
   userQuotaDailyUsage,
 } from '../src/database/schema.js';
@@ -24,10 +24,6 @@ import {
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
 import { findGroupRelationship, findP2PRelationship } from './seed.js';
-import {
-  waitForAcceptedDurableTask,
-  waitForAcceptedDurableTasks,
-} from './durable-task-helpers.js';
 
 describe('federated Address friend requests', () => {
   let appA: FedApp;
@@ -101,8 +97,9 @@ describe('federated Address friend requests', () => {
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
-    expect(sent.body.data).toMatchObject({ status: 'PENDING' });
-    await waitForAcceptedDurableTask(appA.database, sent.body);
+    // The addressed request is synchronous now: the intent, the shell, and the
+    // peer feed item are committed when the request answers.
+    expect(sent.body.data).toEqual({ status: 'OK' });
     const requesterStub = await appA.database.query.account.findFirst({
       where: and(
         eq(user.account, 'address-bob'),
@@ -173,7 +170,10 @@ describe('federated Address friend requests', () => {
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDurableTask(appB.database, accepted.body);
+    // The address-only acceptance activates synchronously on the accepting
+    // side; the origin learns through the peer state-feed push.
+    expect(accepted.body.data).toMatchObject({ status: 'OK' });
+    expect(typeof accepted.body.data.threadId).toBe('number');
 
     await vi.waitFor(
       async () => {
@@ -264,7 +264,7 @@ describe('federated Address friend requests', () => {
       expect(response.body.code, JSON.stringify(response.body)).toBe(
         BusinessCode.OK,
       );
-      await waitForAcceptedDurableTask(appA.database, response.body);
+      expect(response.body.data).toEqual({ status: 'OK' });
     };
     await send('original request');
     const namespace = await appA.database.query.identityNamespace.findFirst({
@@ -389,7 +389,18 @@ describe('federated Address friend requests', () => {
         users: [{ account: 'address-bob', domain: FED_DOMAIN_B }],
       });
     expect(invite.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTasks(appA.database, invite.body);
+    const authoredInvite = await appA.database.query.peerStateFeed.findFirst({
+      where: and(
+        eq(peerStateFeed.account, group.groupAccount!),
+        eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        eq(peerStateFeed.subjectAccount, 'address-bob'),
+      ),
+    });
+    expect(authoredInvite?.body).toMatchObject({
+      status: 'REQUESTED',
+      messageEndSeq: expect.any(Number),
+      tombstoneEndSeq: expect.any(Number),
+    });
     const mirror = await vi.waitFor(
       async () => {
         const row = await appB.database.query.messageThread.findFirst({
@@ -408,7 +419,6 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${bobToken}`)
       .send({ groupId: mirror.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, accepted.body);
     const ns = (await appA.database.query.identityNamespace.findFirst({
       where: eq(identityNamespace.domain, FED_DOMAIN_B),
     }))!;
@@ -418,11 +428,14 @@ describe('federated Address friend requests', () => {
       namespaceId: ns.id,
     };
     await vi.waitFor(
-      async () =>
-        expect(
-          (await findGroupRelationship(appA.database, threadId, remote)).pair
-            ?.active,
-        ).toBe(true),
+      async () => {
+        const rel = await findGroupRelationship(
+          appA.database,
+          threadId,
+          remote,
+        );
+        expect(rel.pair?.active).toBe(true);
+      },
       { timeout: 15_000, interval: 100 },
     );
     const kicked = await request(appA.baseUrl)
@@ -434,7 +447,6 @@ describe('federated Address friend requests', () => {
         domain: remote.domain,
       });
     expect(kicked.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, kicked.body);
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -450,29 +462,14 @@ describe('federated Address friend requests', () => {
         expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
           true,
         );
-        const tasks = await appB.database.query.durableTask.findMany({
-          where: eq(durableTask.taskType, 'REVOKE_USER_RELATIONSHIP'),
+        const leftRow = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, mirror.id),
+            eq(message.contentType, ContentType.SYSTEM),
+            sql`${message.content}::text like '%GROUP_LEFT%'`,
+          ),
         });
-        const reverse = tasks.find(
-          (row) =>
-            row.payload.operation === 'RESPOND_TO_REVOKE' &&
-            row.payload.threadId === mirror.id,
-        );
-        expect(reverse?.status).toBe('SUCCEEDED');
-        expect(reverse?.payload.intentAuthorUserId).toBe(bobId);
-        const system = await appB.database.query.account.findFirst({
-          where: eq(user.kind, 'SYSTEM'),
-        });
-        expect(reverse?.actorUserId).toBe(system?.id);
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, mirror.id),
-              eq(message.contentType, ContentType.SYSTEM),
-              sql`${message.content}::text like '%GROUP_LEFT%'`,
-            ),
-          }),
-        ).toBeDefined();
+        expect(leftRow).toBeDefined();
         expect(
           await appB.database.query.accountThreadState.findFirst({
             where: and(
@@ -486,7 +483,7 @@ describe('federated Address friend requests', () => {
     );
   }, 60_000);
 
-  it('attributes reverse revocation to system and keeps reauthorization intact after restart replay', async () => {
+  it('concludes a received revocation inline and permits reauthorization', async () => {
     const target = { account: 'address-bob', domain: FED_DOMAIN_B };
     const revoke = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
@@ -494,26 +491,6 @@ describe('federated Address friend requests', () => {
       .send(target);
     expect(revoke.body.code).toBe(BusinessCode.OK);
     expect(revoke.body.data).toEqual({ status: 'OK' });
-    const reverse = await vi.waitFor(
-      async () => {
-        const tasks = await appB.database.query.durableTask.findMany({
-          where: eq(durableTask.taskType, 'REVOKE_USER_RELATIONSHIP'),
-        });
-        const task = tasks.find(
-          (row) =>
-            row.payload.operation === 'RESPOND_TO_REVOKE' &&
-            row.payload.intentAuthorUserId === bobId,
-        );
-        expect(task?.status).toBe('SUCCEEDED');
-        expect(task?.checkpoint).toEqual({ reverseRevokeDone: true });
-        const system = await appB.database.query.account.findFirst({
-          where: eq(user.kind, 'SYSTEM'),
-        });
-        expect(task?.actorUserId).toBe(system?.id);
-        return task!;
-      },
-      { timeout: 20_000, interval: 100 },
-    );
     const nsOnA = (await appA.database.query.identityNamespace.findFirst({
       where: eq(identityNamespace.domain, FED_DOMAIN_B),
     }))!;
@@ -546,7 +523,7 @@ describe('federated Address friend requests', () => {
         note: 're-authorize after revoke',
       });
     expect(requested.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appA.database, requested.body);
+    expect(requested.body.data).toEqual({ status: 'OK' });
     const ns = (await appB.database.query.identityNamespace.findFirst({
       where: eq(identityNamespace.domain, FED_DOMAIN_A),
     }))!;
@@ -574,31 +551,9 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${bobToken}`)
       .send({ account: peer.account, domain: peer.domain });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, accepted.body);
+    expect(accepted.body.data).toMatchObject({ status: 'OK' });
     expect(
       (await findP2PRelationship(appB.database, bobId, peer)).pair?.active,
     ).toBe(true);
-    // Model a crash after the business/checkpoint commit but before scheduler completion.
-    await appB.stop();
-    await appB.database
-      .update(durableTask)
-      .set({ status: 'PENDING', startedAt: null, completedAt: null })
-      .where(eq(durableTask.id, reverse.id));
-    await appB.restart();
-    await vi.waitFor(
-      async () => {
-        expect(
-          (
-            await appB.database.query.durableTask.findFirst({
-              where: eq(durableTask.id, reverse.id),
-            })
-          )?.status,
-        ).toBe('SUCCEEDED');
-        expect(
-          (await findP2PRelationship(appB.database, bobId, peer)).pair?.active,
-        ).toBe(true);
-      },
-      { timeout: 20_000, interval: 100 },
-    );
   }, 80_000);
 });

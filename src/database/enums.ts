@@ -45,14 +45,14 @@ export const MessageDeleteType = {
 export type MessageDeleteType =
   (typeof MessageDeleteType)[keyof typeof MessageDeleteType];
 
-export const FileSyncDirection = {
+const FileSyncDirection = {
   OUTBOUND: 'OUTBOUND',
   INBOUND: 'INBOUND',
 } as const;
 export type FileSyncDirection =
   (typeof FileSyncDirection)[keyof typeof FileSyncDirection];
 
-export const FileSyncStatus = {
+const FileSyncStatus = {
   PENDING: 'PENDING',
   DOWNLOADING: 'DOWNLOADING',
   SUCCEEDED: 'SUCCEEDED',
@@ -62,7 +62,7 @@ export const FileSyncStatus = {
 export type FileSyncStatus =
   (typeof FileSyncStatus)[keyof typeof FileSyncStatus];
 
-export const FileSyncKind = {
+const FileSyncKind = {
   FILE: 'FILE',
   IMAGE: 'IMAGE',
   VIDEO: 'VIDEO',

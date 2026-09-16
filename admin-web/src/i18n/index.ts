@@ -10,11 +10,11 @@ export const SUPPORTED_LANGS = ['zh-CN', 'en'] as const
 export type AppLang = (typeof SUPPORTED_LANGS)[number]
 // Default to English when the system language matches no shipped language — mirrors
 // the web/Angular end (zh* → zh-CN, en* → en, anything else → en).
-export const FALLBACK_LANG: AppLang = 'en'
+const FALLBACK_LANG: AppLang = 'en'
 
 // localStorage key is prefixed with `admin_` to stay isolated from the C-end app
 // on the same origin (mirrors the `admin_refresh_token` convention).
-export const LANG_STORAGE_KEY = 'admin_lang'
+const LANG_STORAGE_KEY = 'admin_lang'
 
 const resources = {
   'zh-CN': { translation: zhCN },

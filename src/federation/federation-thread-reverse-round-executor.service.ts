@@ -5,7 +5,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
-  type ForwardWireBundle,
+  type InboundForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
 import {
   encodeFederationResourceComponent,
@@ -35,7 +35,7 @@ interface BufferedReverseMessageBatch {
   response: FederationThreadResourceResponse<FederationMessageQueryPage>;
   before: number;
   through?: number;
-  prefetchedForwardClosures: ReadonlyMap<number, ForwardWireBundle>;
+  prefetchedForwardClosures: ReadonlyMap<number, InboundForwardWireBundle>;
 }
 
 /** Connects one caller-owned reverse round to signed peer reads and durable local application.
@@ -218,9 +218,9 @@ export class FederationThreadReverseRoundExecutorService {
   private async prefetchForwardClosures(
     source: FederationReverseThreadSource,
     messageResponse: FederationThreadResourceResponse<FederationMessageQueryPage>,
-  ): Promise<ReadonlyMap<number, ForwardWireBundle>> {
-    const result = new Map<number, ForwardWireBundle>();
-    const byBundleId = new Map<string, ForwardWireBundle>();
+  ): Promise<ReadonlyMap<number, InboundForwardWireBundle>> {
+    const result = new Map<number, InboundForwardWireBundle>();
+    const byBundleId = new Map<string, InboundForwardWireBundle>();
     for (const [index, item] of messageResponse.data.messages.entries()) {
       if (item.contentType !== ContentType.FORWARD) continue;
       let bundleId: string;
@@ -238,7 +238,7 @@ export class FederationThreadReverseRoundExecutorService {
       }
       let closure = byBundleId.get(bundleId);
       if (!closure) {
-        const response = await this.threadResources.fetch<ForwardWireBundle>(
+        const response = await this.threadResources.fetch<InboundForwardWireBundle>(
           source.threadId,
           `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
           source.peerDomain,

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
-import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
+import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
@@ -12,12 +12,12 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 export interface FederationGroupMetaPageRequest {
   account: string;
   mode: 'full' | 'delta';
-  after: bigint;
-  through: bigint;
+  after: number;
+  through: number;
 }
 
 /** Fetches and validates one bounded Group Meta page. Durable progress and
- * page application belong to the caller's task transaction. */
+ * page application belong to the caller's round transaction. */
 @Injectable()
 export class FederationGroupMetaClient {
   constructor(
@@ -29,7 +29,12 @@ export class FederationGroupMetaClient {
     peerDomain: string,
     request: FederationGroupMetaPageRequest,
   ): Promise<GroupMetaFeedPage> {
-    if (request.after < 0n || request.through < request.after)
+    if (
+      !Number.isSafeInteger(request.after) ||
+      !Number.isSafeInteger(request.through) ||
+      request.after < 0 ||
+      request.through < request.after
+    )
       throw new Error('invalid bounded group-meta request');
     const query = new URLSearchParams({
       account: request.account,
@@ -58,6 +63,12 @@ export class FederationGroupMetaClient {
   }
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return (
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  );
+}
+
 function validatePage(
   request: FederationGroupMetaPageRequest,
   page: GroupMetaFeedPage,
@@ -69,12 +80,12 @@ function validatePage(
     page.mode !== request.mode ||
     !Array.isArray(page.items) ||
     typeof page.hasMore !== 'boolean' ||
-    !isDecimal(page.scannedThrough) ||
-    !isDecimal(page.groupMetaFeedEndId)
+    !isNonNegativeSafeInteger(page.scannedThrough) ||
+    !isNonNegativeSafeInteger(page.groupMetaFeedEndId)
   )
     throw new Error('invalid group-meta page envelope');
-  const scannedThrough = BigInt(page.scannedThrough);
-  const sourceEnd = BigInt(page.groupMetaFeedEndId);
+  const scannedThrough = page.scannedThrough;
+  const sourceEnd = page.groupMetaFeedEndId;
   const scanEnd = sourceEnd < request.through ? sourceEnd : request.through;
   if (
     scannedThrough < request.after ||
@@ -85,12 +96,14 @@ function validatePage(
     throw new Error('invalid group-meta page boundary');
   let previous = request.after;
   for (const item of page.items) {
-    if (!isPositiveDecimal(item.feedId))
-      throw new Error('invalid group-meta item coordinate');
-    const feedId = BigInt(item.feedId);
-    if (feedId <= previous || feedId > scannedThrough)
+    if (
+      !Number.isSafeInteger(item.feedId) ||
+      item.feedId <= 0 ||
+      item.feedId <= previous ||
+      item.feedId > scannedThrough
+    )
       throw new Error('unordered group-meta page items');
-    previous = feedId;
+    previous = item.feedId;
   }
 }
 
@@ -106,23 +119,13 @@ function mapCursorUnavailable(error: unknown): Error {
   const resumeAfter = (data as Record<string, unknown>)['resumeAfter'];
   const resumeBefore = (data as Record<string, unknown>)['resumeBefore'];
   if (
-    typeof resumeAfter !== 'string' ||
-    !isDecimal(resumeAfter) ||
-    typeof resumeBefore !== 'string' ||
-    !isPositiveDecimal(resumeBefore) ||
-    BigInt(resumeBefore) <= BigInt(resumeAfter)
+    !isNonNegativeSafeInteger(resumeAfter) ||
+    !isNonNegativeSafeInteger(resumeBefore) ||
+    resumeBefore <= resumeAfter
   )
     return new Error('invalid group-meta recovery window');
-  return new RemoteFeedCursorUnavailableError(
-    BigInt(resumeAfter),
-    BigInt(resumeBefore),
+  return new RemoteGroupMetaCursorUnavailableError(
+    resumeAfter,
+    resumeBefore,
   );
-}
-
-function isDecimal(value: unknown): value is string {
-  return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
-}
-
-function isPositiveDecimal(value: unknown): value is string {
-  return typeof value === 'string' && /^[1-9]\d*$/.test(value);
 }

@@ -51,7 +51,7 @@ const playgroundGroupService = {
   kickMember: () => of({ code: 0, message: 'ok' }),
   transferOwnership: () => of({ code: 0, message: 'ok' }),
   inviteUsers: () =>
-    of({ code: 0, message: 'ok', data: { invited: [], tasks: [], skipped: [] } }),
+    of({ code: 0, message: 'ok', data: { invited: [], skipped: [] } }),
 };
 
 const playgroundMemberNames = new Map([

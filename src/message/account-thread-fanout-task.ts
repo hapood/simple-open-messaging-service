@@ -6,7 +6,7 @@ import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
 } from '../business/shared/locks/thread-content-lock.js';
-import { relationshipEndpointMatchesUserSql } from '../relationship/relationship-authorization.js';
+import { relationshipEndpointMatchesUserSql } from '../business/relationship/shared/relationship-authorization.js';
 import {
   localAccountsForTargetsInTx,
   type AccountTarget,

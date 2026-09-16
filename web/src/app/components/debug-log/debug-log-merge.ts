@@ -13,7 +13,7 @@ import type { ConsoleEntry } from '../../services/log-buffer';
  *    extracted the line keeps its raw text and sorts to the end (see {@link mergeByTs}).
  */
 
-export type LogSource = 'js' | 'rust' | 'kotlin';
+type LogSource = 'js' | 'rust' | 'kotlin';
 export type LogLevel = 'error' | 'warn' | 'info' | 'log' | 'debug';
 
 export interface MergedLine {

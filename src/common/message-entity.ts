@@ -1,4 +1,4 @@
-export interface MessageTextSegment {
+interface MessageTextSegment {
   kind: 'text';
   text: string;
 }
@@ -13,8 +13,6 @@ export interface MessageEntitySegment {
 }
 
 export type MessageSegment = MessageTextSegment | MessageEntitySegment;
-
-export const ALL_MENTION_ID = 'somfp:audience:all';
 
 interface ParsedAt {
   entity: MessageEntitySegment;

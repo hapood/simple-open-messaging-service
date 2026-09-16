@@ -24,12 +24,13 @@ import {
   relationshipPair,
   threadAudience,
 } from '../src/database/schema.js';
-import { setLockedP2PPairActiveInTx } from '../src/relationship/p2p-pair-state.js';
+import { setLockedP2PPairActiveInTx } from '../src/business/relationship/shared/p2p-pair-state.js';
 import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
-import { FederationRelationshipMutationService } from '../src/federation/federation-relationship-mutation.service.js';
+import { GroupRelationshipMutationService } from '../src/business/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('federation thread synchronization state', () => {
   let mod: TestingModule;
@@ -51,9 +52,7 @@ describe('federation thread synchronization state', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "Account", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
     const [existingNamespace] = await database.db
       .select({ id: identityNamespace.id })
       .from(identityNamespace)
@@ -211,7 +210,7 @@ describe('federation thread synchronization state', () => {
           groupDissolvedAt: new Date(),
         })
         .where(eq(messageThread.id, threadId));
-      const mutations = new FederationRelationshipMutationService(
+      const mutations = new GroupRelationshipMutationService(
         {} as never,
         {} as never,
         {} as never,
@@ -296,6 +295,38 @@ describe('federation thread synchronization state', () => {
     return state;
   }
 
+  it('re-enters with a valid gap when the retained remote cursor is ahead of the local head', async () => {
+    await database.db.insert(federationThreadSyncState).values({
+      threadId,
+      namespaceId,
+      messageTargetSeq: 50,
+      messageProcessedThroughSeq: 50,
+      deletionTargetSeq: 0,
+      deletionProcessedThroughSeq: 0,
+      authorizationEpoch: 0,
+    });
+    await database.db
+      .update(messageThread)
+      .set({ authorizationEpoch: 1 })
+      .where(eq(messageThread.id, threadId));
+
+    await initializeTail(100);
+    expect(await states.require(threadId, namespaceId)).toMatchObject({
+      messageProcessedThroughSeq: 99,
+      authorizationEpoch: 1,
+    });
+    expect(
+      await database.db.query.federationThreadHistoryGap.findFirst({
+        where: eq(federationThreadHistoryGap.threadId, threadId),
+      }),
+    ).toMatchObject({ startSeq: 51, endSeq: 99, messageSeqOffset: 0 });
+    expect(
+      await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+      }),
+    ).toMatchObject({ curSeq: 99 });
+  });
+
   it('sets read from the reserved local window start, not subsequent forward targets', async () => {
     const reader = await createReader();
     expect(reader).toMatchObject({
@@ -372,7 +403,6 @@ describe('federation thread synchronization state', () => {
       deletionTargetSeq: 0,
       deletionProcessedThroughSeq: 0,
       authorizationEpoch: 0,
-      historyBoundaryReached: false,
     });
     const [gap] = await database.db
       .select()
@@ -547,7 +577,6 @@ describe('federation thread synchronization state', () => {
 
     await expect(states.require(threadId, namespaceId)).resolves.toMatchObject({
       activeGapId: null,
-      historyBoundaryReached: true,
     });
     const gaps = await database.db
       .select()
@@ -686,7 +715,6 @@ describe('federation thread synchronization state', () => {
       );
       expect(await states.require(threadId, namespaceId)).toMatchObject({
         activeGapId: null,
-        historyBoundaryReached: true,
       });
       expect(
         await states.resolveReverseWindow(threadId, other.id),

@@ -4,6 +4,8 @@ export interface ThreadFeedSnapshot {
   threadFeedId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  /** Canonical Group Meta coordinate; null for P2P threads. */
+  groupMetaFeedEndId: string | null;
   lastReadSeq: number;
   unreadCount: number;
   lastMentionSeq: number | null;
@@ -46,6 +48,11 @@ export function mergeThreadAttention(
   coordinate(incoming.threadFeedId, 'feed ID');
   coordinate(incoming.messageEndSeq, 'message end');
   coordinate(incoming.tombstoneEndSeq, 'tombstone end');
+  if (
+    incoming.groupMetaFeedEndId !== null &&
+    !/^(0|[1-9]\d*)$/.test(incoming.groupMetaFeedEndId)
+  )
+    throw new Error('Invalid attention Group Meta end');
   coordinate(incoming.lastReadSeq, 'server read position');
   coordinate(incoming.unreadCount, 'unread count');
   if (incoming.lastMentionSeq !== null)

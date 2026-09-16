@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { and, asc, eq, gt, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
@@ -52,11 +52,14 @@ export class FederationHealthSchedulerService
     try {
       const rows = await this.database.db.query.federatedPeer.findMany({
         where: and(
-          inArray(tables.federatedPeer.trustLevel, ['available', 'degraded']),
+          inArray(tables.federatedPeer.trustLevel, [
+            'establishing',
+            'available',
+            'degraded',
+          ]),
+          isNotNull(tables.federatedPeer.activeNamespaceId),
           eq(tables.federatedPeer.recognizesPeer, true),
           eq(tables.federatedPeer.localServiceAvailable, true),
-          eq(tables.federatedPeer.outboundRecognitionConfirmed, true),
-          eq(tables.federatedPeer.inboundRecognitionConfirmed, true),
           ...(this.scanCursor === null
             ? []
             : [gt(tables.federatedPeer.domain, this.scanCursor)]),

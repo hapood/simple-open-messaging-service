@@ -56,7 +56,7 @@ export class SendMessageDto {
     required: false,
     example: 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b',
     description:
-      'Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.',
+      'Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit when retry identity is not required.',
   })
   @IsOptional()
   @IsUUID()

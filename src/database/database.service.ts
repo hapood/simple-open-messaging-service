@@ -7,10 +7,8 @@ import {
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { optionalIntEnv } from '../common/env.js';
-import * as relations from './relations.js';
-import * as schema from './schema.js';
+import { databaseSchema } from './database-schema.js';
 
-export const databaseSchema = { ...schema, ...relations };
 export type Database = NodePgDatabase<typeof databaseSchema>;
 export type DatabaseTransaction = Parameters<
   Parameters<Database['transaction']>[0]

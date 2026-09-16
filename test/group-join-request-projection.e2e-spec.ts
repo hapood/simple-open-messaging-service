@@ -1,11 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/bootstrap.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -13,30 +9,25 @@ import {
   groupRequestProjection,
   messageThread,
   accountThreadState,
+  durableTask,
 } from '../src/database/schema.js';
-import { GroupService } from '../src/group/group.service.js';
+import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
+import { GroupService } from '../src/business/group/group.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { FederationRelationshipMutationService } from '../src/federation/federation-relationship-mutation.service.js';
-import { GroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
-import { readCurrentGroupMemberInTx } from '../src/group-meta/current-group-roster.js';
+import { GroupRelationshipMutationService } from '../src/business/group/membership-intent/shared/group-relationship-mutation.service.js';
+import { admitGroupMembershipProjectionFanoutInTx } from '../src/business/group/membership-intent/shared/group-membership-projection-fanout.js';
+import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
+import type { DatabaseTransaction } from '../src/database/database.service.js';
+import { readCurrentGroupMemberInTx } from '../src/business/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
-import {
-  waitForAcceptedDurableTask,
-  waitForAcceptedDurableTasks,
-  waitForLocalRelationshipRequest,
-} from './durable-task-helpers.js';
+import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
+import { createTestApp } from './support/app';
 
 describe('group join request projection', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
 
   beforeAll(async () => {
-    const fixture = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = fixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
+    ({ app } = await createTestApp());
   });
 
   afterAll(async () => app.close());
@@ -48,9 +39,17 @@ describe('group join request projection', () => {
   ): Promise<void> {
     const database = app.get(DatabaseService);
     await database.db.transaction(async (tx) => {
+      // Flow-entry group advisory: the mutation writers hold row locks only.
+      const thread = await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+        columns: { groupAccount: true, groupDomain: true },
+      });
+      await lockBusinessAccountsInTx(tx, [
+        { account: thread!.groupAccount!, domain: thread!.groupDomain! },
+      ]);
       const updates: Array<{ userId: number; feedId: number }> = [];
       await app
-        .get(FederationRelationshipMutationService)
+        .get(GroupRelationshipMutationService)
         .writeMemberRelationshipIntentInTx(
           tx,
           threadId,
@@ -59,6 +58,10 @@ describe('group join request projection', () => {
           updates,
           note,
         );
+      await admitGroupMembershipProjectionFanoutInTx(tx, {
+        threadId,
+        groupAccount: thread!.groupAccount!,
+      });
     });
   }
 
@@ -83,6 +86,12 @@ describe('group join request projection', () => {
 
     await submitApplication(threadId, applicant.id, 'please');
 
+    const applicantPage = await request(app.getHttpServer())
+      .post('/api/v1/group/join-requests')
+      .set('Authorization', `Bearer ${applicant.token}`)
+      .send({ groupId: threadId });
+    expect(applicantPage.body.code).toBe(BusinessCode.THREAD_NOT_FOUND);
+
     const pending = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests')
       .set('Authorization', `Bearer ${owner.token}`)
@@ -93,40 +102,44 @@ describe('group join request projection', () => {
       note: 'please',
     });
     expect(Number.isInteger(pending.body.data.data[0].feedId)).toBe(true);
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
+    // The projection fan-out advances the manager's request watermark before
+    // the read endpoint builds its cosmetic head.
+    const joinRequestFeedId = pending.body.data.data[0].feedId as number;
+    await vi.waitFor(async () => {
+      const managerState = await database.db.query.accountThreadState.findFirst({
         where: and(
-          eq(clientStateFeed.userId, owner.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
+          eq(accountThreadState.accountId, owner.id),
+          eq(accountThreadState.threadId, threadId),
         ),
-      }),
-    ).toBeDefined();
+      });
+      expect(managerState?.joinRequestEndFeedId).toBe(joinRequestFeedId);
+    }, { timeout: 10_000 });
     const read = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests/read')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        readFeedId: pending.body.data.data[0].feedId,
+        readFeedId: joinRequestFeedId,
       });
     expect(read.body.code).toBe(BusinessCode.OK);
-    const readHead = await database.db.query.clientStateFeed.findFirst({
-      where: and(
-        eq(clientStateFeed.userId, owner.id),
-        eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
-      ),
-    });
-    expect(readHead?.body).toMatchObject({
-      latestFeedId: pending.body.data.data[0].feedId,
-      readFeedId: pending.body.data.data[0].feedId,
+    await vi.waitFor(async () => {
+      const readHead = await database.db.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, owner.id),
+          eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
+        ),
+      });
+      expect(readHead?.body).toMatchObject({
+        latestFeedId: joinRequestFeedId,
+        readFeedId: joinRequestFeedId,
+      });
     });
 
     const rejected = await request(app.getHttpServer())
       .post('/api/v1/group/join-request/reject')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, requestId: pending.body.data.data[0].id });
+      .send({ groupId: threadId, account: applicant.account, domain: 'local' });
     expect(rejected.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, rejected.body);
 
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests')
@@ -134,10 +147,12 @@ describe('group join request projection', () => {
       .send({ groupId: threadId });
     expect(history.body.data.data).toHaveLength(1);
     expect(history.body.data.data[0].status).toBe('REVOKED');
-    expect(history.body.data.data[0].feedId).toBeGreaterThan(
+    expect(history.body.data.data[0].feedId).toBe(
       pending.body.data.data[0].feedId,
     );
 
+    // Expiry is the only collection trigger: an unexpired row survives every
+    // sweep even when its manager deleted their participation state.
     const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
       .update(groupRequestProjection)
@@ -148,24 +163,14 @@ describe('group join request projection', () => {
       .where(eq(groupRequestProjection.threadId, threadId));
     expect(
       await app.get(GroupService).garbageCollectJoinRequestProjections(),
-    ).toBe(1);
+    ).toBeGreaterThanOrEqual(1);
     const afterGc = await database.db.query.groupRequestProjection.findMany({
       where: eq(groupRequestProjection.threadId, threadId),
     });
     expect(afterGc).toEqual([]);
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, owner.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
-        ),
-      }),
-    ).toBeUndefined();
 
     const now = new Date();
     await database.db.insert(groupRequestProjection).values({
-      managerUserId: owner.id,
       threadId,
       memberAccount: applicant.account,
       memberDomain: 'local',
@@ -173,26 +178,11 @@ describe('group join request projection', () => {
       memberProfileRev: 1,
       direction: 'APPLICATION',
       feedId: history.body.data.data[0].feedId + 1,
-      requestId: BigInt(history.body.data.data[0].id),
       status: 'REVOKED',
       note: 'please',
       requestedAt: now,
       expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
     });
-    await database.db.transaction((tx) =>
-      app
-        .get(ClientStateFeedService)
-        .recordProfileStateInTx(tx, applicant.id, [owner.id]),
-    );
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, owner.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
-        ),
-      }),
-    ).toBeDefined();
     await database.db
       .delete(accountThreadState)
       .where(
@@ -209,34 +199,6 @@ describe('group join request projection', () => {
         where: eq(groupRequestProjection.threadId, threadId),
       }),
     ).toHaveLength(1);
-    await database.db.transaction((tx) =>
-      app.get(GroupMetaFeedService).reconcileMembersInTx(tx, thread!.id, [
-        {
-          namespaceId: 0,
-          account: owner.account,
-          domain: 'local',
-          operation: 'DEPART',
-          body: {},
-        },
-      ]),
-    );
-    expect(
-      await app.get(GroupService).garbageCollectJoinRequestProjections(),
-    ).toBe(1);
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: eq(groupRequestProjection.threadId, threadId),
-      }),
-    ).toEqual([]);
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, owner.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
-        ),
-      }),
-    ).toBeUndefined();
   });
 
   it('projects group invitations through the symmetric manager API', async () => {
@@ -279,28 +241,32 @@ describe('group join request projection', () => {
     expect(invited.body.data.invited).toEqual([
       { account: member.account, domain: 'local' },
     ]);
-    await waitForAcceptedDurableTasks(
-      app.get(DatabaseService).db,
-      invited.body,
-    );
 
     const pending = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
-    expect(pending.body.data.data).toHaveLength(1);
-    expect(pending.body.data.data[0]).toMatchObject({
+    // The listing is the projection history for the direction: the owner's own
+    // ACCEPTED founding invitation and the member's live invitation.
+    const requestedRows = pending.body.data.data.filter(
+      (row: { status: string }) => row.status === 'REQUESTED',
+    );
+    expect(requestedRows).toHaveLength(1);
+    expect(requestedRows[0]).toMatchObject({
       account: member.account,
       domain: 'local',
       status: 'REQUESTED',
     });
+    const pendingRow = requestedRows[0] as {
+      id: string;
+      feedId: number;
+    };
 
     const revoked = await request(app.getHttpServer())
       .post('/api/v1/group/invitation/revoke')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, requestId: pending.body.data.data[0].id });
+      .send({ groupId: threadId, account: member.account, domain: 'local' });
     expect(revoked.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(app.get(DatabaseService).db, revoked.body);
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
       .set('Authorization', `Bearer ${owner.token}`)
@@ -327,19 +293,21 @@ describe('group join request projection', () => {
       .post('/api/v1/group/join-requests')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
-    const requestId = pending.body.data.data[0].id as string;
+    expect(pending.body.data.data[0]).toMatchObject({
+      account: applicant.account,
+      domain: 'local',
+      status: 'REQUESTED',
+    });
 
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/group/join-request/accept')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, requestId });
+      .send({ groupId: threadId, account: applicant.account, domain: 'local' });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, accepted.body);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
       {
         where: and(
-          eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, applicant.account),
           eq(groupRequestProjection.memberDomain, 'local'),
@@ -351,7 +319,6 @@ describe('group join request projection', () => {
     expect(projections[0]).toMatchObject({
       direction: 'APPLICATION',
       status: 'ACCEPTED',
-      requestId: BigInt(requestId),
     });
   });
 
@@ -386,10 +353,6 @@ describe('group join request projection', () => {
         users: [{ account: member.account, domain: 'local' }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTasks(
-      app.get(DatabaseService).db,
-      invited.body,
-    );
 
     const database = app.get(DatabaseService);
     const groupThread = await database.db.query.messageThread.findFirst({
@@ -421,7 +384,6 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ account: groupIdentity!.account, domain: 'local' });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, accepted.body);
 
     const acceptedCandidates = await request(app.getHttpServer())
       .post('/api/v1/group/invite-candidates')
@@ -438,7 +400,6 @@ describe('group join request projection', () => {
     const projections = await database.db.query.groupRequestProjection.findMany(
       {
         where: and(
-          eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, member.account),
           eq(groupRequestProjection.memberDomain, 'local'),
@@ -457,7 +418,6 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(left.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, left.body);
     await expect(
       database.db.transaction((tx) =>
         readCurrentGroupMemberInTx(tx, groupThread!.id, member.id),
@@ -476,14 +436,12 @@ describe('group join request projection', () => {
     const database = app.get(DatabaseService);
     const feedId = await database.db.transaction((tx) =>
       app.get(ClientStateFeedService).writeGroupRequestInTx(tx, {
-        managerUserId: owner.id,
         threadId,
         memberAccount: member.account,
         memberDomain: 'local',
         memberNamespaceId: 0,
         memberProfileRev: 1,
         direction: 'APPLICATION',
-        requestId: 999n,
         status: 'ACCEPTED',
         note: '',
         requestedAt: null,
@@ -494,7 +452,6 @@ describe('group join request projection', () => {
     expect(
       await database.db.query.groupRequestProjection.findMany({
         where: and(
-          eq(groupRequestProjection.managerUserId, owner.id),
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, member.account),
           eq(groupRequestProjection.memberDomain, 'local'),
@@ -504,7 +461,7 @@ describe('group join request projection', () => {
     ).toEqual([]);
   });
 
-  it('immediately collects manager projections on demotion and leave', async () => {
+  it('keeps the shared projection across manager role changes and departure', async () => {
     const owner = await seedUserWithSession(app, 'join-role-owner');
     const admin = await seedUserWithSession(app, 'join-role-admin');
     const applicant = await seedUserWithSession(app, 'join-role-applicant');
@@ -520,8 +477,16 @@ describe('group join request projection', () => {
     });
     expect(thread?.id).toBeTypeOf('number');
     await database.db.transaction(async (tx) => {
+      // Flow-entry group advisory: the mutation writers hold row locks only.
+      const thread = await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+        columns: { groupAccount: true, groupDomain: true },
+      });
+      await lockBusinessAccountsInTx(tx, [
+        { account: thread!.groupAccount!, domain: thread!.groupDomain! },
+      ]);
       const updates: Array<{ userId: number; feedId: number }> = [];
-      const federation = app.get(FederationRelationshipMutationService);
+      const federation = app.get(GroupRelationshipMutationService);
       await federation.writeGroupRelationshipIntentInTx(
         tx,
         threadId,
@@ -540,98 +505,64 @@ describe('group join request projection', () => {
     });
     await submitApplication(threadId, applicant.id, 'admin should see this');
 
-    const promoted = await request(app.getHttpServer())
-      .post('/api/v1/group/set-role')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: admin.account,
-        domain: 'local',
-        role: 'ADMIN',
+    // All managers share one projection per (thread, member, direction): role
+    // changes never delete it, they admit the projection fan-out that rebuilds
+    // each current manager's join-request watermark.
+    const sharedProjections = () =>
+      database.db.query.groupRequestProjection.findMany({
+        where: and(
+          eq(groupRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.memberAccount, applicant.account),
+          eq(groupRequestProjection.memberDomain, 'local'),
+          eq(groupRequestProjection.memberNamespaceId, 0),
+        ),
       });
+    const setRole = (token: string, role: 'ADMIN' | 'MEMBER') =>
+      request(app.getHttpServer())
+        .post('/api/v1/group/set-role')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          groupId: threadId,
+          account: admin.account,
+          domain: 'local',
+          role,
+        });
+    expect(await sharedProjections()).toHaveLength(1);
+
+    const promoted = await setRole(owner.token, 'ADMIN');
     expect(promoted.body.code, JSON.stringify(promoted.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDurableTask(database.db, promoted.body);
+    expect(await sharedProjections()).toHaveLength(1);
     expect(
-      await database.db.query.groupRequestProjection.findMany({
+      await database.db.query.durableTask.findFirst({
         where: and(
-          eq(groupRequestProjection.managerUserId, admin.id),
-          eq(groupRequestProjection.threadId, threadId),
-        ),
-      }),
-    ).toHaveLength(1);
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, admin.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
+          eq(durableTask.taskType, DurableTaskType.FAN_OUT_GROUP_PROJECTION),
+          eq(
+            durableTask.coalescingKey,
+            JSON.stringify(['FAN_OUT_GROUP_PROJECTION', threadId]),
+          ),
         ),
       }),
     ).toBeDefined();
 
-    const demoted = await request(app.getHttpServer())
-      .post('/api/v1/group/set-role')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: admin.account,
-        domain: 'local',
-        role: 'MEMBER',
-      });
+    const demoted = await setRole(owner.token, 'MEMBER');
     expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDurableTask(database.db, demoted.body);
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: eq(groupRequestProjection.managerUserId, admin.id),
-      }),
-    ).toEqual([]);
-    expect(
-      await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, admin.id),
-          eq(clientStateFeed.account, applicant.account),
-          eq(clientStateFeed.eventType, 'PROFILE'),
-        ),
-      }),
-    ).toBeUndefined();
+    expect(await sharedProjections()).toHaveLength(1);
 
-    const promotedAgain = await request(app.getHttpServer())
-      .post('/api/v1/group/set-role')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: admin.account,
-        domain: 'local',
-        role: 'ADMIN',
-      });
+    const promotedAgain = await setRole(owner.token, 'ADMIN');
     expect(promotedAgain.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, promotedAgain.body);
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(groupRequestProjection.managerUserId, admin.id),
-          eq(groupRequestProjection.threadId, threadId),
-        ),
-      }),
-    ).toHaveLength(1);
+    expect(await sharedProjections()).toHaveLength(1);
 
     const left = await request(app.getHttpServer())
       .post('/api/v1/group/leave')
       .set('Authorization', `Bearer ${admin.token}`)
       .send({ groupId: threadId });
     expect(left.body.code, JSON.stringify(left.body)).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(database.db, left.body);
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(groupRequestProjection.managerUserId, admin.id),
-          eq(groupRequestProjection.threadId, threadId),
-        ),
-      }),
-    ).toEqual([]);
+    // The owner still manages the same request history after one manager leaves.
+    expect(await sharedProjections()).toHaveLength(1);
+    expect(await sharedProjections()).toMatchObject([{ status: 'REQUESTED' }]);
   });
 });

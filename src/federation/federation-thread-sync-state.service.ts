@@ -16,7 +16,7 @@ import {
 } from '../database/schema.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundAuthorizationEpochChangedError } from './federation-thread-round-error.js';
-import { applyReadPositionInTx } from '../message/thread-read-position.js';
+import { applyReadPositionInTx } from '../business/message/thread-read-position.service.js';
 import { eligiblePreviewOwnerSql } from '../message/thread-preview-eligibility.js';
 
 export interface FederationReverseWindow {
@@ -96,7 +96,11 @@ export class FederationThreadSyncStateService {
   }> {
     this.assertCoordinate(params.messageTargetSeq, 'message target seq');
     this.assertCoordinate(params.deletionTargetSeq, 'deletion target seq');
-    await requireThreadContentLockInTx(tx, params.threadId, params.threadLock);
+    const threadLock = await requireThreadContentLockInTx(
+      tx,
+      params.threadId,
+      params.threadLock,
+    );
 
     const [thread] = await tx
       .select({
@@ -117,12 +121,11 @@ export class FederationThreadSyncStateService {
       deletionRecoveryMaxMessageSeq: number | null;
       authorizationEpoch: number;
       activeGapId: string | null;
-      historyBoundaryReached: boolean;
     }>(sql`
       SELECT "messageTargetSeq", "messageProcessedThroughSeq",
         "deletionTargetSeq", "deletionProcessedThroughSeq",
         "deletionRecoveryThroughSeq", "deletionRecoveryMaxMessageSeq",
-        "authorizationEpoch", "activeGapId", "historyBoundaryReached"
+        "authorizationEpoch", "activeGapId"
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}
         AND "namespaceId" = ${params.namespaceId}
@@ -155,6 +158,7 @@ export class FederationThreadSyncStateService {
         );
         await this.initializeHistoryReadPositionsInTx(
           tx,
+          threadLock,
           params.threadId,
           reverseEndSeq + messageSeqOffset,
         );
@@ -177,7 +181,6 @@ export class FederationThreadSyncStateService {
           : 0,
         authorizationEpoch: thread.authorizationEpoch,
         activeGapId,
-        historyBoundaryReached: activeGapId === null,
         updatedAt: new Date(),
       });
       return {
@@ -224,6 +227,7 @@ export class FederationThreadSyncStateService {
     let activeGapId: bigint | null = null;
     const obsoleteGapIds: bigint[] = [];
     let historyReadBoundary: number | null = null;
+    let newGapMessageSeqOffset: number | null = null;
     if (params.reverseEnabled) {
       const newGapStartSeq = state.messageProcessedThroughSeq + 1;
       const newGapEndSeq = nextMessageProcessedThroughSeq;
@@ -243,8 +247,15 @@ export class FederationThreadSyncStateService {
             AND "endSeq"::bigint + 1 >= ${newGapStartSeq}
           FOR UPDATE
         `);
-        const messageSeqOffset = thread.curSeq + 1 - newGapStartSeq;
+        // The old authorized interval may have advanced the remote cursor
+        // without occupying local sequence numbers. On re-entry, align the
+        // new gap at its source coordinates when the local head is behind it.
+        const messageSeqOffset = Math.max(
+          0,
+          thread.curSeq + 1 - newGapStartSeq,
+        );
         this.assertOffset(messageSeqOffset);
+        newGapMessageSeqOffset = messageSeqOffset;
         const conflictingOverlap = overlaps.rows.find(
           (gap) =>
             gap.messageSeqOffset !== messageSeqOffset &&
@@ -336,7 +347,6 @@ export class FederationThreadSyncStateService {
           : null,
         authorizationEpoch: thread.authorizationEpoch,
         activeGapId,
-        historyBoundaryReached: activeGapId === null,
         updatedAt: new Date(),
       })
       .where(
@@ -355,12 +365,12 @@ export class FederationThreadSyncStateService {
     if (!updated) {
       throw new Error('federation synchronization epoch changed');
     }
-    if (params.reverseEnabled && nextMessageProcessedThroughSeq >= 1) {
+    if (newGapMessageSeqOffset !== null) {
       await this.reserveReverseSequenceRangeInTx(
         tx,
         params.threadId,
         nextMessageProcessedThroughSeq,
-        thread.curSeq + 1 - (state.messageProcessedThroughSeq + 1),
+        newGapMessageSeqOffset,
       );
     }
     if (obsoleteGapIds.length > 0) {
@@ -377,6 +387,7 @@ export class FederationThreadSyncStateService {
     if (historyReadBoundary !== null) {
       await this.initializeHistoryReadPositionsInTx(
         tx,
+        threadLock,
         params.threadId,
         historyReadBoundary,
       );
@@ -392,6 +403,7 @@ export class FederationThreadSyncStateService {
    * content lock. Do not derive initialization from whichever gap is rightmost. */
   private static async initializeHistoryReadPositionsInTx(
     tx: DatabaseTransaction,
+    threadLock: ThreadContentLock,
     threadId: number,
     initialReadSeq: number,
   ): Promise<void> {
@@ -410,7 +422,7 @@ export class FederationThreadSyncStateService {
       ORDER BY s."accountId"
       FOR NO KEY UPDATE OF s`);
     for (const owner of owners.rows) {
-      await applyReadPositionInTx(tx, owner.accountId, {
+      await applyReadPositionInTx(tx, threadLock, owner.accountId, {
         threadId,
         localReadHwm: owner.initialReadSeq,
       });
@@ -513,7 +525,7 @@ export class FederationThreadSyncStateService {
     namespaceId: number,
   ): Promise<FederationReverseWindow> {
     const state = await this.require(threadId, namespaceId);
-    if (state.historyBoundaryReached) {
+    if (state.activeGapId === null) {
       return {
         authorizationEpoch: state.authorizationEpoch,
         gapId: null,
@@ -521,9 +533,6 @@ export class FederationThreadSyncStateService {
         throughSeq: null,
         messageSeqOffset: 0,
       };
-    }
-    if (state.activeGapId === null) {
-      throw new Error('unfinished reverse history has no active gap');
     }
     const gapId = state.activeGapId;
     const result = await this.database.db.execute<{
@@ -664,7 +673,6 @@ export class FederationThreadSyncStateService {
       .update(federationThreadSyncState)
       .set({
         activeGapId: nextGap?.id ?? null,
-        historyBoundaryReached: nextGap === undefined,
         updatedAt: new Date(),
       })
       .where(
@@ -764,7 +772,6 @@ export class FederationThreadSyncStateService {
       .update(federationThreadSyncState)
       .set({
         activeGapId: nextGap?.id ?? null,
-        historyBoundaryReached: nextGap === undefined,
         updatedAt: new Date(),
       })
       .where(

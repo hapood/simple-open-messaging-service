@@ -1,11 +1,11 @@
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { isThreadMutuallyAuthorized } from '../relationship/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';

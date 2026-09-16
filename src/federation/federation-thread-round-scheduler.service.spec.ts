@@ -30,7 +30,7 @@ function harness() {
       deletionTargetSeq: 0,
       messageProcessedThroughSeq: 10,
       deletionProcessedThroughSeq: 0,
-      historyBoundaryReached: true,
+      activeGapId: null,
     }),
   };
   const sources = { resolve: vi.fn((threadId: number) => source(threadId)) };
@@ -43,6 +43,7 @@ function harness() {
   };
   const database = {
     db: {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
       select: vi.fn((shape: Record<string, unknown>) => {
         const result =
           'threadId' in shape
@@ -72,13 +73,14 @@ function harness() {
   const federation = {
     listTrustedPeerDomains: vi.fn().mockResolvedValue([]),
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
-    handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKE_QUEUED'),
+    handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
   const scheduler = new FederationThreadRoundSchedulerService(
     database as never,
     states as never,
     forward as never,
     reverse as never,
+    { run: vi.fn().mockResolvedValue(false) } as never,
     federation as never,
     sources as never,
   );
@@ -106,7 +108,6 @@ describe('FederationThreadRoundSchedulerService', () => {
         messageProcessedThroughSeq: 2,
         deletionTargetSeq: 0,
         deletionProcessedThroughSeq: 0,
-        historyBoundaryReached: false,
       },
     ];
     try {
@@ -197,7 +198,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         expect(warn).not.toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
         expect(debug).toHaveBeenCalledWith(
-          expect.stringContaining('P2P_REVOKE_QUEUED'),
+          expect.stringContaining('P2P_REVOKED'),
         );
       } finally {
         await scheduler.onModuleDestroy();
@@ -345,7 +346,6 @@ describe('FederationThreadRoundSchedulerService', () => {
       deletionTargetSeq: 12,
       messageProcessedThroughSeq: 20,
       deletionProcessedThroughSeq: 12,
-      historyBoundaryReached: true,
     });
     let releaseFirst!: () => void;
     forward.runTombstones
@@ -441,18 +441,18 @@ describe('FederationThreadRoundSchedulerService', () => {
     const { scheduler, states, reverse } = harness();
     states.require
       .mockResolvedValueOnce({
-        historyBoundaryReached: false,
         messageTargetSeq: 10,
         deletionTargetSeq: 0,
         messageProcessedThroughSeq: 10,
         deletionProcessedThroughSeq: 0,
+        activeGapId: 1n,
       })
       .mockResolvedValue({
-        historyBoundaryReached: true,
         messageTargetSeq: 10,
         deletionTargetSeq: 0,
         messageProcessedThroughSeq: 10,
         deletionProcessedThroughSeq: 0,
+        activeGapId: null,
       });
 
     await scheduler.wake(1, 'a.test', 'reverse');
@@ -465,14 +465,12 @@ describe('FederationThreadRoundSchedulerService', () => {
     databaseState.ownerDomain = 'b.test';
     states.require
       .mockResolvedValueOnce({
-        historyBoundaryReached: true,
         messageTargetSeq: 10,
         deletionTargetSeq: 0,
         messageProcessedThroughSeq: 9,
         deletionProcessedThroughSeq: 0,
       })
       .mockResolvedValue({
-        historyBoundaryReached: true,
         messageTargetSeq: 10,
         deletionTargetSeq: 0,
         messageProcessedThroughSeq: 10,
@@ -722,7 +720,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         deletionTargetSeq: 4,
         messageProcessedThroughSeq: 10,
         deletionProcessedThroughSeq: 2,
-        historyBoundaryReached: false,
+        activeGapId: 1n,
       },
     ];
 
@@ -746,7 +744,6 @@ describe('FederationThreadRoundSchedulerService', () => {
         messageProcessedThroughSeq: 0,
         deletionTargetSeq: 2,
         deletionProcessedThroughSeq: 0,
-        historyBoundaryReached: true,
       }),
     );
     await scheduler.onApplicationBootstrap();

@@ -38,7 +38,6 @@ export type Message = Omit<
   mediaStatus?: MediaStatus;
 };
 export type MessageCreator = NonNullable<Message['creator']>;
-export type { MessageTomb } from '../../../../shared/message-tomb';
 export type MessageQueryRow = Message | MessageTomb;
 
 /** Namespace zero and the local sentinel both identify a subject on this server.
@@ -96,7 +95,7 @@ export function parseUserIdentityKey(key: string): {
     return null;
   }
 }
-export interface Group {
+interface Group {
   id: number;
   account: string;
   name: string;
@@ -292,7 +291,7 @@ export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';
 
 /** Per-user quota breaker snapshot (msg cnt / file cnt / file total size). `fileBytes` is a decimal string
  *  because file-total-size is a backend bigint. */
-export interface PersonalQuotaBreaker {
+interface PersonalQuotaBreaker {
   tripped: boolean;
   trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
   msg: { count: number; limit: number };
@@ -306,7 +305,7 @@ export interface PersonalQuotaState {
   resetAt: number;
 }
 
-export type MessageThreadType = ConversationItem['type'];
+type MessageThreadType = ConversationItem['type'];
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)
 export interface StandardResponse<T = unknown> {
@@ -335,7 +334,7 @@ export interface DeletedMessageItem {
 }
 
 /** Message feed may arrive before the account-owned structural snapshot. */
-export interface PendingThreadListItem {
+interface PendingThreadListItem {
   threadId: number;
   type: 'PENDING';
   unreadCount?: never;

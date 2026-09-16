@@ -5,10 +5,6 @@ import { ClientStateFeedService } from './client-state-feed.service.js';
 
 const dialect = new PgDialect();
 
-vi.mock('../state-feed/state-feed-fanout-task.js', () => ({
-  enqueueStateFeedFanoutInTx: vi.fn().mockResolvedValue(undefined),
-}));
-
 describe('ClientStateFeedService', () => {
   it('merges independent thread heads and does not suppress them with an unchanged state head', async () => {
     vi.useFakeTimers();
@@ -146,6 +142,7 @@ describe('ClientStateFeedService', () => {
       account: 'admin',
       domain: 'local',
       eventType: 'RELATIONSHIP_INTENT',
+      namespaceId: 0,
       subjectAccount: '!group',
       subjectDomain: 'alpha.test',
       body: { status: 'REQUESTED', requestedAt },
@@ -191,18 +188,13 @@ describe('ClientStateFeedService', () => {
     expect(query).not.toContain('ClientGroupMetaMemberFeed');
   });
 
-  it('publishes the shared Group Meta head to each active local account state', async () => {
+  it('publishes the group profile to each active local account state', async () => {
     const service = new ClientStateFeedService(
       undefined as never,
       undefined as never,
     );
     vi.spyOn(service, 'writeInTx').mockResolvedValue(9);
     const tx = {
-      select: () => ({
-        from: () => ({
-          where: async () => [{ userId: 7, feedId: 10, threadFeedEndId: 3 }],
-        }),
-      }),
       execute: vi
         .fn()
         .mockResolvedValueOnce({
@@ -216,7 +208,6 @@ describe('ClientStateFeedService', () => {
               avatar: '',
               profileRev: 1,
               namespaceId: 0,
-              groupMetaFeedEndId: '4',
             },
           ],
         })
@@ -226,20 +217,15 @@ describe('ClientStateFeedService', () => {
     };
 
     await expect(
-      service.publishGroupStateToLocalAccountsInTx(tx as never, 11),
-    ).resolves.toEqual([
-      { userId: 7, feedId: 9 },
-      { userId: 7, feedId: 9 },
-      { userId: 7, feedId: 10, threadFeedEndId: 3 },
-    ]);
+      service.publishGroupProfileToLocalAccountsInTx(tx as never, 11),
+    ).resolves.toEqual([{ userId: 7, feedId: 9 }]);
 
     expect(service.writeInTx).toHaveBeenNthCalledWith(
-      2,
+      1,
       tx,
       expect.objectContaining({
         userId: 7,
-        eventType: 'GROUP_META_FEED_HEAD',
-        body: { groupMetaFeedEndId: '4' },
+        eventType: 'PROFILE',
       }),
     );
   });

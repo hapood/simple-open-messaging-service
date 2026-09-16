@@ -942,6 +942,8 @@ export class ThreadRepository {
     }
     const states = await this.webdb.getThreadStates();
     if (epoch !== this.sessionEpoch) return;
+    await this.applyThreadGroupMeta(states);
+    if (epoch !== this.sessionEpoch) return;
     await this.applyThreadStates(states, false);
     if (epoch !== this.sessionEpoch) return;
     const port = await this.webdb.createThreadFeedPort();
@@ -960,6 +962,8 @@ export class ThreadRepository {
     }
     await this.pullDelta(d.stateFeedEndId);
     if (epoch !== this.sessionEpoch) return;
+    await this.applyThreadGroupMeta(await this.webdb.getThreadStates());
+    if (epoch !== this.sessionEpoch) return;
     if (!port) await this.syncThreadFeed(d.threadFeedEndId);
   }
 
@@ -970,6 +974,8 @@ export class ThreadRepository {
     this.threadSyncInFlight = true;
     const epoch = this.sessionEpoch;
     try {
+      await this.applyThreadGroupMeta(await this.webdb.getThreadStates());
+      if (epoch !== this.sessionEpoch) return;
       while (
         this.threadFeedCursor !== undefined &&
         this.threadFeedCursor < this.threadSyncTarget
@@ -978,6 +984,8 @@ export class ThreadRepository {
           this.threadSyncTarget,
           this.threadFeedCursor,
         );
+        if (epoch !== this.sessionEpoch) return;
+        await this.applyThreadGroupMeta(result.states);
         if (epoch !== this.sessionEpoch) return;
         await this.applyThreadStates(result.states, true);
         if (epoch !== this.sessionEpoch) return;
@@ -1007,6 +1015,8 @@ export class ThreadRepository {
       const changes = await this.webdb.readThreadFeedChanges(
         this.threadFeedCursor,
       );
+      if (epoch !== this.sessionEpoch) return;
+      await this.applyThreadGroupMeta(changes.states);
       if (epoch !== this.sessionEpoch) return;
       await this.applyThreadStates(changes.states, true);
       if (epoch !== this.sessionEpoch) return;
@@ -1230,7 +1240,7 @@ export class ThreadRepository {
               })),
             }),
           );
-        const groupMeta = await this.prefetchGroupMeta(delta);
+        const groupMeta: import('./webdb.service').ClientGroupMetaApply[] = [];
         // The rows and cursor are one durable unit. If this fails, leave both memory and cursor untouched;
         // the next HELLO retries the same idempotent range.
         await this.webdb.applyStateFeedPage(
@@ -1308,11 +1318,6 @@ export class ThreadRepository {
             );
           } else if (op.eventType === 'PROFILE') {
             this.applyStateProfile(op);
-          } else if (op.eventType === 'GROUP_META_FEED_HEAD') {
-            const affected = groupMeta
-              .filter((update) => update.page.account === op.account)
-              .map((update) => update.threadId);
-            if (affected.length) this.memberProfiles.notifyChanged(affected);
           } else if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
             const hasNewUnread = this.userService.applyGroupJoinRequestHead(
               op.body.threadId,
@@ -1560,84 +1565,53 @@ export class ThreadRepository {
     );
   }
 
-  private async prefetchGroupMeta(
-    items: import('./user.service').ClientStateFeedItem[],
-  ): Promise<import('./webdb.service').ClientGroupMetaApply[]> {
-    const updates: import('./webdb.service').ClientGroupMetaApply[] = [];
-    const heads: import('./user.service').ClientStateFeedItem[] = [...items];
-    for (const state of items) {
-      if (
-        state.eventType !== 'THREAD_STATE' ||
-        state.body.type !== 'GROUP' ||
-        state.body.conversationState !== 'ACTIVE'
-      )
-        continue;
-      const ref = state.body.profile;
-      const current = this.items().find(
-        (item) => item.threadId === state.body.threadId,
+  private async applyThreadGroupMeta(
+    states: LocalThreadAttention[],
+  ): Promise<void> {
+    const updates = await this.prefetchThreadGroupMeta(states);
+    if (updates.length === 0) return;
+    await this.webdb.applyGroupMetaPages(updates);
+    const persisted = await this.webdb.getThreads();
+    for (const update of updates) {
+      const thread = persisted.find(
+        (item) => item.threadId === update.threadId,
       );
-      heads.push({
-        feedId: state.feedId,
-        eventType: 'GROUP_META_FEED_HEAD',
-        account: ref.account,
-        domain: ref.domain,
-        namespaceId: ref.namespaceId,
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: {
-          groupMetaFeedEndId: (
-            BigInt(
-              current?.type === 'GROUP' ? current.group.groupMetaFeedId : '0',
-            ) + 1n
-          ).toString(),
-        },
+      if (thread?.type !== 'GROUP') continue;
+      this.applyGroupUpdate(update.threadId, {
+        memberCount: thread.group.memberCount,
+        groupMetaFeedId: thread.group.groupMetaFeedId,
+        profileRev: thread.group.profileRev,
+        role: thread.role,
       });
     }
+    this.memberProfiles.notifyChanged(updates.map((update) => update.threadId));
+  }
+
+  private async prefetchThreadGroupMeta(
+    states: LocalThreadAttention[],
+  ): Promise<import('./webdb.service').ClientGroupMetaApply[]> {
+    const updates: import('./webdb.service').ClientGroupMetaApply[] = [];
     const fetched = new Set<number>();
-    for (const entry of heads) {
-      const item =
-        entry.eventType === 'GROUP_META_FEED_HEAD'
-          ? localSubjectIdentity(entry)
-          : entry;
-      if (item.eventType !== 'GROUP_META_FEED_HEAD') continue;
+    for (const state of states) {
+      const target = state.server?.groupMetaFeedEndId;
+      if (target === null || target === undefined) continue;
       const thread = this.items().find(
-        (candidate) =>
-          candidate.type === 'GROUP' &&
-          candidate.group.account === item.account &&
-          candidate.group.domain === item.domain &&
-          candidate.group.namespaceId === item.namespaceId,
-      );
-      const projectedThreadId = items.find(
-        (candidate) =>
-          candidate.eventType === 'THREAD_STATE' &&
-          candidate.body.type === 'GROUP' &&
-          candidate.body.profile.account === item.account &&
-          candidate.body.profile.domain === item.domain &&
-          candidate.body.profile.namespaceId === item.namespaceId,
+        (candidate) => candidate.threadId === state.threadId,
       );
       if (
-        projectedThreadId?.eventType === 'THREAD_STATE'
-          ? projectedThreadId.body.conversationState === 'READ_ONLY'
-          : thread?.conversationState === 'READ_ONLY'
+        thread?.type !== 'GROUP' ||
+        thread.conversationState === 'READ_ONLY' ||
+        fetched.has(thread.threadId)
       )
         continue;
-      const projectedId =
-        projectedThreadId?.eventType === 'THREAD_STATE'
-          ? projectedThreadId.body.threadId
-          : undefined;
-      if ((!thread || thread.type !== 'GROUP') && projectedId === undefined)
-        continue;
-      const threadId =
-        thread?.type === 'GROUP' ? thread.threadId : projectedId!;
-      if (fetched.has(threadId)) continue;
-      const current =
-        thread?.type === 'GROUP' ? (thread.group.groupMetaFeedId ?? '0') : '0';
-      if (BigInt(current) === BigInt(item.body.groupMetaFeedEndId)) continue;
+      const threadId = thread.threadId;
+      const current = thread.group.groupMetaFeedId ?? '0';
+      if (BigInt(current) >= BigInt(target)) continue;
       let mode: 'full' | 'delta' = current === '0' ? 'full' : 'delta';
       if (mode === 'full') await this.resetGroupMetaProjection(threadId);
       let recovered = false;
       let after = current;
-      let through: string | undefined;
+      let through = target;
       const pages: import('./user.service').ClientGroupMetaFeedPage[] = [];
       do {
         const requestedAfter = after;
@@ -1685,12 +1659,13 @@ export class ThreadRepository {
           throw new Error(
             'group-meta member is missing its namespace-qualified identity',
           );
-        through ??= page.groupMetaFeedEndId;
         if (
           page.mode !== mode ||
-          page.account !== item.account ||
+          page.account !== thread.group.account ||
           BigInt(page.scannedThrough) < BigInt(after) ||
-          BigInt(page.scannedThrough) > BigInt(through)
+          BigInt(page.scannedThrough) > BigInt(through) ||
+          BigInt(page.groupMetaFeedEndId) < BigInt(through) ||
+          (!page.hasMore && page.scannedThrough !== through)
         )
           throw new Error('invalid group-meta page');
         pages.push(page);
@@ -1702,14 +1677,14 @@ export class ThreadRepository {
       fetched.add(threadId);
       updates.push({
         threadId,
-        sourceServer: item.domain,
-        namespaceId: item.namespaceId,
+        sourceServer: thread.group.domain,
+        namespaceId: thread.group.namespaceId,
         page: {
-          account: item.account,
+          account: thread.group.account,
           mode,
           items: pages.flatMap((page) => page.items),
           scannedThrough: after,
-          groupMetaFeedEndId: through!,
+          groupMetaFeedEndId: through,
           hasMore: false,
         },
       });

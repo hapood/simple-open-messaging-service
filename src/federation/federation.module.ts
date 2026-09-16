@@ -1,31 +1,19 @@
-import { StateFeedFanoutTaskHandler } from '../state-feed/state-feed-fanout-task.handler.js';
-import { FederationRelationshipTaskAdmission } from './federation-relationship-task-admission.service.js';
-import { FederationRelationshipTaskHandler } from './federation-relationship-task.handler.js';
-import { FederationReverseRevokeService } from './federation-reverse-revoke.service.js';
 import { Global, Module } from '@nestjs/common';
-import { EventEmitterModule } from '@nestjs/event-emitter';
+import { EventEmitter2, EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
-import { FederationGroupMembershipService } from './federation-group-membership.service.js';
-import { AuthoritativeGroupMetaMutationService } from './authoritative-group-meta-mutation.service.js';
+import { GroupMembershipProjectionService } from '../business/group/membership-intent/shared/group-membership-projection.service.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
-import { FederationGroupMetaTaskCoordinator } from './federation-group-meta-task-coordinator.service.js';
-import { GroupMetaSyncTaskExecutionService } from './group-meta-sync-task-execution.service.js';
-import {
-  GroupMetaSyncAsyncTaskHandler,
-  GroupMetaSyncHandoffTaskHandler,
-} from './group-meta-sync-task.handlers.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
-import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
-import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
+import { GroupRelationshipFoldService } from '../business/group/membership-intent/shared/group-relationship-fold.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
-import { RelationshipModule } from '../relationship/relationship.module.js';
+import { RelationshipModule } from '../business/relationship/relationship.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
@@ -44,7 +32,9 @@ import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
-import { GroupMetaFeedService } from './group-meta-feed.service.js';
+import { FederationGroupMetaFeedService } from './group-meta-feed.service.js';
+import { GroupMetaFeedService } from '../business/group/meta/group-meta-feed.service.js';
+import { FederationThreadMetaRoundExecutorService } from './federation-thread-meta-round-executor.service.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationThreadForwardRoundService } from './federation-thread-forward-round.service.js';
 import { FederationThreadReverseRoundService } from './federation-thread-reverse-round.service.js';
@@ -54,7 +44,7 @@ import { FederationThreadForwardRoundExecutorService } from './federation-thread
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FederationThreadFanoutTaskHandler } from './federation-thread-fanout-task.handler.js';
-import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
+import { GroupRelationshipMutationService } from '../business/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
@@ -82,26 +72,18 @@ import { FederationPeerResourceService } from './federation-peer-resource.servic
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
 import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
 import { ProfileResolutionController } from './profile-resolution.controller.js';
-import { FederationGroupLeaveHintService } from './federation-group-leave-hint.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationDownloadAdminService } from './federation-download-admin.service.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
-import { FederatedRelationshipRequestTaskExecutionService } from './federated-relationship-request-task-execution.service.js';
-import {
-  AcceptAddressedRelationshipRequestTaskHandler,
-  RevokeAddressedRelationshipRequestTaskHandler,
-  SendFederatedRelationshipRequestTaskHandler,
-} from './federated-relationship-request-task.handlers.js';
-import { FederatedGroupTaskExecutionService } from './federated-group-task-execution.service.js';
-import {
-  AcceptAddressedGroupInvitationTaskHandler,
-  RequestFederatedGroupJoinTaskHandler,
-  RevokeFederatedGroupJoinTaskHandler,
-} from './federated-group-task.handlers.js';
-import { GroupProjectionTaskExecutionService } from './group-projection-task-execution.service.js';
-import { GroupMetaHeadFanoutTaskHandler } from './group-projection-task.handlers.js';
-import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-membership-finalizer.service.js';
+import { AuthoritativeMembershipFinalizerService } from '../business/group/membership-intent/shared/authoritative-membership-finalizer.service.js';
+import { UserIntentService } from '../business/user/p2p-intent/authored/user-intent.service.js';
+import { ReceivedUserIntentService } from '../business/user/p2p-intent/received/received-user-intent.service.js';
+import { RemoteMemberMembershipIntentService } from '../business/group/membership-intent/received/remote-member-membership-intent.service.js';
+import { MirrorGroupMembershipIntentService } from '../business/group/membership-intent/received/mirror-group-membership-intent.service.js';
+import { DatabaseService } from '../database/database.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -136,10 +118,122 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     QuoteResolutionController,
   ],
   providers: [
-    StateFeedFanoutTaskHandler,
-    FederationRelationshipTaskAdmission,
-    FederationRelationshipTaskHandler,
-    FederationReverseRevokeService,
+    {
+      provide: UserIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        EventEmitter2,
+        FederationNamespaceService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        events: EventEmitter2,
+        namespaces: FederationNamespaceService,
+      ) =>
+        new UserIntentService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation: {
+            async pushStateFeedDomains(domains) {
+              for (const peerDomain of new Set(domains))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            },
+          },
+          namespaces,
+        }),
+    },
+    {
+      provide: ReceivedUserIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        EventEmitter2,
+        UserIntentService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        events: EventEmitter2,
+        userIntents: UserIntentService,
+      ) =>
+        new ReceivedUserIntentService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation: {
+            async pushStateFeedDomains(domains) {
+              for (const peerDomain of new Set(domains))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            },
+          },
+          userIntents,
+        }),
+    },
+    {
+      provide: RemoteMemberMembershipIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        EventEmitter2,
+        GroupRelationshipMutationService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        events: EventEmitter2,
+        relationshipMutations: GroupRelationshipMutationService,
+      ) =>
+        new RemoteMemberMembershipIntentService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation: {
+            async pushStateFeedDomains(domains) {
+              for (const peerDomain of new Set(domains))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            },
+          },
+          relationshipMutations,
+        }),
+    },
+    {
+      provide: MirrorGroupMembershipIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        EventEmitter2,
+        GroupRelationshipMutationService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        events: EventEmitter2,
+        memberMutations: GroupRelationshipMutationService,
+      ) =>
+        new MirrorGroupMembershipIntentService({
+          database,
+          clientFeed,
+          peerFeed,
+          federation: {
+            async pushStateFeedDomains(domains) {
+              for (const peerDomain of new Set(domains))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            },
+          },
+          memberMutations,
+        }),
+    },
     FederationThreadFanoutTaskHandler,
     KeypairService,
     SignatureService,
@@ -156,16 +250,6 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationPendingMediaPromoter,
     FederationInboundMediaBatchService,
     FederationDownloadAdminService,
-    FederatedRelationshipRequestTaskExecutionService,
-    SendFederatedRelationshipRequestTaskHandler,
-    AcceptAddressedRelationshipRequestTaskHandler,
-    RevokeAddressedRelationshipRequestTaskHandler,
-    FederatedGroupTaskExecutionService,
-    RequestFederatedGroupJoinTaskHandler,
-    RevokeFederatedGroupJoinTaskHandler,
-    AcceptAddressedGroupInvitationTaskHandler,
-    GroupProjectionTaskExecutionService,
-    GroupMetaHeadFanoutTaskHandler,
     FederationUserDirectoryService,
     FederationCallBridgeService,
     FederationThreadAccessService,
@@ -183,19 +267,14 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationStateFeedPushSchedulerService,
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
-    FederationGroupLeaveHintService,
     FederationThreadQueryDenialService,
     FederationService,
-    FederationGroupMembershipService,
-    AuthoritativeGroupMembershipFinalizer,
+    GroupMembershipProjectionService,
+    AuthoritativeMembershipFinalizerService,
     FederationGroupMetaClient,
-    FederationGroupMetaTaskCoordinator,
-    GroupMetaSyncTaskExecutionService,
-    GroupMetaSyncHandoffTaskHandler,
-    GroupMetaSyncAsyncTaskHandler,
+    FederationThreadMetaRoundExecutorService,
     FederationGroupRequestProjectionService,
-    FederationGroupRelationshipService,
-    FederationGroupRosterProjectionService,
+    GroupRelationshipFoldService,
     FederationReconnectService,
     FederationRecognitionService,
     FederationMessageFeedService,
@@ -207,7 +286,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
-    AuthoritativeGroupMetaMutationService,
+    FederationGroupMetaFeedService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
@@ -216,15 +295,16 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,
-    FederationRelationshipMutationService,
+    GroupRelationshipMutationService,
     FederationNamespaceService,
     ProfileResolutionCoordinatorService,
     FederationStateFeedConsumerService,
   ],
   exports: [
-    FederationReverseRevokeService,
-    FederatedRelationshipRequestTaskExecutionService,
-    FederatedGroupTaskExecutionService,
+    UserIntentService,
+    ReceivedUserIntentService,
+    RemoteMemberMembershipIntentService,
+    MirrorGroupMembershipIntentService,
     FederationThreadQueryDenialService,
     KeypairService,
     SignatureService,
@@ -241,7 +321,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
-    AuthoritativeGroupMetaMutationService,
+    FederationGroupMetaFeedService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
@@ -250,7 +330,7 @@ import { AuthoritativeGroupMembershipFinalizer } from './authoritative-group-mem
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,
-    FederationRelationshipMutationService,
+    GroupRelationshipMutationService,
     FederationNamespaceService,
   ],
 })

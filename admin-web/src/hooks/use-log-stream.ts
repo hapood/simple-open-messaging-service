@@ -33,7 +33,7 @@ const MAX_LINES = 1000;
 /** Parse one SSE frame (the text between blank lines) into { event, data }. A leading `:` line is a
  *  comment (ignored); a frame with no `event:` field is dropped. Multiple `data:` lines join with `\n`
  *  per spec. Direct port of the consumer web/src/app/services/sse.worker.ts parser. */
-export function parseFrame(
+function parseFrame(
   raw: string,
 ): { event: string; data?: string } | undefined {
   let event = '';
@@ -57,7 +57,7 @@ export function parseFrame(
 
 /** Consume the SSE byte stream, invoking onFrame per complete frame. Resolves on a clean stream end;
  *  rejects on a read/abort error so the caller can back off + reconnect. */
-export async function readFrames(
+async function readFrames(
   body: ReadableStream<Uint8Array>,
   onFrame: (event: string, data?: string) => void,
 ): Promise<void> {

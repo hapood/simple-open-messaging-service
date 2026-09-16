@@ -5,9 +5,9 @@ import { FederationService } from './federation.service.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import {
-  FEDERATION_PEER_HEALTH_RECOVERED,
-  type FederationPeerHealthRecovered,
-} from './federation-health.events.js';
+  FEDERATION_PEER_AVAILABLE,
+  type FederationPeerAvailable,
+} from './federation-peer.events.js';
 
 /** 60s reconnect sweep cadence (§4.3). Module-scope so @Interval can read it at decoration time. */
 const SWEEP_MS = 60_000;
@@ -16,12 +16,12 @@ const JITTER_MS = 5000;
 const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
 
 /**
- * The 60s reconnect sweep retries missing idempotent recognition directions. Periodic reachability
+ * The 60s reconnect sweep retries peers still establishing acceptance. Periodic reachability
  * probing belongs to FederationHealthSchedulerService, whose bounded queue prevents slow Health
  * requests from accumulating here. After recognition recovery, this service exchanges ephemeral feed
  * revisions and drains state before messages.
  *
- * State reconciliation is event-driven: a Health degraded → available transition triggers one
+ * State reconciliation is event-driven: a transition to available triggers one
  * reconcile pass for that peer. Degradation refuses outbound S2S, so hints and pulls stop for the
  * whole window; recovery is when the missed state must drain.
  *
@@ -55,9 +55,9 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     );
   }
 
-  /** One reconcile pass for a peer whose Health just returned from degraded to available. */
-  @OnEvent(FEDERATION_PEER_HEALTH_RECOVERED)
-  onHealthRecovered(event: FederationPeerHealthRecovered): void {
+  /** One reconcile pass whenever a peer becomes available. */
+  @OnEvent(FEDERATION_PEER_AVAILABLE)
+  onPeerAvailable(event: FederationPeerAvailable): void {
     const domain = event.peerDomain;
     if (this.inFlight.has(domain)) return;
     this.inFlight.add(domain);

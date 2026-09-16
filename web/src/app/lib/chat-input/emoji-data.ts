@@ -109,4 +109,4 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
 ];
 
 /** Flat ordered list of every glyph (for the popup fallback that shows everything in one grid). */
-export const EMOJIS_FLAT: readonly string[] = EMOJI_CATEGORIES.flatMap((c) => c.icons);
+const EMOJIS_FLAT: readonly string[] = EMOJI_CATEGORIES.flatMap((c) => c.icons);

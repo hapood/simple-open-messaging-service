@@ -33,7 +33,7 @@ const HASH_OPTIONS = {
  * raw KDF (see src/auth/otp-login.service.ts). Different threat models, different primitives, deliberately
  * not unified.
  *
- * Greenfield: there is no legacy un-peppered hash path. Every stored hash is produced by {@link hash} and
+ * Every stored hash is peppered, produced by {@link hash}, and
  * verified by {@link verify} with the same pepper; if the pepper ever changes, all hashes are invalidated
  * by design (users reset) — there is no migration shim.
  */

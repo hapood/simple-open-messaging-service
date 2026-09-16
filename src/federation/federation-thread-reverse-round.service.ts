@@ -169,8 +169,7 @@ export class FederationThreadReverseRoundService {
       if (
         state.authorizationEpoch === continuation.authorizationEpoch &&
         state.activeGapId !== null &&
-        state.activeGapId === continuation.gapId &&
-        !state.historyBoundaryReached
+        state.activeGapId === continuation.gapId
       ) {
         return continuation;
       }

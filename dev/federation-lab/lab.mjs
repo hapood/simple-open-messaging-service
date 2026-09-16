@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { createWriteStream, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
@@ -294,10 +294,17 @@ if (runBackend) {
       [...diagnosticsArgs, join(root, 'dist', 'src', 'main.js')],
       {
         cwd: root,
-        stdio: 'inherit',
+        stdio: ['inherit', 'pipe', 'inherit'],
         env: labEnvironment(node, peerRoutes),
       },
     );
+    // Mirror each backend's stdout to the terminal AND its per-node log.
+    const backendLog = createWriteStream(
+      join(runtimeDir, node.name, 'backend.log'),
+      { flags: 'a' },
+    );
+    child.stdout.pipe(backendLog);
+    child.stdout.pipe(process.stdout);
     children.push(child);
     child.once('exit', (code, signal) => {
       if (!stopping) {

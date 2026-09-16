@@ -11,7 +11,6 @@ function request(
 ): GroupJoinRequest {
   return {
     feedId,
-    id: String(feedId + 100),
     status,
     namespaceId: 0,
     profileRev: 1,

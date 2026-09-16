@@ -1,7 +1,6 @@
 import { Injectable, Logger, type OnApplicationShutdown } from '@nestjs/common';
 import { optionalIntEnv } from '../common/env.js';
 import { BusinessException } from '../common/business.exception.js';
-import { DurableAsyncTaskSchedulerService } from './durable-async-task-scheduler.service.js';
 import { DurableTaskType } from './durable-task.constants.js';
 import { DurableTaskDispatcherService } from './durable-task-dispatcher.service.js';
 import {
@@ -33,7 +32,6 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
   constructor(
     private readonly store: DurableTaskStoreService,
     private readonly dispatcher: DurableTaskDispatcherService,
-    private readonly asyncScheduler: DurableAsyncTaskSchedulerService,
   ) {}
 
   onApplicationShutdown(): Promise<void> {
@@ -79,14 +77,12 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
         this.startupRecovery = await this.store.findCheckpointedProcessing([
           ...new Set([
             DurableTaskType.DISBAND_GROUP,
+            DurableTaskType.DISBAND_MIRROR_GROUP_MEMBERS,
             DurableTaskType.REVOKE_FORBIDDEN_GROUP,
             DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
-            DurableTaskType.COMMIT_THREAD_READ_POSITION,
-            DurableTaskType.FAN_OUT_GROUP_META_HEAD,
             DurableTaskType.FAN_OUT_THREAD_CONTENT,
             DurableTaskType.FAN_OUT_ACCOUNT_THREAD_CONTENT,
             DurableTaskType.FAN_OUT_FEDERATION_THREAD_CONTENT,
-            ...this.asyncScheduler.supportedTaskTypes,
           ]),
         ]);
       }
@@ -191,14 +187,12 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
   private async execute(task: DurableTask): Promise<void> {
     let outcome:
       | { status: 'SUCCEEDED' }
-      | { status: 'ASYNC_PROCESSING' }
       | { status: 'REJECTED'; resultCode: number }
       | { status: 'FAILED'; lastError: string };
     try {
+      const result = await this.dispatcher.execute(task);
       outcome =
-        (await this.dispatcher.execute(task))?.status === 'ASYNC_PROCESSING'
-          ? { status: 'ASYNC_PROCESSING' }
-          : { status: 'SUCCEEDED' };
+        result?.status === 'REJECTED' ? result : { status: 'SUCCEEDED' };
     } catch (error) {
       if (error instanceof BusinessException) {
         outcome = { status: 'REJECTED', resultCode: error.bizCode };
@@ -219,9 +213,6 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
     try {
       if (outcome.status === 'SUCCEEDED') {
         await this.store.markSucceeded(task.id);
-      } else if (outcome.status === 'ASYNC_PROCESSING') {
-        const handedOff = await this.store.markAsyncProcessing(task.id);
-        this.asyncScheduler.enqueue(handedOff);
       } else if (outcome.status === 'REJECTED') {
         await this.store.markRejected(task.id, outcome.resultCode);
       } else {

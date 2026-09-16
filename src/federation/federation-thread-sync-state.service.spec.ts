@@ -54,7 +54,6 @@ function epochTransaction(params: {
     deletionProcessedThroughSeq?: number;
     authorizationEpoch: number;
     activeGapId: bigint | null;
-    historyBoundaryReached: boolean;
   };
   overlaps?: Array<{
     id: bigint;
@@ -200,7 +199,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         expect.objectContaining({
           messageProcessedThroughSeq: processed,
           activeGapId: null,
-          historyBoundaryReached: true,
         }),
       );
     },
@@ -238,7 +236,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         messageTargetSeq: 2,
         messageProcessedThroughSeq: 1,
         activeGapId: 12n,
-        historyBoundaryReached: false,
       }),
     );
   });
@@ -299,7 +296,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         deletionProcessedThroughSeq: 3,
         authorizationEpoch: 7,
         activeGapId: 12n,
-        historyBoundaryReached: false,
       },
       overlaps: [{ id: 12n, startSeq: 1, endSeq: 99 }],
     });
@@ -347,7 +343,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         messageProcessedThroughSeq: 150,
         authorizationEpoch: 7,
         activeGapId: 12n,
-        historyBoundaryReached: false,
       },
       overlaps: [],
     });
@@ -378,7 +373,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         messageProcessedThroughSeq: 100,
         authorizationEpoch: 7,
         activeGapId: null,
-        historyBoundaryReached: true,
       },
       overlaps: [],
     });
@@ -406,7 +400,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         messageProcessedThroughSeq: 150,
         authorizationEpoch: 7,
         activeGapId: 12n,
-        historyBoundaryReached: false,
       },
       latestGapId: 12n,
     });
@@ -438,7 +431,6 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     const findFirst = vi.fn().mockResolvedValue({
       authorizationEpoch: 8,
       activeGapId: 12n,
-      historyBoundaryReached: false,
     });
     const execute = vi.fn().mockResolvedValue({
       rows: [{ startSeq: 1, endSeq: 99, messageSeqOffset: 8 }],
@@ -463,7 +455,6 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     const findFirst = vi.fn().mockResolvedValue({
       authorizationEpoch: 8,
       activeGapId: null,
-      historyBoundaryReached: true,
     });
     const execute = vi.fn();
     const service = new FederationThreadSyncStateService({
@@ -551,7 +542,6 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
         activeGapId: 11n,
-        historyBoundaryReached: false,
       }),
     );
     expect(update.mock.invocationCallOrder[0]).toBeLessThan(

@@ -47,10 +47,11 @@ test('derives manager targets and retractable messages from one database observa
     relationships: new Map(),
     requests: [
       {
-        managerAddress: owner.address,
         memberAddress: friend,
         direction: 'APPLICATION',
-        requestId: '44',
+        feedId: 44,
+        memberAccount: 'friend',
+        memberDomain: 'bravo.test',
         status: 'REQUESTED',
         expiresAt: new Date(Date.now() + 60_000),
       },
@@ -82,8 +83,8 @@ test('derives manager targets and retractable messages from one database observa
   assert.equal(facts.memberRole, 'OWNER');
   assert.equal(facts.membershipActive, true);
   assert.deepEqual(
-    facts.pendingApplications.map(({ requestId }) => requestId),
-    ['44'],
+    facts.pendingApplications.map(({ feedId }) => feedId),
+    [44],
   );
   assert.deepEqual(
     facts.inviteCandidates.map(({ id }) => id),

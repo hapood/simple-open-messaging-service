@@ -16,7 +16,7 @@ import { serializeBody } from './serialize.interceptor.js';
  */
 
 /** Heartbeat interval (< Nginx's default 60s proxy_read_timeout). Bound for half-open detection. */
-export const SSE_HEARTBEAT_MS = 25000;
+const SSE_HEARTBEAT_MS = 25000;
 
 /**
  * Initialize one SSE response: write the streaming headers (h2-aware — HTTP/2 forbids the Connection

@@ -22,7 +22,7 @@ import {
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 
-export function readFederationFanoutProgress(value: Record<string, unknown>): {
+function readFederationFanoutProgress(value: Record<string, unknown>): {
   phase: 'FEED' | 'DONE';
   afterNamespaceId: number;
 } {

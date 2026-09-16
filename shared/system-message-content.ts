@@ -20,6 +20,7 @@ export type OrdinarySystemMessageContent<A = SystemEventAddress> =
         | 'GROUP_ADMIN_REVOKED';
       member: A;
     }
+  | { type: 'GROUP_DISSOLVED' }
   | { type: 'GROUP_OWNER_TRANSFERRED'; previousOwner: A; newOwner: A }
   | { type: 'MESSAGE_WITHDRAWN'; author: A }
   | { type: 'MESSAGES_MODERATED'; count: number };
@@ -34,6 +35,7 @@ export const SystemMessageType = {
   FRIEND_REMOVED: 'FRIEND_REMOVED',
   GROUP_JOINED: 'GROUP_JOINED',
   GROUP_LEFT: 'GROUP_LEFT',
+  GROUP_DISSOLVED: 'GROUP_DISSOLVED',
   GROUP_ADMIN_GRANTED: 'GROUP_ADMIN_GRANTED',
   GROUP_ADMIN_REVOKED: 'GROUP_ADMIN_REVOKED',
   GROUP_OWNER_TRANSFERRED: 'GROUP_OWNER_TRANSFERRED',
@@ -82,6 +84,9 @@ export function parseSystemMessageContent(
       case 'GROUP_ADMIN_GRANTED':
       case 'GROUP_ADMIN_REVOKED':
         valid = keys('member') && address(body['member']);
+        break;
+      case 'GROUP_DISSOLVED':
+        valid = keys();
         break;
       case 'GROUP_OWNER_TRANSFERRED':
         valid =

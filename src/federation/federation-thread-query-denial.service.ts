@@ -1,26 +1,14 @@
 import { systemAccountIdInTx } from '../user/system-account.js';
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq, sql } from 'drizzle-orm';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
-import { FederationRelationshipMutationService } from './federation-relationship-mutation.service.js';
-import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
+import { RelationshipIntentService } from '../business/relationship/relationship-intent.service.js';
+import { admitMirrorGroupMembersDisbandInTx } from './mirror-group-disband-admission.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
-import type { DurableTask } from '../durable-task/durable-task.types.js';
-import {
-  readForbiddenGroupTask,
-  readForcedMemberRevokeTask,
-} from '../group/group-disband-task.js';
-import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
-import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
+import { UserIntentService } from '../business/user/p2p-intent/authored/user-intent.service.js';
 
 /** Converges locally authored relationship directions after authenticated query denial. */
 @Injectable()
@@ -28,10 +16,8 @@ export class FederationThreadQueryDenialService {
   constructor(
     private readonly database: DatabaseService,
     private readonly relationshipIntents: RelationshipIntentService,
-    private readonly relationshipMutations: FederationRelationshipMutationService,
-    private readonly clientStateFeed: ClientStateFeedService,
-    private readonly eventEmitter: EventEmitter2,
     private readonly tasks: DurableTaskQueueService,
+    private readonly userIntents: UserIntentService,
   ) {}
 
   async handleThreadQueryForbidden(
@@ -40,13 +26,14 @@ export class FederationThreadQueryDenialService {
     namespaceId: number,
     expectedAuthorizationEpoch: number,
   ): Promise<
-    | 'P2P_REVOKE_QUEUED'
+    | 'P2P_REVOKED'
     | 'P2P_ALREADY_CLOSED'
     | 'GROUP_REVOKE_QUEUED'
+    | 'GROUP_DISBAND_QUEUED'
     | 'GROUP_ALREADY_CLOSED'
     | 'STALE'
   > {
-    return this.database.db.transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       const endpoints = await tx.execute<{
         localUserId: number;
         remoteAccount: string;
@@ -162,6 +149,9 @@ export class FederationThreadQueryDenialService {
 
         const mirror = groupLocation.groupDomain !== 'local';
         if (mirror) {
+          // A mirror denied an authorized read has no authorized state behind
+          // it: fence in-flight content rounds now and converge the whole
+          // group through the disband task instead of one member's revocation.
           await tx.execute(sql`
             UPDATE "MessageThread"
             SET "authorizationEpoch" = "authorizationEpoch" + 1,
@@ -169,6 +159,13 @@ export class FederationThreadQueryDenialService {
               "updatedAt" = CURRENT_TIMESTAMP
             WHERE id = ${threadId}
           `);
+          await admitMirrorGroupMembersDisbandInTx(tx, {
+            groupId: threadId,
+            groupAccount: groupLocation.groupAccount,
+            peerDomain: groupLocation.groupDomain,
+            namespaceId,
+          });
+          return 'GROUP_DISBAND_QUEUED' as const;
         }
         await this.tasks.enqueueTaskInTx(tx, {
           scope: {
@@ -184,118 +181,38 @@ export class FederationThreadQueryDenialService {
             threadId,
             peerDomain,
             namespaceId,
-            expectedAuthorizationEpoch:
-              expectedAuthorizationEpoch + (mirror ? 1 : 0),
+            expectedAuthorizationEpoch,
           },
         });
         return 'GROUP_REVOKE_QUEUED' as const;
       }
 
-      const relationship =
-        await this.relationshipIntents.readP2PRelationshipInTx(
-          tx,
-          endpoint.localUserId,
-          { account: endpoint.remoteAccount, domain: peerDomain, namespaceId },
-        );
-      const thread = await tx.query.messageThread.findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: { authorizationEpoch: true },
-      });
-      if (
-        relationship.pair.threadId !== threadId ||
-        thread?.authorizationEpoch !== expectedAuthorizationEpoch
-      ) {
-        return 'STALE' as const;
-      }
-      const positive = (status: string | undefined) =>
-        status === 'REQUESTED' || status === 'ACCEPTED';
-      if (
-        !relationship.pair.active ||
-        !positive(relationship.firstIntent?.status) ||
-        !positive(relationship.secondIntent?.status)
-      ) {
-        return 'P2P_ALREADY_CLOSED' as const;
-      }
-      await this.tasks.enqueueTaskInTx(tx, {
-        scope: {
-          type: 'USER_PAIR',
-          endpoints: [relationship.pair.endpointA, relationship.pair.endpointB],
+      return {
+        kind: 'P2P_REVOKE' as const,
+        localUserId: endpoint.localUserId,
+        remoteAccount: endpoint.remoteAccount,
+      };
+    });
+    if (typeof result === 'string') return result;
+    const outcome = await this.userIntents.execute(
+      {
+        userId: result.localUserId,
+        decision: 'REVOKED',
+        target: {
+          account: result.remoteAccount,
+          domain: peerDomain,
+          namespaceId,
         },
-        taskType: DurableTaskType.REVOKE_USER_RELATIONSHIP,
-        actorUserId: await systemAccountIdInTx(tx),
-        payload: {
+      },
+      {
+        expectedAuthorization: {
           threadId,
-          expectedAuthorizationEpoch,
-          intentAuthorUserId: endpoint.localUserId,
+          epoch: expectedAuthorizationEpoch,
         },
-      });
-      return 'P2P_REVOKE_QUEUED' as const;
-    });
-  }
-
-  async revokeForbiddenMember(task: DurableTask): Promise<void> {
-    const denial = readForbiddenGroupTask(task);
-    const { memberUserId } = readForcedMemberRevokeTask(task);
-    const updates: PendingClientStateFeedUpdate[] = [];
-    const allocated = await this.database.db.transaction(async (tx) => {
-      await requireThreadContentLockInTx(tx, denial.threadId);
-      const state = await tx.execute<{
-        authorizationEpoch: number;
-        account: string;
-        domain: string;
-        namespaceId: number;
-      }>(sql`
-        SELECT thread."authorizationEpoch", group_profile.account,
-          group_profile.domain, group_profile."namespaceId"
-        FROM "MessageThread" thread
-        JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
-        WHERE thread.id = ${denial.threadId}
-      `);
-      const group = state.rows[0];
-      if (
-        !group ||
-        group.authorizationEpoch !== denial.expectedAuthorizationEpoch
-      )
-        return new Map<string, bigint>();
-      if (businessAccountScopeKey(group) !== task.scopeKey)
-        throw new Error('forced revoke belongs to another group');
-      if (group.domain === 'local') {
-        if (
-          task.payload.direction !== 'GROUP' ||
-          typeof memberUserId === 'number' ||
-          memberUserId.domain !== denial.peerDomain ||
-          memberUserId.namespaceId !== denial.namespaceId
-        )
-          throw new Error('invalid denied group direction');
-        return this.relationshipMutations.writeGroupRelationshipIntentInTx(
-          tx,
-          denial.threadId,
-          memberUserId,
-          '',
-          'REVOKED',
-          updates,
-        );
-      }
-      if (
-        group.domain !== denial.peerDomain ||
-        group.namespaceId !== denial.namespaceId
-      )
-        return new Map<string, bigint>();
-      if (
-        task.payload.direction !== 'MEMBER' ||
-        typeof memberUserId !== 'number'
-      )
-        throw new Error('invalid denied member direction');
-      return this.relationshipMutations.writeMemberRelationshipIntentInTx(
-        tx,
-        denial.threadId,
-        memberUserId,
-        'REVOKED',
-        updates,
-      );
-    });
-    this.clientStateFeed.notifyFeedUpdates(updates);
-    for (const peerDomain of allocated.keys())
-      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+      },
+    );
+    if (outcome.status === 'NO_OP' && outcome.reason === 'STALE_AUTHORIZATION')
+      return 'STALE';
+    return outcome.status === 'APPLIED' ? 'P2P_REVOKED' : 'P2P_ALREADY_CLOSED';
   }
 }

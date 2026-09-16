@@ -20,7 +20,6 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
-import { DurableTaskDispatcherService } from '../src/durable-task/durable-task-dispatcher.service.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ThreadHistoryService } from '../src/message/thread-history.service.js';
@@ -28,19 +27,22 @@ import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js'
 import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
 import { ThreadFanoutProgressService } from '../src/message/thread-fanout-progress.service.js';
 import { enqueueThreadFanoutInTx } from '../src/message/thread-fanout-task.js';
+import { ThreadReadPositionService } from '../src/business/message/thread-read-position.service.js';
+import { truncateTablesForTest } from './support/truncate';
 
 describe('transactional thread attention', () => {
   const db = new DatabaseService();
-  const service = new ThreadFeedService(db, new DurableTaskDispatcherService());
+  const service = new ThreadFeedService(db);
+  const readPositions = new ThreadReadPositionService(db, {
+    onThreadFeedUpdated: vi.fn(),
+  } as never);
   const tasks = new DurableTaskStoreService(db);
   let userId: number;
   let threadId: number;
   beforeAll(() => db.onModuleInit());
   afterAll(() => db.onApplicationShutdown());
   beforeEach(async () => {
-    await db.pool.query(
-      'TRUNCATE "Account", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
-    );
+    await truncateTablesForTest(db.pool, 'TRUNCATE "Account", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
     const [owner] = await db.db
       .insert(account)
       .values({ account: 'reader' })
@@ -180,12 +182,12 @@ describe('transactional thread attention', () => {
         ...patch,
       })
       .onConflictDoNothing();
-  async function run(taskId: string) {
-    const claimed = await tasks.claim(BigInt(taskId));
-    expect(claimed).toBeDefined();
-    await service.executeTask(claimed!);
-    await tasks.markSucceeded(BigInt(taskId));
-    return claimed!;
+  async function run(request: {
+    threadId: number;
+    localReadHwm: number;
+    force?: boolean;
+  }) {
+    return readPositions.execute(userId, request);
   }
   async function projectCurrentHeads() {
     return db.db.transaction(async (tx) => {
@@ -271,15 +273,7 @@ describe('transactional thread attention', () => {
     expect(before).toMatchObject({ unreadCount: 0, messageEndSeq: 0 });
     for (const action of order) {
       if (action === 'fanout') await projectCurrentHeads();
-      if (action === 'read')
-        await run(
-          (
-            await service.enqueueReadPosition(userId, {
-              threadId,
-              localReadHwm: 1,
-            })
-          ).taskId,
-        );
+      if (action === 'read') await run({ threadId, localReadHwm: 1 });
       if (action === 'tomb') await retractMention(3, 1);
     }
     await projectCurrentHeads();
@@ -293,15 +287,7 @@ describe('transactional thread attention', () => {
     const settled = await state();
     await projectCurrentHeads();
     expect(await state()).toEqual(settled);
-    await run(
-      (
-        await service.enqueueReadPosition(userId, {
-          threadId,
-          localReadHwm: 0,
-          force: true,
-        })
-      ).taskId,
-    );
+    await run({ threadId, localReadHwm: 0, force: true });
     expect((await state()).unreadCount).toBe(3);
   });
 
@@ -316,26 +302,11 @@ describe('transactional thread attention', () => {
       });
     });
     expect((await state()).unreadCount).toBe(2);
-    await run(
-      (
-        await service.enqueueReadPosition(userId, {
-          threadId,
-          localReadHwm: 4,
-        })
-      ).taskId,
-    );
+    await run({ threadId, localReadHwm: 4 });
     expect((await state()).unreadCount).toBe(0);
     await projectCurrentHeads();
     expect((await state()).unreadCount).toBe(1);
-    await run(
-      (
-        await service.enqueueReadPosition(userId, {
-          threadId,
-          localReadHwm: 1,
-          force: true,
-        })
-      ).taskId,
-    );
+    await run({ threadId, localReadHwm: 1, force: true });
     expect((await state()).unreadCount).toBe(4);
   });
 
@@ -420,22 +391,11 @@ describe('transactional thread attention', () => {
   it('prunes reads without refilling and restores slots on force rollback', async () => {
     for (let seq = 1; seq <= 8; seq++) await put(seq);
     await projectCurrentHeads();
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 6 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 6 });
     expect((await state()).previewSeqs).toEqual([8, 7, 6]);
     await projectCurrentHeads();
     expect((await state()).previewSeqs).toEqual([8, 7, 6]);
-    await run(
-      (
-        await service.enqueueReadPosition(userId, {
-          threadId,
-          localReadHwm: 0,
-          force: true,
-        })
-      ).taskId,
-    );
+    await run({ threadId, localReadHwm: 0, force: true });
     expect((await state()).previewSeqs).toEqual([8, 7, 6, 5, 4]);
     await new ThreadHistoryService(db).clear(threadId, 7);
     expect((await state()).previewSeqs).toEqual([8]);
@@ -444,10 +404,7 @@ describe('transactional thread attention', () => {
   it('retains the read-boundary preview through head and visibility updates, then prunes when passed', async () => {
     await put(1, '[@Reader](somfp://user/reader)');
     await projectCurrentHeads();
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 1 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 1 });
     expect(await state()).toMatchObject({
       lastReadSeq: 1,
       unreadCount: 0,
@@ -471,20 +428,14 @@ describe('transactional thread attention', () => {
       previewCount: 1,
     });
     expect(delta.items[0].previews?.map((row) => row.seq)).toEqual([1]);
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 2 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 2 });
     expect((await state()).previewSeqs).toEqual([]);
   });
 
   it('clears a preview at the read boundary when its history is cleared', async () => {
     await put(1);
     await projectCurrentHeads();
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 1 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 1 });
     expect((await state()).previewSeqs).toEqual([1]);
     await new ThreadHistoryService(db).clear(threadId, 1);
     expect((await state()).previewSeqs).toEqual([]);
@@ -524,50 +475,25 @@ describe('transactional thread attention', () => {
     await projectCurrentHeads();
     expect((await state()).unreadCount).toBe(1005);
   });
-  it('MAX-merges pending reads, preserves force barriers and does not replay completed force tasks', async () => {
+  it('serializes monotonic and force reads synchronously', async () => {
     await put(1);
     await put(2);
     await put(3);
     await projectCurrentHeads();
-    const first = await service.enqueueReadPosition(userId, {
-      threadId,
-      localReadHwm: 1,
-    });
-    const merged = await service.enqueueReadPosition(userId, {
-      threadId,
-      localReadHwm: 2,
-    });
-    expect(first.taskId).toBe(merged.taskId);
-    const force = await service.enqueueReadPosition(userId, {
-      threadId,
-      localReadHwm: 0,
-      force: true,
-    });
-    const tail = await service.enqueueReadPosition(userId, {
-      threadId,
-      localReadHwm: 3,
-    });
-    expect(tail.taskId).not.toBe(first.taskId);
-    await run(first.taskId);
+    await run({ threadId, localReadHwm: 1 });
+    await run({ threadId, localReadHwm: 2 });
     expect(await state()).toMatchObject({ lastReadSeq: 2, unreadCount: 1 });
-    const replay = await run(force.taskId);
+    await run({ threadId, localReadHwm: 0, force: true });
     expect(await state()).toMatchObject({ lastReadSeq: 0, unreadCount: 3 });
-    await run(tail.taskId);
-    await service.executeTask(replay);
+    await run({ threadId, localReadHwm: 3 });
     expect(await state()).toMatchObject({ lastReadSeq: 3, unreadCount: 0 });
   });
   it('preserves monotonic reads and publishes read position changes with unchanged count', async () => {
     const initial = (await state()).threadFeedId;
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 5 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 5 });
     expect((await state()).threadFeedId).toBeGreaterThan(initial);
     const head = (await state()).threadFeedId;
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 3 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 3 });
     expect(await state()).toMatchObject({
       lastReadSeq: 5,
       threadFeedId: head,
@@ -586,22 +512,11 @@ describe('transactional thread attention', () => {
     await retractMention(3, 1);
     await projectCurrentHeads();
     expect((await state()).lastMentionSeq).toBe(2);
-    await run(
-      (await service.enqueueReadPosition(userId, { threadId, localReadHwm: 2 }))
-        .taskId,
-    );
+    await run({ threadId, localReadHwm: 2 });
     await retractMention(2, 2);
     await projectCurrentHeads();
     expect((await state()).lastMentionSeq).toBeNull();
-    await run(
-      (
-        await service.enqueueReadPosition(userId, {
-          threadId,
-          localReadHwm: 0,
-          force: true,
-        })
-      ).taskId,
-    );
+    await run({ threadId, localReadHwm: 0, force: true });
     await projectCurrentHeads();
     expect((await state()).lastMentionSeq).toBe(1);
   });
@@ -772,10 +687,6 @@ describe('transactional thread attention', () => {
   });
   it('serializes concurrent insertion, read advancement and deletion without count drift', async () => {
     await put(1);
-    const accepted = await service.enqueueReadPosition(userId, {
-      threadId,
-      localReadHwm: 2,
-    });
     await Promise.all([
       db.db.transaction(async (tx) => {
         await tx.execute(
@@ -791,7 +702,7 @@ describe('transactional thread attention', () => {
           updatedAt: new Date(),
         });
       }),
-      run(accepted.taskId),
+      run({ threadId, localReadHwm: 2 }),
       db.db.transaction(async (tx) => {
         await tx.execute(
           sql`SELECT 1 FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,

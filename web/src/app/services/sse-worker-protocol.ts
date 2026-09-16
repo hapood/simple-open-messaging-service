@@ -12,12 +12,12 @@
  *    session is revoked/expired → the worker posts `force-logout` (re-login), not a token renewal.
  */
 
-export type WorkerState = 'connecting' | 'open' | 'reconnecting' | 'closed';
+type WorkerState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 /** Shape posted up for each business event; structurally identical to the main-thread
  *  `StandardMessage` (kept loose here so the protocol module stays Angular-agnostic — the bridge
  *  casts onto the typed `Subject`). */
-export interface SseEventPayload {
+interface SseEventPayload {
   event: string;
   status: number;
   message: string;

@@ -11,6 +11,7 @@ describe('mention projection in the shared head writer', () => {
     lastMentionSeq: 3,
     messageEndSeq: 5,
     tombstoneEndSeq: 0,
+    threadProfileRev: 0,
     blocked: false,
     clearedSeq: null,
     messageVisibleThroughSeq: null,

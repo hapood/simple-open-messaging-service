@@ -19,7 +19,6 @@ import {
   verifyMidpointProfiles,
   shouldSettleWorkloadBatch,
 } from './verification-mode.mjs';
-export { admitOperation } from './operations.mjs';
 import {
   groupCandidateWeight,
   weightedOrder,
@@ -107,9 +106,11 @@ export function chooseStateWindow(log, random, groupSnapshot) {
           return (
             projection?.roster.some((member) => member.address === address) ||
             Boolean(relationship?.groupIntent || relationship?.userIntent) ||
-            projection?.requests.some(
-              (request) => request.managerAddress === address,
-            )
+            (Boolean(projection?.requests.length) &&
+              projection?.roster.some(
+                ({ address: member, role }) =>
+                  member === address && (role === 'OWNER' || role === 'ADMIN'),
+              ))
           );
         }),
       )
@@ -396,7 +397,7 @@ function actionCounts(operations) {
 
 // A projection may still show REQUESTED while an earlier management task is
 // admitted or completed. Scope deduplication to the request generation so a
-// renewed application remains eligible even if its durable identity is reused.
+// renewed application remains eligible after its projection feed coordinate advances.
 export function unsubmittedGroupRequests(requests, group, operations) {
   const managementTypes = new Set([
     'ACCEPT_GROUP_APPLICATION',
@@ -413,8 +414,8 @@ export function unsubmittedGroupRequests(requests, group, operations) {
             operation.status,
           ) &&
           operation.target?.direction === request.direction &&
-          operation.target?.requestId === request.requestId &&
-          operation.target?.expiresAt === request.expiresAt,
+          operation.target?.memberAddress === request.memberAddress &&
+          operation.target?.feedId === request.feedId,
       ),
   );
 }
@@ -548,7 +549,9 @@ export async function executeBatch({
           try {
             unavailableConfirmation = await confirmGroupUnavailable(decision);
           } catch (confirmationError) {
-            unavailableConfirmation = { error: journalError(confirmationError) };
+            unavailableConfirmation = {
+              error: journalError(confirmationError),
+            };
           }
         }
         const unavailableGroup =
@@ -725,7 +728,10 @@ export async function executeRandomP2pWorkload({
           localConnections,
           log.users,
         );
-        const groups = await readGroupWorkloadSnapshot(localConnections, current);
+        const groups = await readGroupWorkloadSnapshot(
+          localConnections,
+          current,
+        );
         return observeGroupMessageAvailability(groups, decision);
       },
       confirmUnavailable: async (decision) => {

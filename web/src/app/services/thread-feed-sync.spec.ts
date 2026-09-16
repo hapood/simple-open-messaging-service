@@ -7,6 +7,7 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   threadFeedId: feedId,
   messageEndSeq: feedId,
   tombstoneEndSeq: 0,
+  groupMetaFeedEndId: null,
   lastReadSeq: 0,
   unreadCount: feedId,
   lastMentionSeq: null,

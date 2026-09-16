@@ -1,7 +1,5 @@
-import { enqueueStateFeedFanoutInTx } from '../state-feed/state-feed-fanout-task.js';
-import { captureThreadStateUpdatesInTx } from './capture-thread-state-updates.js';
-import { hasEstablishedThreadRelationship } from '../relationship/relationship-authorization.js';
-import { groupStateSql } from '../group/group-state.js';
+import { hasEstablishedThreadRelationship } from '../business/relationship/shared/relationship-authorization.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 
 import {
   accountAddressInTx,
@@ -32,7 +30,6 @@ export interface ClientStateFeedWrite {
   eventType:
     | 'PROFILE'
     | 'RELATIONSHIP_INTENT'
-    | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
     | 'THREAD_STATE';
@@ -183,11 +180,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
           updatedAt: new Date(),
         },
       });
-    await enqueueStateFeedFanoutInTx(tx, {
-      target: 'CLIENT',
-      userId: write.userId,
-      feedId: String(owner.feedId),
-    });
     return owner.feedId;
   }
 
@@ -275,19 +267,17 @@ export class ClientStateFeedService implements OnModuleDestroy {
     });
   }
 
-  /** Persist one manager-facing group-request projection. Original request timestamps are immutable:
+  /** Persist one shared group-request projection. Original request timestamps are immutable:
    * terminal intents clear their own expiry, while the projection must retain its seven-day GC boundary. */
   async writeGroupRequestInTx(
     tx: DatabaseTransaction,
     write: {
-      managerUserId: number;
       threadId: number;
       memberAccount: string;
       memberDomain: string;
       memberNamespaceId: number;
       memberProfileRev: number;
       direction: 'APPLICATION' | 'INVITATION';
-      requestId: bigint;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
       note: string;
       requestedAt: Date | null;
@@ -298,7 +288,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       .select({
         status: groupRequestProjection.status,
         note: groupRequestProjection.note,
-        requestId: groupRequestProjection.requestId,
         memberProfileRev: groupRequestProjection.memberProfileRev,
         requestedAt: groupRequestProjection.requestedAt,
         expiresAt: groupRequestProjection.expiresAt,
@@ -306,7 +295,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       .from(groupRequestProjection)
       .where(
         and(
-          eq(groupRequestProjection.managerUserId, write.managerUserId),
           eq(groupRequestProjection.threadId, write.threadId),
           eq(groupRequestProjection.memberAccount, write.memberAccount),
           eq(groupRequestProjection.memberDomain, write.memberDomain),
@@ -323,13 +311,12 @@ export class ClientStateFeedService implements OnModuleDestroy {
       current?.status === write.status &&
       current.memberProfileRev === write.memberProfileRev &&
       current.note === note &&
-      current.requestId === write.requestId &&
       current.requestedAt.getTime() === requestedAt.getTime() &&
       current.expiresAt.getTime() === expiresAt.getTime()
     )
       return null;
-    // The group's per-direction counters number the event; every manager's
-    // projection copy carries that number, and the row is created lazily for
+    // The group's per-direction counters number the event; the shared
+    // projection row carries that number, and the row is created lazily for
     // groups that have not fanned group meta yet.
     const invitation = write.direction === 'INVITATION';
     const [feed] = await tx
@@ -359,7 +346,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       .values({ ...write, note, requestedAt, expiresAt, feedId })
       .onConflictDoUpdate({
         target: [
-          groupRequestProjection.managerUserId,
           groupRequestProjection.threadId,
           groupRequestProjection.memberAccount,
           groupRequestProjection.memberDomain,
@@ -368,13 +354,11 @@ export class ClientStateFeedService implements OnModuleDestroy {
         ],
         set: {
           feedId,
-          requestId: write.requestId,
           memberProfileRev: write.memberProfileRev,
           status: write.status,
           note,
           requestedAt,
           expiresAt,
-          updatedAt: new Date(),
         },
       });
     return feedId;
@@ -493,8 +477,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const references = await tx.execute<{ referenced: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1 FROM "GroupRequestProjection" projection
-        WHERE projection."managerUserId" = ${ownerUserId}
-          AND projection."memberAccount" = ${subject.account}
+        WHERE projection."memberAccount" = ${subject.account}
           AND projection."memberDomain" = ${subject.domain}
           AND projection."memberNamespaceId" = ${subject.namespaceId}
         UNION ALL
@@ -525,7 +508,8 @@ export class ClientStateFeedService implements OnModuleDestroy {
             WHERE member_fact."threadId" = thread.id
               AND member_fact."memberAccount" = ${subject.account}
               AND member_fact."memberDomain" = ${subject.domain}
-              AND member_fact."memberNamespaceId" = ${subject.namespaceId}
+              AND group_meta_member_namespace(member_fact."threadId",
+                member_fact."memberAccount", member_fact."memberDomain") = ${subject.namespaceId}
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) = 'UPSERT'
@@ -544,8 +528,8 @@ export class ClientStateFeedService implements OnModuleDestroy {
       );
   }
 
-  /** Publish only compacted profile and shared Group Meta heads after a mirror round commits. */
-  async publishGroupStateToLocalAccountsInTx(
+  /** Publish the compacted group profile after a mirror round commits. */
+  async publishGroupProfileToLocalAccountsInTx(
     tx: DatabaseTransaction,
     threadId: number,
   ): Promise<PendingClientStateFeedUpdate[]> {
@@ -558,16 +542,13 @@ export class ClientStateFeedService implements OnModuleDestroy {
       avatar: string;
       profileRev: number;
       namespaceId: number;
-      groupMetaFeedEndId: string;
     }>(sql`
       SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
              group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
-             group_state.avatar, group_state."profileRev" AS "profileRev",
-             COALESCE(meta_feed."metaEndId", 0)::text AS "groupMetaFeedEndId"
+             group_state.avatar, group_state."profileRev" AS "profileRev"
       FROM "MessageThread" thread
       JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      LEFT JOIN "GroupMeta" meta_feed ON meta_feed."threadId" = group_state.id
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
       LIMIT 1
     `);
@@ -613,24 +594,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
       });
       if (profileFeedId !== null)
         pending.push({ userId, feedId: profileFeedId });
-      const feedId = await this.writeInTx(tx, {
-        userId,
-        account: group.account,
-        domain: group.domain,
-        namespaceId: group.namespaceId,
-        eventType: 'GROUP_META_FEED_HEAD',
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: { groupMetaFeedEndId: group.groupMetaFeedEndId },
-      });
-      if (feedId !== null) pending.push({ userId, feedId });
     }
-    pending.push(
-      ...(await captureThreadStateUpdatesInTx(
-        tx,
-        consumers.rows.map(({ userId }) => userId),
-      )),
-    );
     return pending;
   }
 

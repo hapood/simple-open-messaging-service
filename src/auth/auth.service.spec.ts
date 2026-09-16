@@ -21,7 +21,7 @@ describe('AuthService (session overview → SessionToken)', () => {
   const pageRows = vi.fn();
   const countRows = vi.fn();
   const purgeRows = vi.fn();
-  const terminal = (result: ReturnType<typeof vi.fn>) => {
+  const terminal = (result: (...args: unknown[]) => unknown) => {
     const chain: Record<string, unknown> = {};
     for (const method of ['innerJoin', 'where', 'orderBy', 'offset']) {
       chain[method] = vi.fn(() => chain);

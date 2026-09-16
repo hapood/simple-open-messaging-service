@@ -1,4 +1,4 @@
-import { groupStateSql } from '../group/group-state.js';
+import { groupStateSql } from '../business/group/shared/group-state.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
@@ -20,7 +20,7 @@ export async function openFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
   threadId: number,
-  groupMetaVisibleAfter = 0n,
+  groupMetaVisibleAfter = 0,
 ): Promise<boolean> {
   const namespaceId = await resolveAudienceNamespaceInTx(
     tx,

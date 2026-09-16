@@ -11,14 +11,14 @@
           "request": "state-feed",
           "after": "4",
           "through": "6",
-          "responseItems": ["GROUP_META_FEED_HEAD@5", "THREAD_CONTENT_HEAD@6"],
+          "responseItems": ["THREAD_CONTENT_HEAD(meta=5)@6"],
           "responseScannedThrough": "6",
           "commit": true
         }
       ],
       "assertions": [
-        "group roster head is applied before the thread targets",
-        "message and deletion targets come from one item"
+        "group roster target is applied before the thread targets",
+        "Group Meta, message, and deletion targets come from one item"
       ]
     },
     {
@@ -121,15 +121,15 @@
         {
           "request": "state-feed",
           "after": "6",
-          "responseItems": ["GROUP_META_FEED_HEAD@7", "THREAD_CONTENT_HEAD@8"],
+          "responseItems": ["THREAD_CONTENT_HEAD(meta=7)@8"],
           "responseScannedThrough": "8",
           "hasMore": false,
           "commit": true
         }
       ],
       "assertions": [
-        "the newer group-meta head remains before its dependent thread head",
-        "unchanged thread coordinates may be force-reindexed"
+        "the newer Group Meta coordinate is atomic with its dependent thread head",
+        "unchanged message and deletion coordinates may be force-reindexed"
       ]
     },
     {
@@ -144,7 +144,7 @@
           "start": "35",
           "discardedLocalGap": ["21", "35"]
         },
-        { "action": "commit-required-group-meta-head" },
+        { "action": "commit-required-group-meta-coordinate" },
         {
           "request": "messages",
           "after": "35",

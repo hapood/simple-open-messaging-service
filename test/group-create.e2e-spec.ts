@@ -1,29 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/bootstrap.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { relationshipPair } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
+import { createTestApp } from './support/app';
 
 describe('group creation authorization', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let database: DatabaseService;
 
   beforeAll(async () => {
-    const fixture = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    app = fixture.createNestApplication(adapter);
-    await configureApp(app, adapter);
-    await app.listen(0);
-    database = app.get(DatabaseService);
+    ({ app, database } = await createTestApp());
   });
 
   afterAll(async () => app.close());

@@ -85,12 +85,13 @@ export class FriendInviteDialogComponent {
     request.subscribe({
       next: (res) => {
         if (res.code === 0) {
+          const threadId =
+            res.data && 'threadId' in res.data ? res.data.threadId : undefined;
           const result = {
             account: this.user().account,
             domain: this.user().domain || 'local',
             status:
-              res.data?.threadId ||
-              res.messageKey === 'friend.msg.alreadyFriends'
+              threadId || res.messageKey === 'friend.msg.alreadyFriends'
                 ? 'FRIEND'
                 : 'OUTGOING_PENDING',
           } as const;

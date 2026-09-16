@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
 import { forwardBundle, forwardBundleAsset } from '../database/schema.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
+  type ForwardBundleMessage,
   localizeForwardMediaContent,
 } from './forward-bundle.service.js';
 
@@ -473,7 +473,7 @@ describe('ForwardBundleService', () => {
 
       await expect(
         service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
-      ).rejects.toMatchObject<Partial<BusinessException>>({
+      ).rejects.toMatchObject({
         bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
       });
     },
@@ -500,7 +500,7 @@ describe('ForwardBundleService', () => {
 
     await expect(
       service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
     });
   });
@@ -675,7 +675,7 @@ describe('ForwardBundleService', () => {
 
     await service.prepareFromMessages(9, [{ threadId: 4, seq: 7 }]);
 
-    const filters = messageServiceFake.attachQuotePreviews.mock.calls[0][1];
+    const filters = messageServiceFake.attachQuotePreviews.mock.calls[0][1]!;
     expect(filters.get(4)).toEqual({
       clearedThroughSeq: clearedSeq,
     });
@@ -701,7 +701,7 @@ describe('ForwardBundleService', () => {
 
       await expect(
         service.prepareFromMessages(9, [{ threadId: 4, seq: 7 }]),
-      ).rejects.toMatchObject<Partial<BusinessException>>({
+      ).rejects.toMatchObject({
         bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
       });
       expect(messageServiceFake.attachQuotePreviews).not.toHaveBeenCalled();
@@ -734,11 +734,11 @@ describe('ForwardBundleService', () => {
     const database = databaseFake(0);
     const service = forwardService(database);
 
-    await expect(service.prepareFromMessages(9, sources)).rejects.toMatchObject<
-      Partial<BusinessException>
-    >({
-      bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
-    });
+    await expect(service.prepareFromMessages(9, sources)).rejects.toMatchObject(
+      {
+        bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
+      },
+    );
     expect(database.db.query.message.findFirst).not.toHaveBeenCalled();
   });
 
@@ -785,13 +785,14 @@ describe('ForwardBundleService', () => {
     await expect(
       service.importClosure('peer.test', {
         id: bundleId,
+        // Malformed on purpose (bad id / negative or null quote target / …): the
+        // parameter type is InboundForwardWireBundle — untrusted wire JSON — so hostile
+        // fixtures need no cast. importClosure's validation is the gate under test.
         messages: [wireMessage],
         children: [],
         assets: [],
-        messageCount: 1,
-        assetCount: 0,
       }),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
   });
@@ -881,12 +882,12 @@ describe('ForwardBundleService', () => {
         children: [{ id: 'child', messages: [] }],
         assets: [],
       }),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
   });
 
-  it('rejects legacy display fields mixed into the author identity', async () => {
+  it('rejects unknown display fields mixed into the author identity', async () => {
     const service = forwardService({});
 
     await expect(
@@ -908,13 +909,13 @@ describe('ForwardBundleService', () => {
         children: [],
         assets: [],
       } as never),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
   });
 
   it('rejects federated closure JSON over the wire limit', async () => {
-    const messages = [
+    const messages: ForwardBundleMessage[] = [
       {
         id: 1,
         author: { account: 'a', domain: 'peer.test' },
@@ -931,10 +932,8 @@ describe('ForwardBundleService', () => {
         messages,
         children: [],
         assets: [],
-        messageCount: 1,
-        assetCount: 0,
       }),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
   });

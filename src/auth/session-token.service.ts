@@ -53,7 +53,7 @@ function hashToken(token: string): string {
 
 /**
  * Issues + validates long-lived, revocable, per-device session credentials (the single credential that
- * replaces the legacy access+refresh pair). Stores only the sha256 hash; the plaintext is returned once,
+ * represents the complete authenticated session. Stores only the sha256 hash; the plaintext is returned once,
  * generalized to:
  *  - a required sliding `expiresAt` for every client;
  *  - a `lastSeenAt` activity tracker;

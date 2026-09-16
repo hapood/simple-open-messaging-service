@@ -87,7 +87,7 @@ async function setup(o: Overrides = {}) {
     user: { findUnique: vi.fn(async () => user) },
     admin: {
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
-      update: vi.fn(async () => ({})),
+      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
     },
     adminSession: {
       create: vi.fn(async (args: { data: Record<string, unknown> }) => ({

@@ -1,6 +1,6 @@
 import type { RateLimitMode } from './rate-limit.types.js';
 
-export type RateLimitAdviceLevel = 'info' | 'warning' | 'critical';
+type RateLimitAdviceLevel = 'info' | 'warning' | 'critical';
 
 export interface RateLimitAdvice {
   code: string;

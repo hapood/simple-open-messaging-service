@@ -16,7 +16,7 @@ import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 200;
 
-export interface FederationMessageTombstoneItem {
+interface FederationMessageTombstoneItem {
   deletionSeq: number;
   thread: FederationThreadAddress;
   messageSeq: number;

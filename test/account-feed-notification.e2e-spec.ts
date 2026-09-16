@@ -10,8 +10,7 @@ import {
 } from '../src/database/schema.js';
 import { SseService } from '../src/gateway/sse.service.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
-import { DurableTaskDispatcherService } from '../src/durable-task/durable-task-dispatcher.service.js';
-import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
+import { ThreadReadPositionService } from '../src/business/message/thread-read-position.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
@@ -21,16 +20,9 @@ describe('account feed notification delivery', () => {
   const database = new DatabaseService();
   const sse = new SseService(database, { get: () => null } as never);
   const clientFeed = new ClientStateFeedService(database, sse);
-  const feed = new ThreadFeedService(
-    database,
-    new DurableTaskDispatcherService(),
-  );
-  const tasks = new DurableTaskStoreService(database);
-  const participants = new AccountThreadStateService(
-    database,
-    {} as never,
-    clientFeed,
-  );
+  const feed = new ThreadFeedService(database);
+  const readPositions = new ThreadReadPositionService(database, sse);
+  const participants = new AccountThreadStateService(database, clientFeed);
   const hints = vi.spyOn(sse, 'onThreadFeedUpdated');
   const devices: string[][] = [[], []];
   let userId: number;
@@ -68,7 +60,7 @@ describe('account feed notification delivery', () => {
       messageEndSeq: 10,
       updatedAt: new Date(),
     });
-    Object.assign(feed, { previews: new ThreadPreviewService(database), sse });
+    Object.assign(feed, { previews: new ThreadPreviewService(database) });
     Object.assign(participants, {
       previews: new ThreadPreviewService(database),
     });
@@ -116,15 +108,12 @@ describe('account feed notification delivery', () => {
     );
   }
 
-  it('delivers read-position task changes to both connected devices without a new message', async () => {
+  it('delivers read-position changes to both connected devices without a new message', async () => {
     const before = await heads();
-    const admitted = await feed.enqueueReadPosition(userId, {
+    await readPositions.execute(userId, {
       threadId,
       localReadHwm: 4,
     });
-    const task = await tasks.claim(BigInt(admitted.taskId));
-    expect(task).toBeTruthy();
-    await feed.executeTask(task!);
     const after = await heads();
     expect(after.threadFeedEndId).toBeGreaterThan(before.threadFeedEndId);
     await expectDelivered(

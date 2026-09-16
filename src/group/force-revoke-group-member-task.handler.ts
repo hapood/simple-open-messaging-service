@@ -9,9 +9,15 @@ import type {
   DurableTask,
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
-import { readForcedMemberRevokeTask } from './group-disband-task.js';
+import {
+  readForcedMemberRevokeTask,
+  readMirrorGroupMemberRevokeTask,
+  readQueryDeniedGroupMembershipRevocationTask,
+} from './group-disband-task.js';
 import { GroupDisbandMembershipRevocationService } from '../business/group/disband/group-disband-membership-revocation.service.js';
-import { FederationThreadQueryDenialService } from '../federation/federation-thread-query-denial.service.js';
+import { MirrorGroupDisbandService } from '../business/group/disband/mirror-group-disband.service.js';
+import { GroupAuthoredMembershipIntentService } from '../business/group/membership-intent/authored/group-authored-membership-intent.service.js';
+import { MemberAuthoredGroupMembershipIntentService } from '../business/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 
 @Injectable()
 export class ForceRevokeGroupMemberTaskHandler
@@ -23,7 +29,9 @@ export class ForceRevokeGroupMemberTaskHandler
   constructor(
     private readonly dispatcher: DurableTaskDispatcherService,
     private readonly disbandMembershipRevocations: GroupDisbandMembershipRevocationService,
-    private readonly denial: FederationThreadQueryDenialService,
+    private readonly mirrorDisbands: MirrorGroupDisbandService,
+    private readonly groupAuthoredIntents: GroupAuthoredMembershipIntentService,
+    private readonly memberAuthoredIntents: MemberAuthoredGroupMembershipIntentService,
   ) {}
 
   onModuleInit(): void {
@@ -35,8 +43,30 @@ export class ForceRevokeGroupMemberTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
+    // The mirror sweep carries no denial coordinates — only its direction mark,
+    // which must be tested before the peerDomain probe below.
+    if (task.payload.direction === 'MIRROR') {
+      await this.mirrorDisbands.revokeMember(
+        readMirrorGroupMemberRevokeTask(task),
+      );
+      return;
+    }
     if (task.payload.peerDomain !== undefined) {
-      await this.denial.revokeForbiddenMember(task);
+      const command = readQueryDeniedGroupMembershipRevocationTask(task);
+      if (command.direction === 'GROUP')
+        await this.groupAuthoredIntents.executeQueryDeniedRevocation({
+          threadId: command.threadId,
+          group: command.group,
+          member: command.member,
+          expectedAuthorizationEpoch: command.expectedAuthorizationEpoch,
+        });
+      else
+        await this.memberAuthoredIntents.executeQueryDeniedRevocation({
+          threadId: command.threadId,
+          group: command.group,
+          memberUserId: command.memberUserId,
+          expectedAuthorizationEpoch: command.expectedAuthorizationEpoch,
+        });
       return;
     }
     const command = readForcedMemberRevokeTask(task);

@@ -11,8 +11,7 @@ import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
-import { mkdirSync, rmSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync } from 'fs';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
@@ -311,10 +310,6 @@ async function registerStaticServing(
 ) {
   const uploadsDir = dataDirectory('uploads');
   const casDir = dataDirectory('cas');
-  // Breaking CAS reset: the legacy namespace is intentionally unsupported. Removing it on startup
-  // guarantees old URLs stay invalid and prevents abandoned duplicate-by-extension files from
-  // consuming disk indefinitely. Avatars live outside this directory and are unaffected.
-  rmSync(join(uploadsDir, 'shards'), { recursive: true, force: true });
   // @fastify/static throws at registration if root is missing; ensure it exists (matches the
   // lazy mkdir UploadService.ensureDir already does for the write path).
   mkdirSync(uploadsDir, { recursive: true });

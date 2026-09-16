@@ -524,8 +524,8 @@ export class LabAdminActor {
 
   async durableTaskActivity() {
     const queryMs = {};
-    const [pending, processing, asyncProcessing, failed] = await Promise.all(
-      ['PENDING', 'PROCESSING', 'ASYNC_PROCESSING', 'FAILED'].map(
+    const [pending, processing, failed] = await Promise.all(
+      ['PENDING', 'PROCESSING', 'FAILED'].map(
         async (status) => {
           const startedAt = performance.now();
           const result = await this.durableTasks({
@@ -542,7 +542,6 @@ export class LabAdminActor {
       queryMs,
       pendingCount: pending.total,
       processing: processing.list ?? [],
-      asyncProcessing: asyncProcessing.list ?? [],
       failedCount: failed.total,
       failed: failed.list ?? [],
     };

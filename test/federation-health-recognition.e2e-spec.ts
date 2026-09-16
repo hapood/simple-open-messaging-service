@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { federatedPeer } from '../src/database/schema.js';
 import {
@@ -36,9 +36,7 @@ describe('Health recognition acknowledgement', () => {
     await proxy?.close();
   });
 
-  it('resolves through positive Health while reverse Recognize is blocked', async () => {
-    proxy.blockRecognize(true);
-
+  it('establishes acceptance on both peers with one successful Recognize', async () => {
     const result = await resolveFederatedCard(
       appA,
       aliceToken,
@@ -47,38 +45,21 @@ describe('Health recognition acknowledgement', () => {
     );
 
     expect(result.event).toBe('resolved');
-    await vi.waitFor(() => {
-      expect(proxy.blockedRecognizeCount()).toBeGreaterThan(0);
-    });
-
     const peerOnA = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, FED_DOMAIN_B),
     });
     expect(peerOnA).toMatchObject({
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
-      lightweightInboundReady: true,
+      peerAcceptanceConfirmed: true,
+      trustLevel: 'available',
       remoteServiceReachable: true,
     });
 
-    const peerOnBWhileBlocked =
-      await appB.database.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, FED_DOMAIN_A),
-      });
-    expect(peerOnBWhileBlocked).toMatchObject({
-      inboundRecognitionConfirmed: true,
-      outboundRecognitionConfirmed: false,
+    const peerOnB = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, FED_DOMAIN_A),
     });
-
-    proxy.blockRecognize(false);
-    await vi.waitFor(
-      async () => {
-        const peerOnB = await appB.database.query.federatedPeer.findFirst({
-          where: eq(federatedPeer.domain, FED_DOMAIN_A),
-        });
-        expect(peerOnB?.outboundRecognitionConfirmed).toBe(true);
-      },
-      { timeout: 15_000 },
-    );
+    expect(peerOnB).toMatchObject({
+      peerAcceptanceConfirmed: true,
+      trustLevel: 'available',
+    });
   });
 });

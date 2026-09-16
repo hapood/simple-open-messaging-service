@@ -18,7 +18,7 @@ vi.mock('../federation/federation.config.js', () => ({
   loadFederationConfig: () => ({ domain: 'local.test' }),
 }));
 
-vi.mock('../relationship/relationship-authorization.js', () => ({
+vi.mock('../business/relationship/shared/relationship-authorization.js', () => ({
   isThreadMutuallyAuthorized: async (db: { authorized: boolean }) =>
     db.authorized,
 }));
@@ -827,10 +827,18 @@ describe('CallsService ringing timeout', () => {
 });
 
 /** Build an inbound S2SCallFrame (the wire shape FederationService resolves + emits on
- *  'call.frame.inbound'). Defaults describe S_B's server ringing OUR local user (alice@aaa.local). */
-function mkFrame(p: Partial<S2SCallFrame> = {}): S2SCallFrame {
+ *  'call.frame.inbound'). Defaults describe S_B's server ringing OUR local user (alice@aaa.local).
+ *  Overrides are loose (payload as a free record, callType allowed on any op) because several tests
+ *  construct frames that are intentionally malformed — the service must reject them at runtime. */
+function mkFrame(
+  p: {
+    op?: S2SCallFrame['op'];
+    callType?: 'AUDIO' | 'VIDEO';
+    payload?: Record<string, unknown>;
+  } = {},
+): S2SCallFrame {
   const op = p.op ?? 'incoming';
-  const suppliedPayload = (p as { payload?: Record<string, unknown> }).payload;
+  const suppliedPayload = p.payload;
   return {
     callSid: 'cs1',
     op,
@@ -1151,7 +1159,8 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       svc.onInboundIncomingPreflight({
         peerDomain: 'bbb.local',
         namespaceId: 3,
-        frame: mkFrame(),
+        // mkFrame returns the full frame union; the preflight contract is the incoming variant.
+        frame: mkFrame() as Extract<S2SCallFrame, { op: 'incoming' }>,
       }),
     ).toBe(true);
     expect(() =>
@@ -1160,7 +1169,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
         namespaceId: 3,
         frame: mkFrame({
           payload: { fromAccount: 'mallory', toAccount: 'bob' },
-        }),
+        }) as Extract<S2SCallFrame, { op: 'incoming' }>,
       }),
     ).toThrowError(
       expect.objectContaining({

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { FEDERATION_PEER_HEALTH_RECOVERED } from './federation-health.events.js';
+import { FEDERATION_PEER_AVAILABLE } from './federation-peer.events.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 
@@ -155,7 +155,7 @@ describe('FederationRecognitionService health transitions', () => {
     unsubscribeSecond();
   });
 
-  it('derives availability independently from recognition direction facts', () => {
+  it('requires acceptance before deriving availability from reachability', () => {
     const { recognition } = service();
     const lifecycle = (
       recognition as unknown as {
@@ -163,20 +163,33 @@ describe('FederationRecognitionService health transitions', () => {
       }
     ).lifecycle.bind(recognition);
     const prepared = {
-      trustLevel: 'degraded',
+      trustLevel: 'establishing',
       identityPinnedAt: new Date(),
       recognizesPeer: true,
       localServiceAvailable: true,
-      outboundRecognitionConfirmed: false,
-      inboundRecognitionConfirmed: false,
+      peerAcceptanceConfirmed: false,
     };
 
     expect(lifecycle({ ...prepared, remoteServiceReachable: false })).toBe(
-      'degraded',
+      'establishing',
     );
     expect(lifecycle({ ...prepared, remoteServiceReachable: true })).toBe(
-      'available',
+      'establishing',
     );
+    expect(
+      lifecycle({
+        ...prepared,
+        peerAcceptanceConfirmed: true,
+        remoteServiceReachable: false,
+      }),
+    ).toBe('degraded');
+    expect(
+      lifecycle({
+        ...prepared,
+        peerAcceptanceConfirmed: true,
+        remoteServiceReachable: true,
+      }),
+    ).toBe('available');
   });
 
   it('degrades local availability when Health returns unavailable', async () => {
@@ -197,6 +210,30 @@ describe('FederationRecognitionService health transitions', () => {
     expect(degrade).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
       'Health unavailable',
+    );
+  });
+
+  it('marks reachability lost when Health discovery fails', async () => {
+    const recognition = new FederationRecognitionService(
+      {} as never,
+      {
+        resolveBase: vi.fn().mockRejectedValue(new Error('DNS timeout')),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const degrade = vi
+      .spyOn(recognition, 'markTransportDegraded')
+      .mockResolvedValue(undefined);
+
+    await expect(recognition.checkHealth('peer.example')).rejects.toThrow(
+      'DNS timeout',
+    );
+    expect(degrade).toHaveBeenCalledExactlyOnceWith(
+      'peer.example',
+      'Health discovery: DNS timeout',
     );
   });
 
@@ -234,28 +271,30 @@ describe('FederationRecognitionService health transitions', () => {
         {} as never,
         events as never,
       );
-      vi.spyOn(recognition as never, 'lockPeer').mockResolvedValue({
-        trustLevel: 'degraded',
+      vi.spyOn(
+        recognition as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >,
+        'lockPeer',
+      ).mockResolvedValue({
+        trustLevel: 'establishing',
         identityPinnedAt: new Date(),
         recognizesPeer: true,
         localServiceAvailable: true,
-        inboundRecognitionConfirmed: false,
-        inboundRecognizedAt: null,
-        lightweightInboundReady: false,
+        peerAcceptanceConfirmed: false,
       });
 
       await recognition.applyHealthResult('peer.example', status);
 
       expect(updateValues).toHaveBeenCalledWith(
         expect.objectContaining({
-          inboundRecognitionConfirmed: true,
-          inboundRecognizedAt: expect.any(Date),
-          lightweightInboundReady: true,
+          peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
         }),
       );
       expect(events.emit).toHaveBeenCalledExactlyOnceWith(
-        FEDERATION_PEER_HEALTH_RECOVERED,
+        FEDERATION_PEER_AVAILABLE,
         { peerDomain: 'peer.example' },
       );
     },
@@ -282,9 +321,7 @@ describe('FederationRecognitionService health transitions', () => {
       identityPinnedAt: new Date(),
       recognizesPeer: true,
       localServiceAvailable: true,
-      inboundRecognitionConfirmed: true,
-      inboundRecognizedAt: new Date(),
-      lightweightInboundReady: true,
+      peerAcceptanceConfirmed: true,
     });
 
     await recognition.applyHealthResult('peer.example', 'available');
@@ -299,7 +336,13 @@ describe('FederationRecognitionService health transitions', () => {
       complete = resolve;
     });
     const runHealthCheck = vi
-      .spyOn(recognition as never, 'runHealthCheck')
+      .spyOn(
+        recognition as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >,
+        'runHealthCheck',
+      )
       .mockReturnValue(pending);
 
     const first = recognition.checkHealth('peer.example');
@@ -328,7 +371,10 @@ describe('FederationRecognitionService Recognize HTTP classification', () => {
       .spyOn(service, 'markTransportDegraded')
       .mockResolvedValue(undefined);
     const halted = vi
-      .spyOn(service as never, 'markHalted')
+      .spyOn(
+        service as unknown as Record<string, (...args: unknown[]) => unknown>,
+        'markHalted',
+      )
       .mockResolvedValue(undefined);
     const handle = (
       service as unknown as {

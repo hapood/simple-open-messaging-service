@@ -14,7 +14,7 @@ import {
 import {
   hasEstablishedThreadRelationship,
   isThreadMutuallyAuthorized,
-} from '../relationship/relationship-authorization.js';
+} from '../business/relationship/shared/relationship-authorization.js';
 import {
   ThreadFeedHeadWriter,
   type ThreadProjectionChange,
@@ -35,7 +35,7 @@ export type ThreadFanoutProjection = ThreadProjectionChange & {
   userId: number;
 };
 
-export function readThreadFanoutProgress(
+function readThreadFanoutProgress(
   value: Record<string, unknown>,
 ): ThreadFanoutProgress {
   if (Object.keys(value).length === 0)
@@ -59,8 +59,8 @@ export class ThreadFanoutProgressService {
   ) {}
 
   /** The source enqueue uses this same lock. A committed successor must cover
-   * both heads before the old execution may stop; its own cursor stays at zero.
-   * Complete the old task atomically with coverage, without a successor pointer
+   * both heads before the current execution may stop; its own cursor stays at zero.
+   * Complete the current task atomically with coverage, without a successor pointer
    * or an intermediate handoff state. Scheduler finalization is idempotent. */
   async yieldToNewer(
     taskId: bigint,
@@ -88,15 +88,15 @@ export class ThreadFanoutProgressService {
     return readThreadFanoutProgress(task.checkpoint);
   }
 
-  /** Every fan-out reconciles the group meta head as a side effect: rows
+  /** Every fan-out reconciles the Group Meta coordinate as a side effect: rows
    * behind the canonical value catch up even when the payload's content heads
    * did not move. Threads without a meta feed (P2P) publish nothing. */
-  private advanceGroupMetaHeadInTx(
+  private advanceGroupMetaCoordinateInTx(
     tx: DatabaseTransaction,
     threadId: number,
     userIds: readonly number[],
-  ): Promise<void> {
-    return ThreadFeedHeadWriter.reconcileGroupMetaHeadInTx(tx, {
+  ): Promise<number[]> {
+    return ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
       threadId,
       userIds,
     });
@@ -151,10 +151,22 @@ export class ThreadFanoutProgressService {
           });
         }
       }
-      if (lock)
-        await this.advanceGroupMetaHeadInTx(tx, target.threadId, [
-          target.accountId,
-        ]);
+      if (lock) {
+        const metaChanged = await this.advanceGroupMetaCoordinateInTx(
+          tx,
+          target.threadId,
+          [target.accountId],
+        );
+        if (
+          metaChanged.includes(target.accountId) &&
+          !projected.some(({ userId }) => userId === target.accountId)
+        )
+          projected.push({
+            userId: target.accountId,
+            unreadCountChanged: false,
+            previewChanged: false,
+          });
+      }
       await saveTaskCheckpointInTx(tx, taskId, {
         phase: 'DONE',
         afterAccountId: target.accountId,
@@ -182,7 +194,18 @@ export class ThreadFanoutProgressService {
             ...(await ThreadFeedHeadWriter.advanceInTx(tx, userId, target)),
           });
       }
-      await this.advanceGroupMetaHeadInTx(tx, target.threadId, userIds);
+      const metaChanged = await this.advanceGroupMetaCoordinateInTx(
+        tx,
+        target.threadId,
+        userIds,
+      );
+      for (const userId of metaChanged)
+        if (!projected.some((item) => item.userId === userId))
+          projected.push({
+            userId,
+            unreadCountChanged: false,
+            previewChanged: false,
+          });
       await saveTaskCheckpointInTx(tx, taskId, {
         phase: 'FEED',
         afterAccountId: userIds[userIds.length - 1],
