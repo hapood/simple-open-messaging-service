@@ -3,7 +3,7 @@ import {
   lockThreadContentInTx,
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../business/shared/locks/thread-content-lock.js';
+} from '../common/business/locks/thread-content-lock.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -16,7 +16,7 @@ import {
 } from '../database/schema.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundAuthorizationEpochChangedError } from './federation-thread-round-error.js';
-import { applyReadPositionInTx } from '../business/message/thread-read-position.service.js';
+import { applyReadPositionInTx } from '../message/business/thread-read-position.service.js';
 import { eligiblePreviewOwnerSql } from '../message/thread-preview-eligibility.js';
 
 export interface FederationReverseWindow {

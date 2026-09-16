@@ -182,7 +182,7 @@ Federation profile endpoints keep their existing wire format and authorization r
 
 ## Relationship API
 
-> Controller: [src/controller/relationship.controller.ts](../../src/controller/relationship.controller.ts) · Service: [src/business/relationship/relationship.service.ts](../../src/business/relationship/relationship.service.ts)
+> Controller: [src/controller/relationship.controller.ts](../../src/controller/relationship.controller.ts) · Service: [src/relationship/business/relationship.service.ts](../../src/relationship/business/relationship.service.ts)
 
 Friend and group requests use the same directed facts. `RelationshipIntent(A,B)` and
 `RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,

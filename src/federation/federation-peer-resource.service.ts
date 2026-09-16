@@ -1,9 +1,9 @@
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 import {
   groupState as groupStateTable,
   readGroupState,
   groupStateFields,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import { and, eq, isNotNull, or, sql } from 'drizzle-orm';

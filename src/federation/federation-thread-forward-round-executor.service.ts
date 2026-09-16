@@ -190,10 +190,7 @@ export class FederationThreadForwardRoundExecutorService {
     query.set('after', params.after.toString());
     query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set(
-      'includeSelf',
-      String(!(source.kind === 'GROUP' && source.localGroupAuthority)),
-    );
+    query.set('includeSelf', 'true');
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(
@@ -403,12 +400,13 @@ export class FederationThreadForwardRoundExecutorService {
       }
       let closure = byBundleId.get(bundleId);
       if (!closure) {
-        const dependency = await this.threadResources.fetch<InboundForwardWireBundle>(
-          source.threadId,
-          `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
-          source.peerDomain,
-          FORWARD_MAX_WIRE_JSON_BYTES,
-        );
+        const dependency =
+          await this.threadResources.fetch<InboundForwardWireBundle>(
+            source.threadId,
+            `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
+            source.peerDomain,
+            FORWARD_MAX_WIRE_JSON_BYTES,
+          );
         if (
           dependency.threadId !== response.threadId ||
           dependency.peerDomain !== response.peerDomain ||

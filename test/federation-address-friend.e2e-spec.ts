@@ -491,6 +491,16 @@ describe('federated Address friend requests', () => {
       .send(target);
     expect(revoke.body.code).toBe(BusinessCode.OK);
     expect(revoke.body.data).toEqual({ status: 'OK' });
+    expect(
+      await appA.database.query.peerStateFeed.findFirst({
+        where: and(
+          eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+          eq(peerStateFeed.account, 'address-alice'),
+          eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+          eq(peerStateFeed.subjectAccount, 'address-bob'),
+        ),
+      }),
+    ).toBeUndefined();
     const nsOnA = (await appA.database.query.identityNamespace.findFirst({
       where: eq(identityNamespace.domain, FED_DOMAIN_B),
     }))!;
@@ -555,5 +565,36 @@ describe('federated Address friend requests', () => {
     expect(
       (await findP2PRelationship(appB.database, bobId, peer)).pair?.active,
     ).toBe(true);
+    await vi.waitFor(
+      async () => {
+        const [headOnA, headOnB] = await Promise.all([
+          appA.database.query.peerStateFeed.findFirst({
+            where: and(
+              eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+              eq(peerStateFeed.account, 'address-alice'),
+              eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+              eq(peerStateFeed.subjectAccount, 'address-bob'),
+            ),
+          }),
+          appB.database.query.peerStateFeed.findFirst({
+            where: and(
+              eq(peerStateFeed.peerDomain, FED_DOMAIN_A),
+              eq(peerStateFeed.account, 'address-bob'),
+              eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+              eq(peerStateFeed.subjectAccount, 'address-alice'),
+            ),
+          }),
+        ]);
+        expect(headOnA?.body).toMatchObject({
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+        });
+        expect(headOnB?.body).toMatchObject({
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+        });
+      },
+      { timeout: 15_000, interval: 100 },
+    );
   }, 80_000);
 });

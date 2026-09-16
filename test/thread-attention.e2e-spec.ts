@@ -24,10 +24,10 @@ import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ThreadHistoryService } from '../src/message/thread-history.service.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
-import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
 import { ThreadFanoutProgressService } from '../src/message/thread-fanout-progress.service.js';
 import { enqueueThreadFanoutInTx } from '../src/message/thread-fanout-task.js';
-import { ThreadReadPositionService } from '../src/business/message/thread-read-position.service.js';
+import { ThreadReadPositionService } from '../src/message/business/thread-read-position.service.js';
 import { truncateTablesForTest } from './support/truncate';
 
 describe('transactional thread attention', () => {

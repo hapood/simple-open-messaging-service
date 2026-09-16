@@ -1,8 +1,8 @@
 import {
   relationshipPairBusinessKey,
   type PairAddressScope,
-} from '../src/business/shared/locks/relationship-pair-business-lock.js';
-import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
+} from '../src/common/business/locks/relationship-pair-business-lock.js';
+import { businessAccountScopeKey } from '../src/common/business/locks/account-business-lock.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -34,7 +34,7 @@ import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.
 import {
   UserIntentService,
   type UserIntentDependencies,
-} from '../src/business/user/p2p-intent/authored/user-intent.service.js';
+} from '../src/user/business/p2p-intent/authored/user-intent.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 
 interface UserRef {
@@ -320,6 +320,10 @@ describe('user intent decision', () => {
     expect(
       after.feeds.filter((feed) => body(feed.body).direction === 'OUTGOING'),
     ).toHaveLength(2);
+    expect(after.threadTasks.map((task) => task.taskType).sort()).toEqual([
+      'FAN_OUT_FEDERATION_THREAD_CONTENT',
+      'FAN_OUT_THREAD_CONTENT',
+    ]);
   });
 
   it('collapses a crossed request into the acceptance path', async () => {

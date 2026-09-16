@@ -1,4 +1,4 @@
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {

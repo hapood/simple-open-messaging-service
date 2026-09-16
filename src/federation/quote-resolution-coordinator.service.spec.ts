@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteResolutionCoordinatorService } from './quote-resolution-coordinator.service.js';
-import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
 
-vi.mock('../business/relationship/shared/relationship-authorization.js', () => ({
+vi.mock('../relationship/business/shared/relationship-authorization.js', () => ({
   isThreadMutuallyAuthorized: vi.fn(),
 }));
 afterEach(() => vi.restoreAllMocks());

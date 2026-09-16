@@ -68,6 +68,70 @@ function groupRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('FederationMessageFeedService group origin coordinates', () => {
+  it.each(['origin.test', 'third-party.test'])(
+    'returns the direct origin coordinate for a mirror copy authored on %s',
+    async (authorDomain) => {
+      const originTime = new Date('2026-09-03T00:00:00.000Z');
+      const [receipt] = await service().serializeMessagesInTx(
+        transaction(),
+        [
+          groupRow({
+            seq: 99,
+            originSeq: 42,
+            originServerTime: originTime,
+            sourceNamespaceId: 9,
+            authorDomain,
+          }),
+        ],
+        'origin.test',
+        9,
+        { account: '!group' },
+      );
+      expect(receipt).toMatchObject({
+        seq: 99,
+        originSeq: 42,
+        originCreatedAt: originTime.getTime(),
+      });
+    },
+  );
+  it('returns submission coordinates only to the author home of an accepted group message', async () => {
+    const publisher = service();
+    publisher.localDomain = 'origin.test';
+    const originTime = new Date('2026-09-03T00:00:00.000Z');
+    const row = groupRow({
+      seq: 42,
+      originSeq: 7,
+      originServerTime: originTime,
+      sourceNamespaceId: 12,
+      authorityNamespaceId: 0,
+      authorDomain: 'member.test',
+    });
+    const [receipt] = await publisher.serializeMessagesInTx(
+      transaction(),
+      [row],
+      'member.test',
+      12,
+      { account: '!group' },
+    );
+    const [distribution] = await publisher.serializeMessagesInTx(
+      transaction(),
+      [row],
+      'other.test',
+      19,
+      { account: '!group' },
+    );
+    expect(receipt).toMatchObject({
+      seq: 42,
+      originSeq: 7,
+      originCreatedAt: originTime.getTime(),
+    });
+    expect(distribution).toMatchObject({
+      seq: 42,
+      originSeq: null,
+      originCreatedAt: null,
+    });
+  });
+
   it.each([
     {
       name: 'own target before confirmation',

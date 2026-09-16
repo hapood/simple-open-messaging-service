@@ -76,8 +76,8 @@ import {
  * in depth, since the data is physically gone, not just unreachable.
  *
  * Prerender safety: every IDB access is guarded by `typeof indexedDB !== 'undefined'` and the database
- * is opened lazily (never at construction / module load), mirroring the existing `localStorage` /
- * `window` guards used elsewhere.
+ * is opened lazily (never at construction / module load), mirroring the existing `window` guards used
+ * elsewhere.
  */
 
 /** Avatar blob record. Keyed by stable identity (`u<userId>` / `g<groupId>`), NEVER by URL — see plan. */

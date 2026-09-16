@@ -7,8 +7,9 @@
  *  - Tauri desktop webview: loaded from local assets at a non-HTTP origin (tauri://localhost on
  *    macOS, https://tauri.localhost on Windows, http://tauri.localhost on Linux). The backend origin
  *    is read from the platform persistence surface — the native `window.SomsSecureStore`
- *    (@JavascriptInterface, EncryptedSharedPreferences) on Android, a localStorage shim on desktop —
- *    at seed time, so API/SSE URLs resolve cross-origin. The backend's httpOnly `media_token` cookie is
+ *    (@JavascriptInterface, EncryptedSharedPreferences) on Android at seed time; on desktop it lives
+ *    in the Rust app-data config file and reaches the signal via the config-guard self-heal —
+ *    so API/SSE URLs resolve cross-origin. The backend's httpOnly `media_token` cookie is
  *    SameSite=Strict (so the webview can't auto-attach it cross-origin) and a bare `<img src>` / CSS
  *    `url()` can't carry an Authorization header anyway, so `/uploads/*` is rewritten to a
  *    platform-specific Tauri custom-protocol URL handled by a Rust-side proxy that injects the Bearer
@@ -26,9 +27,10 @@ import { signal } from '@angular/core';
  *  - Android: a Kotlin `@JavascriptInterface` (`window.SomsSecureStore`) backed by
  *    EncryptedSharedPreferences — the SAME store the native SSE (RealtimeService)
  *    reads, so the web and the native realtime layer can never disagree on the host.
- *  - Desktop / browser: `window.SomsSecureStore` is absent, so the web substitutes a JS shim over
- *    localStorage (see `secureStore` below). The web talks to this single interface regardless of
- *    platform — no isAndroid() branching at the call sites.
+ *  - Desktop / browser: `window.SomsSecureStore` is absent, so `secureStore` falls back to an inert
+ *    stub (reads return null, writes no-op) — the desktop origin's persistence is the Rust app-data
+ *    config file (`set_api_origin`), synced into the signal by the config-guard self-heal. The web
+ *    talks to this single interface regardless of platform — no isAndroid() branching at the call sites.
  */
 interface SomsSecureStore {
   getApiOrigin(): string | null;
@@ -43,7 +45,7 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
     /** Native (Android) persistence surface (EncryptedSharedPreferences); absent on desktop/browser,
-     *  where the web substitutes a localStorage shim. See `SomsSecureStore` + `secureStore`. */
+     *  where `secureStore` falls back to an inert stub. See `SomsSecureStore` + `secureStore`. */
     SomsSecureStore?: SomsSecureStore;
     /** Exposed by Tauri v2 when `app.withGlobalTauri` is true (see src-tauri/tauri.conf.json). Used
      *  instead of the `@tauri-apps/api` npm package so the browser build has zero extra deps and the
@@ -500,8 +502,9 @@ export function originIsInsecure(origin: string): boolean {
   return !origin || !/^https:\/\//i.test(origin);
 }
 
-/** The concrete persistence surface: the native `@JavascriptInterface` on Android, or a localStorage
- *  shim on desktop/browser. Resolved once at module load — `window.SomsSecureStore` is injected before
+/** The concrete persistence surface: the native `@JavascriptInterface` on Android; an inert stub
+ *  (reads return null, writes no-op) on desktop/browser, where the origin's persistence is the Rust
+ *  config file (see `setApiOrigin`). Resolved once at module load — `window.SomsSecureStore` is injected before
  *  any page script by the Android shell (same window as the other @JavascriptInterface surfaces), so the
  *  native store is available synchronously at seed time, with no async and no race. */
 const secureStore: SomsSecureStore =
@@ -668,9 +671,10 @@ export function apiOriginIsEmpty(): boolean {
 /**
  * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates +
  * canonicalizes the URL, writes the app-data config file, AND updates the media proxy's live Arc (so
- * `/uploads/*` immediately uses the new host); here we persist the same value into the platform store
- * (Android EncryptedSharedPreferences via `window.SomsSecureStore`, localStorage on desktop) — the same
- * store the native SSE reads — and mirror it into the {@link apiOrigin} signal so every in-process
+ * `/uploads/*` immediately uses the new host); here we mirror the same value into the Android platform
+ * store (EncryptedSharedPreferences via `window.SomsSecureStore`; the desktop call is a no-op — the
+ * Rust config file just written is the persistence) — the same store the native SSE reads — and mirror
+ * it into the {@link apiOrigin} signal so every in-process
  * consumer (HttpClient via `apiPrefix()`, the SSE worker's reconnect, the guest guard, the Settings
  * label) picks up the new host at once, with NO page reload. Returns the canonical origin Rust stored.
  */

@@ -1,7 +1,7 @@
 import {
   groupState as groupStateTable,
   groupStateFields,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -32,7 +32,7 @@ import {
   type FederatedForwardCard,
 } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
-import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
+import type { ThreadContentLock } from '../common/business/locks/thread-content-lock.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -237,7 +237,7 @@ export class FederationInboundMessagePageService {
           );
         }
 
-        if (author.domain === this.config.domain) {
+        if (item.originSeq !== null || author.domain === this.config.domain) {
           if (item.originSeq === null || item.originCreatedAt === null) {
             this.logger.error(
               `self-authored message diagnostic is missing source coordinates: ${federatedMessageLogContext(
@@ -253,7 +253,7 @@ export class FederationInboundMessagePageService {
               eq(tables.message.threadId, route.threadId),
               eq(tables.message.seq, item.originSeq),
               eq(tables.message.creatorAccount, route.creatorAccount),
-              eq(tables.message.creatorDomain, 'local'),
+              eq(tables.message.creatorDomain, route.creatorDomain),
             ),
             columns: {
               id: true,
@@ -265,7 +265,7 @@ export class FederationInboundMessagePageService {
               localSourceMessage.createdAt.getTime() !== item.originCreatedAt
             ) {
               this.logger.error(
-                `ignored a self-authored message diagnostic with conflicting source time: ${JSON.stringify(
+                `ignored a processing receipt with conflicting source time: ${JSON.stringify(
                   {
                     messageId: localSourceMessage.id.toString(),
                     peerDomain: domain,
@@ -319,23 +319,24 @@ export class FederationInboundMessagePageService {
             // Only the group's authoritative server can confirm a local submission.
             // Other receipts retain peer-coordinate aliases for reference resolution;
             // they cannot overwrite the original message's authority coordinate.
-            const [authoritativeGroup] = !('peerAccount' in item.thread)
-              ? await tx
-                  .select({ id: groupStateTable.id })
-                  .from(tables.messageThread)
-                  .innerJoin(
-                    groupStateTable,
-                    eq(groupStateTable.id, tables.messageThread.id),
-                  )
-                  .where(
-                    and(
-                      eq(tables.messageThread.id, route.threadId),
-                      eq(groupStateFields.domain, domain),
-                      eq(groupStateFields.namespaceId, token.namespaceId),
-                    ),
-                  )
-                  .limit(1)
-              : [];
+            const [authoritativeGroup] =
+              route.creatorDomain === 'local' && !('peerAccount' in item.thread)
+                ? await tx
+                    .select({ id: groupStateTable.id })
+                    .from(tables.messageThread)
+                    .innerJoin(
+                      groupStateTable,
+                      eq(groupStateTable.id, tables.messageThread.id),
+                    )
+                    .where(
+                      and(
+                        eq(tables.messageThread.id, route.threadId),
+                        eq(groupStateFields.domain, domain),
+                        eq(groupStateFields.namespaceId, token.namespaceId),
+                      ),
+                    )
+                    .limit(1)
+                : [];
             if (authoritativeGroup) {
               const confirmed = await tx
                 .update(tables.message)
@@ -369,7 +370,7 @@ export class FederationInboundMessagePageService {
             continue;
           }
           this.logger.error(
-            `self-authored missed message has no matching local source message: ${federatedMessageLogContext(
+            `processing receipt has no matching published message: ${federatedMessageLogContext(
               domain,
               item,
               'LOCAL_SOURCE_MESSAGE_NOT_FOUND',

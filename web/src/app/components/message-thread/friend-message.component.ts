@@ -74,7 +74,6 @@ import { LinkCardGenerationService } from '../../services/link-card-generation.s
 import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 import { assetUrl } from '../../services/runtime';
-import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import {
   MediaAvailabilityRegistration,
@@ -273,7 +272,6 @@ export class MessageThreadComponent implements OnDestroy {
     read: ElementRef<HTMLElement>,
   });
   private readonly envInjector = inject(EnvironmentInjector);
-  private readonly msgService = inject(MsgService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly msgRepo = inject(MessageRepository);
   private readonly mediaAvailability = inject(MediaAvailabilityService);
@@ -403,7 +401,6 @@ export class MessageThreadComponent implements OnDestroy {
   );
   private readonly messageSender = new ThreadMessageSendController(
     this.threadAdapter,
-    this.msgService,
     {
       threadId: () => this.threadId(),
       selfAccount: () => this.userService.sessionProfile()?.account,

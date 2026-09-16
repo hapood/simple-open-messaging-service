@@ -32,10 +32,18 @@
       "name": "quote coordinates select sender or receiver timeline",
       "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
       "values": [
-        { "seq": 0 },
-        { "seq": 8 },
-        { "originSeq": 42 },
-        { "seq": 9007199254740990 }
+        {
+          "seq": 0
+        },
+        {
+          "seq": 8
+        },
+        {
+          "originSeq": 42
+        },
+        {
+          "seq": 9007199254740990
+        }
       ]
     },
     {
@@ -100,7 +108,9 @@
               "profileRev": 3,
               "note": "",
               "requestedAt": 1700000000000,
-              "expiresAt": null
+              "expiresAt": null,
+              "messageEndSeq": 0,
+              "tombstoneEndSeq": 0
             }
           },
           {
@@ -113,7 +123,9 @@
               "profileRev": 4,
               "note": "",
               "requestedAt": 1700000000000,
-              "expiresAt": null
+              "expiresAt": null,
+              "messageEndSeq": 0,
+              "tombstoneEndSeq": 0
             }
           },
           {
@@ -148,11 +160,13 @@
                 "profileRev": 3,
                 "note": "hello",
                 "requestedAt": 1700000000000,
-                "expiresAt": 1700604800000
+                "expiresAt": 1700604800000,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -172,7 +186,7 @@
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -192,7 +206,7 @@
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         }
@@ -206,7 +220,7 @@
         "mode": "full",
         "items": [
           {
-            "feedId": "7",
+            "feedId": 7,
             "account": "alice",
             "domain": "a.example",
             "operation": "UPSERT",
@@ -216,7 +230,7 @@
             }
           },
           {
-            "feedId": "8",
+            "feedId": 8,
             "account": "bob",
             "domain": "b.example",
             "operation": "UPSERT",
@@ -226,14 +240,14 @@
             }
           },
           {
-            "feedId": "9",
+            "feedId": 9,
             "operation": "GROUP_PROFILE",
             "body": {
               "profileRev": 4
             }
           }
         ],
-        "scannedThrough": "9",
+        "scannedThrough": 9,
         "groupMetaFeedEndId": 9,
         "hasMore": false
       }
@@ -246,13 +260,13 @@
         "mode": "delta",
         "items": [
           {
-            "feedId": "10",
+            "feedId": 10,
             "account": "bob",
             "domain": "b.example",
             "operation": "DEPART"
           }
         ],
-        "scannedThrough": "10",
+        "scannedThrough": 10,
         "groupMetaFeedEndId": 10,
         "hasMore": false
       }

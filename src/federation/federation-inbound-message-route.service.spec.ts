@@ -128,7 +128,7 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.params).toContain(9);
   });
 
-  it('rejects a mirror returning a group-authority author instead of a local submission', async () => {
+  it('routes a mirror receipt to its existing origin timeline', async () => {
     const execute = vi
       .fn()
       .mockResolvedValueOnce({ rows: [] })
@@ -140,10 +140,12 @@ describe('FederationInboundMessageRouteService', () => {
 
     await expect(
       service().resolveMessage(tx, groupReceipt(), 'peer.test', 9),
-    ).rejects.toThrow(
-      'group mirror may only submit its locally managed authors',
-    );
-    expect(execute).toHaveBeenCalledOnce();
+    ).resolves.toMatchObject({ threadId: 11, creatorDomain: 'local' });
+    const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
+    expect(query.sql).toContain('target.seq =');
+    expect(query.sql).toContain('target."creatorDomain" =');
+    expect(query.sql).toContain('pair.active = true');
+    expect(query.params).toContain(3);
   });
 
   it('does not authorize the local-origin branch for a forwarded third-party author', async () => {

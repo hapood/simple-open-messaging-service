@@ -47,6 +47,7 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import { ForwardRecentTargetsService } from '../../services/forward-recent-targets.service';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
 export type ForwardDialogPurpose = 'FORWARD' | 'CHAT_CARD' | 'NATIVE_SHARE';
@@ -98,6 +99,8 @@ export class ForwardDialogComponent {
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
   private readonly user = inject(UserService);
+  private readonly recentTargets = inject(ForwardRecentTargetsService);
+  private readonly recentUserId = this.user.sessionProfile()?.id;
   private readonly linkCards = inject(LinkCardService);
   private readonly generations = inject(LinkCardGenerationService);
   private readonly transloco = inject(TranslocoService);
@@ -105,6 +108,7 @@ export class ForwardDialogComponent {
   readonly shareMode = signal<'link' | 'text'>('link');
   readonly generationStarting = signal(false);
   private generationStartedFor = '';
+  private recentRemembered = false;
 
   readonly sharedUrl = computed(() =>
     this.linkCards.firstUrl(this.sharedText()),
@@ -203,7 +207,11 @@ export class ForwardDialogComponent {
   );
 
   constructor() {
-    this.recentThreadIds.set(this.readRecentThreadIds());
+    if (this.recentUserId !== undefined) {
+      void this.recentTargets.read(this.recentUserId).then((ids) => {
+        if (!this.recentRemembered) this.recentThreadIds.set(ids);
+      });
+    }
     effect(() => {
       if (this.purpose() !== 'NATIVE_SHARE') return;
       const url = this.sharedUrl();
@@ -240,10 +248,11 @@ export class ForwardDialogComponent {
 
   confirm(mode: ForwardMode = this.effectiveForwardMode()): void {
     if (!this.canConfirm()) return;
-    this.rememberRecentThreadIds([...this.selectedThreadIds()]);
+    const threadIds = [...this.selectedThreadIds()];
+    this.rememberRecentThreadIds(threadIds);
     const generation = this.generation();
     this.route.closeDlg({
-      threadIds: [...this.selectedThreadIds()],
+      threadIds,
       messages: this.messages(),
       mode,
       ...(this.purpose() === 'NATIVE_SHARE'
@@ -306,33 +315,15 @@ export class ForwardDialogComponent {
     });
   }
 
-  private readRecentThreadIds(): number[] {
-    try {
-      const value = JSON.parse(
-        localStorage.getItem(this.recentStorageKey()) ?? '[]',
-      );
-      return Array.isArray(value)
-        ? value.filter((id): id is number => Number.isInteger(id)).slice(0, 12)
-        : [];
-    } catch {
-      return [];
-    }
-  }
-
   private rememberRecentThreadIds(threadIds: readonly number[]): void {
+    this.recentRemembered = true;
     const next = [
       ...threadIds,
       ...this.recentThreadIds().filter((id) => !threadIds.includes(id)),
     ].slice(0, 12);
     this.recentThreadIds.set(next);
-    try {
-      localStorage.setItem(this.recentStorageKey(), JSON.stringify(next));
-    } catch {
-      // Storage is a progressive enhancement; forwarding itself must still work.
+    if (this.recentUserId !== undefined) {
+      void this.recentTargets.remember(this.recentUserId, threadIds);
     }
-  }
-
-  private recentStorageKey(): string {
-    return `forward-recent:${this.user.sessionProfile()?.id ?? 'anonymous'}`;
   }
 }

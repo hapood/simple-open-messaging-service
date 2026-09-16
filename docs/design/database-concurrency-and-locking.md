@@ -101,8 +101,8 @@ make queries concurrent: ordinary reads already have that concurrency.
 
 ## Implementation and verification
 
-- [Thread content locks](../../src/business/shared/locks/thread-content-lock.ts)
-- [Relationship-pair writes](../../src/business/relationship/relationship-intent.service.ts)
+- [Thread content locks](../../src/common/business/locks/thread-content-lock.ts)
+- [Relationship-pair writes](../../src/relationship/business/relationship-intent.service.ts)
 - [Trigger lock modes](../../database/migrations/0001_non_key_write_locks.sql)
 - [Snapshot authorization](../../src/federation/federation-thread-query-authorization.ts)
 - [Atomic epoch validation](../../src/federation/federation-thread-sync-state.service.ts)

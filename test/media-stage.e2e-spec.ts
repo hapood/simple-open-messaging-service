@@ -15,7 +15,7 @@ import {
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
-import { UserIntentService } from '../src/business/user/p2p-intent/authored/user-intent.service';
+import { UserIntentService } from '../src/user/business/p2p-intent/authored/user-intent.service';
 import { userQuotaDailyUsage } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import type { OutboundFilePayload } from '../src/upload/file-content';

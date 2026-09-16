@@ -281,11 +281,11 @@ export interface ClientGroupMetaFeedPage {
   hasMore: boolean;
 }
 
-/** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
- *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
- *  clearSession. Read at boot by {@link UserService.restoreWebdb} so the per-user IDB opens + the
- *  threadlist eager-paints the cached list BEFORE the SSE/HELLO round-trip (instant list for returning
- *  users). Cleared with the other user-scoped keys on logout (see USER_SCOPED_LS_KEYS). */
+/** The persisted last-logged-in userId (device-scoped preference) — the client's sole pre-HELLO source
+ *  of its own userId (the session token is opaque, server-side-lookup only). Set on establishSession,
+ *  cleared on clearSession. Read at boot by {@link UserService.restoreWebdb} so the per-user IDB opens +
+ *  the threadlist eager-paints the cached list BEFORE the SSE/HELLO round-trip (instant list for
+ *  returning users). Cleared on logout by `clearClientPreferences`. */
 const LAST_USER_ID_KEY = 'soms.lastUserId';
 const CACHE_REBUILD_KEY = 'soms.cacheRebuild';
 
@@ -1182,12 +1182,12 @@ export function avatarUrl(base: string | undefined | null): string {
 }
 
 /**
- * localStorage keys holding USER-SCOPED client-only data (no server copy) — cleared on logout so a
+ * Preference records holding USER-SCOPED client-only data (no server copy) — cleared on logout so a
  * second account on the same browser never sees the previous one's emoji recents. This mirrors
  * the IDB purge-on-logout (the per-user DB is closed + deleted): local cache is wiped, rebuilt from
  * scratch on the next login. NOTE these are client-only — clearing is permanent (even for the same user
  * re-logging in), which is the chosen trade-off for account isolation.
  *
  * Deliberately NOT cleared (device-level preferences, shared across accounts on this browser): theme,
- * language, the desktop list-pane width, the media-size threshold, `device_id`, and `is_keep_login`.
+ * language, the desktop list-pane width, the media-size threshold, and `device_id`.
  */

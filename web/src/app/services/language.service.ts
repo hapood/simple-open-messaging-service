@@ -30,7 +30,7 @@ const DAYJS_LOCALE: Record<AppLang, string> = {
 
 /**
  * App-wide UI-language controller, mirroring {@link ThemeService}: a persisted
- * `soms.*` localStorage preference exposed as a signal, with an `effect` that
+ * device-level preference (via {@link PreferenceStore}) exposed as a signal, with an `effect` that
  * reflects the resolved language onto the document and the active Transloco
  * language. The choice is restored from storage on construction (defaulting to
  * the browser language, then English) and can be changed at runtime via

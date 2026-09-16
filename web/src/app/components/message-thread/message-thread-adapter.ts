@@ -66,6 +66,15 @@ export interface SendTextRequest {
   source: MessageThreadSource;
 }
 
+export interface SendContactRequest {
+  threadId: number;
+  targetUserId?: number;
+  targetGroupId?: number;
+  clientMessageId: string;
+  optimistic: CbItem<ChatItemData>;
+  source: MessageThreadSource;
+}
+
 export interface ForwardMessagesRequest {
   threadId: number;
   sourceMessages: ReadonlyArray<{ threadId: number; seq: number }>;
@@ -97,6 +106,10 @@ export abstract class MessageThreadAdapter {
 
   abstract sendText(
     request: SendTextRequest,
+  ): Promise<StandardResponse<unknown>>;
+
+  abstract sendContact(
+    request: SendContactRequest,
   ): Promise<StandardResponse<unknown>>;
 
   abstract sendLink(request: {
@@ -201,6 +214,20 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
         threadId: request.threadId,
         content: request.content,
         contentType: 'PURE_TEXT',
+        clientMessageId: request.clientMessageId,
+      }),
+    );
+  }
+
+  override sendContact(
+    request: SendContactRequest,
+  ): Promise<StandardResponse<unknown>> {
+    return firstValueFrom(
+      this.messages.sendContactCard({
+        threadId: request.threadId,
+        ...(request.targetGroupId !== undefined
+          ? { targetGroupId: request.targetGroupId }
+          : { targetUserId: request.targetUserId }),
         clientMessageId: request.clientMessageId,
       }),
     );

@@ -14,10 +14,10 @@ import {
   readMirrorGroupMemberRevokeTask,
   readQueryDeniedGroupMembershipRevocationTask,
 } from './group-disband-task.js';
-import { GroupDisbandMembershipRevocationService } from '../business/group/disband/group-disband-membership-revocation.service.js';
-import { MirrorGroupDisbandService } from '../business/group/disband/mirror-group-disband.service.js';
-import { GroupAuthoredMembershipIntentService } from '../business/group/membership-intent/authored/group-authored-membership-intent.service.js';
-import { MemberAuthoredGroupMembershipIntentService } from '../business/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
+import { GroupDisbandMembershipRevocationService } from './business/disband/group-disband-membership-revocation.service.js';
+import { MirrorGroupDisbandService } from './business/disband/mirror-group-disband.service.js';
+import { GroupAuthoredMembershipIntentService } from './business/membership-intent/authored/group-authored-membership-intent.service.js';
+import { MemberAuthoredGroupMembershipIntentService } from './business/membership-intent/authored/member-authored-group-membership-intent.service.js';
 
 @Injectable()
 export class ForceRevokeGroupMemberTaskHandler

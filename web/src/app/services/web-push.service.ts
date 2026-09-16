@@ -4,7 +4,8 @@ import { TranslocoService } from '@jsverse/transloco';
 import { apiPrefix } from './constants';
 import { isTauri } from './runtime';
 import { ToastService } from './toast.service';
-import { clientDeviceId } from '../lib/client-device-id';
+import { PreferenceStore } from './preference-store.service';
+import { uuid } from '../lib/uuid';
 import { resetNotificationSince } from './browser-notification-checkpoint';
 
 /**
@@ -23,6 +24,8 @@ export class WebPushService {
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
+  private readonly preferences = inject(PreferenceStore);
+  private deviceIdPromise: Promise<string> | null = null;
 
   /** The endpoint currently registered with the backend for the OPTIONAL Web Push (closed-tab) path, or
    *  null when not subscribed. Best-effort internal state — the Settings toggle does NOT reflect this; it
@@ -191,7 +194,7 @@ export class WebPushService {
       .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
         token: sub.endpoint,
         platform: 'WEB',
-        deviceId: clientDeviceId(),
+        deviceId: await this.clientDeviceId(),
         p256dh: sub.getKey('p256dh')
           ? base64UrlEncode(sub.getKey('p256dh')!)
           : undefined,
@@ -219,6 +222,28 @@ export class WebPushService {
     } catch {
       return null;
     }
+  }
+
+  private clientDeviceId(): Promise<string> {
+    return (this.deviceIdPromise ??= this.loadClientDeviceId());
+  }
+
+  private async loadClientDeviceId(): Promise<string> {
+    const stored = await this.preferences.get<unknown>('device', 'device_id');
+    if (
+      typeof stored === 'string' &&
+      stored.length > 0 &&
+      stored.length <= 127
+    ) {
+      return stored;
+    }
+    const created = uuid();
+    try {
+      await this.preferences.set('device', 'device_id', created);
+    } catch {
+      // Keep one identifier for this session when persistent storage is unavailable.
+    }
+    return created;
   }
 
   private t(key: string): string {

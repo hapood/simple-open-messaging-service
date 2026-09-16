@@ -100,10 +100,7 @@ export class FederationThreadReverseRoundExecutorService {
     if (params.through !== undefined)
       query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set(
-      'includeSelf',
-      String(!(source.kind === 'GROUP' && source.localGroupAuthority)),
-    );
+    query.set('includeSelf', 'true');
 
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
@@ -238,12 +235,13 @@ export class FederationThreadReverseRoundExecutorService {
       }
       let closure = byBundleId.get(bundleId);
       if (!closure) {
-        const response = await this.threadResources.fetch<InboundForwardWireBundle>(
-          source.threadId,
-          `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
-          source.peerDomain,
-          FORWARD_MAX_WIRE_JSON_BYTES,
-        );
+        const response =
+          await this.threadResources.fetch<InboundForwardWireBundle>(
+            source.threadId,
+            `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
+            source.peerDomain,
+            FORWARD_MAX_WIRE_JSON_BYTES,
+          );
         this.assertSameAuthority(messageResponse, response);
         closure = response.data;
         byBundleId.set(bundleId, closure);

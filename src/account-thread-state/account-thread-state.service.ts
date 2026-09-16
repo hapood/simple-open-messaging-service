@@ -1,7 +1,7 @@
 import {
   groupState as group,
   groupStateFields,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -9,7 +9,7 @@ import {
 import {
   addressRelation,
   p2pPeerRelation,
-} from '../business/relationship/shared/relationship-address.js';
+} from '../relationship/business/shared/relationship-address.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
@@ -22,8 +22,8 @@ import { MessageThreadType } from '../database/enums.js';
 import {
   isThreadMutuallyAuthorized,
   relationshipPairMatchesUsersSql,
-} from '../business/relationship/shared/relationship-authorization.js';
-import { requireThreadContentLockInTx } from '../business/shared/locks/thread-content-lock.js';
+} from '../relationship/business/shared/relationship-authorization.js';
+import { requireThreadContentLockInTx } from '../common/business/locks/thread-content-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { ThreadPreviewService } from '../message/thread-preview.service.js';

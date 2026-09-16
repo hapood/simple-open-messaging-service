@@ -24,8 +24,8 @@ const META_THEME_COLOR: Record<EffectiveTheme, string> = {
  * The dark-mode token overrides already live in `_tokens.scss` under
  * `[data-theme="dark"]`; this service is the single thing that decides which
  * attribute lands on `<html>`. Default mode is `'system'` (follows OS); the user
- * may override via {@link cycleMode}, and the choice persists in `localStorage`
- * under the project's `soms.*` prefix.
+ * may override via {@link cycleMode}, and the choice persists device-level via
+ * {@link PreferenceStore}.
  *
  * A no-FOUC inline script in `index.html` paints the very first frame using the
  * same resolution; this service then owns runtime updates (mode change or OS

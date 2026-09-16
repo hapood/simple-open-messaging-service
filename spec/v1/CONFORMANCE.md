@@ -65,6 +65,27 @@ observable requirements:
   request admission, not necessarily its bilateral lifecycle. A valid request
   may therefore return `degraded` even as it refreshes reachability.
 
+## Synchronization and deletion checks
+
+- An effective one-way intent permits passive history queries before a thread
+  head exists. Confirmation publishes an initialization head after the authored
+  `ACCEPTED` acknowledgement, even when message and deletion bounds are unchanged.
+- A failed Group Meta retrieval does not block State Feed cursor progress once
+  its target has been durably accepted. Dependent group content remains
+  unexposed until that target is covered.
+- A member home may publish either tombstone type to the group origin for its
+  own authors. The origin applies valid facts and translates their target
+  coordinates for distribution. A mirror cannot exercise that authority over
+  another home's author or publish directly to another mirror.
+- Returning a copy to its direct publisher supplies that publisher's original
+  coordinates as a receipt, independently of the author's domain. This includes
+  a mirror returning a third-party-authored message to its group origin.
+  Distribution to another mirror uses null origin coordinates. Repeated reads
+  preserve each recipient's projection; receiving a receipt creates no new
+  timeline message or further receipt.
+- A P2P forward asset derives its outer author from `authorRef`; it does not
+  require the GROUP-only `author` field.
+
 ## Independent validation
 
 Run this command from the repository root:

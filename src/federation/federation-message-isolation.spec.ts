@@ -1,7 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-vi.mock('../business/shared/locks/thread-content-lock.js', () => ({
+vi.mock('../common/business/locks/thread-content-lock.js', () => ({
   lockThreadContentInTx: vi.fn().mockResolvedValue(true),
   requireThreadContentLockInTx: vi.fn(
     async (tx, threadId, held) => held ?? { tx, threadId },
@@ -26,7 +26,10 @@ import { FederationInboundMessageValidatorService } from './federation-inbound-m
 /** Always the thread-author feed member; assignments below rely on it. */
 const item = (
   sequence: string,
-): Extract<FederationMessageFeedMessage, { authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT' }> => ({
+): Extract<
+  FederationMessageFeedMessage,
+  { authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT' }
+> => ({
   thread: {
     account: 'alice',
     peerAccount: 'bob',
@@ -112,7 +115,12 @@ describe('federation message context isolation', () => {
       bad.contentType = contentType;
       bad.content =
         contentType === 'FORWARD' ? 'invalid-json' : '{"items":null}';
-      const good = { ...item('70'), authorRef: 'THREAD_ACCOUNT' as const };
+      const good = {
+        ...item('70'),
+        authorRef: 'THREAD_ACCOUNT' as const,
+        originSeq: null,
+        originCreatedAt: null,
+      };
       const tx = {
         execute: vi.fn().mockResolvedValue({ rows: [] }),
         query: {
@@ -266,8 +274,11 @@ describe('federation message context isolation', () => {
       );
       expect(publishMessage).not.toHaveBeenCalled();
       expect(
-        (service as unknown as { enqueueFanout: { mock: { calls: unknown[][] } } })
-          .enqueueFanout.mock.calls,
+        (
+          service as unknown as {
+            enqueueFanout: { mock: { calls: unknown[][] } };
+          }
+        ).enqueueFanout.mock.calls,
       ).toHaveLength(reverse ? 0 : 1);
     },
   );
@@ -565,6 +576,8 @@ describe('federation message context isolation', () => {
     const incoming = item('70');
     incoming.createdAt = 1_700_000_001_000;
     incoming.authorRef = 'THREAD_ACCOUNT';
+    incoming.originSeq = null;
+    incoming.originCreatedAt = null;
     await expect(
       service.apply(tx as never, 'peer.test', [incoming], {
         namespaceId: 22,

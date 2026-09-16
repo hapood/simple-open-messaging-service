@@ -2,7 +2,7 @@ import {
   groupState as groupStateTable,
   readGroupState,
   groupStateFields,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';

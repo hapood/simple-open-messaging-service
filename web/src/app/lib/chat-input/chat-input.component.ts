@@ -209,7 +209,7 @@ export class ChatInputComponent implements OnDestroy {
   private restoredThreadId?: number;
   private openWhenStarted = false;
 
-  /** Recently-used emojis (persisted across sessions via localStorage). */
+  /** Recently-used emojis (persisted across sessions via the preference store, device scope). */
   readonly recents = signal<string[]>([]);
   /** Active tab id ('recent' for the Recents tab, else a category id). */
   readonly activeCategory = signal<string>(

@@ -139,7 +139,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
     },
   );
 
-  it('requests only mirror-owned authors during an authoritative reverse scan', async () => {
+  it('includes mirror receipts during an authoritative reverse scan', async () => {
     const { source } = harness();
     if (source.kind !== 'GROUP') throw new Error('expected group fixture');
     source.localGroupAuthority = true;
@@ -157,7 +157,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       31,
-      '/s2s/v1/messages?account=%21group&before=100&through=40&take=20&includeSelf=false',
+      '/s2s/v1/messages?account=%21group&before=100&through=40&take=20&includeSelf=true',
       'origin.test',
       16 * 1024 * 1024,
     );

@@ -2,7 +2,7 @@ import {
   isProfileSelector,
   type ProfileSelector as Selector,
 } from '../../shared/profile-selector.js';
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -12,7 +12,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
-import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationPeerHttp } from './federation-peer-http.js';

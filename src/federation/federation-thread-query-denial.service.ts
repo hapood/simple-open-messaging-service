@@ -1,14 +1,14 @@
 import { systemAccountIdInTx } from '../user/system-account.js';
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { RelationshipIntentService } from '../business/relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../relationship/business/relationship-intent.service.js';
 import { admitMirrorGroupMembersDisbandInTx } from './mirror-group-disband-admission.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
-import { UserIntentService } from '../business/user/p2p-intent/authored/user-intent.service.js';
+import { UserIntentService } from '../user/business/p2p-intent/authored/user-intent.service.js';
 
 /** Converges locally authored relationship directions after authenticated query denial. */
 @Injectable()

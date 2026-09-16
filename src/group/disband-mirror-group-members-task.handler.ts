@@ -9,7 +9,7 @@ import type {
   DurableTask,
   DurableTaskHandler,
 } from '../durable-task/durable-task.types.js';
-import { MirrorGroupDisbandService } from '../business/group/disband/mirror-group-disband.service.js';
+import { MirrorGroupDisbandService } from './business/disband/mirror-group-disband.service.js';
 import { GroupRevokeFanoutService } from './group-revoke-fanout.service.js';
 import { readDisbandMirrorGroupMembersTask } from './group-disband-task.js';
 

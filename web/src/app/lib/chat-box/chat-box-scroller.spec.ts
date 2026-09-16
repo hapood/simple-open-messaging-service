@@ -1613,6 +1613,84 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     );
   });
 
+  it('bottom-pinned full newer pages repeatedly mount, trim the old head, re-pin, and request the next page', async () => {
+    const { hooks } = controllableHooks();
+    const live = pushedSource(fakeSource(500));
+    const requestCursors: number[] = [];
+    const source: CbSource<number> = {
+      ...live,
+      requestNewer: (cursorId, count) => {
+        requestCursors.push(cursorId);
+        return live.requestNewer(cursorId, count);
+      },
+    };
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init(); // m-400..m-499, pinned; the live newer demand waits at cursor 499
+    expect(requestCursors).toEqual([499]);
+
+    // A full page has no newest marker: all 50 rows mount first, trimOlder drops only reloadable rows at the old head,
+    // and the demand callback follows the enlarged bottom before synchronizing the still-active bottom region.
+    source.pushLive(
+      Array.from({ length: 50 }, (_, i) => ({ id: 600 + i, data: i })),
+    );
+    await flush();
+    await flush();
+
+    const afterFirst = scroller.getInfo();
+    for (let id = 600; id < 650; id++)
+      expect(content.querySelector(`[data-cb-id="${id}"]`)).toBeTruthy();
+    expect(afterFirst.mounted).toBe(67); // 83 old rows trimmed; all 50 new rows remain mounted
+    expect(afterFirst.oldestId).toBe(483);
+    expect(afterFirst.atBottom).toBe(true);
+    expect(afterFirst.scrollTop).toBe(
+      afterFirst.scrollHeight - afterFirst.viewportHeight,
+    );
+    expect(afterFirst.noNewer).toBe(false);
+    expect(requestCursors).toEqual([499, 649]); // no scroll event was needed to request page 2
+
+    const pushPage = async (start: number, reachesNewest: boolean) => {
+      source.pushLive(
+        Array.from({ length: 50 }, (_, i) => ({
+          id: start + i,
+          data: start + i,
+          ...(reachesNewest && i === 49
+            ? { boundary: 'newest' as const }
+            : {}),
+        })),
+      );
+      await flush();
+      await flush();
+      const info = scroller!.getInfo();
+      for (let id = start; id < start + 50; id++)
+        expect(content.querySelector(`[data-cb-id="${id}"]`)).toBeTruthy();
+      expect(info.mounted).toBe(67);
+      expect(info.newestId).toBe(start + 49);
+      expect(info.noNewer).toBe(reachesNewest);
+      expect(info.atBottom).toBe(true);
+      expect(info.scrollTop).toBe(info.scrollHeight - info.viewportHeight);
+      return info;
+    };
+
+    // Pages 2 and 3 are also full and have more data. Each must be requested without a scroll event, and each trim must
+    // cross the former global-newest row instead of treating its now-stale boundary marker as an immortal trim barrier.
+    const afterSecond = await pushPage(650, false);
+    expect(afterSecond.oldestId).toBe(633);
+    expect(requestCursors).toEqual([499, 649, 699]);
+
+    const afterThird = await pushPage(700, false);
+    expect(afterThird.oldestId).toBe(683);
+    expect(requestCursors).toEqual([499, 649, 699, 749]);
+
+    // Page 4 finally reaches the moving newest edge. The same bounded window and bottom pin are preserved.
+    const afterFourth = await pushPage(750, true);
+    expect(afterFourth.oldestId).toBe(733);
+  });
+
   it('scrollToBottom (go-to-bottom) chains through a trimmed newer end to the global newest (followToNewest)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({

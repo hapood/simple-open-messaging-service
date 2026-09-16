@@ -3,14 +3,13 @@ import { PreferenceStore } from './preference-store.service';
 
 const ENABLED_KEY = 'notificationEnabled';
 const SOUND_KEY = 'notificationSound';
-/** Away-notification grouping pref key (localStorage) — "thread" (default) or "all". */
+/** Away-notification grouping pref key — "thread" (default) or "all". */
 const PREVIEW_MODE_KEY = 'notificationPreviewMode';
 
 /**
  * App-level notification preferences for the browser in-tab attention path ({@link UnreadAttentionService}).
- * Two booleans, both default `true`, persisted to `localStorage` via the project's `soms.*` idiom — the
- * same ad-hoc-per-service shape as {@link MediaSizeThresholdService} (there is no generic storage helper;
- * each pref domain owns its own wrapper, with a try/catch for private mode).
+ * Two booleans, both default `true`, persisted device-level via {@link PreferenceStore} — the
+ * same shape as {@link MediaSizeThresholdService}.
  *
  * These are DEVICE-level (like theme/language): they survive logout. `UserService.clearSession()` only
  * wipes user-scoped keys such as `soms.chat.emojiRecents`, so these are preserved.

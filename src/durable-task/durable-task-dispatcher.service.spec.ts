@@ -1,4 +1,6 @@
+import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
+import { beginDatabaseRoundTrip } from '../diagnostics/execution-measurement.js';
 import { DurableTaskDispatcherService } from './durable-task-dispatcher.service.js';
 import type { DurableTask } from './durable-task.types.js';
 
@@ -52,5 +54,39 @@ describe('DurableTaskDispatcherService', () => {
     expect(() =>
       dispatcher.register({ ...handler, taskType: 'disband-group' }),
     ).toThrow(TypeError);
+  });
+
+  it('establishes a measured task execution context when sampled', async () => {
+    const previousSampleRate = process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE;
+    process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE = '1';
+    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+    try {
+      const dispatcher = new DurableTaskDispatcherService();
+      dispatcher.register({
+        taskType: 'DISBAND_GROUP',
+        execute: async () => {
+          const finish = beginDatabaseRoundTrip();
+          expect(finish).toBeTypeOf('function');
+          finish?.();
+        },
+      });
+
+      await dispatcher.execute(task);
+
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: 'task:1',
+          kind: 'task',
+          name: 'DISBAND_GROUP',
+          taskId: '1',
+          databaseRoundTripCount: 1,
+        }),
+      );
+    } finally {
+      log.mockRestore();
+      if (previousSampleRate === undefined)
+        delete process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE;
+      else process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE = previousSampleRate;
+    }
   });
 });

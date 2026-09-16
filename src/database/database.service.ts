@@ -5,9 +5,18 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { Pool } from 'pg';
+import {
+  DefaultLogger,
+  type Logger as DrizzleLogger,
+} from 'drizzle-orm/logger';
+import { Pool, type PoolClient } from 'pg';
 import { optionalIntEnv } from '../common/env.js';
+import {
+  executionMeasurementSampleRate,
+  recordSqlExecution,
+} from '../diagnostics/execution-measurement.js';
 import { databaseSchema } from './database-schema.js';
+import { instrumentDatabaseClient } from './database-execution-measurement.js';
 
 export type Database = NodePgDatabase<typeof databaseSchema>;
 export type DatabaseTransaction = Parameters<
@@ -21,6 +30,7 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
   readonly db: Database;
 
   constructor() {
+    const measurementEnabled = executionMeasurementSampleRate() > 0;
     const connectionString = process.env.DATABASE_URL?.trim();
     if (!connectionString) {
       const missing = ['PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'].filter(
@@ -40,12 +50,22 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
       // interpretation regardless of the PostgreSQL server/role default.
       options: '-c timezone=UTC',
     });
+    if (measurementEnabled) {
+      this.pool.on('connect', (client: PoolClient) => {
+        instrumentDatabaseClient(client);
+      });
+    }
+    const logQueries =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.DATABASE_QUERY_LOG !== '0';
     this.db = drizzle({
       client: this.pool,
       schema: databaseSchema,
-      logger:
-        process.env.NODE_ENV !== 'production' &&
-        process.env.DATABASE_QUERY_LOG !== '0',
+      logger: measurementEnabled
+        ? new MeasurementQueryLogger(
+            logQueries ? new DefaultLogger() : undefined,
+          )
+        : logQueries,
     });
   }
 
@@ -102,5 +122,14 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
+  }
+}
+
+class MeasurementQueryLogger implements DrizzleLogger {
+  constructor(private readonly delegate?: DrizzleLogger) {}
+
+  logQuery(query: string, params: unknown[]): void {
+    recordSqlExecution();
+    this.delegate?.logQuery(query, params);
   }
 }

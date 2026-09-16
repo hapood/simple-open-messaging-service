@@ -1,8 +1,67 @@
 import { firstValueFrom } from 'rxjs';
+import { vi } from 'vitest';
+import type { CbItem } from '../app/lib/chat-box/chat-box-scroller';
+import type { ChatItemData } from '../app/components/message-cards/chat-item';
+import { MockItemSource } from '../app/pages/chatbox-playground/http-item-source.mock';
 import type { ConversationItem } from '../app/services/model';
 import { PlaygroundMessageThreadAdapter } from './playground-message-thread.adapter';
 
 describe('PlaygroundMessageThreadAdapter', () => {
+  it('confirms a contact card in the message sequence before the mock reply', async () => {
+    const adapter = new PlaygroundMessageThreadAdapter();
+    adapter.itemCount.set(10);
+    adapter.sourceLatency.set(0);
+    adapter.confirmDelay.set(0);
+    adapter.pushSignalDelay.set(0);
+    adapter.replyDelay.set(0);
+    const source = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      {
+        onNewerAvailable: () => undefined,
+        onMediaStatus: () => undefined,
+        onProfile: () => undefined,
+      },
+    ) as MockItemSource;
+    const optimistic: CbItem<ChatItemData> = {
+      id: -1,
+      clientMessageId: 'contact-1',
+      data: {
+        type: 'msg',
+        msgId: -1,
+        creator: JSON.stringify([0, 'mock.local', 'user-1']),
+        isSelf: true,
+        name: 'Me',
+        text: JSON.stringify({ displayName: 'Maya', account: 'maya' }),
+        time: '12:00',
+        contentType: 'CONTACT_CARD',
+        images: null,
+        file: null,
+        createdAtMs: Date.now(),
+      },
+    };
+    source.addPending(optimistic);
+
+    expect(
+      (await adapter.sendContact({
+        threadId: 1,
+        targetUserId: 3,
+        clientMessageId: 'contact-1',
+        optimistic,
+        source,
+      })).code,
+    ).toBe(0);
+    await vi.waitFor(async () => {
+      const items = await source.getNewer(10, 10);
+      expect(items.length).toBe(2);
+      expect(items[0].data.type).toBe('msg');
+      expect(items[0].data.type === 'msg' && items[0].data.contentType).toBe(
+        'CONTACT_CARD',
+      );
+      expect(items[1].data.type === 'msg' && items[1].data.isSelf).toBe(false);
+      expect(source.getPending()).toHaveLength(0);
+    });
+  });
+
   it('marks group history and generates messages from multiple members', async () => {
     const adapter = new PlaygroundMessageThreadAdapter();
     adapter.itemCount.set(100);

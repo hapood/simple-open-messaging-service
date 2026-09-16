@@ -4,6 +4,7 @@ import type {
   DurableTaskExecutionResult,
   DurableTaskHandler,
 } from './durable-task.types.js';
+import { runMeasuredExecution } from '../diagnostics/execution-measurement.js';
 
 @Injectable()
 export class DurableTaskDispatcherService {
@@ -38,6 +39,14 @@ export class DurableTaskDispatcherService {
         `no handler registered for durable task: ${task.taskType}`,
       );
     }
-    return handler.execute(task);
+    return runMeasuredExecution(
+      {
+        kind: 'task',
+        name: task.taskType,
+        executionId: `task:${task.id.toString()}`,
+        taskId: task.id.toString(),
+      },
+      () => handler.execute(task),
+    );
   }
 }

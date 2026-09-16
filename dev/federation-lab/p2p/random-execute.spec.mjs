@@ -31,6 +31,7 @@ test('classifies random acceptance or rejection of an expired or revoked incomin
   };
   for (const [changes, status, resultCode, expected] of [
     [{}, 'REJECTED', 20011, 'OBSERVED_UNAVAILABLE'],
+    [{}, 'REJECTED', 20010, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20013, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20011, 'OBSERVED_UNAVAILABLE'],
     [
@@ -58,6 +59,7 @@ test('classifies random acceptance or rejection of an expired or revoked incomin
       'REJECTED',
     ],
     [{ type: 'REJECT_REQUEST' }, 'FAILED', 20011, 'FAILED'],
+    [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20010, 'REJECTED'],
     [{ type: 'REJECT_REQUEST' }, 'REJECTED', 20002, 'REJECTED'],
     [
       { type: 'REJECT_REQUEST', scenario: 'FIXED' },
@@ -84,6 +86,7 @@ test('classifies random acceptance or rejection of an expired or revoked incomin
     [{ observedFacts: undefined }, 'REJECTED', 20011, 'REJECTED'],
     [{ observedFacts: { state: 'FRIEND' } }, 'REJECTED', 20011, 'REJECTED'],
     [{ type: 'SEND_REQUEST' }, 'REJECTED', 20011, 'REJECTED'],
+    [{ type: 'SEND_REQUEST' }, 'REJECTED', 20010, 'REJECTED'],
     [{}, 'FAILED', 20011, 'FAILED'],
     [{}, 'REJECTED', 20002, 'REJECTED'],
   ]) {
@@ -657,6 +660,7 @@ test('handles a revoked incoming request before admission with the same policy a
   };
   for (const [changes, code, expected] of [
     [{}, 20011, 'OBSERVED_UNAVAILABLE'],
+    [{}, 20010, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 20013, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST' }, 20011, 'OBSERVED_UNAVAILABLE'],
     [{ type: 'REJECT_REQUEST', scenario: 'FIXED' }, 20011, 'ADMISSION_FAILED'],
@@ -672,6 +676,7 @@ test('handles a revoked incoming request before admission with the same policy a
       'ADMISSION_FAILED',
     ],
     [{ type: 'REJECT_REQUEST' }, 20002, 'ADMISSION_FAILED'],
+    [{ type: 'REJECT_REQUEST' }, 20010, 'ADMISSION_FAILED'],
     [{ type: 'REJECT_REQUEST', scenario: 'FIXED' }, 20013, 'ADMISSION_FAILED'],
     [{ type: 'REJECT_REQUEST' }, 10001, 'ADMISSION_FAILED'],
     [{ scenario: 'FIXED' }, 20011, 'ADMISSION_FAILED'],
@@ -680,6 +685,7 @@ test('handles a revoked incoming request before admission with the same policy a
     [{ observedFacts: undefined }, 20011, 'ADMISSION_FAILED'],
     [{ observedFacts: { state: 'FRIEND' } }, 20011, 'ADMISSION_FAILED'],
     [{ type: 'SEND_REQUEST' }, 20011, 'ADMISSION_FAILED'],
+    [{ type: 'SEND_REQUEST' }, 20010, 'ADMISSION_FAILED'],
     [{}, 50000, 'ADMISSION_FAILED'],
   ]) {
     const journal = { operations: [] };

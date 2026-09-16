@@ -14,7 +14,7 @@ import {
   businessAccountScopeKey,
   lockBusinessAccountsInTx,
   type BusinessScopeAddress,
-} from '../business/shared/locks/account-business-lock.js';
+} from '../common/business/locks/account-business-lock.js';
 import { DurableTaskType } from './durable-task.constants.js';
 import {
   insertPendingTaskInTx,

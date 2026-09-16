@@ -51,7 +51,6 @@
     "cursorUnavailableData": {
       "oneOf": [
         { "$ref": "#/$defs/feedCursorUnavailableData" },
-        { "$ref": "#/$defs/groupMetaCursorUnavailableData" },
         { "$ref": "#/$defs/threadCursorUnavailableData" }
       ]
     },
@@ -81,17 +80,7 @@
       "additionalProperties": false
     },
     "groupMetaCursorUnavailableData": {
-      "type": "object",
-      "required": ["resumeAfter", "resumeBefore"],
-      "properties": {
-        "resumeAfter": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "resumeBefore": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        }
-      },
-      "additionalProperties": false
+      "$ref": "#/$defs/threadCursorUnavailableData"
     },
     "threadCursorUnavailableData": {
       "type": "object",

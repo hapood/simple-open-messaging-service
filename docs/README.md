@@ -37,6 +37,7 @@ and client behavior.
 ## Operations
 
 - [Authentication rate limiting](./operations/rate-limiting.md)
+- [Business and task execution measurement](./operations/execution-measurement.md)
 
 Completed plans and superseded implementation notes are not retained here. Git
 history remains available when implementation-era context is needed.

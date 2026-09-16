@@ -23,7 +23,7 @@ import type { FederationThreadResourceResponse } from './federation-thread-resou
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../business/shared/locks/thread-content-lock.js';
+} from '../common/business/locks/thread-content-lock.js';
 
 export interface ReverseMessagePageCommit {
   threadLock?: ThreadContentLock;
@@ -197,16 +197,15 @@ export class FederationInboundMessageCommitService {
         );
       const authorityDomain =
         route.groupOriginDomain ?? params.response.peerDomain;
+      // Routing verifies that a member-home publisher owns the target author.
+      // Both retraction and home-server moderation are authoritative in that scope.
       if (
-        route.memberSubmission
-          ? item.type !== MessageDeleteType.USER_RETRACTION
-          : authorityDomain !== params.response.peerDomain
+        !route.memberSubmission &&
+        authorityDomain !== params.response.peerDomain
       )
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          route.memberSubmission
-            ? 'group members may only submit author retractions'
-            : 'group tombstone is not from the group origin',
+          'group tombstone is not from the group origin',
           HttpStatus.BAD_REQUEST,
         );
       const deletion = await this.deletedMessages.applyFederatedInTx(tx, {

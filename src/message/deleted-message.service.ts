@@ -21,7 +21,7 @@ import {
   acquireThreadContentLockInTx,
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../business/shared/locks/thread-content-lock.js';
+} from '../common/business/locks/thread-content-lock.js';
 
 @Injectable()
 export class DeletedMessageService {
@@ -376,7 +376,7 @@ export class DeletedMessageService {
       authorityDeletedAt?: Date;
       /** Group origins reject unmatched member submissions instead of treating them as facts. */
       allowPending?: boolean;
-      /** An authenticated member retraction becomes a locally published authority fact. */
+      /** An authenticated member-home tombstone becomes a locally published authority fact. */
       publishAsAuthority?: boolean;
       expectedFederationVersion: number;
       threadLock?: ThreadContentLock;

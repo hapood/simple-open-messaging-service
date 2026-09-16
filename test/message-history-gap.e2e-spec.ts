@@ -12,7 +12,7 @@ import {
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
-import { requireThreadContentLockInTx } from '../src/business/shared/locks/thread-content-lock.js';
+import { requireThreadContentLockInTx } from '../src/common/business/locks/thread-content-lock.js';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
 

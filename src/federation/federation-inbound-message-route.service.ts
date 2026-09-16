@@ -1,11 +1,11 @@
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { isThreadMutuallyAuthorized } from '../business/relationship/shared/relationship-authorization.js';
+import { isThreadMutuallyAuthorized } from '../relationship/business/shared/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
@@ -84,6 +84,50 @@ export class FederationInboundMessageRouteService {
         FOR SHARE OF thread
       `);
       threadRows = result.rows;
+      if (threadRows.length === 0 && item.originSeq != null) {
+        // A mirror returns copies of this origin's timeline, including third-party
+        // authors. Bind the receipt to that timeline and a current mirror audience;
+        // the receipt author's own membership is not the mirror's authorization.
+        const receipt = await tx.execute<{
+          threadId: number;
+          federationVersion: number;
+          toAccount: string;
+        }>(sql`
+          SELECT thread.id AS "threadId", thread."federationVersion",
+                 group_user.account AS "toAccount"
+          FROM "MessageThread" thread
+          JOIN ${groupStateSql} group_user ON group_user.id = thread.id
+          JOIN "Message" target ON target."threadId" = thread.id
+          WHERE thread.type = 'GROUP'
+            AND group_user.account = ${normalizeAccount(item.thread.account)}
+            AND group_user.domain = 'local'
+            AND group_user."namespaceId" = 0
+            AND target.seq = ${item.originSeq}
+            AND target."creatorAccount" = ${normalizeAccount(author.account)}
+            AND target."creatorDomain" = ${author.domain === this.config.domain ? 'local' : author.domain}
+            AND EXISTS (
+              SELECT 1 FROM "RelationshipPair" pair
+              WHERE pair."threadId" = thread.id
+                AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
+                AND (
+                  (pair."endpointAType" = 'USER'
+                    AND pair."endpointADomain" = ${sourceDomain}
+                    AND pair."endpointANamespaceId" = ${namespaceId})
+                  OR
+                  (pair."endpointBType" = 'USER'
+                    AND pair."endpointBDomain" = ${sourceDomain}
+                    AND pair."endpointBNamespaceId" = ${namespaceId})
+                )
+            )
+          LIMIT 1
+        `);
+        threadRows = receipt.rows;
+        if (threadRows.length === 0) {
+          throw new FederationMessageContextError(
+            'group receipt has no matching published message or mirror audience',
+          );
+        }
+      }
       if (threadRows.length === 0 && author.domain !== sourceDomain) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
@@ -274,7 +318,7 @@ export class FederationInboundMessageRouteService {
     `);
     const route = rows.rows[0];
     if (!route && messageSeq !== undefined) {
-      // A member may retract only a retained message authored on its own server.
+      // A member home may retract or moderate only a retained message authored on its own server.
       // Reuse message routing to lock and validate that author's active membership.
       const targets = await tx.execute<{ account: string }>(sql`
         SELECT m."creatorAccount" AS account

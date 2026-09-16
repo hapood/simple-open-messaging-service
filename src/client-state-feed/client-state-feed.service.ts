@@ -1,5 +1,5 @@
-import { hasEstablishedThreadRelationship } from '../business/relationship/shared/relationship-authorization.js';
-import { groupStateSql } from '../business/group/shared/group-state.js';
+import { hasEstablishedThreadRelationship } from '../relationship/business/shared/relationship-authorization.js';
+import { groupStateSql } from '../group/business/shared/group-state.js';
 
 import {
   accountAddressInTx,

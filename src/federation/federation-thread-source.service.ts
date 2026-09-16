@@ -1,4 +1,4 @@
-import { groupState as group, groupStateFields } from '../business/group/shared/group-state.js';
+import { groupState as group, groupStateFields } from '../group/business/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
@@ -9,7 +9,7 @@ import {
   FederationThreadSourceInactiveError,
 } from './federation-errors.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
-import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
+import type { ThreadContentLock } from '../common/business/locks/thread-content-lock.js';
 
 @Injectable()
 export class FederationThreadSourceService {

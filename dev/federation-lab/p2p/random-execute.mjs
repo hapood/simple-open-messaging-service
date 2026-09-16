@@ -421,17 +421,21 @@ export function unsubmittedGroupRequests(requests, group, operations) {
 }
 
 // Request cancellation can win either before admission or during task execution.
-// Federated acceptance and rejection also return INVITE_EXPIRED when the
-// incoming intent is no longer REQUESTED, including after a remote revocation.
+// The current acceptance path reports a mirrored REVOKED direction as
+// INVITE_NOT_FOUND; the earlier path reported the same observed-state race as
+// INVITE_EXPIRED. Rejection retains its existing expired/already-handled cases.
 function isUnavailableIncomingRequest(operation, code) {
+  const acceptable =
+    operation.type === 'ACCEPT_REQUEST'
+      ? code === 20010 || code === 20011
+      : operation.type === 'REJECT_REQUEST' &&
+        (code === 20011 || code === 20013);
   return Boolean(
     !operation.scenario &&
       !operation.group &&
       operation.pair &&
       operation.observedFacts?.state === 'INCOMING_PENDING' &&
-      ((operation.type === 'ACCEPT_REQUEST' && code === 20011) ||
-        (operation.type === 'REJECT_REQUEST' &&
-          (code === 20011 || code === 20013))),
+      acceptable,
   );
 }
 

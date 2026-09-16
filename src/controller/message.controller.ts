@@ -30,7 +30,7 @@ import {
 } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
-import { GroupService } from '../business/group/group.service.js';
+import { GroupService } from '../group/business/group.service.js';
 import { ThreadFeedService } from '../message/thread-feed.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
@@ -68,8 +68,8 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportDto } from '../message/message-report.dto.js';
-import { ThreadReadPositionService } from '../business/message/thread-read-position.service.js';
-import { isBusinessRejection } from '../business/shared/business-command-result.js';
+import { ThreadReadPositionService } from '../message/business/thread-read-position.service.js';
+import { isBusinessRejection } from '../common/business/business-command-result.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,

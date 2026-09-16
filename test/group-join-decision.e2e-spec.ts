@@ -2,15 +2,15 @@ import {
   relationshipPairBusinessKey,
   lockRelationshipPairsInTx,
   type PairAddressScope,
-} from '../src/business/shared/locks/relationship-pair-business-lock.js';
-import { businessAccountScopeKey } from '../src/business/shared/locks/account-business-lock.js';
+} from '../src/common/business/locks/relationship-pair-business-lock.js';
+import { businessAccountScopeKey } from '../src/common/business/locks/account-business-lock.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import {
   admitGroupMembershipProjectionFanoutInTx,
   groupMembershipProjectionFanoutKey,
-} from '../src/business/group/membership-intent/shared/group-membership-projection-fanout.js';
-import { GroupMembershipProjectionFanoutService } from '../src/business/group/membership-intent/shared/group-membership-projection-fanout.service.js';
-import { mintGroupMemberPairInTx } from '../src/business/group/membership-intent/shared/group-member-pair-mint.js';
+} from '../src/group/business/membership-intent/shared/group-membership-projection-fanout.js';
+import { GroupMembershipProjectionFanoutService } from '../src/group/business/membership-intent/shared/group-membership-projection-fanout.service.js';
+import { mintGroupMemberPairInTx } from '../src/group/business/membership-intent/shared/group-member-pair-mint.js';
 import { insertPendingTaskInTx } from '../src/durable-task/task-admission.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import {
@@ -34,22 +34,22 @@ import {
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { GroupRole } from '../src/database/enums.js';
-import { GroupService } from '../src/business/group/group.service.js';
+import { GroupService } from '../src/group/business/group.service.js';
 import {
   GroupAuthoredMembershipIntentService,
   type GroupAuthoredMembershipIntentDependencies,
-} from '../src/business/group/membership-intent/authored/group-authored-membership-intent.service.js';
-import { MemberAuthoredGroupMembershipIntentService } from '../src/business/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
-import { GroupRosterRoleService } from '../src/business/group/roster-role/group-roster-role.service.js';
+} from '../src/group/business/membership-intent/authored/group-authored-membership-intent.service.js';
+import { MemberAuthoredGroupMembershipIntentService } from '../src/group/business/membership-intent/authored/member-authored-group-membership-intent.service.js';
+import { GroupRosterRoleService } from '../src/group/business/roster-role/group-roster-role.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
-import { RelationshipIntentService } from '../src/business/relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/relationship/business/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
-import { GroupRelationshipMutationService } from '../src/business/group/membership-intent/shared/group-relationship-mutation.service.js';
+import { GroupRelationshipMutationService } from '../src/group/business/membership-intent/shared/group-relationship-mutation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
-import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
-import { readCurrentGroupMemberInTx } from '../src/business/group/meta/current-group-roster.js';
+import { lockBusinessAccountsInTx } from '../src/common/business/locks/account-business-lock.js';
+import { readCurrentGroupMemberInTx } from '../src/group/business/meta/current-group-roster.js';
 import { findGroupRelationship, seedUser } from './seed.js';
 
 function deferred() {

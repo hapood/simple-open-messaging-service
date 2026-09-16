@@ -466,8 +466,7 @@ export class FederationMessageFeedService {
       const isProcessingReceipt =
         row.originSeq !== null &&
         row.originServerTime !== null &&
-        row.sourceNamespaceId === peerNamespaceId &&
-        author.domain === peerDomain;
+        row.sourceNamespaceId === peerNamespaceId;
       const envelope = {
         seq: row.seq,
         profileRev: row.profileRev,

@@ -114,7 +114,6 @@ test('P2P permits absent withdrawn history only after scanning, never an undelet
     messageProcessedThroughSeq: 2,
     deletionTargetSeq: 1,
     deletionProcessedThroughSeq: 1,
-    historyBoundaryReached: true,
     activeGapId: null,
   };
   mirror.historyGaps = [];

@@ -19,6 +19,9 @@ export interface S2sProxy {
   armGetFileTruncation: () => void;
   /** One-shot: return HTTP 503 for the next request whose pathname exactly matches. */
   armServiceUnavailable: (pathname: string) => void;
+  /** Hold the armed 503 response while another request completes, then release it. */
+  blockServiceUnavailable: (blocked: boolean) => void;
+  blockedServiceUnavailableCount: () => number;
   /** While blocked, every relayed request is destroyed at the socket — a transport-level
    *  "peer unreachable" with no process stop. Destroyed requests are not resumed on unblock;
    *  the client's retry policy re-issues them. */
@@ -69,6 +72,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     // One-shot truncation flag — set by the resume test, cleared after it fires once.
     let truncateNextGetFile = false;
     let serviceUnavailablePath: string | null = null;
+    let serviceUnavailableBlocked = false;
+    const blockedServiceUnavailable = new Set<() => void>();
     // Sticky partition flag — while set, every relayed request is destroyed instead
     // of forwarded (the "peer unreachable" arm; no process lifecycle involved).
     let relaysBlocked = false;
@@ -134,13 +139,23 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
       if (requestUrl.pathname === serviceUnavailablePath) {
         serviceUnavailablePath = null;
-        requests.push({
-          method: req.method ?? 'GET',
-          path: req.url ?? '/',
-          status: 503,
-        });
-        res.writeHead(503, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ code: 10000, message: 'fault injected' }));
+        const respond = (): void => {
+          blockedServiceUnavailable.delete(respond);
+          if (req.aborted) return;
+          requests.push({
+            method: req.method ?? 'GET',
+            path: req.url ?? '/',
+            status: 503,
+          });
+          res.writeHead(503, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ code: 10000, message: 'fault injected' }));
+        };
+        if (serviceUnavailableBlocked) {
+          blockedServiceUnavailable.add(respond);
+          req.once('aborted', () => blockedServiceUnavailable.delete(respond));
+        } else {
+          respond();
+        }
         return;
       }
 
@@ -360,6 +375,13 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         armServiceUnavailable: (pathname: string) => {
           serviceUnavailablePath = pathname;
         },
+        blockServiceUnavailable: (blocked: boolean) => {
+          serviceUnavailableBlocked = blocked;
+          if (!blocked) {
+            for (const respond of [...blockedServiceUnavailable]) respond();
+          }
+        },
+        blockedServiceUnavailableCount: () => blockedServiceUnavailable.size,
         blockRelays: (blocked: boolean) => {
           relaysBlocked = blocked;
         },

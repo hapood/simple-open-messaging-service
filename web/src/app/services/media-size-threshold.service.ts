@@ -21,8 +21,8 @@ const DEFAULT_POLICY: MediaLoadPolicy = MEDIA_LOAD_POLICY_OPTIONS[1];
  * manual gate against auto-downloading big files on mobile data). At or below the threshold (and for
  * all VIDEO/AUDIO), media loads immediately as before. The unlimited mode disables the gate entirely.
  *
- * Mirrors {@link ThemeService}'s pattern: a signal restored from `localStorage` (the project's
- * `soms.*` prefix) with try/catch for private mode. The backend only provides `size` (added to the
+ * Mirrors {@link ThemeService}'s pattern: a signal restored from device-level
+ * {@link PreferenceStore} storage. The backend only provides `size` (added to the
  * IMAGE upload response + content in Phase 1); the threshold + the tap-to-load decision are pure
  * frontend, so changing it needs no API round-trip.
  */

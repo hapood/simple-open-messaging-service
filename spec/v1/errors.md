@@ -125,12 +125,12 @@ interface FederationQuotaExceededData {
 
 type FederationCursorUnavailableData =
   | {
-      // Feed-ID coordinate space.
+      // State Feed coordinate space.
       resumeAfter: DecimalString;
       resumeBefore: DecimalString;
     }
   | {
-      // Thread message- or deletion-sequence coordinate space.
+      // Group Meta, thread message, or deletion coordinate space.
       resumeAfter: SafeInteger;
       resumeBefore: SafeInteger;
     };
@@ -148,8 +148,8 @@ interface FederationQueryRetryData {
 serviceable window `(resumeAfter, resumeBefore)`: `resumeAfter` is the exclusive
 lower boundary and `resumeBefore` is the exclusive upper boundary. Both values
 MUST use the same representation and `resumeBefore` MUST be greater than
-`resumeAfter`. Feed operations return non-negative exact decimal strings.
-Message and tombstone queries return JSON
+`resumeAfter`. State Feed returns non-negative exact decimal strings.
+Group Meta, message, and tombstone queries return JSON
 `SafeInteger` values.
 
 A forward query resumes with `after=resumeAfter`; a reverse thread query resumes

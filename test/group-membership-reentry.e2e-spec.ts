@@ -19,7 +19,7 @@ import {
   message,
   accountThreadState,
 } from '../src/database/schema.js';
-import { readCurrentGroupMemberInTx } from '../src/business/group/meta/current-group-roster.js';
+import { readCurrentGroupMemberInTx } from '../src/group/business/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
 import { createTestApp } from './support/app';

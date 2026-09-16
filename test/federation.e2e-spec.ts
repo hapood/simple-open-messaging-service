@@ -1,7 +1,7 @@
 import {
   groupState as group,
   groupStateFields,
-} from '../src/business/group/shared/group-state.js';
+} from '../src/group/business/shared/group-state.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -88,7 +88,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readCurrentGroupMemberByAddressInTx } from '../src/business/group/meta/current-group-roster.js';
+import { readCurrentGroupMemberByAddressInTx } from '../src/group/business/meta/current-group-roster.js';
 import { encodeFederationResourceComponent } from '../src/federation/federation-resource-request.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 
@@ -3768,6 +3768,60 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   // local-only and does not degrade). They drive the state machine through real signed S2S traffic:
   // a one-shot proxy 503 forces a transport failure → markTransportDegraded; the next Health allows
   // recovery; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
+
+  it('keeps a peer available when a newer successful contact supersedes a delayed HTTP 503', async () => {
+    expect(
+      await resolveFederatedCard(appB, tokenB, 'alice', DOM_A),
+    ).toMatchObject({
+      event: 'resolved',
+    });
+    const before = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
+    });
+    expect(before?.trustLevel).toBe('available');
+    const eventsBefore = await appB.database.query.federatedPeerEvent.findMany({
+      where: and(
+        eq(federatedPeerEvent.domain, DOM_A),
+        eq(federatedPeerEvent.type, 'degraded'),
+      ),
+    });
+    proxy.blockServiceUnavailable(true);
+    proxy.armServiceUnavailable('/s2s/v1/accounts/unreachable');
+    try {
+      const failing = resolveFederatedCard(appB, tokenB, 'unreachable', DOM_A);
+      await vi.waitFor(
+        () => expect(proxy.blockedServiceUnavailableCount()).toBe(1),
+        { timeout: 15_000, interval: 20 },
+      );
+      expect(
+        await resolveFederatedCard(appB, tokenB, 'alice', DOM_A),
+      ).toMatchObject({
+        event: 'resolved',
+      });
+      proxy.blockServiceUnavailable(false);
+      expect(await failing).toEqual({
+        event: 'failed',
+        data: { reason: 'UNREACHABLE' },
+      });
+      const after = await appB.database.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, DOM_A),
+      });
+      expect(after?.trustLevel).toBe('available');
+      expect(after?.lastSuccessAt?.getTime()).toBeGreaterThan(
+        before!.lastSuccessAt!.getTime(),
+      );
+      expect(
+        await appB.database.query.federatedPeerEvent.findMany({
+          where: and(
+            eq(federatedPeerEvent.domain, DOM_A),
+            eq(federatedPeerEvent.type, 'degraded'),
+          ),
+        }),
+      ).toHaveLength(eventsBefore.length);
+    } finally {
+      proxy.blockServiceUnavailable(false);
+    }
+  });
 
   it('degrades a healthy peer on transport failure while retaining certificates', async () => {
     // The proxy is on B → A, so exercise B's local lifecycle for A without stopping either process.

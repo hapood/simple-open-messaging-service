@@ -121,7 +121,33 @@
     {
       "name": "quote coordinates reject null ambiguous legacy and unscoped shapes",
       "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
-      "values": [null, {}, { "seq": 8, "originSeq": 8 }, { "targetSeq": 8 }, { "seq": 8, "namespaceId": 3 }, { "originSeq": 0 }, { "originSeq": -1 }, { "seq": 1.5 }, { "seq": 9007199254740991 }]
+      "values": [
+        null,
+        {},
+        {
+          "seq": 8,
+          "originSeq": 8
+        },
+        {
+          "targetSeq": 8
+        },
+        {
+          "seq": 8,
+          "namespaceId": 3
+        },
+        {
+          "originSeq": 0
+        },
+        {
+          "originSeq": -1
+        },
+        {
+          "seq": 1.5
+        },
+        {
+          "seq": 9007199254740991
+        }
+      ]
     },
     {
       "name": "well-known scalar version is obsolete",
@@ -192,7 +218,7 @@
             }
           }
         ],
-        "scannedThrough": 1,
+        "scannedThrough": "1",
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -213,7 +239,7 @@
             }
           }
         ],
-        "scannedThrough": 1,
+        "scannedThrough": "1",
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -234,7 +260,7 @@
             }
           }
         ],
-        "scannedThrough": 1,
+        "scannedThrough": "1",
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -254,11 +280,14 @@
                 "status": "REQUESTED",
                 "note": "",
                 "requestedAt": 1700000000000,
-                "expiresAt": null
+                "expiresAt": null,
+                "profileRev": 0,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -273,11 +302,14 @@
                 "status": "REQUESTED",
                 "note": "",
                 "requestedAt": 1700000000000,
-                "expiresAt": 1699999999999
+                "expiresAt": 1699999999999,
+                "profileRev": 0,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -292,11 +324,14 @@
                 "status": "REQUESTED",
                 "note": "",
                 "requestedAt": 1700000000000,
-                "expiresAt": 1700604800001
+                "expiresAt": 1700604800001,
+                "profileRev": 0,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         }
@@ -317,11 +352,14 @@
                 "status": "ACCEPTED",
                 "note": "",
                 "requestedAt": null,
-                "expiresAt": null
+                "expiresAt": null,
+                "profileRev": 0,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -336,11 +374,14 @@
                 "status": "ACCEPTED",
                 "note": "",
                 "requestedAt": 1700000000000,
-                "expiresAt": 1700604800000
+                "expiresAt": 1700604800000,
+                "profileRev": 0,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         },
@@ -355,11 +396,12 @@
                 "status": "REVOKED",
                 "note": "",
                 "requestedAt": null,
-                "expiresAt": 1700604800000
+                "expiresAt": 1700604800000,
+                "profileRev": 0
               }
             }
           ],
-          "scannedThrough": 1,
+          "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
         }
@@ -379,11 +421,14 @@
               "status": "REQUESTED",
               "note": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
               "requestedAt": 1700000000000,
-              "expiresAt": 1700600000000
+              "expiresAt": 1700600000000,
+              "profileRev": 0,
+              "messageEndSeq": 0,
+              "tombstoneEndSeq": 0
             }
           }
         ],
-        "scannedThrough": 1,
+        "scannedThrough": "1",
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -530,7 +575,9 @@
       "value": {
         "callId": "550e8400-e29b-41d4-a716-446655440000",
         "operation": "connected",
-        "payload": { "startedAt": 1700000000100 }
+        "payload": {
+          "startedAt": 1700000000100
+        }
       }
     },
     {
@@ -901,7 +948,7 @@
             }
           }
         ],
-        "scannedThrough": 1,
+        "scannedThrough": "1",
         "stateFeedEndId": "1",
         "hasMore": false
       }
@@ -961,15 +1008,15 @@
         "mode": "full",
         "items": [
           {
-            "feedId": "2",
+            "feedId": 2,
             "account": "alice",
             "domain": "a.example",
             "operation": "DELETE",
             "body": {}
           }
         ],
-        "scannedThrough": "2",
-        "groupMetaFeedEndId": "2",
+        "scannedThrough": 2,
+        "groupMetaFeedEndId": 2,
         "hasMore": false
       }
     },
@@ -989,15 +1036,15 @@
         "mode": "delta",
         "items": [
           {
-            "feedId": "2",
+            "feedId": 2,
             "account": "alice",
             "domain": "a.example",
             "operation": "DEPART",
             "body": {}
           }
         ],
-        "scannedThrough": "2",
-        "groupMetaFeedEndId": "2",
+        "scannedThrough": 2,
+        "groupMetaFeedEndId": 2,
         "hasMore": false
       }
     },
@@ -1439,6 +1486,96 @@
         },
         "mediaType": "VIDEO"
       }
+    },
+    {
+      "name": "positive intents require both authorization sequence bounds",
+      "schema": "urn:somfp:v1:state-feed",
+      "values": [
+        {
+          "items": [
+            {
+              "account": "alice",
+              "peerAccount": "bob",
+              "eventType": "RELATIONSHIP_INTENT",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "profileRev": 0,
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1700000001000,
+                "tombstoneEndSeq": 0
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "peerAccount": "bob",
+              "eventType": "RELATIONSHIP_INTENT",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "profileRev": 0,
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1700000001000,
+                "messageEndSeq": 0
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "peerAccount": "bob",
+              "eventType": "RELATIONSHIP_INTENT",
+              "feedId": "1",
+              "body": {
+                "status": "ACCEPTED",
+                "profileRev": 0,
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": null,
+                "tombstoneEndSeq": 0
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "peerAccount": "bob",
+              "eventType": "RELATIONSHIP_INTENT",
+              "feedId": "1",
+              "body": {
+                "status": "ACCEPTED",
+                "profileRev": 0,
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": null,
+                "messageEndSeq": 0
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        }
+      ]
     }
   ]
 }

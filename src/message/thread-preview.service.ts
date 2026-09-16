@@ -7,12 +7,12 @@ import {
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
-} from '../business/shared/locks/thread-content-lock.js';
+} from '../common/business/locks/thread-content-lock.js';
 import {
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../user/account-address.js';
-import { applyReadPositionInTx } from '../business/message/thread-read-position.service.js';
+import { applyReadPositionInTx } from './business/thread-read-position.service.js';
 import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
 import { threadPreviewLimit } from './thread-preview-limit.js';
 import type { MessageDeleteType } from '../database/enums.js';

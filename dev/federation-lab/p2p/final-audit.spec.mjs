@@ -620,7 +620,6 @@ function lateWithdrawalFixture() {
     messageProcessedThroughSeq: 2,
     deletionTargetSeq: 1,
     deletionProcessedThroughSeq: 1,
-    historyBoundaryReached: true,
     activeGapId: null,
   };
   mirror.historyGaps = [];
@@ -653,6 +652,17 @@ test('accepts a scanned late mirror without withdrawn body and resolves its sour
   );
 });
 
+test('accepts absent withdrawn history when only unavailable gaps remain', () => {
+  const value = lateWithdrawalFixture();
+  const mirror = value.messages.bravo.get(groupAddress);
+  mirror.syncState.namespaceId = 5;
+  mirror.historyGaps = [
+    { namespaceId: 5, startSeq: 1, endSeq: 1, recoverable: false },
+    { namespaceId: 6, startSeq: 1, endSeq: 1, recoverable: true },
+  ];
+  assert.deepEqual(compareFederationSnapshot(value).failures, []);
+});
+
 test('does not accept wrong source coordinates, unscanned history, or missing live bodies', () => {
   for (const mutate of [
     (v) => {
@@ -665,12 +675,8 @@ test('does not accept wrong source coordinates, unscanned history, or missing li
     },
     (v) => {
       v.messages.bravo.get(groupAddress).historyGaps = [
-        { startSeq: 1, endSeq: 2 },
+        { startSeq: 1, endSeq: 2, recoverable: true },
       ];
-    },
-    (v) => {
-      v.messages.bravo.get(groupAddress).syncState.historyBoundaryReached =
-        false;
     },
     (v) => {
       v.messages.bravo.get(groupAddress).messages = [];
@@ -755,7 +761,6 @@ function p2pWithdrawalFixture() {
     messageProcessedThroughSeq: 1,
     deletionTargetSeq: 1,
     deletionProcessedThroughSeq: 1,
-    historyBoundaryReached: true,
     activeGapId: null,
   };
   mirror.historyGaps = [];
@@ -812,13 +817,12 @@ test('rejects P2P withdrawal absence without authoritative deletion and complete
       mirror.syncState.deletionProcessedThroughSeq = 0;
     },
     ({ mirror }) => {
-      mirror.syncState.historyBoundaryReached = false;
-    },
-    ({ mirror }) => {
       mirror.syncState.activeGapId = 1;
     },
     ({ mirror }) => {
-      mirror.historyGaps = [{ startSeq: 1, endSeq: 1 }];
+      mirror.historyGaps = [
+        { startSeq: 1, endSeq: 1, recoverable: true },
+      ];
     },
     ({ mirror }) => {
       mirror.syncState.deletionRecoveryThroughSeq = 1;

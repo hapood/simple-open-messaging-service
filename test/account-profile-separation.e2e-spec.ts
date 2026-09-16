@@ -11,12 +11,12 @@ import {
   messageThread,
   profileTable,
 } from '../src/database/schema.js';
-import { GroupService } from '../src/business/group/group.service.js';
+import { GroupService } from '../src/group/business/group.service.js';
 import {
   groupState,
   readGroupState,
-} from '../src/business/group/shared/group-state.js';
-import { GroupMetaFeedService } from '../src/business/group/meta/group-meta-feed.service.js';
+} from '../src/group/business/shared/group-state.js';
+import { GroupMetaFeedService } from '../src/group/business/meta/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
 describe('account controls and exact profiles', () => {

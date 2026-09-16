@@ -107,10 +107,12 @@ export function permitsAbsentWithdrawal({
   return Boolean(
     original?.isDeleted &&
       authorityThread.deletedSeqs.has(original.seq) &&
-      state?.historyBoundaryReached === true &&
-      state.activeGapId === null &&
+      state?.activeGapId === null &&
       Array.isArray(thread.historyGaps) &&
-      thread.historyGaps.length === 0 &&
+      thread.historyGaps.every(
+        (gap) =>
+          gap.namespaceId !== state.namespaceId || gap.recoverable === false,
+      ) &&
       state.messageProcessedThroughSeq >= state.messageTargetSeq &&
       state.messageProcessedThroughSeq >= original.seq &&
       state.deletionProcessedThroughSeq >= state.deletionTargetSeq &&

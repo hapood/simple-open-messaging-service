@@ -38,8 +38,10 @@ is sent:
 For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
 `UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
 
-After normalization, the requested thread MUST exactly equal the committed
-`THREAD_CONTENT_HEAD` item's Thread Address. The source does not accept any
+After normalization, the requested thread MUST exactly equal the authorized
+stable Thread Address. When a committed `THREAD_CONTENT_HEAD` exists, its
+Thread Address MUST match; the absence of a head MUST NOT prevent a passive
+query authorized by an effective intent. The source does not accept any
 domain parameter declared by the
 requester. The peer domain comes only from the validated HTTP Message Signature,
 and the selector MUST NOT address an identity belonging to an unrelated third
@@ -57,13 +59,16 @@ member home server's mirror, the mirror returns only messages authored by users 
 domain; copies of all other group members are excluded, not just authors hosted by the requester.
 For authoritative group distribution, `false` excludes authors hosted by the requesting member home
 server. Filtering uses canonical author domains and the authenticated group direction, not local user
-IDs or message coordinates. Group authorities MUST use `false` when pulling submissions, in both
-forward and reverse scans. Mirrors MUST use `true` when pulling from the authority so their own
+IDs or message coordinates. Group authorities MAY use `false` for a submission-only scan;
+they MUST use `true` to consume mirror processing receipts as well as submissions,
+in either forward or reverse scans. Mirrors MUST use `true` when pulling from the authority so their own
 submissions can receive authoritative coordinate confirmation.
 
 A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the
-selected direction. Receivers MUST independently reject unexpected mirror authors even if the sender
-ignores the filter. Within an otherwise valid ordered page, malformed items are skipped with a bounded
+selected direction. Receivers MUST independently reject unexpected mirror authors in new
+submissions even if the sender ignores the filter. A processing receipt may name any
+author of the origin's previously published target and follows Message Envelope Section 8.
+Within an otherwise valid ordered page, malformed items are skipped with a bounded
 warning and do not prevent processing later items or advancing the validated scan boundary. No message
 or receipt is created for a skipped item. Invalid page boundaries, authentication failures, and local
 storage failures MUST NOT be treated as skippable message errors.
@@ -173,8 +178,16 @@ rules in [Protocol Section 9.1](./protocol.md#91-feed-coordinate-vocabulary).
 
 ## 3. Consumer fast-forward and tail initialization
 
-A consumer MAY enter skip mode either during initial synchronization to retain
-only recent history, or later when finite local storage or processing capacity
+A consumer MAY initialize passive history from the simultaneous sequence pair
+in an effective intent without waiting for a thread head. It MAY retain all,
+some, or none of that available history. For an initial reverse query, it uses
+`before=E+1`, where `E` is the selected intent snapshot's `messageEndSeq`.
+It MUST apply the discard and tombstone safety rules below to any history it
+elects to skip. This passive initialization does not waive the publisher's
+obligation to publish an initialization head after relationship confirmation.
+
+A consumer MAY enter skip mode after confirmation to retain only recent history,
+or later when finite local storage or processing capacity
 makes its saved forward backlog impractical to drain. It MUST first converge
 current state, complete a current Group Meta full drain for a GROUP thread, and
 commit a current `THREAD_CONTENT_HEAD` item for the thread. Let that item's inclusive
@@ -185,7 +198,8 @@ the committed inclusive feed boundary, not an arbitrarily selected
 intermediate cursor. If that cursor is no longer in the source's serviceable
 window, the consumer applies the cursor-unavailable recovery rules and creates
 new work from a newly reconciled thread-content boundary. A thread with no
-`THREAD_CONTENT_HEAD` projection has no advertised message tail to reconstruct.
+`THREAD_CONTENT_HEAD` projection MUST use the intent-based passive initialization
+above rather than claim that it has committed a head-based tail.
 
 A skip-mode consumer MUST atomically adopt `E` as its committed forward query
 position and treat every skipped coordinate through that position as

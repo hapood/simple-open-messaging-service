@@ -21,6 +21,7 @@ import {
   type ForwardMessagesRequest,
   type SearchMessagesRequest,
   type SendTextRequest,
+  type SendContactRequest,
   type StageMediaRequest,
 } from '../app/components/message-thread/message-thread-adapter';
 import type {
@@ -76,6 +77,18 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override async sendText(
     request: SendTextRequest,
+  ): Promise<StandardResponse<unknown>> {
+    return this.sendAuthored(request);
+  }
+
+  override async sendContact(
+    request: SendContactRequest,
+  ): Promise<StandardResponse<unknown>> {
+    return this.sendAuthored(request);
+  }
+
+  private async sendAuthored(
+    request: SendTextRequest | SendContactRequest,
   ): Promise<StandardResponse<unknown>> {
     await wait(this.confirmDelay());
     if (this.sendError()) return { code: -1, message: 'Mock send failed' };

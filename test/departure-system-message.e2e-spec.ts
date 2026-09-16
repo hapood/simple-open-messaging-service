@@ -1,5 +1,5 @@
-import { ReceivedUserIntentService } from '../src/business/user/p2p-intent/received/received-user-intent.service.js';
-import { UserIntentService } from '../src/business/user/p2p-intent/authored/user-intent.service.js';
+import { ReceivedUserIntentService } from '../src/user/business/p2p-intent/received/received-user-intent.service.js';
+import { UserIntentService } from '../src/user/business/p2p-intent/authored/user-intent.service.js';
 import { FederationThreadQueryDenialService } from '../src/federation/federation-thread-query-denial.service.js';
 import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
 import { RevokeForbiddenGroupTaskHandler } from '../src/group/revoke-forbidden-group-task.handler.js';
@@ -13,7 +13,7 @@ import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.
 import {
   groupState as group,
   readGroupState,
-} from '../src/business/group/shared/group-state.js';
+} from '../src/group/business/shared/group-state.js';
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -29,20 +29,20 @@ import {
   accountThreadState,
   durableTask,
 } from '../src/database/schema.js';
-import { GroupService } from '../src/business/group/group.service.js';
+import { GroupService } from '../src/group/business/group.service.js';
 import { MessageService } from '../src/message/message.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { applyDeltaMirrorMetaItemInTx } from '../src/business/group/meta/apply-delta-mirror-meta-item-in-tx.js';
+import { applyDeltaMirrorMetaItemInTx } from '../src/group/business/meta/apply-delta-mirror-meta-item-in-tx.js';
 import { ThreadFanoutTaskHandler } from '../src/message/thread-fanout-task.handler.js';
 import { ThreadFanoutProgressService } from '../src/message/thread-fanout-progress.service.js';
 import { parseAccountThreadFanoutTarget } from '../src/message/account-thread-fanout-task.js';
 import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.service.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
-import { RelationshipIntentService } from '../src/business/relationship/relationship-intent.service.js';
+import { RelationshipIntentService } from '../src/relationship/business/relationship-intent.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
-import { GroupAuthoredMembershipIntentService } from '../src/business/group/membership-intent/authored/group-authored-membership-intent.service.js';
-import { MemberAuthoredGroupMembershipIntentService } from '../src/business/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
-import { GroupRelationshipFoldService } from '../src/business/group/membership-intent/shared/group-relationship-fold.service.js';
+import { GroupAuthoredMembershipIntentService } from '../src/group/business/membership-intent/authored/group-authored-membership-intent.service.js';
+import { MemberAuthoredGroupMembershipIntentService } from '../src/group/business/membership-intent/authored/member-authored-group-membership-intent.service.js';
+import { GroupRelationshipFoldService } from '../src/group/business/membership-intent/shared/group-relationship-fold.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { mintGroupAccount } from '../src/common/account.js';
 import {

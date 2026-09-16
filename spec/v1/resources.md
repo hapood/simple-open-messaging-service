@@ -363,12 +363,16 @@ the consumer derives a media request for a needed asset as follows:
 | Media parameter | Sole source                                                     |
 | --------------- | --------------------------------------------------------------- |
 | `digest`        | `BlobDescriptor.digest` in the root bundle's `assets` union     |
-| `fromAccount`   | `FederatedMessage.author.account`                               |
-| `fromDomain`    | `FederatedMessage.author.domain`                                |
+| `fromAccount`   | Account of the outer message's reconstructed author             |
+| `fromDomain`    | Domain of the outer message's reconstructed author              |
 | `toAccount`     | Signer-hosted participant for P2P; `thread.account` for GROUP   |
 | `seq`           | Outer `FederatedMessage.seq` encoded as `PositiveDecimalString` |
 
-The request MUST NOT contain a bundle ID. An inner author, child ID, local
+For GROUP, the consumer MUST use the outer message's explicit `author` Address.
+For P2P, it MUST reconstruct that Address from `authorRef`, the thread accounts,
+and the authenticated publisher/consumer domains under Message Envelope Section 2;
+a P2P message has no `author` field. The request MUST NOT contain a bundle ID.
+An inner author, child ID, local
 bundle message ID, and `quoteTargetId` are not authorization coordinates. The
 publisher re-establishes the outer FORWARD binding, durable audience, and the
 digest's membership in that root's complete closure before returning bytes.

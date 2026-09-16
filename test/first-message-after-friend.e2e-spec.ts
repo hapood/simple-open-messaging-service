@@ -18,8 +18,8 @@ import {
   accountThreadState,
   threadAudience,
 } from '../src/database/schema';
-import { ReceivedUserIntentService } from '../src/business/user/p2p-intent/received/received-user-intent.service.js';
-import { UserIntentService } from '../src/business/user/p2p-intent/authored/user-intent.service.js';
+import { ReceivedUserIntentService } from '../src/user/business/p2p-intent/received/received-user-intent.service.js';
+import { UserIntentService } from '../src/user/business/p2p-intent/authored/user-intent.service.js';
 import {
   registerAndLogin,
   openSse,

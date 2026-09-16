@@ -10,12 +10,12 @@ import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { GroupRelationshipMutationService } from '../src/business/group/membership-intent/shared/group-relationship-mutation.service.js';
-import { MemberAuthoredGroupMembershipIntentService } from '../src/business/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
+import { GroupRelationshipMutationService } from '../src/group/business/membership-intent/shared/group-relationship-mutation.service.js';
+import { MemberAuthoredGroupMembershipIntentService } from '../src/group/business/membership-intent/authored/member-authored-group-membership-intent.service.js';
 import {
   MirrorGroupMembershipIntentService,
   type MirrorGroupMembershipIntentDependencies,
-} from '../src/business/group/membership-intent/received/mirror-group-membership-intent.service.js';
+} from '../src/group/business/membership-intent/received/mirror-group-membership-intent.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 

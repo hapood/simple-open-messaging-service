@@ -5,7 +5,7 @@ import { DisbandGroupTaskHandler } from './disband-group-task.handler.js';
 import { DisbandMirrorGroupMembersTaskHandler } from './disband-mirror-group-members-task.handler.js';
 import { ForceRevokeGroupMemberTaskHandler } from './force-revoke-group-member-task.handler.js';
 import { RevokeForbiddenGroupTaskHandler } from './revoke-forbidden-group-task.handler.js';
-import { businessAccountScopeKey } from '../business/shared/locks/account-business-lock.js';
+import { businessAccountScopeKey } from '../common/business/locks/account-business-lock.js';
 
 const parent = {
   id: 10n,

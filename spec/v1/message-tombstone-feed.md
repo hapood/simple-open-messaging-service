@@ -24,7 +24,9 @@ interface MessageTombstone {
 ```
 
 `USER_RETRACTION` is a retraction enacted by the message author.
-`MODERATION_REMOVAL` is a moderation deletion enacted by the thread authority.
+`MODERATION_REMOVAL` is a moderation deletion enacted by a server with authority
+over the target under the rules below. The type describes the deletion's cause,
+not a different publication or transport direction.
 Both are irreversible terminal states in which the message is no longer visible.
 
 The stable target is `(publisher domain, thread, messageSeq)`. `messageSeq`
@@ -34,15 +36,24 @@ message query. It therefore uses that publisher's thread-message coordinate.
 It is neither a copy of the target message's nullable outer `originSeq` nor a
 globally stable coordinate across arbitrary publishers.
 
-For a P2P `USER_RETRACTION`, the authority is the target message author's
-domain. For a group message authored by one of its local users, a member home
-server directly publishes the `USER_RETRACTION` in its tombstone feed to the
-group origin. This is an author-enacted deletion fact, not a request. The origin
-validates the author and target binding, accepts the deletion into the
-authoritative group timeline, translates its coordinate, and publishes the
-result to mirrors. Only the group origin's moderation process MAY create a
-`MODERATION_REMOVAL`. A mirror MUST NOT relay a group tombstone to a peer other
-than its group origin.
+For P2P, the target message author's home is the publishing authority for both
+types. For GROUP, the group origin MAY publish either type for any message in
+its accepted group timeline. A member home MAY publish either type only for
+messages authored by accounts it manages, and only to the group's origin.
+It MUST NOT publish a tombstone for another home's author or send group
+tombstones directly to other mirrors.
+
+Each server's local community governance policy determines when it enacts a
+retraction or moderation removal within its authority. A published tombstone is
+a deletion fact, not a request for the receiver to exercise that policy again.
+After authenticating the publisher and validating its authority over the exact
+target, the receiver MUST apply either type under Section 4. It MUST NOT reject
+an otherwise valid member-home tombstone merely because its type is
+`MODERATION_REMOVAL`. The group origin translates an accepted member-home
+tombstone to its own target coordinate and publishes the fact to its mirrors.
+An out-of-scope or invalid fact MUST NOT gain authority through recognition,
+publication, or retention. Rejecting such a fact requires no notification to
+the publisher; v1 defines no per-tombstone acceptance or rejection operation.
 
 `deletionSeq` is the tombstone's independent positive thread-local identifier. It
 MUST strictly increase without reuse within a thread. The protocol requires
@@ -59,7 +70,7 @@ friendship, or group re-entry.
 
 To apply a tombstone, a consumer locates its local target using the persistently
 stored source domain, thread, and source message `seq`. When a group member's
-home server publishes a `USER_RETRACTION` to the group origin, it uses the `seq`
+home server publishes either tombstone type to the group origin, it uses the `seq`
 with which it exposed that message to the origin. When the origin publishes the
 accepted tombstone to a mirror, it instead uses the `seq` with which the origin
 exposed the target message to that mirror. A publisher MUST NOT forward the
@@ -104,13 +115,14 @@ leave no placeholder.
 
 There are exactly two valid group publication paths through this query:
 
-- A member home server publishes `USER_RETRACTION` tombstones only for messages
+- A member home server publishes either tombstone type only for messages
   authored by its local users to the group origin.
-- The group origin publishes accepted `USER_RETRACTION` and enacted
-  `MODERATION_REMOVAL` tombstones to member home servers holding mirrors.
+- The group origin publishes either type, enacted locally or accepted from an
+  authorized member home, to member home servers holding mirrors.
 
 A mirror MUST NOT publish a group tombstone to a peer other than its group
-origin and MUST NOT create or relay a `MODERATION_REMOVAL`.
+origin. Its publication authority is limited to targets authored by its own
+accounts; receiving an origin tombstone does not expand that authority.
 
 When `after` is omitted, the source returns
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` instead of a
@@ -180,7 +192,7 @@ served by a group origin under at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
 verified signer peer. In the reverse direction, the signer MUST be the exact
 authority of the mirrored group, and the source may return only
-`USER_RETRACTION` tombstones whose target author belongs to the source domain.
+tombstones whose target author belongs to the source domain, for either type.
 That reverse authority binding does not require a source-authored
 member-to-group intent. An effective `REQUESTED` expires at its absolute
 `expiresAt`; an `ACCEPTED` remains effective until superseded. A
@@ -215,14 +227,25 @@ protocol and MUST NOT be returned as structured fields.
 
 ## 4. Consumer application and races
 
-The consumer MUST validate the authority binding: a P2P source MUST be the
-target message author's domain, and a group tombstone source MUST be the known
-group origin. If a tombstone arrives before its target message, the accepted
+The consumer MUST validate the authority binding separately for each direction:
+
+- For P2P, the source MUST be the target message author's domain.
+- A group mirror MUST accept group tombstones only from the known group origin.
+  That origin has authority over every author in its accepted group timeline.
+- A group origin receiving a member-home tombstone MUST verify that the target
+  was authored by an account managed by that authenticated source, and bind the
+  source's `messageSeq` to the accepted submission. Both tombstone types have
+  the same authority check. An unknown or foreign-authored target MUST NOT be
+  accepted as an authoritative member-home deletion.
+
+If an authoritative origin tombstone arrives before its target message, or a
+P2P tombstone arrives before its target, the accepted
 fact remains effective for `(source domain, thread, messageSeq)` and the
 consumer completes author-binding validation when the message arrives. A
-mismatch rejects the target message and has no other protocol effect. A member's withdrawal
-submission to the origin is not an authoritative query item that a mirror can
-apply.
+mismatch rejects the target message and has no other protocol effect. A
+member-home tombstone is authoritative within that home's author scope, but a
+different mirror MUST receive the group's translated fact directly from the
+group origin rather than apply the member home's publication.
 
 A query page and its thread deletion cursor MUST be accepted atomically. A
 consumer MUST fail closed for the affected target whenever it can identify an

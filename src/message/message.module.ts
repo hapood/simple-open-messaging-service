@@ -9,7 +9,7 @@ import { DeletedMessageService } from './deleted-message.service.js';
 import { MessageReportService } from './message-report.service.js';
 import { ThreadHistoryService } from './thread-history.service.js';
 import { ThreadPreviewModule } from './thread-preview.module.js';
-import { ThreadReadPositionService } from '../business/message/thread-read-position.service.js';
+import { ThreadReadPositionService } from './business/thread-read-position.service.js';
 
 @Module({
   // LinkPreviewModule: MessageService inlines a LINK card's og:image (digest → base64) on the wire.

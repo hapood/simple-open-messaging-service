@@ -1,17 +1,17 @@
 import {
   groupStateFields,
   groupStateSql,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import {
   applyDeltaMirrorMetaItemInTx,
   finalizeDeltaMirrorMetaRoundInTx,
-} from '../business/group/meta/apply-delta-mirror-meta-item-in-tx.js';
-import { applyFullMirrorMetaBatchInTx } from '../business/group/meta/apply-full-mirror-meta-batch-in-tx.js';
+} from '../group/business/meta/apply-delta-mirror-meta-item-in-tx.js';
+import { applyFullMirrorMetaBatchInTx } from '../group/business/meta/apply-full-mirror-meta-batch-in-tx.js';
 import {
   reopenMirrorMetaRecoveryInTx,
   type MirrorGroupAddress,
   type MirrorMetaReplicatedItem,
-} from '../business/group/meta/mirror-meta-shared.js';
+} from '../group/business/meta/mirror-meta-shared.js';
 import { MessageService } from '../message/message.service.js';
 import {
   isValidSomfpDomain,

@@ -8,6 +8,9 @@ This directory contains the Simple Open Messaging Federation Protocol v1.0.0-rc.
 
 This English text is the authoritative working text for v1.0.0-rc.0.
 
+See [candidate corrections](./CHANGES.md) for the reviewable record of changes
+made before the wire contract is frozen.
+
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174. Wire fields, enum values, HTTP headers, standard names, and stable error codes retain their original spelling and appear in code formatting. Examples, diagrams, TypeScript notation, and artifacts under `schema/` explain or validate the normative text but do not independently create protocol requirements.
 
 ## Reading order

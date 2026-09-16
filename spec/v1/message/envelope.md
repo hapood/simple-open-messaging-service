@@ -59,12 +59,17 @@ type FederatedMessage = FederatedMessageBase &
 
 ## 2. Thread and author
 
-- Thread addresses are relative to the authenticated S2S exchange. The source
-  domain comes from the verified HTTP Message Signature and the target domain is
-  the consumer's own domain; neither is repeated inside `thread`.
+- Thread addresses are relative to the authenticated S2S exchange. For a message
+  query response, the source domain is the queried publisher's logical domain,
+  authenticated by hostname-validated TLS under the pinned peer identity rules.
+  The target domain is the querying consumer's domain, authenticated to the
+  publisher by the GET request's HTTP Message Signature. The request signer is
+  the consumer, not the message publisher; ordinary responses are not signed.
+  Neither domain is repeated inside `thread`.
 - When `thread.account` is a `UserAccount`, the thread is P2P. `account` is
-  hosted by the source domain and `peerAccount` MUST be a distinct
-  `UserAccount` hosted by the target domain.
+  hosted by the source domain and `peerAccount` MUST be a `UserAccount` hosted
+  by the target domain. The complete Addresses are distinct; the account strings
+  MAY be equal across different domains.
 - When `thread.account` is a `GroupAccount`, the thread is GROUP and
   `peerAccount` MUST be absent. Group delivery is scoped to the target peer,
   not to an individual member hosted on that peer.
@@ -100,8 +105,18 @@ The message wire has no client-authoritative `date` field:
   `SafeInteger - 1`; `SafeInteger` is reserved as the maximum exclusive reverse
   query cursor.
 - `createdAt` is the epoch-millisecond time at which the current publisher first persisted this copy. It is not client send time, device time, or a cross-server ordering time.
-- When the authoritative origin publishes a timeline message, `originSeq/originCreatedAt` MUST be `null/null`.
-- When a consumer pulls from its direct publisher and creates a non-authoritative copy, its origin pair MUST equal the incoming `seq/createdAt`.
+- When a publisher returns a copy to the direct publisher from which it
+  received that message, it MUST send the received `seq/createdAt` as
+  `originSeq/originCreatedAt`. Its outer `seq/createdAt` still identifies its
+  own copy. This is a processing receipt regardless of the author's domain.
+- This rule applies both when a group origin returns an accepted submission to
+  the submitting home and when a mirror returns an origin-published message to
+  that origin, including a message authored on a third domain.
+- A locally authored submission and authoritative distribution to a peer other
+  than the direct source MUST use `originSeq/originCreatedAt: null/null`.
+- A consumer MUST retain the incoming publisher's `seq/createdAt` as the direct
+  source association of its copy. Receipt association MUST NOT replace an
+  authoritative timeline message's source association with a mirror's coordinates.
 - `originSeq/originCreatedAt` MUST either both be null or both be non-null. They are single-hop origin coordinates and MUST NOT be copied unchanged across publishers.
 
 Origin coordinates are operational data, not diagnostic-only metadata: they
@@ -112,6 +127,16 @@ The outer `originSeq` associates this message copy; `quoteTarget.originSeq`
 selects the quoted target in the current receiver's timeline (section 7).
 
 An application time inside content cannot replace the outer `createdAt`.
+
+For example, if member home A submits message `seq=7` to group origin G,
+G can expose its accepted copy as `seq=42, originSeq=7` to A and as
+`seq=42, originSeq=null` to another mirror B. If B assigns its copy `seq=99`,
+B returns `seq=99, originSeq=42` to G even though the author belongs to A.
+G associates that receipt with its existing message 42; it does not create a
+new message or return another receipt. The origin time follows the same
+projection. Each projection is immutable within its source/thread/target-peer
+coordinate space; a publisher MUST NOT switch a previously exposed projection
+between receipt and authoritative distribution on retry.
 
 ## 4. Identity and immutability
 
@@ -207,13 +232,21 @@ Consumers MAY distinguish unpulled history from confirmed absence in presentatio
 
 ## 8. Processing receipts
 
-After successfully persisting an incoming message, a consumer SHOULD make the non-authoritative copy queryable by its direct publisher as a processing receipt. The copy's origin pair equals the publisher's original item `seq/createdAt`.
+After successfully persisting an incoming message, a consumer SHOULD make its
+copy queryable by its direct publisher as a processing receipt. The copy's
+origin pair equals the publisher's original item `seq/createdAt`. An author's
+domain differing from that publisher MUST NOT suppress the origin pair or
+cause the receipt to be interpreted as a new submission.
 
 When reading a receipt, the publisher:
 
 - Reconstructs the author from `authorRef` for P2P, or reads `author` for
   GROUP, then uses `(thread, author, originSeq)` to associate a message it
   previously published.
+- MUST validate the source's authorization for that thread, the exact target
+  author and coordinate, and `originCreatedAt` against the previously published
+  message. An unmatched or conflicting receipt MUST NOT create a timeline
+  message or grant authority to relay a third-party author's new message.
 - Uses the receipt's `seq/createdAt` as the peer-copy coordinate and time. For
   GROUP receipts from the authoritative group server, these fields MAY also
   confirm the existing local message's group-authoritative coordinate and time

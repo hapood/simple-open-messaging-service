@@ -221,7 +221,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       expect.stringContaining('FEDERATION_MALFORMED'),
     );
   });
-  it('filters mirror-owned submissions when the local group is authoritative', async () => {
+  it('includes mirror receipts alongside submissions when the local group is authoritative', async () => {
     const h = harness(true);
     h.threadResources.fetch.mockResolvedValueOnce(
       response({ messages: [], scannedThrough: 100, hasMore: false }),
@@ -229,7 +229,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     await h.executor.runMessages(31, 'origin.test', 7, 50);
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
-      '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=false',
+      '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
       'origin.test',
       16 * 1024 * 1024,
     );

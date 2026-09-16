@@ -10,10 +10,13 @@ Update that index when a task is added or its scope changes.
 
 ## New implementation boundary
 
-New use cases live under `src/business/`. API and durable-task handlers call
-use-case entries there after the specific flow has been reviewed for routing.
-Keep domain SQL beside its use case and established reusable fragments under
-`shared/sql`; new lock primitives belong under `shared/locks`.
+New use cases live under the owning domain's `src/<domain>/business/`
+directory. API and durable-task handlers call use-case entries there after the
+specific flow has been reviewed for routing. Keep domain SQL beside its use
+case. Put established cross-domain SQL fragments under
+`src/common/business/sql/` and cross-domain lock primitives under
+`src/common/business/locks/`; domain-specific primitives stay with their
+owning domain.
 
 Migrate one complete business entry at a time. Once an entry uses this standard,
 remove its old writer instead of retaining a compatibility path or dual write.

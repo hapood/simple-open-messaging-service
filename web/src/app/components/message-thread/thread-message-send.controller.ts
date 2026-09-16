@@ -1,4 +1,3 @@
-import { firstValueFrom } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 import {
@@ -7,7 +6,6 @@ import {
 } from '../../lib/message-entity';
 import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
 import type { LinkCardContent } from '../../services/link-card-generation.service';
-import type { MsgService } from '../../services/message.service';
 import type { StandardResponse } from '../../services/model';
 import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 import type {
@@ -36,7 +34,6 @@ export interface ThreadMessageSendHost {
 export class ThreadMessageSendController {
   constructor(
     private readonly adapter: MessageThreadAdapter,
-    private readonly messages: MsgService,
     private readonly host: ThreadMessageSendHost,
   ) {}
 
@@ -71,6 +68,8 @@ export class ThreadMessageSendController {
   contact(contact: Extract<ChatSendIntent, { kind: 'contact' }>): void {
     const threadId = this.host.threadId();
     if (!threadId) return;
+    const source = this.host.source();
+    if (!source) return;
     const cid = this.host.newClientMessageId();
     const item = this.host.makeItem(
       cid,
@@ -84,15 +83,16 @@ export class ThreadMessageSendController {
       'CONTACT_CARD',
     );
     this.host.dispatch(item);
-    void firstValueFrom(
-      this.messages.sendContactCard({
+    void this.adapter
+      .sendContact({
         threadId,
         ...(contact.targetGroupId !== undefined
           ? { targetGroupId: contact.targetGroupId }
           : { targetUserId: contact.targetUserId }),
         clientMessageId: cid,
-      }),
-    )
+        optimistic: item,
+        source,
+      })
       .then((response) => this.settle(response, threadId, item))
       .catch(() => void this.host.fail(item));
   }

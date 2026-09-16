@@ -2129,15 +2129,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       }
     }
     const wasAtNewest = this.noNewer; // pre-load edge state (transition gate for the optimistic dispatch)
+    const reachesNewest = batch.some(
+      (it) => it.boundary === 'newest' || it.boundary === 'both',
+    );
+    // A live append moves the global newest edge. The item that carried the previous newest marker is now an ordinary
+    // interior row; leaving that marker mounted makes trimOlder stop there forever, so every later full backlog page
+    // grows the window by 50 rows. Preserve `oldest` when a sole-item `both` edge is extended.
+    if (!reachesNewest) this.clearStaleNewestBoundary();
     this.absorbBoundary(batch); // phase 0: absorb boundary only after passing
     // Authoritative: a newer batch reaches the global newest iff it carries the 'newest' marker. A full page WITHOUT it
     // means more newer data remains (a large SSE backlog spans multiple pages) → noNewer=false so the next signal/balance
     // loads further. absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel
     // falsely believing it was at the newest — stranding the remaining newer messages off-window and blocking further
     // loads (revalidateBottom is gated on !noNewer).
-    this.noNewer = batch.some(
-      (it) => it.boundary === 'newest' || it.boundary === 'both',
-    );
+    this.noNewer = reachesNewest;
 
     const count0 = this.mounted.length;
 
@@ -2868,6 +2873,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.noOlder = true;
       if (it.boundary === 'newest' || it.boundary === 'both')
         this.noNewer = true;
+    }
+  }
+
+  /** Demote the former global-newest marker after a newer page proves that the sequence now continues past it. */
+  private clearStaleNewestBoundary(): void {
+    for (const entry of this.mounted) {
+      if (entry.item.boundary === 'newest') {
+        const { boundary: _boundary, ...item } = entry.item;
+        entry.item = item;
+      } else if (entry.item.boundary === 'both') {
+        entry.item = { ...entry.item, boundary: 'oldest' };
+      }
     }
   }
 

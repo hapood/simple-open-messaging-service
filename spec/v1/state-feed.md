@@ -138,8 +138,10 @@ invalidate an already authored item; transport retries may retransmit it.
 `0/0` is a valid snapshot of an empty thread, not a fallback for missing values.
 
 The authorization snapshot supplies a synchronization starting point for initial
-access and reauthorization. Neither case requires a separate
-`THREAD_CONTENT_HEAD` publication before the receiver can start synchronization.
+access and reauthorization. An effective one-way `REQUESTED` permits passive
+history queries using this snapshot before any `THREAD_CONTENT_HEAD` exists.
+After the relationship becomes confirmed, the publisher MUST publish an
+initialization head as defined in Section 6.
 The snapshot does not require the receiver to reconstruct earlier thread history:
 the receiver MAY backfill all, some, or none of the history available under the
 publisher's query and retention policies. Snapshot selection across repeated
@@ -307,8 +309,10 @@ when it authors the item. It MUST NOT read the two coordinates from different
 snapshots or reuse stale coordinates for a newly authored head. An authorized
 empty thread MAY publish `messageEndSeq: 0, tombstoneEndSeq: 0`. Relationship
 closure MAY remove the current projection without allocating a deletion item.
-Confirmation or restored access does not require an immediate thread-content
-publication: the positive intent already carries the latest sequence pair.
+Confirmation or restoration of a confirmed relationship MUST publish an
+initialization thread-content head after the authored `ACCEPTED` projection,
+even when the sequence pair has not changed. Passive access before confirmation
+continues to use the positive intent's snapshot.
 If the publisher later recreates a removed thread-content projection, it MUST
 allocate a new, greater `feedId`, even when both coordinates are unchanged.
 
@@ -327,9 +331,17 @@ confirmed before allocating or publishing `THREAD_CONTENT_HEAD` for that peer.
 For GROUP, at least one member hosted by
 that peer MUST remain confirmed.
 
-A relationship change alone does not require creating or reindexing a
-thread-content item: its positive intent already provides the latest sequence
-pair. For a complete rebuild, the consumer applies current relationship facts
+When a relationship becomes confirmed, the publisher MUST commit its authored
+`ACCEPTED` acknowledgement before allocating the initialization
+`THREAD_CONTENT_HEAD` at a greater State Feed `feedId`. This is a relationship
+acknowledgement, not an HTTP ACK or proof that the peer has consumed the feed.
+The publisher MUST create or refresh that head even when passive query access
+already existed or the message/tombstone coordinates are unchanged. For an
+origin-owned group, it MUST include the committed Group Meta coordinate.
+The normal lossy `feed-heads` hint advertises the resulting State Feed end;
+periodic reconciliation remains sufficient to discover the initialization.
+Other relationship changes follow their operation-specific projection rules.
+For a complete rebuild, the consumer applies current relationship facts
 before selecting thread targets; an older head must not replace a newer
 authorization snapshot. If the canonical Group Meta coordinate moves to a
 greater `feedId`, the publisher MUST replace the existing combined thread head
@@ -337,8 +349,14 @@ at a greater State Feed `feedId`, sampling a fresh latest sequence pair. The
 consumer applies relationship and roster dependencies before exposing content
 from their thread targets, regardless of placement within one fetched page.
 
-A malformed item is isolated according to the common permanent-item rules. A
-failed group-meta fetch or page transaction does not advance the state cursor.
+A malformed item is isolated according to the common permanent-item rules.
+Accepting a State Feed page MUST atomically preserve its Group Meta target and
+advance its State Feed cursor; failure to preserve either accepts neither.
+Group Meta retrieval is asynchronous and MUST NOT be a prerequisite for that
+State Feed progress. A failed Group Meta retrieval MUST NOT roll back or block
+the State Feed cursor. The consumer MUST retain the target for retry and MUST
+NOT expose dependent group content until the required Group Meta progress has
+been accepted.
 Hints may be lost, repeated, or reordered; startup and periodic reconciliation
 must drain from the durable local cursor. The consumer retains the maximum
 observed pending `stateFeedEndId`; an older hint never moves pending, active, or

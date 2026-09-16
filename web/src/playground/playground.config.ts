@@ -154,6 +154,11 @@ export const playgroundConfig: ApplicationConfig = {
           { id: 'en', label: 'English' },
           { id: 'zh-CN', label: '简体中文' },
         ],
+        // Seed value only — the playground does NOT stay in English. Shared message-card
+        // components (DateRow, SystemRow, …) inject the root LanguageService on first render,
+        // whose constructor re-applies the browser language (then the preference persisted by
+        // the main app on this origin) via setActiveLang, so the playground follows the
+        // browser exactly like the main app.
         defaultLang: 'en',
         reRenderOnLangChange: true,
         prodMode: true,

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
 import { prepareLabConfig } from './local-config.mjs';
 import { ensureLabDatabase } from './database.mjs';
+import { assertPortsFree } from './ports.mjs';
 import { stopLabChildren } from './shutdown.mjs';
 import {
   federationLabDatabaseUrl,
@@ -150,6 +151,14 @@ if (requiredOutputs.some((output) => !existsSync(output))) {
   throw new Error('one or more required build outputs are missing');
 }
 
+const preflightPorts = [];
+if (runBackend) preflightPorts.push(...nodes.map((node) => node.backendPort));
+if (runFrontend) {
+  preflightPorts.push(...nodes.map((node) => node.edgePort));
+  if (devServer) preflightPorts.push(webDevPort, adminDevPort);
+}
+await assertPortsFree(preflightPorts);
+
 if (runBackend) {
   mkdirSync(runtimeDir, { recursive: true });
   for (const node of nodes) {
@@ -250,6 +259,8 @@ function spawnChild(command, args, options = {}) {
     cwd: root,
     stdio: 'inherit',
     env: process.env,
+    // Own process group, so shutdown reaches the whole subtree (npm → sh → vite).
+    detached: true,
     ...options,
   });
   children.push(child);
@@ -296,6 +307,7 @@ if (runBackend) {
         cwd: root,
         stdio: ['inherit', 'pipe', 'inherit'],
         env: labEnvironment(node, peerRoutes),
+        detached: true,
       },
     );
     // Mirror each backend's stdout to the terminal AND its per-node log.

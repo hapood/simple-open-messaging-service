@@ -3,7 +3,7 @@ import {
   groupState as groupStateTable,
   readGroupState,
   groupStateFields,
-} from '../business/group/shared/group-state.js';
+} from '../group/business/shared/group-state.js';
 import { toClientIdentity } from '../common/client-identity.js';
 import { localAccountsForTargetsInTx } from '../user/account-address.js';
 import {
@@ -36,7 +36,7 @@ import { BusinessCode } from '../common/business-code.js';
 import type { MediaStatus } from '../common/media-status.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
-import { RelationshipService } from '../business/relationship/relationship.service.js';
+import { RelationshipService } from '../relationship/business/relationship.service.js';
 import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
 import { type OutboundCallFrameParams } from './federation-call-delivery.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
@@ -65,10 +65,10 @@ import {
   type PeerStateFeedPage,
 } from './peer-state-feed.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { RelationshipIntentService } from '../business/relationship/relationship-intent.service.js';
-import { GroupRelationshipFoldService } from '../business/group/membership-intent/shared/group-relationship-fold.service.js';
+import { RelationshipIntentService } from '../relationship/business/relationship-intent.service.js';
+import { GroupRelationshipFoldService } from '../group/business/membership-intent/shared/group-relationship-fold.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
-import { GroupRelationshipMutationService } from '../business/group/membership-intent/shared/group-relationship-mutation.service.js';
+import { GroupRelationshipMutationService } from '../group/business/membership-intent/shared/group-relationship-mutation.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import type { S2SAddress } from './federation-address.js';
 import { FederationUserDirectoryService } from './federation-user-directory.service.js';
@@ -94,7 +94,7 @@ import { FederationThreadQueryDenialService } from './federation-thread-query-de
 import {
   lockBusinessAccountsInTx,
   type BusinessScopeAddress,
-} from '../business/shared/locks/account-business-lock.js';
+} from '../common/business/locks/account-business-lock.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -1135,4 +1135,4 @@ export class FederationService {
     return this.profiles.fetchRemoteAccount(address);
   }
 }
-import type { ThreadContentLock } from '../business/shared/locks/thread-content-lock.js';
+import type { ThreadContentLock } from '../common/business/locks/thread-content-lock.js';

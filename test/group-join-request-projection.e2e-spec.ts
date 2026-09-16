@@ -12,13 +12,13 @@ import {
   durableTask,
 } from '../src/database/schema.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
-import { GroupService } from '../src/business/group/group.service.js';
+import { GroupService } from '../src/group/business/group.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { GroupRelationshipMutationService } from '../src/business/group/membership-intent/shared/group-relationship-mutation.service.js';
-import { admitGroupMembershipProjectionFanoutInTx } from '../src/business/group/membership-intent/shared/group-membership-projection-fanout.js';
-import { lockBusinessAccountsInTx } from '../src/business/shared/locks/account-business-lock.js';
+import { GroupRelationshipMutationService } from '../src/group/business/membership-intent/shared/group-relationship-mutation.service.js';
+import { admitGroupMembershipProjectionFanoutInTx } from '../src/group/business/membership-intent/shared/group-membership-projection-fanout.js';
+import { lockBusinessAccountsInTx } from '../src/common/business/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../src/database/database.service.js';
-import { readCurrentGroupMemberInTx } from '../src/business/group/meta/current-group-roster.js';
+import { readCurrentGroupMemberInTx } from '../src/group/business/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
 import { createTestApp } from './support/app';

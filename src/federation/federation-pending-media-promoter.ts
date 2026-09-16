@@ -104,16 +104,9 @@ export class FederationPendingMediaPromoter {
       )
         throw new Error('inbound media message has no author');
 
-      const [thread] = await tx
-        .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
-        .from(tables.messageThread)
-        .where(eq(tables.messageThread.id, stagedMessage.threadId))
-        .limit(1);
-      if (!thread) throw new Error('inbound Message STUB thread is missing');
-      if (thread.authorizationEpoch !== batch.expectedAuthorizationEpoch) {
-        return null;
-      }
-
+      // The captured authorization epoch governs admission and download. Once every file has been
+      // verified, a later relationship change does not invalidate materialization of the retained
+      // Message STUB; tombstones below still determine whether its content remains visible.
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(tables.federatedMessageTombstone.threadId, stagedMessage.threadId),

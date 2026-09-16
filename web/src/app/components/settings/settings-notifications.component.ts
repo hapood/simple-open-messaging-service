@@ -37,7 +37,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
  *  - `unsupported` (plain-HTTP origin / no Notification API) → no toggle, just a "requires HTTPS" hint.
  *
  * When `granted`, two app-level toggles appear beneath it ({@link NotificationPrefsService}, persisted to
- * localStorage) — the in-app controls the browser permission can't offer: "Show desktop alerts" (mute
+ * the device preference store) — the in-app controls the browser permission can't offer: "Show desktop alerts" (mute
  * posting entirely) and "Sound" (`silent: !sound`). The permission state is reactive
  * ({@link WebPushService.permission} refreshes on window focus), so the rows track changes the user makes
  * in the browser's site settings without a reload.
@@ -179,17 +179,17 @@ export class SettingsNotificationsComponent {
     if (e.checked) await this.webPush.enable();
   }
 
-  /** App-level "show desktop alert" mute (no browser-permission round-trip — persists to localStorage). */
+  /** App-level "show desktop alert" mute (no browser-permission round-trip — persists device-level). */
   onDesktopChange(e: MatSlideToggleChange): void {
     this.prefs.setEnabled(e.checked);
   }
 
-  /** Sound on/off — persists to localStorage; maps to `silent: !sound` on the posted Notification. */
+  /** Sound on/off — persists device-level; maps to `silent: !sound` on the posted Notification. */
   onSoundChange(e: MatSlideToggleChange): void {
     this.prefs.setSound(e.checked);
   }
 
-  /** Away-notification grouping — persists to localStorage; the next foreground pull sends it as `grouping`. */
+  /** Away-notification grouping — persists device-level; the next foreground pull sends it as `grouping`. */
   onPreviewModeChange(e: MatButtonToggleChange): void {
     this.prefs.setPreviewMode(e.value as 'message' | 'private');
   }
