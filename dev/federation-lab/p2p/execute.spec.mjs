@@ -24,13 +24,12 @@ test('mapConcurrent preserves result order and bounds active workers', async () 
 test('waitForTaskQueueIdle prints active ids and requires two empty samples', async () => {
   const samples = [
     {
-      queryMs: { PENDING: 17, PROCESSING: 35, ASYNC_PROCESSING: 21 },
+      queryMs: { PENDING: 17, PROCESSING: 35 },
       pendingCount: 1,
       processing: [{ id: '12' }],
-      asyncProcessing: [{ id: '13' }],
     },
-    { pendingCount: 0, processing: [], asyncProcessing: [] },
-    { pendingCount: 0, processing: [], asyncProcessing: [] },
+    { pendingCount: 0, processing: [] },
+    { pendingCount: 0, processing: [] },
   ];
   const output = [];
   let cursor = 0;
@@ -50,11 +49,10 @@ test('waitForTaskQueueIdle prints active ids and requires two empty samples', as
     onProgress: (line) => output.push(line),
   });
   assert.match(output[0], /processing=\[12\]/);
-  assert.match(output[0], /async=\[13\]/);
   assert.match(output.at(-1), /pending=0/);
   assert.match(
     output[0],
-    /statusMs=\[ASYNC_PROCESSING:21,PENDING:17,PROCESSING:35\]/,
+    /statusMs=\[PENDING:17,PROCESSING:35\]/,
   );
   assert.match(
     output[0],
@@ -76,7 +74,6 @@ test('queue drain reports failed tasks immediately, including when no pending ta
             return {
               pendingCount,
               processing: [],
-              asyncProcessing: [],
               failedCount: 1,
               failed: [
                 {

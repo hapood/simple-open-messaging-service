@@ -449,28 +449,28 @@ pub(crate) async fn native_db_query_messages(
             ("desc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq < ?3
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq DESC LIMIT ?4",
                 anchor,
             ),
             ("asc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq > ?3
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq ASC LIMIT ?4",
                 anchor,
             ),
             ("desc", None) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq <= ?3
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq DESC LIMIT ?4",
                 i64::MAX,
             ),
             ("asc", None) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq >= ?3
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq ASC LIMIT ?4",
                 i64::MIN,
             ),
@@ -976,14 +976,14 @@ async fn query_native_messages(
             HistoryDirection::Older => (
                 "SELECT payload_json FROM messages
                  WHERE user_id=?1 AND thread_id=?2 AND seq<?3 AND seq>?4
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq DESC LIMIT ?5",
                 params![user_id, thread_id, cursor, boundary, take as i64],
             ),
             HistoryDirection::Newer => (
                 "SELECT payload_json FROM messages
                  WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
-                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                   AND json_type(payload_json, '$.createdAt') IS NOT NULL
                  ORDER BY seq ASC LIMIT ?5",
                 params![user_id, thread_id, cursor, boundary, take as i64],
             ),
@@ -1377,7 +1377,7 @@ pub(crate) async fn commit_native_message_page(
                 return Err("message page contains an invalid message coordinate".to_string());
             }
             let merged = write_message_slot(&tx, user_id, MessageSlotWrite::Message(message))?;
-            if merged.get("isDeleted").and_then(Value::as_bool) != Some(true) {
+            if merged.get("createdAt").and_then(Value::as_i64).is_some() {
                 committed_messages.push(merged);
             }
         }

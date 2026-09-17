@@ -151,7 +151,7 @@ function groupPositionFrom(
  *
  * Shared by the real thread and the playground so both render identical cards + wrapping logic.
  *
- * date was moved out of the data source: the source returns only messages; the date separator is derived
+ * date was moved out of the data source: the source returns timeline rows; the date separator is derived
  * per-day by the createItem factory and passed in as dateLabel, rendered conditionally at the top of the
  * message component template (see date-format.ts).
  *
@@ -183,7 +183,7 @@ export function createMsgCbElement(
   onQuoteJump?: (seq: number) => void,
   onOpenMemberProfile?: (identityKey: string, anchor: DOMRect) => void,
 ): CbElement<ChatItemData> {
-  const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
+  const data = item.data as ChatMsgData; // date is derived at the render layer
 
   const comp: Type<RowComponent> =
     data.type === 'system'

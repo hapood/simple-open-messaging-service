@@ -346,7 +346,7 @@ describe('transactional thread attention', () => {
       });
       const delta = await service.queryThreadFeedDelta(userId, {
         after: 0,
-        previewCount: 5,
+        previewCount: 3,
       });
       expect(delta.items[0].previews?.at(-1)).toMatchObject({
         seq: 7,
@@ -367,7 +367,7 @@ describe('transactional thread attention', () => {
       await put(seq, 'own', { creatorAccount: 'reader' });
     expect((await state()).previewSeqs).toEqual([]);
     await projectCurrentHeads();
-    expect((await state()).previewSeqs).toEqual([7, 6, 5, 4, 3]);
+    expect((await state()).previewSeqs).toEqual([7, 6, 5]);
     Object.assign(service, { previews: new ThreadPreviewService(db) });
     const delta = await service.queryThreadFeedDelta(userId, {
       after: 0,
@@ -376,13 +376,13 @@ describe('transactional thread attention', () => {
     expect(delta.items[0].previews?.map((row) => row.seq)).toEqual([7]);
     await retractMention(7, 1);
     await projectCurrentHeads();
-    expect((await state()).previewSeqs).toEqual([7, 6, 5, 4, 3]);
+    expect((await state()).previewSeqs).toEqual([7, 6, 5]);
     const deleted = await service.queryThreadFeedDelta(userId, {
       after: 0,
-      previewCount: 5,
+      previewCount: 3,
     });
     expect(deleted.items[0].previews?.map((row) => row.seq)).toEqual([
-      3, 4, 5, 6, 7,
+      5, 6, 7,
     ]);
     expect(deleted.items[0].previews?.at(-1)).toMatchObject({
       seq: 7,
@@ -391,7 +391,7 @@ describe('transactional thread attention', () => {
     expect(deleted.items[0].previews?.at(-1)).not.toHaveProperty('text');
   });
 
-  it('prunes reads without refilling and restores slots on force rollback', async () => {
+  it('preserves previews across read movement and prunes only cleared history', async () => {
     for (let seq = 1; seq <= 8; seq++) await put(seq);
     await projectCurrentHeads();
     await run({ threadId, localReadHwm: 6 });
@@ -399,12 +399,12 @@ describe('transactional thread attention', () => {
     await projectCurrentHeads();
     expect((await state()).previewSeqs).toEqual([8, 7, 6]);
     await run({ threadId, localReadHwm: 0, force: true });
-    expect((await state()).previewSeqs).toEqual([8, 7, 6, 5, 4]);
+    expect((await state()).previewSeqs).toEqual([8, 7, 6]);
     await new ThreadHistoryService(db).clear(threadId, 7);
     expect((await state()).previewSeqs).toEqual([8]);
   });
 
-  it('retains the read-boundary preview through head and visibility updates, then prunes when passed', async () => {
+  it('retains an eligible preview when reads and ineligible own messages advance', async () => {
     await put(1, '[@Reader](somfp://user/reader)');
     await projectCurrentHeads();
     await run({ threadId, localReadHwm: 1 });
@@ -414,7 +414,7 @@ describe('transactional thread attention', () => {
       lastMentionSeq: null,
       previewSeqs: [1],
     });
-    // A new own message forces preview selection without adding an unread slot.
+    // A new own message advances the content head without adding an unread or preview slot.
     await put(2, 'own', { creatorAccount: 'reader' });
     await projectCurrentHeads();
     expect((await state()).previewSeqs).toEqual([1]);
@@ -432,10 +432,39 @@ describe('transactional thread attention', () => {
     });
     expect(delta.items[0].previews?.map((row) => row.seq)).toEqual([1]);
     await run({ threadId, localReadHwm: 2 });
-    expect((await state()).previewSeqs).toEqual([]);
+    expect((await state()).previewSeqs).toEqual([1]);
+    await put(3, 'own again', { creatorAccount: 'reader' });
+    await projectCurrentHeads();
+    expect((await state()).previewSeqs).toEqual([1]);
   });
 
-  it('clears a preview at the read boundary when its history is cleared', async () => {
+  it('keeps a system preview after mark-read and later own messages', async () => {
+    await put(1, '', {
+      contentType: 'SYSTEM',
+      content: JSON.stringify({ type: 'FRIEND_ADDED' }),
+      creatorAccount: '$system',
+    });
+    await projectCurrentHeads();
+    expect((await state()).previewSeqs).toEqual([1]);
+    await run({ threadId, localReadHwm: 1 });
+    await put(2, 'own', { creatorAccount: 'reader' });
+    await projectCurrentHeads();
+    await run({ threadId, localReadHwm: 2 });
+    expect((await state()).previewSeqs).toEqual([1]);
+    const delta = await service.queryThreadFeedDelta(userId, {
+      after: 0,
+      previewCount: 1,
+    });
+    expect(delta.items[0].previews).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        sender: { account: '$system', domain: 'local' },
+        text: '[System message]',
+      }),
+    ]);
+  });
+
+  it('clears a retained preview when its history is cleared', async () => {
     await put(1);
     await projectCurrentHeads();
     await run({ threadId, localReadHwm: 1 });

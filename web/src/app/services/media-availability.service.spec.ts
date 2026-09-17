@@ -7,7 +7,13 @@ const settle = (): Promise<void> =>
 describe('MediaAvailabilityService', () => {
   let events: Subject<unknown>;
   let reconnect: Subject<void>;
-  let deleted: Subject<{ threadId: number; seqs: number[] }>;
+  let deleted: Subject<{
+    threadId: number;
+    deletions: Array<{
+      seq: number;
+      type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+    }>;
+  }>;
   let snapshots: Subject<{
     code: number;
     data?: {
@@ -83,7 +89,10 @@ describe('MediaAvailabilityService', () => {
     registration.onWithdrawn(withdrawn);
     await settle();
 
-    deleted.next({ threadId: 7, seqs: [2] });
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 2, type: 'USER_RETRACTION' }],
+    });
     events.next({
       event: 'MEDIA_STATUS',
       status: 0,

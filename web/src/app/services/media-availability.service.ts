@@ -70,8 +70,8 @@ export class MediaAvailabilityService {
       }
     });
 
-    this.repo.deletedLive$.subscribe(({ threadId, seqs }) => {
-      for (const seq of seqs) {
+    this.repo.deletedLive$.subscribe(({ threadId, deletions }) => {
+      for (const { seq } of deletions) {
         const key = keyOf(threadId, seq);
         const entry = this.entries.get(key);
         if (!entry) continue;

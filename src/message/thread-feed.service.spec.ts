@@ -42,7 +42,7 @@ describe('thread feed database previews', () => {
       db: { transaction: (run: (tx: unknown) => unknown) => run({ execute }) },
     };
     const service = new ThreadFeedService(db as never);
-    Object.assign(service, { previews: { limit: 5, readInTx: read } });
+    Object.assign(service, { previews: { limit: 3, readInTx: read } });
     return { service, read, execute };
   }
 
@@ -57,7 +57,7 @@ describe('thread feed database previews', () => {
     const { service, execute } = setup();
     const result = await service.queryThreadFeedDelta(1, {
       after: 0,
-      previewCount: 5,
+      previewCount: 3,
     });
     expect(result.items[0].previews).toEqual([
       {
@@ -90,7 +90,7 @@ describe('thread feed database previews', () => {
       previewCount: 1,
     });
     expect(result.items[0].previews?.map((item) => item.seq)).toEqual([3]);
-    for (const previewCount of [-1, 1.5, 6])
+    for (const previewCount of [-1, 1.5, 4])
       await expect(
         service.queryThreadFeedDelta(1, { after: 0, previewCount }),
       ).rejects.toMatchObject({ bizCode: 10000 });

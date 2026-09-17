@@ -46,9 +46,6 @@ export class UnreadAttentionService {
   private readonly unreadTotal = computed(() =>
     this.convList.items().reduce((sum, item) => sum + item.unreadCount, 0),
   );
-  private readonly pending = new Map<number, ThreadNotificationUpdate>();
-  private readonly suppressed = new Set<number>();
-  private timer: ReturnType<typeof setTimeout> | null = null;
   private queue = Promise.resolve();
   private generation = 0;
   private desktopSince = 0;
@@ -90,27 +87,12 @@ export class UnreadAttentionService {
     this.convList.threadNotifications$
       .pipe(takeUntilDestroyed())
       .subscribe((updates) => {
-        for (const update of updates) {
-          const old = this.pending.get(update.item.threadId);
-          if (!old || old.state.threadFeedId < update.state.threadFeedId) {
-            this.pending.set(update.item.threadId, update);
-            if (this.focused()) this.suppressed.add(update.item.threadId);
-            else this.suppressed.delete(update.item.threadId);
-          }
-        }
-        if (this.timer !== null) clearTimeout(this.timer);
-        this.timer = setTimeout(() => {
-          this.timer = null;
-          const batch = [...this.pending.values()];
-          const suppressed = new Set(this.suppressed);
-          this.suppressed.clear();
-          this.pending.clear();
-          const epoch = this.lifecycle.accountEpoch;
-          const generation = this.generation;
-          this.queue = this.queue
-            .then(() => this.present(batch, epoch, generation, suppressed))
-            .catch(() => {});
-        }, 300);
+        const epoch = this.lifecycle.accountEpoch;
+        const generation = this.generation;
+        const suppressed = this.focused();
+        this.queue = this.queue
+          .then(() => this.present(updates, epoch, generation, suppressed))
+          .catch(() => {});
       });
   }
 
@@ -154,9 +136,8 @@ export class UnreadAttentionService {
   private onFocusChange(focused: boolean): void {
     this.focused.set(focused);
     if (focused) {
-      // Retain queued feed updates so their presentation checkpoint is consumed silently.
+      // Invalidate queued renders; they still consume their presentation checkpoint silently.
       this.generation++;
-      for (const id of this.pending.keys()) this.suppressed.add(id);
       void this.adapter.clear();
     }
   }
@@ -164,10 +145,6 @@ export class UnreadAttentionService {
   private dismissActive(): void {
     this.generation++;
     this.desktopSince = 0;
-    if (this.timer !== null) clearTimeout(this.timer);
-    this.timer = null;
-    this.pending.clear();
-    this.suppressed.clear();
     void this.adapter.clear();
   }
 
@@ -192,7 +169,7 @@ export class UnreadAttentionService {
     batch: ThreadNotificationUpdate[],
     epoch: number,
     generation: number,
-    suppressed: Set<number>,
+    suppressed: boolean,
   ): Promise<void> {
     const run = async () => {
       if (!this.lifecycle.isCurrent(epoch)) return;
@@ -200,7 +177,9 @@ export class UnreadAttentionService {
         ? this.desktopSince
         : await readNotificationSince();
       if (!this.lifecycle.isCurrent(epoch)) return;
-      const fresh = batch.filter((update) => update.state.threadFeedId > after);
+      const fresh = batch.filter(
+        (update) => update.state.threadFeedId > after,
+      );
       const end = Math.max(
         after,
         ...fresh.map((update) => update.state.threadFeedId),
@@ -213,7 +192,7 @@ export class UnreadAttentionService {
           !this.prefs.enabled()
         )
           break;
-        if (suppressed.has(update.item.threadId)) continue;
+        if (suppressed) continue;
         const descriptor = threadNotificationDescriptor(
           update,
           this.prefs.previewMode(),

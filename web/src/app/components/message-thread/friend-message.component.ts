@@ -663,9 +663,10 @@ export class MessageThreadComponent implements OnDestroy {
 
   constructor() {
     this.deletedSub = this.msgRepo.deletedLive$.subscribe(
-      ({ threadId, seqs }) => {
+      ({ threadId, deletions }) => {
         if (threadId !== this.currentTrdId || !this.scroller) return;
-        for (const seq of seqs) this.onMessageDeleted(threadId, seq);
+        for (const { seq, type } of deletions)
+          this.onMessageDeleted(threadId, seq, type);
       },
     );
     effect((onCleanup) => {
@@ -830,14 +831,22 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private onMessageDeleted(threadId: number, seq: number): void {
+  private onMessageDeleted(
+    threadId: number,
+    seq: number,
+    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
+    reinitializeAlbum = true,
+  ): void {
     this.galleryViewer.closeIfDeleted(threadId, seq);
     this.fileDetail.closeIfDeleted(threadId, seq);
     this.messageInteraction.removeMessage(seq);
+    let deletedAlbumMember = false;
     this.scroller?.mutateItem(seq, (item) => {
-      if (item.data.type !== 'msg') return null;
+      if (item.data.type !== 'msg') return item;
       const images = item.data.images;
-      if (!images || images.length < 2) return null;
+      if (!images || images.length < 2)
+        return this.deletedPlaceholder(item, seq, deletionType);
+      deletedAlbumMember = true;
       const remaining = images.filter((image) => image.msgId !== seq);
       if (remaining.length === images.length) return null;
       if (remaining.length === 0) return null;
@@ -859,6 +868,37 @@ export class MessageThreadComponent implements OnDestroy {
         },
       };
     });
+    // One source album can represent several durable coordinates. Rebuild it from the now-authoritative
+    // cache so the deleted coordinate becomes its own tombstone row and the remaining media regroup around it.
+    if (deletedAlbumMember && reinitializeAlbum)
+      queueMicrotask(() => {
+        if (this.currentTrdId === threadId) this.reinit();
+      });
+  }
+
+  private deletedPlaceholder(
+    item: CbItem<ChatItemData>,
+    seq: number,
+    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
+  ): CbItem<ChatItemData> {
+    return {
+      id: seq,
+      data: {
+        type: 'system',
+        contentType: 'SYSTEM',
+        msgId: seq,
+        threadId: item.data.threadId,
+        isSelf: false,
+        isGroupConversation: item.data.isGroupConversation,
+        name: '',
+        text: '',
+        time: item.data.time,
+        images: null,
+        file: null,
+        createdAtMs: item.data.createdAtMs,
+        deletionType,
+      },
+    };
   }
 
   private hideNativeComposer(resetGeometry = false): void {
@@ -1569,7 +1609,7 @@ export class MessageThreadComponent implements OnDestroy {
           this.toast.warn(translateBizResult(res, this.transloco));
           return;
         }
-        this.scroller?.removeItem(seq);
+        this.onMessageDeleted(threadId, seq, 'USER_RETRACTION', false);
         const deletionSeq = (res.data as { deletionSeq?: unknown } | undefined)
           ?.deletionSeq;
         if (

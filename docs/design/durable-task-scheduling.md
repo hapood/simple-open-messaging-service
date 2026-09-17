@@ -99,10 +99,9 @@ durable task model.
 | `lastError`     | Bounded sanitized unexpected error                                              |
 | timestamps      | Acceptance, first claim, and terminal times                                     |
 
-Statuses are `PENDING`, `PROCESSING`, `ASYNC_PROCESSING`, `SUCCEEDED`,
-`REJECTED`, `FAILED`, and `SUPERSEDED`. The database enforces their timestamp
-and supersession shapes. Only one task for a `(kind, scopeKey)` lane may be
-either `PROCESSING` or `ASYNC_PROCESSING`.
+Statuses are `PENDING`, `PROCESSING`, `SUCCEEDED`, `REJECTED`, `FAILED`, and
+`SUPERSEDED`. The database enforces their timestamp and supersession shapes.
+Only one task for a `(kind, scopeKey)` lane may be `PROCESSING`.
 
 `payload` contains stable identifiers and normalized values only. It never
 contains request objects, authorization decisions, secrets, or network-delivery
@@ -142,7 +141,7 @@ successors; a failed task is not automatically retried.
 The [wake migration](../../database/migrations/0002_durable_task_wake.sql) emits
 `durable_task_work` notifications for pending inserts, pending input changes,
 and status transitions. Database triggers cover admission in caller-owned
-transactions and async completions. Rollbacks emit no notifications; repeated
+transactions and terminal completions. Rollbacks emit no notifications; repeated
 notifications with the same payload within one transaction are coalesced by
 PostgreSQL. Checkpoint-only writes on running tasks do not wake discovery.
 A dedicated connection commits `LISTEN` before scanning existing work. Listener
@@ -156,63 +155,26 @@ The process-local concurrency limit defaults to eight through
 `DURABLE_TASK_MAX_CONCURRENCY`. Its active-lane set is an optimization only;
 PostgreSQL remains the durable source of work.
 
-`ASYNC_PROCESSING` transfers execution ownership to a process-wide asynchronous
-scheduler. It retains the lane's ordering fence but is removed from the ordinary
-executor's active-task count. The async runner has a separate concurrency limit,
-configured by `DURABLE_ASYNC_TASK_MAX_CONCURRENCY` and defaulting to eight. Its
-pending queue is currently unbounded. Network requests made by those active
-tasks separately use the federation HTTP pool's global and per-peer concurrency
-limits.
+Federation message, tombstone, reverse, Group Meta, and State Feed rounds are a
+separate process-local execution mechanism. Their durable cursors live in their
+own domain tables; they are not durable-task rows or durable-task statuses. The
+federation scheduler bounds concurrency, queues follow-up rounds, and recovers
+unfinished cursor ranges at application bootstrap. Network requests enter the
+federation HTTP pool's global and per-peer concurrency limits.
 
-The handoff is an explicit state transition:
-
-```text
-PENDING -> PROCESSING -> ASYNC_PROCESSING -> SUCCEEDED | FAILED
-```
-
-The ordinary handler performs no external request before the handoff. It first
-commits `ASYNC_PROCESSING`, then submits the row to the async runner and releases
-its ordinary executor slot. The async runner calls the registered task-type
-handler and awaits its result, while the handler delegates each HTTP operation
-to the network scheduler and awaits the returned response. The network scheduler
-never writes task or domain state.
-
-After validating a page response, the async handler commits that page's domain
-facts and durable checkpoint in one short transaction. On the final page, the
-same transaction also moves the task from `ASYNC_PROCESSING` to `SUCCEEDED`.
-Consequently, successful handler return means the handler has already completed
-the terminal database transaction; the runner must not perform a second success
-update. An unexpected handler rejection is sanitized and moves the task to
-`FAILED`. Retryable network failures remain inside the network request lifecycle
-and do not reject the async handler while retries remain valid.
-
-Checkpoint-only writes use `saveTaskCheckpointInTx` inside that transaction.
-Synchronous handlers require `PROCESSING`; async handlers explicitly require
-`ASYNC_PROCESSING`. The helper requires exactly one updated row and never opens
-its own transaction. Terminal transitions still commit status and final effects
-together rather than splitting them into a checkpoint-only write.
-
-An async-capable row left in `PROCESSING` by a shutdown is safe to run again
-because pre-handoff preparation only refreshes task checkpoints and requests
-the state transition. Group Meta sync refreshes its starting cursor from the
-mirror's committed end after predecessors finish. It never assumes a failed
-predecessor reached its target, and completes without a handoff when a previous
-round already covered its target. Preparation can be repeated before handoff;
-already asynchronous tasks retain their page checkpoints on recovery. At
-application bootstrap, rows already in `ASYNC_PROCESSING` are submitted once to
-the async runner. The durable task ID identifies the row for checkpoint and
-terminal updates; it is not an execution-instance ID or a process-local
-deduplication mechanism.
+Checkpoint-only durable-task writes use `saveTaskCheckpointInTx`. The helper
+requires `PROCESSING`, updates exactly one row, and never opens its own
+transaction. Terminal transitions commit status and final effects together
+where the handler owns both.
 
 Execution outcomes are:
 
-| Outcome                                    | Status             | Later tasks in lane |
-| ------------------------------------------ | ------------------ | ------------------- |
-| Mutation committed                         | `SUCCEEDED`        | Allowed             |
-| Valid business refusal                     | `REJECTED`         | Allowed             |
-| Unexpected error                           | `FAILED`           | Allowed             |
-| Process stops after an ordinary task claim | `PROCESSING`       | Blocked             |
-| Work handed to an async scheduler          | `ASYNC_PROCESSING` | Blocked             |
+| Outcome                                    | Status       | Later tasks in lane |
+| ------------------------------------------ | ------------ | ------------------- |
+| Mutation committed                         | `SUCCEEDED`  | Allowed             |
+| Valid business refusal                     | `REJECTED`   | Allowed             |
+| Unexpected error                           | `FAILED`     | Allowed             |
+| Process stops after an ordinary task claim | `PROCESSING` | Blocked             |
 
 There is no automatic task retry. Failed rows remain available for investigation
 and do not block later tasks. A mutation may commit just
@@ -342,7 +304,7 @@ cleanup rows in the same `GROUP` mutation lane:
 | Matching `PENDING FORCE_REVOKE_GROUP_MEMBER`                                          | Any command in the same direction  | Preserve mandatory cleanup and return its task ID                                               |
 | Matching `PENDING`, identical type/actor/payload                                      | Exact duplicate                    | Return its task ID                                                                              |
 | Matching `PENDING`                                                                    | Different desired state or payload | Rewrite in place regardless of intervening work; supersede other pending rows in this direction |
-| Identical `PROCESSING` or `ASYNC_PROCESSING` type/actor/payload, no pending successor | Exact duplicate                    | Return the running task ID; append nothing                                                      |
+| Identical `PROCESSING` type/actor/payload, no pending successor                       | Exact duplicate                    | Return the running task ID; append nothing                                                      |
 | Running task, different new intent                                                    | Different desired state or payload | Keep running work immutable and admit a pending successor                                       |
 | Matching task is terminal                                                             | Any                                | Ignore it and insert a new pending row                                                          |
 

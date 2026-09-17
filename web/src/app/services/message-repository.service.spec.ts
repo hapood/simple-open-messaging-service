@@ -388,6 +388,50 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe(12);
   });
 
+  it('publishes deletion coordinates with their authoritative type', async () => {
+    await webdb.putCachedMessages([msg(42, 10)]);
+    const updates: Array<{
+      threadId: number;
+      deletions: Array<{
+        seq: number;
+        type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+      }>;
+    }> = [];
+    const subscription = repo.deletedLive$.subscribe((update) =>
+      updates.push(update),
+    );
+    queryDeletedMessagesSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        message: '',
+        data: {
+          tombstones: [
+            {
+              threadId: 42,
+              messageSeq: 10,
+              deletionSeq: 1,
+              type: 'MODERATION_REMOVAL',
+              createdAt: 10_000,
+              updatedAt: 10_000,
+            },
+          ],
+          scannedThrough: 1,
+          hasMore: false,
+        },
+      }),
+    );
+
+    await repo.openTombstoneStream(42, 1);
+
+    expect(updates).toEqual([
+      {
+        threadId: 42,
+        deletions: [{ seq: 10, type: 'MODERATION_REMOVAL' }],
+      },
+    ]);
+    subscription.unsubscribe();
+  });
+
   it('does not fetch a pending tombstone target before the chatbox is opened', async () => {
     await repo.updateTombstoneTarget(42, 9);
     await flush();

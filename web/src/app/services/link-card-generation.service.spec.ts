@@ -66,29 +66,32 @@ describe('LinkCardGenerationService', () => {
       expiresAt: Date.now() + 60000,
     });
 
-    await delay(0);
-    const request = http.expectOne(
-      '/api/v1/link-preview/generations/generation-1',
+    const request = await vi.waitFor(() =>
+      http.expectOne('/api/v1/link-preview/generations/generation-1'),
     );
     request.flush(
       { code: 1, message: 'temporary failure' },
       { status: 503, statusText: 'Service Unavailable' },
     );
-    await delay(0);
 
-    expect(service.snapshot('generation-1')).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        polling: false,
-        unavailable: true,
-      }),
+    await vi.waitFor(() =>
+      expect(service.snapshot('generation-1')).toEqual(
+        expect.objectContaining({
+          status: 'failed',
+          polling: false,
+          unavailable: true,
+        }),
+      ),
     );
 
-    await delay(700);
+    // Deterministic negative: sweep a generous virtual window on the fake clock — the poll loop
+    // schedules its next tick via setTimeout, so any would-be retry would fire here.
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
     http.expectNone('/api/v1/link-preview/generations/generation-1');
   });
 });
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

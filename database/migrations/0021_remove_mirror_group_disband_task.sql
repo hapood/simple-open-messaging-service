@@ -1,2 +1,0 @@
-DELETE FROM "DurableTask"
-WHERE "taskType" = 'DISBAND_MIRROR_GROUP_MEMBERS';

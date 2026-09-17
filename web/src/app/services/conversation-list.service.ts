@@ -52,7 +52,6 @@ export class ConversationListService {
   readonly status = this.repo.status;
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
-  readonly topInserted = this.repo.topInserted;
 
   /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */
   load(opts?: { force?: boolean }) {
@@ -127,16 +126,6 @@ export class ConversationListService {
   }
 
   // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──
-
-  /** Clear the `topInserted` pulse after the list has played its enter/FLIP animation. */
-  clearTopInserted(): void {
-    this.repo.clearTopInserted();
-  }
-
-  /** Force `threadId` to index 0 on the next update so the row animates in. */
-  markTopOnNextUpdate(threadId: number): void {
-    this.repo.markTopOnNextUpdate(threadId);
-  }
 
   /** Patch per-user thread metadata (mute/pin/block/alias); called from local optimistic actions. */
   applyThreadMeta(

@@ -135,9 +135,6 @@ export class NewGroupComponent {
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data) {
-            // Promote the new group to the top of the list (the caller's refresh→load converges on it)
-            // so it animates in via the FLIP enter rather than sinking to the bottom (empty lastMessageAt).
-            this.convList.markTopOnNextUpdate(res.data.threadId);
             this.routeService.closeDlg({ groupId: res.data.groupId });
           } else {
             this.toast.warn(translateBizResult(res, this.transloco));

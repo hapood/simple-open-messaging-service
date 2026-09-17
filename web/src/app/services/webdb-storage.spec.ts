@@ -7,6 +7,10 @@ import { syncThreadFeed } from './thread-feed-sync';
 describe('shared background storage', () => {
   const userId = '9107';
   let storage: WebdbStorage;
+  const groupMetaRequest = vi.fn(async () => {
+    throw new Error('unexpected group-meta request');
+  });
+  const profileResolver = vi.fn(async () => false);
 
   beforeEach(() => {
     storage = new WebdbStorage();
@@ -17,27 +21,36 @@ describe('shared background storage', () => {
 
   it('runs feed synchronization without an Angular injector or a nested worker', async () => {
     await storage.openForUser(userId);
-    const result = await syncThreadFeed(storage, 1, async () => ({
-      code: 0,
-      data: {
-        items: [
-          {
-            threadId: 7,
-            threadFeedId: 1,
-            messageEndSeq: 2,
-            tombstoneEndSeq: 0,
-            groupMetaFeedEndId: null,
-            lastReadSeq: 0,
-            unreadCount: 2,
-            lastMentionSeq: null,
-          },
-        ],
-        scannedThrough: 1,
-        through: 1,
-        threadFeedEndId: 1,
-        hasMore: false,
-      },
-    }));
+    const result = await syncThreadFeed(
+      storage,
+      1,
+      async () => ({
+        code: 0,
+        data: {
+          items: [
+            {
+              threadId: 7,
+              threadFeedId: 1,
+              messageEndSeq: 2,
+              tombstoneEndSeq: 0,
+              groupMetaFeedEndId: null,
+              joinRequestEndFeedId: 0,
+              joinRequestReadFeedId: -1,
+              groupInviteEndFeedId: 0,
+              lastReadSeq: 0,
+              unreadCount: 2,
+              lastMentionSeq: null,
+            },
+          ],
+          scannedThrough: 1,
+          through: 1,
+          threadFeedEndId: 1,
+          hasMore: false,
+        },
+      }),
+      groupMetaRequest,
+      profileResolver,
+    );
     expect(result.cursor).toBe(1);
     expect(result.states[0].server?.unreadCount).toBe(2);
     await storage.close();
@@ -85,8 +98,14 @@ describe('shared background storage', () => {
     });
     try {
       await Promise.all([
-        syncThreadFeed(storage, 1, request),
-        syncThreadFeed(background, 1, request),
+        syncThreadFeed(storage, 1, request, groupMetaRequest, profileResolver),
+        syncThreadFeed(
+          background,
+          1,
+          request,
+          groupMetaRequest,
+          profileResolver,
+        ),
       ]);
       expect(request).toHaveBeenCalledOnce();
       expect(lock.mock.calls.map((call) => call[0])).toEqual([
@@ -118,12 +137,18 @@ describe('shared background storage', () => {
     const requested = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const sync = syncThreadFeed(background, 1, () => {
-      started();
-      return new Promise((resolve) => {
-        respond = resolve;
-      });
-    });
+    const sync = syncThreadFeed(
+      background,
+      1,
+      () => {
+        started();
+        return new Promise((resolve) => {
+          respond = resolve;
+        });
+      },
+      groupMetaRequest,
+      profileResolver,
+    );
     await requested;
     await storage.closeAndDelete(userId);
     expect(background.ready()).toBe(false);

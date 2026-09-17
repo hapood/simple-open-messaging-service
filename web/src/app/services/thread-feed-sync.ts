@@ -2,14 +2,24 @@ import type {
   LocalThreadAttention,
   ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
+import {
+  syncGroupMeta,
+  GroupMetaSyncError,
+  type GroupMetaRequester,
+  type GroupMetaProfileResolver,
+  type GroupMetaSyncStorage,
+} from './group-meta-sync';
+
+const THREAD_FEED_PREVIEW_COUNT = 3;
 
 export interface ThreadFeedSyncResult {
   states: LocalThreadAttention[];
   cursor: number;
+  groupThreadIds: number[];
   error?: string;
 }
 
-export interface ThreadFeedSyncStorage {
+export interface ThreadFeedSyncStorage extends GroupMetaSyncStorage {
   withThreadFeedLock?<T>(run: () => Promise<T>): Promise<T>;
   getMeta(key: string): Promise<unknown>;
   mergeThreadStates(
@@ -57,9 +67,17 @@ export async function syncThreadFeed(
     take: number;
     previewCount: number;
   }) => Promise<unknown>,
-  previewCount: 1 | 5 = 1,
+  requestGroupMeta: GroupMetaRequester,
+  resolveGroupMetaProfile: GroupMetaProfileResolver,
 ): Promise<ThreadFeedSyncResult> {
-  const run = () => syncThreadFeedUnlocked(storage, target, request, previewCount);
+  const run = () =>
+    syncThreadFeedUnlocked(
+      storage,
+      target,
+      request,
+      requestGroupMeta,
+      resolveGroupMetaProfile,
+    );
   return storage.withThreadFeedLock ? storage.withThreadFeedLock(run) : run();
 }
 
@@ -67,10 +85,9 @@ async function syncThreadFeedUnlocked(
   storage: ThreadFeedSyncStorage,
   target: number,
   request: Parameters<typeof syncThreadFeed>[2],
-  previewCount: 1 | 5,
+  requestGroupMeta: GroupMetaRequester,
+  resolveGroupMetaProfile: GroupMetaProfileResolver,
 ): Promise<ThreadFeedSyncResult> {
-  if (previewCount !== 1 && previewCount !== 5)
-    throw new Error('invalid thread feed preview count');
   const initial = (await storage.getMeta('threadFeedCursor')) ?? 0;
   if (
     !Number.isInteger(initial) ||
@@ -82,6 +99,7 @@ async function syncThreadFeedUnlocked(
     throw new Error('invalid thread feed target');
   let cursor = Number(initial);
   const states = new Map<number, LocalThreadAttention>();
+  let groupThreadIds: number[] = [];
   try {
     while (cursor < target) {
       const through = target;
@@ -89,7 +107,7 @@ async function syncThreadFeedUnlocked(
         after: cursor,
         through,
         take: 100,
-        previewCount,
+        previewCount: THREAD_FEED_PREVIEW_COUNT,
       })) as {
         code: number;
         data?: {
@@ -134,11 +152,18 @@ async function syncThreadFeedUnlocked(
       cursor = page.scannedThrough;
       target = Math.max(target, page.threadFeedEndId);
     }
-    return { states: [...states.values()], cursor };
+    groupThreadIds = await syncGroupMeta(
+      storage,
+      requestGroupMeta,
+      resolveGroupMetaProfile,
+    );
+    return { states: [...states.values()], cursor, groupThreadIds };
   } catch (error) {
+    if (error instanceof GroupMetaSyncError) groupThreadIds = error.threadIds;
     return {
       states: [...states.values()],
       cursor,
+      groupThreadIds,
       error: error instanceof Error ? error.message : String(error),
     };
   }

@@ -5,12 +5,13 @@ import {
   ShieldAlert,
   ShieldBan,
   RotateCcw,
+  Wifi,
 } from 'lucide-react';
 import { Timestamp } from '@/components/common/timestamp';
 import type { FederatedPeerEvent } from '@/types/api';
 
 /** The trust-lifecycle timeline — the centerpiece "trust → connection-loss" view. Each transition is
- *  a row: a colored dot/icon, the event label, the timestamp, and (for degraded/halted) the reason.
+ *  a row: a colored dot/icon, the event label, the timestamp, and (where present) the reason.
  *  Newest-first matches the backend ordering, so the most recent state change is at the top. */
 
 const META: Record<string, { icon: typeof Eye; cls: string }> = {
@@ -22,6 +23,10 @@ const META: Record<string, { icon: typeof Eye; cls: string }> = {
   degraded: {
     icon: ShieldAlert,
     cls: 'text-amber-700 bg-amber-500/20 dark:text-amber-400',
+  },
+  available: {
+    icon: Wifi,
+    cls: 'text-emerald-700 bg-emerald-500/20 dark:text-emerald-400',
   },
   halted: { icon: ShieldBan, cls: 'text-destructive bg-destructive/15' },
   unblocked: { icon: RotateCcw, cls: 'text-muted-foreground bg-muted' },

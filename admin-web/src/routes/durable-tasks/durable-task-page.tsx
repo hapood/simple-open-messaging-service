@@ -23,7 +23,6 @@ const STATUS_FILTERS = [
   '',
   'PENDING',
   'PROCESSING',
-  'ASYNC_PROCESSING',
   'SUCCEEDED',
   'REJECTED',
   'FAILED',
@@ -33,8 +32,7 @@ const STATUS_FILTERS = [
 function statusVariant(status: DurableTaskStatus) {
   if (status === 'FAILED') return 'destructive' as const;
   if (status === 'SUCCEEDED') return 'default' as const;
-  if (status === 'PROCESSING' || status === 'ASYNC_PROCESSING')
-    return 'secondary' as const;
+  if (status === 'PROCESSING') return 'secondary' as const;
   return 'outline' as const;
 }
 

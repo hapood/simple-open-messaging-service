@@ -36,7 +36,6 @@ import { account, message, peerStateFeed } from '../src/database/schema.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { FederationThreadContentHeadService } from '../src/federation/federation-thread-content-head.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { truncateTablesForTest } from './support/truncate';
 
 describe('transactional thread fanout queue', () => {
@@ -51,7 +50,10 @@ describe('transactional thread fanout queue', () => {
   beforeAll(() => database.onModuleInit());
   afterAll(() => database.onApplicationShutdown());
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
+    );
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
@@ -90,7 +92,7 @@ describe('transactional thread fanout queue', () => {
         targetNamespaceId: namespaceId,
       });
     }
-    const heads = { refreshInTx: vi.fn().mockResolvedValue(undefined) };
+    const heads = { projectCurrentInTx: vi.fn().mockResolvedValue(true) };
     const events = { emit: vi.fn() };
     const handler = new FederationThreadFanoutTaskHandler(
       database,
@@ -368,8 +370,8 @@ describe('transactional thread fanout queue', () => {
 
   it('resumes federation fanout after the committed peer cursor without replaying peers', async () => {
     const f = await federationFixture();
-    f.heads.refreshInTx
-      .mockResolvedValueOnce(undefined)
+    f.heads.projectCurrentInTx
+      .mockResolvedValueOnce(true)
       .mockRejectedValueOnce(new Error('projection rollback'));
     await expect(f.handler.execute(f.task)).rejects.toThrow(
       'projection rollback',
@@ -383,11 +385,9 @@ describe('transactional thread fanout queue', () => {
     });
     expect(f.events.emit).toHaveBeenCalledTimes(1);
     await f.handler.execute(f.task);
-    expect(f.heads.refreshInTx.mock.calls.map((call) => call[1])).toEqual([
-      'fanout-a.test',
-      'fanout-b.test',
-      'fanout-b.test',
-    ]);
+    expect(
+      f.heads.projectCurrentInTx.mock.calls.map((call) => call[1]),
+    ).toEqual(['fanout-a.test', 'fanout-b.test', 'fanout-b.test']);
     expect(f.events.emit).toHaveBeenCalledTimes(2);
     expect(
       (
@@ -402,7 +402,7 @@ describe('transactional thread fanout queue', () => {
     const f = await federationFixture();
     await enqueue(20, 20);
     let successor: bigint | undefined;
-    f.heads.refreshInTx.mockImplementationOnce(async (tx) => {
+    f.heads.projectCurrentInTx.mockImplementationOnce(async (tx) => {
       const lock = (await acquireThreadContentLockInTx(tx, threadId))!;
       successor = await enqueueThreadFanoutInTx(
         tx,
@@ -416,7 +416,7 @@ describe('transactional thread fanout queue', () => {
       );
     });
     await f.handler.execute(f.task);
-    expect(f.heads.refreshInTx).toHaveBeenCalledTimes(1);
+    expect(f.heads.projectCurrentInTx).toHaveBeenCalledTimes(1);
     const rows = await database.db.select().from(durableTask);
     expect(rows.find((task) => task.id === f.task.id)?.status).toBe(
       'SUCCEEDED',
@@ -434,7 +434,7 @@ describe('transactional thread fanout queue', () => {
       throw new Error('lost wake');
     });
     await expect(f.handler.execute(f.task)).resolves.toBeUndefined();
-    expect(f.heads.refreshInTx).toHaveBeenCalledTimes(2);
+    expect(f.heads.projectCurrentInTx).toHaveBeenCalledTimes(2);
   });
 
   it('rolls back projection writes if its checkpoint cannot commit', async () => {
@@ -442,7 +442,7 @@ describe('transactional thread fanout queue', () => {
     const before = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
     });
-    f.heads.refreshInTx.mockImplementationOnce(async (tx) => {
+    f.heads.projectCurrentInTx.mockImplementationOnce(async (tx) => {
       await tx
         .update(messageThread)
         .set({ curSeq: 99 })
@@ -555,9 +555,7 @@ describe('transactional thread fanout queue', () => {
         (row) => row.taskType === federationType,
       )!;
       const heads = new FederationThreadContentHeadService(
-        database,
         new PeerStateFeedService(database),
-        new FederationNamespaceService(database),
       );
       const events = { emit: vi.fn() };
       const handler = new FederationThreadFanoutTaskHandler(
@@ -581,9 +579,74 @@ describe('transactional thread fanout queue', () => {
           .filter((row) => row.eventType === 'THREAD_CONTENT_HEAD')
           .map((row) => row.body),
       ).toEqual(active ? [{ messageEndSeq: 1, tombstoneEndSeq: 0 }] : []);
-      expect(events.emit).toHaveBeenCalledTimes(1);
+      expect(events.emit).toHaveBeenCalledTimes(active ? 1 : 0);
     },
   );
+
+  it('skips a hosted-group peer that only has a pending invitation audience', async () => {
+    const domain = 'fanout-pending-group.test';
+    const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
+    const [authoredGroup] = await database.db
+      .insert(groupAccount)
+      .values({ account: '!fanout-pending-group' })
+      .returning();
+    await database.db
+      .update(messageThread)
+      .set({
+        type: 'GROUP',
+        groupAccount: authoredGroup.account,
+        groupDomain: 'local',
+        groupAccountId: authoredGroup.id,
+        authorityNamespaceId: 0,
+      })
+      .where(eq(messageThread.id, threadId));
+    await database.db.insert(relationshipPair).values({
+      kind: 'GROUP_MEMBER',
+      endpointAType: 'GROUP',
+      endpointAAccount: authoredGroup.account,
+      endpointADomain: 'local',
+      endpointANamespaceId: namespaceId,
+      endpointBType: 'USER',
+      endpointBAccount: 'pending-member',
+      endpointBDomain: domain,
+      endpointBNamespaceId: namespaceId,
+      threadId,
+      active: false,
+    });
+    await database.db.insert(threadAudience).values({
+      threadId,
+      targetDomain: domain,
+      targetNamespaceId: namespaceId,
+    });
+    await enqueueBoth(1);
+    const queued = (await database.db.select().from(durableTask)).find(
+      (task) => task.taskType === federationType,
+    )!;
+    const events = { emit: vi.fn() };
+    const handler = new FederationThreadFanoutTaskHandler(
+      database,
+      new DurableTaskDispatcherService(),
+      new FederationThreadContentHeadService(
+        new PeerStateFeedService(database),
+      ),
+      events as never,
+    );
+
+    await handler.execute((await store.claim(queued.id))!);
+
+    expect(
+      await database.db
+        .select()
+        .from(peerStateFeed)
+        .where(eq(peerStateFeed.namespaceId, namespaceId)),
+    ).toEqual([]);
+    expect(events.emit).not.toHaveBeenCalled();
+    expect(
+      await database.db.query.durableTask.findFirst({
+        where: eq(durableTask.id, queued.id),
+      }),
+    ).toMatchObject({ checkpoint: { phase: 'DONE', afterNamespaceId: 0 } });
+  });
 
   it('merges pending watermarks by MAX', async () => {
     const first = await enqueue(5, 1);

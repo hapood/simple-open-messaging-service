@@ -24,6 +24,7 @@ import {
 import type {
   ConversationItem,
   Message,
+  MessageQueryRow,
   User,
   StandardResponse,
 } from '../../services/model';
@@ -98,7 +99,7 @@ function pendingItem(cid: string, id = -1) {
 describe('HttpItemSource (source-owned live demand over MessageRepository)', () => {
   /** Build a source whose repository walker returns `dbResult`, with a drivable liveSignal$. */
   function setup(
-    dbResult: StandardResponse<Message[]>,
+    dbResult: StandardResponse<MessageQueryRow[]>,
     tid = 42,
     outbox = new ThreadSendOutbox(),
     profileResolver?: ProfileResolutionService,
@@ -107,7 +108,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       threadId: number;
       seq: number;
     }>();
-    const deletedLive$ = new Subject<{ threadId: number; seqs: number[] }>();
+    const deletedLive$ = new Subject<{
+      threadId: number;
+      deletions: Array<{
+        seq: number;
+        type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+      }>;
+    }>();
     const getDeletedMessageSeqs = vi.fn().mockResolvedValue([]);
     const onQuoteDeleted = vi.fn();
     const reconnectSignal$ = new Subject<void>();
@@ -181,7 +188,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
               items: [
                 ...(older.data ?? []).slice().reverse(),
                 ...(newer.data ?? []),
-              ].map((message: Message) => ({ kind: 'message', message })),
+              ].map((message: MessageQueryRow) => ({
+                kind: 'message',
+                message,
+              })),
               hasOlder: older.hasMore ?? false,
               hasNewer: newer.hasMore ?? false,
               failed: older.failed === true || newer.failed === true,
@@ -203,7 +213,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
               ? (page.data ?? []).slice().reverse()
               : (page.data ?? []);
           return {
-            items: messages.map((message: Message) => ({
+            items: messages.map((message: MessageQueryRow) => ({
               kind: 'message',
               message,
             })),
@@ -402,6 +412,44 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(resolver.resolve).not.toHaveBeenCalled();
     src.destroy();
   });
+
+  it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
+    'projects an identified %s tombstone as a readable system row at the original sequence',
+    async (deletionType) => {
+      const tomb: MessageQueryRow = {
+        threadId: 42,
+        seq: 10,
+        creator: { account: 'alice', domain: 'local', namespaceId: 0 },
+        profileRev: 1,
+        createdAt: 1700000000000,
+        updatedAt: 1700000000100,
+        contentType: 'TOMB',
+        isDeleted: true,
+        deletionType,
+      };
+      const { src } = setup({
+        code: 0,
+        message: 'ok',
+        data: [tomb],
+        hasMore: false,
+      });
+
+      const items = await src.init(-1, 50, 0);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        id: 10,
+        data: {
+          type: 'system',
+          contentType: 'SYSTEM',
+          msgId: 10,
+          deletionType,
+          createdAtMs: 1700000000000,
+        },
+      });
+      src.destroy();
+    },
+  );
 
   it('renders on PENDING and resolves later messages from an already known sender', async () => {
     const pending = new Map<number, Subject<ResolvedProfile>>();
@@ -1134,9 +1182,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [quotedReply()],
     });
     await src.init(-1, 50, 0);
-    deletedLive$.next({ threadId: 99, seqs: [44] });
+    deletedLive$.next({
+      threadId: 99,
+      deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
+    });
     expect(onQuoteDeleted).not.toHaveBeenCalled();
-    deletedLive$.next({ threadId: 42, seqs: [44] });
+    deletedLive$.next({
+      threadId: 42,
+      deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
+    });
     expect(onQuoteDeleted).toHaveBeenCalledWith(101, 44);
     // A later stale HTTP/cache body cannot restore the preview.
     expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({
@@ -1145,7 +1199,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     src.destroy();
     onQuoteDeleted.mockClear();
-    deletedLive$.next({ threadId: 42, seqs: [44] });
+    deletedLive$.next({
+      threadId: 42,
+      deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
+    });
     expect(onQuoteDeleted).not.toHaveBeenCalled();
   });
 
@@ -1156,7 +1213,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [quotedReply()],
     });
     getDeletedMessageSeqs.mockImplementation(async () => {
-      deletedLive$.next({ threadId: 42, seqs: [44] });
+      deletedLive$.next({
+        threadId: 42,
+        deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
+      });
       return [];
     });
     expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({

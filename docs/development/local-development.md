@@ -57,16 +57,10 @@ maintenance outside the federation lab. The lab backend command automatically cr
 its isolated `soms_fed_lab_alpha`, `soms_fed_lab_bravo`, and `soms_fed_lab_charlie` databases, so a
 manual migration is not required before `npm run dev:be`.
 
-`database/migrations/0000_base.sql` is the greenfield baseline, consolidated through the former
-`0025_thread_state.sql` on 2026-09-10. It includes database functions, triggers, the local namespace,
-and the internal system account. Future changes must use new migration files.
-
-This squash starts a new migration history; it does not upgrade databases using the previous
-baseline or incremental migrations. The runner rejects their old checksums or missing migration
-versions. Recreate disposable development databases before migrating. Retain the previous migration
-release for existing deployments until a separate data-preserving transition is prepared.
-`npm run db:baseline` does not replace an existing ledger and is only for adopting a compatible
-schema with no migration history after reviewing its state.
+`database/migrations/0000_base.sql` is the greenfield baseline. It includes database functions,
+triggers, the local namespace, and the internal system account. Future changes must use new
+migration files. `npm run db:baseline` is only for adopting a compatible schema with no migration
+history after reviewing its state.
 
 Set `ADMIN_BOOTSTRAP_PASSWORD` before the first server start to create the initial `admin` account.
 The bootstrap is a no-op after an administrator exists.

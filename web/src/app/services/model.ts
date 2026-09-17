@@ -40,6 +40,15 @@ export type Message = Omit<
 export type MessageCreator = NonNullable<Message['creator']>;
 export type MessageQueryRow = Message | MessageTomb;
 
+/** A tomb can enter the cache before its message identity. Only identified tombs are timeline rows. */
+export function isRenderableMessageTomb(
+  row:
+    | MessageQueryRow
+    | import('../../../../shared/message-tomb').MessageDeletionMarker,
+): row is MessageTomb {
+  return row.contentType === 'TOMB' && 'creator' in row;
+}
+
 /** Namespace zero and the local sentinel both identify a subject on this server.
  * Source/authority namespace fields are separate and must not use this conversion. */
 export function localSubjectIdentity<
@@ -116,17 +125,15 @@ interface Group {
 type ConversationItemBase = {
   visible?: boolean;
   threadStateFeedId?: number;
-  establishedAt?: number;
-  defaultProfileResolved?: boolean;
-  defaultProfile?: ThreadStateSnapshot['profile'];
+  /** Account-scoped thread-feed coordinate. Present on every visible list item and authoritative for ordering. */
+  threadFeedId?: number;
   threadId: number;
   /** Immutable namespace owning this thread's publisher coordinate space. */
   authorityNamespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
-  lastMessageSeq?: number | null;
-  /** Latest per-thread deletion-log target advertised by the unified content feed. */
-  tombstoneEndSeq?: number;
+  /** Durable server message ceiling; independent from the evictable local message cache. */
+  lastMessageSeq: number | null;
   muted: boolean;
   blocked?: boolean;
   pinned: boolean;
@@ -138,7 +145,6 @@ type ConversationItemBase = {
   lastReadSeq?: number | null;
   unreadCount: number;
   // Latest-message preview state is derived from message catch-up and the local message cache.
-  lastMessagePreviewSeq?: number | null;
   lastMessagePreview?: string | null;
   lastMessageSenderId?: string | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
@@ -148,8 +154,6 @@ type ConversationItemBase = {
   /** -1 disables manager attention; zero is the pre-first-application position. */
   joinRequestReadFeedId?: number;
   groupInviteEndFeedId?: number;
-  /** Local timestamp observed when the thread head advances to a new unread application. */
-  joinRequestAt?: number | null;
 };
 
 export type ConversationItem = ConversationItemBase &
@@ -165,6 +169,8 @@ export type ConversationItem = ConversationItemBase &
         type: 'GROUP';
         peerUser?: never;
         group: Group;
+        /** Fixed full-recovery boundary. Null outside a resumable Group Meta rebuild. */
+        groupMetaRecoveryThrough: string | null;
       }
   );
 
@@ -262,6 +268,7 @@ export function createGroupConversation(
     mentionUnread: [],
     lastMessagePreview: null,
     lastMessageSenderId: null,
+    groupMetaRecoveryThrough: null,
     ...overrides,
     group: groupProfile,
   };
@@ -341,6 +348,7 @@ export interface DeletedMessageItem {
 /** Message feed may arrive before the account-owned structural snapshot. */
 interface PendingThreadListItem {
   threadId: number;
+  threadFeedId?: number;
   type: 'PENDING';
   unreadCount?: never;
   lastMessageSeq?: never;

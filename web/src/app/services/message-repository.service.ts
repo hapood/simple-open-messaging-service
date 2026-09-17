@@ -10,7 +10,7 @@ import {
 } from './message.service';
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { Message, MediaStatus } from './model';
+import { Message, MediaStatus, type MessageQueryRow } from './model';
 import { isTauri, tauriInvoke } from './runtime';
 
 export type NativeMessageHistoryDemand =
@@ -25,7 +25,7 @@ export type NativeMessageHistoryDemand =
   | { kind: 'newer'; after: number; count: number };
 
 export type MessageHistorySourceItem =
-  | { kind: 'message'; message: Message }
+  | { kind: 'message'; message: MessageQueryRow }
   | {
       kind: 'serverGap';
       left: number;
@@ -91,7 +91,10 @@ export class MessageRepository {
   readonly liveSignal$ = this.signal$.asObservable();
   private readonly deletedSignal$ = new Subject<{
     threadId: number;
-    seqs: number[];
+    deletions: Array<{
+      seq: number;
+      type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+    }>;
   }>();
   readonly deletedLive$ = this.deletedSignal$.asObservable();
   private readonly slotsChanged = new Subject<number>();
@@ -484,7 +487,7 @@ export class MessageRepository {
     cursor: number,
     boundary: number,
     take: number,
-  ): Promise<Message[]> {
+  ): Promise<MessageQueryRow[]> {
     const messages = await this.webdb.queryCachedMessages(
       threadId,
       direction === 'older' ? 'desc' : 'asc',
@@ -514,7 +517,7 @@ export class MessageRepository {
   private projectCommittedHistoryPage(
     direction: HistoryDirection,
     scan: { left: number; right: number },
-    messages: Message[],
+    messages: MessageQueryRow[],
     gaps: Array<{
       left: number;
       right: number;
@@ -722,7 +725,10 @@ export class MessageRepository {
       if (items.length) {
         this.deletedSignal$.next({
           threadId,
-          seqs: items.map((item) => item.messageSeq),
+          deletions: items.map((item) => ({
+            seq: item.messageSeq,
+            type: item.type,
+          })),
         });
       }
       hwm = next;

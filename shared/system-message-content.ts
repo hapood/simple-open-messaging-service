@@ -12,6 +12,7 @@ export interface SystemEventAddress {
 export type OrdinarySystemMessageContent<A = SystemEventAddress> =
   | { type: 'FRIEND_ADDED' }
   | { type: 'FRIEND_REMOVED'; initiator: A }
+  | { type: 'GROUP_CREATED'; creator: A }
   | {
       type:
         | 'GROUP_JOINED'
@@ -21,9 +22,7 @@ export type OrdinarySystemMessageContent<A = SystemEventAddress> =
       member: A;
     }
   | { type: 'GROUP_DISSOLVED' }
-  | { type: 'GROUP_OWNER_TRANSFERRED'; previousOwner: A; newOwner: A }
-  | { type: 'MESSAGE_WITHDRAWN'; author: A }
-  | { type: 'MESSAGES_MODERATED'; count: number };
+  | { type: 'GROUP_OWNER_TRANSFERRED'; previousOwner: A; newOwner: A };
 
 export type SystemMessageContent =
   | OrdinarySystemMessageContent
@@ -33,14 +32,13 @@ export const SystemMessageType = {
   CALL_ENDED: 'CALL_ENDED',
   FRIEND_ADDED: 'FRIEND_ADDED',
   FRIEND_REMOVED: 'FRIEND_REMOVED',
+  GROUP_CREATED: 'GROUP_CREATED',
   GROUP_JOINED: 'GROUP_JOINED',
   GROUP_LEFT: 'GROUP_LEFT',
   GROUP_DISSOLVED: 'GROUP_DISSOLVED',
   GROUP_ADMIN_GRANTED: 'GROUP_ADMIN_GRANTED',
   GROUP_ADMIN_REVOKED: 'GROUP_ADMIN_REVOKED',
   GROUP_OWNER_TRANSFERRED: 'GROUP_OWNER_TRANSFERRED',
-  MESSAGE_WITHDRAWN: 'MESSAGE_WITHDRAWN',
-  MESSAGES_MODERATED: 'MESSAGES_MODERATED',
 } as const;
 
 export function parseSystemMessageContent(
@@ -79,6 +77,9 @@ export function parseSystemMessageContent(
       case 'FRIEND_REMOVED':
         valid = keys('initiator') && address(body['initiator'], true);
         break;
+      case 'GROUP_CREATED':
+        valid = keys('creator') && address(body['creator']);
+        break;
       case 'GROUP_JOINED':
       case 'GROUP_LEFT':
       case 'GROUP_ADMIN_GRANTED':
@@ -93,16 +94,6 @@ export function parseSystemMessageContent(
           keys('previousOwner', 'newOwner') &&
           address(body['previousOwner']) &&
           address(body['newOwner']);
-        break;
-      case 'MESSAGE_WITHDRAWN':
-        valid = keys('author') && address(body['author']);
-        break;
-      case 'MESSAGES_MODERATED':
-        valid =
-          keys('count') &&
-          typeof body['count'] === 'number' &&
-          Number.isSafeInteger(body['count']) &&
-          body['count'] > 0;
         break;
     }
     return valid ? (body as unknown as OrdinarySystemMessageContent) : null;

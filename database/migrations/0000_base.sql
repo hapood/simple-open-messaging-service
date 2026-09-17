@@ -1,4 +1,4 @@
--- Greenfield schema baseline, consolidated on 2026-09-10.
+-- Greenfield schema baseline.
 -- Future schema changes belong in new migration files.
 
 --
@@ -80,10 +80,10 @@ CREATE TYPE public."DurableTaskKind" AS ENUM (
 --
 
 CREATE TYPE public."DurableTaskScopeType" AS ENUM (
+    'THREAD',
     'USER_PAIR',
     'GROUP',
-    'ACCOUNT_THREAD',
-    'THREAD'
+    'ACCOUNT_THREAD'
 );
 
 
@@ -94,7 +94,6 @@ CREATE TYPE public."DurableTaskScopeType" AS ENUM (
 CREATE TYPE public."DurableTaskStatus" AS ENUM (
     'PENDING',
     'PROCESSING',
-    'ASYNC_PROCESSING',
     'SUCCEEDED',
     'REJECTED',
     'FAILED',
@@ -145,7 +144,8 @@ CREATE TYPE public."FileSyncStatus" AS ENUM (
 
 CREATE TYPE public."GroupMetaMemberOperation" AS ENUM (
     'UPSERT',
-    'DEPART'
+    'DEPART',
+    'GROUP_PROFILE'
 );
 
 
@@ -197,7 +197,6 @@ CREATE TYPE public."MessageThreadType" AS ENUM (
 
 CREATE TYPE public."PeerStateEventType" AS ENUM (
     'RELATIONSHIP_INTENT',
-    'GROUP_META_FEED_HEAD',
     'THREAD_CONTENT_HEAD'
 );
 
@@ -246,7 +245,7 @@ CREATE FUNCTION public.attention_history_after_write() RETURNS trigger
 DECLARE s "AccountThreadState";
 BEGIN
   IF NEW."clearedSeq" IS NOT DISTINCT FROM OLD."clearedSeq" THEN RETURN NULL; END IF;
-  FOR s IN SELECT * FROM "AccountThreadState" WHERE "threadId" = NEW.id ORDER BY "accountId" FOR UPDATE LOOP
+  FOR s IN SELECT * FROM "AccountThreadState" WHERE "threadId" = NEW.id ORDER BY "accountId" FOR NO KEY UPDATE LOOP
     UPDATE "AccountThreadState" SET "unreadCount" =
       thread_unread_count(s, NEW."clearedSeq", s."lastReadSeq", s."messageEndSeq") WHERE id = s.id;
   END LOOP;
@@ -272,7 +271,7 @@ BEGIN
     AND NEW."contentType" = OLD."contentType"
     AND (NEW."contentType" <> 'PURE_TEXT' OR NEW.content IS NOT DISTINCT FROM OLD.content)
     THEN RETURN NEW; END IF;
-  PERFORM 1 FROM "MessageThread" WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD."threadId" ELSE NEW."threadId" END FOR UPDATE;
+  PERFORM 1 FROM "MessageThread" WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD."threadId" ELSE NEW."threadId" END FOR NO KEY UPDATE;
   IF TG_OP = 'UPDATE' AND (NEW.seq <> OLD.seq OR NEW."threadId" <> OLD."threadId") THEN
     RAISE EXCEPTION 'message sequence and thread are immutable';
   END IF;
@@ -291,30 +290,40 @@ SET default_table_access_method = heap;
 --
 
 CREATE TABLE public."AccountThreadState" (
-    id integer CONSTRAINT "ThreadParticipant_id_not_null" NOT NULL,
-    "accountId" integer CONSTRAINT "ThreadParticipant_accountId_not_null" NOT NULL,
-    "threadId" integer CONSTRAINT "ThreadParticipant_threadId_not_null" NOT NULL,
+    id integer NOT NULL,
+    "accountId" integer NOT NULL,
+    "threadId" integer NOT NULL,
     role public."GroupRole",
     "lastReadSeq" integer DEFAULT 0 NOT NULL,
-    muted boolean DEFAULT false CONSTRAINT "ThreadParticipant_muted_not_null" NOT NULL,
-    blocked boolean DEFAULT false CONSTRAINT "ThreadParticipant_blocked_not_null" NOT NULL,
-    pinned boolean DEFAULT false CONSTRAINT "ThreadParticipant_pinned_not_null" NOT NULL,
+    muted boolean DEFAULT false NOT NULL,
+    blocked boolean DEFAULT false NOT NULL,
+    pinned boolean DEFAULT false NOT NULL,
     "pinnedAt" timestamp(3) with time zone,
     "messageVisibleThroughSeq" bigint,
     alias character varying(64),
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP CONSTRAINT "ThreadParticipant_createdAt_not_null" NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP CONSTRAINT "ThreadParticipant_updatedAt_not_null" NOT NULL,
-    "threadFeedId" integer DEFAULT 0 CONSTRAINT "AccountThreadState_attentionFeedId_not_null" NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "threadFeedId" integer DEFAULT 0 NOT NULL,
     "unreadCount" integer DEFAULT 0 NOT NULL,
     "lastMentionSeq" integer,
     "messageEndSeq" integer DEFAULT 0 NOT NULL,
     "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
     "previewSeqs" integer[] DEFAULT '{}'::integer[] NOT NULL,
+    "joinRequestEndFeedId" integer DEFAULT 0 NOT NULL,
+    "joinRequestReadFeedId" integer DEFAULT '-1'::integer NOT NULL,
+    "groupInviteEndFeedId" integer DEFAULT 0 NOT NULL,
+    "groupMetaFeedEndId" integer,
+    "threadProfileRev" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "AccountThreadState_groupInviteEndFeedId_check" CHECK (("groupInviteEndFeedId" >= 0)),
+    CONSTRAINT "AccountThreadState_groupMetaFeedEndId_check" CHECK ((("groupMetaFeedEndId" IS NULL) OR ("groupMetaFeedEndId" >= 0))),
+    CONSTRAINT "AccountThreadState_joinRequestEndFeedId_check" CHECK (("joinRequestEndFeedId" >= 0)),
+    CONSTRAINT "AccountThreadState_joinRequestReadFeedId_check" CHECK ((("joinRequestReadFeedId" >= '-1'::integer) AND ("joinRequestReadFeedId" <= "joinRequestEndFeedId"))),
     CONSTRAINT "AccountThreadState_lastMentionSeq_check" CHECK ((("lastMentionSeq" IS NULL) OR ("lastMentionSeq" > 0))),
     CONSTRAINT "AccountThreadState_lastReadSeq_check" CHECK (("lastReadSeq" >= 0)),
     CONSTRAINT "AccountThreadState_messageEndSeq_check" CHECK (("messageEndSeq" >= 0)),
     CONSTRAINT "AccountThreadState_messageVisibleThroughSeq_check" CHECK ((("messageVisibleThroughSeq" IS NULL) OR ("messageVisibleThroughSeq" >= 0))),
     CONSTRAINT "AccountThreadState_threadFeedId_check" CHECK (("threadFeedId" > 0)),
+    CONSTRAINT "AccountThreadState_threadProfileRev_check" CHECK (("threadProfileRev" >= 0)),
     CONSTRAINT "AccountThreadState_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" >= 0)),
     CONSTRAINT "AccountThreadState_unreadCount_check" CHECK (("unreadCount" >= 0))
 );
@@ -346,7 +355,7 @@ CREATE TABLE public."Message" (
     CONSTRAINT "Message_origin_seq_check" CHECK ((("sourceNamespaceId" = 0) OR (("originSeq" IS NOT NULL) AND ("originSeq" > 0)))),
     CONSTRAINT "Message_profileRev_check" CHECK (("profileRev" >= 0)),
     CONSTRAINT "Message_seq_check" CHECK ((seq > 0)),
-    CONSTRAINT "Message_system_creator_check" CHECK (((("contentType" = 'SYSTEM'::public."ContentType") AND ("creatorAccount" IS NULL) AND ("creatorDomain" IS NULL)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND ("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL))))
+    CONSTRAINT "Message_system_creator_check" CHECK ((("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL) AND ((("contentType" = 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text = '$system'::text) AND (("creatorDomain")::text = 'local'::text) AND ("creatorNamespaceId" = 0) AND ("profileRev" = 0) AND ("sourceNamespaceId" = 0)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text <> '$system'::text)))))
 );
 
 
@@ -407,6 +416,43 @@ $$;
 
 
 --
+-- Name: group_meta_member_namespace(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.group_meta_member_namespace(p_thread_id integer, p_account text, p_domain text) RETURNS integer
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT CASE WHEN p_domain = 'local' THEN 0 ELSE COALESCE((
+    SELECT pair."endpointBNamespaceId"
+    FROM "RelationshipPair" pair
+    WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = p_thread_id
+      AND pair."endpointBType" = 'USER'
+      AND pair."endpointBAccount" = p_account
+      AND pair."endpointBDomain" = p_domain
+    ORDER BY pair.active DESC, pair."updatedAt" DESC, pair.id DESC
+    LIMIT 1
+  ), (
+    SELECT thread."authorityNamespaceId"
+    FROM "MessageThread" thread WHERE thread.id = p_thread_id
+  )) END;
+$$;
+
+
+--
+-- Name: notify_durable_task_work(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_durable_task_work() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM pg_notify('durable_task_work', '');
+  RETURN NULL;
+END;
+$$;
+
+
+--
 -- Name: publish_client_thread_state(integer, integer, bigint); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -421,8 +467,7 @@ DECLARE compact_key text;
 DECLARE position integer;
 DECLARE activated boolean;
 BEGIN
-  -- Serialize each owner's snapshot before reading any source facts.
-  PERFORM 1 FROM "Account" WHERE id = owner_id FOR UPDATE;
+  PERFORM 1 FROM "Account" WHERE id = owner_id FOR NO KEY UPDATE;
   SELECT t.type, t."authorityNamespaceId", s.blocked, s.role, s."createdAt", p.active,
     CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
       WHEN p."endpointAAccount" = a.account AND p."endpointADomain" = 'local' THEN p."endpointBAccount" ELSE p."endpointAAccount" END AS account,
@@ -457,8 +502,8 @@ BEGIN
       ELSE COALESCE((previous->>'establishedAt')::bigint, floor(extract(epoch FROM facts."createdAt") * 1000)::bigint) END,
     'profile', profile_ref);
   IF snapshot IS NOT DISTINCT FROM previous THEN RETURN; END IF;
-  UPDATE "Account" SET "stateFeedAllocatedThrough" = "stateFeedAllocatedThrough" + 1
-    WHERE id = owner_id RETURNING "stateFeedAllocatedThrough" INTO position;
+  UPDATE "Account" SET "clientStateFeedEndId" = "clientStateFeedEndId" + 1
+    WHERE id = owner_id RETURNING "clientStateFeedEndId" INTO position;
   INSERT INTO "ClientStateFeed" ("userId", account, domain, "eventType", "subjectAccount", "subjectDomain", "namespaceId", "feedId", body, "compactionKey")
     VALUES (owner_id, '', 'local', 'THREAD_STATE', thread_id::text, 'local', 0, position, snapshot, compact_key)
     ON CONFLICT ("userId", "compactionKey") DO UPDATE SET body = EXCLUDED.body, "feedId" = EXCLUDED."feedId", "updatedAt" = CURRENT_TIMESTAMP;
@@ -493,15 +538,13 @@ BEGIN
   IF TG_OP = 'UPDATE' AND (NEW."accountId" <> OLD."accountId" OR NEW."threadId" <> OLD."threadId") THEN
     RAISE EXCEPTION 'attention owner and thread are immutable';
   END IF;
-  -- Lifecycle boundaries still commit with their source transaction. Ordinary
+  -- Blocking still reconciles attention in the source transaction. Ordinary
   -- read/head updates already contain the signed delta computed by the writer.
-  IF TG_OP = 'UPDATE' AND (
-    NEW."messageVisibleThroughSeq" IS DISTINCT FROM OLD."messageVisibleThroughSeq"
-    OR NEW.blocked IS DISTINCT FROM OLD.blocked) THEN
-    SELECT "clearedSeq" INTO c FROM "MessageThread" WHERE id = NEW."threadId" FOR UPDATE;
+  IF TG_OP = 'UPDATE' AND NEW.blocked IS DISTINCT FROM OLD.blocked THEN
+    SELECT "clearedSeq" INTO c FROM "MessageThread" WHERE id = NEW."threadId" FOR NO KEY UPDATE;
     NEW."unreadCount" := thread_unread_count(NEW, c, NEW."lastReadSeq", NEW."messageEndSeq");
     NEW."previewSeqs" := ARRAY(SELECT seq FROM unnest(NEW."previewSeqs") seq
-      WHERE seq > GREATEST(NEW."lastReadSeq", COALESCE(c, 0))
+      WHERE seq >= NEW."lastReadSeq" AND seq > COALESCE(c, 0)
         AND seq <= COALESCE(NEW."messageVisibleThroughSeq", NEW."messageEndSeq") ORDER BY seq DESC);
   END IF;
   IF TG_OP = 'INSERT' OR NEW."threadFeedId" = 0
@@ -510,7 +553,11 @@ BEGIN
     OR NEW."lastReadSeq" IS DISTINCT FROM OLD."lastReadSeq"
     OR NEW."lastMentionSeq" IS DISTINCT FROM OLD."lastMentionSeq"
     OR NEW."messageEndSeq" IS DISTINCT FROM OLD."messageEndSeq"
-    OR NEW."tombstoneEndSeq" IS DISTINCT FROM OLD."tombstoneEndSeq" THEN
+    OR NEW."tombstoneEndSeq" IS DISTINCT FROM OLD."tombstoneEndSeq"
+    OR NEW."joinRequestEndFeedId" IS DISTINCT FROM OLD."joinRequestEndFeedId"
+    OR NEW."groupInviteEndFeedId" IS DISTINCT FROM OLD."groupInviteEndFeedId"
+    OR NEW."joinRequestReadFeedId" IS DISTINCT FROM OLD."joinRequestReadFeedId"
+    OR NEW."groupMetaFeedEndId" IS DISTINCT FROM OLD."groupMetaFeedEndId" THEN
     UPDATE "Account" SET "threadFeedEndId" = "threadFeedEndId" + 1
       WHERE id = NEW."accountId" RETURNING "threadFeedEndId" INTO NEW."threadFeedId";
   END IF;
@@ -541,8 +588,8 @@ CREATE TABLE public."Account" (
     "hashPwd" character varying(127),
     "mustChangePassword" boolean DEFAULT false NOT NULL,
     "disabledAt" timestamp(3) with time zone,
-    "stateFeedAllocatedThrough" integer DEFAULT 0 NOT NULL,
-    "threadFeedEndId" integer DEFAULT 0 CONSTRAINT "Account_readRevision_not_null" NOT NULL,
+    "clientStateFeedEndId" integer DEFAULT 0 NOT NULL,
+    "threadFeedEndId" integer DEFAULT 0 NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     account character varying(31) NOT NULL,
@@ -552,7 +599,8 @@ CREATE TABLE public."Account" (
     availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
     kind character varying(16) DEFAULT 'USER'::character varying NOT NULL,
     CONSTRAINT "Account_account_check" CHECK (((account)::text !~~ '!%'::text)),
-    CONSTRAINT "Account_availability_check" CHECK (((availability)::text = ANY ((ARRAY['AVAILABLE'::character varying, 'REMOVED'::character varying])::text[]))),
+    CONSTRAINT "Account_availability_check" CHECK (((availability)::text = ANY (ARRAY[('AVAILABLE'::character varying)::text, ('REMOVED'::character varying)::text]))),
+    CONSTRAINT "Account_clientStateFeedEndId_check" CHECK (("clientStateFeedEndId" >= 0)),
     CONSTRAINT "Account_defaultProfileRev_check" CHECK (("defaultProfileRev" >= 0)),
     CONSTRAINT "Account_kind_check" CHECK (((((kind)::text = 'USER'::text) AND ((account)::text <> '$system'::text)) OR (((kind)::text = 'SYSTEM'::text) AND ((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
     CONSTRAINT "Account_local_identity_check" CHECK ((((domain)::text = 'local'::text) AND ("namespaceId" = 0))),
@@ -862,7 +910,7 @@ CREATE TABLE public."DurableTask" (
     CONSTRAINT "DurableTask_payload_check" CHECK ((jsonb_typeof(payload) = 'object'::text)),
     CONSTRAINT "DurableTask_result_check" CHECK ((("resultCode" IS NULL) OR (status = ANY (ARRAY['SUCCEEDED'::public."DurableTaskStatus", 'REJECTED'::public."DurableTaskStatus"])))),
     CONSTRAINT "DurableTask_scope_key_check" CHECK ((length(("scopeKey")::text) > 0)),
-    CONSTRAINT "DurableTask_status_timestamps_check" CHECK ((((status = 'PENDING'::public."DurableTaskStatus") AND ("startedAt" IS NULL) AND ("completedAt" IS NULL)) OR ((status = ANY (ARRAY['PROCESSING'::public."DurableTaskStatus", 'ASYNC_PROCESSING'::public."DurableTaskStatus"])) AND ("startedAt" IS NOT NULL) AND ("completedAt" IS NULL)) OR ((status = ANY (ARRAY['SUCCEEDED'::public."DurableTaskStatus", 'REJECTED'::public."DurableTaskStatus", 'FAILED'::public."DurableTaskStatus"])) AND ("startedAt" IS NOT NULL) AND ("completedAt" IS NOT NULL)) OR ((status = 'SUPERSEDED'::public."DurableTaskStatus") AND ("startedAt" IS NULL) AND ("completedAt" IS NOT NULL)))),
+    CONSTRAINT "DurableTask_status_timestamps_check" CHECK ((((status = 'PENDING'::public."DurableTaskStatus") AND ("startedAt" IS NULL) AND ("completedAt" IS NULL)) OR ((status = 'PROCESSING'::public."DurableTaskStatus") AND ("startedAt" IS NOT NULL) AND ("completedAt" IS NULL)) OR ((status = ANY (ARRAY['SUCCEEDED'::public."DurableTaskStatus", 'REJECTED'::public."DurableTaskStatus", 'FAILED'::public."DurableTaskStatus"])) AND ("startedAt" IS NOT NULL) AND ("completedAt" IS NOT NULL)) OR ((status = 'SUPERSEDED'::public."DurableTaskStatus") AND ("startedAt" IS NULL) AND ("completedAt" IS NOT NULL)))),
     CONSTRAINT "DurableTask_supersession_check" CHECK (((status <> 'SUPERSEDED'::public."DurableTaskStatus") OR ("coalescingKey" IS NOT NULL))),
     CONSTRAINT "DurableTask_task_type_check" CHECK ((("taskType")::text ~ '^[A-Z][A-Z0-9_]*$'::text)),
     CONSTRAINT "DurableTask_timestamp_order_check" CHECK (((("startedAt" IS NULL) OR ("startedAt" >= "createdAt")) AND (("completedAt" IS NULL) OR ("completedAt" >= "createdAt")) AND (("completedAt" IS NULL) OR ("startedAt" IS NULL) OR ("completedAt" >= "startedAt"))))
@@ -948,15 +996,10 @@ CREATE TABLE public."FederatedPeer" (
     "dailyFileLimit" integer,
     "dailyFileBytesLimit" bigint,
     "recognizesPeer" boolean DEFAULT false NOT NULL,
-    "outboundRecognitionConfirmed" boolean DEFAULT false NOT NULL,
-    "inboundRecognitionConfirmed" boolean DEFAULT false NOT NULL,
-    "lightweightInboundReady" boolean DEFAULT false NOT NULL,
     "localServiceAvailable" boolean DEFAULT false NOT NULL,
     "remoteServiceReachable" boolean DEFAULT false NOT NULL,
-    "reverseRecognitionPending" boolean DEFAULT false NOT NULL,
-    "outboundRecognizedAt" timestamp(3) with time zone,
-    "inboundRecognizedAt" timestamp(3) with time zone,
     "resetAt" timestamp(3) with time zone,
+    "peerAcceptanceConfirmed" boolean DEFAULT false NOT NULL,
     CONSTRAINT "FederatedPeer_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
 );
 
@@ -991,42 +1034,6 @@ CREATE SEQUENCE public."FederatedPeerEvent_id_seq"
 --
 
 ALTER SEQUENCE public."FederatedPeerEvent_id_seq" OWNED BY public."FederatedPeerEvent".id;
-
-
---
--- Name: FederationDeletedCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationDeletedCursor" (
-    id bigint NOT NULL,
-    "threadId" integer NOT NULL,
-    "namespaceId" integer NOT NULL,
-    "streamAccount" character varying(255) DEFAULT ''::character varying NOT NULL,
-    "streamKind" character varying(32) NOT NULL,
-    "committedThrough" integer DEFAULT 0 NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationDeletedCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
-);
-
-
---
--- Name: FederationDeletedCursor_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."FederationDeletedCursor_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: FederationDeletedCursor_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."FederationDeletedCursor_id_seq" OWNED BY public."FederationDeletedCursor".id;
 
 
 --
@@ -1094,11 +1101,9 @@ CREATE TABLE public."FederationThreadSyncState" (
     "deletionRecoveryMaxMessageSeq" integer,
     "authorizationEpoch" integer DEFAULT 0 NOT NULL,
     "activeGapId" bigint,
-    "historyBoundaryReached" boolean DEFAULT false NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "namespaceId" integer NOT NULL,
     CONSTRAINT "FederationThreadSyncState_deletionRecovery_check" CHECK (((("deletionRecoveryThroughSeq" IS NULL) AND ("deletionRecoveryMaxMessageSeq" IS NULL)) OR (("deletionRecoveryThroughSeq" IS NOT NULL) AND ("deletionRecoveryMaxMessageSeq" IS NOT NULL) AND ("deletionRecoveryThroughSeq" > "deletionProcessedThroughSeq") AND ("deletionRecoveryThroughSeq" <= "deletionTargetSeq") AND ("deletionRecoveryMaxMessageSeq" >= 0)))),
-    CONSTRAINT "FederationThreadSyncState_history_check" CHECK ((NOT ("historyBoundaryReached" AND ("activeGapId" IS NOT NULL)))),
     CONSTRAINT "FederationThreadSyncState_messageSeqs_check" CHECK ((("messageTargetSeq" >= 0) AND ("deletionTargetSeq" >= 0) AND ("messageProcessedThroughSeq" >= 0) AND ("deletionProcessedThroughSeq" >= 0) AND ("messageProcessedThroughSeq" <= "messageTargetSeq") AND ("deletionProcessedThroughSeq" <= "deletionTargetSeq") AND ("authorizationEpoch" >= 0)))
 );
 
@@ -1241,14 +1246,26 @@ ALTER SEQUENCE public."GroupAccount_id_seq" OWNED BY public."GroupAccount".id;
 
 
 --
--- Name: GroupMetaFeed; Type: TABLE; Schema: public; Owner: -
+-- Name: GroupMeta; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."GroupMetaFeed" (
-    "feedEndId" bigint DEFAULT 0 NOT NULL,
+CREATE TABLE public."GroupMeta" (
+    "metaEndId" integer DEFAULT 0 NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
-    CONSTRAINT "GroupMetaFeed_feedEndId_check" CHECK (("feedEndId" >= 0))
+    "applicationEndId" integer DEFAULT 0 NOT NULL,
+    "invitationEndId" integer DEFAULT 0 NOT NULL,
+    "profileRev" integer DEFAULT 0 NOT NULL,
+    "metaTargetId" integer DEFAULT 0 NOT NULL,
+    "metaProcessedThroughId" integer DEFAULT 0 NOT NULL,
+    "metaRecoveryThroughId" integer,
+    CONSTRAINT "GroupMeta_applicationEndId_check" CHECK (("applicationEndId" >= 0)),
+    CONSTRAINT "GroupMeta_invitationEndId_check" CHECK (("invitationEndId" >= 0)),
+    CONSTRAINT "GroupMeta_metaEndId_check" CHECK (("metaEndId" >= 0)),
+    CONSTRAINT "GroupMeta_metaProcessedThroughId_check" CHECK ((("metaProcessedThroughId" >= 0) AND ("metaProcessedThroughId" <= "metaTargetId"))),
+    CONSTRAINT "GroupMeta_metaRecovery_check" CHECK ((("metaRecoveryThroughId" IS NULL) OR (("metaProcessedThroughId" < "metaRecoveryThroughId") AND ("metaRecoveryThroughId" <= "metaTargetId")))),
+    CONSTRAINT "GroupMeta_metaTargetId_check" CHECK (("metaTargetId" >= 0)),
+    CONSTRAINT "GroupMeta_profileRev_check" CHECK (("profileRev" >= 0))
 );
 
 
@@ -1257,34 +1274,16 @@ CREATE TABLE public."GroupMetaFeed" (
 --
 
 CREATE TABLE public."GroupMetaMemberFeed" (
-    "feedId" bigint NOT NULL,
+    "feedId" integer NOT NULL,
     operation public."GroupMetaMemberOperation" NOT NULL,
     body jsonb NOT NULL,
-    "fullSyncRunId" bigint,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "memberDomain" character varying(63) NOT NULL,
-    "memberNamespaceId" integer NOT NULL,
-    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb))))),
+    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
-);
-
-
---
--- Name: GroupMetaProfileFeed; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."GroupMetaProfileFeed" (
-    "feedId" bigint NOT NULL,
-    "profileRev" integer NOT NULL,
-    "fullSyncRunId" bigint,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "threadId" integer NOT NULL,
-    CONSTRAINT "GroupMetaProfileFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "GroupMetaProfileFeed_profileRev_check" CHECK (("profileRev" >= 0))
 );
 
 
@@ -1293,21 +1292,17 @@ CREATE TABLE public."GroupMetaProfileFeed" (
 --
 
 CREATE TABLE public."GroupRequestProjection" (
-    "managerUserId" integer NOT NULL,
     "threadId" integer NOT NULL,
-    direction character varying(15) NOT NULL,
-    "feedId" integer NOT NULL,
-    "requestId" bigint NOT NULL,
-    status character varying(15) NOT NULL,
-    note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone NOT NULL,
-    "expiresAt" timestamp(3) with time zone NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "memberDomain" character varying(63) NOT NULL,
     "memberNamespaceId" integer NOT NULL,
     "memberProfileRev" integer NOT NULL,
+    direction character varying(15) NOT NULL,
+    "feedId" integer NOT NULL,
+    status character varying(15) NOT NULL,
+    note character varying(255) DEFAULT ''::character varying NOT NULL,
+    "requestedAt" timestamp(3) with time zone NOT NULL,
+    "expiresAt" timestamp(3) with time zone NOT NULL,
     CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY (ARRAY[('APPLICATION'::character varying)::text, ('INVITATION'::character varying)::text]))),
     CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval)))),
@@ -1327,8 +1322,10 @@ CREATE TABLE public."IdentityNamespace" (
     "identityPinnedAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
+    "stateFeedEndId" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
-    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("retiredAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL))))
+    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("retiredAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL)))),
+    CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0))))
 );
 
 
@@ -1433,7 +1430,7 @@ CREATE TABLE public."MessageAsset" (
 
 CREATE TABLE public."MessageReport" (
     "threadId" integer NOT NULL,
-    seq integer CONSTRAINT "MessageReport_messageSeq_not_null" NOT NULL,
+    seq integer NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL
@@ -1450,7 +1447,7 @@ CREATE TABLE public."MessageThread" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL,
     "curSeq" integer DEFAULT 0 NOT NULL,
-    "deletionSeqAllocatedThrough" integer DEFAULT 0 NOT NULL,
+    "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
     "pullUntil" integer DEFAULT 0 NOT NULL,
     "authorityNamespaceId" integer DEFAULT 0 NOT NULL,
     "federationVersion" integer DEFAULT 0 NOT NULL,
@@ -1463,10 +1460,10 @@ CREATE TABLE public."MessageThread" (
     "federationRoundsEnabled" boolean DEFAULT false NOT NULL,
     CONSTRAINT "MessageThread_authorizationEpoch_check" CHECK (("authorizationEpoch" >= 0)),
     CONSTRAINT "MessageThread_clearedSeq_check" CHECK ((("clearedSeq" IS NULL) OR (("clearedSeq" >= 0) AND ("clearedSeq" <= "curSeq")))),
-    CONSTRAINT "MessageThread_deletionSeqAllocatedThrough_check" CHECK (("deletionSeqAllocatedThrough" >= 0)),
     CONSTRAINT "MessageThread_federationVersion_check" CHECK (("federationVersion" >= 0)),
     CONSTRAINT "MessageThread_group_identity_check" CHECK (((type <> 'GROUP'::public."MessageThreadType") OR (((("groupDomain")::text = 'local'::text) = ("authorityNamespaceId" = 0)) AND ((("groupDomain")::text = 'local'::text) = ("groupAccountId" IS NOT NULL)) AND (("groupAccount")::text ~~ '!%'::text)))),
-    CONSTRAINT "MessageThread_group_type_check" CHECK ((((type = 'GROUP'::public."MessageThreadType") AND ("groupAccount" IS NOT NULL) AND ("groupDomain" IS NOT NULL)) OR ((type = 'P2P'::public."MessageThreadType") AND ("groupAccount" IS NULL) AND ("groupDomain" IS NULL) AND ("groupAccountId" IS NULL) AND ("groupDissolvedAt" IS NULL))))
+    CONSTRAINT "MessageThread_group_type_check" CHECK ((((type = 'GROUP'::public."MessageThreadType") AND ("groupAccount" IS NOT NULL) AND ("groupDomain" IS NOT NULL)) OR ((type = 'P2P'::public."MessageThreadType") AND ("groupAccount" IS NULL) AND ("groupDomain" IS NULL) AND ("groupAccountId" IS NULL) AND ("groupDissolvedAt" IS NULL)))),
+    CONSTRAINT "MessageThread_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" >= 0))
 );
 
 
@@ -1526,7 +1523,7 @@ CREATE TABLE public."PeerStateFeed" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "PeerStateFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text <> ''::text)) OR (("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType") AND ((((account)::text ~~ '!%'::text) AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text)) OR (((account)::text !~~ '!%'::text) AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text = ("peerDomain")::text)))) OR (("eventType" = 'GROUP_META_FEED_HEAD'::public."PeerStateEventType") AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text))))
+    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text <> ''::text)) OR (("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType") AND ((((account)::text ~~ '!%'::text) AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text)) OR (((account)::text !~~ '!%'::text) AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text = ("peerDomain")::text))))))
 );
 
 
@@ -1541,19 +1538,6 @@ CREATE TABLE public."PeerStateFeedPullCursor" (
     "committedThrough" bigint DEFAULT 0 NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "PeerStateFeedPullCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
-);
-
-
---
--- Name: PeerStateFeedTarget; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."PeerStateFeedTarget" (
-    "peerDomain" character varying(63) NOT NULL,
-    "namespaceId" integer NOT NULL,
-    "allocatedThrough" bigint DEFAULT 0 NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "PeerStateFeedTarget_allocatedThrough_check" CHECK (("allocatedThrough" >= 0))
 );
 
 
@@ -1895,10 +1879,10 @@ ALTER SEQUENCE public."ThreadAudience_id_seq" OWNED BY public."ThreadAudience".i
 
 
 --
--- Name: ThreadParticipant_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: AccountThreadState_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public."ThreadParticipant_id_seq"
+CREATE SEQUENCE public."AccountThreadState_id_seq"
     AS integer
     START WITH 1
     INCREMENT BY 1
@@ -1908,10 +1892,10 @@ CREATE SEQUENCE public."ThreadParticipant_id_seq"
 
 
 --
--- Name: ThreadParticipant_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: AccountThreadState_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
-ALTER SEQUENCE public."ThreadParticipant_id_seq" OWNED BY public."AccountThreadState".id;
+ALTER SEQUENCE public."AccountThreadState_id_seq" OWNED BY public."AccountThreadState".id;
 
 
 --
@@ -2112,7 +2096,7 @@ ALTER TABLE ONLY public."Account" ALTER COLUMN id SET DEFAULT nextval('public."A
 -- Name: AccountThreadState id; Type: DEFAULT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."AccountThreadState" ALTER COLUMN id SET DEFAULT nextval('public."ThreadParticipant_id_seq"'::regclass);
+ALTER TABLE ONLY public."AccountThreadState" ALTER COLUMN id SET DEFAULT nextval('public."AccountThreadState_id_seq"'::regclass);
 
 
 --
@@ -2169,13 +2153,6 @@ ALTER TABLE ONLY public."FederatedMessageTombstone" ALTER COLUMN id SET DEFAULT 
 --
 
 ALTER TABLE ONLY public."FederatedPeerEvent" ALTER COLUMN id SET DEFAULT nextval('public."FederatedPeerEvent_id_seq"'::regclass);
-
-
---
--- Name: FederationDeletedCursor id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationDeletedCursor" ALTER COLUMN id SET DEFAULT nextval('public."FederationDeletedCursor_id_seq"'::regclass);
 
 
 --
@@ -2427,14 +2404,6 @@ ALTER TABLE ONLY public."FederatedPeer"
 
 
 --
--- Name: FederationDeletedCursor FederationDeletedCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationDeletedCursor"
-    ADD CONSTRAINT "FederationDeletedCursor_pkey" PRIMARY KEY (id);
-
-
---
 -- Name: FederationMessageReceipt FederationMessageReceipt_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2523,11 +2492,11 @@ ALTER TABLE ONLY public."GroupAccount"
 
 
 --
--- Name: GroupMetaFeed GroupMetaFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupMeta GroupMeta_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."GroupMetaFeed"
-    ADD CONSTRAINT "GroupMetaFeed_pkey" PRIMARY KEY ("threadId");
+ALTER TABLE ONLY public."GroupMeta"
+    ADD CONSTRAINT "GroupMeta_pkey" PRIMARY KEY ("threadId");
 
 
 --
@@ -2539,19 +2508,11 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 
 --
--- Name: GroupMetaProfileFeed GroupMetaProfileFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaProfileFeed"
-    ADD CONSTRAINT "GroupMetaProfileFeed_pkey" PRIMARY KEY ("threadId");
-
-
---
 -- Name: GroupRequestProjection GroupRequestProjection_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("managerUserId", "threadId", "memberAccount", "memberDomain", "memberNamespaceId", direction);
+    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("threadId", "memberAccount", "memberDomain", "memberNamespaceId", direction);
 
 
 --
@@ -2632,14 +2593,6 @@ ALTER TABLE ONLY public."Message"
 
 ALTER TABLE ONLY public."PeerStateFeedPullCursor"
     ADD CONSTRAINT "PeerStateFeedPullCursor_pkey" PRIMARY KEY ("namespaceId");
-
-
---
--- Name: PeerStateFeedTarget PeerStateFeedTarget_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedTarget"
-    ADD CONSTRAINT "PeerStateFeedTarget_pkey" PRIMARY KEY ("namespaceId");
 
 
 --
@@ -2955,14 +2908,14 @@ CREATE INDEX "DiagnosticsReport_status_idx" ON public."DiagnosticsReport" USING 
 -- Name: DurableTask_blocking_scope_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "DurableTask_blocking_scope_id_idx" ON public."DurableTask" USING btree (kind, "scopeKey", id) WHERE (status = ANY (ARRAY['PENDING'::public."DurableTaskStatus", 'PROCESSING'::public."DurableTaskStatus", 'ASYNC_PROCESSING'::public."DurableTaskStatus", 'FAILED'::public."DurableTaskStatus"]));
+CREATE INDEX "DurableTask_blocking_scope_id_idx" ON public."DurableTask" USING btree (kind, "scopeKey", id) WHERE (status = ANY (ARRAY['PENDING'::public."DurableTaskStatus", 'PROCESSING'::public."DurableTaskStatus"]));
 
 
 --
 -- Name: DurableTask_one_processing_per_scope; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "DurableTask_one_processing_per_scope" ON public."DurableTask" USING btree (kind, "scopeKey") WHERE (status = ANY (ARRAY['PROCESSING'::public."DurableTaskStatus", 'ASYNC_PROCESSING'::public."DurableTaskStatus"]));
+CREATE UNIQUE INDEX "DurableTask_one_processing_per_scope" ON public."DurableTask" USING btree (kind, "scopeKey") WHERE (status = 'PROCESSING'::public."DurableTaskStatus");
 
 
 --
@@ -3019,13 +2972,6 @@ CREATE INDEX "FederatedPeer_lastSuccessAt_idx" ON public."FederatedPeer" USING b
 --
 
 CREATE INDEX "FederatedPeer_trustLevel_idx" ON public."FederatedPeer" USING btree ("trustLevel");
-
-
---
--- Name: FederationDeletedCursor_stream_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FederationDeletedCursor_stream_key" ON public."FederationDeletedCursor" USING btree ("threadId", "namespaceId", "streamAccount", "streamKind");
 
 
 --
@@ -3134,17 +3080,17 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 
 
 --
--- Name: GroupMetaMemberFeed_full_sync_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: GroupMetaMemberFeed_member_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "GroupMetaMemberFeed_full_sync_idx" ON public."GroupMetaMemberFeed" USING btree ("threadId", "fullSyncRunId", "feedId");
+CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "memberDomain");
 
 
 --
--- Name: GroupMetaMemberFeed_member_feed_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: GroupRequestProjection_direction_feed_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "GroupMetaMemberFeed_member_feed_idx" ON public."GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "memberDomain", "memberNamespaceId", "feedId");
+CREATE UNIQUE INDEX "GroupRequestProjection_direction_feed_key" ON public."GroupRequestProjection" USING btree ("threadId", direction, "feedId");
 
 
 --
@@ -3155,17 +3101,10 @@ CREATE INDEX "GroupRequestProjection_expiry_idx" ON public."GroupRequestProjecti
 
 
 --
--- Name: GroupRequestProjection_manager_feed_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "GroupRequestProjection_manager_feed_key" ON public."GroupRequestProjection" USING btree ("managerUserId", "feedId");
-
-
---
 -- Name: GroupRequestProjection_thread_feed_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "GroupRequestProjection_thread_feed_idx" ON public."GroupRequestProjection" USING btree ("managerUserId", "threadId", "feedId");
+CREATE INDEX "GroupRequestProjection_thread_feed_idx" ON public."GroupRequestProjection" USING btree ("threadId", "feedId");
 
 
 --
@@ -3533,6 +3472,20 @@ CREATE UNIQUE INDEX "WebAuthnCredential_credentialId_key" ON public."WebAuthnCre
 
 
 --
+-- Name: DurableTask DurableTask_insert_wake; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER "DurableTask_insert_wake" AFTER INSERT ON public."DurableTask" FOR EACH ROW WHEN ((new.status = 'PENDING'::public."DurableTaskStatus")) EXECUTE FUNCTION public.notify_durable_task_work();
+
+
+--
+-- Name: DurableTask DurableTask_update_wake; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER "DurableTask_update_wake" AFTER UPDATE ON public."DurableTask" FOR EACH ROW WHEN (((old.status IS DISTINCT FROM new.status) OR ((new.status = 'PENDING'::public."DurableTaskStatus") AND (((old."taskType")::text IS DISTINCT FROM (new."taskType")::text) OR (old.payload IS DISTINCT FROM new.payload) OR (old.checkpoint IS DISTINCT FROM new.checkpoint))))) EXECUTE FUNCTION public.notify_durable_task_work();
+
+
+--
 -- Name: MessageThread attention_history_after_write; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3703,22 +3656,6 @@ ALTER TABLE ONLY public."FederatedPeer"
 
 
 --
--- Name: FederationDeletedCursor FederationDeletedCursor_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationDeletedCursor"
-    ADD CONSTRAINT "FederationDeletedCursor_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
-
-
---
--- Name: FederationDeletedCursor FederationDeletedCursor_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationDeletedCursor"
-    ADD CONSTRAINT "FederationDeletedCursor_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON UPDATE CASCADE ON DELETE CASCADE;
-
-
---
 -- Name: FederationMessageReceipt FederationMessageReceipt_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3839,30 +3776,6 @@ ALTER TABLE ONLY public."ForwardMessage"
 
 
 --
--- Name: GroupMetaFeed GroupMetaFeed_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaFeed"
-    ADD CONSTRAINT "GroupMetaFeed_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_fullSyncRunId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_fullSyncRunId_fkey" FOREIGN KEY ("fullSyncRunId") REFERENCES public."DurableTask"(id) ON DELETE RESTRICT;
-
-
---
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_memberNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_memberNamespaceId_fkey" FOREIGN KEY ("memberNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
-
-
---
 -- Name: GroupMetaMemberFeed GroupMetaMemberFeed_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3871,27 +3784,11 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 
 --
--- Name: GroupMetaProfileFeed GroupMetaProfileFeed_fullSyncRunId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupMeta GroupMeta_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."GroupMetaProfileFeed"
-    ADD CONSTRAINT "GroupMetaProfileFeed_fullSyncRunId_fkey" FOREIGN KEY ("fullSyncRunId") REFERENCES public."DurableTask"(id) ON DELETE RESTRICT;
-
-
---
--- Name: GroupMetaProfileFeed GroupMetaProfileFeed_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaProfileFeed"
-    ADD CONSTRAINT "GroupMetaProfileFeed_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupRequestProjection GroupRequestProjection_managerUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_managerUserId_fkey" FOREIGN KEY ("managerUserId") REFERENCES public."Account"(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public."GroupMeta"
+    ADD CONSTRAINT "GroupMeta_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
 
 
 --
@@ -3988,14 +3885,6 @@ ALTER TABLE ONLY public."Message"
 
 ALTER TABLE ONLY public."PeerStateFeedPullCursor"
     ADD CONSTRAINT "PeerStateFeedPullCursor_namespace_fkey" FOREIGN KEY ("peerDomain", "namespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
-
-
---
--- Name: PeerStateFeedTarget PeerStateFeedTarget_namespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedTarget"
-    ADD CONSTRAINT "PeerStateFeedTarget_namespace_fkey" FOREIGN KEY ("peerDomain", "namespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
 
 
 --
@@ -4193,7 +4082,6 @@ ALTER TABLE ONLY public."WebAuthnCredential"
 --
 -- PostgreSQL database dump complete
 --
-
 
 
 -- Required local identities.

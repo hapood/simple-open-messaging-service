@@ -20,12 +20,6 @@ import { User } from './model';
 import { PreferenceStore } from './preference-store.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 
-/** Flush microtasks + macrotasks so the cold HttpClient POST (subscribed inside updateSessionProfile)
- *  settles through to the sessionProfile signal. */
-function flush(ms = 0): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /** Match the POST /user/my-profile request regardless of the runtime apiOrigin (empty same-origin in
  *  the browser, absolute under Tauri). */
 const isMyProfile = (req: HttpRequest<unknown>): boolean =>
@@ -115,20 +109,21 @@ describe('UserService profile refresh', () => {
   // multi-device refresh suffered the same staleness). The second call here MUST issue a second request
   // and adopt its CHANGED response — only force does that.
   it('updateSessionProfile() forces a re-fetch even when sessionProfile is already set', async () => {
-    // First refresh seeds sessionProfile with name = 'A'.
+    // First refresh seeds sessionProfile with name = 'A'. The cold POST is subscribed inside
+    // updateSessionProfile — expectOne throws until it arrives, and waitFor retries on that throw.
     svc.updateSessionProfile();
-    await flush(50);
-    httpMock.expectOne(isMyProfile).flush(profile({ name: 'A' }));
-    await flush();
-    expect(svc.sessionProfile()?.name).toBe('A');
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
+      profile({ name: 'A' }),
+    );
+    await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('A'));
 
     // Second refresh — sessionProfile is already set. The bug would short-circuit here (no request,
     // stale 'A' stays). The fix issues the request regardless and adopts the new value.
     svc.updateSessionProfile();
-    await flush();
-    httpMock.expectOne(isMyProfile).flush(profile({ name: 'B' }));
-    await flush();
-    expect(svc.sessionProfile()?.name).toBe('B');
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
+      profile({ name: 'B' }),
+    );
+    await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('B'));
   });
 
   // Contrast: ensureProfile() (no force) is the idempotent get-or-load — it DOES short-circuit to the
@@ -137,8 +132,9 @@ describe('UserService profile refresh', () => {
   // so the force cannot be "simplified" back out of the refresh path.
   it('ensureProfile() (no force) short-circuits to the cached profile on the second call', async () => {
     const first = firstValueFrom(svc.ensureProfile());
-    await flush();
-    httpMock.expectOne(isMyProfile).flush(profile({ name: 'A' }));
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
+      profile({ name: 'A' }),
+    );
     await first;
     expect(svc.sessionProfile()?.name).toBe('A');
 
@@ -305,7 +301,14 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     );
 
     await svc.establishSession(1, 0);
-    await flush();
+    // The cleanup is fire-and-forget inside establishSession; its completion is marked by the
+    // persisted timestamp (written only after the cleanup resolves) — wait on that, not on a sleep.
+    await vi.waitFor(() =>
+      expect(webdb.putMeta).toHaveBeenCalledWith(
+        'relationshipRequestCleanupAt',
+        expect.any(Number),
+      ),
+    );
 
     expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
     expect(webdb.putMeta).toHaveBeenCalledWith(
@@ -331,7 +334,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     });
 
     await svc.establishSession(1, 0);
-    await flush();
+    // No wait needed: the skip-vs-run branch is evaluated inside establishSession, so once the
+    // await above resolves the decision is already final.
 
     expect(webdb.cleanupRelationshipRequests).not.toHaveBeenCalled();
   });
@@ -353,7 +357,12 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     });
 
     await svc.establishSession(1, 0);
-    await flush();
+    await vi.waitFor(() =>
+      expect(webdb.putMeta).toHaveBeenCalledWith(
+        'relationshipRequestCleanupAt',
+        expect.any(Number),
+      ),
+    );
 
     expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
   });
@@ -436,8 +445,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
     const done = svc.establishSession(2, 0);
-    await flush();
-    httpMock.expectOne(isMyProfile).flush(profile({ id: 2 }));
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
+      profile({ id: 2 }),
+    );
     await done;
 
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1'); // previous user's DB torn down
@@ -455,7 +465,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBeNull();
-    await flush();
+    // clearSession awaits the preference removal before it resolves — no drain needed.
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBeUndefined();

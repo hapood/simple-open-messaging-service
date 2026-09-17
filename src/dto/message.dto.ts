@@ -16,6 +16,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ContentType } from '../database/enums.js';
+import { THREAD_PREVIEW_LIMIT } from '../message/thread-preview-limit.js';
 
 /** Message-domain request DTOs. Validation rules are ported from the original message.controller inline types. */
 
@@ -378,12 +379,14 @@ export class ThreadFeedDeltaDto {
   @ApiPropertyOptional({
     default: 0,
     minimum: 0,
-    description: 'Number of memory previews, up to THREAD_PREVIEW_LIMIT.',
+    maximum: THREAD_PREVIEW_LIMIT,
+    description: 'Number of memory previews, up to 3.',
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(THREAD_PREVIEW_LIMIT)
   previewCount?: number;
 
   @ApiProperty({ example: 0 })

@@ -21,11 +21,9 @@ test('retains drain diagnostics and terminal errors without a shutdown flush', a
             durableTaskActivity: async () => ({
               pendingCount: 0,
               processing: [],
-              asyncProcessing: [],
               queryMs: {
                 PENDING: 2,
                 PROCESSING: 3,
-                ASYNC_PROCESSING: 4,
                 FAILED: 5,
               },
             }),

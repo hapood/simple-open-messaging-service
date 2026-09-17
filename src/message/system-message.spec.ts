@@ -45,33 +45,6 @@ describe('system message content', () => {
     ).toBeNull();
   });
 
-  it('validates deletion event-specific fields', () => {
-    expect(
-      parseSystemMessageContent(
-        stringifySystemMessageContent({
-          type: SystemMessageType.MESSAGE_WITHDRAWN,
-          author: { account: 'alice', domain: 'local' },
-        }),
-      ),
-    ).not.toBeNull();
-    expect(
-      parseSystemMessageContent(
-        stringifySystemMessageContent({
-          type: SystemMessageType.MESSAGES_MODERATED,
-          count: 3,
-        }),
-      ),
-    ).not.toBeNull();
-    expect(
-      parseSystemMessageContent(
-        JSON.stringify({
-          type: SystemMessageType.MESSAGES_MODERATED,
-          count: 0,
-        }),
-      ),
-    ).toBeNull();
-  });
-
   it.each([
     {
       type: 'FRIEND_REMOVED',
@@ -85,6 +58,7 @@ describe('system message content', () => {
       type: 'FRIEND_REMOVED',
       initiator: { account: '$system', domain: 'local' },
     },
+    { type: 'GROUP_CREATED', creator: { account: 'alice', domain: 'local' } },
     { type: 'GROUP_LEFT', member: { account: 'bob', domain: 'peer.test' } },
   ])('accepts event-specific content: $type', (body) => {
     expect(parseSystemMessageContent(JSON.stringify(body))).toEqual(body);
@@ -103,6 +77,10 @@ describe('system message content', () => {
       initiator: { account: '$system', domain: 'local' },
     },
     { type: 'GROUP_LEFT', subject: { account: 'bob', domain: 'local' } },
+    {
+      type: 'GROUP_CREATED',
+      member: { account: 'alice', domain: 'local' },
+    },
     {
       type: 'GROUP_LEFT',
       member: { account: 'bob', domain: 'local' },

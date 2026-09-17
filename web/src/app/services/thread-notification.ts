@@ -37,7 +37,6 @@ export function threadNotificationDescriptor(
     retracted: string;
     removed: string;
   },
-  previewCount: 1 | 5 = 1,
 ): NotificationDescriptor {
   const preview = state.previews
     ?.filter((p) => p.seq > (item.lastReadSeq ?? state.lastReadSeq))
@@ -61,13 +60,12 @@ export function threadNotificationDescriptor(
       : preview.status === 'MODERATION_REMOVAL'
         ? copy.removed
         : preview.text || copy.privateBody;
-  const recent = state.previews
-    ?.filter((p) => p.seq > (item.lastReadSeq ?? state.lastReadSeq))
-    .sort((a, b) => b.seq - a.seq)
-    .slice(0, previewCount);
+  const recent = state.previews?.filter(
+    (p) => p.seq > (item.lastReadSeq ?? state.lastReadSeq),
+  );
   const text =
-    previewCount === 5 && recent?.length
-      ? recent.reverse().map(textFor).join('\n')
+    recent?.length
+      ? recent.map(textFor).join('\n')
       : preview
         ? textFor(preview)
         : copy.privateBody;

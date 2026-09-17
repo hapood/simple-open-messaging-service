@@ -432,7 +432,7 @@ async fn open_one_stream(
             }
             let result = tokio::select! {
                 _ = feed_cancel.cancelled() => break,
-                result = crate::native_db::attention::sync_thread_feed(Some(&feed_app), &feed_proxy, user_id, target, 1) => result,
+                result = crate::native_db::attention::sync_thread_feed(Some(&feed_app), &feed_proxy, user_id, target) => result,
             };
             if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
                 break;
@@ -442,14 +442,27 @@ async fn open_one_stream(
                     if let Some(error) = &result.error {
                         warn!("thread feed wake failed; next wake retries: {error}");
                     }
-                    // Local completion, not a server SSE event. A renderer only reads committed DB changes.
+                    let mut changes = Vec::new();
+                    if !result.states.is_empty() {
+                        changes.push("THREADS");
+                    }
+                    if !result.group_thread_ids.is_empty() {
+                        changes.push("GROUP_META");
+                    }
+                    // Local completion, not a server SSE event. The renderer only receives a wake and
+                    // re-reads committed native storage.
                     let _ = feed_app.emit(
                         "soms-sse-event",
                         SseEventPayload {
                             event: "LOCAL_THREAD_FEED_COMMITTED".into(),
                             status: 0,
                             message: "local data committed".into(),
-                            data: serde_json::json!({ "userId": user_id, "cursor": result.cursor }),
+                            data: serde_json::json!({
+                                "userId": user_id,
+                                "cursor": result.cursor,
+                                "changes": changes,
+                                "groupThreadIds": result.group_thread_ids,
+                            }),
                         },
                     );
                 }
@@ -555,6 +568,40 @@ async fn open_one_stream(
                                     feed_wakes.send_replace(Some(head));
                                 }
                                 if parsed.event == "THREAD_FEED_UPDATED" { continue; }
+                                if matches!(parsed.event.as_str(), "PROFILE_RESOLVED" | "PROFILE_FAILED") {
+                                    if let Some(user_id) = feed_head.user_id {
+                                        let profile_app = app.clone();
+                                        let profile_event = parsed.event.clone();
+                                        let profile_data = parsed.data.clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            match crate::native_db::attention::handle_group_meta_profile_event(
+                                                user_id,
+                                                &profile_event,
+                                                &profile_data,
+                                            )
+                                            .await
+                                            {
+                                                Ok(Some(thread_id)) => {
+                                                    let _ = profile_app.emit(
+                                                        "soms-sse-event",
+                                                        SseEventPayload {
+                                                            event: "LOCAL_THREAD_FEED_COMMITTED".into(),
+                                                            status: 0,
+                                                            message: "local data committed".into(),
+                                                            data: serde_json::json!({
+                                                                "userId": user_id,
+                                                                "changes": ["PROFILE"],
+                                                                "groupThreadIds": [thread_id],
+                                                            }),
+                                                        },
+                                                    );
+                                                }
+                                                Ok(None) => {}
+                                                Err(error) => warn!("commit background profile resolution: {error}"),
+                                            }
+                                        });
+                                    }
+                                }
                                 let _ = app.emit(
                                     "soms-sse-event",
                                     SseEventPayload {

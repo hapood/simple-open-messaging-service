@@ -70,6 +70,7 @@ describe('SystemRowComponent', () => {
   });
 
   it.each([
+    [{ type: 'GROUP_CREATED', creator: me }, 'me 创建了群聊'],
     [{ type: 'GROUP_JOINED', member: alice }, 'alice@peer.test 加入了群聊'],
     [{ type: 'GROUP_LEFT', member: me }, '你已不在该群聊中'],
     [
@@ -87,19 +88,28 @@ describe('SystemRowComponent', () => {
       { type: 'GROUP_OWNER_TRANSFERRED', previousOwner: me, newOwner: alice },
       'alice@peer.test 已成为群主',
     ],
-    [{ type: 'MESSAGE_WITHDRAWN', author: me }, '你撤回了一条消息'],
     [
-      { type: 'MESSAGE_WITHDRAWN', author: alice },
-      'alice@peer.test 撤回了一条消息',
+      {
+        type: 'FRIEND_REMOVED',
+        initiator: { account: '$system', domain: 'local' },
+      },
+      '好友关系已解除',
     ],
-    [{ type: 'MESSAGES_MODERATED', count: 3 }, '管理员删除了 3 条消息'],
-    [{ type: 'FRIEND_REMOVED', initiator: { account: '$system', domain: 'local' } }, '好友关系已解除'],
     [
       { type: 'FRIEND_REMOVED', initiator: alice },
       'alice@peer.test 已解除与你的好友关系',
     ],
   ])('renders event-specific participants: %j', (body, expected) => {
     expect(render(body).nativeElement.textContent).toContain(expected);
+  });
+
+  it.each([
+    ['USER_RETRACTION', '消息已撤回'],
+    ['MODERATION_REMOVAL', '消息已被管理员删除'],
+  ] as const)('renders a deletion tombstone: %s', (deletionType, expected) => {
+    expect(
+      render(null, { text: '', deletionType }).nativeElement.textContent,
+    ).toContain(expected);
   });
 
   it.each([
@@ -159,6 +169,26 @@ describe('SystemRowComponent', () => {
     fixture.detectChanges();
     expect(results.observed).toBe(false);
     expect(fixture.nativeElement.textContent).not.toContain('Alice Profile');
+  });
+
+  it('resolves the creator profile for a group creation event', () => {
+    const results = new Subject<ResolvedProfile>();
+    resolve.mockReturnValue(results);
+    const fixture = render(
+      { type: 'GROUP_CREATED', creator: alice },
+      { isGroupConversation: true },
+    );
+    expect(resolve).toHaveBeenCalledWith({
+      type: 'GROUP_MEMBER',
+      threadId: 42,
+      memberAccount: 'alice',
+      memberDomain: 'peer.test',
+    });
+    results.next({ name: 'Alice Profile' } as ResolvedProfile);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Alice Profile 创建了群聊',
+    );
   });
 
   it.each([

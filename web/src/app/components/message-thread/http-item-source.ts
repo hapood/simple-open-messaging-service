@@ -2,10 +2,10 @@
  * HttpItemSource — production data source implementing CbSource<ChatItemData> (absorbs the old
  * ChatThreadController).
  *
- * Owns DB cursor pagination (oldestMsgId/newestMsgId) + SSE. **Returns raw messages only** (no album
- * merging, no display-time sequential abstract ids) — album merging is a presentation decision done by
- * the kernel's `mergeItems` hook (per batch, before createItem). Date separators are likewise derived by
- * the createItem render layer based on adjacent messages crossing a day boundary (see
+ * Owns DB cursor pagination (oldestMsgId/newestMsgId) + SSE. Returns one timeline item per durable
+ * message slot, projecting tombstones as body-free system rows. Album merging is a presentation decision
+ * done by the kernel's `mergeItems` hook (per batch, before createItem). Date separators are likewise
+ * derived by the createItem render layer based on adjacent messages crossing a day boundary (see
  * message-cards/date-format.ts).
  *
  * [Cursor] getOlder(cursorId, count) pages older via a lastId cursor (desc → ascending); getNewer pages
@@ -41,10 +41,12 @@ import { ProfileRepository } from '../../services/profile-store.service';
 import { ProfileResolutionService } from '../../services/profile-resolution.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import {
+  isRenderableMessageTomb,
   messageCreatorKey,
   parseUserIdentityKey,
   type Message,
   type ConversationItem,
+  type MessageQueryRow,
 } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
@@ -202,8 +204,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.pending = outbox.forThread(conv.threadId);
     this.deletedSub = repo.deletedLive$
       .pipe(filter((event) => event.threadId === conv.threadId))
-      .subscribe(({ seqs }) => {
-        for (const seq of seqs) {
+      .subscribe(({ deletions }) => {
+        for (const { seq } of deletions) {
           this.deletedQuoteSeqs.add(seq);
           for (const replySeq of this.repliesByQuote.get(seq) ?? []) {
             live.onQuoteDeleted?.(replySeq, seq);
@@ -539,7 +541,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    */
   finishLocalInit(
     liveLatestSeq: number | undefined,
-    persistedLatestSeq?: number | null,
+    persistedLatestSeq: number | null = null,
   ): void {
     this.initializingDb = false;
     const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
@@ -655,7 +657,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private async historyItemsToCb(
     sourceItems: MessageHistorySourceItem[],
   ): Promise<CbItem<ChatItemData>[]> {
-    const messages = sourceItems
+    const slots = sourceItems
       .filter(
         (
           item,
@@ -663,9 +665,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           item.kind === 'message',
       )
       .map((item) => item.message);
+    const messages = slots.filter(
+      (slot): slot is Message => !isRenderableMessageTomb(slot),
+    );
     const shaped = new Map(
       (await this.rawToItems(messages)).map((item) => [item.id, item]),
     );
+    for (const slot of slots) {
+      if (!isRenderableMessageTomb(slot)) continue;
+      shaped.set(slot.seq, this.tombstoneToItem(slot));
+    }
     const out: CbItem<ChatItemData>[] = [];
     for (const item of sourceItems) {
       if (item.kind === 'message') {
@@ -706,6 +715,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       });
     }
     return out;
+  }
+
+  private tombstoneToItem(
+    tomb: Extract<MessageQueryRow, { contentType: 'TOMB' }>,
+  ): CbItem<ChatItemData> {
+    return {
+      id: tomb.seq,
+      data: {
+        type: 'system',
+        contentType: 'SYSTEM',
+        msgId: tomb.seq,
+        threadId: tomb.threadId,
+        isSelf: false,
+        isGroupConversation: this.conv.type === 'GROUP',
+        name: '',
+        text: '',
+        time: dayjs(tomb.createdAt).format('HH:mm'),
+        images: null,
+        file: null,
+        createdAtMs: tomb.createdAt,
+        deletionType: tomb.deletionType,
+      },
+    };
   }
 
   private queryHistory(
@@ -756,10 +788,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             ? {
                 account: this.conv.peerUser.account,
                 domain: this.conv.peerUser.domain,
-                name:
-                  this.conv.defaultProfileResolved === false
-                    ? ''
-                    : this.conv.peerUser.name,
+                name: this.conv.peerUser.name,
               }
             : undefined,
         isGroupConversation: this.conv.type === 'GROUP',

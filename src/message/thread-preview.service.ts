@@ -14,13 +14,13 @@ import {
 } from '../user/account-address.js';
 import { applyReadPositionInTx } from './thread-read-position.service.js';
 import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
-import { threadPreviewLimit } from './thread-preview-limit.js';
+import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
 import type { MessageDeleteType } from '../database/enums.js';
 
 /** Database-backed preview references and source message publication. */
 @Injectable()
 export class ThreadPreviewService {
-  readonly limit = threadPreviewLimit();
+  readonly limit = THREAD_PREVIEW_LIMIT;
   constructor(private readonly database: DatabaseService) {}
 
   /** Activation starts empty at the current read boundary, in the owning transaction. */

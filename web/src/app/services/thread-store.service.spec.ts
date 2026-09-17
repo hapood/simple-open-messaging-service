@@ -29,6 +29,7 @@ import {
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
+import { MemberProfileRepository } from './member-profile-store.service';
 
 /** Flush the microtask + macrotask queue so the async boot (IDB reads + Observable awaits + the 200ms
  *  debounce) settles. A 0ms flush advances the task queue enough for IDB + Observable microtasks; the
@@ -46,7 +47,7 @@ function p2p(
   return createP2PConversation(
     threadId,
     { id: peerId, account: `u${peerId}`, name: `User ${peerId}` },
-    opts,
+    { threadFeedId: threadId, ...opts },
   );
 }
 
@@ -173,19 +174,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .fn()
               .mockName('queryUserInfo')
               .mockReturnValue(of({ code: 0, data: [] }))),
-            queryGroupMeta: vi.fn().mockReturnValue(
-              of({
-                code: 0,
-                data: {
-                  account: '!dev',
-                  mode: 'full',
-                  items: [],
-                  scannedThrough: '1',
-                  groupMetaFeedEndId: '1',
-                  hasMore: false,
-                },
-              }),
-            ),
             applyStateProfile: (profile: User) => {
               if (profile.id === sessionProfile()?.id)
                 sessionProfile.set(profile);
@@ -207,8 +195,22 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     webdb = TestBed.inject(WebdbService);
     vi.spyOn(webdb, 'syncThreadFeed').mockImplementation(
       async (target, after) => {
-        const result = await syncThreadFeed(webdb, target, (body) =>
-          firstValueFrom(queryThreadFeedSpy(body)),
+        const result = await syncThreadFeed(
+          webdb,
+          target,
+          (body) => firstValueFrom(queryThreadFeedSpy(body)),
+          async (input) => ({
+            code: 0,
+            data: {
+              account: '!dev',
+              mode: input.mode,
+              items: [],
+              scannedThrough: input.through,
+              groupMetaFeedEndId: input.through,
+              hasMore: false,
+            },
+          }),
+          async () => false,
         );
         return {
           ...(await webdb.readThreadFeedChanges(after)),
@@ -298,7 +300,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         event: 'THREAD_FEED_UPDATED',
         data: { threadFeedEndId: state.threadFeedId },
       });
-    await flush(40);
+    await vi.waitFor(async () => {
+      expect(
+        Number(await webdb.getMeta('threadFeedCursor')),
+      ).toBeGreaterThanOrEqual(state.threadFeedId);
+      expect(
+        repo.items().find((item) => item.threadId === state.threadId),
+      ).toMatchObject({
+        threadFeedId: state.threadFeedId,
+      });
+    });
   }
 
   const threadSnapshot = (): ThreadFeedSnapshot => ({
@@ -339,7 +350,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       after: 0,
       through: 1,
       take: 100,
-      previewCount: 1,
+      previewCount: 3,
     });
     expect(repo.items()[0]).toMatchObject({
       unreadCount: 3,
@@ -377,7 +388,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await publishThreadState(threadSnapshot(), true);
     const previewFields = {
       lastMessagePreview: repo.items()[0].lastMessagePreview,
-      lastMessagePreviewSeq: repo.items()[0].lastMessagePreviewSeq,
       lastMessageAt: repo.items()[0].lastMessageAt,
       lastMessageSenderId: repo.items()[0].lastMessageSenderId,
     };
@@ -422,7 +432,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       threadFeedId: 2,
       messageEndSeq: 9,
       tombstoneEndSeq: 3,
-      groupMetaFeedEndId: null,
       lastMentionSeq: null,
       previews: [
         {
@@ -437,8 +446,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       unreadCount: 3,
       mentionUnread: [],
       lastMessageSeq: 9,
-      tombstoneEndSeq: 3,
-      groupMetaFeedEndId: null,
       lastMessagePreview: '[Message removed by administrator]',
     });
     await publishThreadState({
@@ -495,10 +502,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].lastMessagePreview).toBe('latest preview');
   });
 
-  it('applies local completion wakes without starting a network drain', async () => {
+  it('refreshes committed worker state without starting a network drain', async () => {
     await populate([p2p(1, 11)]);
+    const read = vi.spyOn(webdb, 'readThreadFeedChanges');
     emitHello({ userId: 1, stateFeedEndId: 0 });
-    await flush(20);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledWith(0));
+    read.mockClear();
     await webdb.mergeThreadStates([{ ...threadSnapshot(), unreadCount: 8 }], 1);
     queryThreadFeedSpy.mockClear();
     vi.mocked(webdb.syncThreadFeed).mockClear();
@@ -506,9 +515,37 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       event: 'LOCAL_THREAD_FEED_COMMITTED',
       data: { userId: 1, cursor: 1 },
     });
-    await flush(30);
-    expect(repo.items()[0].unreadCount).toBe(8);
+    await vi.waitFor(() => expect(repo.items()[0].unreadCount).toBe(8));
+    expect(read).toHaveBeenCalledWith(0);
     expect(webdb.syncThreadFeed).not.toHaveBeenCalled();
+    expect(queryThreadFeedSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes a committed Group Meta wake to thread-scoped domain listeners', async () => {
+    await populate([
+      createGroupConversation(
+        12,
+        { id: 12, account: '!team', name: 'Team', ownerId: 1 },
+        { threadFeedId: 1 },
+      ),
+    ]);
+    const notify = vi.spyOn(
+      TestBed.inject(MemberProfileRepository),
+      'notifyChanged',
+    );
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+
+    eventSubject.next({
+      event: 'LOCAL_THREAD_FEED_COMMITTED',
+      data: {
+        userId: 1,
+        changes: ['GROUP_META'],
+        groupThreadIds: [12],
+      },
+    });
+
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledWith([12]));
     expect(queryThreadFeedSpy).not.toHaveBeenCalled();
   });
 
@@ -622,13 +659,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const db = await webdb.db();
     const tx = db.transaction('threads', 'readwrite');
     for (const it of items) {
-      if (it.type === 'P2P')
-        it.defaultProfile ??= {
-          account: it.peerUser.account,
-          domain: it.peerUser.domain,
-          namespaceId: it.peerUser.namespaceId,
-          profileRev: it.peerUser.profileRev,
-        };
       await tx.store.put(it);
     }
     await tx.done;
@@ -768,6 +798,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       account: 'peer',
       domain: 'bravo.test',
       profileRev: 9,
+      name: '',
     });
     await populate([item]);
     const profile = {
@@ -802,6 +833,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       domain: 'bravo.test',
       namespaceId: 1,
       profileRev: 3,
+      name: '',
       avatar: '',
     });
     await populate([item]);
@@ -848,12 +880,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       domain: 'bravo.test',
       namespaceId: 1,
       profileRev: 3,
+      name: '',
     });
     await populate([item]);
     repo['upsertThread']({
       ...item,
-      peerUser: { ...item.peerUser, profileRev: 4 },
-      defaultProfile: { ...item.defaultProfile!, profileRev: 4 },
+      peerUser: { ...item.peerUser, profileRev: 4, name: '' },
     });
     current.next({
       namespaceId: 1,
@@ -887,7 +919,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       'resolve',
     ).mockReturnValue(resolved);
     const item = p2p(9, 0);
-    item.peerUser.profileRev = 3;
+    Object.assign(item.peerUser, { profileRev: 3, name: '' });
     await populate([item]);
     TestBed.inject(SessionLifecycleService).endSession();
     resolved.next({
@@ -986,7 +1018,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await vi.waitFor(() => expect(cursorSignal()).toBe(2));
   });
 
-  it.each(['getNamespaces', 'getThreads', 'getMeta'] as const)(
+  it.each(['getNamespaces', 'getThreads', 'getThreadStates'] as const)(
     'warns and requests recovery when cache pre-read %s fails',
     async (method) => {
       const failure = new Error('cache read failed');
@@ -1072,6 +1104,28 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await webdb.getThreads()).toEqual([]);
     const peer = stale.peerUser;
     const items = [threadStateEvent(2, 61)];
+    queryThreadFeedSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          items: [
+            {
+              ...threadSnapshot(),
+              threadId: 61,
+              threadFeedId: 1,
+              messageEndSeq: 0,
+              unreadCount: 0,
+              lastMentionSeq: null,
+              previews: [],
+            },
+          ],
+          through: 1,
+          scannedThrough: 1,
+          threadFeedEndId: 1,
+          hasMore: false,
+        },
+      }),
+    );
     queryStateFeedSpy.mockReturnValueOnce(
       of({
         code: 0,
@@ -1084,7 +1138,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       }),
     );
-    emitHello({ userId: 1, stateFeedEndId: 2 });
+    emitHello({ userId: 1, stateFeedEndId: 2, threadFeedEndId: 1 });
     await flush(40);
     expect((await webdb.getThreads()).map((t) => t.threadId)).toEqual([61]);
     expect(
@@ -1150,7 +1204,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       createGroupConversation(
         7,
         { id: 70, account: '!team', name: 'Team', ownerId: 1 },
-        { role: 'ADMIN' },
+        { role: 'ADMIN', threadFeedId: 7 },
       ),
     ]);
 
@@ -1175,6 +1229,32 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────
 
+  it('orders pinned and ordinary tiers strictly by descending threadFeedId', async () => {
+    await populate([
+      p2p(1, 11, { threadFeedId: 30 }),
+      p2p(2, 22, { threadFeedId: 10, pinned: true }),
+      p2p(3, 33, { threadFeedId: 20 }),
+      p2p(4, 44, { threadFeedId: 40, pinned: true }),
+    ]);
+
+    expect(repo.items().map((thread) => thread.threadId)).toEqual([4, 2, 1, 3]);
+  });
+
+  it('moves an updated ordinary thread by its newer threadFeedId', async () => {
+    await populate([
+      p2p(1, 11, { threadFeedId: 1 }),
+      p2p(2, 22, { threadFeedId: 2 }),
+    ]);
+    expect(repo.items().map((thread) => thread.threadId)).toEqual([2, 1]);
+
+    await publishThreadState(
+      { ...threadSnapshot(), threadId: 1, threadFeedId: 3 },
+      true,
+    );
+
+    expect(repo.items().map((thread) => thread.threadId)).toEqual([1, 2]);
+  });
+
   it('applyThreadMeta patches the row, re-sorts (pin), and writes through to IDB', async () => {
     await populate([
       p2p(1, 11, { lastMessageAt: 100 }),
@@ -1195,7 +1275,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       p2p(1, 11, { lastMessageAt: 200 }),
       p2p(2, 22, { lastMessageAt: 100 }),
     ]);
-    expect(repo.items().map((t) => t.threadId)).toEqual([1, 2]);
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
 
     repo.applyThreadMeta(2, {
       muted: true,
@@ -1204,8 +1284,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await flush();
 
-    expect(repo.items().map((t) => t.threadId)).toEqual([1, 2]);
-    expect(repo.items()[1]).toEqual(
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    expect(repo.items()[0]).toEqual(
       expect.objectContaining({ muted: true, blocked: true, alias: 'Quiet' }),
     );
   });
@@ -1290,13 +1370,22 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data: { feedId: 4 },
     });
     await flush(30);
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadId: 9,
+      threadFeedId: 1,
+      messageEndSeq: 0,
+      unreadCount: 0,
+      lastMentionSeq: null,
+      previews: [],
+    });
 
     expect(repo.items()).toEqual([
       expect.objectContaining({
         threadId: 9,
         friendshipActive: true,
         conversationState: 'ACTIVE',
-        lastMessageSeq: null,
+        lastMessageSeq: 0,
       }),
     ]);
   });

@@ -94,6 +94,70 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   retracted: '[' + locale.chat.messageRetracted + ']',
                   removed: '[' + locale.chat.messageRemovedByAdmin + ']',
                 },
+                async (input) => {
+                  if (!(await current()))
+                    throw new Error('notification account expired');
+                  const query = new URLSearchParams({
+                    threadId: String(input.threadId),
+                    mode: input.mode,
+                    after: input.after,
+                    through: input.through,
+                    take: String(input.take),
+                  });
+                  const response = await fetch(
+                    API_PREFIX + '/user/group-meta?' + query.toString(),
+                    {
+                      credentials: 'same-origin',
+                      signal: AbortSignal.timeout(20000),
+                    },
+                  );
+                  if (!response.ok)
+                    throw new Error(`group-meta HTTP ${response.status}`);
+                  if (!(await current()))
+                    throw new Error('notification account expired');
+                  return response.json();
+                },
+                async (reference) => {
+                  if (!(await current()))
+                    throw new Error('notification account expired');
+                  const selector =
+                    reference.type === 'GROUP'
+                      ? {
+                          type: 'EXACT',
+                          account: reference.account,
+                          domain: reference.domain,
+                          rev: reference.rev,
+                        }
+                      : {
+                          type: 'GROUP_MEMBER',
+                          threadId: reference.threadId,
+                          memberAccount: reference.account,
+                          memberDomain: reference.domain,
+                        };
+                  const response = await fetch(
+                    API_PREFIX + '/user/profile-resolution',
+                    {
+                      method: 'POST',
+                      credentials: 'same-origin',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify(selector),
+                      signal: AbortSignal.timeout(20000),
+                    },
+                  );
+                  if (!response.ok)
+                    throw new Error(
+                      `profile-resolution HTTP ${response.status}`,
+                    );
+                  const envelope = await response.json();
+                  if (envelope?.code !== 0 || !envelope.data)
+                    throw new Error('profile resolution failed');
+                  if (envelope.data.status === 'READY')
+                    return storage.commitResolvedGroupMetaProfile(
+                      reference,
+                      envelope.data.profile,
+                    );
+                  return false;
+                },
               );
               if (!(await current())) return;
               const pages = await scope.clients.matchAll({
@@ -160,13 +224,40 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
         const activeId = scope.navigator.locks
           ? await activePageClientId(scope.navigator.locks)
           : undefined;
-        for (const page of await scope.clients.matchAll({
+        const pages = await scope.clients.matchAll({
           type: 'window',
           includeUncontrolled: true,
-        })) {
-          if (page.id !== activeId) continue;
+        });
+        const windows = pages as WindowClient[];
+        const appWindows = windows.filter((candidate) => {
+          const pathname = new URL(candidate.url).pathname;
+          return pathname !== '/admin' && !pathname.startsWith('/admin/');
+        });
+        const activePage = appWindows.find(
+          (candidate) => candidate.id === activeId,
+        );
+        const page =
+          activePage ??
+          appWindows.find((candidate) => candidate.focused) ??
+          appWindows.find(
+            (candidate) => candidate.visibilityState === 'visible',
+          ) ??
+          appWindows[0];
+        if (page) {
+          if (!activePage)
+            console.warn(
+              '[push] active page client was not matched; reusing an existing page',
+              {
+                activeId,
+                clients: appWindows.map((candidate) => ({
+                  id: candidate.id,
+                  focused: candidate.focused,
+                  visibilityState: candidate.visibilityState,
+                })),
+              },
+            );
           page.postMessage({ type: SOMS_NOTIF_MSG.OPEN, threadId });
-          await (page as WindowClient).focus();
+          await page.focus();
           return;
         }
         await scope.clients.openWindow('/chat/' + threadId);

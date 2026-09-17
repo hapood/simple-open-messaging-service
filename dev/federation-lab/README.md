@@ -72,7 +72,9 @@ edge URLs so each session reaches the intended backend node.
 Use `Ctrl+C` in each terminal to stop its child processes. Shutdown stops new durable-task dispatch and waits
 for in-flight executions before unregistering handlers. Unstarted durable work remains available
 for startup recovery. The launcher waits up to 60 seconds, exits as soon as all children finish,
-and logs a warning and exits nonzero if it must force remaining children to stop.
+and logs a warning and exits nonzero if it must force remaining children to stop. Interrupting during
+startup takes effect immediately instead of waiting for readiness checks to time out, and a second
+`Ctrl+C` force-kills the remaining children and exits at once.
 
 Starting the backend creates any missing lab databases and applies pending migrations.
 Existing database records are preserved across restarts. Credentials and node identity files
@@ -160,9 +162,9 @@ Evidence and the dedicated operation journal are stored under `forwardRelayScena
 `operations.json` and `forwardRelay` in `coverage.json`; any case failure fails execution.
 
 Admissions are globally paced at 10 operation starts per second by default, with slow requests allowed
-to overlap. The runner polls the administrator task list for `PENDING`, `PROCESSING`, and
-`ASYNC_PROCESSING` activity. After the round barrier is idle, it polls the incremental Oracle until
-the round's federated state converges before observing the next state:
+to overlap. The runner polls the administrator task list for `PENDING` and `PROCESSING` work. After
+the durable-task barrier is idle, it polls the incremental Oracle until the round's federated state
+converges before observing the next state:
 
 `--verify-mode=round` is available in the workload runner: every batch waits for two stable oracle
 samples and verifies the batch's effects. The package script selects `--verify-mode=final`, which omits these
@@ -328,7 +330,7 @@ The final idle sample returns without another sleep. Drain progress includes:
 | `sample`, `idleSamples`        | Sample number and consecutive idle samples out of two required.                         |
 | `sampleMs`                     | Wall-clock time for the current sample across all nodes.                                |
 | Per-node `queryMs`             | Wall-clock time for that node's concurrent status requests.                             |
-| Per-node `statusMs`            | Individual `PENDING`, `PROCESSING`, `ASYNC_PROCESSING`, and `FAILED` request durations. |
+| Per-node `statusMs`            | Individual `PENDING`, `PROCESSING`, and `FAILED` request durations.                      |
 | `queryTotalMs`, `sleepTotalMs` | Cumulative sample time and actual polling sleep time.                                   |
 
 Concurrent request durations must not be added to estimate elapsed time. Request measurements

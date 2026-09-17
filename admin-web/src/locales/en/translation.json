@@ -472,6 +472,7 @@
       "discovered": "Discovered",
       "trusted": "Trust established",
       "degraded": "Connection lost / degraded",
+      "available": "Connection restored",
       "halted": "Communication halted",
       "unblocked": "Unblocked by admin"
     },
@@ -715,7 +716,6 @@
       "ALL": "All",
       "PENDING": "Pending",
       "PROCESSING": "Processing",
-      "ASYNC_PROCESSING": "Async processing",
       "SUCCEEDED": "Succeeded",
       "REJECTED": "Rejected",
       "FAILED": "Failed",

@@ -77,8 +77,8 @@ export class SystemRowComponent {
       const event = this.event();
       if (!event) return undefined;
       if ('member' in event) return event.member;
+      if (event.type === 'GROUP_CREATED') return event.creator;
       if (event.type === 'GROUP_OWNER_TRANSFERRED') return event.newOwner;
-      if (event.type === 'MESSAGE_WITHDRAWN') return event.author;
       if (event.type === 'FRIEND_REMOVED') {
         const data = this.data();
         return this.isCurrentUser(event.initiator) && data.type === 'system'
@@ -122,6 +122,13 @@ export class SystemRowComponent {
   readonly label = computed(() => {
     this.language.lang();
     try {
+      const data = this.data();
+      const deletionType =
+        data.type === 'system' ? data.deletionType : undefined;
+      if (deletionType === 'USER_RETRACTION')
+        return this.transloco.translate('chat.messageRetracted');
+      if (deletionType === 'MODERATION_REMOVAL')
+        return this.transloco.translate('chat.messageRemovedByAdmin');
       const body = this.event();
       if (!body) return this.fallback('invalid system message content');
       if (body.type === 'CALL_ENDED') {
@@ -154,7 +161,6 @@ export class SystemRowComponent {
         return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
       }
       const identity = this.displayIdentity();
-      const data = this.data();
       const peer = data.type === 'system' ? data.systemPeer : undefined;
       const peerName =
         peer &&
@@ -170,12 +176,18 @@ export class SystemRowComponent {
         case 'FRIEND_ADDED':
           return translate('friendAdded');
         case 'FRIEND_REMOVED':
-          if (body.initiator.account === '$system' && body.initiator.domain === 'local') return translate('friendRemoved');
+          if (
+            body.initiator.account === '$system' &&
+            body.initiator.domain === 'local'
+          )
+            return translate('friendRemoved');
           if (this.isCurrentUser(body.initiator))
             return name
               ? translate('friendRemovedSelf')
               : translate('friendRemoved');
           return translate('friendRemovedOther');
+        case 'GROUP_CREATED':
+          return translate('groupCreated');
         case 'GROUP_JOINED':
           return translate('groupJoined');
         case 'GROUP_LEFT':
@@ -188,17 +200,6 @@ export class SystemRowComponent {
           return translate('groupAdminRevoked');
         case 'GROUP_OWNER_TRANSFERRED':
           return translate('groupOwnerTransferred');
-        case 'MESSAGE_WITHDRAWN':
-          return translate(
-            this.isCurrentUser(body.author)
-              ? 'messageWithdrawnSelf'
-              : 'messageWithdrawn',
-          );
-        case 'MESSAGES_MODERATED':
-          return this.transloco.translate(
-            'chat.systemMessage.messagesModerated',
-            { count: body.count },
-          );
       }
       return this.fallback('unknown system message type');
     } catch (error) {

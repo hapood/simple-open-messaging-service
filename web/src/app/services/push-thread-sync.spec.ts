@@ -15,6 +15,10 @@ describe('Push thread-feed synchronization', () => {
     removed: '[Removed]',
   };
   const preferences = { get: async <T>(): Promise<T | undefined> => undefined };
+  const groupMetaRequest = vi.fn(async () => {
+    throw new Error('unexpected group-meta request');
+  });
+  const profileResolver = vi.fn(async () => false);
   function snapshot(feed = 1): ThreadFeedSnapshot {
     return {
       threadId: 7,
@@ -28,7 +32,7 @@ describe('Push thread-feed synchronization', () => {
       lastReadSeq: 0,
       unreadCount: 7,
       lastMentionSeq: 7,
-      previews: [7, 6, 5, 4, 3].map((seq) => ({
+      previews: [5, 6, 7].map((seq) => ({
         seq,
         createdAt: '2026-09-09T00:00:00Z',
         sender: { account: 'peer', domain: 'test' },
@@ -68,7 +72,7 @@ describe('Push thread-feed synchronization', () => {
     await storage.closeAndDelete(String(userId));
   });
 
-  it('requests five previews, keeps one in the database, and never repeats a consumed target', async () => {
+  it('requests three previews, keeps one in the database, and never repeats a consumed target', async () => {
     const request = vi.fn().mockResolvedValue(page());
     const result = await syncPushThreads(
       storage,
@@ -77,23 +81,34 @@ describe('Push thread-feed synchronization', () => {
       request,
       preferences,
       copy,
+      groupMetaRequest,
+      profileResolver,
     );
     expect(request).toHaveBeenCalledWith({
       after: 0,
       through: 1,
       take: 100,
-      previewCount: 5,
+      previewCount: 3,
     });
     expect(result.notifications[0]).toMatchObject({
       count: 7,
-      body: '3\n4\n5\n[Retracted]\n[Removed]',
+      body: '5\n[Retracted]\n[Removed]',
     });
     expect(
       (await storage.getThreadStates())[0].server?.previews?.map((p) => p.seq),
     ).toEqual([7]);
     request.mockClear();
     expect(
-      await syncPushThreads(storage, userId, 1, request, preferences, copy),
+      await syncPushThreads(
+        storage,
+        userId,
+        1,
+        request,
+        preferences,
+        copy,
+        groupMetaRequest,
+        profileResolver,
+      ),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
   });
@@ -141,6 +156,8 @@ describe('Push thread-feed synchronization', () => {
       async () => page(),
       preferences,
       copy,
+      groupMetaRequest,
+      profileResolver,
     );
     expect(result.notifications[0]).toMatchObject({
       count: 6,
@@ -153,10 +170,25 @@ describe('Push thread-feed synchronization', () => {
   });
 
   it('does not notify when ordinary synchronization already consumed the target', async () => {
-    await syncThreadFeed(storage, 1, async () => page());
+    await syncThreadFeed(
+      storage,
+      1,
+      async () => page(),
+      groupMetaRequest,
+      profileResolver,
+    );
     const request = vi.fn();
     expect(
-      await syncPushThreads(storage, userId, 1, request, preferences, copy),
+      await syncPushThreads(
+        storage,
+        userId,
+        1,
+        request,
+        preferences,
+        copy,
+        groupMetaRequest,
+        profileResolver,
+      ),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
   });
@@ -173,6 +205,8 @@ describe('Push thread-feed synchronization', () => {
       request,
       preferences,
       copy,
+      groupMetaRequest,
+      profileResolver,
     );
     expect(result).toMatchObject({
       cursor: 1,

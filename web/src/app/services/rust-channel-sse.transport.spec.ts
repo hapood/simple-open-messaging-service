@@ -102,10 +102,13 @@ function installFakeTauri(initialState: ConnectionState = 'closed'): FakeTauri {
   };
 }
 
-/** Drain the microtask queue so the transport's async `startAsync` settles before assertions. */
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+/** Wait until the transport's async start-up has fully wired itself. `startAsync` registers the event
+ *  listeners first and invokes `sse_start` strictly after, so a recorded `sse_start` proves the
+ *  transport is ready to receive emitted events. */
+const started = (tauri: ReturnType<typeof installFakeTauri>): Promise<void> =>
+  vi.waitFor(() =>
+    expect(tauri.invokes().some((i) => i.cmd === 'sse_start')).toBe(true),
+  );
 
 describe('RustChannelSseTransport', () => {
   // Each test's transport is stopped in afterEach so its window online/offline listeners (and the
@@ -133,17 +136,17 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri('reconnecting');
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    // The seed lands right after sse_start (sse_get_state follows it in startAsync) — waiting on the
+    // seeded banner state also proves sse_start was invoked.
+    await vi.waitFor(() => expect(rec.states).toContain('reconnecting'));
     expect(t.invokes().some((i) => i.cmd === 'sse_start')).toBe(true);
-    // The live state is seeded so a freshly-booted renderer's banner isn't blank until the next transition.
-    expect(rec.states).toContain('reconnecting');
   });
 
   it('forwards a soms-sse-event frame verbatim into a StandardMessage', async () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-event', {
       event: 'STATE_FEED_UPDATED',
       status: 0,
@@ -164,7 +167,7 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri('closed');
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-state', 'connecting');
     t.emit('soms-sse-state', 'open');
     expect(rec.states).toContain('connecting');
@@ -175,7 +178,7 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-reconnect', null);
     expect(rec.reconnects()).toBe(1);
   });
@@ -184,7 +187,7 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-reconnect-in', 8000);
     expect(rec.reconnectIns()).toEqual([8000]);
   });
@@ -193,7 +196,7 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-force-logout', { reason: 'device_revoke' });
     expect(rec.forceLogouts()).toEqual(['device_revoke']);
   });
@@ -202,7 +205,7 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     t.emit('soms-sse-force-logout', {});
     expect(rec.forceLogouts()).toEqual([undefined]);
   });
@@ -211,24 +214,25 @@ describe('RustChannelSseTransport', () => {
     const t = installFakeTauri();
     const rec = recordingSink();
     make(rec.sink).start();
-    await flush();
+    await started(t);
     window.dispatchEvent(new Event('offline'));
     window.dispatchEvent(new Event('online'));
-    await flush();
-    const nets = t
-      .invokes()
-      .filter((i) => i.cmd === 'sse_net')
-      .map(
-        (i) =>
-          (
-            i.args as
-              | {
-                  online?: boolean;
-                }
-              | undefined
-          )?.online,
-      );
-    expect(nets).toEqual([false, true]);
+    await vi.waitFor(() => {
+      const nets = t
+        .invokes()
+        .filter((i) => i.cmd === 'sse_net')
+        .map(
+          (i) =>
+            (
+              i.args as
+                | {
+                    online?: boolean;
+                  }
+                | undefined
+            )?.online,
+        );
+      expect(nets).toEqual([false, true]);
+    });
   });
 
   it('retryNow() invokes sse_net(online:true) so the supervisor resets backoff + retries at once', async () => {
@@ -236,29 +240,31 @@ describe('RustChannelSseTransport', () => {
     const rec = recordingSink();
     const transport = make(rec.sink);
     transport.start();
-    await flush();
+    await started(t);
     transport.retryNow();
-    await flush();
-    expect(
-      t.invokes().some(
-        (i) =>
-          i.cmd === 'sse_net' &&
-          (
-            i.args as {
-              online?: boolean;
-            }
-          )?.online === true,
-      ),
-    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(
+        t.invokes().some(
+          (i) =>
+            i.cmd === 'sse_net' &&
+            (
+              i.args as {
+                online?: boolean;
+              }
+            )?.online === true,
+        ),
+      ).toBe(true),
+    );
   });
 
   it('retryNow() drops the scheduled countdown (the manual retry voids the backoff deadline)', async () => {
-    installFakeTauri();
+    const t = installFakeTauri();
     const rec = recordingSink();
     const transport = make(rec.sink);
     transport.start();
-    await flush();
+    await started(t);
     transport.retryNow();
+    // retryNow() drops the countdown synchronously via the sink.
     expect(rec.reconnectIns()).toContain(null);
   });
 
@@ -267,12 +273,15 @@ describe('RustChannelSseTransport', () => {
     const rec = recordingSink();
     const transport = make(rec.sink);
     transport.start();
-    await flush();
+    await started(t);
     transport.stop();
     // Remove from `active` so afterEach doesn't double-stop (stop is idempotent anyway).
     active = active.filter((x) => x !== transport);
-    await flush();
-    expect(t.invokes().some((i) => i.cmd === 'sse_stop')).toBe(true);
+    // stop() detaches listeners + emits closed synchronously; only the fire-and-forget sse_stop
+    // invoke records a microtask later — wait on that record.
+    await vi.waitFor(() =>
+      expect(t.invokes().some((i) => i.cmd === 'sse_stop')).toBe(true),
+    );
     expect(rec.states[rec.states.length - 1]).toBe('closed');
     // Listeners detached → a Rust emit no longer reaches the sink.
     t.emit('soms-sse-event', {
@@ -289,10 +298,13 @@ describe('RustChannelSseTransport', () => {
     const rec = recordingSink();
     const transport = make(rec.sink);
     transport.start();
-    await flush();
+    await started(t);
     const firstStarts = t.invokes().filter((i) => i.cmd === 'sse_start').length;
     transport.start();
-    await flush();
+    // Negative (absence) assertion: the sync idempotence guard already returned before startAsync
+    // could run; a single macrotask turn fully drains the microtask chains (the fakes schedule no
+    // timers), so a would-be second sse_start would be visible here.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const secondStarts = t
       .invokes()
       .filter((i) => i.cmd === 'sse_start').length;

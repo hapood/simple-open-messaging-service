@@ -75,7 +75,7 @@ terminal task result.
 
 The runner admits independent operations with bounded concurrency. It then
 polls the existing administrator task API until admitted tasks are terminal and
-there are no `PENDING`, `PROCESSING`, or `ASYNC_PROCESSING` tasks on the three
+there are no `PENDING` or `PROCESSING` tasks or process-local federation rounds on the three
 nodes. It waits an additional five seconds for asynchronous federation delivery
 before selecting the next round. Progress and active task IDs are printed to the
 console.

@@ -21,6 +21,7 @@ export function applyThreadStateSnapshot(
     feedId < 1
   )
     throw new Error('invalid thread state snapshot');
+  const threadFeedId = current?.threadFeedId;
   if (current?.type === 'PENDING') current = undefined;
   if (current?.threadStateFeedId && current.threadStateFeedId >= feedId)
     return current;
@@ -29,7 +30,7 @@ export function applyThreadStateSnapshot(
   const identity = {
     id: 0,
     ...snapshot.profile,
-    name: snapshot.profile.account,
+    name: '',
   };
   const base =
     current ??
@@ -42,15 +43,10 @@ export function applyThreadStateSnapshot(
         }));
   const next = {
     ...base,
-    defaultProfileResolved:
-      current?.defaultProfileResolved === true &&
-      JSON.stringify(current.defaultProfile) ===
-        JSON.stringify(snapshot.profile),
+    ...(threadFeedId !== undefined ? { threadFeedId } : {}),
     visible: true,
     threadStateFeedId: feedId,
     authorityNamespaceId: snapshot.authorityNamespaceId,
-    establishedAt: snapshot.establishedAt,
-    defaultProfile: snapshot.profile,
     conversationState: snapshot.conversationState,
     blocked: snapshot.blocked,
     role: snapshot.role,
@@ -69,23 +65,6 @@ export function applyThreadStateSnapshot(
       ...next.peerUser,
       ...identity,
       ...(same ? { name: next.peerUser.name } : { avatar: '', bio: '' }),
-    };
-  } else if (
-    next.type === 'GROUP' &&
-    (!current?.defaultProfile ||
-      JSON.stringify(current.defaultProfile) !==
-        JSON.stringify(snapshot.profile))
-  ) {
-    const same =
-      next.group.account === identity.account &&
-      next.group.domain === identity.domain &&
-      next.group.namespaceId === identity.namespaceId &&
-      next.group.profileRev === identity.profileRev;
-    next.group = {
-      ...next.group,
-      ...identity,
-      id: snapshot.threadId,
-      ...(same ? { name: next.group.name } : { avatar: '', description: '' }),
     };
   }
   return next;

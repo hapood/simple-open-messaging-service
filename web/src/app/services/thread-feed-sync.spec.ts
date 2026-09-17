@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 
+const groupMetaRequest = vi.fn(async () => {
+  throw new Error('unexpected group-meta request');
+});
+const profileResolver = vi.fn(async () => false);
+
 const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   threadId: 7,
   threadFeedId: feedId,
@@ -19,6 +24,11 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
 function storage() {
   let cursor = 0;
   return {
+    getThreads: vi.fn(async () => []),
+    getThreadStates: vi.fn(async () => []),
+    getUnresolvedGroupMetaProfiles: vi.fn(async () => []),
+    beginGroupMetaRecovery: vi.fn(async () => undefined),
+    applyGroupMetaPage: vi.fn(async () => undefined),
     getMeta: vi.fn(async () => cursor),
     mergeThreadStates: vi.fn(
       async (states: ThreadFeedSnapshot[], next: number) => {
@@ -52,42 +62,54 @@ function page(
 }
 
 describe('thread feed executor', () => {
-  it('ignores a notification wake already consumed by ordinary synchronization', async () => {
+  it('ignores a wake already consumed by an earlier synchronization', async () => {
     const db = storage();
-    const ordinary = vi.fn().mockResolvedValue(page(5, 5));
-    await syncThreadFeed(db, 5, ordinary);
-    expect(ordinary).toHaveBeenCalledWith({
+    const initial = vi.fn().mockResolvedValue(page(5, 5));
+    await syncThreadFeed(db, 5, initial, groupMetaRequest, profileResolver);
+    expect(initial).toHaveBeenCalledWith({
       after: 0,
       through: 5,
       take: 100,
-      previewCount: 1,
+      previewCount: 3,
     });
-    const notification = vi.fn();
+    const repeated = vi.fn();
     for (const target of [5, 4]) {
-      expect(await syncThreadFeed(db, target, notification, 5)).toEqual({
+      expect(
+        await syncThreadFeed(
+          db,
+          target,
+          repeated,
+          groupMetaRequest,
+          profileResolver,
+        ),
+      ).toEqual({
         cursor: 5,
+        groupThreadIds: [],
         states: [],
       });
     }
-    expect(notification).not.toHaveBeenCalled();
+    expect(repeated).not.toHaveBeenCalled();
   });
 
-  it('uses five previews on every notification page and shares durable progress', async () => {
+  it('uses three previews on every page and shares durable progress', async () => {
     const db = storage();
     const request = vi
       .fn()
       .mockResolvedValueOnce(page(1, 2))
       .mockResolvedValueOnce(page(2, 2));
-    await syncThreadFeed(db, 2, request, 5);
+    await syncThreadFeed(db, 2, request, groupMetaRequest, profileResolver);
     expect(request.mock.calls.map(([body]) => body.previewCount)).toEqual([
-      5, 5,
+      3, 3,
     ]);
-    const ordinary = vi.fn();
-    expect(await syncThreadFeed(db, 2, ordinary)).toEqual({
+    const repeated = vi.fn();
+    expect(
+      await syncThreadFeed(db, 2, repeated, groupMetaRequest, profileResolver),
+    ).toEqual({
       cursor: 2,
+      groupThreadIds: [],
       states: [],
     });
-    expect(ordinary).not.toHaveBeenCalled();
+    expect(repeated).not.toHaveBeenCalled();
   });
 
   it('coalesces queued wakes and does not automatically retry a failed run', async () => {
@@ -140,7 +162,13 @@ describe('thread feed executor', () => {
       .mockResolvedValueOnce(page(1, 2))
       .mockResolvedValueOnce(page(2, 2, 3))
       .mockResolvedValueOnce(page(3, 3));
-    const result = await syncThreadFeed(db, 2, request);
+    const result = await syncThreadFeed(
+      db,
+      2,
+      request,
+      groupMetaRequest,
+      profileResolver,
+    );
     expect(
       request.mock.calls.map(([body]) => [body.after, body.through]),
     ).toEqual([
@@ -150,6 +178,7 @@ describe('thread feed executor', () => {
     ]);
     expect(result).toEqual({
       cursor: 3,
+      groupThreadIds: [],
       states: [{ threadId: 7, server: snapshot(3), localReadSeq: 0 }],
     });
     expect(await db.getMeta()).toBe(3);
@@ -161,7 +190,13 @@ describe('thread feed executor', () => {
       .fn()
       .mockResolvedValueOnce(page(1, 2))
       .mockRejectedValueOnce(new Error('offline'));
-    const result = await syncThreadFeed(db, 2, request);
+    const result = await syncThreadFeed(
+      db,
+      2,
+      request,
+      groupMetaRequest,
+      profileResolver,
+    );
     expect(request).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       cursor: 1,
@@ -169,12 +204,14 @@ describe('thread feed executor', () => {
       states: [{ server: { threadFeedId: 1 } }],
     });
     const resumed = vi.fn().mockResolvedValue(page(2, 2));
-    expect(await syncThreadFeed(db, 2, resumed)).toMatchObject({ cursor: 2 });
+    expect(
+      await syncThreadFeed(db, 2, resumed, groupMetaRequest, profileResolver),
+    ).toMatchObject({ cursor: 2 });
     expect(resumed).toHaveBeenCalledWith({
       after: 1,
       through: 2,
       take: 100,
-      previewCount: 1,
+      previewCount: 3,
     });
   });
 
@@ -185,9 +222,12 @@ describe('thread feed executor', () => {
       db,
       1,
       vi.fn().mockResolvedValue(page(1, 1)),
+      groupMetaRequest,
+      profileResolver,
     );
     expect(result).toEqual({
       cursor: 0,
+      groupThreadIds: [],
       states: [],
       error: 'transaction failed',
     });
@@ -197,11 +237,14 @@ describe('thread feed executor', () => {
   it('advances compacted empty pages and skips requests when already caught up', async () => {
     const db = storage();
     const request = vi.fn().mockResolvedValue(page(5, 5, 5, []));
-    expect(await syncThreadFeed(db, 5, request)).toEqual({
+    expect(
+      await syncThreadFeed(db, 5, request, groupMetaRequest, profileResolver),
+    ).toEqual({
       cursor: 5,
+      groupThreadIds: [],
       states: [],
     });
-    await syncThreadFeed(db, 5, request);
+    await syncThreadFeed(db, 5, request, groupMetaRequest, profileResolver);
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -210,7 +253,9 @@ describe('thread feed executor', () => {
     const request = vi
       .fn()
       .mockResolvedValue(page(2, 2, 2, [snapshot(2), snapshot(1)]));
-    expect(await syncThreadFeed(db, 2, request)).toMatchObject({
+    expect(
+      await syncThreadFeed(db, 2, request, groupMetaRequest, profileResolver),
+    ).toMatchObject({
       cursor: 0,
       error: 'unordered thread feed page',
     });

@@ -97,7 +97,7 @@ pub(crate) async fn synchronize(
     target: i32,
 ) -> Result<NotificationBatch, String> {
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    let result = super::attention::sync_thread_feed(None, proxy, user_id, target, 5).await?;
+    let result = super::attention::sync_thread_feed(None, proxy, user_id, target).await?;
     super::lifetime::spawn_at(Ok(epoch), move || {
         let mut batch = assemble(&mut super::open()?, user_id, result.states, result.error)?;
         batch.account_epoch = epoch;

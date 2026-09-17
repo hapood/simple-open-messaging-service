@@ -178,22 +178,11 @@ async function tryApplyReadPositionInTx(
         state.messageEndSeq,
       ),
     ));
-  const previewSeqs = await ThreadFeedHeadWriter.previewSeqsInTx(
-    tx,
-    accountId,
-    request.threadId,
-    state,
-    {
-      lastReadSeq: localReadHwm,
-      messageEndSeq: state.messageEndSeq,
-    },
-  );
   const result = await tx.execute<{ lastReadSeq: number }>(sql`
     UPDATE "AccountThreadState" SET "lastReadSeq" =
       CASE WHEN ${request.force === true} THEN ${localReadHwm}
         ELSE GREATEST("lastReadSeq", ${localReadHwm}) END,
       "unreadCount" = ${unreadCount},
-      "previewSeqs" = ${sql.param(previewSeqs)}::integer[],
       "lastMentionSeq" = ${lastMentionSeq}, "updatedAt" = CURRENT_TIMESTAMP
     WHERE "accountId" = ${accountId} AND "threadId" = ${request.threadId}
     RETURNING "lastReadSeq"`);

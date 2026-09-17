@@ -38,7 +38,8 @@ caches, without old-cache imports, runtime fallbacks, or dual writes.
 
 - Source message/tombstone transactions store facts and admit the single content
   task. They do not update recipient counts or published content heads.
-- Preview references commit with fanout/read projections. There is no cache barrier.
+- Preview references commit with fanout projections. Read projections leave them unchanged.
+  There is no cache barrier.
   Fanout remains durable, checkpointed, and yieldable.
 - Fanout advances content-head columns, interval counts, the mention pointer, and the same thread
   feed ID atomically with its checkpoint. Resolve against locked current state,
@@ -72,9 +73,11 @@ inside the business transaction, using the shared read writer. Repeated activati
 and profile/role updates do not reset active members. Departures and namespace
 retirement do not delete preview state; later activation owns initialization.
 
-Read advancement prunes references in its transaction. Force rollback can select
-earlier eligible slots. Clients also filter by their optimistic read position.
-There is no memory window, startup hydration, cache deletion, or cache queue.
+Read advancement does not mutate preview references. New eligible messages extend
+the bounded preview memory; ineligible messages, including the account's own
+messages, leave it unchanged. History clearing and visibility changes may prune
+references that are no longer visible. There is no startup hydration, cache
+deletion, or cache queue.
 Use canonical Account State / Relationship Pair / Thread Content ordering for
 database mutations. A fan-out projection commits one account-thread pair per
 transaction: after its parent and thread locks, it locks that account's
@@ -90,7 +93,7 @@ interface ThreadFeedRequest {
   after: number;
   through?: number;
   take?: number; // default 100, 1..200
-  previewCount?: number; // default 0, 0..THREAD_PREVIEW_LIMIT
+  previewCount?: number; // default 0, 0..3
 }
 interface ThreadFeedState {
   threadId: number;
@@ -130,6 +133,14 @@ including empty pages. A compacted row moving beyond the fixed target is consume
 in the next drain. If the head exceeds the target, drain again without requiring
 a fresh SSE signal.
 
+The web conversation list persists the latest `threadFeedId` on every visible
+thread item. Pinned items form the first tier; within the pinned and ordinary
+tiers, items are ordered strictly by descending `threadFeedId`. The account-level
+unique constraint makes equal IDs invalid. A structural thread-state projection
+that arrives before its thread snapshot remains hidden until that positive feed
+ID is available. Clients must not reconstruct list order from timestamps, local
+arrival order, thread IDs, or a separately persisted order array.
+
 Preview count zero omits the array. Otherwise return up to the requested number
 of latest other-sender entries, ordered by seq ascending. Own messages never
 occupy slots. Retractions retain stored slots; queries attach current deletion facts. Deleted text
@@ -137,9 +148,10 @@ is localized by the client; no original text is returned. Avatars are supplied
 only by client-side profiles or the agreed logo/account fallback.
 
 `previewSeqs` contains unique, positive thread-local message sequences in strict
-descending order, bounded by `THREAD_PREVIEW_LIMIT`. It stores references only,
+descending order, bounded to three entries. It stores references only,
 never copied content, authors, timestamps, or deletion status. Read advancement
-prunes references; a forced backwards read may select earlier eligible slots.
+and forced backwards reads leave references unchanged. A newly published eligible
+message rotates the bounded set; an ineligible message does not replace it.
 
 SSE `THREAD_FEED_UPDATED` carries `{ threadFeedEndId }`. HELLO includes both
 `stateFeedEndId` and `threadFeedEndId`. Remove `ATTENTION_FEED_UPDATED` and the old
@@ -218,9 +230,8 @@ against advancing the cursor after a complete notification-consumed feed page.
 
 #### Native notification cutover contract
 
-- Ordinary synchronization requests at most one preview; notification wakes
-  request at most five through the same executor and snapshot/cursor transaction.
-  Both TypeScript and Rust executors accept this preview-count selection. Native
+- Every client synchronization requests the server-defined three previews through
+  the same executor and snapshot/cursor transaction. Native
   drains serialize cursor ownership and recheck cache lifetime after admission.
 - A notification target at or below the shared durable thread-feed cursor is
   consumed already: skip the request and notification. Do not backfill previews
@@ -369,7 +380,7 @@ against advancing the cursor after a complete notification-consumed feed page.
   close background handles and invalidate late writes. Feed drains share a per-account
   Web Lock; Push execution requires Web Locks rather than running unsynchronized.
   In-memory account epochs are not shared between contexts.
-- Push requests five previews and persists only the newest one. Presentation uses
+- Push requests three previews and persists only the newest one. Presentation uses
   current local read progress and the transient preview batch. Already-consumed
   targets do not fetch or post again, and do not consume pending page presentation.
   Completed background writes send a validated COMMITTED wake to the page, which

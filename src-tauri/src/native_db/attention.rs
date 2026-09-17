@@ -1,7 +1,10 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{LazyLock, Mutex};
 
+use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
 use super::open;
 use crate::{proxy::perform_api_request_with_events, ProxyState};
 
@@ -9,12 +12,9 @@ use crate::{proxy::perform_api_request_with_events, ProxyState};
 // This is not the cache lifetime lock: network waits must not block account cleanup.
 static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn feed_request(cursor: i32, through: i32, preview_count: u8) -> Result<Vec<u8>, String> {
-    if !matches!(preview_count, 1 | 5) {
-        return Err("invalid thread feed preview count".into());
-    }
+fn feed_request(cursor: i32, through: i32) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&serde_json::json!({
-        "after": cursor, "through": through, "take": 100, "previewCount": preview_count,
+        "after": cursor, "through": through, "take": 100, "previewCount": 3,
     }))
     .map_err(|e| format!("encode thread feed request: {e}"))
 }
@@ -35,11 +35,550 @@ struct ThreadFeedResponse {
     data: Option<ThreadFeedPage>,
 }
 
+#[derive(Deserialize)]
+struct GroupMetaResponse {
+    code: i32,
+    data: Option<Value>,
+}
+
+struct GroupMetaPlan {
+    thread_id: i64,
+    account: String,
+    source_server: String,
+    namespace_id: i64,
+    target: String,
+    processed_through: String,
+    recovery_through: Option<String>,
+}
+
+#[derive(Clone)]
+struct GroupMetaProfileReference {
+    is_group: bool,
+    thread_id: i64,
+    account: String,
+    domain: String,
+    namespace_id: i64,
+    rev: i64,
+}
+
+static PENDING_GROUP_META_PROFILES: LazyLock<
+    Mutex<HashMap<(i64, String), GroupMetaProfileReference>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn commit_group_meta_profile(
+    conn: &Connection,
+    user_id: i64,
+    reference: &GroupMetaProfileReference,
+    profile: &Value,
+) -> Result<(), String> {
+    if profile.get("rev").and_then(Value::as_i64) != Some(reference.rev)
+        || profile.get("account").and_then(Value::as_str) != Some(&reference.account)
+        || profile.get("domain").and_then(Value::as_str) != Some(&reference.domain)
+    {
+        return Err("resolved profile revision does not match Group Meta".into());
+    }
+    let current: bool = if reference.is_group {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE user_id=?1 AND thread_id=?2
+             AND json_extract(payload_json,'$.type')='GROUP'
+             AND json_extract(payload_json,'$.group.account')=?3
+             AND json_extract(payload_json,'$.group.domain')=?4
+             AND json_extract(payload_json,'$.group.namespaceId')=?5
+             AND json_extract(payload_json,'$.group.profileRev')=?6)",
+            params![
+                user_id,
+                reference.thread_id,
+                reference.account,
+                reference.domain,
+                reference.namespace_id,
+                reference.rev
+            ],
+            |row| row.get(0),
+        )
+    } else {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2
+             AND member_account=?3 AND member_domain=?4 AND namespace_id=?5
+             AND profile_rev=?6 AND left_state=0)",
+            params![
+                user_id,
+                reference.thread_id,
+                reference.account,
+                reference.domain,
+                reference.namespace_id,
+                reference.rev
+            ],
+            |row| row.get(0),
+        )
+    }
+    .map_err(|e| format!("validate Group Meta profile reference: {e}"))?;
+    if !current {
+        return Ok(());
+    }
+    let avatar = profile
+        .get("avatarBase64")
+        .and_then(Value::as_str)
+        .map(|value| format!("data:image/webp;base64,{value}"))
+        .unwrap_or_default();
+    super::contacts::register_namespace(conn, user_id, reference.namespace_id, &reference.domain)?;
+    super::contacts::write_profile(
+        conn,
+        user_id,
+        &serde_json::json!({
+            "account": reference.account,
+            "domain": reference.domain,
+            "namespaceId": reference.namespace_id,
+            "profileRev": reference.rev,
+            "name": profile.get("name").and_then(Value::as_str).unwrap_or(&reference.account),
+            "avatar": avatar,
+            "bio": profile.get("bio").and_then(Value::as_str).unwrap_or(""),
+        }),
+    )?;
+    if reference.is_group {
+        conn.execute(
+            "UPDATE threads SET payload_json=json_set(payload_json,
+               '$.group.name', ?3, '$.group.avatar', ?4, '$.group.description', ?5)
+             WHERE user_id=?1 AND thread_id=?2",
+            params![
+                user_id,
+                reference.thread_id,
+                profile
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&reference.account),
+                avatar,
+                profile.get("bio").and_then(Value::as_str).unwrap_or("")
+            ],
+        )
+        .map_err(|e| format!("update resolved group profile: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn resolve_group_meta_profile(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ProxyState,
+    user_id: i64,
+    epoch: u64,
+    reference: GroupMetaProfileReference,
+) -> Result<bool, String> {
+    let selector = if reference.is_group {
+        serde_json::json!({
+            "type": "EXACT", "account": reference.account,
+            "domain": reference.domain, "rev": reference.rev,
+        })
+    } else {
+        serde_json::json!({
+            "type": "GROUP_MEMBER", "threadId": reference.thread_id,
+            "memberAccount": reference.account, "memberDomain": reference.domain,
+        })
+    };
+    let response = perform_api_request_with_events(
+        app,
+        proxy,
+        "POST".into(),
+        "/api/v1/user/profile-resolution".into(),
+        std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
+        Some(serde_json::to_vec(&selector).map_err(|e| e.to_string())?),
+        true,
+    )
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("profile-resolution HTTP {}", response.status));
+    }
+    let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
+        .map_err(|e| format!("decode profile-resolution response: {e}"))?;
+    if envelope.code != 0 {
+        return Err("profile resolution failed".into());
+    }
+    let data = envelope.data.ok_or("missing profile-resolution result")?;
+    match data.get("status").and_then(Value::as_str) {
+        Some("READY") => {
+            let profile = data
+                .get("profile")
+                .cloned()
+                .ok_or("missing resolved profile")?;
+            super::lifetime::spawn_at(Ok(epoch), move || {
+                commit_group_meta_profile(&open()?, user_id, &reference, &profile)
+            })
+            .await
+            .map_err(|e| format!("join resolved profile commit: {e}"))??;
+            return Ok(true);
+        }
+        Some("PENDING") => {
+            let request_id = data
+                .get("requestId")
+                .and_then(Value::as_str)
+                .ok_or("missing profile-resolution request id")?;
+            PENDING_GROUP_META_PROFILES
+                .lock()
+                .map_err(|_| "profile-resolution map poisoned".to_string())?
+                .insert((user_id, request_id.to_owned()), reference);
+        }
+        _ => return Err("invalid profile-resolution result".into()),
+    }
+    Ok(false)
+}
+
+fn unresolved_group_meta_profiles(
+    conn: &Connection,
+    user_id: i64,
+) -> Result<Vec<GroupMetaProfileReference>, String> {
+    let mut references = Vec::new();
+    let mut groups = conn
+        .prepare(
+            "SELECT thread_id, json_extract(payload_json,'$.group.account'),
+                    json_extract(payload_json,'$.group.domain'),
+                    json_extract(payload_json,'$.group.namespaceId'),
+                    json_extract(payload_json,'$.group.profileRev')
+             FROM threads
+             WHERE user_id=?1 AND json_extract(payload_json,'$.type')='GROUP'
+               AND COALESCE(json_extract(payload_json,'$.conversationState'),'ACTIVE') <> 'READ_ONLY'
+               AND CAST(json_extract(payload_json,'$.group.profileRev') AS INTEGER) > 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM profiles profile WHERE profile.user_id=?1
+                   AND profile.account=json_extract(threads.payload_json,'$.group.account')
+                   AND profile.domain=json_extract(threads.payload_json,'$.group.domain')
+                   AND profile.namespace_id=json_extract(threads.payload_json,'$.group.namespaceId')
+                   AND profile.profile_rev=json_extract(threads.payload_json,'$.group.profileRev'))",
+        )
+        .map_err(|e| format!("prepare unresolved group profiles: {e}"))?;
+    let rows = groups
+        .query_map([user_id], |row| {
+            Ok(GroupMetaProfileReference {
+                is_group: true,
+                thread_id: row.get(0)?,
+                account: row.get(1)?,
+                domain: row.get(2)?,
+                namespace_id: row.get(3)?,
+                rev: row.get(4)?,
+            })
+        })
+        .map_err(|e| format!("query unresolved group profiles: {e}"))?;
+    for row in rows {
+        references.push(row.map_err(|e| format!("read unresolved group profile: {e}"))?);
+    }
+    let mut members = conn
+        .prepare(
+            "SELECT member.thread_id, member.member_account, member.member_domain,
+                    member.namespace_id, member.profile_rev
+             FROM members member
+             WHERE member.user_id=?1 AND member.left_state=0 AND member.profile_rev>0
+               AND member.profile_message_seq IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM profiles profile WHERE profile.user_id=member.user_id
+                   AND profile.account=member.member_account
+                   AND profile.domain=member.member_domain
+                   AND profile.namespace_id=member.namespace_id
+                   AND profile.profile_rev=member.profile_rev)",
+        )
+        .map_err(|e| format!("prepare unresolved member profiles: {e}"))?;
+    let rows = members
+        .query_map([user_id], |row| {
+            Ok(GroupMetaProfileReference {
+                is_group: false,
+                thread_id: row.get(0)?,
+                account: row.get(1)?,
+                domain: row.get(2)?,
+                namespace_id: row.get(3)?,
+                rev: row.get(4)?,
+            })
+        })
+        .map_err(|e| format!("query unresolved member profiles: {e}"))?;
+    for row in rows {
+        references.push(row.map_err(|e| format!("read unresolved member profile: {e}"))?);
+    }
+    Ok(references)
+}
+
+pub(crate) async fn handle_group_meta_profile_event(
+    user_id: i64,
+    event: &str,
+    data: &Value,
+) -> Result<Option<i64>, String> {
+    let request_id = data
+        .get("requestId")
+        .and_then(Value::as_str)
+        .ok_or("profile event has no request id")?;
+    let reference = PENDING_GROUP_META_PROFILES
+        .lock()
+        .map_err(|_| "profile-resolution map poisoned".to_string())?
+        .remove(&(user_id, request_id.to_owned()));
+    let Some(reference) = reference else {
+        return Ok(None);
+    };
+    if event == "PROFILE_FAILED" {
+        return Ok(None);
+    }
+    let profile = data
+        .get("profile")
+        .cloned()
+        .ok_or("profile event has no profile")?;
+    let thread_id = reference.thread_id;
+    super::lifetime::spawn(move || {
+        commit_group_meta_profile(&open()?, user_id, &reference, &profile)
+    })
+    .await
+    .map_err(|e| format!("join profile event commit: {e}"))??;
+    Ok(Some(thread_id))
+}
+
+fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT thread.thread_id, thread.payload_json, state.payload_json
+             FROM threads thread JOIN thread_states state
+               ON state.user_id=thread.user_id AND state.thread_id=thread.thread_id
+             WHERE thread.user_id=?1 AND json_extract(thread.payload_json,'$.type')='GROUP'
+               AND COALESCE(json_extract(thread.payload_json,'$.conversationState'),'ACTIVE') <> 'READ_ONLY'",
+        )
+        .map_err(|e| format!("prepare group-meta plans: {e}"))?;
+    let rows = statement
+        .query_map([user_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("query group-meta plans: {e}"))?;
+    let mut plans = Vec::new();
+    for row in rows {
+        let (thread_id, thread_json, state_json) =
+            row.map_err(|e| format!("read group-meta plan: {e}"))?;
+        let thread: Value =
+            serde_json::from_str(&thread_json).map_err(|e| format!("decode group thread: {e}"))?;
+        let state: LocalThreadAttention = serde_json::from_str(&state_json)
+            .map_err(|e| format!("decode group thread head: {e}"))?;
+        let Some(target) = state
+            .server
+            .and_then(|server| server.group_meta_feed_end_id)
+        else {
+            continue;
+        };
+        let group = &thread["group"];
+        let account = group["account"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("group-meta plan has no group account")?;
+        let source_server = group["domain"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("group-meta plan has no source server")?;
+        let namespace_id = group["namespaceId"]
+            .as_i64()
+            .filter(|value| *value >= 0)
+            .ok_or("group-meta plan has no namespace")?;
+        let processed_through = group["groupMetaFeedId"].as_str().unwrap_or("0");
+        for value in [&target, processed_through] {
+            value
+                .parse::<u64>()
+                .map_err(|_| "invalid group-meta coordinate".to_string())?;
+        }
+        let recovery_through = thread["groupMetaRecoveryThrough"]
+            .as_str()
+            .map(str::to_owned);
+        if let Some(value) = &recovery_through {
+            value
+                .parse::<u64>()
+                .map_err(|_| "invalid group-meta recovery boundary".to_string())?;
+        }
+        plans.push(GroupMetaPlan {
+            thread_id,
+            account: account.to_owned(),
+            source_server: source_server.to_owned(),
+            namespace_id,
+            target,
+            processed_through: processed_through.to_owned(),
+            recovery_through,
+        });
+    }
+    Ok(plans)
+}
+
+async fn sync_group_meta(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ProxyState,
+    user_id: i64,
+    epoch: u64,
+) -> (Vec<i64>, Option<String>) {
+    let mut changed = Vec::new();
+    let result = sync_group_meta_unchecked(app, proxy, user_id, epoch, &mut changed).await;
+    changed.sort_unstable();
+    changed.dedup();
+    (changed, result.err())
+}
+
+async fn sync_group_meta_unchecked(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ProxyState,
+    user_id: i64,
+    epoch: u64,
+    changed: &mut Vec<i64>,
+) -> Result<(), String> {
+    let plans = super::lifetime::spawn_at(Ok(epoch), move || group_meta_plans(&open()?, user_id))
+        .await
+        .map_err(|e| format!("join group-meta plan read: {e}"))??;
+    for plan in plans {
+        let target = plan.target.parse::<u64>().map_err(|e| e.to_string())?;
+        let mut after = plan
+            .processed_through
+            .parse::<u64>()
+            .map_err(|e| e.to_string())?;
+        let recovery_through = plan.recovery_through;
+        if recovery_through.is_none() && after >= target {
+            continue;
+        }
+        let mut mode = if recovery_through.is_some() || after == 0 {
+            "full"
+        } else {
+            "delta"
+        };
+        let mut through = recovery_through
+            .as_deref()
+            .unwrap_or(&plan.target)
+            .parse::<u64>()
+            .map_err(|e| e.to_string())?;
+        if mode == "full" && recovery_through.is_none() {
+            let boundary = through.to_string();
+            super::lifetime::spawn_at(Ok(epoch), move || {
+                super::client_state::begin_group_meta_recovery(
+                    &mut open()?,
+                    user_id,
+                    plan.thread_id,
+                    &boundary,
+                )
+            })
+            .await
+            .map_err(|e| format!("join group-meta recovery reset: {e}"))??;
+            changed.push(plan.thread_id);
+            after = 0;
+        }
+        let mut reopened = false;
+        loop {
+            drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+            let path = format!(
+                "/api/v1/user/group-meta?threadId={}&mode={mode}&after={after}&take=100&through={through}",
+                plan.thread_id
+            );
+            let response = perform_api_request_with_events(
+                app,
+                proxy,
+                "GET".into(),
+                path,
+                std::collections::HashMap::new(),
+                None,
+                true,
+            )
+            .await?;
+            if !(200..300).contains(&response.status) {
+                return Err(format!("group-meta HTTP {}", response.status));
+            }
+            let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
+                .map_err(|e| format!("decode group-meta response: {e}"))?;
+            if envelope.code == 30006 {
+                if reopened {
+                    return Err("group-meta recovery window is unavailable".into());
+                }
+                let reset = envelope.data.ok_or("missing group-meta recovery window")?;
+                if reset["resumeAfter"].as_str() != Some("0") {
+                    return Err("invalid group-meta recovery window".into());
+                }
+                let before = reset["resumeBefore"]
+                    .as_str()
+                    .ok_or("invalid group-meta recovery boundary")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid group-meta recovery boundary".to_string())?;
+                through = before
+                    .checked_sub(1)
+                    .ok_or("invalid group-meta recovery boundary")?;
+                let boundary = through.to_string();
+                let thread_id = plan.thread_id;
+                super::lifetime::spawn_at(Ok(epoch), move || {
+                    super::client_state::begin_group_meta_recovery(
+                        &mut open()?,
+                        user_id,
+                        thread_id,
+                        &boundary,
+                    )
+                })
+                .await
+                .map_err(|e| format!("join group-meta recovery reopen: {e}"))??;
+                changed.push(plan.thread_id);
+                after = 0;
+                mode = "full";
+                reopened = true;
+                continue;
+            }
+            if envelope.code != 0 {
+                return Err("group-meta pull failed".into());
+            }
+            let page: ClientGroupMetaPage =
+                serde_json::from_value(envelope.data.ok_or("missing group-meta page")?)
+                    .map_err(|e| format!("decode group-meta page: {e}"))?;
+            let scanned = page
+                .scanned_through
+                .parse::<u64>()
+                .map_err(|_| "invalid group-meta scanned boundary".to_string())?;
+            let source_end = page
+                .group_meta_feed_end_id
+                .parse::<u64>()
+                .map_err(|_| "invalid group-meta source boundary".to_string())?;
+            if page.mode != mode
+                || page.account != plan.account
+                || scanned < after
+                || scanned > through
+                || source_end < through
+                || (!page.has_more && scanned != through)
+                || (page.has_more && scanned == after)
+            {
+                return Err("invalid group-meta page".into());
+            }
+            let has_more = page.has_more;
+            let update = ClientGroupMetaApply {
+                thread_id: plan.thread_id,
+                source_server: plan.source_server.clone(),
+                namespace_id: plan.namespace_id,
+                page,
+            };
+            super::lifetime::spawn_at(Ok(epoch), move || {
+                super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
+            })
+            .await
+            .map_err(|e| format!("join group-meta page commit: {e}"))??;
+            changed.push(plan.thread_id);
+            after = scanned;
+            if !has_more {
+                if mode == "full" && after < target {
+                    mode = "delta";
+                    through = target;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    let references = super::lifetime::spawn_at(Ok(epoch), move || {
+        unresolved_group_meta_profiles(&open()?, user_id)
+    })
+    .await
+    .map_err(|e| format!("join unresolved Group Meta profile read: {e}"))??;
+    for reference in references {
+        let thread_id = reference.thread_id;
+        if resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await? {
+            changed.push(thread_id);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadFeedSyncResult {
-    pub(super) states: Vec<LocalThreadAttention>,
+    pub(crate) states: Vec<LocalThreadAttention>,
     pub(crate) cursor: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) group_thread_ids: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
 }
@@ -95,9 +634,27 @@ pub(crate) async fn native_thread_feed_sync(
         return Err("invalid applied thread feed cursor".into());
     }
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    let result = sync_thread_feed(Some(&app), &proxy, user_id, target, 1).await?;
+    let result = sync_thread_feed(Some(&app), &proxy, user_id, target).await?;
     super::lifetime::spawn_at(Ok(epoch), move || {
         let mut changes = read_feed_changes(&mut open()?, user_id, after)?;
+        for state in &mut changes.states {
+            let Some(server) = state.server.as_mut() else {
+                continue;
+            };
+            let Some(transient) = result.states.iter().find(|candidate| {
+                candidate.thread_id == state.thread_id
+                    && candidate.server.as_ref().is_some_and(|candidate_server| {
+                        candidate_server.thread_feed_id == server.thread_feed_id
+                    })
+            }) else {
+                continue;
+            };
+            server.previews = transient
+                .server
+                .as_ref()
+                .and_then(|candidate_server| candidate_server.previews.clone());
+        }
+        changes.group_thread_ids = result.group_thread_ids;
         changes.error = result.error;
         Ok(changes)
     })
@@ -127,6 +684,7 @@ fn read_feed_changes(
     Ok(ThreadFeedSyncResult {
         states,
         cursor,
+        group_thread_ids: Vec::new(),
         error: None,
     })
 }
@@ -149,15 +707,11 @@ pub(crate) async fn sync_thread_feed(
     proxy: &ProxyState,
     user_id: i64,
     target: i32,
-    preview_count: u8,
 ) -> Result<ThreadFeedSyncResult, String> {
     if user_id <= 0 || target < -1 {
         return Err("invalid thread feed owner or target".into());
     }
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    if !matches!(preview_count, 1 | 5) {
-        return Err("invalid thread feed preview count".into());
-    }
     let _sync = THREAD_FEED_SYNC.lock().await;
     drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
     let mut cursor = super::lifetime::spawn_at(Ok(epoch), move || {
@@ -167,6 +721,7 @@ pub(crate) async fn sync_thread_feed(
     .await
     .map_err(|e| format!("join thread feed cursor read: {e}"))??;
     let mut states = BTreeMap::new();
+    let mut group_thread_ids = Vec::new();
     // Only scheduled polling lacks a wake head. Its first page discovers the server boundary.
     let mut target = (target >= 0).then_some(target);
     let outcome: Result<(), String> = async {
@@ -183,9 +738,12 @@ pub(crate) async fn sync_thread_feed(
                     "application/json".into(),
                 )]),
                 Some(if let Some(through) = through {
-                    feed_request(cursor, through, preview_count)?
+                    feed_request(cursor, through)?
                 } else {
-                    serde_json::to_vec(&serde_json::json!({"after":cursor,"take":100,"previewCount":preview_count})).map_err(|e| e.to_string())?
+                    serde_json::to_vec(
+                        &serde_json::json!({"after":cursor,"take":100,"previewCount":3}),
+                    )
+                    .map_err(|e| e.to_string())?
                 }),
                 true,
             )
@@ -213,6 +771,11 @@ pub(crate) async fn sync_thread_feed(
             cursor = scanned;
             target = Some(target.unwrap_or(head).max(head));
         }
+        let (changed, error) = sync_group_meta(app, proxy, user_id, epoch).await;
+        group_thread_ids = changed;
+        if let Some(error) = error {
+            return Err(error);
+        }
         Ok(())
     }
     .await;
@@ -221,6 +784,7 @@ pub(crate) async fn sync_thread_feed(
     Ok(ThreadFeedSyncResult {
         states: states.into_values().collect(),
         cursor,
+        group_thread_ids,
         error: outcome.err(),
     })
 }
@@ -318,16 +882,26 @@ fn write_state(
             .cloned();
         *previews = latest.into_iter().collect();
     }
+    let thread_feed_id = state.server.as_ref().map(|server| server.thread_feed_id);
     conn.execute(
         "INSERT OR IGNORE INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3)",
         params![
             user_id,
             state.thread_id,
-            serde_json::json!({"threadId": state.thread_id, "type": "PENDING", "visible": false})
+            serde_json::json!({"threadId": state.thread_id, "threadFeedId": thread_feed_id, "type": "PENDING", "visible": false})
                 .to_string()
         ],
     )
     .map_err(|e| format!("write pending thread: {e}"))?;
+    if let Some(thread_feed_id) = thread_feed_id {
+        conn.execute(
+            "UPDATE threads SET payload_json=json_set(payload_json, '$.threadFeedId', ?3,
+               '$.visible', CASE WHEN json_extract(payload_json, '$.type')='PENDING' THEN json('false') ELSE json('true') END)
+             WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, state.thread_id, thread_feed_id],
+        )
+        .map_err(|e| format!("publish thread list order: {e}"))?;
+    }
     let payload = serde_json::to_string(&stored).map_err(|e| format!("encode attention: {e}"))?;
     conn.execute(
         "INSERT INTO thread_states(user_id,thread_id,payload_json) VALUES(?1,?2,?3)
@@ -494,20 +1068,14 @@ mod tests {
     }
 
     #[test]
-    fn normal_and_notification_requests_share_the_same_feed_contract() {
-        for count in [1, 5] {
-            let body: serde_json::Value =
-                serde_json::from_slice(&feed_request(3, 8, count).unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({
-                    "after": 3, "through": 8, "take": 100, "previewCount": count,
-                })
-            );
-        }
-        for count in [0, 2, 6] {
-            assert!(feed_request(3, 8, count).is_err());
-        }
+    fn all_native_requests_use_three_previews() {
+        let body: serde_json::Value = serde_json::from_slice(&feed_request(3, 8).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "after": 3, "through": 8, "take": 100, "previewCount": 3,
+            })
+        );
     }
 
     #[test]

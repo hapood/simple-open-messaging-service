@@ -47,14 +47,10 @@ function transaction(options?: {
 describe('FederationThreadContentHeadService', () => {
   it('writes message and tombstone targets as one P2P State Feed projection', async () => {
     const stateFeed = { writeManyInTx: vi.fn().mockResolvedValue(new Map()) };
-    const service = new FederationThreadContentHeadService(
-      {} as never,
-      stateFeed as never,
-      {} as never,
-    );
+    const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction();
 
-    await service.refreshInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
 
     expect(tx.execute).toHaveBeenCalledTimes(3);
     const snapshotSql = new PgDialect().sqlToQuery(
@@ -78,14 +74,10 @@ describe('FederationThreadContentHeadService', () => {
 
   it('uses the group address without a directional subject', async () => {
     const stateFeed = { writeManyInTx: vi.fn().mockResolvedValue(new Map()) };
-    const service = new FederationThreadContentHeadService(
-      {} as never,
-      stateFeed as never,
-      {} as never,
-    );
+    const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction({ threadType: 'GROUP', tombstoneEndSeq: 0 });
 
-    await service.refreshInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
@@ -99,14 +91,10 @@ describe('FederationThreadContentHeadService', () => {
 
   it('publishes the reauthorization floor when no newer message exists', async () => {
     const stateFeed = { writeManyInTx: vi.fn() };
-    const service = new FederationThreadContentHeadService(
-      {} as never,
-      stateFeed as never,
-      {} as never,
-    );
+    const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction({ messageEndSeq: null });
 
-    await service.refreshInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
@@ -117,18 +105,14 @@ describe('FederationThreadContentHeadService', () => {
 
   it('publishes an empty authorized thread', async () => {
     const stateFeed = { writeManyInTx: vi.fn() };
-    const service = new FederationThreadContentHeadService(
-      {} as never,
-      stateFeed as never,
-      {} as never,
-    );
+    const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction({
       messageEndSeq: null,
       messageAccessAfterSeq: 0,
       tombstoneEndSeq: 0,
     });
 
-    await service.refreshInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({

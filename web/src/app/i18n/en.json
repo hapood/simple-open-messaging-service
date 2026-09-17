@@ -553,15 +553,13 @@
       "friendRemoved": "The friendship ended",
       "friendRemovedSelf": "You ended your friendship with {{name}}",
       "friendRemovedOther": "{{name}} ended the friendship with you",
+      "groupCreated": "{{name}} created the group",
       "groupJoined": "{{name}} joined the group",
       "groupLeft": "{{name}} is no longer in the group",
       "groupLeftSelf": "You are no longer in this group",
       "groupAdminGranted": "{{name}} became an administrator",
       "groupAdminRevoked": "{{name}} is no longer an administrator",
       "groupOwnerTransferred": "{{name}} became the group owner",
-      "messageWithdrawn": "{{name}} withdrew a message",
-      "messageWithdrawnSelf": "You withdrew a message",
-      "messagesModerated": "An administrator deleted {{count}} message(s)",
       "updated": "Conversation updated"
     },
     "selection": {

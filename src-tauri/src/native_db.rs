@@ -22,7 +22,7 @@ use messages::{
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 22;
+const CACHE_SCHEMA_VERSION: i64 = 24;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);

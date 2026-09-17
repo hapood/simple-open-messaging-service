@@ -76,11 +76,7 @@ describe('ThreadListComponent', () => {
             status,
             error: signal(''),
             openThreadId: signal(undefined),
-            topInserted: signal(null),
             load: loadSpy,
-            clearTopInserted: () => {
-              /* no-op — the FLIP effect calls this on a rAF; irrelevant here */
-            },
           },
         },
         {

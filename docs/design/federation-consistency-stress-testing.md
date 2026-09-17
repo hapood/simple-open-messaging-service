@@ -190,8 +190,7 @@ conditions hold or the convergence deadline expires.
 The quiescence candidate requires:
 
 - every admitted durable task is terminal;
-- no task remains `PENDING`, `PROCESSING`, or `ASYNC_PROCESSING` for a workload
-  scope;
+- no task remains `PENDING` or `PROCESSING` for a workload scope;
 - no terminal `FAILED` task exists unless the operation's expected result set
   explicitly includes that failure;
 - every initialized `PeerStateFeedPullCursor.committedThrough` has reached the

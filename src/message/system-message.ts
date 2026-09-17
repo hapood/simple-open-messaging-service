@@ -28,6 +28,8 @@ export async function resolveSystemMessageInTx(
   switch (event.type) {
     case 'FRIEND_REMOVED':
       return { ...event, initiator: await resolve(event.initiator) };
+    case 'GROUP_CREATED':
+      return { ...event, creator: await resolve(event.creator) };
     case 'GROUP_JOINED':
     case 'GROUP_LEFT':
     case 'GROUP_ADMIN_GRANTED':
@@ -39,8 +41,6 @@ export async function resolveSystemMessageInTx(
         previousOwner: await resolve(event.previousOwner),
         newOwner: await resolve(event.newOwner),
       };
-    case 'MESSAGE_WITHDRAWN':
-      return { ...event, author: await resolve(event.author) };
     default:
       return event;
   }

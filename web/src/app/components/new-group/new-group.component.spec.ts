@@ -22,7 +22,7 @@ describe('NewGroupComponent', () => {
         { provide: RouteService, useValue: routeService },
         {
           provide: ConversationListService,
-          useValue: { items: signal([]), markTopOnNextUpdate: vi.fn() },
+          useValue: { items: signal([]) },
         },
         { provide: HttpClient, useValue: {} },
         {

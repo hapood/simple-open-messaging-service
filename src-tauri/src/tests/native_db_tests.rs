@@ -228,12 +228,11 @@ fn native_thread_state_restores_history_and_ignores_old_snapshots() {
         .unwrap();
     let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(thread["conversationState"], "READ_ONLY");
-    assert_eq!(thread["defaultProfile"]["profileRev"], 3);
+    assert_eq!(thread["peerUser"]["profileRev"], 3);
     assert_eq!(thread["blocked"], true);
     assert_eq!(thread["visible"], true);
     assert_eq!(thread["lastMessageAt"], 900);
     assert_eq!(thread["unreadCount"], 4);
-    assert_eq!(thread["establishedAt"], 100);
 }
 
 #[test]
@@ -265,7 +264,7 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
         );
     }
     tx.commit().unwrap();
-    super::client_state::reset_group_meta(&mut conn, 1, 52).unwrap();
+    super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
             .unwrap(),

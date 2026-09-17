@@ -469,6 +469,7 @@
       "discovered": "发现对端",
       "trusted": "建立信任",
       "degraded": "连接丢失 / 降级",
+      "available": "连接恢复",
       "halted": "通信已停止",
       "unblocked": "管理员取消屏蔽"
     },
@@ -712,7 +713,6 @@
       "ALL": "全部",
       "PENDING": "等待中",
       "PROCESSING": "执行中",
-      "ASYNC_PROCESSING": "异步执行中",
       "SUCCEEDED": "成功",
       "REJECTED": "已拒绝",
       "FAILED": "失败",

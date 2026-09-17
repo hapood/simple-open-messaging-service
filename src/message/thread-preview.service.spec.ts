@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadPreviewService } from './thread-preview.service.js';
-import { threadPreviewLimit } from './thread-preview-limit.js';
+import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
 import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
 vi.mock('../common/locks/thread-content-lock.js', () => ({
   requireThreadContentLockInTx: vi.fn().mockResolvedValue({ threadId: 7 }),
@@ -50,14 +50,11 @@ describe('database preview lifecycle', () => {
   it('reads no fallback history when the stored reference query is empty', async () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });
     const service = new ThreadPreviewService({} as never);
-    expect(await service.readInTx({ execute } as never, 1, 7, 5)).toEqual([]);
+    expect(await service.readInTx({ execute } as never, 1, 7, 3)).toEqual([]);
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('validates configurable capacity', () => {
-    expect(threadPreviewLimit('2')).toBe(2);
-    for (const raw of ['0', '-1', '1.5', 'NaN', '9007199254740992']) {
-      expect(() => threadPreviewLimit(raw)).toThrow();
-    }
+  it('uses the fixed server preview capacity', () => {
+    expect(THREAD_PREVIEW_LIMIT).toBe(3);
   });
 });

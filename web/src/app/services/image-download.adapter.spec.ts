@@ -69,7 +69,11 @@ describe('NativeImageDownloadAdapter', () => {
     adapter
       .download('/uploads/photo.jpg')
       .subscribe((event) => events.push(event));
-    await tick();
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(invoke).mock.calls.some((call) => call[0] === 'download_media'),
+      ).toBe(true),
+    );
     const downloadCall = vi
       .mocked(invoke)
       .mock.calls.find((call) => call[0] === 'download_media');
@@ -82,25 +86,26 @@ describe('NativeImageDownloadAdapter', () => {
       contentType: 'image/jpeg',
       size: 2048,
     });
-    await tick();
 
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: 'progress',
-        loaded: 1024,
-        total: 2048,
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: 'completed',
-        artifact: expect.objectContaining({
-          displayUrl: 'media://localhost/uploads/photo.jpg',
-          savePath: '/uploads/photo.jpg',
-          size: 2048,
+    await vi.waitFor(() => {
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'progress',
+          loaded: 1024,
+          total: 2048,
         }),
-      }),
-    );
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'completed',
+          artifact: expect.objectContaining({
+            displayUrl: 'media://localhost/uploads/photo.jpg',
+            savePath: '/uploads/photo.jpg',
+            size: 2048,
+          }),
+        }),
+      );
+    });
   });
 
   it('cancels the Rust task when the observable is unsubscribed', async () => {
@@ -113,23 +118,24 @@ describe('NativeImageDownloadAdapter', () => {
     });
 
     const subscription = adapter.download('/uploads/photo.jpg').subscribe();
-    await tick();
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(invoke).mock.calls.some((call) => call[0] === 'download_media'),
+      ).toBe(true),
+    );
     const taskId = vi
       .mocked(invoke)
       .mock.calls.find((call) => call[0] === 'download_media')?.[1]
       .taskId as string;
     subscription.unsubscribe();
-    await tick();
 
-    expect(invoke).toHaveBeenCalledWith('cancel_media_download', { taskId });
-    expect(unlisten).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('cancel_media_download', { taskId });
+      expect(unlisten).toHaveBeenCalled();
+    });
     resolveDownload?.({
       path: '/private/cache/media.bin',
       size: 2048,
     });
   });
 });
-
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}

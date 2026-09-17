@@ -6,6 +6,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
+import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from './auth.service';
 import { RouteService } from './route.service';
@@ -107,14 +108,14 @@ describe('AuthService (session-token contract, browser path)', () => {
 
   it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', async () => {
     expect(svc.isLoggedIn()).toBe(false); // no presence cookie before login
-    svc.login({ account: 'alice', password: 'pw' }).subscribe();
-    // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))`. Even on the
-    // browser path pickLoginOrigin() is `Promise.resolve(apiOrigin())`, so the POST fires on the next
-    // microtask — NOT synchronously. Let that hop settle before asserting on the request (logout() and
-    // revokeSession() post directly, so they need no such wait).
-    await new Promise((r) => setTimeout(r));
-
-    const req = httpMock.expectOne((r) => /\/auth\/login$/.test(r.url));
+    // login() awaits activateSession BEFORE its observable emits — `done` is the deterministic
+    // whole-chain completion signal (logout() and revokeSession() post directly, so they need no wait).
+    const done = firstValueFrom(svc.login({ account: 'alice', password: 'pw' }));
+    // Even on the browser path pickLoginOrigin() defers the POST to the next microtask — waitFor
+    // its arrival at the mock instead of sleeping.
+    const req = await vi.waitFor(() =>
+      httpMock.expectOne((r) => /\/auth\/login$/.test(r.url)),
+    );
     expect(req.request.body.account).toBe('alice');
     // Headless browser test env → isTauri() false → client metadata is 'web'.
     expect(req.request.body.client).toBe('web');
@@ -124,7 +125,7 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(req.request.body.device.length).toBeGreaterThan(0);
 
     req.flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await done;
     expect(closeNotification).toHaveBeenCalledTimes(1);
     // Pure-httpOnly browser: the token lives in the (JS-unreadable) httpOnly cookie the backend set — JS
     // NEVER holds it (there is no sessionToken surface at all). Login state rides the non-httpOnly
@@ -142,8 +143,9 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(true);
 
     svc.logout().subscribe();
-    await Promise.resolve();
-    const req = httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url));
+    const req = await vi.waitFor(() =>
+      httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)),
+    );
     // The logout body carries NO token — JS never holds one. The backend resolves the session from the
     // httpOnly cookie (browser) / Bearer (native). No refresh token (single session-token model).
     expect(req.request.body.sessionToken).toBeUndefined();
@@ -173,10 +175,11 @@ describe('AuthService (session-token contract, browser path)', () => {
     httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
 
     finishCacheClear();
-    await Promise.resolve();
+    // The emission passes the tap (local state clear + remote logout POST) before `exited` fires —
+    // waiting on it means everything below is already settled.
+    await vi.waitFor(() => expect(exited).toHaveBeenCalledTimes(1));
 
     expect(svc.isLoggedIn()).toBe(false);
-    expect(exited).toHaveBeenCalledTimes(1);
     httpMock
       .expectOne((request) => /\/auth\/logout$/.test(request.url))
       .flush({ code: 0, message: 'ok' });
@@ -190,11 +193,12 @@ describe('AuthService (session-token contract, browser path)', () => {
     user.clearSession.mockRejectedValue(new Error('cache busy'));
 
     svc.logout().subscribe({ error: () => {} });
-    await Promise.resolve();
+    await vi.waitFor(() =>
+      expect(TestBed.inject(ToastService).warn).toHaveBeenCalled(),
+    );
 
     expect(svc.isLoggedIn()).toBe(true);
     httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
-    expect(TestBed.inject(ToastService).warn).toHaveBeenCalled();
   });
 
   it('keeps the authenticated session when local-cache initialization fails', async () => {

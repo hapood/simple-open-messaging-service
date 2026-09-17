@@ -6,13 +6,7 @@ import {
 } from './shared/group-state.js';
 import { p2pPeerRelation } from '../relationship/shared/relationship-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import {
-  HttpStatus,
-  Inject,
-  Injectable,
-  Logger,
-  Optional,
-} from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -76,7 +70,7 @@ export class GroupService {
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly groupMeta: GroupMetaFeedService,
-    @Optional() private readonly messages?: MessageService,
+    private readonly messages: MessageService,
   ) {}
 
   /** Resolve a member's current roster details only after its pair is active. */
@@ -421,6 +415,13 @@ export class GroupService {
             'REQUESTED',
             clientFeedUpdates,
           );
+          // The creation notice is authority-local history: federation message
+          // feeds exclude SYSTEM rows. Write it before owner activation so the
+          // new participant's read boundary initializes at this sequence.
+          await this.messages.writeSystemMessageInTx(tx, thread.id, {
+            type: SystemMessageType.GROUP_CREATED,
+            creator: params.owner,
+          });
           await this.relationshipMutations.writeMemberRelationshipIntentInTx(
             tx,
             thread.id,
@@ -598,7 +599,7 @@ export class GroupService {
           ),
         )
         .returning({ id: groupAccount.id });
-      if (dissolved.length > 0 && this.messages) {
+      if (dissolved.length > 0) {
         // Gated on the transition so a replayed parent never writes a second
         // boundary. GROUP_LEFT-free by design: the sweep children are silent.
         await this.messages.writeSystemMessageInTx(

@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { parseMessageEntities } from '../common/message-entity.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
-import { threadPreviewLimit } from './thread-preview-limit.js';
+import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
 
 export function mentionsAccount(content: string, account: string): boolean {
   const text = parseTextMessageContent(content)?.text ?? '';
@@ -110,39 +110,41 @@ export class ThreadFeedHeadWriter {
     return interval.sign * result.rows[0].count;
   }
 
-  /** Stored references retain tomb slots; ordinary reads only prune existing references. */
+  /**
+   * Extend the stored preview memory only with newly published eligible messages.
+   * Read cursors do not own this projection: an ineligible message or mark-read
+   * must not evict the last useful conversation preview.
+   */
   static async previewSeqsInTx(
     tx: DatabaseTransaction,
     accountId: number,
     threadId: number,
     previous: MentionProjectionState,
-    next: { lastReadSeq: number; messageEndSeq: number },
+    next: { messageEndSeq: number },
   ): Promise<number[]> {
     if (previous.blocked) return [];
-    // Reading a preview keeps its slot until the cursor passes it. History
-    // clearing still removes the boundary message itself.
-    const lower = Math.max(next.lastReadSeq - 1, previous.clearedSeq ?? 0);
+    const lower = previous.clearedSeq ?? 0;
     const upper = Math.min(
       next.messageEndSeq,
       previous.messageVisibleThroughSeq ?? next.messageEndSeq,
     );
     if (lower >= upper) return [];
-    if (
-      next.messageEndSeq <= previous.messageEndSeq &&
-      next.lastReadSeq >= previous.lastReadSeq
-    ) {
-      return previous.previewSeqs
-        .filter((seq) => seq > lower && seq <= upper)
-        .slice(0, threadPreviewLimit());
-    }
+    const retained = previous.previewSeqs.filter(
+      (seq) => seq > lower && seq <= upper,
+    );
+    if (next.messageEndSeq <= previous.messageEndSeq)
+      return retained.slice(0, THREAD_PREVIEW_LIMIT);
     const result = await tx.execute<{ seq: number }>(sql`
       SELECT m.seq FROM "Message" m
       JOIN "AccountThreadState" s ON s."threadId" = m."threadId" AND s."accountId" = ${accountId}
       JOIN "MessageThread" t ON t.id = m."threadId"
-      WHERE m."threadId" = ${threadId} AND m.seq > ${lower} AND m.seq <= ${upper}
+      WHERE m."threadId" = ${threadId}
+        AND m.seq > ${Math.max(previous.messageEndSeq, lower)} AND m.seq <= ${upper}
         AND attention_message_eligible(m, s, t."clearedSeq")
-      ORDER BY m.seq DESC LIMIT ${threadPreviewLimit()}`);
-    return result.rows.map((row) => row.seq);
+      ORDER BY m.seq DESC LIMIT ${THREAD_PREVIEW_LIMIT}`);
+    return [...new Set([...result.rows.map((row) => row.seq), ...retained])]
+      .sort((left, right) => right - left)
+      .slice(0, THREAD_PREVIEW_LIMIT);
   }
 
   /** Resolve the next pointer without publishing separately from the heads/read. */
@@ -289,7 +291,6 @@ export class ThreadFeedHeadWriter {
       !mentionOutsideVisibility &&
       !state.previewSeqs.some(
         (seq) =>
-          seq < state.lastReadSeq ||
           seq <= (state.clearedSeq ?? 0) ||
           (state.messageVisibleThroughSeq !== null &&
             seq > state.messageVisibleThroughSeq),
@@ -327,7 +328,6 @@ export class ThreadFeedHeadWriter {
       target.threadId,
       state,
       {
-        lastReadSeq: state.lastReadSeq,
         messageEndSeq,
       },
     );

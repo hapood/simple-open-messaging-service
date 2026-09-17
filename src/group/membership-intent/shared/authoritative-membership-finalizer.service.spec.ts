@@ -35,9 +35,9 @@ function queryResult<T>(value: T) {
 }
 
 function harness(state: Record<string, unknown>) {
-  const refreshInTx = vi.fn().mockResolvedValue(undefined);
+  const projectCurrentInTx = vi.fn().mockResolvedValue(true);
   const service = new AuthoritativeMembershipFinalizerService({
-    refreshInTx,
+    projectCurrentInTx,
   } as never);
   const where = vi.fn().mockResolvedValue(undefined);
   const set = vi.fn(() => ({ where }));
@@ -55,7 +55,7 @@ function harness(state: Record<string, unknown>) {
     service,
     tx,
     enqueueCurrentThreadFanoutsInTx: fanout.enqueueCurrent,
-    refreshInTx,
+    projectCurrentInTx,
     set,
   };
 }
@@ -194,13 +194,13 @@ describe('AuthoritativeMembershipFinalizerService', () => {
     ).resolves.toEqual({ audienceChanged: true, threadFanoutAdmitted: true });
 
     expect(audience.open).toHaveBeenCalledWith(target.tx, 'peer.test', 7, 12n);
-    expect(target.refreshInTx).toHaveBeenCalledWith(
+    expect(target.projectCurrentInTx).toHaveBeenCalledWith(
       target.tx,
       'peer.test',
       9,
       7,
     );
-    expect(target.refreshInTx.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(target.projectCurrentInTx.mock.invocationCallOrder[0]).toBeLessThan(
       target.enqueueCurrentThreadFanoutsInTx.mock.invocationCallOrder[0],
     );
   });
@@ -224,7 +224,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       }),
     ).resolves.toEqual({ audienceChanged: false, threadFanoutAdmitted: true });
 
-    expect(target.refreshInTx).toHaveBeenCalledWith(
+    expect(target.projectCurrentInTx).toHaveBeenCalledWith(
       target.tx,
       'peer.test',
       9,

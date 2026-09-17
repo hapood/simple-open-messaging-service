@@ -181,11 +181,11 @@ describe('client state feed + notification feed', () => {
     expect(single.body.data.items[0].previews).toEqual([
       expect.objectContaining({ seq: 3, status: 'LIVE' }),
     ]);
-    const full = await getThreads({ after: 0, previewCount: 5 });
+    const full = await getThreads({ after: 0, previewCount: 3 });
     expect(
       full.body.data.items[0].previews.map((item: { seq: number }) => item.seq),
     ).toEqual([1, 2, 3]);
-    const invalid = await getThreads({ after: 0, previewCount: 6 });
+    const invalid = await getThreads({ after: 0, previewCount: 4 });
     expect(invalid.status).toBe(200);
     expect(invalid.body.code).toBe(10000);
   });

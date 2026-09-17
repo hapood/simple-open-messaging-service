@@ -226,6 +226,13 @@ function dispatch(event: string, rawData: string | undefined): void {
     post({ type: 'force-logout' });
     return;
   }
+  if (
+    (event === 'PROFILE_RESOLVED' || event === 'PROFILE_FAILED') &&
+    threadFeedPort &&
+    threadFeedUserId === helloUserId
+  ) {
+    threadFeedPort.postMessage({ event, data });
+  }
   if (event === 'HELLO' || event === 'THREAD_FEED_UPDATED') {
     const head = data as
       | { userId?: number; threadFeedEndId?: number }

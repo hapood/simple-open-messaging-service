@@ -23,23 +23,28 @@ describe('playground call mock', () => {
     const state = TestBed.inject(PlaygroundCallState);
     const adapter = TestBed.inject(PlaygroundCallAdapter);
 
-    adapter.initiate(2, 'call-from-header', 'AUDIO', 'Alice', '');
-    adapter.setMuted(true);
-
-    expect(state.callState().callSid).toBe('call-from-header');
-    expect(state.callState().muted).toBe(true);
-    expect(state.callState().phase).toBe('ringing');
-    await waitForResponse();
-    expect(state.callState().phase).toBe('connected');
-
+    // The mock's peer response is a PEER_RESPONSE_DELAY_MS setTimeout — advance the fake clock
+    // instead of sleeping real time (mirrors the decline/busy test below).
     vi.useFakeTimers();
-    adapter.end();
+    try {
+      adapter.initiate(2, 'call-from-header', 'AUDIO', 'Alice', '');
+      adapter.setMuted(true);
 
-    expect(state.callState().phase).toBe('ended');
-    expect(state.callState().terminalReason).toBe('completed');
-    vi.advanceTimersByTime(1400);
-    expect(state.callState()).toEqual({ ...IDLE_CALL });
-    vi.useRealTimers();
+      expect(state.callState().callSid).toBe('call-from-header');
+      expect(state.callState().muted).toBe(true);
+      expect(state.callState().phase).toBe('ringing');
+      await vi.advanceTimersByTimeAsync(850);
+      expect(state.callState().phase).toBe('connected');
+
+      adapter.end();
+
+      expect(state.callState().phase).toBe('ended');
+      expect(state.callState().terminalReason).toBe('completed');
+      vi.advanceTimersByTime(1400);
+      expect(state.callState()).toEqual({ ...IDLE_CALL });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows a declined or busy peer before dismissing the call', () => {
@@ -106,7 +111,3 @@ describe('playground call mock', () => {
     expect(self.poster).toBe(initialRemotePoster);
   });
 });
-
-function waitForResponse(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 850));
-}

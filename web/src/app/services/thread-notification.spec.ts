@@ -32,16 +32,16 @@ describe('thread notification presentation', () => {
         lastMentionSeq: null,
         previews: [
           {
-            seq: 8,
-            createdAt: '2026-09-09T00:00:00Z',
-            sender: { account: 'peer', domain: 'test' },
-            status: 'MODERATION_REMOVAL',
-          },
-          {
             seq: 6,
             createdAt: '2026-09-09T00:00:00Z',
             sender: { account: 'peer', domain: 'test' },
             status: 'USER_RETRACTION',
+          },
+          {
+            seq: 8,
+            createdAt: '2026-09-09T00:00:00Z',
+            sender: { account: 'peer', domain: 'test' },
+            status: 'MODERATION_REMOVAL',
           },
         ],
       },
@@ -50,16 +50,34 @@ describe('thread notification presentation', () => {
   it('uses projected count, latest sequence and the moderation reason', () => {
     expect(
       threadNotificationDescriptor(update(), 'message', copy),
-    ).toMatchObject({ count: 101, body: '[Removed]', data: { seq: 8 } });
+    ).toMatchObject({
+      count: 101,
+      body: '[Retracted]\n[Removed]',
+      data: { seq: 8 },
+    });
   });
   it('distinguishes retraction and hides message content in private mode', () => {
     const value = update();
-    value.state.previews!.shift();
+    value.state.previews!.pop();
     expect(threadNotificationDescriptor(value, 'message', copy).body).toBe(
       '[Retracted]',
     );
     expect(threadNotificationDescriptor(value, 'private', copy).body).toBe(
       'New message',
+    );
+  });
+  it('renders the server-provided previews in their original order', () => {
+    const value = update();
+    value.item.lastReadSeq = 0;
+    value.state.previews = [6, 7, 8].map((seq) => ({
+      seq,
+      createdAt: '2026-09-09T00:00:00Z',
+      sender: { account: 'peer', domain: 'test' },
+      status: 'LIVE' as const,
+      text: String(seq),
+    }));
+    expect(threadNotificationDescriptor(value, 'message', copy).body).toBe(
+      '6\n7\n8',
     );
   });
   it('truncates at the local read position and clears blocked threads', () => {

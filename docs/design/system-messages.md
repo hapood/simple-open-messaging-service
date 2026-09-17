@@ -33,18 +33,18 @@ before content is persisted.
 | ------------------------- | ------------------------------------------------------------- |
 | `FRIEND_ADDED`            | None                                                          |
 | `FRIEND_REMOVED`          | Required `initiator` address                                  |
+| `GROUP_CREATED`           | `creator` address                                             |
 | `GROUP_JOINED`            | `member` address                                              |
 | `GROUP_LEFT`              | `member` address                                              |
+| `GROUP_DISSOLVED`         | None                                                          |
 | `GROUP_ADMIN_GRANTED`     | `member` address                                              |
 | `GROUP_ADMIN_REVOKED`     | `member` address                                              |
 | `GROUP_OWNER_TRANSFERRED` | `previousOwner` and `newOwner` addresses                      |
-| `MESSAGE_WITHDRAWN`       | `author` address                                              |
-| `MESSAGES_MODERATED`      | Positive integer `count`                                      |
 | `CALL_ENDED`              | The independent [call-history content](local-call-history.md) |
 
 Do not store viewer-relative `isSelf` or incoming/outgoing fields. Both local
 endpoints read the same notification. The renderer compares the event's
-`initiator`, `member`, `author`, or `caller` to the current account as appropriate.
+`initiator`, `creator`, `member`, or `caller` to the current account as appropriate.
 A friendship removal always records its initiator. Local automatic operations
 use `{ account: '$system', domain: 'local' }`; received federation revocations
 use the remote relationship endpoint. There is no `reason` field and no attempt

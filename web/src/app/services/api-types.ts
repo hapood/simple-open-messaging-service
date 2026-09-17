@@ -5049,7 +5049,6 @@ export interface components {
             status?:
                 | "PENDING"
                 | "PROCESSING"
-                | "ASYNC_PROCESSING"
                 | "SUCCEEDED"
                 | "REJECTED"
                 | "FAILED"

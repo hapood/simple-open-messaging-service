@@ -227,45 +227,6 @@ export type ClientStateFeedItem =
       body: ThreadStateSnapshot;
     };
 
-export interface ClientGroupMetaFeedPage {
-  account: string;
-  mode: 'full' | 'delta';
-  items: Array<
-    | {
-        feedId: string;
-        account: string;
-        domain: string;
-        namespaceId: number;
-        operation: 'UPSERT';
-        body: {
-          role: 'OWNER' | 'ADMIN' | 'MEMBER';
-          profileRev: number;
-          profileMessageSeq?: number | null;
-          profileResolved?: boolean;
-          displayName?: string;
-          avatar?: string | null;
-          bio?: string;
-        };
-      }
-    | {
-        feedId: string;
-        account: string;
-        domain: string;
-        namespaceId: number;
-        operation: 'DEPART';
-        body?: Record<string, never>;
-      }
-    | {
-        feedId: string;
-        operation: 'GROUP_PROFILE';
-        body: { profileRev: number };
-      }
-  >;
-  scannedThrough: string;
-  groupMetaFeedEndId: string;
-  hasMore: boolean;
-}
-
 /** The persisted last-logged-in userId (device-scoped preference) — the client's sole pre-HELLO source
  *  of its own userId (the session token is opaque, server-side-lookup only). Set on establishSession,
  *  cleared on clearSession. Read at boot by {@link UserService.restoreWebdb} so the per-user IDB opens +
@@ -796,25 +757,6 @@ export class UserService {
         hasMore: boolean;
       }>
     >(`${apiPrefix()}/user/state-feed?${query.toString()}`);
-  }
-
-  queryGroupMeta(params: {
-    threadId: number;
-    mode: 'full' | 'delta';
-    after: string;
-    take?: number;
-    through?: string;
-  }) {
-    const query = new URLSearchParams({
-      threadId: String(params.threadId),
-      mode: params.mode,
-      after: params.after,
-      take: String(params.take ?? 100),
-    });
-    if (params.through !== undefined) query.set('through', params.through);
-    return this.http.get<StandardResponse<ClientGroupMetaFeedPage>>(
-      `${apiPrefix()}/user/group-meta?${query.toString()}`,
-    );
   }
 
   queryUserInfo(params: { userIds: number[] }) {

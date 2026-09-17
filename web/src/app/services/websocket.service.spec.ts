@@ -53,11 +53,6 @@ let liveWorker: FakeWorker | undefined;
 /** The real `Worker` ctor, restored after each test so the stub never leaks to other specs. */
 let realWorker: typeof Worker | undefined;
 
-/** Drain the macrotask queue so the ctor's `connect()` + the 250ms ticker settle before assertions. */
-function flush(ms = 0): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 describe('WebsocketService (reconnect countdown clock)', () => {
   let ws: WebsocketService;
 
@@ -83,7 +78,9 @@ describe('WebsocketService (reconnect countdown clock)', () => {
   afterEach(async () => {
     // Stop any running countdown ticker + tear the transport down so it never leaks into the next spec.
     ws?.disconnect();
-    await flush(0);
+    // One bounded task-turn drain of the teardown's pending promises. This is not a timed wait —
+    // transport.stop() schedules no timers, so a single turn always suffices.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     if (realWorker) globalThis.Worker = realWorker;
     liveWorker = undefined;
   });
@@ -128,26 +125,38 @@ describe('WebsocketService (reconnect countdown clock)', () => {
   });
 
   it('records the deadline on reconnect-in and the ticker decrements it over time', async () => {
-    liveWorker!.emit({ type: 'state', state: 'reconnecting' });
-    liveWorker!.emit({ type: 'reconnect-in', ms: 5000 });
-    expect(ws.state()).toBe('reconnecting');
-    // Right after the deadline lands: ~5000ms remaining (allow a hair for the synchronous set).
-    expect(ws.reconnectIn()).not.toBeNull();
-    expect(ws.reconnectIn()!).toBeGreaterThan(4500);
-    // The 250ms ticker fires within the wait → the remaining time must have dropped.
-    await flush(320);
-    expect(ws.reconnectIn()!).toBeLessThan(4800);
+    // The ticker is a real setInterval(250) reading Date.now() — fake timers advance both the
+    // interval queue and the virtual clock, so exactly one tick fires with zero wall-clock dependence.
+    vi.useFakeTimers();
+    try {
+      liveWorker!.emit({ type: 'state', state: 'reconnecting' });
+      liveWorker!.emit({ type: 'reconnect-in', ms: 5000 });
+      expect(ws.state()).toBe('reconnecting');
+      // Right after the deadline lands: ~5000ms remaining (allow a hair for the synchronous set).
+      expect(ws.reconnectIn()).not.toBeNull();
+      expect(ws.reconnectIn()!).toBeGreaterThan(4500);
+      // Advance exactly one 250ms tick → the remaining time must have dropped.
+      await vi.advanceTimersByTimeAsync(250);
+      expect(ws.reconnectIn()!).toBeLessThan(4800);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a non-reconnecting state (open) clears the countdown + stops the ticker', async () => {
-    liveWorker!.emit({ type: 'state', state: 'reconnecting' });
-    liveWorker!.emit({ type: 'reconnect-in', ms: 5000 });
-    expect(ws.reconnectIn()).not.toBeNull();
-    liveWorker!.emit({ type: 'state', state: 'open' });
-    expect(ws.reconnectIn()).toBeNull();
-    // The ticker is stopped, so the signal stays null even after the interval would have fired.
-    await flush(320);
-    expect(ws.reconnectIn()).toBeNull();
+    vi.useFakeTimers();
+    try {
+      liveWorker!.emit({ type: 'state', state: 'reconnecting' });
+      liveWorker!.emit({ type: 'reconnect-in', ms: 5000 });
+      expect(ws.reconnectIn()).not.toBeNull();
+      liveWorker!.emit({ type: 'state', state: 'open' });
+      expect(ws.reconnectIn()).toBeNull();
+      // Deterministic negative: a full second of timer time cannot revive a cleared ticker.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ws.reconnectIn()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('retryNow() drops the stale countdown immediately (the manual retry voids the backoff)', () => {

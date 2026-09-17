@@ -109,7 +109,12 @@ export class FederationThreadRoundSchedulerService
   ): Promise<void> {
     if (!(await this.isNamespaceActive(peerDomain, namespaceId))) return;
     await this.sources.resolve(threadId, peerDomain, namespaceId);
-    for (const direction of ['message', 'tombstone', 'reverse', 'meta'] as const)
+    for (const direction of [
+      'message',
+      'tombstone',
+      'reverse',
+      'meta',
+    ] as const)
       await this.wakeCaptured(threadId, peerDomain, namespaceId, direction);
   }
 
@@ -550,7 +555,8 @@ export class FederationThreadRoundSchedulerService
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
       const state = await this.states.require(threadId, namespaceId);
-      shouldContinue = state.messageProcessedThroughSeq < state.messageTargetSeq;
+      shouldContinue =
+        state.messageProcessedThroughSeq < state.messageTargetSeq;
     } else if (direction === 'tombstone') {
       await this.forward.runTombstones(
         threadId,

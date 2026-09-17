@@ -319,6 +319,7 @@ type FederationPeerEventType =
   | 'discovered'
   | 'trusted'
   | 'degraded'
+  | 'available'
   | 'halted'
   | 'unblocked';
 
@@ -326,7 +327,7 @@ export interface FederatedPeerEvent {
   id: number;
   domain: string;
   type: FederationPeerEventType;
-  reason: string | null; // degraded: failure message; halted: persisted stop reason
+  reason: string | null; // degraded: failure message; halted: persisted stop reason; available: recovery source
   createdAt: number;
 }
 
@@ -563,7 +564,6 @@ type DurableTaskKind = 'MUTATION' | 'PROJECTION';
 export type DurableTaskStatus =
   | 'PENDING'
   | 'PROCESSING'
-  | 'ASYNC_PROCESSING'
   | 'SUCCEEDED'
   | 'REJECTED'
   | 'FAILED'

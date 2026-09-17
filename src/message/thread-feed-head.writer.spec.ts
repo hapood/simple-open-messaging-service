@@ -132,10 +132,10 @@ describe('mention projection in the shared head writer', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('skips duplicate heads with a retained read-boundary preview', async () => {
+  it('skips duplicate heads with a preview older than the read cursor', async () => {
     const execute = vi.fn().mockResolvedValue({
       rows: [
-        { ...state, lastReadSeq: 5, lastMentionSeq: null, previewSeqs: [5] },
+        { ...state, lastReadSeq: 5, lastMentionSeq: null, previewSeqs: [3] },
       ],
     });
     await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {

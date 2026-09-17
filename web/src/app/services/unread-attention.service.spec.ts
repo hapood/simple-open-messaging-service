@@ -54,7 +54,7 @@ describe('UnreadAttentionService committed thread notifications', () => {
       ],
     },
   });
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 350));
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
 
   beforeEach(async () => {
     await resetNotificationSince();
@@ -128,18 +128,36 @@ describe('UnreadAttentionService committed thread notifications', () => {
     );
     expect(refreshBackgroundThreadFeed).toHaveBeenCalledWith(7);
   });
-  it('uses the reconciled count and coalesces the latest update without HTTP', async () => {
+  it('uses the reconciled count and immediately replaces an older update without HTTP', async () => {
     window.dispatchEvent(new Event('blur'));
     updates.next([update(1, 3)]);
     updates.next([update(2, 2)]);
-    await flush();
-    expect(show).toHaveBeenCalledOnce();
-    expect(show.mock.calls[0][0]).toMatchObject({
+    await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(2));
+    expect(show.mock.calls[1][0]).toMatchObject({
       count: 2,
       body: 'Hello',
       data: { threadId: 7 },
     });
     expect(await readNotificationSince()).toBe(2);
+  });
+  it('groups the server-provided previews in one per-thread replacement card', async () => {
+    const value = update(1, 6);
+    value.item.lastReadSeq = 0;
+    value.state.previews = [4, 5, 6].map((seq) => ({
+      seq,
+      createdAt: '2026-09-09T00:00:00Z',
+      sender: { account: 'peer', domain: 'test' },
+      status: 'LIVE' as const,
+      text: String(seq),
+    }));
+    window.dispatchEvent(new Event('blur'));
+    updates.next([value]);
+    await flush();
+    expect(show).toHaveBeenCalledOnce();
+    expect(show.mock.calls[0][0]).toMatchObject({
+      tag: 'soms-thread-7',
+      body: '4\n5\n6',
+    });
   });
   it('does not replay a foreground update after blur', async () => {
     updates.next([update()]);

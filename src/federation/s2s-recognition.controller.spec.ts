@@ -237,15 +237,31 @@ describe('FederationRecognitionService health transitions', () => {
     );
   });
 
-  function txDatabase() {
+  function txDatabase(peer?: Record<string, unknown>) {
     const updateValues = vi.fn();
+    const insertValues = vi.fn();
     const tx = {
+      // Fake drizzle builder for lockPeer's SELECT chain: every chained call returns the same
+      // builder; `limit` resolves the seeded peer row (or none), as `…FOR UPDATE LIMIT 1` would.
+      select: vi.fn(() => {
+        const builder: Record<string, unknown> = {};
+        for (const method of ['from', 'leftJoin', 'where', 'for'])
+          builder[method] = vi.fn(() => builder);
+        builder.limit = vi.fn(async () => (peer ? [peer] : []));
+        return builder;
+      }),
       update: vi.fn().mockReturnValue({
         set: vi.fn((values: unknown) => {
           updateValues(values);
           return { where: vi.fn().mockResolvedValue(undefined) };
         }),
       }),
+      insert: vi.fn().mockImplementation(() => ({
+        values: vi.fn((values: unknown) => {
+          insertValues(values);
+          return Promise.resolve();
+        }),
+      })),
     };
     const database = {
       db: {
@@ -255,13 +271,19 @@ describe('FederationRecognitionService health transitions', () => {
         ),
       },
     };
-    return { database, updateValues };
+    return { database, updateValues, insertValues };
   }
 
   it.each(['available', 'degraded'] as const)(
     'confirms peer recognition when Health returns %s',
     async (status) => {
-      const { database, updateValues } = txDatabase();
+      const { database, updateValues } = txDatabase({
+        trustLevel: 'establishing',
+        identityPinnedAt: new Date(),
+        recognizesPeer: true,
+        localServiceAvailable: true,
+        peerAcceptanceConfirmed: false,
+      });
       const events = { emit: vi.fn() };
       const recognition = new FederationRecognitionService(
         database as never,
@@ -271,19 +293,6 @@ describe('FederationRecognitionService health transitions', () => {
         {} as never,
         events as never,
       );
-      vi.spyOn(
-        recognition as unknown as Record<
-          string,
-          (...args: unknown[]) => unknown
-        >,
-        'lockPeer',
-      ).mockResolvedValue({
-        trustLevel: 'establishing',
-        identityPinnedAt: new Date(),
-        recognizesPeer: true,
-        localServiceAvailable: true,
-        peerAcceptanceConfirmed: false,
-      });
 
       await recognition.applyHealthResult('peer.example', status);
 
@@ -300,8 +309,14 @@ describe('FederationRecognitionService health transitions', () => {
     },
   );
 
-  it('emits no recovery event when the peer was already available', async () => {
-    const { database } = txDatabase();
+  it('audits the recovery when Health restores a degraded peer', async () => {
+    const { database, insertValues } = txDatabase({
+      trustLevel: 'degraded',
+      identityPinnedAt: new Date(),
+      recognizesPeer: true,
+      localServiceAvailable: true,
+      peerAcceptanceConfirmed: true,
+    });
     const events = { emit: vi.fn() };
     const recognition = new FederationRecognitionService(
       database as never,
@@ -311,45 +326,76 @@ describe('FederationRecognitionService health transitions', () => {
       {} as never,
       events as never,
     );
-    vi.spyOn(
-      recognition as unknown as {
-        lockPeer(tx: unknown): Promise<Record<string, unknown>>;
-      },
-      'lockPeer',
-    ).mockResolvedValue({
+
+    await recognition.applyHealthResult('peer.example', 'available');
+
+    expect(insertValues).toHaveBeenCalledWith({
+      domain: 'peer.example',
+      type: 'available',
+      reason: 'Health round trip restored reachability',
+    });
+    expect(events.emit).toHaveBeenCalledExactlyOnceWith(
+      FEDERATION_PEER_AVAILABLE,
+      { peerDomain: 'peer.example' },
+    );
+  });
+
+  it('emits no recovery event when the peer was already available', async () => {
+    const { database, insertValues } = txDatabase({
       trustLevel: 'available',
       identityPinnedAt: new Date(),
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
+    const events = { emit: vi.fn() };
+    const recognition = new FederationRecognitionService(
+      database as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      events as never,
+    );
 
     await recognition.applyHealthResult('peer.example', 'available');
 
     expect(events.emit).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it('coalesces concurrent Health checks for the same domain', async () => {
-    const { recognition } = service();
-    let complete!: (status: 'available') => void;
-    const pending = new Promise<'available'>((resolve) => {
-      complete = resolve;
+    // Park the very first network step so the in-flight run is visible; coalescing means the
+    // second checkHealth() reuses it instead of issuing its own resolveBase round.
+    let releaseBase!: (base: string) => void;
+    const blocked = new Promise<string>((resolve) => {
+      releaseBase = resolve;
     });
-    const runHealthCheck = vi
-      .spyOn(
-        recognition as unknown as Record<
-          string,
-          (...args: unknown[]) => unknown
-        >,
-        'runHealthCheck',
-      )
-      .mockReturnValue(pending);
+    const discovery = {
+      resolveBase: vi.fn(() => blocked),
+      acquireRequestSlot: vi.fn(async () => () => {}),
+      request: vi.fn(async () => ({
+        status: 200,
+        json: async () => ({ status: 'available' }),
+      })),
+    };
+    const { database } = txDatabase();
+    const recognition = new FederationRecognitionService(
+      database as never,
+      discovery as never,
+      { signOutbound: vi.fn(async () => ({})) } as never,
+      { get: () => ({ callTimeoutSec: 12 }) } as never,
+      {} as never,
+      { emit: vi.fn() } as never,
+    );
 
     const first = recognition.checkHealth('peer.example');
     const second = recognition.checkHealth('peer.example');
 
-    expect(runHealthCheck).toHaveBeenCalledExactlyOnceWith('peer.example');
-    complete('available');
+    expect(discovery.resolveBase).toHaveBeenCalledExactlyOnceWith(
+      'peer.example',
+    );
+    releaseBase('http://127.0.0.1:1');
     await expect(Promise.all([first, second])).resolves.toEqual([
       'available',
       'available',

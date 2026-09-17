@@ -6,6 +6,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
+import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from './auth.service';
 import { RouteService } from './route.service';
@@ -157,9 +158,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     });
   }
 
-  /** Drain pending microtasks (activateSession awaits `set_session_token` before flipping the login flag). */
-  function drain(): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, 0));
+  /** The POST arrives on the next microtask (pickLoginOrigin defers it) — waitFor its arrival at
+   *  the mock instead of sleeping, then answer it. */
+  function loginRequest() {
+    return vi.waitFor(() =>
+      httpMock.expectOne((r) => /\/auth\/login$/.test(r.url)),
+    );
   }
 
   beforeEach(() => {
@@ -229,23 +233,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     restoreGlobals();
   });
 
-  /** Drive a password login with the given trust flag, flush the issued token, and drain activateSession
-   *  (it awaits `set_session_token` before the login flag flips). */
+  /** Drive a password login with the given trust flag and await full activation: login() awaits
+   *  activateSession BEFORE its observable emits (so ProxyState.token is populated first), making
+   *  the emitted promise the deterministic whole-chain completion signal. */
   async function passwordLogin(token: string): Promise<void> {
-    svc
-      .login({
+    const done = firstValueFrom(
+      svc.login({
         account: 'alice',
         password: 'pw',
-      })
-      .subscribe();
-    // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))` — on the Tauri
-    // path pickLoginOrigin awaits the native origin selection, so the POST fires
-    // on the next microtask, NOT synchronously. Drain once so the request is pending before expectOne.
-    await drain();
-    httpMock
-      .expectOne((r) => /\/auth\/login$/.test(r.url))
-      .flush({ code: 0, message: 'ok', data: { session_token: token } });
-    await drain();
+      }),
+    );
+    (
+      await loginRequest()
+    ).flush({ code: 0, message: 'ok', data: { session_token: token } });
+    await done;
   }
 
   describe('desktop (Tauri) keyring path', () => {
@@ -297,17 +298,16 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // persisted (survives restart). Persistence follows `keep`, not `trust`, so a freshly registered
       // desktop user is not logged out on every restart.
       desktopGlobals({ secureSetOk: true });
-      svc
-        .login({
+      const done = firstValueFrom(
+        svc.login({
           account: 'newbie',
           password: 'pw',
-        })
-        .subscribe();
-      await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
-      httpMock
-        .expectOne((r) => /\/auth\/login$/.test(r.url))
-        .flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
-      await drain();
+        }),
+      );
+      (
+        await loginRequest()
+      ).flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
+      await done;
       expect(svc.loggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-keep',
@@ -338,8 +338,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       desktopGlobals();
       await passwordLogin('st-logout');
 
-      svc.logout().subscribe();
-      await drain();
+      // logout() emits only after clearSession resolves; its tap (native teardown) has then run.
+      await firstValueFrom(svc.logout());
 
       expect(svc.loggedIn()).toBe(false);
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
@@ -352,17 +352,18 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       desktopGlobals({ secureSetOk: false }); // secure_set_token rejects
       // Keep-but-untrusted (e.g. the register flow): isKeep true, trustDevice false → a SLIDING token that IS
       // persisted (so it survives restart) — but the keyring write fails, downgrading it to memory-only.
-      svc
-        .login({
+      const done = firstValueFrom(
+        svc.login({
           account: 'newbie',
           password: 'pw',
-        })
-        .subscribe();
-      await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
-      httpMock
-        .expectOne((r) => /\/auth\/login$/.test(r.url))
-        .flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
-      await drain(); // rejecting write → catch → toast.warn
+        }),
+      );
+      (
+        await loginRequest()
+      ).flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
+      // The rejecting keyring write is caught inside activateSession (warn → toast), so login
+      // still emits — `done` covers the whole failure-handling path too.
+      await done;
 
       // No orphan to revoke (sliding token self-expires in 14d) and no bounce (the session is valid
       // in-memory) → /auth/logout is NOT called and the user stays logged in. Just a warn toast.
@@ -459,8 +460,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       const { set } = androidGlobals('st-logout');
       await passwordLogin('st-logout');
 
-      svc.logout().subscribe();
-      await drain();
+      // logout() emits only after clearSession resolves; its tap (native teardown) has then run.
+      await firstValueFrom(svc.logout());
 
       expect(set).toHaveBeenCalledWith(null);
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {

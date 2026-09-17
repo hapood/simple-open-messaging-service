@@ -23,31 +23,37 @@ pub(crate) struct ClientStateFeedItem {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaApply {
-    thread_id: i64,
-    source_server: String,
-    namespace_id: i64,
-    page: ClientGroupMetaPage,
+    pub(super) thread_id: i64,
+    pub(super) source_server: String,
+    pub(super) namespace_id: i64,
+    pub(super) page: ClientGroupMetaPage,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaPage {
-    mode: String,
-    items: Vec<ClientGroupMetaItem>,
-    scanned_through: String,
+    #[serde(default)]
+    pub(super) account: String,
+    pub(super) mode: String,
+    pub(super) items: Vec<ClientGroupMetaItem>,
+    pub(super) scanned_through: String,
+    #[serde(default)]
+    pub(super) group_meta_feed_end_id: String,
+    #[serde(default)]
+    pub(super) has_more: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaItem {
     #[serde(default)]
-    account: String,
+    pub(super) account: String,
     #[serde(default)]
-    domain: String,
+    pub(super) domain: String,
     #[serde(default)]
-    namespace_id: i64,
-    operation: String,
-    body: Value,
+    pub(super) namespace_id: i64,
+    pub(super) operation: String,
+    pub(super) body: Value,
 }
 
 pub(crate) fn chrono_millis() -> i64 {
@@ -348,18 +354,15 @@ pub(crate) async fn native_db_delete_thread(user_id: i64, thread_id: i64) -> Res
     .map_err(|e| format!("join delete thread: {e}"))?
 }
 
-#[tauri::command]
-pub(crate) async fn native_db_reset_group_meta(user_id: i64, thread_id: i64) -> Result<(), String> {
-    super::lifetime::spawn(move || reset_group_meta(&mut open()?, user_id, thread_id))
-        .await
-        .map_err(|e| format!("join group-meta reset: {e}"))?
-}
-
-pub(super) fn reset_group_meta(
+pub(super) fn begin_group_meta_recovery(
     conn: &mut Connection,
     user_id: i64,
     thread_id: i64,
+    through: &str,
 ) -> Result<(), String> {
+    through
+        .parse::<u64>()
+        .map_err(|_| "invalid group-meta recovery boundary".to_string())?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -368,8 +371,8 @@ pub(super) fn reset_group_meta(
         params![user_id, thread_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 0, '$.group.groupMetaFeedId', '0')
-      WHERE user_id=?1 AND thread_id=?2 AND json_extract(payload_json, '$.type')='GROUP'", params![user_id, thread_id]).map_err(|e| e.to_string())?;
+    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 0, '$.group.groupMetaFeedId', '0', '$.groupMetaRecoveryThrough', ?3)
+      WHERE user_id=?1 AND thread_id=?2 AND json_extract(payload_json, '$.type')='GROUP'", params![user_id, thread_id, through]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -378,7 +381,6 @@ pub(crate) async fn native_db_apply_state_feed_page(
     user_id: i64,
     feed_id: i64,
     items: Vec<ClientStateFeedItem>,
-    group_meta: Vec<ClientGroupMetaApply>,
     reset_projection: bool,
 ) -> Result<(), String> {
     super::lifetime::spawn(move || {
@@ -387,7 +389,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
             user_id,
             items,
             feed_id,
-            group_meta,
+            Vec::new(),
             reset_projection,
         )
     })
@@ -668,6 +670,9 @@ pub(super) fn apply_state_feed_page(
                     "role".into(),
                     self_role.map(Value::String).unwrap_or(Value::Null),
                 );
+                if !update.page.has_more {
+                    object.insert("groupMetaRecoveryThrough".into(), Value::Null);
+                }
             }
             if let Some(group) = thread.get_mut("group").and_then(Value::as_object_mut) {
                 group.remove("members");
@@ -867,6 +872,23 @@ pub(super) fn apply_state_feed_page(
     Ok(())
 }
 
+pub(super) fn apply_group_meta_page(
+    conn: &mut Connection,
+    user_id: i64,
+    update: ClientGroupMetaApply,
+) -> Result<(), String> {
+    let feed_id = conn
+        .query_row(
+            "SELECT CAST(value_json AS INTEGER) FROM sync_state WHERE user_id=?1 AND key='stateFeedId'",
+            [user_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("read state-feed cursor for group meta: {e}"))?
+        .unwrap_or(0);
+    apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)
+}
+
 /// The current account's server snapshot is the sole authority for conversation visibility.
 pub(super) fn apply_thread_state(
     tx: &rusqlite::Transaction<'_>,
@@ -890,7 +912,7 @@ pub(super) fn apply_thread_state(
         .filter(|v| matches!(*v, "ACTIVE" | "READ_ONLY"))
         .ok_or("invalid thread state lifecycle")?;
     let profile = body.get("profile").ok_or("thread state profile missing")?;
-    let account = profile
+    profile
         .get("account")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
@@ -946,7 +968,12 @@ pub(super) fn apply_thread_state(
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let mut thread = previous.map(parse_json).transpose()?.filter(|item| item.get("type").and_then(Value::as_str) != Some("PENDING")).unwrap_or_else(|| serde_json::json!({
+    let previous = previous.map(parse_json).transpose()?;
+    let thread_feed_id = previous
+        .as_ref()
+        .and_then(|item| item.get("threadFeedId"))
+        .and_then(Value::as_i64);
+    let mut thread = previous.filter(|item| item.get("type").and_then(Value::as_str) != Some("PENDING")).unwrap_or_else(|| serde_json::json!({
         "threadId": thread_id, "type": kind, "role": null, "lastMessageAt": null, "lastMessageSeq": null,
         "muted": false, "pinned": false, "pinnedAt": null, "alias": null,
         "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null, "lastMessageSenderId": null
@@ -968,11 +995,13 @@ pub(super) fn apply_thread_state(
             .get("peerProfileMessageSeq")
             .and_then(Value::as_i64)
             .is_some();
-    let preserve_group = kind == "GROUP" && thread.get("defaultProfile") == Some(profile);
+    // Group Meta exclusively owns the materialized group presentation. Relationship state only
+    // creates the initial structural reference and must never rewind an already-applied Meta page.
+    let preserve_group = kind == "GROUP" && thread.get("group").is_some();
     if !preserve_message && !preserve_group {
         let mut presentation = thread.get(field).cloned().unwrap_or_else(|| serde_json::json!({
             "id": if kind == "GROUP" { thread_id } else { 0 }, "ownerId": 0,
-            "createdAt": 0, "updatedAt": 0, "memberCount": 0, "groupMetaFeedId": "0", "isGroup": kind == "GROUP", "isDeleted": false
+        "createdAt": 0, "updatedAt": 0, "memberCount": 0, "groupMetaFeedId": "0", "isGroup": kind == "GROUP", "isDeleted": false
         }));
         let same = ["account", "domain", "namespaceId", "profileRev"]
             .iter()
@@ -985,7 +1014,7 @@ pub(super) fn apply_thread_state(
         }
         if !same {
             for (key, value) in [
-                ("name", account),
+                ("name", ""),
                 ("avatar", ""),
                 ("bio", ""),
                 ("description", ""),
@@ -997,25 +1026,21 @@ pub(super) fn apply_thread_state(
     }
     for key in [
         "authorityNamespaceId",
-        "establishedAt",
         "blocked",
         "role",
         "conversationState",
     ] {
         thread[key] = body[key].clone();
     }
-    thread["defaultProfileResolved"] = Value::Bool(
-        thread
-            .get("defaultProfileResolved")
-            .and_then(Value::as_bool)
-            == Some(true)
-            && thread.get("defaultProfile") == Some(profile),
-    );
-    thread["defaultProfile"] = profile.clone();
+    if let Some(thread_feed_id) = thread_feed_id {
+        thread["threadFeedId"] = Value::from(thread_feed_id);
+    }
     thread["visible"] = Value::Bool(true);
     thread["threadStateFeedId"] = Value::from(feed_id);
     if kind == "P2P" {
         thread["friendshipActive"] = Value::Bool(state == "ACTIVE");
+    } else if thread.get("groupMetaRecoveryThrough").is_none() {
+        thread["groupMetaRecoveryThrough"] = Value::Null;
     }
     tx.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3) ON CONFLICT(user_id,thread_id) DO UPDATE SET payload_json=excluded.payload_json", params![user_id, thread_id, json_text(&thread)?]).map_err(|e| e.to_string())?;
     Ok(())

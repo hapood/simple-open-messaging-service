@@ -6,11 +6,12 @@ describe('thread state projection', () => {
   it('promotes a pending item and retains content when blocking or replaying a state', () => {
     const body = threadStateEvent(2, 9).body;
     const first = applyThreadStateSnapshot(
-      { type: 'PENDING', threadId: 9, visible: false },
+      { type: 'PENDING', threadId: 9, threadFeedId: 1, visible: false },
       body,
       2,
     );
     expect(first.visible).toBe(true);
+    expect(first.threadFeedId).toBe(1);
     const withContent = {
       ...first,
       lastMessageSeq: 5,
@@ -25,7 +26,6 @@ describe('thread state projection', () => {
     );
     expect(blocked).toMatchObject({
       blocked: true,
-      establishedAt: 1,
       lastMessageSeq: 5,
       unreadCount: 4,
       lastMessagePreview: 'hello',
@@ -58,9 +58,7 @@ describe('thread state projection', () => {
       4,
     );
     expect(reopened).toMatchObject({
-      defaultProfile: { profileRev: 3 },
       peerUser: { name: 'Message author', profileRev: 2 },
-      establishedAt: 20,
     });
   });
   it('does not rewind the group-meta display profile on an unrelated thread update', () => {
@@ -83,7 +81,6 @@ describe('thread state projection', () => {
       applyThreadStateSnapshot(latest, { ...body, blocked: true }, 3),
     ).toMatchObject({
       group: { profileRev: 3, name: 'Current group' },
-      defaultProfile: { profileRev: 1 },
     });
   });
   it('preserves the roster and its cursor across read-only and re-establishment states', () => {

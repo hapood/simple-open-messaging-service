@@ -1,4 +1,4 @@
-/** One atomic server snapshot. Its feed ID orders only this thread's snapshots. */
+/** One atomic server snapshot. Its account-scoped feed ID also orders visible thread-list items. */
 export interface ThreadFeedSnapshot {
   threadId: number;
   threadFeedId: number;

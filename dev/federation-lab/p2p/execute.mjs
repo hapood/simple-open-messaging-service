@@ -91,7 +91,6 @@ export async function waitForTaskQueueIdle({
     queryTotalMs += sampleMs;
     let pending = 0;
     const processing = [];
-    const asyncProcessing = [];
     for (const { nodeName, activity } of snapshots) {
       if (activity.failedCount > 0 || activity.failed?.length > 0) {
         const failures = (activity.failed ?? []).map(
@@ -107,11 +106,8 @@ export async function waitForTaskQueueIdle({
       pending += activity.pendingCount;
       for (const task of activity.processing ?? [])
         processing.push(`${nodeName}:${String(task.id)}`);
-      for (const task of activity.asyncProcessing ?? [])
-        asyncProcessing.push(`${nodeName}:${String(task.id)}`);
     }
-    const idle =
-      pending === 0 && processing.length === 0 && asyncProcessing.length === 0;
+    const idle = pending === 0 && processing.length === 0;
     stableIdleSamples = idle ? stableIdleSamples + 1 : 0;
     const perNode = snapshots.map(({ nodeName, activity, durationMs }) => ({
       nodeName,
@@ -119,11 +115,8 @@ export async function waitForTaskQueueIdle({
       queryMs: activity.queryMs,
       pending: activity.pendingCount,
       processing: (activity.processing ?? []).map(({ id }) => String(id)),
-      asyncProcessing: (activity.asyncProcessing ?? []).map(({ id }) =>
-        String(id),
-      ),
     }));
-    const signature = JSON.stringify({ pending, processing, asyncProcessing });
+    const signature = JSON.stringify({ pending, processing });
     if (
       signature !== previousSignature ||
       stableIdleSamples === 2 ||
@@ -137,7 +130,6 @@ export async function waitForTaskQueueIdle({
               (node) =>
                 `${node.nodeName}{pending=${node.pending},` +
                 `processing=[${node.processing.join(',')}],` +
-                `async=[${node.asyncProcessing.join(',')}],` +
                 `queryMs=${node.durationMs}` +
                 (node.queryMs
                   ? `,statusMs=[${Object.entries(node.queryMs)

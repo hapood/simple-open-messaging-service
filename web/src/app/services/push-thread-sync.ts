@@ -11,6 +11,10 @@ import {
 } from './thread-notification';
 import { createP2PConversation, type User } from './model';
 import type { NotificationDescriptor } from './notification-descriptor.model';
+import type {
+  GroupMetaProfileResolver,
+  GroupMetaRequester,
+} from './group-meta-sync';
 
 export interface PushThreadResult {
   userId: number;
@@ -28,8 +32,16 @@ export async function syncPushThreads(
   request: Parameters<typeof syncThreadFeed>[2],
   preferences: Pick<PreferenceStorage, 'get'>,
   copy: Parameters<typeof threadNotificationDescriptor>[2],
+  requestGroupMeta: GroupMetaRequester,
+  resolveGroupMetaProfile: GroupMetaProfileResolver,
 ): Promise<PushThreadResult> {
-  const result = await syncThreadFeed(storage, target, request, 5);
+  const result = await syncThreadFeed(
+    storage,
+    target,
+    request,
+    requestGroupMeta,
+    resolveGroupMetaProfile,
+  );
   const notifications: NotificationDescriptor[] = [];
   if (!result.states.length)
     return { ...result, consumed: false, userId, notifications };
@@ -86,7 +98,6 @@ export async function syncPushThreads(
       },
       mode === 'private' ? 'private' : 'message',
       copy,
-      5,
     );
     descriptor.silent = !!descriptor.silent || sound === false;
     if (enabled !== false) {

@@ -6,6 +6,15 @@ import type { SessionLifecycleService } from './session-lifecycle.service';
 import { Subject, type Subscription } from 'rxjs';
 import { apiPrefix } from './constants';
 import type { ThreadFeedSyncResult } from './thread-feed-sync';
+import type {
+  ClientGroupMetaApply,
+  ClientGroupMetaFeedPage,
+  GroupMetaProfileReference,
+} from './group-meta-model';
+export type {
+  ClientGroupMetaApply,
+  ClientGroupMetaFeedPage,
+} from './group-meta-model';
 import {
   openDB,
   deleteDB,
@@ -31,7 +40,6 @@ import {
 import type {
   ClientFriendIntent,
   ClientGroupInviteIntent,
-  ClientGroupMetaFeedPage,
   ClientStateFeedItem,
 } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
@@ -149,13 +157,6 @@ export interface ProfileWriteRecord extends ProfileSnapshot {
   sourceServer: string;
 }
 
-export interface ClientGroupMetaApply {
-  threadId: number;
-  sourceServer: string;
-  namespaceId: number;
-  page: ClientGroupMetaFeedPage;
-}
-
 type ClientRelationshipIntentBody = Extract<
   ClientStateFeedItem,
   { eventType: 'RELATIONSHIP_INTENT' }
@@ -185,6 +186,13 @@ function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
 }
 
+function isCachedTimelineSlot(value: CachedMessage): value is MessageQueryRow {
+  return (
+    isCachedMessageBody(value) ||
+    (value.contentType === 'TOMB' && 'creator' in value)
+  );
+}
+
 function readDeletedHwm(value: unknown): number {
   if (value === undefined) return 0;
   if (Number.isSafeInteger(value) && (value as number) >= 0)
@@ -205,7 +213,7 @@ export interface CommitMessagePageInput {
 }
 
 export interface CommittedMessagePage {
-  messages: Message[];
+  messages: MessageQueryRow[];
   ranges: MessageRange[];
 }
 
@@ -258,7 +266,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 20;
+export const CACHE_SCHEMA_VERSION = 22;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 5;
 const IDB_FORMAT_VERSION = 1;
 
@@ -1017,6 +1025,7 @@ export class WebdbStorage {
         throw new Error('invalid local thread feed cursor');
       return {
         cursor,
+        groupThreadIds: [],
         states: rows.filter(
           (row) =>
             row.server !== null &&
@@ -1093,9 +1102,11 @@ export class WebdbStorage {
       const merged = new Map<number, LocalThreadAttention>();
       for (const snapshot of snapshots) {
         const threads = tx.objectStore('threads');
-        if (!(await threads.get(snapshot.threadId)))
+        const thread = await threads.get(snapshot.threadId);
+        if (!thread)
           await threads.put({
             threadId: snapshot.threadId,
+            threadFeedId: snapshot.threadFeedId,
             type: 'PENDING',
             visible: false,
           });
@@ -1119,6 +1130,17 @@ export class WebdbStorage {
                 ? { ...next.server, previews: latest ? [latest] : [] }
                 : next.server,
           });
+        }
+        if (thread && next.server) {
+          await threads.put(
+            thread.type === 'PENDING'
+              ? { ...thread, threadFeedId: next.server.threadFeedId }
+              : {
+                  ...thread,
+                  threadFeedId: next.server.threadFeedId,
+                  visible: true,
+                },
+          );
         }
         merged.set(next.threadId, next);
       }
@@ -1478,7 +1500,6 @@ export class WebdbStorage {
   async applyStateFeedPage(
     items: ClientStateFeedItem[],
     feedId: number,
-    groupMeta: readonly ClientGroupMetaApply[] = [],
     resetProjection = false,
   ): Promise<void> {
     await this.runAccountOperation(async () => {
@@ -1487,7 +1508,6 @@ export class WebdbStorage {
           this.currentUserId,
           items,
           feedId,
-          groupMeta,
           resetProjection,
         );
         if (workerApply) {
@@ -1495,34 +1515,21 @@ export class WebdbStorage {
           return;
         }
       }
-      await this.applyStateFeedPageInternal(
-        items,
-        feedId,
-        groupMeta,
-        resetProjection,
-      );
+      await this.applyStateFeedPageInternal(items, feedId, resetProjection, []);
     });
   }
 
-  /** Commit Group Meta pages discovered through thread heads without moving the state-feed cursor. */
-  async applyGroupMetaPages(
-    groupMeta: readonly ClientGroupMetaApply[],
-  ): Promise<void> {
-    if (groupMeta.length === 0) return;
-    const cursor = await this.getMeta('stateFeedId');
-    await this.applyStateFeedPage(
-      [],
-      typeof cursor === 'number' && cursor >= 0 ? cursor : 0,
-      groupMeta,
-      false,
-    );
+  /** Apply one fetched Group Meta page and advance its durable scan cursor atomically. */
+  async applyGroupMetaPage(update: ClientGroupMetaApply): Promise<void> {
+    await this.runAccountOperation(async () => {
+      await this.applyStateFeedPageInternal([], null, false, [update]);
+    });
   }
 
   private applyStateFeedPageInWorker(
     userId: string,
     items: ClientStateFeedItem[],
     feedId: number,
-    groupMeta: readonly ClientGroupMetaApply[],
     resetProjection: boolean,
   ): Promise<void> | null {
     return this.requestDbWorker<void>({
@@ -1530,7 +1537,6 @@ export class WebdbStorage {
       userId,
       items,
       feedId,
-      groupMeta,
       resetProjection,
     });
   }
@@ -1556,6 +1562,8 @@ export class WebdbStorage {
           target,
           after,
           url: `${apiPrefix()}/thread/feed-delta`,
+          groupMetaUrl: `${apiPrefix()}/user/group-meta`,
+          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
         });
     if (!pending) throw new Error('database worker unavailable');
     const result = await pending;
@@ -1639,6 +1647,8 @@ export class WebdbStorage {
           userId: this.currentUserId,
           port: channel.port1,
           url: `${apiPrefix()}/thread/feed-delta`,
+          groupMetaUrl: `${apiPrefix()}/user/group-meta`,
+          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
         },
         [channel.port1],
       );
@@ -1660,16 +1670,17 @@ export class WebdbStorage {
 
   private async applyStateFeedPageInternal(
     items: ClientStateFeedItem[],
-    feedId: number,
-    groupMeta: readonly ClientGroupMetaApply[],
+    feedId: number | null,
     resetProjection: boolean,
+    groupMeta: readonly ClientGroupMetaApply[],
   ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
+      if (feedId === null)
+        throw new Error('Group Meta commits are owned by the native executor');
       await tauriInvoke('native_db_apply_state_feed_page', {
         userId: Number(this.currentUserId),
         feedId,
         items,
-        groupMeta,
         resetProjection,
       });
       return;
@@ -1915,15 +1926,14 @@ export class WebdbStorage {
               member.account === selfUser.account &&
               member.domain === selfUser.domain,
           );
-          const { members: _members, ...group } =
-            thread.group as typeof thread.group & {
-              members?: unknown;
-            };
           await tx.objectStore('threads').put({
             ...thread,
             role: self?.role ?? null,
+            groupMetaRecoveryThrough: update.page.hasMore
+              ? thread.groupMetaRecoveryThrough
+              : null,
             group: {
-              ...group,
+              ...thread.group,
               memberCount: activeMembers.length,
               groupMetaFeedId: update.page.scannedThrough,
             },
@@ -2016,9 +2026,10 @@ export class WebdbStorage {
           continue;
         }
       }
-      await tx
-        .objectStore('settings')
-        .put({ key: 'stateFeedId', value: feedId });
+      if (feedId !== null)
+        await tx
+          .objectStore('settings')
+          .put({ key: 'stateFeedId', value: feedId });
       await tx.done;
     } catch (error) {
       // Application errors do not automatically abort an IndexedDB transaction.
@@ -2157,15 +2168,16 @@ export class WebdbStorage {
     };
   }
 
-  /** Discard an unavailable group-meta coordinate space before starting its full rebuild. */
-  async resetGroupMeta(threadId: number): Promise<void> {
+  /** Open a fixed full-recovery window and reset its durable scan cursor. */
+  async beginGroupMetaRecovery(
+    threadId: number,
+    through: string,
+  ): Promise<void> {
+    if (!/^(0|[1-9]\d*)$/.test(through))
+      throw new Error('invalid group-meta recovery boundary');
     await this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_reset_group_meta', {
-          userId: Number(this.currentUserId),
-          threadId,
-        });
-        return;
+        throw new Error('Group Meta recovery is owned by the native executor');
       }
       const tx = (await this.db()).transaction(
         ['threads', 'members'],
@@ -2183,6 +2195,7 @@ export class WebdbStorage {
       if (thread?.type === 'GROUP')
         await tx.objectStore('threads').put({
           ...thread,
+          groupMetaRecoveryThrough: through,
           group: { ...thread.group, memberCount: 0, groupMetaFeedId: '0' },
         });
       await tx.done;
@@ -2285,6 +2298,67 @@ export class WebdbStorage {
     });
   }
 
+  async getUnresolvedGroupMetaProfiles(): Promise<
+    import('./group-meta-sync').GroupMetaProfileReference[]
+  > {
+    return this.runAccountOperation(async () => {
+      if (isTauri()) return [];
+      const tx = (await this.db()).transaction(
+        ['threads', 'members', 'profiles'],
+        'readonly',
+      );
+      const references: import('./group-meta-sync').GroupMetaProfileReference[] =
+        [];
+      for (const thread of await tx.objectStore('threads').getAll()) {
+        if (thread.type !== 'GROUP' || thread.group.profileRev < 1) continue;
+        const cached = await tx
+          .objectStore('profiles')
+          .get([
+            thread.group.account,
+            thread.group.domain,
+            thread.group.namespaceId,
+            thread.group.profileRev,
+          ]);
+        if (!cached)
+          references.push({
+            type: 'GROUP',
+            threadId: thread.threadId,
+            account: thread.group.account,
+            domain: thread.group.domain,
+            namespaceId: thread.group.namespaceId,
+            rev: thread.group.profileRev,
+          });
+      }
+      for (const member of await tx.objectStore('members').getAll()) {
+        if (
+          member.left ||
+          member.profileRev < 1 ||
+          member.profileMessageSeq != null
+        )
+          continue;
+        const cached = await tx
+          .objectStore('profiles')
+          .get([
+            member.account,
+            member.domain,
+            member.namespaceId,
+            member.profileRev,
+          ]);
+        if (!cached)
+          references.push({
+            type: 'GROUP_MEMBER',
+            threadId: member.threadId,
+            account: member.account,
+            domain: member.domain,
+            namespaceId: member.namespaceId,
+            rev: member.profileRev,
+          });
+      }
+      await tx.done;
+      return references;
+    });
+  }
+
   async recordGroupMemberMessageProfile(
     threadId: number,
     identity: {
@@ -2383,6 +2457,82 @@ export class WebdbStorage {
     });
   }
 
+  async commitResolvedGroupMetaProfile(
+    reference: GroupMetaProfileReference,
+    profile: {
+      namespaceId: number;
+      account: string;
+      domain: string;
+      rev: number;
+      name: string;
+      bio: string;
+      avatarBase64: string | null;
+    },
+  ): Promise<boolean> {
+    if (
+      profile.rev !== reference.rev ||
+      profile.account !== reference.account ||
+      profile.domain !== reference.domain ||
+      profile.namespaceId !== reference.namespaceId
+    )
+      throw new Error('resolved profile does not match Group Meta reference');
+    const avatar = profile.avatarBase64
+      ? `data:image/webp;base64,${profile.avatarBase64}`
+      : '';
+    if (reference.type === 'GROUP_MEMBER')
+      return this.storeGroupMemberResolvedProfile(
+        reference.threadId,
+        {
+          account: reference.account,
+          domain: reference.domain,
+          namespaceId: reference.namespaceId,
+        },
+        { rev: profile.rev, name: profile.name, avatar, bio: profile.bio },
+      );
+    return this.runAccountOperation(async () => {
+      const tx = (await this.db()).transaction(
+        ['threads', 'namespaces', 'profiles'],
+        'readwrite',
+      );
+      const thread = await tx.objectStore('threads').get(reference.threadId);
+      if (
+        thread?.type !== 'GROUP' ||
+        thread.group.account !== reference.account ||
+        thread.group.domain !== reference.domain ||
+        thread.group.namespaceId !== reference.namespaceId ||
+        thread.group.profileRev !== reference.rev
+      ) {
+        await tx.done;
+        return false;
+      }
+      await this.registerNamespace(
+        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
+        reference.domain,
+        reference.namespaceId,
+      );
+      await this.writeSnapshot(tx.objectStore('profiles'), {
+        account: reference.account,
+        domain: reference.domain,
+        namespaceId: reference.namespaceId,
+        profileRev: reference.rev,
+        name: profile.name,
+        avatar,
+        bio: profile.bio,
+      });
+      await tx.objectStore('threads').put({
+        ...thread,
+        group: {
+          ...thread.group,
+          name: profile.name,
+          avatar,
+          description: profile.bio,
+        },
+      });
+      await tx.done;
+      return true;
+    });
+  }
+
   async putProfile(record: ProfileWriteRecord): Promise<boolean> {
     record = localSubjectIdentity(record);
     return this.runAccountOperation(async () => {
@@ -2462,7 +2612,7 @@ export class WebdbStorage {
     orderBy: 'desc' | 'asc',
     take: number,
     anchor?: number,
-  ): Promise<Message[]> {
+  ): Promise<MessageQueryRow[]> {
     return this.runMessageOperation(() =>
       this.queryCachedMessagesInternal(threadId, orderBy, take, anchor),
     );
@@ -2562,9 +2712,9 @@ export class WebdbStorage {
     orderBy: 'desc' | 'asc',
     take: number,
     anchor?: number,
-  ): Promise<Message[]> {
+  ): Promise<MessageQueryRow[]> {
     if (isTauri() && this.currentUserId != null) {
-      return tauriInvoke<Message[]>('native_db_query_messages', {
+      return tauriInvoke<MessageQueryRow[]>('native_db_query_messages', {
         userId: Number(this.currentUserId),
         threadId,
         anchor: anchor ?? null,
@@ -2582,14 +2732,14 @@ export class WebdbStorage {
       orderBy === 'asc' && anchor !== undefined,
       orderBy === 'desc' && anchor !== undefined,
     );
-    const out: Message[] = [];
+    const out: MessageQueryRow[] = [];
     const tx = db.transaction('messages', 'readonly');
     let cursor = await tx.store.openCursor(
       range,
       orderBy === 'desc' ? 'prev' : 'next',
     );
     while (cursor && out.length < take) {
-      if (isCachedMessageBody(cursor.value)) out.push(cursor.value);
+      if (isCachedTimelineSlot(cursor.value)) out.push(cursor.value);
       cursor = await cursor.continue();
     }
     await tx.done;
@@ -2712,7 +2862,7 @@ export class WebdbStorage {
       messageSeqs: input.messages.map((message) => message.seq),
     });
     const messageStore = tx.objectStore('messages');
-    const committedMessages: Message[] = [];
+    const committedMessages: MessageQueryRow[] = [];
     for (const entry of input.messages) {
       const message = {
         ...entry,
@@ -2721,7 +2871,7 @@ export class WebdbStorage {
       const existing = await messageStore.get([input.threadId, message.seq]);
       const merged = mergeMessageSlot<Message>(existing, message);
       await messageStore.put(merged);
-      if (isCachedMessageBody(merged)) committedMessages.push(merged);
+      if (isCachedTimelineSlot(merged)) committedMessages.push(merged);
     }
     await rangeStore.delete(rangeKey);
     for (const range of ranges) await rangeStore.put(range);

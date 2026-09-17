@@ -40,10 +40,12 @@ describe('MessageThreadComponent initial failure presentation', () => {
       document.createElement('div'),
       thread,
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(component.initialLoading()).toBe(false);
-    expect(component.initialLoadFailed()).toBe(true);
-    expect(component.ready.emit).toHaveBeenCalledWith(42);
+    // init() rejects asynchronously — wait for the failure presentation to land instead of sleeping.
+    await vi.waitFor(() => {
+      expect(component.initialLoading()).toBe(false);
+      expect(component.initialLoadFailed()).toBe(true);
+      expect(component.ready.emit).toHaveBeenCalledWith(42);
+    });
     expect(component.isWarm()).toBe(true);
     component.reinit = vi.fn();
     component.retryInitialLoad();

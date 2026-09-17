@@ -336,7 +336,7 @@ under `/group/*` because the group, rather than the current user, authors that d
   `lastMentionSeq` is nullable; clients compare it with their local read position.
   `joinRequestReadFeedId` is `-1` for non-managers; otherwise a join-request
   notification is unread when it is smaller than `joinRequestEndFeedId`.
-- `previewCount` defaults to zero and cannot exceed the configured preview limit.
+- `previewCount` defaults to zero and cannot exceed three.
   Previews include sequence, sender, timestamp, and live/retracted/removed status;
   deleted entries contain no original message text.
 - Initial consumption uses `after: 0`; omitted through captures the current head.

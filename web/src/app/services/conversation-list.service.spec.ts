@@ -33,7 +33,6 @@ describe('ConversationListService stable markRead flush', () => {
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
             refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
-            markTopOnNextUpdate: vi.fn().mockName('markTopOnNextUpdate'),
             load: vi.fn().mockName('load'),
           },
         },

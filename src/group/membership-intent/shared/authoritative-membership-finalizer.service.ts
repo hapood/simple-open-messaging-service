@@ -97,7 +97,7 @@ export class AuthoritativeMembershipFinalizerService {
       // REQUESTED may have already opened query authorization without publishing a head.
       // Mutual activation must therefore refresh the compacted content head even when the
       // audience insert is an idempotent no-op.
-      await this.threadContentHeads.refreshInTx(
+      await this.threadContentHeads.projectCurrentInTx(
         tx,
         member.domain,
         member.namespaceId,

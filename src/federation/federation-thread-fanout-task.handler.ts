@@ -74,6 +74,7 @@ export class FederationThreadFanoutTaskHandler
     for (;;) {
       const result = await this.projectNext(task.id, target);
       if (result.done) return;
+      if (result.peerDomain === undefined) continue;
       try {
         // The existing per-peer scheduler coalesces attempts at one-second intervals.
         this.events.emit(FEDERATION_STATE_FEED_PUSH, {
@@ -88,7 +89,7 @@ export class FederationThreadFanoutTaskHandler
   private async projectNext(
     taskId: bigint,
     target: ThreadFanoutTarget,
-  ): Promise<{ done: true } | { done: false; peerDomain: string }> {
+  ): Promise<{ done: true } | { done: false; peerDomain?: string }> {
     return this.database.db.transaction(async (tx) => {
       // Preserve business -> thread -> projection/task lock ordering.
       const lock = await requireThreadContentLockInTx(tx, target.threadId);
@@ -113,7 +114,7 @@ export class FederationThreadFanoutTaskHandler
         return { done: true };
 
       // Use current direct routes, including the origin of a mirrored group.
-      // refreshInTx remains the authority for each peer's visible content window.
+      // projectCurrentInTx remains the authority for each peer's visible content window.
       const routes = await tx.execute<{
         peerDomain: string;
         namespaceId: number;
@@ -149,7 +150,7 @@ export class FederationThreadFanoutTaskHandler
         await saveTaskCheckpointInTx(tx, taskId, done);
         return { done: true };
       }
-      await this.heads.refreshInTx(
+      const projected = await this.heads.projectCurrentInTx(
         tx,
         next.peerDomain,
         next.namespaceId,
@@ -159,7 +160,10 @@ export class FederationThreadFanoutTaskHandler
         phase: 'FEED',
         afterNamespaceId: next.namespaceId,
       });
-      return { done: false, peerDomain: next.peerDomain };
+      return {
+        done: false,
+        ...(projected ? { peerDomain: next.peerDomain } : {}),
+      };
     });
   }
 }

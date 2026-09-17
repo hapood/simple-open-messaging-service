@@ -1,13 +1,9 @@
 import { groupStateSql } from '../group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import type { DatabaseTransaction } from '../database/database.service.js';
 import { readThreadHeadSnapshotInTx } from './federation-thread-head-snapshot.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
-import { FederationNamespaceService } from './federation-namespace.service.js';
 
 interface ThreadContentProjection {
   account: string;
@@ -21,53 +17,23 @@ interface ThreadContentProjection {
 
 @Injectable()
 export class FederationThreadContentHeadService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly stateFeed: PeerStateFeedService,
-    private readonly namespaces: FederationNamespaceService,
-  ) {}
+  constructor(private readonly stateFeed: PeerStateFeedService) {}
 
-  async fill(peerDomain: string): Promise<void> {
-    const context = await this.namespaces.captureActive(peerDomain);
-    const routes = await this.database.db.execute<{ threadId: number }>(sql`
-      SELECT audience."threadId"
-      FROM "ThreadAudience" audience
-      JOIN "MessageThread" audience_thread
-        ON audience_thread.id = audience."threadId"
-      LEFT JOIN ${groupStateSql} audience_group
-        ON audience_group.id = audience_thread.id
-      WHERE audience."targetDomain" = ${peerDomain}
-        AND audience."targetNamespaceId" = ${context.namespaceId}
-        AND audience."localUserId" IS NULL
-        AND (audience_thread.type = 'P2P' OR audience_group.domain = 'local')
-      UNION
-      SELECT thread.id AS "threadId"
-      FROM ${groupStateSql} group_state
-      JOIN "MessageThread" thread ON thread.id = group_state.id
-      JOIN "AccountThreadState" local_state ON local_state."threadId" = thread.id
-      WHERE thread.type = 'GROUP'
-        AND group_state.domain = ${peerDomain}
-        AND group_state."namespaceId" = ${context.namespaceId}
-    `);
-    for (const route of routes.rows)
-      await this.database.db.transaction((tx) =>
-        this.refreshInTx(tx, peerDomain, context.namespaceId, route.threadId),
-      );
-  }
-
-  async refreshInTx(
+  /** Project the currently authorized content coordinate into the durable peer
+   * State Feed. A candidate route that cannot publish a head returns false. */
+  async projectCurrentInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
     namespaceId: number,
     threadId: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const projection = await this.readProjectionInTx(
       tx,
       peerDomain,
       namespaceId,
       threadId,
     );
-    if (!projection) return;
+    if (!projection) return false;
     await this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain,
@@ -86,6 +52,7 @@ export class FederationThreadContentHeadService {
         },
       },
     ]);
+    return true;
   }
 
   private async readProjectionInTx(
@@ -141,7 +108,31 @@ export class FederationThreadContentHeadService {
         AND (
           (audience."threadId" IS NOT NULL
             AND ((${thread.threadType} = 'P2P' AND pair.id IS NOT NULL)
-              OR (${thread.threadType} = 'GROUP' AND ${thread.groupDomain} = 'local')))
+              OR (${thread.threadType} = 'GROUP'
+                AND ${thread.groupDomain} = 'local'
+                AND EXISTS (
+                  SELECT 1
+                  FROM "RelationshipPair" member_pair
+                  WHERE member_pair."threadId" = message_thread.id
+                    AND member_pair.kind = 'GROUP_MEMBER'
+                    AND member_pair.active = true
+                    AND (
+                      (member_pair."endpointAType" = 'USER'
+                        AND member_pair."endpointADomain" = ${peerDomain}
+                        AND member_pair."endpointANamespaceId" = ${namespaceId}
+                        AND member_pair."endpointBType" = 'GROUP'
+                        AND member_pair."endpointBAccount" = ${thread.groupAccount}
+                        AND member_pair."endpointBDomain" = 'local'
+                        AND member_pair."endpointBNamespaceId" = ${namespaceId})
+                      OR (member_pair."endpointBType" = 'USER'
+                        AND member_pair."endpointBDomain" = ${peerDomain}
+                        AND member_pair."endpointBNamespaceId" = ${namespaceId}
+                        AND member_pair."endpointAType" = 'GROUP'
+                        AND member_pair."endpointAAccount" = ${thread.groupAccount}
+                        AND member_pair."endpointADomain" = 'local'
+                        AND member_pair."endpointANamespaceId" = ${namespaceId})
+                    )
+                ))))
           OR (${thread.threadType} = 'GROUP'
             AND ${thread.groupDomain} = ${peerDomain}
             AND ${thread.groupNamespaceId} = ${namespaceId}

@@ -10,13 +10,6 @@ import { UserService } from './user.service';
 import { WebdbService } from './webdb.service';
 import { AvatarRepository } from './avatar-cache.service';
 
-/** Flush enough task turns for the IndexedDB read to settle and reach HttpClient. */
-async function flush(): Promise<void> {
-  for (let i = 0; i < 5; i++) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-}
-
 describe('AvatarRepository', () => {
   let repo: AvatarRepository;
   let httpMock: HttpTestingController;
@@ -52,8 +45,9 @@ describe('AvatarRepository', () => {
     const path = '/uploads/avatars/x-512.webp';
 
     const p1 = repo.getBlob('u9', path);
-    await flush();
-    const req = httpMock.expectOne(path);
+    // The IDB read settles asynchronously before the request reaches HttpClient — expectOne throws
+    // until it arrives, and waitFor retries on that throw (deterministic, no timed sleep).
+    const req = await vi.waitFor(() => httpMock.expectOne(path));
     expect(req.request.method).toBe('GET');
     expect(req.request.responseType).toBe('blob');
     req.flush(new Blob(['png-bytes'], { type: 'image/webp' }));
@@ -68,18 +62,16 @@ describe('AvatarRepository', () => {
 
   it('refresh re-fetches and overwrites the cached blob under the same identity', async () => {
     const p1 = repo.getBlob('g5', '/uploads/avatars/old-512.webp');
-    await flush();
-    httpMock
-      .expectOne('/uploads/avatars/old-512.webp')
-      .flush(new Blob(['old']));
+    (
+      await vi.waitFor(() => httpMock.expectOne('/uploads/avatars/old-512.webp'))
+    ).flush(new Blob(['old']));
     await p1;
 
     const tickBefore = repo.refreshTick('g5');
     const p2 = repo.refresh('g5', '/uploads/avatars/new-512.webp');
-    await flush();
-    httpMock
-      .expectOne('/uploads/avatars/new-512.webp')
-      .flush(new Blob(['new']));
+    (
+      await vi.waitFor(() => httpMock.expectOne('/uploads/avatars/new-512.webp'))
+    ).flush(new Blob(['new']));
     await p2;
 
     const b = await repo.getBlob('g5', '/uploads/avatars/new-512.webp');
@@ -91,10 +83,11 @@ describe('AvatarRepository', () => {
 
   it('returns undefined on a cache miss + fetch failure (graceful — never throws)', async () => {
     const p = repo.getBlob('u9', '/uploads/avatars/missing-512.webp');
-    await flush();
-    httpMock
-      .expectOne('/uploads/avatars/missing-512.webp')
-      .flush(new Blob(['not found']), { status: 404, statusText: 'Not Found' });
+    (
+      await vi.waitFor(() =>
+        httpMock.expectOne('/uploads/avatars/missing-512.webp'),
+      )
+    ).flush(new Blob(['not found']), { status: 404, statusText: 'Not Found' });
     await expect(p).resolves.toEqual(undefined);
   });
 

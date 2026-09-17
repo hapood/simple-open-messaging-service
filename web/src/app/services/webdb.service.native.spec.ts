@@ -105,7 +105,7 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('sends a state-feed page and group metadata through one atomic native command', async () => {
+  it('sends a state-feed page through the native background command', async () => {
     const items = [
       {
         feedId: 81,
@@ -118,9 +118,7 @@ describe('WebdbService native SQLite routing', () => {
         body: { displayName: 'Alice', avatar: '', bio: '', profileRev: 2 },
       },
     ];
-    const groupMeta: never[] = [];
-
-    await service.applyStateFeedPage(items, 81, groupMeta, true);
+    await service.applyStateFeedPage(items, 81, true);
 
     expect(calls.at(-1)).toEqual({
       cmd: 'native_db_apply_state_feed_page',
@@ -128,7 +126,6 @@ describe('WebdbService native SQLite routing', () => {
         userId: 42,
         feedId: 81,
         items,
-        groupMeta,
         resetProjection: true,
       },
     });

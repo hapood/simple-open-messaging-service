@@ -226,6 +226,7 @@ export class FederationRecognitionService {
   ): Promise<FederationContext> {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
+    let restored = false;
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       this.assertPolicyAllowsRecognition(peer, normalized);
@@ -247,6 +248,13 @@ export class FederationRecognitionService {
         remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
+      restored = await this.logRecoveryInTx(
+        tx,
+        normalized,
+        peer,
+        trustLevel,
+        'signed Recognize handshake restored reachability',
+      );
       await tx
         .insert(tables.federatedPeer)
         .values({
@@ -292,6 +300,8 @@ export class FederationRecognitionService {
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
+    if (restored)
+      this.logger.log(`Recognize ${normalized}: degraded → available`);
     this.emitPeerAvailable(normalized);
     return mismatch.context;
   }
@@ -340,6 +350,7 @@ export class FederationRecognitionService {
       return;
     }
     let recovered = false;
+    let restored = false;
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       if (
@@ -358,6 +369,13 @@ export class FederationRecognitionService {
       };
       const trustLevel = this.lifecycle(next);
       recovered = peer.trustLevel !== 'available' && trustLevel === 'available';
+      restored = await this.logRecoveryInTx(
+        tx,
+        normalized,
+        peer,
+        trustLevel,
+        'Health round trip restored reachability',
+      );
       await tx
         .update(tables.federatedPeer)
         .set({
@@ -375,11 +393,13 @@ export class FederationRecognitionService {
         .where(eq(tables.federatedPeer.domain, normalized));
     });
     // Emitted post-commit when Health restores reachability or first proves peer acceptance.
+    if (restored) this.logger.log(`Health ${normalized}: degraded → available`);
     if (recovered) this.emitPeerAvailable(normalized);
   }
 
   async markReachable(domain: string): Promise<void> {
     const normalized = this.normalizeDomain(domain);
+    let restored = false;
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       if (
@@ -395,6 +415,13 @@ export class FederationRecognitionService {
         ...peer,
         remoteServiceReachable: true,
       });
+      restored = await this.logRecoveryInTx(
+        tx,
+        normalized,
+        peer,
+        trustLevel,
+        'signed S2S contact restored reachability',
+      );
       await tx
         .update(tables.federatedPeer)
         .set({
@@ -410,6 +437,8 @@ export class FederationRecognitionService {
         })
         .where(eq(tables.federatedPeer.domain, normalized));
     });
+    if (restored)
+      this.logger.log(`Contact ${normalized}: degraded → available`);
   }
 
   async markTransportDegraded(
@@ -453,6 +482,29 @@ export class FederationRecognitionService {
           reason: reason.slice(0, 255),
         });
     });
+  }
+
+  /** The mirror of markTransportDegraded's `transitioned` guard: exactly when a DEGRADED peer returns
+   *  to 'available' — via a Health round trip, an inbound Recognize handshake or an ordinary signed
+   *  S2S contact — append the 'available' audit event in the same tx, so the admin timeline tells
+   *  both halves of the degradation story. Returns whether the event was written. */
+  private async logRecoveryInTx(
+    tx: DatabaseTransaction,
+    domain: string,
+    peer:
+      | Pick<typeof tables.federatedPeer.$inferSelect, 'trustLevel'>
+      | undefined,
+    trustLevel: string,
+    reason: string,
+  ): Promise<boolean> {
+    if (peer?.trustLevel !== 'degraded' || trustLevel !== 'available')
+      return false;
+    await tx.insert(tables.federatedPeerEvent).values({
+      domain,
+      type: 'available',
+      reason: reason.slice(0, 255),
+    });
+    return true;
   }
 
   private async runRecognize(domain: string): Promise<void> {

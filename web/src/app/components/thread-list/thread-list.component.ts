@@ -37,7 +37,7 @@ import { UserIdentityLabelComponent } from '../user-identity-label/user-identity
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
-import { playFlipList, snapshotFlipRects } from '../../lib/flip-list';
+import { playFlipList } from '../../lib/flip-list';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
@@ -75,16 +75,10 @@ export class ThreadListComponent implements OnInit {
   private readonly namespaces = inject(FederationNamespaceService);
   private readonly host = inject(ElementRef);
   readonly composerDrafts = inject(ComposerDraftService);
-  /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
-   *  every render that doesn't itself animate, so a later insert measures against current positions. */
   private prevRects = new Map<string, DOMRect>();
 
   constructor() {
-    // FLIP list animation: re-runs whenever the shared list mutates (read items() reactively). The
-    // rAF defers the rect read until the DOM has settled into the new layout; on a deliberate
-    // top-insert (convList.topInserted pulse) it plays the enter + shift, otherwise it refreshes the
-    // "before" snapshot so routine reloads / message bumps / filter changes keep the map current
-    // without animating.
+    // Animate insertions and feed-ordered moves after Angular commits the new list layout.
     effect(() => {
       this.convList.items();
       requestAnimationFrame(() => {
@@ -92,13 +86,7 @@ export class ThreadListComponent implements OnInit {
           this.host.nativeElement as HTMLElement | null
         )?.querySelector('.thread-list') as HTMLElement | null;
         if (!container) return;
-        const tid = this.convList.topInserted();
-        if (tid != null) {
-          this.prevRects = playFlipList(container, this.prevRects);
-          this.convList.clearTopInserted();
-        } else {
-          this.prevRects = snapshotFlipRects(container);
-        }
+        this.prevRects = playFlipList(container, this.prevRects);
       });
     });
   }
@@ -208,9 +196,7 @@ export class ThreadListComponent implements OnInit {
   previewTime(t: ConversationItem): number | null | undefined {
     const draft = this.composerDrafts.get(t.threadId);
     if (draft) return draft.updatedAt;
-    if (t.lastMessageAt == null) return t.joinRequestAt;
-    if (t.joinRequestAt == null) return t.lastMessageAt;
-    return Math.max(t.lastMessageAt, t.joinRequestAt);
+    return t.lastMessageAt;
   }
 
   hasUnreadJoinRequests(t: ConversationItem): boolean {
