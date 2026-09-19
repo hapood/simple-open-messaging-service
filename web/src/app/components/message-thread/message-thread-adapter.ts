@@ -16,7 +16,6 @@ import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { ProfileResolutionService } from '../../services/profile-resolution.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import { MsgService } from '../../services/message.service';
 import { HttpItemSource } from './http-item-source';
@@ -29,17 +28,6 @@ export interface MessageThreadLiveCallbacks {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   onNewerAvailable: (seq: number) => void;
   onMediaStatus: (seq: number, status: MediaStatus) => void;
-  onProfile: (
-    seq: number,
-    profile: {
-      name: string;
-      avatar: string;
-      avatarIdentityId: string;
-      avatarAccount: string;
-      avatarDomain: string;
-      isSelf: boolean;
-    },
-  ) => void;
 }
 
 /** The complete source contract consumed by the production thread shell. */
@@ -186,7 +174,6 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   private readonly users = inject(UserService);
   private readonly outbox = inject(ThreadSendOutbox);
   private readonly profiles = inject(ProfileRepository);
-  private readonly profileResolver = inject(ProfileResolutionService);
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly messages = inject(MsgService);
 
@@ -201,7 +188,6 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
       this.outbox,
       callbacks,
       this.profiles,
-      this.profileResolver,
       this.memberProfiles,
     );
   }

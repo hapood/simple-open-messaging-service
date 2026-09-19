@@ -12,7 +12,7 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | State Feed              | Core, Recognition             | Mandatory                                                 |
 | Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                   |
 | Authorized Profile      | Core, Group Meta, Message     | Mandatory account/revision profile lookup                 |
-| Group Member Profile    | Core, Group Meta              | Mandatory asymmetric exact-member lookup                  |
+| Group Meta Profile    | Core, Group Meta              | Mandatory asymmetric exact-member lookup                  |
 | Message Author Profile  | Core, Group Meta, Message     | Mandatory exact-message profile lookup                    |
 | Message Query           | Core, Recognition             | Mandatory                                                 |
 | Message Tombstone Query | Core, Message                 | Mandatory                                                 |

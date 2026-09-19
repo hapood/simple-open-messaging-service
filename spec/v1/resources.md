@@ -111,7 +111,7 @@ relationship directions, group membership, presence, contact information,
 deletion reasons, or another peer's visibility state.
 State Feed and Group Meta do not publish display profiles. Established user and
 group threads use [Authorized Profile](./authorized-profile.md); exact current
-Group Meta member references use [Group Member Profile](./group-member-profile.md)
+Group Meta member references use [Group Meta Profile](./group-meta-profile.md)
 served by the group origin. A mirror requests that snapshot from the group
 origin, caches it for local use, and never redirects another mirror to the
 member's account home. A peer that
@@ -120,7 +120,7 @@ needs the version selected by a message uses the exact-message-authorized
 search or account-enumeration operation.
 
 All four Federation v1 profile retrieval operations—Public Account Profile,
-Authorized Profile, Group Member Profile, and Message Author Profile—return the
+Authorized Profile, Group Meta Profile, and Message Author Profile—return the
 same complete profile fields: `account`, `domain`, `displayName`, required
 `bio`, nullable `avatar`, and positive `profileRev`. Their authorization
 coordinates differ; the returned snapshot shape does not.

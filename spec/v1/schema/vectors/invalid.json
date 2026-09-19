@@ -756,8 +756,8 @@
       ]
     },
     {
-      "name": "group member profile rejects incomplete or ambiguous selectors",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
+      "name": "group meta profile rejects incomplete or ambiguous selectors",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
       "values": [
         {
           "account": "!group",
@@ -766,16 +766,25 @@
         },
         {
           "account": "!group",
+          "subject": "GROUP",
           "memberAccount": "alice",
-          "memberDomain": "a.example",
-          "rev": "3",
-          "messageSeq": "1"
+          "memberDomain": "a.example"
         },
         {
-          "account": "alice",
+          "account": "!group",
+          "subject": "MEMBER",
           "memberAccount": "bob",
           "memberDomain": "b.example",
           "rev": "3"
+        },
+        {
+          "account": "!group",
+          "subject": "MEMBER",
+          "memberAccount": "bob"
+        },
+        {
+          "account": "!group",
+          "subject": "OTHER"
         }
       ]
     },
@@ -1233,16 +1242,6 @@
       }
     },
     {
-      "name": "group member profile parameters reject no-profile sentinel",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
-      "value": {
-        "account": "!team",
-        "memberAccount": "alice",
-        "memberDomain": "a.example",
-        "rev": "0"
-      }
-    },
-    {
       "name": "public user profile rejects zero revision",
       "schema": "urn:somfp:v1:profile",
       "value": {
@@ -1268,7 +1267,7 @@
     },
     {
       "name": "group member profile rejects zero revision",
-      "schema": "urn:somfp:v1:group-member-profile",
+      "schema": "urn:somfp:v1:group-meta-profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
@@ -1280,7 +1279,7 @@
     },
     {
       "name": "group member profile rejects missing revision",
-      "schema": "urn:somfp:v1:group-member-profile",
+      "schema": "urn:somfp:v1:group-meta-profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
@@ -1302,7 +1301,7 @@
     },
     {
       "name": "group member profile rejects missing bio",
-      "schema": "urn:somfp:v1:group-member-profile",
+      "schema": "urn:somfp:v1:group-meta-profile",
       "value": {
         "account": "alice",
         "domain": "a.example",

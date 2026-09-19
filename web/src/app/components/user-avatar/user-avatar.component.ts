@@ -12,6 +12,11 @@ import { UserAvatarType } from './model';
 import { assetUrl } from '../../services/runtime';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { UserService } from '../../services/user.service';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+} from '../../services/profile-store.service';
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
 
 /**
  * Initials avatar (industry best-practice palette).
@@ -75,6 +80,7 @@ function firstGrapheme(value: string): string {
 export class UserAvatarComponent {
   private readonly avatarRepo = inject(AvatarRepository);
   private readonly userService = inject(UserService);
+  private readonly profiles = inject(ProfileRepository);
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER);
   readonly name = input<string | undefined | null>('');
@@ -95,7 +101,9 @@ export class UserAvatarComponent {
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
   readonly loading = input(false);
+  readonly profileEvidence = input<ProfileSelector | undefined>(undefined);
   readonly UserAvatarType = UserAvatarType;
+  private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
 
   /** Normalized foreign domain used by the marker. */
   readonly federatedMarkerDomain = computed(() => {
@@ -116,6 +124,9 @@ export class UserAvatarComponent {
   );
   private readonly effectiveSrc = computed(
     () =>
+      (this.resolvedProfile()?.avatarBase64
+        ? `data:image/webp;base64,${this.resolvedProfile()!.avatarBase64}`
+        : undefined) ??
       this.src() ??
       (this.type() === UserAvatarType.SELF
         ? this.userService.sessionProfile()?.avatar
@@ -123,6 +134,7 @@ export class UserAvatarComponent {
   );
   private readonly effectiveName = computed(
     () =>
+      this.resolvedProfile()?.name ||
       this.name() ||
       (this.type() === UserAvatarType.SELF
         ? this.userService.sessionProfile()?.name
@@ -149,6 +161,16 @@ export class UserAvatarComponent {
   });
 
   constructor() {
+    effect((onCleanup) => {
+      const evidence = this.profileEvidence();
+      this.resolvedProfile.set(null);
+      if (!evidence) return;
+      const subscription = this.profiles.resolve(evidence).subscribe({
+        next: (profile) => this.resolvedProfile.set(profile),
+        error: () => this.resolvedProfile.set(null),
+      });
+      onCleanup(() => subscription.unsubscribe());
+    });
     // Reset the failure flag whenever the avatar source changes (retry the new image).
     effect(() => {
       this.effectiveSrc();

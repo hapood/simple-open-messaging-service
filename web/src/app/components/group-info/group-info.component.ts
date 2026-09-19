@@ -46,6 +46,7 @@ import { ChatContextService } from '../message-thread/chat-context.service';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -99,6 +100,32 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
+
+  groupProfileEvidence(): ProfileSelector | undefined {
+    const group = this.group();
+    const threadId = this.threadId();
+    return group && threadId !== undefined && group.profileRev > 0
+      ? {
+          type: 'GROUP_META',
+          threadId,
+          profileRev: group.profileRev,
+          subject: { type: 'GROUP' },
+        }
+      : undefined;
+  }
+
+  memberProfileEvidence(member: ResolvedMemberProfile): ProfileSelector {
+    return {
+      type: 'GROUP_META',
+      threadId: this.threadId()!,
+      profileRev: member.profileRev,
+      subject: {
+        type: 'MEMBER',
+        account: member.account,
+        domain: member.domain,
+      },
+    };
+  }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
     const id = this.convList.openThreadId();

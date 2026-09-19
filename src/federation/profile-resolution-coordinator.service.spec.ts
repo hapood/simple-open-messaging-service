@@ -83,18 +83,21 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       {} as never,
     );
 
-    const result = await subject['resolve']({
-      kind: 'message',
-      threadId: 41,
-      messageSeq: 23,
-      account: 'alice',
-      domain: 'member.example',
-      rev: 9,
-      namespaceId: 7,
-      publisherDomain: 'group-host.example',
-      publisherNamespaceId: 7,
-      publisherMessageSeq: 81,
-    });
+    const result = await subject['fetch'](
+      {
+        namespaceId: 7,
+        account: 'alice',
+        domain: 'member.example',
+        rev: 9,
+      },
+      {
+        kind: 'message',
+        threadId: 41,
+        publisherDomain: 'group-host.example',
+        publisherNamespaceId: 7,
+        publisherMessageSeq: 81,
+      },
+    );
 
     expect(peerHttp.get).toHaveBeenCalledWith(
       '/s2s/v1/message-author-profile?account=%21group&peerAccount=local-user&messageSeq=81',
@@ -144,20 +147,28 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       {} as never,
     );
 
-    await subject['resolve']({
-      kind: 'groupMember',
-      threadId: 41,
-      groupAccount: '!group',
-      account: 'alice',
-      domain: 'member.example',
-      rev: 9,
-      namespaceId: 12,
-      publisherDomain: 'group-host.example',
-      publisherNamespaceId: 7,
-    });
+    await subject['fetch'](
+      {
+        namespaceId: 12,
+        account: 'alice',
+        domain: 'member.example',
+        rev: 9,
+      },
+      {
+        kind: 'groupMeta',
+        publisherDomain: 'group-host.example',
+        publisherNamespaceId: 7,
+        groupAccount: '!group',
+        subject: {
+          type: 'MEMBER',
+          account: 'alice',
+          domain: 'member.example',
+        },
+      },
+    );
 
     expect(peerHttp.get).toHaveBeenCalledWith(
-      '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=9',
+      '/s2s/v1/group-meta-profile?account=%21group&subject=MEMBER&memberAccount=alice&memberDomain=member.example',
       'group-host.example',
     );
     expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
@@ -189,16 +200,18 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
 
     await expect(
       subject['normalizeAndAuthorize'](3, {
-        type: 'GROUP_MEMBER',
+        type: 'GROUP_META',
         threadId: 41,
-        memberAccount: 'alice',
-        memberDomain: 'member.test',
+        profileRev: 4,
+        subject: {
+          type: 'MEMBER',
+          account: 'alice',
+          domain: 'member.test',
+        },
       }),
     ).resolves.toMatchObject({
-      kind: 'groupMember',
-      groupAccount: '!group',
-      rev: 4,
-      namespaceId: 9,
+      key: { account: 'alice', rev: 4, namespaceId: 9 },
+      method: { kind: 'groupMeta', groupAccount: '!group' },
     });
 
     const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL).sql;
@@ -206,5 +219,97 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     expect(query).toContain('FROM "RelationshipPair" viewer_pair');
     expect(query).not.toContain('ClientGroupMetaMemberFeed');
     expect(query).not.toContain('AccountThreadState');
+  });
+
+  it('settles the actual revision item and removes only the invoking method from the expected item', () => {
+    const sse = { onProfileAvailable: vi.fn() };
+    const subject = new ProfileResolutionCoordinatorService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      sse as never,
+    );
+    const expectedKey = {
+      namespaceId: 7,
+      account: 'alice',
+      domain: 'peer.example',
+      rev: 4,
+    };
+    const actualKey = { ...expectedKey, rev: 5 };
+    const invoking = {
+      method: {
+        kind: 'message' as const,
+        threadId: 9,
+        publisherDomain: 'peer.example',
+        publisherNamespaceId: 7,
+        publisherMessageSeq: 12,
+      },
+      users: new Set([1]),
+    };
+    const retained = {
+      method: {
+        kind: 'exact' as const,
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 4,
+      },
+      users: new Set([3]),
+    };
+    const actual = {
+      method: {
+        kind: 'exact' as const,
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 5,
+      },
+      users: new Set([2]),
+    };
+    const expectedKeyString = JSON.stringify([7, 'alice', 'peer.example', 4]);
+    const actualKeyString = JSON.stringify([7, 'alice', 'peer.example', 5]);
+    subject['pending'].set(expectedKeyString, {
+      key: expectedKey,
+      methods: new Map([
+        ['message', invoking],
+        ['exact-old', retained],
+      ]),
+      state: 'ACTIVE',
+    });
+    subject['pending'].set(actualKeyString, {
+      key: actualKey,
+      methods: new Map([['exact-new', actual]]),
+      state: 'QUEUED',
+    });
+    subject['pendingMethodCount'] = 3;
+    subject['queue'].push(actualKeyString);
+
+    subject['complete'](expectedKeyString, 'message', invoking, {
+      ...actualKey,
+      name: 'Alice',
+      bio: '',
+      avatarBase64: null,
+    });
+
+    expect(subject['pending'].has(actualKeyString)).toBe(false);
+    expect(subject['pending'].get(expectedKeyString)?.methods).toEqual(
+      new Map([['exact-old', retained]]),
+    );
+    expect(subject['pendingMethodCount']).toBe(1);
+    expect(subject['queue']).toContain(expectedKeyString);
+    expect(subject['queue']).not.toContain(actualKeyString);
+    expect(sse.onProfileAvailable.mock.calls).toEqual([
+      [1, actualKey],
+      [2, actualKey],
+    ]);
+
+    // The removed actual-revision item may already have had an HTTP request in
+    // flight. Its late completion is stale and must not publish a second event.
+    subject['complete'](actualKeyString, 'exact-new', actual, {
+      ...actualKey,
+      name: 'Alice',
+      bio: '',
+      avatarBase64: null,
+    });
+    expect(sse.onProfileAvailable).toHaveBeenCalledTimes(2);
   });
 });

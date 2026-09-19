@@ -8,6 +8,12 @@ const actor = {
   token: 'test-token',
   node: { backendBaseUrl: 'http://bravo.test' },
 };
+const key = {
+  namespaceId: 2,
+  account: 'alice',
+  domain: 'alpha.test',
+  rev: 7,
+};
 
 async function stream() {
   let controller;
@@ -41,27 +47,26 @@ async function stream() {
   };
 }
 
-test('buffers early terminal events, parses split CRLF frames and matches request IDs', async () => {
+test('buffers early profile wakes and parses split CRLF frames', async () => {
   const s = await stream();
   try {
     s.send(
-      ': connected\r\n\r\nevent: PROFILE_FAILED\r\ndata: {"requestId":"other","reason":"NOT_FOUND"}\r\n\r\nevent: PROFILE_RESOLVED\r\ndata: {"requestId":"wanted","profile":{"rev":7}}\r',
+      `: connected\r\n\r\nevent: PROFILE_AVAILABLE\r\ndata: ${JSON.stringify(key)}\r`,
     );
     s.send('\n\r\n');
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(await s.events.wait('wanted'), {
-      event: 'PROFILE_RESOLVED',
-      requestId: 'wanted',
-      profile: { rev: 7 },
+    assert.deepEqual(await s.events.wait(), {
+      event: 'PROFILE_AVAILABLE',
+      key,
+      reason: undefined,
     });
-    assert.equal((await s.events.wait('other')).reason, 'NOT_FOUND');
   } finally {
     await s.events.close();
   }
   assert.equal(s.cancelled, true);
 });
 
-test('reports PROFILE_FAILED immediately instead of repeatedly creating PENDING requests', async () => {
+test('reports PROFILE_UNAVAILABLE without creating another request', async () => {
   const s = await stream();
   let calls = 0;
   try {
@@ -70,20 +75,20 @@ test('reports PROFILE_FAILED immediately instead of repeatedly creating PENDING 
       resolveProfile: async () => {
         calls++;
         s.send(
-          'event: PROFILE_FAILED\ndata: {"requestId":"failed","reason":"NOT_FOUND"}\n\n',
+          `event: PROFILE_UNAVAILABLE\ndata: ${JSON.stringify({ ...key, reason: 'NOT_FOUND' })}\n\n`,
         );
-        return { status: 'PENDING', requestId: 'failed' };
+        return { status: 'PENDING', key };
       },
     };
     await assert.rejects(
       resolveUntilReady(
         user,
-        { threadId: 19, messageSeq: 5 },
-        1,
+        { type: 'MESSAGE_AUTHOR', threadId: 19, messageSeq: 5, rev: 7 },
+        7,
         1000,
         s.events,
       ),
-      /threadId.*19.*messageSeq.*5.*requestId=failed reason=NOT_FOUND/,
+      /threadId.*19.*messageSeq.*5.*NOT_FOUND/,
     );
     assert.equal(calls, 1);
   } finally {
@@ -91,27 +96,32 @@ test('reports PROFILE_FAILED immediately instead of repeatedly creating PENDING 
   }
 });
 
-test('accepts ready profiles and verifies the exact revision after SSE resolution', async () => {
+test('rereads the durable result after PROFILE_AVAILABLE', async () => {
   const s = await stream();
+  let calls = 0;
   try {
-    const ready = {
-      ...actor,
-      resolveProfile: async () => ({ status: 'READY', profile: { rev: 7 } }),
-    };
-    assert.deepEqual(await resolveUntilReady(ready, {}, 7, 1000, s.events), {
-      rev: 7,
-    });
     const pending = {
       ...actor,
       resolveProfile: async () => {
-        s.send(
-          'event: PROFILE_RESOLVED\ndata: {"requestId":"resolved","profile":{"rev":8}}\n\n',
-        );
-        return { status: 'PENDING', requestId: 'resolved' };
+        calls++;
+        if (calls === 1) {
+          s.send(`event: PROFILE_AVAILABLE\ndata: ${JSON.stringify(key)}\n\n`);
+          return { status: 'PENDING', key };
+        }
+        return { status: 'READY', profile: { rev: 7 } };
       },
     };
+    assert.deepEqual(await resolveUntilReady(pending, {}, 7, 1000, s.events), {
+      rev: 7,
+    });
+    assert.equal(calls, 2);
+
+    const wrong = {
+      ...actor,
+      resolveProfile: async () => ({ status: 'READY', profile: { rev: 8 } }),
+    };
     await assert.rejects(
-      resolveUntilReady(pending, {}, 7, 1000, s.events),
+      resolveUntilReady(wrong, {}, 7, 1000, s.events),
       /returned rev 8, expected 7/,
     );
   } finally {
@@ -119,14 +129,14 @@ test('accepts ready profiles and verifies the exact revision after SSE resolutio
   }
 });
 
-test('rejects pending waiters on disconnect and bounds missing-event waits', async () => {
+test('rejects waiters on timeout and disconnect', async () => {
   const s = await stream();
   try {
-    await assert.rejects(s.events.wait('missing', 5), /requestId=missing/);
-    const pending = s.events.wait('disconnected');
+    await assert.rejects(s.events.wait(5), /timed out waiting for profile SSE/);
+    const pending = s.events.wait();
     s.end();
     await assert.rejects(pending, /SSE disconnected/);
-    await assert.rejects(s.events.wait('later'), /SSE disconnected/);
+    await assert.rejects(s.events.wait(), /SSE disconnected/);
   } finally {
     await s.events.close();
   }
@@ -139,9 +149,9 @@ test('rejects non-SSE responses and invalid profile event data', async () => {
   );
   const s = await stream();
   try {
-    const pending = s.events.wait('invalid');
-    s.send('event: PROFILE_FAILED\ndata: {}\n\n');
-    await assert.rejects(pending, /no requestId/);
+    const pending = s.events.wait();
+    s.send('event: PROFILE_AVAILABLE\ndata: {}\n\n');
+    await assert.rejects(pending, /no profile key/);
   } finally {
     await s.events.close();
   }

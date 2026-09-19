@@ -1,369 +1,233 @@
-# Profile Version Storage and Resolution
+# Profile Version Resolution
 
-Status: profile-version storage, exact account/message/group-member resolution,
-shared client dispatch, and bounded backend scheduling are implemented.
+Status: normative implementation design.
 
-## 1. Scope and separation
+## 1. Invariants
 
-This document is the SOMS implementation design. The federation documents in
-[`spec/v1`](../../spec/v1/README.md) define only peer-observable wire behavior;
-they do not prescribe the tables, NestJS providers, RxJS graph, LRU container,
-or component lifecycle described here.
-
-The change has four goals:
-
-1. retain immutable profile versions while keeping one local default revision;
-2. resolve remote profiles without putting names, biographies, or avatar bytes
-   in State Feed, Group Meta, relationship intents, or message wire objects;
-3. merge duplicate backend and frontend resolution work; and
-4. deliver asynchronous results through the existing authenticated `/events`
-   realtime stream together with `MEDIA_STATUS`.
-
-The temporary `/user/resolve-federated-stream` remains an add-friend lookup
-surface only. Thread lists, message items, incoming-intent UI, and group
-management must use the new session-authenticated profile-resolution API.
-
-## 2. Profile storage and update
-
-One immutable profile-version record contains:
+A profile snapshot is identified by the immutable key:
 
 ```ts
-interface ProfileVersion {
+interface ProfileKey {
+  namespaceId: number;
   account: string;
   domain: string;
   rev: number;
-  name: string;
-  bio: string;
-  avatarBase64: string | null;
 }
 ```
 
-Each local user or group stores `defaultProfileRev`. A successful update creates
-a new complete version and moves that default pointer to it in one transaction.
-The pointer is only a local authoring default; federation peers cannot query it,
-and a future implementation may select another retained revision for a
-particular peer. An older version is never updated in place.
+Profile bytes, display name, and biography are stored and cached only under
+this four-part key. A request proof is not part of the profile identity. Several
+proofs may resolve to the same key.
 
-Within one account, a revision is permanently bound to one immutable version
-and is never reused. `defaultProfileRev` is an authoring default, not an active
-or validity flag. Moving it does not deactivate an older retained version.
+The system has three ownership boundaries:
 
-Name, biography, and avatar are one update operation. The client submits one
-JSON body containing the complete name/bio values and an optional Base64 avatar
-value. The backend validates decoded byte size, canonical Base64, magic bytes,
-image dimensions, decompression limits, and supported formats before image
-normalization and the database commit. Omitting the avatar field preserves the
-current avatar; an explicit `null` removes it in the new revision.
+- the backend authenticates client proofs, schedules federation work, and
+  materializes profile snapshots in PostgreSQL;
+- the Web Worker or Rust runtime is the only client-side profile network and
+  database writer; and
+- the UI reads client storage through repositories and renders the result. UI
+  code never calls the profile-resolution HTTP endpoint or consumes raw profile
+  SSE events.
 
-Historical profile data is a soft retention dependency. Storage degradation
-SHOULD preserve versions referenced by serviceable messages and current Group
-Meta projections. If cleanup must remove one, it must not rewrite a message to
-another version or delete otherwise retained message content.
+There is no request identifier and no compatibility path for the superseded
+profile completion protocol.
 
-## 3. Message and Group Meta binding
+## 2. Client evidence
 
-The federation message wire carries the selected author's `profileRev`. When a
-server commits a message copy, that field becomes part of the immutable
-publisher-local `(thread, seq)` object. Replaying that coordinate always carries
-the same revision.
+Every client request contains exactly one evidence source. Evidence selects an
+immutable local fact and carries the expected profile revision so the backend
+can construct a `ProfileKey` before scheduling network work.
 
-For a P2P thread:
+```ts
+type ProfileEvidence =
+  | { type: 'EXACT'; account: string; domain: string; rev: number }
+  | {
+      type: 'MESSAGE_AUTHOR';
+      threadId: number;
+      messageSeq: number;
+      rev: number;
+    }
+  | {
+      type: 'GROUP_META';
+      threadId: number;
+      profileRev: number;
+      subject:
+        | { type: 'GROUP' }
+        | { type: 'MEMBER'; account: string; domain: string };
+    };
+```
 
-- before any peer-authored message is available, the thread list uses the
-  default revision retained by the account-owned `THREAD_STATE` snapshot;
-- after messages are loaded, the profile bound to the greatest `seq` authored
-  by the peer becomes the thread display profile;
-- a locally authored message never replaces the peer's thread avatar; and
-- the numeric revision alone does not order messages—the greatest qualifying
-  thread `seq` wins.
+The backend does not trust the supplied revision by itself. It authorizes the
+evidence and derives the account, domain, namespace, publisher, and federation
+route from local durable facts. The supplied revision is the requested profile
+version and forms the target key. A missing or unauthorized evidence fact is a
+synchronous business error.
 
-For a group thread, member-message profiles do not select the thread avatar.
-The greatest committed Group Meta `GROUP_PROFILE.feedId` selects that item's
-exact `profileRev`; the client resolves the group `(account, rev)` and uses that
-result for the thread avatar. It never compares group profile revisions.
+`EXACT` is still evidence, not an unrestricted address lookup. Relationship
+intent, thread state, group audience, or self-profile state must authorize the
+exact revision.
 
-Each group roster also stores a group-scoped profile reference for every
-member. The member-authored join intent selects the initial exact reference in
-canonical Group Meta without display bytes. A mirror resolves it only through
-Group Member Profile on the group origin. A newly read message may
-later update only its author's reference in that message's group, ordered by
-message `seq`; the immutable revision number is not used as a clock. The
-resolved name, biography, and avatar are written back only if the member still
-selects that exact revision in the client. It does not update canonical Group
-Meta or the mirror server's latest replicated member `UPSERT.profileRev`.
-Consequently, one account may render with different revisions in different
-groups without a global User projection overwriting either group.
-The same mechanism leaves room for an author to select different retained
-revisions per friendship or group while the current sender defaults to
-`defaultProfileRev`.
+## 3. Federation evidence
 
-A locally authored message reads the sender's `defaultProfileRev` in the
-message commit transaction and stores that exact value on the immutable message
-row. Copies, group submissions, authoritative group distributions, and receipts
-preserve the incoming revision. Per-thread authoring defaults are deliberately
-deferred; this version has one account-level `defaultProfileRev`.
+Federation requests do not carry a profile revision for message or Group Meta
+proofs. The authoritative peer resolves the revision from its own durable fact.
 
-Relationship intents carry the source account's revision selected for that
-request flow. A profile update must not rewrite or republish the intent. An
-incoming positive intent may trigger exact-revision resolution after the
-backend has validated the durable intent and the owner's disclosure policy.
-This is independent warm-up: group membership, canonical Group Meta, audience,
-and head fan-out commit without querying the profile store or waiting for the
-coordinator.
-For a group join, the committed member-authored `REQUESTED` is sufficient
-authorization for the group origin to start that exact warm-up; bilateral active
-membership is not a download precondition. A later member UPSERT reuses the
-request revision.
-For an established P2P relationship, only a later peer-authored message reveals
-a changed profile reference.
+```text
+GET /s2s/v1/message-author-profile
+    ?account=<thread account>
+    [&peerAccount=<p2p peer>]
+    &messageSeq=<publisher sequence>
 
-For this implementation, a direct remote user-profile lookup is authorized
-only when the effective locally authored Relationship Intent toward the
-requesting peer carries the requested revision. A direct group-profile lookup
-is authorized against the requesting peer's current audience and the canonical
-Group Meta `GROUP_PROFILE` reference. These are local authorization-index choices, not
-additional federation wire requirements.
+GET /s2s/v1/group-meta-profile
+    ?account=<group account>
+    &subject=GROUP
 
-## 4. Backend resolution coordinator
+GET /s2s/v1/group-meta-profile
+    ?account=<group account>
+    &subject=MEMBER
+    &memberAccount=<account>
+    &memberDomain=<domain>
+```
 
-The client API uses the shared discriminated `ProfileSelector` union: `EXACT`,
-`MESSAGE_AUTHOR`, or `GROUP_MEMBER`. Thread defaults use `EXACT`; there is no
-thread-default selector. A matching account-owned `THREAD_STATE` grants access
-to its retained exact version, including after revocation. Re-establishment
-can replace that reference; ordinary profile changes cannot. See
-[account-owned thread state](thread-state.md) for the publication and recovery
-contract. Every resolved client profile also carries its captured `namespaceId`.
+The Group Meta endpoint serves both the group's `GROUP_PROFILE` fact and a
+member's current `UPSERT` fact. It verifies that the requesting peer has a
+current audience for the group, resolves the selected revision and namespace
+from canonical Group Meta, and returns the retained snapshot. A mirror never
+serves another peer as authority for a remote group.
 
+An exact S2S profile request retains its revision because the exact revision is
+the proof being exercised.
 
-One application-wide singleton owns remote profile work. It has three entry
-paths:
+## 4. Backend read-through scheduler
 
-- account resolution: `(domain, account, rev)`; `rev` is always required;
-- group-member resolution: `(groupOrigin, groupAccount, memberAddress, rev)`;
-- message resolution: `(publisherDomain, normalizedThread, messageSeq)`; the
-  remote response must match the revision carried by that message.
+The authenticated client endpoint performs these steps:
 
-For a native author, message and group-member selectors read the exact referenced
-revision from the native user in namespace zero, even when the reference arrived
-through a foreign authoritative group. Both `local` and the server's canonical
-domain identify that native author. A missing native revision returns `NOT_FOUND`;
-it never falls back to S2S, a foreign source-scoped self copy, or the latest revision.
-Thread and roster authorization still applies before resolving the profile.
+1. validate and authorize the evidence;
+2. derive the expected `ProfileKey` and one federation request method;
+3. check the completed in-memory LRU by `ProfileKey`;
+4. check PostgreSQL by `ProfileKey`;
+5. return `READY` on a hit; otherwise join or create the pending item for that
+   key and return `PENDING { key }`.
 
-For foreign authors, the coordinator first checks durable profile versions. A miss joins an
-in-flight registry; equal immutable snapshot
-keys share one job and one backend-generated `requestId`. Message coordinates
-are candidate authorization proofs for the shared snapshot job rather than
-independent HTTP jobs.
+The completed LRU is access ordered and contains at most 1,000 profiles. It is
+an optimization over PostgreSQL, never an authority.
 
-Every federation profile response contains `bio` and is stored as the same
-complete immutable profile-version shape. Materializing a referenced revision
-must not move the user's default pointer. Before appending a positive member
-UPSERT, the group origin obtains and retains the join-intent snapshot. It then
-serves that group-scoped reference to every authorized mirror, including when
-the member's account belongs to another domain. A mirror never serves another
-federation peer as authority for the remote group and never redirects it to the
-member's account home.
+Pending work is stored as:
 
-`ProfileVersion` is the only profile-snapshot table. A user version is keyed by
-`(userId, rev)` and a group version by `(groupId, rev)`; both store the complete
-name, biography, and logical nullable-avatar snapshot. The database encodes a
-null avatar as its existing empty-string sentinel. A profile row does not
-duplicate `sourceDomain` or `sourceNamespaceId`, because its owning `User`
-already carries the materializing namespace.
+```ts
+interface PendingProfileItem {
+  key: ProfileKey;
+  methods: Map<string, FederationRequestMethod>;
+  subscribers: Set<number>;
+  state: 'QUEUED' | 'ACTIVE';
+}
+```
 
-Profile materialization still accepts the authenticated `sourceDomain` as an
-operation argument, but never persists it on the version. If `(owner, rev)` is
-absent, the operation inserts the complete snapshot. If it already exists, an
-incoming profile whose `sourceDomain` equals the profile's claimed `domain` may
-replace that same revision atomically; any other source uses first-write-wins
-and cannot overwrite the retained row. Neither case changes
-`defaultProfileRev`.
+The scheduler maintains key lookup and fair queue traversal. An identical
+method is inserted once. A different proof for the same profile is an
+alternative method under the existing item. Each client evidence is authorized
+before its user is added to `subscribers`.
 
-Completed immutable-key results use an access-ordered LRU capped at 1,000
-entries. Only completed results count toward this capacity. Queued and active
-jobs live in a separate in-flight registry and are never evicted by, or counted
-against, the result LRU. Every success cache key contains an explicit revision. Permanent disclosure
-failures may use a short bounded negative cache, but they must not occupy the
-immutable success cache indefinitely.
+At most 1,000 pending keys and 1,000 retained request methods may exist. Joining
+an existing key and method remains allowed when the queue is full. New work is
+rejected with a dedicated retryable business error when either bound would be
+exceeded.
 
-### 4.1 Pending queue and HTTP concurrency
+HTTP concurrency is bounded globally. Pending work consumes no completed-LRU
+capacity.
 
-An in-flight job is either `QUEUED` or `ACTIVE`. A bounded pending queue feeds a
-bounded application-wide HTTP pool; waiting for retry backoff consumes neither
-an HTTP slot nor a completed-LRU entry. Equal jobs merge before queue admission.
-The pool enforces both a global maximum and a smaller per-peer-domain maximum,
-and schedules domains fairly so one history drain cannot monopolize every
-connection.
+## 5. Federation completion and revision mismatch
 
-Priority is, from highest to lowest: a group origin's required snapshot before
-authoritative distribution, an interactive UI request, a newly committed
-message warm-up, and historical background warm-up. Queue pressure may drop a
-background warm-up because rendering can enqueue it later. It must not silently
-drop a snapshot required before group distribution; that path applies
-backpressure to message promotion.
+Every successful federation response is validated structurally and converted
+to its actual `ProfileKey`. The scheduler deliberately does not require that
+the returned revision equal the requesting item's expected revision.
 
-The pending queue is bounded independently from active concurrency. Completed
-successes leave the in-flight registry before entering the result LRU. A
-temporary failure uses bounded jittered backoff; a permanent disclosure failure
-completes every joined waiter without changing relationship or peer lifecycle.
+For a response produced by method `M` from expected item `E`:
 
-The authenticated client endpoint accepts an exact `(domain, account, rev)`, a
-group-member selector whose revision is read from the local current roster
-projection,
-or a local `(threadId, messageSeq)` selector. A UI caller does not invent a
-group member revision. The backend supplies the exact committed reference to
-the federation request. The endpoint rejects a selector without an applicable
-durable revision or exact message coordinate. Its response union is:
+1. materialize the returned snapshot under its actual key `A`;
+2. insert `A` into the completed LRU;
+3. remove the complete pending item keyed by `A`, if one exists;
+4. remove method `M` from expected item `E`, if `E` still exists;
+5. notify the union of subscribers from the removed actual item and the method
+   that performed the request with `PROFILE_AVAILABLE { A }`;
+6. if `E` still has methods, leave it scheduled; otherwise remove it.
+
+When `A === E.key`, step 3 removes the entire expected item, including every
+alternative proof. When the revisions differ, the returned revision is still a
+valid materialized profile, while only the completed method is removed from the
+original expected item. Another method may still obtain the expected revision.
+No preliminary mismatch branch is used; both cases execute the same state
+transition.
+
+A failure removes only the failing method and emits `PROFILE_UNAVAILABLE` for
+its subscribers. A later client demand may submit the evidence again. The
+expected item is removed only after it has no remaining methods. Failures never
+modify relationship, membership, peer-health, or Group Meta state.
+
+## 6. Client protocol and persistence
+
+The start response is:
 
 ```ts
 type ProfileResolutionStart =
   | { status: 'READY'; profile: ResolvedProfile }
-  | { status: 'PENDING'; requestId: string };
+  | { status: 'PENDING'; key: ProfileKey };
 ```
 
-A local durable/cache hit returns `READY` directly. A new or reused remote job
-returns `PENDING`; reuse returns the existing job's `requestId`.
-
-The client never ignores this HTTP response. It consumes `READY` as the
-terminal result and uses the backend-generated `requestId` from `PENDING` to
-correlate exactly one terminal result from the shared realtime stream. SSE is
-the asynchronous completion channel, not a replacement for the start response.
-
-`FEDERATION_PROFILE_NOT_DISCLOSED` is the remote policy-denial result. Locally
-it is presented as unavailable profile data. It must not enter relationship
-denial handling, end a friendship, revoke membership, or degrade a peer.
-
-### 4.2 Message commit integration
-
-An ordinary inbound message page commits messages and its cursor without
-waiting for profile HTTP. After commit, each newly selected immutable snapshot
-is offered to the global coordinator. A durable/cache hit updates local display
-state immediately; a miss enters the bounded queue. Resolution completion
-updates a P2P thread avatar only when the selecting message remains the greatest
-committed peer-authored `seq`, and updates only the client-side group member
-display when that member still selects the exact revision.
-
-A group origin accepting a member submission is stricter: before promoting and
-distributing the authoritative copy, it must durably retain the referenced
-display snapshot. This mandatory use of the same coordinator is a message-
-promotion dependency, not a database transaction dependency.
-
-### 4.3 Forward-bundle snapshots
-
-A forward bundle always stores a frozen display name. The source author's
-Address is optional and, when present, remains separate from display data.
-Bundle creation reads only the exact durable profile version selected by the
-source message's `profileRev`. It must not read the mutable current/default
-profile.
-
-If that exact version is already durable, the bundle stores its `displayName`
-and, when available, the avatar's CAS digest. The existing bundle asset closure
-owns and deduplicates that digest. If the exact version has not been resolved,
-bundle creation continues without waiting for or enqueuing remote profile work
-and uses the immutable creator account captured by the source message as the
-required display-name fallback. A profile without an available avatar still
-stores its display name; only its avatar digest is absent.
-
-The JSONB bundle message already owns this required snapshot, and the existing
-bundle-to-asset relation owns its CAS references, so this shape requires no new
-database column or table. Imported and nested bundles preserve the received
-snapshot exactly; later resolution does not mutate an immutable
-bundle.
-
-## 5. Shared client SSE and race handling
-
-There is exactly one authenticated user realtime downlink: `/events`.
-`MEDIA_STATUS`, `PROFILE_RESOLVED`, and `PROFILE_FAILED` are event types on that
-same stream. No profile request, message item, or media item opens a second SSE
-connection.
-
-The profile event shapes are:
+The backend SSE success event is a wake-up containing no profile body:
 
 ```ts
-interface ProfileResolvedEvent {
-  requestId: string;
-  profile: {
-    account: string;
-    domain: string;
-    rev: number;
-    name: string;
-    bio: string;
-    avatarBase64: string | null;
-  };
-}
-
-interface ProfileFailedEvent {
-  requestId: string;
-  reason: 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE';
-}
+interface ProfileAvailableEvent extends ProfileKey {}
 ```
 
-The client coordinator waits until the shared realtime facade has completed its
-`HELLO` handshake before starting a request that may return `PENDING`. It does
-not merely wait for the transport socket's `open` state.
+On `READY`, the Web Worker or Rust runtime validates and commits the profile to
+the client database before returning the committed snapshot over IPC. On a
+backend `PROFILE_AVAILABLE`, the platform event bridge submits `EXACT` evidence
+made from the event key to the Web Worker or Rust database executor. The
+executor retrieves the backend-cached profile, commits it, and only then
+publishes a scoped local wake. A repository whose unresolved
+subscription has the same pending key rereads through IPC; the runtime returns
+the committed client-database row without another federation request.
 
-The backend generates `requestId`, so an SSE terminal event can race ahead of
-the HTTP `PENDING` response. A root-scoped dispatcher subscribes to all profile
-events continuously and stores terminal events in a bounded, short-lived map by
-`requestId`. After HTTP returns, `awaitResult(requestId)` first checks that map
-and otherwise subscribes for the future event. This removes any dependency on
-HTTP/SSE delivery order.
+The database commit and IPC completion are strictly ordered. Components
+subscribe only to repositories; they do not consume backend profile SSE
+directly.
 
-If the SSE disconnects and a terminal event is missed, the client retries the
-authenticated start endpoint after the next `HELLO`. A completed backend job
-has already materialized its profile and therefore returns `READY`; no durable
-per-client SSE delivery log is required.
+Lost SSE frames do not lose state. A reconnect, runtime restart, or later UI
+demand repeats unresolved evidence. Since the backend snapshot is durable, the
+repeat returns `READY` without another federation request.
 
-The existing media availability subscription continues consuming
-`MEDIA_STATUS` from `/events`. Any separate one-shot or feature-specific SSE
-introduced for routine profile or download-status waiting is removed rather
-than maintained alongside the shared stream.
+## 7. Client repositories and UI
 
-## 6. RxJS ownership and cancellation
+The Web main thread maintains an access-ordered 1,000-entry LRU of profiles,
+keyed by `ProfileKey`. It is cleared on account/session changes. It caches only
+values read from client storage after a committed runtime write.
 
-The client profile coordinator deduplicates equal normalized selectors. Each
-component receives an RxJS subscription to shared resolution state.
+`ProfileRepository.watch(evidence)` submits an IPC demand to the runtime, which
+performs the local read first. Live subscribers for identical evidence share
+one entry. A `PENDING` result records only its four-tuple key so an unrelated
+profile event cannot retry it; there is no request-ID map or main-thread HTTP
+queue. The entry is removed when it completes, fails, or loses its final UI
+subscriber.
 
-When a message item is unmounted, an add-friend dialog closes, or group
-management closes, that component unsubscribes immediately. This action:
+Avatar, system-message, member-list, friend-request, thread-list, and profile
+views subscribe through this repository. A resolving avatar wrapper may feed
+the existing presentational avatar primitive, but no component calls a
+resolution service. Message sources and repositories do not write profile
+bytes or keep independent resolved-profile maps.
 
-- prevents callbacks and rendering in the destroyed component;
-- does not close `/events`;
-- does not cancel another subscriber waiting on the same request; and
-- does not discard a valid result at application scope.
+## 8. Required verification
 
-The root dispatcher still validates and persists a late result in the local
-profile store/IndexedDB, so it warms subsequent rendering even when the
-initiating component has gone away. A result is ignored completely only when it
-is malformed, belongs to another authenticated user/session context, or its
-bounded orphan-result entry has expired before it can be safely correlated.
+Tests cover:
 
-Reference counts may remove an idle frontend waiter, but a backend federated
-fetch normally continues: another tab/device may share the job, and completing
-it warms the durable store and LRU. Logout clears waiters, orphan results, and
-session-scoped request correlation while the realtime facade closes `/events`.
-
-## 7. Client profile and roster cache
-
-The browser IndexedDB and native SQLite caches use the same clean-cut identity
-model as the backend. A cached `User` is keyed by
-`(account, domain, namespaceId)` and does not persist `sourceDomain`.
-`namespaceId` is a foreign-key association to the namespace registry, not a
-field of a profile snapshot. A group roster member references the same User
-identity and stores its group-scoped selected `profileRev` separately.
-
-Resolved group-member display data consists of `profileName`, `profileAvatar`,
-and the required `profileBio` value together with `resolvedProfileRev`. An
-absent avatar is represented by the existing empty-string client sentinel; an
-absent biography is an empty string. Resolution writes all fields atomically
-only while the member still selects the returned revision. The Tauri column
-`members.profile_bio` is `NOT NULL`; both client caches are disposable and
-recreate the whole cache on a schema-version mismatch instead of migrating or
-reading an older shape.
-
-Client identity strings and roster cursors use the explicit JSON tuple
-`[namespaceId, domain, account]`. They are parsed and compared field by field;
-control-character separators are not a persistence format or hidden client
-protocol. NUL rejection and sanitization remain only at input/protocol security
-boundaries.
+- one federation call for duplicate evidence and duplicate four-part keys;
+- alternative evidence for one key;
+- returned revision equal to and different from the expected revision;
+- group and member profile resolution through Group Meta;
+- queue and method capacity rejection;
+- SSE-before-response, reconnect, runtime restart, and lost-SSE recovery;
+- transaction-before-local-event ordering;
+- account switch while resolution is active;
+- multi-tab IndexedDB visibility; and
+- absence of profile-resolution HTTP calls and raw profile SSE consumers from
+  Angular UI code.

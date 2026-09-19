@@ -23,7 +23,7 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 4. [State Feed](./state-feed.md): compacted relationship/profile-reference, Group Meta feed-head, and thread-content snapshots.
 5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role and compacted group-profile-reference feed.
 6. [Authorized Profile](./authorized-profile.md): policy-controlled exact account/revision lookup for established user and group threads.
-7. [Group Member Profile](./group-member-profile.md): asymmetric exact member-profile lookup served by the group origin and authorized by its canonical Group Meta state.
+7. [Group Meta Profile](./group-meta-profile.md): asymmetric exact member-profile lookup served by the group origin and authorized by its canonical Group Meta state.
 8. [Message Author Profile](./message-author-profile.md): lazy complete-profile lookup authorized by an exact message.
 9. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
 10. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.

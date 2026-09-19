@@ -17,10 +17,6 @@ import { firstValueFrom, Subject, of } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
-import {
-  ProfileResolutionService,
-  type ResolvedProfile,
-} from '../../services/profile-resolution.service';
 import type {
   ConversationItem,
   Message,
@@ -68,6 +64,7 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
         : { account: 'alice', domain: 'local', namespaceId: 0 },
     createdAt: 1700000000000,
     updatedAt: 1700000000000,
+    profileRev: 3,
     isDeleted: false,
     ...(clientMessageId !== undefined ? { clientMessageId } : {}),
   } as unknown as Message;
@@ -102,7 +99,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     dbResult: StandardResponse<MessageQueryRow[]>,
     tid = 42,
     outbox = new ThreadSendOutbox(),
-    profileResolver?: ProfileResolutionService,
+    resolutionRepo?: ProfileRepository,
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -296,7 +293,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
             namespaceId: number;
             profileRev: number;
           }) => {
-            if (profileResolver) return undefined;
+            if (resolutionRepo) return undefined;
             const user = users.find(
               (candidate) =>
                 candidate.account.toLowerCase() === account &&
@@ -314,7 +311,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           },
         ),
     } as unknown as ProfileRepository;
-    const profiles = vi.fn().mockName('onProfile');
+    const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
     const src = new HttpItemSource(
       conv(tid),
@@ -323,11 +320,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       outbox,
       {
         onQuoteDeleted,
-        onProfile: profiles,
         onNewerAvailable: newerAvailable,
       },
-      profileRepo,
-      profileResolver,
+      activeProfileRepo,
     );
     return {
       src,
@@ -338,53 +333,40 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       liveSignal$,
       reconnectSignal$,
       mediaStatusLive$,
-      profiles,
       newerAvailable,
       outbox,
       queryUserInfo,
     };
   }
 
-  it('includes an initially READY avatar in the first rendered message', async () => {
-    const resolved = new Subject<ResolvedProfile>();
-    let finish!: () => void;
-    const resolver = {
-      resolve: vi.fn(() => resolved),
-      prepare: vi.fn(() => new Promise<void>((resolve) => (finish = resolve))),
+  it('puts message evidence on the rendered item without resolving on the source', async () => {
+    const repository = {
+      getProfile: vi.fn().mockResolvedValue(undefined),
+      resolve: vi.fn(),
     };
     const { src } = setup(
       { code: 0, message: 'ok', data: [row(10, 2)], hasMore: false },
       42,
       new ThreadSendOutbox(),
-      resolver as unknown as ProfileResolutionService,
+      repository as unknown as ProfileRepository,
     );
-    let painted = false;
-    const initial = src.init(-1, 50, 0).then((items) => {
-      painted = true;
-      return items;
-    });
-    await vi.waitFor(() => expect(resolver.prepare).toHaveBeenCalledOnce());
-    expect(painted).toBe(false);
-    resolved.next({
-      namespaceId: 0,
-      account: 'peer',
-      domain: 'local',
-      rev: 3,
-      name: 'Ready peer',
-      bio: '',
-      avatarBase64: 'aW1hZ2U=',
-    });
-    resolved.complete();
-    finish();
-    const items = await initial;
+    const items = await src.init(-1, 50, 0);
     expect(items[0].data).toMatchObject({
-      name: 'Ready peer',
-      avatar: 'data:image/webp;base64,aW1hZ2U=',
+      profileEvidence: {
+        type: 'MESSAGE_AUTHOR',
+        threadId: 42,
+        messageSeq: 10,
+        rev: 3,
+      },
     });
+    expect(repository.resolve).not.toHaveBeenCalled();
   });
 
   it('renders the system sender without requesting a sender profile and supplies thread context', async () => {
-    const resolver = { resolve: vi.fn(), prepare: vi.fn() };
+    const repository = {
+      getProfile: vi.fn().mockResolvedValue(undefined),
+      resolve: vi.fn(),
+    };
     const notification = {
       ...row(10, 2),
       contentType: 'SYSTEM' as const,
@@ -400,7 +382,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       { code: 0, message: 'ok', data: [notification], hasMore: false },
       42,
       new ThreadSendOutbox(),
-      resolver as unknown as ProfileResolutionService,
+      repository as unknown as ProfileRepository,
     );
     const items = await src.init(-1, 50, 0);
     expect(items[0].data).toMatchObject({
@@ -409,7 +391,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       isSelf: false,
       systemPeer: { account: 'alice', domain: 'local', name: 'Alice' },
     });
-    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(repository.resolve).not.toHaveBeenCalled();
     src.destroy();
   });
 
@@ -450,50 +432,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       src.destroy();
     },
   );
-
-  it('renders on PENDING and resolves later messages from an already known sender', async () => {
-    const pending = new Map<number, Subject<ResolvedProfile>>();
-    const resolver = {
-      resolve: vi.fn(({ messageSeq }: { messageSeq: number }) => {
-        const result = new Subject<ResolvedProfile>();
-        pending.set(messageSeq, result);
-        return result;
-      }),
-      prepare: vi.fn(async () => {}),
-    };
-    const { src, profiles, repo } = setup(
-      { code: 0, message: 'ok', data: [row(10, 2)], hasMore: true },
-      42,
-      new ThreadSendOutbox(),
-      resolver as unknown as ProfileResolutionService,
-    );
-    expect(await src.init(-1, 50, 0)).toHaveLength(1);
-    pending.get(10)!.next({
-      namespaceId: 0,
-      account: 'peer',
-      domain: 'local',
-      rev: 3,
-      name: 'Later peer',
-      bio: '',
-      avatarBase64: 'aW1hZ2U=',
-    });
-    pending.get(10)!.complete();
-    expect(profiles).toHaveBeenCalledWith(
-      10,
-      expect.objectContaining({ avatar: 'data:image/webp;base64,aW1hZ2U=' }),
-    );
-    (repo.queryMessages as Mock).mockResolvedValue({
-      data: [row(9, 2)],
-      hasMore: false,
-    });
-    await src.getOlder(10, 50);
-    expect(resolver.resolve).toHaveBeenCalledWith({
-      type: 'MESSAGE_AUTHOR',
-      threadId: 42,
-      messageSeq: 9,
-    });
-    pending.get(9)!.complete();
-  });
 
   it('liveSignal$ does not issue HTTP when no newer demand is mounted', async () => {
     const { src, repo, liveSignal$ } = setup({
@@ -927,7 +865,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   });
 
   it('resolves the author from the local User table before shaping the row', async () => {
-    const { src, queryUserInfo, profiles } = setup({
+    const { src, queryUserInfo } = setup({
       code: 0,
       message: 'ok',
       data: [row(100, 2)],
@@ -940,7 +878,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items.map((item) => item.id)).toEqual([100]);
     expect(items[0].data.name).toBe('Alice');
     expect(queryUserInfo).not.toHaveBeenCalled();
-    expect(profiles).not.toHaveBeenCalled();
   });
 
   it('getNewer pulls newer messages from the DB past the "at newest" state (incoming reply mounts)', async () => {

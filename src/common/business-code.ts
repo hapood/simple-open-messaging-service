@@ -58,6 +58,7 @@ export enum BusinessCode {
   WEBAUTHN_NOT_AVAILABLE = 10023, // WebAuthn is unavailable in this deployment (SOMS_TLS_MODE=disabled over a non-localhost origin → not a secure context). Surfaced by the status endpoint so the UI hides the passkey affordance; the endpoints themselves still respond.
   WEBAUTHN_CHALLENGE_EXPIRED = 10024, // a WebAuthn pending token (registration or assertion) is invalid or past its TTL — the admin must restart the enroll/login flow.
   WEBAUTHN_VERIFICATION_FAILED = 10025, // verifyRegistrationResponse / verifyAuthenticationResponse rejected the credential (tampered, wrong RP/origin, counter regression / suspected clone). Counted toward the admin-2FA brute-force lock at the login boundary.
+  PROFILE_RESOLUTION_CAPACITY = 10026, // bounded profile scheduler cannot admit another immutable key or evidence method; retry later
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state

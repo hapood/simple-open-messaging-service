@@ -120,9 +120,9 @@ audience's delta visibility floor instead.
 Member items have stable key `(member account, member domain)`. Their required,
 non-null `profileRev` selects an immutable complete profile snapshot retained by the
 group origin when positive. The value `0` means that the projection has no
-profile; the consumer MUST NOT issue a Group Member Profile request for it. A
+profile; the consumer MUST NOT issue a Group Meta Profile request for it. A
 positive reference is resolved through
-[Group Member Profile](./group-member-profile.md) and is not an assertion about
+[Group Meta Profile](./group-meta-profile.md) and is not an assertion about
 the member's default or numerically newest profile. A member profile update by
 itself MUST NOT republish a member item or advance this feed.
 
@@ -201,7 +201,7 @@ Repeating a page after a failure may therefore return fewer items, never an
 additional item. The subsequent delta drain from `through` observes the
 newest replacement above that boundary and restores eventual roster
 convergence. The group origin retains
-the exact complete member profile snapshots separately for Group Member Profile; Group
+the exact complete member profile snapshots separately for Group Meta Profile; Group
 Meta has no historical-message-author obligation.
 
 ## 4. Delta mode

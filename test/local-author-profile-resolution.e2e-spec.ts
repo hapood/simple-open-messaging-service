@@ -106,7 +106,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       memberAccount: account,
       memberDomain: 'local',
       operation: 'UPSERT',
-      feedId: 1n,
+      feedId: 1,
       body: { role: 'MEMBER', profileRev: 1 },
     });
     await database.db.insert(tables.message).values(
@@ -134,10 +134,14 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     async (form) => {
       await expect(
         coordinator().start(viewerId, {
-          type: 'GROUP_MEMBER',
+          type: 'GROUP_META',
           threadId,
-          memberAccount: account,
-          memberDomain: form === 'local' ? 'local' : domain,
+          profileRev: 1,
+          subject: {
+            type: 'MEMBER',
+            account,
+            domain: form === 'local' ? 'local' : domain,
+          },
         }),
       ).resolves.toMatchObject({
         status: 'READY',
@@ -155,6 +159,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
           type: 'MESSAGE_AUTHOR',
           threadId,
           messageSeq,
+          rev: 1,
         }),
       ).resolves.toMatchObject({
         status: 'READY',
@@ -170,6 +175,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         type: 'MESSAGE_AUTHOR',
         threadId,
         messageSeq: 3,
+        rev: 3,
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     expect(peerHttp.get).not.toHaveBeenCalled();
@@ -186,6 +192,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         type: 'MESSAGE_AUTHOR',
         threadId,
         messageSeq: 1,
+        rev: 1,
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
   });

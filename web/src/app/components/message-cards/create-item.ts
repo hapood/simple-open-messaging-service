@@ -246,6 +246,7 @@ export function createMsgCbElement(
     tailAvatarRef.setInput('account', message.avatarAccount);
     tailAvatarRef.setInput('federatedDomain', message.avatarDomain);
     tailAvatarRef.setInput('src', message.avatar);
+    tailAvatarRef.setInput('profileEvidence', message.profileEvidence);
     tailAvatarRef.changeDetectorRef.detectChanges();
   };
   updateTailAvatar(data);

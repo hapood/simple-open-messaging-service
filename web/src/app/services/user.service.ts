@@ -1,4 +1,3 @@
-import type { ProfileSelector } from '../../../../shared/profile-selector';
 import type { ThreadStateSnapshot } from '../../../../shared/thread-state';
 import {
   Injectable,
@@ -712,26 +711,6 @@ export class UserService {
       `${apiPrefix()}/user/update-profile`,
       params,
     );
-  }
-
-  startProfileResolution(selector: ProfileSelector) {
-    return this.http.post<
-      StandardResponse<
-        | {
-            status: 'READY';
-            profile: {
-              namespaceId: number;
-              account: string;
-              domain: string;
-              rev: number;
-              name: string;
-              bio: string;
-              avatarBase64: string | null;
-            };
-          }
-        | { status: 'PENDING'; requestId: string }
-      >
-    >(`${apiPrefix()}/user/profile-resolution`, selector);
   }
 
   /** Read compacted client-state projections in one fixed feed-id range. */

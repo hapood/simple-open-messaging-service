@@ -4,6 +4,10 @@ import { WebdbStorage } from './webdb-storage';
 import type { ClientStateFeedItem } from './user.service';
 import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
 import type { GroupMetaProfileReference } from './group-meta-model';
+import type {
+  ProfileKey,
+  ProfileSelector,
+} from '../../../../shared/profile-selector';
 
 interface ApplyRequest {
   id: number;
@@ -18,7 +22,48 @@ const storage = new WebdbStorage();
 let openedUserId: string | null = null;
 let queue = Promise.resolve();
 let feedPort: MessagePort | null = null;
-const pendingProfiles = new Map<string, GroupMetaProfileReference>();
+
+interface ResolvedProfile {
+  namespaceId: number;
+  account: string;
+  domain: string;
+  rev: number;
+  name: string;
+  bio: string;
+  avatarBase64: string | null;
+}
+
+type ProfileResolutionAttempt =
+  | { status: 'READY'; profile: ResolvedProfile }
+  | { status: 'PENDING'; key: ProfileKey };
+
+const requestProfile = (url: string) => async (selector: ProfileSelector) => {
+  const cached = await storage.findProfileForEvidence(selector);
+  if (cached) return { status: 'READY', profile: cached } as const;
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(selector),
+  });
+  if (!response.ok)
+    throw new Error(`profile-resolution HTTP ${response.status}`);
+  const envelope = (await response.json()) as {
+    code?: number;
+    message?: string;
+    data?:
+      | { status: 'PENDING'; key: unknown }
+      | { status: 'READY'; profile: ResolvedProfile };
+  };
+  if (envelope.code !== 0 || !envelope.data)
+    throw new Error(envelope.message ?? 'profile resolution failed');
+  if (envelope.data.status === 'PENDING')
+    return envelope.data as ProfileResolutionAttempt;
+  return {
+    status: 'READY',
+    profile: await storage.commitResolvedProfile(envelope.data.profile),
+  } as const;
+};
 
 const requestThreadFeed = (url: string) => async (body: unknown) => {
   const response = await fetch(url, {
@@ -59,46 +104,22 @@ const resolveGroupMetaProfile =
     const selector =
       reference.type === 'GROUP'
         ? {
-            type: 'EXACT' as const,
-            account: reference.account,
-            domain: reference.domain,
-            rev: reference.rev,
+            type: 'GROUP_META' as const,
+            threadId: reference.threadId,
+            profileRev: reference.rev,
+            subject: { type: 'GROUP' as const },
           }
         : {
-            type: 'GROUP_MEMBER' as const,
+            type: 'GROUP_META' as const,
             threadId: reference.threadId,
-            memberAccount: reference.account,
-            memberDomain: reference.domain,
+            profileRev: reference.rev,
+            subject: {
+              type: 'MEMBER' as const,
+              account: reference.account,
+              domain: reference.domain,
+            },
           };
-    const response = await fetch(url, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(selector),
-    });
-    if (!response.ok)
-      throw new Error(`profile-resolution HTTP ${response.status}`);
-    const envelope = (await response.json()) as {
-      code?: number;
-      data?:
-        | { status: 'PENDING'; requestId: string }
-        | {
-            status: 'READY';
-            profile: Parameters<
-              WebdbStorage['commitResolvedGroupMetaProfile']
-            >[1];
-          };
-    };
-    if (envelope.code !== 0 || !envelope.data)
-      throw new Error('profile resolution failed');
-    if (envelope.data.status === 'PENDING') {
-      pendingProfiles.set(envelope.data.requestId, reference);
-      return false;
-    }
-    return storage.commitResolvedGroupMetaProfile(
-      reference,
-      envelope.data.profile,
-    );
+    return (await requestProfile(url)(selector)).status === 'READY';
   };
 
 type Request =
@@ -121,6 +142,13 @@ type Request =
       url: string;
       groupMetaUrl: string;
       profileResolutionUrl: string;
+    }
+  | {
+      id: number;
+      type: 'resolve-profile';
+      userId: string;
+      selector: ProfileSelector;
+      profileResolutionUrl: string;
     };
 
 addEventListener('message', ({ data }: MessageEvent<Request>) => {
@@ -128,7 +156,6 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
     try {
       if (openedUserId !== data.userId) {
         if (openedUserId !== null) await storage.close();
-        pendingProfiles.clear();
         await storage.openForUser(data.userId);
         openedUserId = data.userId;
       }
@@ -178,44 +205,60 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           const message = event.data as {
             target?: unknown;
             event?: unknown;
-            data?: {
-              requestId?: unknown;
-              profile?: Parameters<
-                WebdbStorage['commitResolvedGroupMetaProfile']
-              >[1];
-            };
+            data?: unknown;
           };
-          if (message.event === 'PROFILE_RESOLVED') {
-            const requestId = message.data?.requestId;
-            if (typeof requestId !== 'string') return;
-            const reference = pendingProfiles.get(requestId);
-            if (!reference || !message.data?.profile) return;
-            pendingProfiles.delete(requestId);
+          if (
+            message.event === 'PROFILE_AVAILABLE' ||
+            message.event === 'PROFILE_UNAVAILABLE'
+          ) {
+            const key = profileKey(message.data);
+            if (!key) return;
             queue = queue.then(async () => {
-              await storage.commitResolvedGroupMetaProfile(
-                reference,
-                message.data!.profile!,
-              );
-              if (feedPort === port)
-                port.postMessage({
-                  userId: Number(data.userId),
-                  cursor: 0,
-                  changes: ['PROFILE'],
-                  groupThreadIds: [reference.threadId],
+              try {
+                if (message.event === 'PROFILE_AVAILABLE') {
+                  const result = await requestProfile(
+                    data.profileResolutionUrl,
+                  )({
+                    type: 'EXACT',
+                    account: key.account,
+                    domain: key.domain,
+                    rev: key.rev,
+                  });
+                  if (result.status !== 'READY') return;
+                  postMessage({
+                    type: 'profile-wake',
+                    wake: { event: 'PROFILE_AVAILABLE', key },
+                  });
+                  return;
+                }
+                const reason =
+                  message.data &&
+                  typeof message.data === 'object' &&
+                  typeof (message.data as { reason?: unknown }).reason ===
+                    'string'
+                    ? (message.data as { reason: string }).reason
+                    : 'TEMPORARILY_UNAVAILABLE';
+                postMessage({
+                  type: 'profile-wake',
+                  wake: { event: 'PROFILE_UNAVAILABLE', key, reason },
                 });
+              } catch (error) {
+                console.warn('[profile] event materialization failed', error);
+              }
             });
-            return;
-          }
-          if (message.event === 'PROFILE_FAILED') {
-            const requestId = message.data?.requestId;
-            if (typeof requestId === 'string')
-              pendingProfiles.delete(requestId);
             return;
           }
           wake(message.target);
         };
         port.start();
         postMessage({ id: data.id, ok: true });
+        return;
+      }
+      if (data.type === 'resolve-profile') {
+        const result = await requestProfile(data.profileResolutionUrl)(
+          data.selector,
+        );
+        postMessage({ id: data.id, ok: true, result });
         return;
       }
       if (data.type === 'thread-sync') {
@@ -269,3 +312,25 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
     }
   });
 });
+
+function profileKey(value: unknown): ProfileKey | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const key = value as Partial<ProfileKey>;
+  if (
+    !Number.isSafeInteger(key.namespaceId) ||
+    Number(key.namespaceId) < 0 ||
+    typeof key.account !== 'string' ||
+    !key.account ||
+    typeof key.domain !== 'string' ||
+    !key.domain ||
+    !Number.isSafeInteger(key.rev) ||
+    Number(key.rev) < 1
+  )
+    return;
+  return {
+    namespaceId: Number(key.namespaceId),
+    account: key.account,
+    domain: key.domain,
+    rev: Number(key.rev),
+  };
+}

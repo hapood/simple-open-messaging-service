@@ -470,7 +470,7 @@ describe('group join decision', () => {
           targetDomain: domain,
           targetNamespaceId: namespaceId,
           localUserId: null,
-          groupMetaVisibleAfter: 0n,
+          groupMetaVisibleAfter: 0,
           messageAccessAfterSeq: existingFloor,
         });
 

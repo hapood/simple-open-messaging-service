@@ -1,4 +1,5 @@
 import type { ConversationItem } from '../../services/model';
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
 import { UserAvatarType } from './model';
 
 /**
@@ -33,4 +34,26 @@ export function conversationAvatarSrc(
   t: ConversationItem,
 ): string | null | undefined {
   return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar;
+}
+
+export function conversationAvatarEvidence(
+  t: ConversationItem,
+): ProfileSelector | undefined {
+  if (t.type === 'P2P')
+    return t.peerUser.profileRev > 0
+      ? {
+          type: 'EXACT',
+          account: t.peerUser.account,
+          domain: t.peerUser.domain,
+          rev: t.peerUser.profileRev,
+        }
+      : undefined;
+  return t.group.profileRev > 0
+    ? {
+        type: 'GROUP_META',
+        threadId: t.threadId,
+        profileRev: t.group.profileRev,
+        subject: { type: 'GROUP' },
+      }
+    : undefined;
 }

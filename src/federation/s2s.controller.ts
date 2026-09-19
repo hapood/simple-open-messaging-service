@@ -381,15 +381,15 @@ export class S2sController {
     };
   }
 
-  @Get('group-member-profile')
-  async getGroupMemberProfile(@Req() req: FastifyRequest) {
+  @Get('group-meta-profile')
+  async getGroupMetaProfile(@Req() req: FastifyRequest) {
     const query = parseFederationFixedResourceRequest(req, {
-      path: '/s2s/v1/group-member-profile',
+      path: '/s2s/v1/group-meta-profile',
       query: [
         { name: 'account' },
-        { name: 'memberAccount' },
-        { name: 'memberDomain' },
-        { name: 'rev' },
+        { name: 'subject' },
+        { name: 'memberAccount', optional: true },
+        { name: 'memberDomain', optional: true },
       ],
     });
     const account = requireAccount(query.account, 'account');
@@ -400,44 +400,53 @@ export class S2sController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const memberAccount = requireUserAccount(
-      query.memberAccount,
-      'memberAccount',
-    );
-    const memberDomain = requireDomain(query.memberDomain, 'memberDomain');
-    const rev = requireSafeDecimal(query.rev, 'rev');
-    if (rev < 1) {
+    if (query.subject !== 'GROUP' && query.subject !== 'MEMBER') {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'rev must be positive',
+        'subject must be GROUP or MEMBER',
         HttpStatus.BAD_REQUEST,
       );
     }
+    const subject =
+      query.subject === 'GROUP'
+        ? ({ type: 'GROUP' } as const)
+        : ({
+            type: 'MEMBER',
+            account: requireUserAccount(query.memberAccount, 'memberAccount'),
+            domain: requireDomain(query.memberDomain, 'memberDomain'),
+          } as const);
+    if (
+      query.subject === 'GROUP' &&
+      (query.memberAccount !== undefined || query.memberDomain !== undefined)
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'group subject must not include member address',
+        HttpStatus.BAD_REQUEST,
+      );
     const peerDomain = this.signerDomain(req);
-    const allocation = await this.groupMeta.resolveAllocatedMemberProfile(
+    const reference = await this.groupMeta.resolveProfileReference(
       peerDomain,
       req.peer!.namespaceId,
       account,
-      memberAccount,
-      memberDomain,
-      rev,
+      subject,
     );
-    if (allocation === null) {
+    if (reference === null) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-        'member profile revision is not allocated to this peer',
+        'Group Meta profile is not disclosed to this peer',
       );
     }
     const profile = await this.federation.getStoredProfile(
-      memberAccount,
-      memberDomain,
-      allocation,
-      rev,
+      reference.account,
+      reference.domain,
+      reference.namespaceId,
+      reference.profileRev,
     );
     if (!profile) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        'allocated member profile revision is unavailable',
+        'Group Meta profile revision is unavailable',
       );
     }
     return profile;

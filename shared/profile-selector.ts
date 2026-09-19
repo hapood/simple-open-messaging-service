@@ -1,13 +1,28 @@
 /** Client-to-server selectors. Federation endpoints retain their own wire contracts. */
 export type ProfileSelector =
   | { type: 'EXACT'; account: string; domain: string; rev: number }
-  | { type: 'MESSAGE_AUTHOR'; threadId: number; messageSeq: number }
   | {
-      type: 'GROUP_MEMBER';
+      type: 'MESSAGE_AUTHOR';
       threadId: number;
-      memberAccount: string;
-      memberDomain: string;
+      messageSeq: number;
+      rev: number;
+    }
+  | {
+      type: 'GROUP_META';
+      threadId: number;
+      profileRev: number;
+      subject:
+        | { type: 'GROUP' }
+        | { type: 'MEMBER'; account: string; domain: string };
     };
+
+/** Stable client/server identity of one immutable profile revision. */
+export interface ProfileKey {
+  namespaceId: number;
+  account: string;
+  domain: string;
+  rev: number;
+}
 
 /** Reject mixed selectors and unexpected fields at the trust boundary. */
 export function isProfileSelector(value: unknown): value is ProfileSelector {
@@ -29,17 +44,33 @@ export function isProfileSelector(value: unknown): value is ProfileSelector {
       );
     case 'MESSAGE_AUTHOR':
       return (
-        keys('threadId', 'messageSeq') &&
+        keys('threadId', 'messageSeq', 'rev') &&
         positive(v['threadId']) &&
-        positive(v['messageSeq'])
+        positive(v['messageSeq']) &&
+        positive(v['rev'])
       );
-    case 'GROUP_MEMBER':
+    case 'GROUP_META': {
+      if (
+        !keys('threadId', 'profileRev', 'subject') ||
+        !positive(v['threadId']) ||
+        !positive(v['profileRev']) ||
+        !v['subject'] ||
+        typeof v['subject'] !== 'object' ||
+        Array.isArray(v['subject'])
+      )
+        return false;
+      const subject = v['subject'] as Record<string, unknown>;
+      if (subject['type'] === 'GROUP') return Object.keys(subject).length === 1;
       return (
-        keys('threadId', 'memberAccount', 'memberDomain') &&
-        positive(v['threadId']) &&
-        address(v['memberAccount']) &&
-        address(v['memberDomain'])
+        subject['type'] === 'MEMBER' &&
+        Object.keys(subject).length === 3 &&
+        Object.keys(subject).every((key) =>
+          ['type', 'account', 'domain'].includes(key),
+        ) &&
+        address(subject['account']) &&
+        address(subject['domain'])
       );
+    }
     default:
       return false;
   }

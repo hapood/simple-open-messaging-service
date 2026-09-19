@@ -224,11 +224,16 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
 
-  onProfileResolved(
+  onProfileAvailable(
     userId: number,
-    data: { requestId: string; profile: unknown },
+    data: {
+      namespaceId: number;
+      account: string;
+      domain: string;
+      rev: number;
+    },
   ) {
-    this.pushToUser(userId, 'PROFILE_RESOLVED', data);
+    this.pushToUser(userId, 'PROFILE_AVAILABLE', data);
   }
 
   onQuoteResolution(
@@ -239,14 +244,17 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, event, data);
   }
 
-  onProfileFailed(
+  onProfileUnavailable(
     userId: number,
     data: {
-      requestId: string;
+      namespaceId: number;
+      account: string;
+      domain: string;
+      rev: number;
       reason: 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE';
     },
   ) {
-    this.pushToUser(userId, 'PROFILE_FAILED', data);
+    this.pushToUser(userId, 'PROFILE_UNAVAILABLE', data);
   }
 
   /** Coalesce durable state feed hints per account, independently of thread hints. */

@@ -492,8 +492,10 @@ describe('federation message context isolation', () => {
   it('warns and skips a local-authority receipt whose origin target is absent', async () => {
     const service = createMessagePageService();
     const warn = vi.fn();
+    const inboundStore = { store: vi.fn() };
     Object.assign(service, {
       logger: { error: vi.fn(), warn },
+      inboundMessageStore: inboundStore,
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorAccount: 'bob',
@@ -520,10 +522,7 @@ describe('federation message context isolation', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('LOCAL_SOURCE_MESSAGE_NOT_FOUND'),
     );
-    expect(
-      (service.inboundMessageStore as { store: ReturnType<typeof vi.fn> })
-        .store,
-    ).not.toHaveBeenCalled();
+    expect(inboundStore.store).not.toHaveBeenCalled();
   });
 
   it('rejects origin coordinates on a peer-authoritative message', async () => {

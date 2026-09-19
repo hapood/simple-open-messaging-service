@@ -47,14 +47,19 @@ export class FederationGroupMetaFeedService {
 
   constructor(private readonly database: DatabaseService) {}
 
-  async resolveAllocatedMemberProfile(
+  async resolveProfileReference(
     peerDomain: string,
     namespaceId: number,
     groupAccount: string,
-    memberAccount: string,
-    memberDomain: string,
-    profileRev: number,
-  ): Promise<number | null> {
+    subject:
+      | { type: 'GROUP' }
+      | { type: 'MEMBER'; account: string; domain: string },
+  ): Promise<{
+    account: string;
+    domain: string;
+    namespaceId: number;
+    profileRev: number;
+  } | null> {
     try {
       return await this.database.db.transaction(
         async (tx) => {
@@ -67,7 +72,11 @@ export class FederationGroupMetaFeedService {
           if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
             return null;
           const [source] = await tx
-            .select({ groupId: group.id })
+            .select({
+              groupId: group.id,
+              account: groupStateFields.account,
+              profileRev: groupStateFields.profileRev,
+            })
             .from(group)
             .where(
               and(
@@ -78,20 +87,40 @@ export class FederationGroupMetaFeedService {
             )
             .limit(1);
           if (!source) return null;
+          if (subject.type === 'GROUP') {
+            if (source.profileRev < 1) return null;
+            return {
+              account: source.account,
+              domain: this.ourDomain,
+              namespaceId: 0,
+              profileRev: source.profileRev,
+            };
+          }
           const storedMemberDomain =
-            memberDomain === this.ourDomain ? 'local' : memberDomain;
-          const rows = await tx.execute<{ namespaceId: number }>(sql`
+            subject.domain === this.ourDomain ? 'local' : subject.domain;
+          const rows = await tx.execute<{
+            namespaceId: number;
+            profileRev: number;
+          }>(sql`
             SELECT group_meta_member_namespace(member_fact."threadId",
-              member_fact."memberAccount", member_fact."memberDomain") AS "namespaceId"
+              member_fact."memberAccount", member_fact."memberDomain") AS "namespaceId",
+              (member_fact.body ->> 'profileRev')::integer AS "profileRev"
             FROM "GroupMetaMemberFeed" member_fact
             WHERE member_fact."threadId" = ${source.groupId}
-              AND member_fact."memberAccount" = ${memberAccount}
+              AND member_fact."memberAccount" = ${subject.account}
               AND member_fact."memberDomain" = ${storedMemberDomain}
               AND member_fact.operation = 'UPSERT'
-              AND member_fact.body ->> 'profileRev' = ${profileRev.toString()}
+            ORDER BY member_fact."feedId" DESC
             LIMIT 1
           `);
-          return rows.rows[0]?.namespaceId ?? null;
+          const reference = rows.rows[0];
+          if (!reference || reference.profileRev < 1) return null;
+          return {
+            account: subject.account,
+            domain: subject.domain,
+            namespaceId: reference.namespaceId,
+            profileRev: reference.profileRev,
+          };
         },
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
       );

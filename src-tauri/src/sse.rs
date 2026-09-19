@@ -568,38 +568,35 @@ async fn open_one_stream(
                                     feed_wakes.send_replace(Some(head));
                                 }
                                 if parsed.event == "THREAD_FEED_UPDATED" { continue; }
-                                if matches!(parsed.event.as_str(), "PROFILE_RESOLVED" | "PROFILE_FAILED") {
+                                if parsed.event == "PROFILE_AVAILABLE" {
                                     if let Some(user_id) = feed_head.user_id {
                                         let profile_app = app.clone();
-                                        let profile_event = parsed.event.clone();
-                                        let profile_data = parsed.data.clone();
+                                        let profile_proxy = proxy.clone();
+                                        let profile_data = parsed.data;
                                         tauri::async_runtime::spawn(async move {
-                                            match crate::native_db::attention::handle_group_meta_profile_event(
+                                            match crate::native_db::attention::materialize_profile_event(
+                                                &profile_app,
+                                                &profile_proxy,
                                                 user_id,
-                                                &profile_event,
                                                 &profile_data,
                                             )
                                             .await
                                             {
-                                                Ok(Some(thread_id)) => {
+                                                Ok(()) => {
                                                     let _ = profile_app.emit(
                                                         "soms-sse-event",
                                                         SseEventPayload {
-                                                            event: "LOCAL_THREAD_FEED_COMMITTED".into(),
+                                                            event: "PROFILE_AVAILABLE".into(),
                                                             status: 0,
-                                                            message: "local data committed".into(),
-                                                            data: serde_json::json!({
-                                                                "userId": user_id,
-                                                                "changes": ["PROFILE"],
-                                                                "groupThreadIds": [thread_id],
-                                                            }),
+                                                            message: "local profile committed".into(),
+                                                            data: profile_data,
                                                         },
                                                     );
                                                 }
-                                                Ok(None) => {}
-                                                Err(error) => warn!("commit background profile resolution: {error}"),
+                                                Err(error) => warn!("materialize profile event: {error}"),
                                             }
                                         });
+                                        continue;
                                     }
                                 }
                                 let _ = app.emit(

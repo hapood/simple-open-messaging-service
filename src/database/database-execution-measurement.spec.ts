@@ -55,7 +55,7 @@ describe('database execution measurement', () => {
 
     const eventFailure = new Error('event failed');
     const queryEvents = new EventEmitter();
-    const eventClient = { query: vi.fn(() => queryEvents) };
+    const eventClient = { query: vi.fn((_sql: string) => queryEvents) };
     instrumentDatabaseClient(eventClient as never);
     let eventMeasurement: ExecutionMeasurement | undefined;
     await runMeasuredExecution(

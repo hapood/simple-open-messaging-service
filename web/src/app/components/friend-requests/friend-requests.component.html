@@ -349,6 +349,7 @@
             [federatedDomain]="
               req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
             "
+            [profileEvidence]="profileEvidence(req)"
           />
           <span class="profile-copy">
             <strong>{{

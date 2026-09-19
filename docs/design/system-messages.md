@@ -54,17 +54,18 @@ initiator uses neutral wording. Group departures describe the resulting absence.
 
 ## Rendering and profile resolution
 
-Group participant names resolve with the current thread's `GROUP_MEMBER`
-selector, independently of the system sender. Direct conversations use the
-peer profile already selected by that thread. If a profile is unavailable,
+Group participant names are read from the current thread's locally materialized
+roster. The row subscribes to roster-change notifications and rereads that
+local projection; it does not initiate profile resolution. Direct conversations
+use the peer profile already selected by that thread. If a profile is unavailable,
 empty, or no longer disclosed after a departure, the address remains visible:
 local `account`, federated `account@domain`. No global account-name lookup and
 no profile request for `$system` is needed.
 
 [SystemRowComponent](../../web/src/app/components/message-cards/system-row/system-row.component.ts)
 uses the shared parser and localized templates. Invalid content has a generic
-localized fallback. Subscriptions to participant resolution are released when
-rows are replaced or destroyed.
+localized fallback. Roster subscriptions are released when rows are replaced
+or destroyed.
 
 ## Persistence and boundaries
 

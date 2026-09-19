@@ -1,3 +1,5 @@
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
+
 // Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
 // SSE frame + the attachMediaStatus query field carry these exact strings). Defined here (the components
 // SoT) mirroring services/model.ts (the services SoT) — same strings, the wire contract. A const object so
@@ -84,6 +86,8 @@ interface ChatMessageBase {
   avatarAccount?: string;
   /** Sender home domain; non-empty for federated identities and drives the avatar globe marker. */
   avatarDomain?: string;
+  /** Authorization evidence used by the shared avatar/profile repository. */
+  profileEvidence?: ProfileSelector;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;

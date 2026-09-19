@@ -3323,14 +3323,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/group-member-profile": {
+    "/s2s/v1/group-meta-profile": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["S2sController_getGroupMemberProfile"];
+        get: operations["S2sController_getGroupMetaProfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -9141,7 +9141,7 @@ export interface operations {
             };
         };
     };
-    S2sController_getGroupMemberProfile: {
+    S2sController_getGroupMetaProfile: {
         parameters: {
             query?: never;
             header?: never;
@@ -9320,13 +9320,24 @@ export interface operations {
                           type: "MESSAGE_AUTHOR";
                           threadId: number;
                           messageSeq: number;
+                          rev: number;
                       }
                     | {
                           /** @enum {string} */
-                          type: "GROUP_MEMBER";
+                          type: "GROUP_META";
                           threadId: number;
-                          memberAccount: string;
-                          memberDomain: string;
+                          profileRev: number;
+                          subject:
+                              | {
+                                    /** @enum {string} */
+                                    type: "GROUP";
+                                }
+                              | {
+                                    /** @enum {string} */
+                                    type: "MEMBER";
+                                    account: string;
+                                    domain: string;
+                                };
                       };
             };
         };
@@ -9353,8 +9364,12 @@ export interface operations {
                         | {
                               /** @enum {string} */
                               status: "PENDING";
-                              /** Format: uuid */
-                              requestId: string;
+                              key: {
+                                  namespaceId: number;
+                                  account: string;
+                                  domain: string;
+                                  rev: number;
+                              };
                           };
                 };
             };

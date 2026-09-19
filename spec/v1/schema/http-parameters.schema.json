@@ -190,18 +190,29 @@
         }
       ]
     },
-    "groupMemberProfileQuery": {
-      "type": "object",
-      "required": ["account", "memberAccount", "memberDomain", "rev"],
-      "properties": {
-        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-        "memberAccount": {
-          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+    "groupMetaProfileQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account", "subject"],
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+            "subject": { "const": "GROUP" }
+          },
+          "additionalProperties": false
         },
-        "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
-        "rev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
-      },
-      "additionalProperties": false
+        {
+          "type": "object",
+          "required": ["account", "subject", "memberAccount", "memberDomain"],
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+            "subject": { "const": "MEMBER" },
+            "memberAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "mediaParameters": {
       "type": "object",

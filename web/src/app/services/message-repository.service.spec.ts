@@ -9,11 +9,6 @@ import { WebsocketService } from './websocket.service';
 import { UserService } from './user.service';
 import type { Message } from './model';
 
-/** Flush the microtask + macrotask queue so asynchronous local cache writes settle. */
-function flush(ms = 0): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /** A minimal Message row (seq is the IDB key second component + the cursor the kernel uses). */
 function msg(threadId: number, seq: number, content = `m${seq}`): Message {
   return {
@@ -433,8 +428,9 @@ describe('MessageRepository', () => {
   });
 
   it('does not fetch a pending tombstone target before the chatbox is opened', async () => {
+    // No stream is open for thread 42, so updateTombstoneTarget bails synchronously (resolved
+    // promise, no I/O scheduled) — the absence assertion is valid as soon as the await resolves.
     await repo.updateTombstoneTarget(42, 9);
-    await flush();
 
     expect(queryDeletedMessagesSpy).not.toHaveBeenCalled();
   });

@@ -86,7 +86,7 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     method: RequestMethod.GET,
   },
   {
-    path: `${FEDERATION_API_PREFIX}/group-member-profile`,
+    path: `${FEDERATION_API_PREFIX}/group-meta-profile`,
     method: RequestMethod.GET,
   },
   {

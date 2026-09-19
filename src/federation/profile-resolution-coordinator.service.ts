@@ -1,10 +1,10 @@
 import {
   isProfileSelector,
+  type ProfileKey,
   type ProfileSelector as Selector,
 } from '../../shared/profile-selector.js';
 import { groupStateSql } from '../group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -33,21 +33,51 @@ export interface ResolvedClientProfile {
 
 export type ProfileResolutionStart =
   | { status: 'READY'; profile: ResolvedClientProfile }
-  | { status: 'PENDING'; requestId: string };
+  | { status: 'PENDING'; key: ProfileKey };
 
-interface InFlight {
-  requestId: string;
+type ResolutionMethod =
+  | {
+      kind: 'message';
+      threadId: number;
+      publisherDomain: string;
+      publisherNamespaceId: number;
+      publisherMessageSeq: number;
+    }
+  | {
+      kind: 'groupMeta';
+      publisherDomain: string;
+      publisherNamespaceId: number;
+      groupAccount: string;
+      subject:
+        | { type: 'GROUP' }
+        | { type: 'MEMBER'; account: string; domain: string };
+    }
+  | { kind: 'exact'; domain: string; account: string; rev: number };
+
+interface PendingMethod {
+  method: ResolutionMethod;
   users: Set<number>;
+}
+
+interface PendingItem {
+  key: ProfileKey;
+  methods: Map<string, PendingMethod>;
+  state: 'QUEUED' | 'ACTIVE';
 }
 
 /** Application-wide exact-profile resolver with single-flight and a 1,000-entry access-ordered LRU. */
 @Injectable()
 export class ProfileResolutionCoordinatorService {
+  private static readonly CAPACITY = 1000;
+  private static readonly HTTP_CONCURRENCY = 8;
   private readonly logger = new Logger(
     ProfileResolutionCoordinatorService.name,
   );
   private readonly config = loadFederationConfig();
-  private readonly inFlight = new Map<string, InFlight>();
+  private readonly pending = new Map<string, PendingItem>();
+  private readonly queue: string[] = [];
+  private pendingMethodCount = 0;
+  private activeCount = 0;
   private readonly cache = new Map<string, ResolvedClientProfile>();
 
   constructor(
@@ -64,66 +94,55 @@ export class ProfileResolutionCoordinatorService {
   ): Promise<ProfileResolutionStart> {
     this.assertSelector(selector);
     const normalized = await this.normalizeAndAuthorize(userId, selector);
-    const key = JSON.stringify(normalized);
-    const cached = this.cache.get(key);
+    const keyString = profileKeyString(normalized.key);
+    const cached = this.cache.get(keyString);
     if (cached) {
-      this.touch(key, cached);
+      this.touch(keyString, cached);
       return { status: 'READY', profile: cached };
     }
-    const durable = await this.readDurable(normalized);
+    const durable = await this.readDurable(normalized.key);
     if (durable) {
-      this.touch(key, durable);
+      this.touch(keyString, durable);
       return { status: 'READY', profile: durable };
     }
     if (
-      normalized.domain === this.config.domain &&
-      normalized.namespaceId === 0
+      normalized.key.domain === this.config.domain &&
+      normalized.key.namespaceId === 0
     ) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local profile revision is unavailable',
       );
     }
-    const existing = this.inFlight.get(key);
+    const methodKey = JSON.stringify(normalized.method);
+    const existing = this.pending.get(keyString);
     if (existing) {
-      existing.users.add(userId);
-      return { status: 'PENDING', requestId: existing.requestId };
+      const method = existing.methods.get(methodKey);
+      if (method) method.users.add(userId);
+      else {
+        this.assertMethodCapacity();
+        existing.methods.set(methodKey, {
+          method: normalized.method,
+          users: new Set([userId]),
+        });
+        this.pendingMethodCount++;
+      }
+      return { status: 'PENDING', key: normalized.key };
     }
-    const flight: InFlight = {
-      requestId: randomUUID(),
-      users: new Set([userId]),
-    };
-    this.inFlight.set(key, flight);
-    void this.resolve(normalized)
-      .then((profile) => {
-        this.touch(key, profile);
-        for (const recipient of flight.users) {
-          this.sse.onProfileResolved(recipient, {
-            requestId: flight.requestId,
-            profile,
-          });
-        }
-      })
-      .catch((error: unknown) => {
-        const reason = this.failureReason(error);
-        const detail =
-          error instanceof Error
-            ? `${error.name}: ${error.message}`
-            : String(error);
-        const logMessage = `profile resolution ${flight.requestId} failed for ${normalized.account}@${normalized.domain} rev ${normalized.rev}: ${reason} (${detail})`;
-        if (reason === 'TEMPORARILY_UNAVAILABLE') this.logger.warn(logMessage);
-        else this.logger.debug(logMessage);
-        for (const recipient of flight.users) {
-          this.sse.onProfileFailed(recipient, {
-            requestId: flight.requestId,
-            reason,
-          });
-        }
-      })
-      .finally(() => {
-        if (this.inFlight.get(key) === flight) this.inFlight.delete(key);
-      });
-    return { status: 'PENDING', requestId: flight.requestId };
+    if (this.pending.size >= ProfileResolutionCoordinatorService.CAPACITY)
+      this.capacityExceeded();
+    this.assertMethodCapacity();
+    this.pending.set(keyString, {
+      key: normalized.key,
+      methods: new Map([
+        [methodKey, { method: normalized.method, users: new Set([userId]) }],
+      ]),
+      state: 'QUEUED',
+    });
+    this.pendingMethodCount++;
+    this.enqueue(keyString);
+    this.drain();
+    return { status: 'PENDING', key: normalized.key };
   }
 
   private async normalizeAndAuthorize(userId: number, selector: Selector) {
@@ -178,25 +197,91 @@ export class ProfileResolutionCoordinatorService {
           'message author has no profile',
         );
       }
+      if (message.profileRev !== selector.rev) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'message no longer references the requested profile revision',
+        );
+      }
+      const domain =
+        message.domain === 'local' ? this.config.domain : message.domain;
       return {
-        kind: 'message' as const,
-        threadId: selector.threadId,
-        messageSeq: selector.messageSeq,
-        account: message.account,
-        domain:
-          message.domain === 'local' ? this.config.domain : message.domain,
-        rev: message.profileRev,
-        namespaceId: message.namespaceId,
-        publisherDomain: message.sourceDomain,
-        publisherNamespaceId: message.sourceNamespaceId,
-        publisherMessageSeq: message.originSeq,
+        key: {
+          account: message.account,
+          domain,
+          rev: selector.rev,
+          namespaceId: message.namespaceId,
+        },
+        method: {
+          kind: 'message' as const,
+          threadId: selector.threadId,
+          publisherDomain: message.sourceDomain ?? this.config.domain,
+          publisherNamespaceId: message.sourceNamespaceId,
+          publisherMessageSeq: message.originSeq ?? selector.messageSeq,
+        },
       };
     }
-    if (selector.type === 'GROUP_MEMBER') {
+    if (selector.type === 'GROUP_META') {
+      if (selector.subject.type === 'GROUP') {
+        const rows = await this.database.db.execute<{
+          groupAccount: string;
+          publisherDomain: string;
+          publisherNamespaceId: number;
+          profileRev: number;
+        }>(sql`
+          SELECT group_state.account AS "groupAccount",
+                 group_state.domain AS "publisherDomain",
+                 group_state."namespaceId" AS "publisherNamespaceId",
+                 group_state."profileRev" AS "profileRev"
+          FROM "MessageThread" thread
+          JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+          JOIN "Account" viewer_identity ON viewer_identity.id = ${userId}
+          WHERE thread.id = ${selector.threadId}
+            AND thread.type = 'GROUP'
+            AND EXISTS (
+              SELECT 1 FROM "RelationshipPair" viewer_pair
+              WHERE viewer_pair."threadId" = thread.id
+                AND viewer_pair.kind = 'GROUP_MEMBER'
+                AND viewer_pair.active = true
+                AND ((viewer_pair."endpointAType" = 'USER'
+                      AND viewer_pair."endpointAAccount" = viewer_identity.account
+                      AND viewer_pair."endpointADomain" = viewer_identity.domain)
+                  OR (viewer_pair."endpointBType" = 'USER'
+                      AND viewer_pair."endpointBAccount" = viewer_identity.account
+                      AND viewer_pair."endpointBDomain" = viewer_identity.domain))
+            )
+          LIMIT 1
+        `);
+        const group = rows.rows[0];
+        if (!group || group.profileRev !== selector.profileRev)
+          throw new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'group no longer references the requested profile revision',
+          );
+        const publisherDomain =
+          group.publisherDomain === 'local'
+            ? this.config.domain
+            : group.publisherDomain;
+        return {
+          key: {
+            namespaceId: group.publisherNamespaceId,
+            account: group.groupAccount,
+            domain: publisherDomain,
+            rev: selector.profileRev,
+          },
+          method: {
+            kind: 'groupMeta' as const,
+            publisherDomain,
+            publisherNamespaceId: group.publisherNamespaceId,
+            groupAccount: group.groupAccount,
+            subject: { type: 'GROUP' as const },
+          },
+        };
+      }
       const memberDomain =
-        selector.memberDomain.toLowerCase() === 'local'
+        selector.subject.domain.toLowerCase() === 'local'
           ? this.config.domain
-          : selector.memberDomain.toLowerCase();
+          : selector.subject.domain.toLowerCase();
       const rows = await this.database.db.execute<{
         groupAccount: string;
         publisherDomain: string;
@@ -208,7 +293,7 @@ export class ProfileResolutionCoordinatorService {
                group_state.domain AS "publisherDomain",
                group_state."namespaceId" AS "publisherNamespaceId",
                group_meta_member_namespace(group_state.id,
-                 ${normalizeAccount(selector.memberAccount)},
+                 ${normalizeAccount(selector.subject.account)},
                  ${memberDomain === this.config.domain ? 'local' : memberDomain}) AS "memberNamespaceId",
                (latest.body ->> 'profileRev')::integer AS "profileRev"
         FROM "MessageThread" thread
@@ -219,7 +304,7 @@ export class ProfileResolutionCoordinatorService {
                  member_fact.body
           FROM "GroupMetaMemberFeed" member_fact
           WHERE member_fact."threadId" = group_state.id
-            AND member_fact."memberAccount" = ${normalizeAccount(selector.memberAccount)}
+            AND member_fact."memberAccount" = ${normalizeAccount(selector.subject.account)}
             AND member_fact."memberDomain" = ${memberDomain === this.config.domain ? 'local' : memberDomain}
           ORDER BY member_fact."feedId" DESC
           LIMIT 1
@@ -243,25 +328,31 @@ export class ProfileResolutionCoordinatorService {
         LIMIT 1
       `);
       const allocated = rows.rows[0];
-      if (!allocated || allocated.profileRev < 1) {
+      if (!allocated || allocated.profileRev !== selector.profileRev) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'group member profile is unavailable',
         );
       }
+      const publisherDomain =
+        allocated.publisherDomain === 'local'
+          ? this.config.domain
+          : allocated.publisherDomain;
+      const account = normalizeAccount(selector.subject.account);
       return {
-        kind: 'groupMember' as const,
-        threadId: selector.threadId,
-        groupAccount: allocated.groupAccount,
-        account: normalizeAccount(selector.memberAccount),
-        domain: memberDomain,
-        rev: allocated.profileRev,
-        namespaceId: allocated.memberNamespaceId,
-        publisherDomain:
-          allocated.publisherDomain === 'local'
-            ? this.config.domain
-            : allocated.publisherDomain,
-        publisherNamespaceId: allocated.publisherNamespaceId,
+        key: {
+          namespaceId: allocated.memberNamespaceId,
+          account,
+          domain: memberDomain,
+          rev: selector.profileRev,
+        },
+        method: {
+          kind: 'groupMeta' as const,
+          publisherDomain,
+          publisherNamespaceId: allocated.publisherNamespaceId,
+          groupAccount: allocated.groupAccount,
+          subject: { type: 'MEMBER' as const, account, domain: memberDomain },
+        },
       };
     }
     const account = selector.account.toLowerCase();
@@ -379,111 +470,235 @@ export class ProfileResolutionCoordinatorService {
       );
     }
     return {
-      kind: 'account' as const,
-      account,
-      domain,
-      rev: selector.rev,
-      namespaceId,
+      key: { account, domain, rev: selector.rev, namespaceId },
+      method: { kind: 'exact' as const, account, domain, rev: selector.rev },
     };
   }
 
-  private async readDurable(
-    selector: Awaited<ReturnType<typeof this.normalizeAndAuthorize>>,
-  ) {
+  private async readDurable(key: ProfileKey) {
     const profile = await this.profiles.getStoredProfile(
-      selector.account,
-      selector.domain,
-      selector.namespaceId,
-      selector.rev,
+      key.account,
+      key.domain,
+      key.namespaceId,
+      key.rev,
     );
-    return profile ? this.clientProfile(profile, selector.namespaceId) : null;
+    return profile ? this.clientProfile(profile, key.namespaceId) : null;
   }
 
-  private async resolve(
-    selector: Awaited<ReturnType<typeof this.normalizeAndAuthorize>>,
-  ) {
-    if (selector.namespaceId === 0) {
+  private drain(): void {
+    while (
+      this.activeCount < ProfileResolutionCoordinatorService.HTTP_CONCURRENCY &&
+      this.queue.length > 0
+    ) {
+      const keyString = this.queue.shift()!;
+      const item = this.pending.get(keyString);
+      if (!item || item.state !== 'QUEUED') continue;
+      const next = item.methods.entries().next().value as
+        | [string, PendingMethod]
+        | undefined;
+      if (!next) {
+        this.pending.delete(keyString);
+        continue;
+      }
+      item.state = 'ACTIVE';
+      this.activeCount++;
+      const [methodKey, pendingMethod] = next;
+      void this.execute(keyString, methodKey, pendingMethod).finally(() => {
+        this.activeCount--;
+        this.drain();
+      });
+    }
+  }
+
+  private async execute(
+    expectedKeyString: string,
+    methodKey: string,
+    pendingMethod: PendingMethod,
+  ): Promise<void> {
+    const item = this.pending.get(expectedKeyString);
+    if (!item || item.methods.get(methodKey) !== pendingMethod) return;
+    try {
+      const profile = await this.fetch(item.key, pendingMethod.method);
+      this.complete(expectedKeyString, methodKey, pendingMethod, profile);
+    } catch (error) {
+      this.fail(expectedKeyString, methodKey, pendingMethod, error);
+    }
+  }
+
+  private complete(
+    expectedKeyString: string,
+    methodKey: string,
+    pendingMethod: PendingMethod,
+    profile: ResolvedClientProfile,
+  ): void {
+    const activeItem = this.pending.get(expectedKeyString);
+    if (activeItem?.methods.get(methodKey) !== pendingMethod) return;
+    const actualKey: ProfileKey = {
+      namespaceId: profile.namespaceId,
+      account: profile.account,
+      domain: profile.domain,
+      rev: profile.rev,
+    };
+    const actualKeyString = profileKeyString(actualKey);
+    this.touch(actualKeyString, profile);
+
+    const recipients = new Set(pendingMethod.users);
+    const actualItem = this.pending.get(actualKeyString);
+    if (actualItem) {
+      for (const method of actualItem.methods.values())
+        for (const userId of method.users) recipients.add(userId);
+      this.removeItem(actualKeyString, actualItem);
+    }
+
+    const expectedItem = this.pending.get(expectedKeyString);
+    if (expectedItem?.methods.get(methodKey) === pendingMethod) {
+      expectedItem.methods.delete(methodKey);
+      this.pendingMethodCount--;
+      if (expectedItem.methods.size === 0)
+        this.removeItem(expectedKeyString, expectedItem);
+      else {
+        expectedItem.state = 'QUEUED';
+        this.enqueue(expectedKeyString);
+      }
+    }
+
+    for (const userId of recipients)
+      this.sse.onProfileAvailable(userId, actualKey);
+  }
+
+  private fail(
+    expectedKeyString: string,
+    methodKey: string,
+    pendingMethod: PendingMethod,
+    error: unknown,
+  ): void {
+    const item = this.pending.get(expectedKeyString);
+    if (!item || item.methods.get(methodKey) !== pendingMethod) return;
+    item.methods.delete(methodKey);
+    this.pendingMethodCount--;
+    const reason = this.failureReason(error);
+    const detail =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    const message = `profile resolution failed for ${expectedKeyString}: ${reason} (${detail})`;
+    if (reason === 'TEMPORARILY_UNAVAILABLE') this.logger.warn(message);
+    else this.logger.debug(message);
+    for (const userId of pendingMethod.users)
+      this.sse.onProfileUnavailable(userId, { ...item.key, reason });
+    if (item.methods.size === 0) this.removeItem(expectedKeyString, item);
+    else {
+      item.state = 'QUEUED';
+      this.enqueue(expectedKeyString);
+    }
+  }
+
+  private removeItem(keyString: string, item: PendingItem): void {
+    if (this.pending.get(keyString) !== item) return;
+    this.pending.delete(keyString);
+    this.pendingMethodCount -= item.methods.size;
+    this.removeQueued(keyString);
+  }
+
+  private enqueue(keyString: string): void {
+    if (!this.queue.includes(keyString)) this.queue.push(keyString);
+  }
+
+  private removeQueued(keyString: string): void {
+    for (let index = this.queue.length - 1; index >= 0; index--)
+      if (this.queue[index] === keyString) this.queue.splice(index, 1);
+  }
+
+  private async fetch(
+    expected: ProfileKey,
+    method: ResolutionMethod,
+  ): Promise<ResolvedClientProfile> {
+    if (expected.namespaceId === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'profile revision is unavailable',
       );
     }
     let profile: S2SProfile;
-    if (selector.kind === 'message') {
-      if (!selector.publisherDomain || selector.publisherNamespaceId === 0) {
+    let sourceDomain: string;
+    if (method.kind === 'message') {
+      if (method.publisherNamespaceId === 0) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'message publisher is unavailable',
         );
       }
       const source = await this.threadSources.resolve(
-        selector.threadId,
-        selector.publisherDomain,
-        selector.publisherNamespaceId,
+        method.threadId,
+        method.publisherDomain,
+        method.publisherNamespaceId,
       );
       const query = new URLSearchParams({ account: source.selector.account });
       if ('peerAccount' in source.selector)
         query.set('peerAccount', source.selector.peerAccount);
-      if (selector.publisherMessageSeq === null) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'message publisher sequence is unavailable',
-        );
-      }
-      query.set('messageSeq', selector.publisherMessageSeq.toString());
+      query.set('messageSeq', method.publisherMessageSeq.toString());
       profile = await this.peerHttp.get<S2SProfile>(
         `/s2s/v1/message-author-profile?${query.toString()}`,
-        selector.publisherDomain,
+        method.publisherDomain,
       );
-    } else if (selector.kind === 'groupMember') {
-      if (selector.publisherNamespaceId === 0) {
+      sourceDomain = method.publisherDomain;
+    } else if (method.kind === 'groupMeta') {
+      if (method.publisherNamespaceId === 0) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
-          'locally allocated group member profile is unavailable',
+          'locally allocated Group Meta profile is unavailable',
         );
       }
       const query = new URLSearchParams({
-        account: selector.groupAccount,
-        memberAccount: selector.account,
-        memberDomain: selector.domain,
-        rev: selector.rev.toString(),
+        account: method.groupAccount,
+        subject: method.subject.type,
       });
+      if (method.subject.type === 'MEMBER') {
+        query.set('memberAccount', method.subject.account);
+        query.set('memberDomain', method.subject.domain);
+      }
       profile = await this.peerHttp.get<S2SProfile>(
-        `/s2s/v1/group-member-profile?${query.toString()}`,
-        selector.publisherDomain,
+        `/s2s/v1/group-meta-profile?${query.toString()}`,
+        method.publisherDomain,
       );
+      sourceDomain = method.publisherDomain;
     } else {
       const peer = await this.database.db.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, selector.domain),
+        where: eq(tables.federatedPeer.domain, method.domain),
         columns: { activeNamespaceId: true },
       });
-      if (peer?.activeNamespaceId !== selector.namespaceId)
+      if (peer?.activeNamespaceId !== expected.namespaceId)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'profile namespace is no longer available remotely',
         );
       profile = await this.peerHttp.get<S2SProfile>(
-        `/s2s/v1/profiles/${encodeFederationResourceComponent(selector.account)}?rev=${selector.rev}`,
-        selector.domain,
+        `/s2s/v1/profiles/${encodeFederationResourceComponent(method.account)}?rev=${method.rev}`,
+        method.domain,
       );
+      sourceDomain = method.domain;
     }
     if (
-      profile.account.toLowerCase() !== selector.account ||
-      profile.domain !== selector.domain ||
-      profile.profileRev !== selector.rev
+      profile.account.toLowerCase() !== expected.account ||
+      profile.domain !== expected.domain ||
+      !Number.isSafeInteger(profile.profileRev) ||
+      profile.profileRev < 1
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'peer returned a different profile revision',
+        'peer returned a different profile identity',
         HttpStatus.BAD_REQUEST,
       );
     }
     await this.profiles.materializeExactForeignProfile(
       profile,
-      selector.kind === 'account' ? selector.domain : selector.publisherDomain!,
-      selector.namespaceId,
+      sourceDomain,
+      expected.namespaceId,
     );
-    const materialized = await this.readDurable(selector);
+    const materialized = await this.readDurable({
+      ...expected,
+      rev: profile.profileRev,
+    });
     if (!materialized) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -491,6 +706,18 @@ export class ProfileResolutionCoordinatorService {
       );
     }
     return materialized;
+  }
+
+  private assertMethodCapacity(): void {
+    if (this.pendingMethodCount >= ProfileResolutionCoordinatorService.CAPACITY)
+      this.capacityExceeded();
+  }
+
+  private capacityExceeded(): never {
+    throw new BusinessException(
+      BusinessCode.PROFILE_RESOLUTION_CAPACITY,
+      'profile resolution queue is full',
+    );
   }
 
   private clientProfile(
@@ -539,4 +766,8 @@ export class ProfileResolutionCoordinatorService {
       return 'NOT_FOUND';
     return 'TEMPORARILY_UNAVAILABLE';
   }
+}
+
+function profileKeyString(key: ProfileKey): string {
+  return JSON.stringify([key.namespaceId, key.account, key.domain, key.rev]);
 }

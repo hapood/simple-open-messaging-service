@@ -902,6 +902,7 @@ export class FederationService {
               type: 'MESSAGE_AUTHOR',
               threadId: effect.threadId,
               messageSeq: effect.message.seq,
+              rev: effect.message.profileRev,
             })
             .catch((error: unknown) =>
               this.logger.warn(

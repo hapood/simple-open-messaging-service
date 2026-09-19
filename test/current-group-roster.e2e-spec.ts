@@ -64,7 +64,7 @@ describe('current Group Meta roster', () => {
     await database.db.insert(groupMetaMemberFeed).values([
       {
         threadId: groupId,
-        feedId: 1n,
+        feedId: 1,
         memberAccount: `owner-${suffix}`,
         memberDomain: 'local',
         operation: 'UPSERT',
@@ -72,7 +72,7 @@ describe('current Group Meta roster', () => {
       },
       {
         threadId: groupId,
-        feedId: 3n,
+        feedId: 3,
         memberAccount: `departed-${suffix}`,
         memberDomain: 'local',
         operation: 'DEPART',

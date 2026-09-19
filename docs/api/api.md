@@ -151,15 +151,19 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 The request is a discriminated union:
 
 - `{ type: 'EXACT', account, domain, rev }`
-- `{ type: 'MESSAGE_AUTHOR', threadId, messageSeq }`
-- `{ type: 'GROUP_MEMBER', threadId, memberAccount, memberDomain }`
+- `{ type: 'MESSAGE_AUTHOR', threadId, messageSeq, rev }`
+- `{ type: 'GROUP_META', threadId, profileRev, subject: { type: 'GROUP' } }`
+- `{ type: 'GROUP_META', threadId, profileRev, subject: { type: 'MEMBER', account, domain } }`
 
 There is no thread-default selector or separate endpoint. Clients use the exact identity and revision
 from `THREAD_STATE.profile`. Before any cache lookup, the server verifies the user's matching snapshot
 or another existing disclosure grant. The snapshot grant includes namespace and revision; it does not
 require a surviving intent. A new establishment may replace this grant with another revision.
-`READY.profile` includes `namespaceId`; `PENDING` returns the existing resolution request identifier.
-Federation profile endpoints keep their existing wire format and authorization rules.
+`READY.profile` includes `namespaceId`; `PENDING.key` is the expected
+`{ namespaceId, account, domain, rev }` tuple. Completion is announced by the
+authenticated event stream and clients then reread their local profile store.
+Message Author Profile and Group Meta Profile federation requests derive the
+selected revision from the referenced remote fact rather than accepting a revision parameter.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 

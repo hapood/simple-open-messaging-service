@@ -18,7 +18,6 @@ import { MemberProfileRepository } from './member-profile-store.service';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import { FederationNamespaceService } from './federation-namespace.service';
-import { ProfileResolutionService } from './profile-resolution.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { isFullConsoleLoggingEnabled } from './log-buffer';
 import type { ThreadNotificationUpdate } from './thread-notification';
@@ -83,8 +82,6 @@ export class ThreadRepository {
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
   private readonly namespaces = inject(FederationNamespaceService);
-  private readonly profileResolutions = inject(ProfileResolutionService);
-  private readonly peerProfileRequests = new Set<string>();
 
   private readonly _items = signal<ConversationItem[]>([]);
   private readonly threadStates = new Map<number, LocalThreadAttention>();
@@ -174,38 +171,6 @@ export class ThreadRepository {
       .subscribe((threadId) => {
         void this.projectThread(threadId);
       });
-    this.profileResolutions.resolved$
-      .pipe(takeUntilDestroyed())
-      .subscribe(({ selector, profile }) => {
-        if (!('messageSeq' in selector)) return;
-        const thread = this._items().find(
-          (item) => item.threadId === selector.threadId,
-        );
-        if (
-          thread?.type !== 'P2P' ||
-          thread.peerUser.account !== profile.account ||
-          thread.peerUser.domain !== profile.domain ||
-          selector.messageSeq <= (thread.peerProfileMessageSeq ?? 0)
-        )
-          return;
-        const changed = {
-          ...thread,
-          peerProfileMessageSeq: selector.messageSeq,
-          peerUser: {
-            ...thread.peerUser,
-            name: profile.name,
-            bio: profile.bio,
-            avatar: profile.avatarBase64
-              ? `data:image/webp;base64,${profile.avatarBase64}`
-              : '',
-            profileRev: profile.rev,
-          },
-        };
-        this._items.update((items) =>
-          items.map((item) => (item === thread ? changed : item)),
-        );
-        void this.persistThread(changed);
-      });
     // Cached rows can be painted before HELLO, while sessionUserId is already null. Logout must
     // reset them explicitly rather than relying on an identity signal transition.
     inject(SessionLifecycleService)
@@ -241,6 +206,14 @@ export class ThreadRepository {
           if (m.data !== undefined)
             void this.syncThreadFeed(
               (m.data as { threadFeedEndId: number }).threadFeedEndId,
+            );
+          break;
+        case 'PROFILE_AVAILABLE':
+        case 'PROFILE_UNAVAILABLE':
+          void this.webdb
+            .applyProfileEvent(m.event, m.data)
+            .catch((error) =>
+              console.warn('[profile] local materialization failed', error),
             );
           break;
         case 'LOCAL_THREAD_FEED_COMMITTED': {
@@ -290,7 +263,6 @@ export class ThreadRepository {
    */
   private reset(): void {
     this.sessionEpoch++;
-    this.peerProfileRequests.clear();
     this.threadStates.clear();
     this.projectionTokens.clear();
     this._items.set([]);
@@ -633,10 +605,12 @@ export class ThreadRepository {
     });
     this._status.set('READY');
     if (threadFeedId !== undefined) void this.persistThread(reconciled);
-    if (reconciled.type === 'P2P' && reconciled.peerProfileMessageSeq == null) {
-      if (reconciled.peerUser.name.trim())
-        this.writePeerProfile(reconciled.peerUser);
-      else this.resolveThreadPeerProfile(reconciled);
+    if (
+      reconciled.type === 'P2P' &&
+      reconciled.peerProfileMessageSeq == null &&
+      reconciled.peerUser.name.trim()
+    ) {
+      this.writePeerProfile(reconciled.peerUser);
     } else if (reconciled.type === 'GROUP' && reconciled.group.name.trim()) {
       this.writeGroupProfile(reconciled.group);
     }
@@ -646,74 +620,6 @@ export class ThreadRepository {
     const ordered = sortThreadItems(items);
     this._items.set(ordered);
     this._status.set('READY');
-    for (const item of ordered)
-      if (
-        item.type === 'P2P' &&
-        item.peerProfileMessageSeq == null &&
-        !item.peerUser.name.trim()
-      )
-        this.resolveThreadPeerProfile(item);
-  }
-
-  /** Resolve an unmaterialized relationship reference without persisting duplicate resolution flags. */
-  private resolveThreadPeerProfile(thread: P2PConversationItem): void {
-    const { account, domain, profileRev: rev, namespaceId } = thread.peerUser;
-    if (thread.peerProfileMessageSeq != null || !(rev > 0)) return;
-    const epoch = this.sessionEpoch;
-    const key = JSON.stringify([
-      epoch,
-      thread.threadId,
-      namespaceId,
-      domain,
-      account,
-      rev,
-    ]);
-    if (this.peerProfileRequests.has(key)) return;
-    this.peerProfileRequests.add(key);
-    this.profileResolutions
-      .resolve({ type: 'EXACT', account, domain, rev })
-      .subscribe({
-        next: (profile) => {
-          if (
-            epoch !== this.sessionEpoch ||
-            profile.rev !== rev ||
-            profile.namespaceId !== namespaceId ||
-            profile.account !== account ||
-            profile.domain !== domain
-          )
-            return;
-          let changed: P2PConversationItem | undefined;
-          this._items.update((items) =>
-            items.map((item) => {
-              if (
-                item.type !== 'P2P' ||
-                item.peerProfileMessageSeq != null ||
-                item.threadId !== thread.threadId ||
-                item.peerUser.account !== account ||
-                item.peerUser.domain !== domain ||
-                item.peerUser.namespaceId !== namespaceId ||
-                item.peerUser.profileRev !== rev
-              )
-                return item;
-              changed = {
-                ...item,
-                peerUser: {
-                  ...item.peerUser,
-                  name: profile.name,
-                  bio: profile.bio,
-                  avatar: profile.avatarBase64
-                    ? `data:image/webp;base64,${profile.avatarBase64}`
-                    : '',
-                },
-              };
-              return changed;
-            }),
-          );
-          if (changed) void this.persistThread(changed);
-        },
-        error: () => this.peerProfileRequests.delete(key),
-        complete: () => this.peerProfileRequests.delete(key),
-      });
   }
 
   /** Apply content heads from an already committed unified thread snapshot. */

@@ -36,22 +36,42 @@ export class ProfileResolutionController {
         },
         {
           type: 'object',
-          required: ['type', 'threadId', 'messageSeq'],
+          required: ['type', 'threadId', 'messageSeq', 'rev'],
           properties: {
             type: { type: 'string', enum: ['MESSAGE_AUTHOR'] },
             threadId: { type: 'integer', minimum: 1 },
             messageSeq: { type: 'integer', minimum: 1 },
+            rev: { type: 'integer', minimum: 1 },
           },
           additionalProperties: false,
         },
         {
           type: 'object',
-          required: ['type', 'threadId', 'memberAccount', 'memberDomain'],
+          required: ['type', 'threadId', 'profileRev', 'subject'],
           properties: {
-            type: { type: 'string', enum: ['GROUP_MEMBER'] },
+            type: { type: 'string', enum: ['GROUP_META'] },
             threadId: { type: 'integer', minimum: 1 },
-            memberAccount: { type: 'string' },
-            memberDomain: { type: 'string' },
+            profileRev: { type: 'integer', minimum: 1 },
+            subject: {
+              oneOf: [
+                {
+                  type: 'object',
+                  required: ['type'],
+                  properties: { type: { type: 'string', enum: ['GROUP'] } },
+                  additionalProperties: false,
+                },
+                {
+                  type: 'object',
+                  required: ['type', 'account', 'domain'],
+                  properties: {
+                    type: { type: 'string', enum: ['MEMBER'] },
+                    account: { type: 'string' },
+                    domain: { type: 'string' },
+                  },
+                  additionalProperties: false,
+                },
+              ],
+            },
           },
           additionalProperties: false,
         },
@@ -93,10 +113,20 @@ export class ProfileResolutionController {
         },
         {
           type: 'object',
-          required: ['status', 'requestId'],
+          required: ['status', 'key'],
           properties: {
             status: { type: 'string', enum: ['PENDING'] },
-            requestId: { type: 'string', format: 'uuid' },
+            key: {
+              type: 'object',
+              required: ['namespaceId', 'account', 'domain', 'rev'],
+              properties: {
+                namespaceId: { type: 'integer', minimum: 0 },
+                account: { type: 'string' },
+                domain: { type: 'string' },
+                rev: { type: 'integer', minimum: 1 },
+              },
+              additionalProperties: false,
+            },
           },
           additionalProperties: false,
         },

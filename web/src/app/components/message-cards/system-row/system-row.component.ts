@@ -2,7 +2,7 @@ import {
   parseSystemMessageContent,
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
-import { ProfileResolutionService } from '../../../services/profile-resolution.service';
+import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { UserService } from '../../../services/user.service';
 import { displayUserAccount } from '../../../services/model';
 import {
@@ -66,7 +66,7 @@ export class SystemRowComponent {
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);
-  private readonly profiles = inject(ProfileResolutionService);
+  private readonly members = inject(MemberProfileRepository);
   private readonly users = inject(UserService);
   private readonly profileName = signal('');
   private readonly event = computed(() =>
@@ -95,18 +95,23 @@ export class SystemRowComponent {
       const identity = this.displayIdentity();
       this.profileName.set('');
       if (!identity || !data.isGroupConversation || !data.threadId) return;
-      const subscription = this.profiles
-        .resolve({
-          type: 'GROUP_MEMBER',
-          threadId: data.threadId,
-          memberAccount: identity.account,
-          memberDomain: identity.domain,
-        })
-        .subscribe({
-          next: (profile) => this.profileName.set(profile.name.trim()),
-          error: () => this.profileName.set(''),
-        });
-      onCleanup(() => subscription.unsubscribe());
+      const threadId = data.threadId;
+      let cancelled = false;
+      const refresh = () => {
+        void this.members
+          .findByAddress(threadId, identity.account, identity.domain)
+          .then((member) => {
+            if (!cancelled) this.profileName.set(member?.name.trim() ?? '');
+          });
+      };
+      refresh();
+      const subscription = this.members.changed$.subscribe((threadIds) => {
+        if (threadIds.includes(threadId)) refresh();
+      });
+      onCleanup(() => {
+        cancelled = true;
+        subscription.unsubscribe();
+      });
     });
   }
 

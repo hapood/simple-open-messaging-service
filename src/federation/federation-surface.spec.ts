@@ -54,7 +54,7 @@ describe('Federation v1 surface', () => {
         'GET /.well-known/somfp',
         'GET /s2s/v1/forward-bundles/:bundleId',
         'GET /s2s/v1/group-meta',
-        'GET /s2s/v1/group-member-profile',
+        'GET /s2s/v1/group-meta-profile',
         'GET /s2s/v1/media/:digest',
         'GET /s2s/v1/messages',
         'GET /s2s/v1/message-tombstones',

@@ -27,6 +27,7 @@
           [account]="$safeNavigationMigration(group()?.account)"
           [src]="avatarUrl()"
           [federatedDomain]="displayDomain()"
+          [profileEvidence]="groupProfileEvidence()"
         ></app-user-avatar>
       </span>
     </div>
@@ -134,6 +135,7 @@
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [src]="m.avatar"
+                [profileEvidence]="memberProfileEvidence(m)"
                 [title]="m.name"
               ></app-user-avatar>
             }
@@ -351,6 +353,7 @@
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [src]="m.avatar"
+                [profileEvidence]="memberProfileEvidence(m)"
               ></app-user-avatar>
               <div class="member-info">
                 <span class="member-name"

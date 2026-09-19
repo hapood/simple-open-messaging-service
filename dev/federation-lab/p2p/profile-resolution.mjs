@@ -15,6 +15,15 @@ function storedDomain(node, address) {
   return domain === node.domain ? 'local' : domain;
 }
 
+function sameProfileKey(left, right) {
+  return (
+    left?.namespaceId === right?.namespaceId &&
+    left?.account === right?.account &&
+    left?.domain === right?.domain &&
+    left?.rev === right?.rev
+  );
+}
+
 export async function resolveUntilReady(
   actor,
   selector,
@@ -22,23 +31,32 @@ export async function resolveUntilReady(
   timeoutMs,
   events,
 ) {
+  const deadline = Date.now() + timeoutMs;
   let result = await actor.resolveProfile(selector);
-  if (result?.status === 'PENDING' && typeof result.requestId === 'string') {
+  while (result?.status === 'PENDING' && result.key) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+      throw new Error(
+        `${actor.address}: timed out resolving profile ${JSON.stringify(selector)}`,
+      );
     let terminal;
     try {
-      terminal = await events.wait(result.requestId, timeoutMs);
+      terminal = await events.wait(remaining);
     } catch (cause) {
       throw new Error(
-        `${actor.address}: profile resolution ${JSON.stringify(selector)} requestId=${result.requestId}: ${cause.message}`,
+        `${actor.address}: profile resolution ${JSON.stringify(selector)}: ${cause.message}`,
         { cause },
       );
     }
-    if (terminal.event === 'PROFILE_FAILED') {
+    if (
+      terminal.event === 'PROFILE_UNAVAILABLE' &&
+      sameProfileKey(terminal.key, result.key)
+    ) {
       throw new Error(
-        `${actor.address}: profile resolution failed ${JSON.stringify(selector)} requestId=${result.requestId} reason=${terminal.reason}`,
+        `${actor.address}: profile resolution failed ${JSON.stringify(selector)} key=${JSON.stringify(terminal.key)} reason=${terminal.reason}`,
       );
     }
-    result = { status: 'READY', profile: terminal.profile };
+    result = await actor.resolveProfile(selector);
   }
   if (result?.status === 'READY') {
     if (result.profile?.rev !== expectedRev) {
@@ -109,10 +127,10 @@ export async function resolveWorkloadProfiles({
           nodeName,
           viewer,
           {
-            type: 'EXACT',
-            account: projection.account,
-            domain: projection.domain,
-            rev: projection.defaultProfileRev,
+            type: 'GROUP_META',
+            threadId: projection.threadId,
+            profileRev: projection.defaultProfileRev,
+            subject: { type: 'GROUP' },
           },
           projection.defaultProfileRev,
           'GROUP_THREAD_CURRENT',
@@ -134,6 +152,7 @@ export async function resolveWorkloadProfiles({
             type: 'MESSAGE_AUTHOR',
             threadId: projection.threadId,
             messageSeq: message.seq,
+            rev: message.profileRev,
           },
           message.profileRev,
           'MESSAGE_AUTHOR_HISTORY',
@@ -147,13 +166,17 @@ export async function resolveWorkloadProfiles({
           nodeName,
           viewer,
           {
-            type: 'GROUP_MEMBER',
+            type: 'GROUP_META',
             threadId: projection.threadId,
-            memberAccount: member.account,
-            memberDomain: storedDomain(
-              federationLabNodes.find(({ name }) => name === nodeName),
-              member.address,
-            ),
+            profileRev: member.profileRev,
+            subject: {
+              type: 'MEMBER',
+              account: member.account,
+              domain: storedDomain(
+                federationLabNodes.find(({ name }) => name === nodeName),
+                member.address,
+              ),
+            },
           },
           member.profileRev,
           'GROUP_MEMBER_CURRENT',
@@ -214,6 +237,7 @@ export async function resolveWorkloadProfiles({
               type: 'MESSAGE_AUTHOR',
               threadId: thread.threadId,
               messageSeq: message.seq,
+              rev: message.profileRev,
             },
             message.profileRev,
             'P2P_MESSAGE_AUTHOR',

@@ -1,9 +1,6 @@
 import { Subject, of } from 'rxjs';
 import { MediaAvailabilityService } from './media-availability.service';
 
-const settle = (): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, 0));
-
 describe('MediaAvailabilityService', () => {
   let events: Subject<unknown>;
   let reconnect: Subject<void>;
@@ -65,7 +62,8 @@ describe('MediaAvailabilityService', () => {
 
   it('lets a newer SSE transition win over an older in-flight snapshot', async () => {
     const registration = service.register(7, 2, 'pending');
-    await settle();
+    // The register path batches its poll on a timer — wait until the query fires.
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
     events.next({
       event: 'MEDIA_STATUS',
       status: 0,
@@ -76,10 +74,11 @@ describe('MediaAvailabilityService', () => {
       data: { statuses: [{ seq: 2, status: 'downloading' }] },
     });
     snapshots.complete();
-    await settle();
+    await vi.waitFor(() => {
+      expect(registration.status()).toBe('ready');
+      expect(persist).toHaveBeenCalledTimes(1);
+    });
 
-    expect(registration.status()).toBe('ready');
-    expect(persist).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledWith(7, 2, 'ready');
   });
 
@@ -87,7 +86,7 @@ describe('MediaAvailabilityService', () => {
     const registration = service.register(7, 2, 'downloading');
     const withdrawn = vi.fn();
     registration.onWithdrawn(withdrawn);
-    await settle();
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
 
     deleted.next({
       threadId: 7,
@@ -103,26 +102,25 @@ describe('MediaAvailabilityService', () => {
       data: { statuses: [{ seq: 2, status: 'ready' }] },
     });
     snapshots.complete();
-    await settle();
+    await vi.waitFor(() => expect(withdrawn).toHaveBeenCalledOnce());
 
-    expect(withdrawn).toHaveBeenCalledOnce();
     expect(persist).not.toHaveBeenCalled();
   });
 
   it('queries mounted messages once after reconnect and stops after unmount', async () => {
     snapshots.complete();
     const registration = service.register(7, 2, 'pending');
-    await settle();
-    expect(query).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
 
     query.mockReturnValue(of({ code: 0, data: { statuses: [] } }));
     reconnect.next();
-    await settle();
-    expect(query).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
 
     registration.unregister();
     reconnect.next();
-    await settle();
+    // Negative (absence): the unmounted registration must not re-query — one task turn fully
+    // drains the microtask chains the reconnect wake could schedule.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(query).toHaveBeenCalledTimes(2);
   });
 });

@@ -207,7 +207,7 @@ describe('departure system message paths', () => {
     await database.db.insert(groupMetaMemberFeed).values(
       sourceMembers.map((row, index) => ({
         threadId: parent.id,
-        feedId: BigInt(index + 2),
+        feedId: index + 2,
         memberAccount: row.account,
         memberDomain: row.domain,
         operation: 'UPSERT' as const,
@@ -216,7 +216,7 @@ describe('departure system message paths', () => {
     );
     await database.db.insert(groupMeta).values({
       threadId: parent.id,
-      metaEndId: 5n,
+      metaEndId: 5,
       metaTargetId: 6,
       metaProcessedThroughId: 5,
     });

@@ -27,13 +27,12 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
     clearTimeout(openingTimer);
   }
   const reader = response.body.getReader();
-  const results = new Map();
-  const waiters = new Map();
+  const results = [];
+  const waiters = [];
   let failure;
   const fail = (error) => {
     failure = error;
-    for (const waiter of waiters.values()) waiter.reject(error);
-    waiters.clear();
+    for (const waiter of waiters.splice(0)) waiter.reject(error);
   };
   const consume = (frame) => {
     const lines = frame.split('\n');
@@ -41,24 +40,28 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
       .find((line) => line.startsWith('event:'))
       ?.slice(6)
       .trim();
-    if (event !== 'PROFILE_RESOLVED' && event !== 'PROFILE_FAILED') return;
+    if (event !== 'PROFILE_AVAILABLE' && event !== 'PROFILE_UNAVAILABLE')
+      return;
     const data = JSON.parse(
       lines
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trimStart())
         .join('\n'),
     );
-    if (typeof data.requestId !== 'string')
-      throw new Error('profile SSE has no requestId');
-    const result = { ...data, event };
-    const waiter = waiters.get(data.requestId);
-    if (waiter) {
-      waiters.delete(data.requestId);
-      waiter.resolve(result);
-    } else {
-      // An event may arrive before the initiating HTTP response is received.
-      results.set(data.requestId, result);
-      if (results.size > 1000) results.delete(results.keys().next().value);
+    const key = data;
+    if (
+      !Number.isSafeInteger(key?.namespaceId) ||
+      typeof key?.account !== 'string' ||
+      typeof key?.domain !== 'string' ||
+      !Number.isSafeInteger(key?.rev)
+    )
+      throw new Error('profile SSE has no profile key');
+    const result = { event, key, reason: data.reason };
+    const waiter = waiters.shift();
+    if (waiter) waiter.resolve(result);
+    else {
+      results.push(result);
+      if (results.length > 1000) results.shift();
     }
   };
   const reading = (async () => {
@@ -78,23 +81,11 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
     }
   })().catch(fail);
   return {
-    wait(requestId, waitMs = timeoutMs) {
-      if (results.has(requestId)) {
-        const result = results.get(requestId);
-        results.delete(requestId);
-        return Promise.resolve(result);
-      }
+    wait(waitMs = timeoutMs) {
+      if (results.length) return Promise.resolve(results.shift());
       if (failure) return Promise.reject(failure);
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          waiters.delete(requestId);
-          reject(
-            new Error(
-              `${actor.address}: timed out waiting for profile SSE requestId=${requestId}`,
-            ),
-          );
-        }, waitMs);
-        waiters.set(requestId, {
+        const waiter = {
           resolve: (value) => {
             clearTimeout(timer);
             resolve(value);
@@ -103,7 +94,15 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
             clearTimeout(timer);
             reject(error);
           },
-        });
+        };
+        const timer = setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(
+            new Error(`${actor.address}: timed out waiting for profile SSE`),
+          );
+        }, waitMs);
+        waiters.push(waiter);
       });
     },
     async close() {
@@ -111,7 +110,7 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
       abort.abort();
       await reader.cancel().catch(() => {});
       await reading;
-      results.clear();
+      results.length = 0;
     },
   };
 }

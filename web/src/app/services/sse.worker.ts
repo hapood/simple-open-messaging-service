@@ -227,11 +227,12 @@ function dispatch(event: string, rawData: string | undefined): void {
     return;
   }
   if (
-    (event === 'PROFILE_RESOLVED' || event === 'PROFILE_FAILED') &&
+    (event === 'PROFILE_AVAILABLE' || event === 'PROFILE_UNAVAILABLE') &&
     threadFeedPort &&
     threadFeedUserId === helloUserId
   ) {
     threadFeedPort.postMessage({ event, data });
+    return;
   }
   if (event === 'HELLO' || event === 'THREAD_FEED_UPDATED') {
     const head = data as

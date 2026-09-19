@@ -71,13 +71,13 @@
       "responseEnvelope": true
     },
     {
-      "id": "groupMemberProfileQuery",
+      "id": "groupMetaProfileQuery",
       "method": "GET",
-      "path": "/s2s/v1/group-member-profile",
+      "path": "/s2s/v1/group-meta-profile",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
-      "responseSchema": "urn:somfp:v1:group-member-profile",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
+      "responseSchema": "urn:somfp:v1:group-meta-profile",
       "responseEnvelope": true
     },
     {

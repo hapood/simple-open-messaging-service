@@ -38,7 +38,7 @@ import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invi
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import { ProfileResolutionService } from '../../services/profile-resolution.service';
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
 
 export enum AddTabStatus {
   INIT,
@@ -159,7 +159,6 @@ export class FriendRequestsComponent implements OnDestroy {
     string,
     { subscription?: Subscription }
   >();
-  private readonly profileSubscriptions = new Set<Subscription>();
 
   subject = input<Subject<any> | undefined>(undefined);
   initialTab = input<'add' | 'pending'>('add');
@@ -230,7 +229,6 @@ export class FriendRequestsComponent implements OnDestroy {
     private userService: UserService,
     private transloco: TranslocoService,
     private snackBar: MatSnackBar,
-    private profileResolutions: ProfileResolutionService,
   ) {
     effect(() => {
       const revision = this.userService.relationshipIntentStateRevision();
@@ -497,9 +495,6 @@ export class FriendRequestsComponent implements OnDestroy {
   ngOnDestroy() {
     this.cancelInFlight();
     this.cancelInviteActions();
-    for (const subscription of this.profileSubscriptions)
-      subscription.unsubscribe();
-    this.profileSubscriptions.clear();
   }
 
   approve(req: PendingReq) {
@@ -739,7 +734,6 @@ export class FriendRequestsComponent implements OnDestroy {
       this.pendingReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.resolvePendingProfiles(nextItems, 'incoming');
       this.pendingCursor = page.scannedThrough;
       this.pendingHasMore.set(page.hasMore);
       this.pendingCount.set(page.actionableTotal);
@@ -778,7 +772,6 @@ export class FriendRequestsComponent implements OnDestroy {
       this.sentReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.resolvePendingProfiles(nextItems, 'outgoing');
       this.sentCursor = page.scannedThrough;
       this.sentHasMore.set(page.hasMore);
       this.sentCount.set(page.total);
@@ -793,50 +786,15 @@ export class FriendRequestsComponent implements OnDestroy {
     }
   }
 
-  private resolvePendingProfiles(
-    requests: readonly PendingReq[],
-    target: 'incoming' | 'outgoing',
-  ): void {
-    for (const request of requests) {
-      if (
-        !request.account ||
-        !request.domain ||
-        request.domain === 'local' ||
-        request.profileRev === undefined
-      )
-        continue;
-      let subscription!: Subscription;
-      subscription = this.profileResolutions
-        .resolve({
+  profileEvidence(request: PendingReq): ProfileSelector | undefined {
+    return request.account && request.domain && request.profileRev
+      ? {
           type: 'EXACT',
           account: request.account,
           domain: request.domain,
           rev: request.profileRev,
-        })
-        .subscribe({
-          next: (profile) => {
-            const update = (items: PendingReq[]) =>
-              items.map((item) =>
-                item.projectionKey === request.projectionKey &&
-                item.profileRev === profile.rev
-                  ? {
-                      ...item,
-                      name: profile.name,
-                      avatar: profile.avatarBase64
-                        ? `data:image/webp;base64,${profile.avatarBase64}`
-                        : '',
-                    }
-                  : item,
-              );
-            if (target === 'incoming') this.pendingReqList.update(update);
-            else this.sentReqList.update(update);
-          },
-          error: () => undefined,
-          complete: () => this.profileSubscriptions.delete(subscription),
-        });
-      this.profileSubscriptions.add(subscription);
-      if (subscription.closed) this.profileSubscriptions.delete(subscription);
-    }
+        }
+      : undefined;
   }
 
   ngOnInit() {

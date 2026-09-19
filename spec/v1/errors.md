@@ -175,7 +175,7 @@ potentially serviceable positive coordinate is `N`, then
 protocol does not guarantee that items exist at `N` or `M`, because the relevant
 coordinate space may contain unallocated, filtered, or unauthorized holes.
 
-`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Authorized Profile, Group Member Profile, Message Author Profile, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Authorized Profile, Group Meta Profile, Message Author Profile, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
 
 Complete wire example:
 

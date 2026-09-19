@@ -54,7 +54,10 @@ describe('UnreadAttentionService committed thread notifications', () => {
       ],
     },
   });
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+  /** One bounded task-turn drain for absence assertions: the service's queue chain is pure
+   *  microtasks (fake-indexeddb + mocked adapter schedule no timers), so a single turn is
+   *  deterministically complete. */
+  const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   beforeEach(async () => {
     await resetNotificationSince();
@@ -152,8 +155,7 @@ describe('UnreadAttentionService committed thread notifications', () => {
     }));
     window.dispatchEvent(new Event('blur'));
     updates.next([value]);
-    await flush();
-    expect(show).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
     expect(show.mock.calls[0][0]).toMatchObject({
       tag: 'soms-thread-7',
       body: '4\n5\n6',
@@ -162,23 +164,28 @@ describe('UnreadAttentionService committed thread notifications', () => {
   it('does not replay a foreground update after blur', async () => {
     updates.next([update()]);
     window.dispatchEvent(new Event('blur'));
-    await flush();
+    // The suppressed present() still consumes its checkpoint (writes feedId 1) — that write is the
+    // proof the queue drained, making the "nothing shown" assertion race-free.
+    await vi.waitFor(async () => expect(await readNotificationSince()).toBe(1));
     expect(show).not.toHaveBeenCalled();
-    expect(await readNotificationSince()).toBe(1);
   });
   it('does not replay pending updates after focus and blur', async () => {
     window.dispatchEvent(new Event('blur'));
     updates.next([update()]);
     window.dispatchEvent(new Event('focus'));
     window.dispatchEvent(new Event('blur'));
-    await flush();
+    // The invalidated generation still consumes its checkpoint (writes feedId 1) — wait for that
+    // drain proof, then assert nothing was shown.
+    await vi.waitFor(async () => expect(await readNotificationSince()).toBe(1));
     expect(show).not.toHaveBeenCalled();
   });
   it('drops pending work at account invalidation', async () => {
     window.dispatchEvent(new Event('blur'));
     updates.next([update()]);
     TestBed.inject(SessionLifecycleService).invalidateSession();
-    await flush();
+    // No convergence signal exists (invalidation early-returns before any checkpoint write) —
+    // a bounded drain of the microtask chain is the deterministic form of the absence check.
+    await drain();
     expect(show).not.toHaveBeenCalled();
     expect(await readNotificationSince()).toBe(0);
   });
@@ -186,13 +193,15 @@ describe('UnreadAttentionService committed thread notifications', () => {
     await advanceNotificationSince(5);
     window.dispatchEvent(new Event('blur'));
     updates.next([update(4)]);
-    await flush();
+    // The stale feedId produces no state change (checkpoint stays 5, nothing observable) —
+    // a bounded drain is the deterministic form of the absence check.
+    await drain();
     expect(show).not.toHaveBeenCalled();
   });
   it('passes a zero count to close the existing browser card', async () => {
     window.dispatchEvent(new Event('blur'));
     updates.next([update(2, 0)]);
-    await flush();
+    await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
     expect(show.mock.calls[0][0].count).toBe(0);
   });
 });

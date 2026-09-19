@@ -583,7 +583,7 @@
     },
     {
       "name": "group member profile response",
-      "schema": "urn:somfp:v1:group-member-profile",
+      "schema": "urn:somfp:v1:group-meta-profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
@@ -594,14 +594,20 @@
       }
     },
     {
-      "name": "group member profile query parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
-      "value": {
-        "account": "!group",
-        "memberAccount": "alice",
-        "memberDomain": "a.example",
-        "rev": "3"
-      }
+      "name": "group meta profile query parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
+      "values": [
+        {
+          "account": "!group",
+          "subject": "GROUP"
+        },
+        {
+          "account": "!group",
+          "subject": "MEMBER",
+          "memberAccount": "alice",
+          "memberDomain": "a.example"
+        }
+      ]
     },
     {
       "name": "message author profile query parameters",

@@ -471,7 +471,7 @@ feed cursors, not only handler return values.
   head task, and do not update canonical or replica member `profileRev`.
 - Multiple canonical membership or group-profile changes before fan-out publish
   only the latest canonical end to each audience.
-- Group Member Profile is served only by the group origin to a currently
+- Group Meta Profile is served only by the group origin to a currently
   authorized mirror for a current matching UPSERT.
 
 ### 8.7 Crash, retry, and notification boundaries

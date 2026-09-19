@@ -30,6 +30,7 @@ import {
   conversationAvatarType,
   conversationAvatarIdentityId,
   conversationAvatarAccount,
+  conversationAvatarEvidence,
   conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -220,6 +221,8 @@ export class ThreadListComponent implements OnInit {
   avatarSrc(t: ConversationItem): string | null | undefined {
     return conversationAvatarSrc(t);
   }
+
+  readonly avatarEvidence = conversationAvatarEvidence;
 
   federatedDomain(t: ConversationItem): string | undefined {
     if (t.type === 'P2P')

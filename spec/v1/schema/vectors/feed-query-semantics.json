@@ -277,10 +277,10 @@
           "commit": true
         },
         {
-          "request": "group-member-profile",
+          "request": "group-meta-profile",
           "thread": "!team",
+          "subject": "MEMBER",
           "member": "alice@a.example",
-          "profileRev": 3,
           "authorizedGroupAudience": true,
           "canonicalCurrentGroupMetaReference": true,
           "commit": true

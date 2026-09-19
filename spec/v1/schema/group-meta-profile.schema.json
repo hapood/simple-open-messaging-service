@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:somfp:v1:group-member-profile",
-  "title": "GET /s2s/v1/group-member-profile response data",
+  "$id": "urn:somfp:v1:group-meta-profile",
+  "title": "GET /s2s/v1/group-meta-profile response data",
   "type": "object",
   "required": [
     "account",
@@ -12,7 +12,7 @@
     "avatar"
   ],
   "properties": {
-    "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
     "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
     "profileRev": {
       "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"

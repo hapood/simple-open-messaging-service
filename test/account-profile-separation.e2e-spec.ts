@@ -158,7 +158,7 @@ describe('account controls and exact profiles', () => {
     });
     await database.db
       .insert(groupMeta)
-      .values({ threadId: thread.id, metaEndId: 1n, profileRev: 2 });
+      .values({ threadId: thread.id, metaEndId: 1, profileRev: 2 });
     expect(
       await readGroupState(database.db, eq(groupState.id, thread.id)),
     ).toMatchObject({ name: 'Received name', profileRev: 2, namespaceId });

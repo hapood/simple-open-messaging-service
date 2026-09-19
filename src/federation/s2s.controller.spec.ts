@@ -60,7 +60,12 @@ function target() {
   };
   const groupMeta = {
     serve: vi.fn().mockResolvedValue({}),
-    resolveAllocatedMemberProfile: vi.fn().mockResolvedValue(3),
+    resolveProfileReference: vi.fn().mockResolvedValue({
+      account: 'alice',
+      domain: 'member.example',
+      namespaceId: 3,
+      profileRev: 4,
+    }),
   };
   const controller = new S2sController(
     federation as never,
@@ -552,18 +557,18 @@ describe('S2sController message author profiles', () => {
   });
 });
 
-describe('S2sController group member profiles', () => {
-  it('uses the exact Group Meta allocation and returns the complete profile', async () => {
+describe('S2sController Group Meta profiles', () => {
+  it('derives the member revision from Group Meta and returns the complete profile', async () => {
     const { controller, federation, groupMeta } = target();
     const req = {
       method: 'GET',
-      url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=4',
+      url: '/s2s/v1/group-meta-profile?account=%21group&subject=MEMBER&memberAccount=alice&memberDomain=member.example',
       rawBody: Buffer.alloc(0),
       headers: {},
       peer: { domain: 'mirror.example', namespaceId: 7 },
     } as unknown as FastifyRequest;
 
-    await expect(controller.getGroupMemberProfile(req)).resolves.toEqual({
+    await expect(controller.getGroupMetaProfile(req)).resolves.toEqual({
       account: 'alice',
       domain: 'member.example',
       profileRev: 4,
@@ -571,13 +576,11 @@ describe('S2sController group member profiles', () => {
       bio: 'Member biography',
       avatar: null,
     });
-    expect(groupMeta.resolveAllocatedMemberProfile).toHaveBeenCalledWith(
+    expect(groupMeta.resolveProfileReference).toHaveBeenCalledWith(
       'mirror.example',
       7,
       '!group',
-      'alice',
-      'member.example',
-      4,
+      { type: 'MEMBER', account: 'alice', domain: 'member.example' },
     );
     expect(federation.getStoredProfile).toHaveBeenCalledWith(
       'alice',
@@ -587,21 +590,21 @@ describe('S2sController group member profiles', () => {
     );
   });
 
-  it('rejects a zero revision before reading an allocation', async () => {
+  it('rejects a group subject carrying member fields', async () => {
     const { controller, groupMeta } = target();
     const req = {
       method: 'GET',
-      url: '/s2s/v1/group-member-profile?account=%21group&memberAccount=alice&memberDomain=member.example&rev=0',
+      url: '/s2s/v1/group-meta-profile?account=%21group&subject=GROUP&memberAccount=alice&memberDomain=member.example',
       rawBody: Buffer.alloc(0),
       headers: {},
       peer: { domain: 'mirror.example', namespaceId: 7 },
     } as unknown as FastifyRequest;
 
-    await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject({
+    await expect(controller.getGroupMetaProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
       status: 400,
     });
-    expect(groupMeta.resolveAllocatedMemberProfile).not.toHaveBeenCalled();
+    expect(groupMeta.resolveProfileReference).not.toHaveBeenCalled();
   });
 });
 

@@ -260,9 +260,9 @@ live MediaAsset bindings and actual CAS bytes matching the submitted SHA-256 dig
 transfer-task rows are not required after completed batches have been cleaned up. The complete
 oracle also resolves every positive profile reference through the same authorization-scoped client
 API used by the UI. Before issuing profile requests, the harness opens an authenticated SSE stream
-per viewer and matches `PROFILE_RESOLVED` / `PROFILE_FAILED` by request ID, including events received
-before the HTTP response. Failures report the selector, request ID, and reason instead of repeatedly
-submitting requests until a generic timeout. Streams are closed when profile checks finish or fail.
+per viewer. A `PENDING` response is completed by a `PROFILE_AVAILABLE` wake followed by another
+database-backed resolution request; `PROFILE_UNAVAILABLE` reports the returned profile key and reason.
+Streams are closed when profile checks finish or fail.
 It compares the exact revision's name and biography, requires every referenced
 avatar file to exist and compares its exact SHA-256 digest. Accepted avatars are stored and federated
 byte-for-byte, so any transformation or corruption is a consistency failure. Current P2P

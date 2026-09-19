@@ -14,14 +14,10 @@ describe('PlaygroundMessageThreadAdapter', () => {
     adapter.confirmDelay.set(0);
     adapter.pushSignalDelay.set(0);
     adapter.replyDelay.set(0);
-    const source = adapter.createSource(
-      { threadId: 1 } as ConversationItem,
-      {
-        onNewerAvailable: () => undefined,
-        onMediaStatus: () => undefined,
-        onProfile: () => undefined,
-      },
-    ) as MockItemSource;
+    const source = adapter.createSource({ threadId: 1 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
     const optimistic: CbItem<ChatItemData> = {
       id: -1,
       clientMessageId: 'contact-1',
@@ -42,13 +38,15 @@ describe('PlaygroundMessageThreadAdapter', () => {
     source.addPending(optimistic);
 
     expect(
-      (await adapter.sendContact({
-        threadId: 1,
-        targetUserId: 3,
-        clientMessageId: 'contact-1',
-        optimistic,
-        source,
-      })).code,
+      (
+        await adapter.sendContact({
+          threadId: 1,
+          targetUserId: 3,
+          clientMessageId: 'contact-1',
+          optimistic,
+          source,
+        })
+      ).code,
     ).toBe(0);
     await vi.waitFor(async () => {
       const items = await source.getNewer(10, 10);
@@ -72,7 +70,6 @@ describe('PlaygroundMessageThreadAdapter', () => {
       {
         onNewerAvailable: () => undefined,
         onMediaStatus: () => undefined,
-        onProfile: () => undefined,
       },
     );
 
@@ -94,7 +91,6 @@ describe('PlaygroundMessageThreadAdapter', () => {
     adapter.createSource({ threadId: 1 } as ConversationItem, {
       onNewerAvailable: () => undefined,
       onMediaStatus: () => undefined,
-      onProfile: () => undefined,
     });
 
     const search = await firstValueFrom(

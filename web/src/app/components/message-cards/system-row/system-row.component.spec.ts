@@ -4,15 +4,12 @@ import {
   provideTransloco,
   provideTranslocoTranspiler,
 } from '@jsverse/transloco';
-import { Subject, EMPTY } from 'rxjs';
+import { Subject } from 'rxjs';
 import { vi } from 'vitest';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { LanguageService } from '../../../services/language.service';
-import {
-  ProfileResolutionService,
-  type ResolvedProfile,
-} from '../../../services/profile-resolution.service';
+import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { UserService } from '../../../services/user.service';
 import type { SystemMessageItem } from '../chat-item';
 import { SystemRowComponent } from './system-row.component';
@@ -20,7 +17,8 @@ import { SystemRowComponent } from './system-row.component';
 describe('SystemRowComponent', () => {
   const me = { account: 'me', domain: 'local' };
   const alice = { account: 'alice', domain: 'peer.test' };
-  const resolve = vi.fn();
+  const findByAddress = vi.fn();
+  const memberChanges = new Subject<readonly number[]>();
   let language: LanguageService;
   const data = (
     body: unknown,
@@ -46,13 +44,19 @@ describe('SystemRowComponent', () => {
     return fixture;
   };
   beforeEach(() => {
-    resolve.mockReset().mockReturnValue(EMPTY);
+    findByAddress.mockReset().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       imports: [SystemRowComponent],
       providers: [
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: { sessionProfile: signal(me) } },
-        { provide: ProfileResolutionService, useValue: { resolve } },
+        {
+          provide: MemberProfileRepository,
+          useValue: {
+            findByAddress,
+            changed$: memberChanges,
+          },
+        },
         provideTransloco({
           config: {
             availableLangs: ['en', 'zh-CN'],
@@ -125,7 +129,7 @@ describe('SystemRowComponent', () => {
         },
       );
       expect(fixture.nativeElement.textContent).toContain(expected);
-      expect(resolve).not.toHaveBeenCalled();
+      expect(findByAddress).not.toHaveBeenCalled();
     },
   );
 
@@ -137,21 +141,20 @@ describe('SystemRowComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('alice@peer.test');
   });
 
-  it('resolves the event member in the current thread, handles async completion and language changes', () => {
-    const results = new Subject<ResolvedProfile>();
-    resolve.mockReturnValue(results);
+  it('rereads the event member from the local roster when it changes', async () => {
+    findByAddress
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue({ name: 'Alice Profile' });
     const fixture = render(
       { type: 'GROUP_JOINED', member: alice },
       { isGroupConversation: true },
     );
-    expect(resolve).toHaveBeenCalledWith({
-      type: 'GROUP_MEMBER',
-      threadId: 42,
-      memberAccount: 'alice',
-      memberDomain: 'peer.test',
-    });
+    await vi.waitFor(() =>
+      expect(findByAddress).toHaveBeenCalledWith(42, 'alice', 'peer.test'),
+    );
     expect(fixture.nativeElement.textContent).toContain('alice@peer.test');
-    results.next({ name: 'Alice Profile' } as ResolvedProfile);
+    memberChanges.next([42]);
+    await vi.waitFor(() => expect(findByAddress).toHaveBeenCalledTimes(2));
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain(
       'Alice Profile 加入了群聊',
@@ -167,24 +170,18 @@ describe('SystemRowComponent', () => {
       data({ type: 'GROUP_LEFT', member: me }),
     );
     fixture.detectChanges();
-    expect(results.observed).toBe(false);
     expect(fixture.nativeElement.textContent).not.toContain('Alice Profile');
   });
 
-  it('resolves the creator profile for a group creation event', () => {
-    const results = new Subject<ResolvedProfile>();
-    resolve.mockReturnValue(results);
+  it('reads the creator profile from the local group roster', async () => {
+    findByAddress.mockResolvedValue({ name: 'Alice Profile' });
     const fixture = render(
       { type: 'GROUP_CREATED', creator: alice },
       { isGroupConversation: true },
     );
-    expect(resolve).toHaveBeenCalledWith({
-      type: 'GROUP_MEMBER',
-      threadId: 42,
-      memberAccount: 'alice',
-      memberDomain: 'peer.test',
-    });
-    results.next({ name: 'Alice Profile' } as ResolvedProfile);
+    await vi.waitFor(() =>
+      expect(findByAddress).toHaveBeenCalledWith(42, 'alice', 'peer.test'),
+    );
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain(
       'Alice Profile 创建了群聊',

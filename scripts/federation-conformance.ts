@@ -320,7 +320,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/group-meta',
-    'GET /s2s/v1/group-member-profile',
+    'GET /s2s/v1/group-meta-profile',
     'GET /s2s/v1/profiles/:account',
     'GET /s2s/v1/message-author-profile',
     'GET /s2s/v1/messages',

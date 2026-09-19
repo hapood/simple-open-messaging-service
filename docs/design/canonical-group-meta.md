@@ -362,7 +362,7 @@ group origin
   -> may warm the revision immediately after REQUESTED commits
   -> publishes the stable reference without waiting for profile bytes
   -> lazily resolves and caches the exact revision through the global coordinator
-  -> serves GET /s2s/v1/group-member-profile
+  -> serves GET /s2s/v1/group-meta-profile
 
 group mirror
   -> requests only from the group origin
@@ -384,7 +384,7 @@ registry and do not consume LRU capacity. Jobs waiting for HTTP capacity remain
 queued behind the global bounded request pool. Only completed cache entries
 participate in LRU eviction.
 
-Authorization for Group Member Profile requires all of:
+Authorization for Group Meta Profile requires all of:
 
 - the responding server owns the group;
 - the signer has a current audience;
@@ -398,7 +398,7 @@ transaction and lock. Temporary failure returns a retryable availability result;
 permanent absence or disclosure denial returns the privacy-safe profile result.
 Neither path mutates the group.
 
-After `DEPART`, Group Member Profile no longer resolves that member. A
+After `DEPART`, Group Meta Profile no longer resolves that member. A
 historical message uses Message Author Profile with its exact message
 coordinate instead.
 
@@ -507,7 +507,7 @@ round; a running round is never rewritten.
   no group mutation when it finishes.
 - Revocation while profile resolution is in flight makes the eventual Group
   Member Profile authorization recheck fail without resurrecting membership.
-- Every mirror requests Group Member Profile from the group origin, including
+- Every mirror requests Group Meta Profile from the group origin, including
   when the member belongs to a third domain.
 - A mirror cannot serve another peer as authority for a remote group.
 - Departure, audience revocation, wrong revision, and non-origin requests fail

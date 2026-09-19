@@ -18,7 +18,7 @@ normative text prevails and the release package must be corrected.
 - `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
 - `group-meta.schema.json`: full and delta group-member role/profile-reference and compacted group-profile-reference projections.
 - `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
-- `group-member-profile.schema.json`: complete profile snapshot served by the group origin and selected by an exact current canonical Group Meta member reference.
+- `group-meta-profile.schema.json`: complete profile snapshot served by the group origin and selected by an exact current canonical Group Meta member reference.
 - `message-author-profile.schema.json`: complete profile snapshot selected by an exact authorized message and profile revision.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.

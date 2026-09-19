@@ -68,6 +68,10 @@ import {
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
+import type {
+  ProfileKey,
+  ProfileSelector as ProfileEvidence,
+} from '../../../../shared/profile-selector';
 
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
@@ -111,6 +115,18 @@ export interface ProfileSnapshot extends ProfileSelector {
   avatar: string;
   bio: string;
 }
+
+export type ProfileResolutionAttempt =
+  | { status: 'READY'; profile: ProfileSnapshot }
+  | { status: 'PENDING'; key: ProfileKey };
+
+export type ProfileWake =
+  | { event: 'PROFILE_AVAILABLE'; key: ProfileKey }
+  | {
+      event: 'PROFILE_UNAVAILABLE';
+      key: ProfileKey;
+      reason: string;
+    };
 
 export interface NamespaceRecord {
   domain: string;
@@ -296,12 +312,60 @@ function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
 }
 
+function parseProfileKey(value: unknown): ProfileKey | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const candidate = value as Partial<ProfileKey>;
+  if (
+    !Number.isSafeInteger(candidate.namespaceId) ||
+    Number(candidate.namespaceId) < 0 ||
+    typeof candidate.account !== 'string' ||
+    candidate.account.length === 0 ||
+    typeof candidate.domain !== 'string' ||
+    candidate.domain.length === 0 ||
+    !Number.isSafeInteger(candidate.rev) ||
+    Number(candidate.rev) < 1
+  )
+    return;
+  return {
+    namespaceId: Number(candidate.namespaceId),
+    account: candidate.account,
+    domain: candidate.domain,
+    rev: Number(candidate.rev),
+  };
+}
+
 export type StateFeedWorkerFactory = () => Worker | null;
 
 /** Shared storage implementation used by page and background runtimes. */
 export class WebdbStorage {
   private readonly workerFailed = new Subject<void>();
   readonly workerFailed$ = this.workerFailed.asObservable();
+  private readonly profileWake = new Subject<ProfileWake>();
+  readonly profileWake$ = this.profileWake.asObservable();
+
+  async applyProfileEvent(
+    event: 'PROFILE_AVAILABLE' | 'PROFILE_UNAVAILABLE',
+    data: unknown,
+  ): Promise<void> {
+    const key = parseProfileKey(data);
+    if (!key) return;
+    if (event === 'PROFILE_UNAVAILABLE') {
+      const reason =
+        data && typeof data === 'object' && typeof (data as { reason?: unknown }).reason === 'string'
+          ? (data as { reason: string }).reason
+          : 'TEMPORARILY_UNAVAILABLE';
+      this.profileWake.next({ event, key, reason });
+      return;
+    }
+    const result = await this.resolveProfileEvidence({
+      type: 'EXACT',
+      account: key.account,
+      domain: key.domain,
+      rev: key.rev,
+    });
+    if (result.status === 'READY')
+      this.profileWake.next({ event, key });
+  }
   private stateFeedWorker: Worker | null = null;
   private stateFeedWorkerRequestId = 0;
   private readonly stateFeedWorkerPending = new Map<
@@ -1572,6 +1636,32 @@ export class WebdbStorage {
     return result;
   }
 
+  /** Submit one authorized profile evidence to the platform-owned database executor.
+   * READY results are committed there before this promise resolves. */
+  async resolveProfileEvidence(
+    selector: ProfileEvidence,
+  ): Promise<ProfileResolutionAttempt> {
+    if (this.accountMaintenance || this.currentUserId === null)
+      throw new Error('account cache lifetime expired');
+    const userId = this.currentUserId;
+    const epoch = this.cacheEpoch;
+    const result = isTauri()
+      ? await tauriInvoke<ProfileResolutionAttempt>('native_profile_resolve', {
+          userId: Number(userId),
+          selector,
+        })
+      : await this.requestDbWorker<ProfileResolutionAttempt>({
+          type: 'resolve-profile',
+          userId,
+          selector,
+          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
+        });
+    if (!result) throw new Error('database worker unavailable');
+    if (epoch !== this.cacheEpoch)
+      throw new Error('account cache lifetime expired');
+    return result;
+  }
+
   private requestDbWorker<T>(
     request: Record<string, unknown>,
     transfer: Transferable[] = [],
@@ -1582,13 +1672,20 @@ export class WebdbStorage {
       const worker = this.stateFeedWorker;
       this.stateFeedWorker.onmessage = (
         event: MessageEvent<{
-          id: number;
-          ok: boolean;
+          id?: number;
+          type?: string;
+          wake?: ProfileWake;
+          ok?: boolean;
           error?: string;
           result?: unknown;
         }>,
       ) => {
         if (this.stateFeedWorker !== worker) return;
+        if (event.data.type === 'profile-wake' && event.data.wake) {
+          this.profileWake.next(event.data.wake);
+          return;
+        }
+        if (event.data.id === undefined) return;
         const pending = this.stateFeedWorkerPending.get(event.data.id);
         if (!pending) return;
         this.stateFeedWorkerPending.delete(event.data.id);
@@ -2139,6 +2236,85 @@ export class WebdbStorage {
     });
   }
 
+  /** Resolve an evidence reference to an already materialized local snapshot. */
+  async findProfileForEvidence(
+    evidence: ProfileEvidence,
+  ): Promise<ProfileSnapshot | undefined> {
+    return this.runAccountOperation(async () => {
+      const db = await this.db();
+      if (evidence.type === 'EXACT') {
+        const domain = evidence.domain === 'local' ? 'local' : evidence.domain;
+        const namespace = (
+          await db
+            .transaction('namespaces')
+            .store.index('domain')
+            .getAll(domain)
+        ).find((candidate) => candidate.status === 'ACTIVE');
+        if (!namespace) return undefined;
+        return db.get('profiles', [
+          evidence.account,
+          domain,
+          namespace.namespaceId,
+          evidence.rev,
+        ]);
+      }
+      if (evidence.type === 'MESSAGE_AUTHOR') {
+        const message = await (
+          await this.messageDb()
+        ).get('messages', [evidence.threadId, evidence.messageSeq]);
+        if (
+          !message ||
+          message.isDeleted ||
+          !('creator' in message) ||
+          !message.creator ||
+          message.profileRev !== evidence.rev
+        )
+          return undefined;
+        const creator = localSubjectIdentity(message.creator);
+        return db.get('profiles', [
+          creator.account,
+          creator.domain,
+          creator.namespaceId,
+          evidence.rev,
+        ]);
+      }
+      const thread = await db.get('threads', evidence.threadId);
+      if (evidence.subject.type === 'GROUP') {
+        if (
+          thread?.type !== 'GROUP' ||
+          thread.group.profileRev !== evidence.profileRev
+        )
+          return undefined;
+        return db.get('profiles', [
+          thread.group.account,
+          thread.group.domain,
+          thread.group.namespaceId,
+          evidence.profileRev,
+        ]);
+      }
+      const memberSubject = evidence.subject;
+      const member = (
+        await db
+          .transaction('members')
+          .store.index('thread')
+          .getAll(evidence.threadId)
+      ).find(
+        (row) =>
+          !row.left &&
+          row.account === memberSubject.account &&
+          row.domain === memberSubject.domain &&
+          row.profileRev === evidence.profileRev,
+      );
+      if (!member) return undefined;
+      return db.get('profiles', [
+        member.account,
+        member.domain,
+        member.namespaceId,
+        member.profileRev,
+      ]);
+    });
+  }
+
   private memberUser(
     member: MemberRecord,
     snapshot?: ProfileSnapshot,
@@ -2531,6 +2707,77 @@ export class WebdbStorage {
       await tx.done;
       return true;
     });
+  }
+
+  /** Commit an immutable resolved snapshot. Runtime executors call this before notifying the UI. */
+  async commitResolvedProfile(profile: {
+    namespaceId: number;
+    account: string;
+    domain: string;
+    rev: number;
+    name: string;
+    bio: string;
+    avatarBase64: string | null;
+  }): Promise<ProfileSnapshot> {
+    const snapshot: ProfileSnapshot = {
+      namespaceId: profile.namespaceId,
+      account: profile.account,
+      domain: profile.domain,
+      profileRev: profile.rev,
+      name: profile.name,
+      bio: profile.bio,
+      avatar: profile.avatarBase64
+        ? `data:image/webp;base64,${profile.avatarBase64}`
+        : '',
+    };
+    await this.runAccountOperation(async () => {
+      const tx = (await this.db()).transaction(
+        ['namespaces', 'profiles', 'threads'],
+        'readwrite',
+      );
+      await this.registerNamespace(
+        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
+        snapshot.domain,
+        snapshot.namespaceId,
+      );
+      await this.writeSnapshot(tx.objectStore('profiles'), snapshot);
+      for (const thread of await tx.objectStore('threads').getAll()) {
+        if (
+          thread.type === 'GROUP' &&
+          thread.group.account === snapshot.account &&
+          thread.group.domain === snapshot.domain &&
+          thread.group.namespaceId === snapshot.namespaceId &&
+          thread.group.profileRev === snapshot.profileRev
+        )
+          await tx.objectStore('threads').put({
+            ...thread,
+            group: {
+              ...thread.group,
+              name: snapshot.name,
+              avatar: snapshot.avatar,
+              description: snapshot.bio,
+            },
+          });
+        else if (
+          thread.type === 'P2P' &&
+          thread.peerUser.account === snapshot.account &&
+          thread.peerUser.domain === snapshot.domain &&
+          thread.peerUser.namespaceId === snapshot.namespaceId &&
+          thread.peerUser.profileRev === snapshot.profileRev
+        )
+          await tx.objectStore('threads').put({
+            ...thread,
+            peerUser: {
+              ...thread.peerUser,
+              name: snapshot.name,
+              avatar: snapshot.avatar,
+              bio: snapshot.bio,
+            },
+          });
+      }
+      await tx.done;
+    });
+    return snapshot;
   }
 
   async putProfile(record: ProfileWriteRecord): Promise<boolean> {

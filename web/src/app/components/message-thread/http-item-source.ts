@@ -38,7 +38,6 @@ import {
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { ProfileResolutionService } from '../../services/profile-resolution.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import {
   isRenderableMessageTomb,
@@ -99,19 +98,6 @@ export interface HttpItemSourceLiveOpts {
   /** A mediaStatus change landed for this thread through the shared availability service — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
   onMediaStatus?: (seq: number, status: MediaStatus) => void;
-  /** Background profile enrichment landed for a message already shaped from the local cache. The component
-   *  patches mounted rows in place; unmounted rows pick the profile up from this source on their next shape. */
-  onProfile?: (
-    seq: number,
-    profile: {
-      name: string;
-      avatar: string;
-      avatarIdentityId: string;
-      avatarAccount: string;
-      avatarDomain: string;
-      isSelf: boolean;
-    },
-  ) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -142,17 +128,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private reconnectSub?: Subscription;
   private mediaStatusSub?: Subscription;
   private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
-  private readonly onProfile: (
-    seq: number,
-    profile: {
-      name: string;
-      avatar: string;
-      avatarIdentityId: string;
-      avatarAccount: string;
-      avatarDomain: string;
-      isSelf: boolean;
-    },
-  ) => void;
   private readonly onNewerAvailable: (seq: number) => void;
   private readonly seqsByCreator = new Map<string, Set<number>>();
   private readonly profilesBySeq = new Map<
@@ -166,8 +141,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       avatarIdentityId: string;
     }
   >();
-  private readonly profileRequests = new Set<number>();
-  private readonly profileSubscriptions = new Set<Subscription>();
   private initializingDb = true;
   private loadedSeq = -1;
   /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
@@ -198,7 +171,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
     private readonly profileRepo?: ProfileRepository,
-    private readonly profileResolver?: ProfileResolutionService,
     private readonly memberProfiles?: MemberProfileRepository,
   ) {
     this.pending = outbox.forThread(conv.threadId);
@@ -218,7 +190,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         }
       });
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
-    this.onProfile = live.onProfile ?? (() => {});
     this.onNewerAvailable = live.onNewerAvailable ?? (() => {});
     // MessageRepository turns committed content heads into per-thread live signals.
     // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
@@ -520,9 +491,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.mediaStatusSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
-    for (const subscription of this.profileSubscriptions)
-      subscription.unsubscribe();
-    this.profileSubscriptions.clear();
     for (const waiter of this.newerWaiters) waiter.subscriber.complete();
     this.newerWaiters.clear();
     this.gapIdByKey.clear();
@@ -829,6 +797,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         : { avatarIdentityId: p.avatarIdentityId }),
       avatarAccount: p.account,
       avatarDomain: p.domain,
+      ...(m.creator && m.profileRev > 0
+        ? {
+            profileEvidence: {
+              type: 'MESSAGE_AUTHOR' as const,
+              threadId: m.threadId,
+              messageSeq: m.seq,
+              rev: m.profileRev,
+            },
+          }
+        : {}),
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
@@ -932,105 +910,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           });
       }),
     );
-    if (!this.profileResolver) return;
-    const preparations: Promise<void>[] = [];
-    for (const message of msgs) {
-      if (
-        message.contentType === 'SYSTEM' ||
-        message.creator === null ||
-        this.profileRequests.has(message.seq) ||
-        this.profilesBySeq.has(message.seq)
-      )
-        continue;
-      this.profileRequests.add(message.seq);
-      const creatorKey = this.creatorKey(message.creator)!;
-      let subscription!: Subscription;
-      subscription = this.profileResolver
-        .resolve({
-          type: 'MESSAGE_AUTHOR',
-          threadId: this.conv.threadId,
-          messageSeq: message.seq,
-        })
-        .subscribe({
-          next: (resolved) => {
-            const profile = {
-              name: resolved.name,
-              account: resolved.account,
-              avatar: resolved.avatarBase64
-                ? `data:image/webp;base64,${resolved.avatarBase64}`
-                : '',
-              avatarIdentityId: JSON.stringify([
-                creatorKey,
-                'profile',
-                resolved.rev,
-              ]),
-              domain: resolved.domain,
-              isSelf: this.isSelfAddress(
-                message.creator!.account,
-                message.creator!.domain,
-              ),
-            };
-            this.profilesBySeq.set(message.seq, profile);
-            const subject = parseUserIdentityKey(creatorKey);
-            if (subject && resolved.rev === message.profileRev) {
-              const sourceServer =
-                subject.namespaceId === 0
-                  ? 'local'
-                  : this.conv.type === 'GROUP' &&
-                      subject.namespaceId === this.conv.authorityNamespaceId
-                    ? this.conv.group.domain
-                    : subject.domain;
-              void this.profileRepo?.cacheProfile(
-                {
-                  ...subject,
-                  profileRev: resolved.rev,
-                  name: resolved.name,
-                  avatar: profile.avatar,
-                  bio: resolved.bio,
-                },
-                sourceServer,
-              );
-            }
-
-            if (this.conv.type === 'GROUP' && this.memberProfiles) {
-              const identity = parseUserIdentityKey(creatorKey);
-              if (identity)
-                void this.memberProfiles.storeResolvedProfile(
-                  this.conv.threadId,
-                  identity,
-                  {
-                    rev: resolved.rev,
-                    name: resolved.name,
-                    avatar: profile.avatar,
-                    bio: resolved.bio,
-                  },
-                );
-            }
-            this.onProfile(message.seq, {
-              name: profile.name,
-              avatar: profile.avatar,
-              avatarIdentityId: profile.avatarIdentityId,
-              avatarAccount: profile.account,
-              avatarDomain: profile.domain,
-              isSelf: profile.isSelf,
-            });
-          },
-          error: () => {
-            this.profileRequests.delete(message.seq);
-          },
-          complete: () => this.profileSubscriptions.delete(subscription),
-        });
-      this.profileSubscriptions.add(subscription);
-      if (subscription.closed) this.profileSubscriptions.delete(subscription);
-      preparations.push(
-        this.profileResolver.prepare({
-          type: 'MESSAGE_AUTHOR',
-          threadId: this.conv.threadId,
-          messageSeq: message.seq,
-        }),
-      );
-    }
-    await Promise.all(preparations);
   }
 }
 

@@ -11,6 +11,7 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
+import type { ProfileSelector } from '../../../../../shared/profile-selector';
 
 export interface FriendRequestCardModel {
   id: string;
@@ -25,6 +26,7 @@ export interface FriendRequestCardModel {
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
   sourceLabel?: string;
+  profileRev?: number;
 }
 
 @Component({
@@ -49,6 +51,18 @@ export class FriendRequestCardComponent {
   readonly revoked = output<void>();
   readonly rejected = output<void>();
   readonly UserAvatarType = UserAvatarType;
+
+  profileEvidence(): ProfileSelector | undefined {
+    const request = this.request();
+    return request.account && request.domain && request.profileRev
+      ? {
+          type: 'EXACT',
+          account: request.account,
+          domain: request.domain,
+          rev: request.profileRev,
+        }
+      : undefined;
+  }
 
   act(event: Event, action: 'approve' | 'revoke' | 'reject'): void {
     event.stopPropagation();

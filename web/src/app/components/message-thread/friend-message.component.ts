@@ -57,6 +57,7 @@ import {
 } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarAccount,
+  conversationAvatarEvidence,
   conversationAvatarDomain,
   conversationAvatarType,
   conversationAvatarIdentityId,
@@ -650,6 +651,10 @@ export class MessageThreadComponent implements OnDestroy {
     const t = this.userMsgTrd();
     return t ? conversationAvatarSrc(t) : undefined;
   });
+  readonly emptyAvatarEvidence = computed(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarEvidence(t) : undefined;
+  });
   /** Hint copy varies by state: a blocked peer can't be messaged until unblocked, so the "say hello" line is
    *  swapped for an unblock prompt; otherwise it is per thread type. Returns a transloco key. */
   readonly emptyHintKey = computed(() => {
@@ -1085,21 +1090,6 @@ export class MessageThreadComponent implements OnDestroy {
           ...item,
           data: { ...item.data, quote: { seq: targetSeq, unavailable: true } },
         }));
-      },
-      // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
-      // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
-      onProfile: (
-        seq: number,
-        profile: {
-          name: string;
-          avatar: string;
-          avatarIdentityId: string;
-          avatarAccount: string;
-          avatarDomain: string;
-          isSelf: boolean;
-        },
-      ) => {
-        this.scroller?.updateItemData(seq, profile);
       },
     });
     this.scroller = new ChatBoxScroller<ChatItemData>({

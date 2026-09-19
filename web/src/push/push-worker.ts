@@ -123,16 +123,20 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   const selector =
                     reference.type === 'GROUP'
                       ? {
-                          type: 'EXACT',
-                          account: reference.account,
-                          domain: reference.domain,
-                          rev: reference.rev,
+                          type: 'GROUP_META',
+                          threadId: reference.threadId,
+                          profileRev: reference.rev,
+                          subject: { type: 'GROUP' },
                         }
                       : {
-                          type: 'GROUP_MEMBER',
+                          type: 'GROUP_META',
                           threadId: reference.threadId,
-                          memberAccount: reference.account,
-                          memberDomain: reference.domain,
+                          profileRev: reference.rev,
+                          subject: {
+                            type: 'MEMBER',
+                            account: reference.account,
+                            domain: reference.domain,
+                          },
                         };
                   const response = await fetch(
                     API_PREFIX + '/user/profile-resolution',
@@ -152,10 +156,9 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   if (envelope?.code !== 0 || !envelope.data)
                     throw new Error('profile resolution failed');
                   if (envelope.data.status === 'READY')
-                    return storage.commitResolvedGroupMetaProfile(
-                      reference,
+                    return !!(await storage.commitResolvedProfile(
                       envelope.data.profile,
-                    );
+                    ));
                   return false;
                 },
               );
