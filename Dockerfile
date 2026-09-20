@@ -83,7 +83,6 @@ COPY --chown=node:node --from=server-build /build/node_modules ./node_modules
 COPY --chown=node:node --from=server-build /build/dist ./dist
 # Pure SQL migrations + compiled checksum/lock runner used by the one-shot compose migrate service.
 COPY --chown=node:node --from=server-build /build/database ./database
-COPY --chown=node:node config ./config
 # Angular's application builder emits client files under dist/web/browser/ (SSR-ready layout); copy its
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
@@ -98,16 +97,11 @@ COPY --chown=node:node --from=server-build /build/shell-bundle ./shell-bundle
 RUN mkdir -p data && chown -R node:node data
 # Image ENTRYPOINT (env-loader) + the node+caddy supervisor + the custom init program.
 COPY --chown=node:node docker/entrypoint.sh docker/supervisor.sh docker/init.sh /app/
-RUN chmod +x /app/entrypoint.sh /app/supervisor.sh /app/init.sh \
+# Validate the renderer with the image's actual Caddy modules; test files are not stored in the image.
+RUN --mount=type=bind,source=docker,target=/checks \
+    chmod +x /app/entrypoint.sh /app/supervisor.sh /app/init.sh \
     && mkdir -p /app/data/caddy && chown -R node:node /app/data/caddy \
-    # Build-time Caddyfile gate: generate a sample via init.sh (the SAME code path that runs at runtime)
-    # and `caddy adapt` it (caddy is in soms-base). Single source of truth — no separate baked Caddyfile.
-    # The token only needs to be NON-EMPTY to satisfy the `dns cloudflare` parse (adapt does not run
-    # Provision(), unlike `caddy validate`); a real one is supplied at runtime.
-    && SOMS_DOMAIN=validate.local SOMS_TLS_MODE=standard CLOUDFLARE_API_TOKEN=dummy \
-       PGPASSWORD=gatepw ADMIN_BOOTSTRAP_PASSWORD=gateadmin DATABASE_POOL_MAX=10 \
-       SOMS_RUN_DIR=/tmp/gate/run /app/init.sh >/dev/null \
-    && caddy adapt --config /tmp/gate/run/Caddyfile --adapter caddyfile >/dev/null
+    && CADDY_BIN=/usr/bin/caddy bash /checks/init.test.sh
 USER node
 # Public liveness probe via Node's global fetch (no curl/wget install). /api/v1/health is
 # unauthenticated (src/controller/health.controller.ts) — fit for an orchestrator probe.

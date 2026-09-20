@@ -9,7 +9,7 @@ ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ---- xcaddy: compile Caddy with the buildable DNS-01 providers baked in ----
 # An operator can then sign certs via their OWN DNS provider with ZERO rebuild — set CADDY_DNS_DIRECTIVE
-# (+ provider creds) in soms.conf; init.sh transcribes it into the generated Caddyfile (see docker/init.sh).
+# (+ provider credentials) in .env. Caddy resolves {env.NAME} references at runtime.
 #
 # The list is the non-archived caddy-dns modules MINUS those that can't build today. Excluded:
 #   - archived: google-domains, lego-deprecated

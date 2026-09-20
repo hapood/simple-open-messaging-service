@@ -2,6 +2,7 @@
 # Explicit paths (no **) so the legacy builder matches them reliably.
 /node_modules
 /web/node_modules
+/web/tools/openapi-generator
 /admin-web/node_modules
 /web/.angular
 /web/.vscode
@@ -16,6 +17,8 @@
 /.env.local
 /.env.production
 /uploads
+/data
+/deploy/data
 /coverage
 /test
 /Dockerfile

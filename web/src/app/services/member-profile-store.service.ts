@@ -1,5 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbService } from './webdb.service';
 import { messageCreatorKey, parseUserIdentityKey } from './model';
 
@@ -23,6 +25,21 @@ export interface ResolvedMemberProfile {
 export class MemberProfileRepository {
   private readonly webdb = inject(WebdbService);
   readonly changed$ = new Subject<readonly number[]>();
+  private readonly queriedThreads = new Set<number>();
+
+  constructor() {
+    this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
+      // A newly resolved name can also enter a previously empty search result.
+      // Invalidate queried rosters even if that identity was not in their page.
+      if (wake.event === 'PROFILE_AVAILABLE' && this.queriedThreads.size)
+        this.notifyChanged([...this.queriedThreads]);
+    });
+    inject(SessionLifecycleService)
+      .ended$.pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        this.queriedThreads.clear();
+      });
+  }
 
   notifyChanged(threadIds: readonly number[]): void {
     this.changed$.next(threadIds);
@@ -32,6 +49,7 @@ export class MemberProfileRepository {
     threadId: number,
     params: { afterIdentity?: string; take: number; search?: string },
   ): Promise<ResolvedMemberProfile[]> {
+    this.queriedThreads.add(threadId);
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });
     const resolved = members.map((member) => ({
       identityKey: messageCreatorKey({
@@ -58,8 +76,7 @@ export class MemberProfileRepository {
           : '',
       profileRev: member.profileRev,
       profileMessageSeq: member.profileMessageSeq ?? null,
-      profileResolved:
-        member.profileRev === member.resolvedProfileRev,
+      profileResolved: member.profileRev === member.resolvedProfileRev,
     }));
     return resolved;
   }
@@ -68,6 +85,7 @@ export class MemberProfileRepository {
     threadId: number,
     identityKey: string,
   ): Promise<ResolvedMemberProfile | undefined> {
+    this.queriedThreads.add(threadId);
     const identity = parseUserIdentityKey(identityKey);
     if (!identity) return undefined;
     const member = await this.webdb.getGroupMember(
@@ -98,8 +116,7 @@ export class MemberProfileRepository {
           : '',
       profileRev: member.profileRev,
       profileMessageSeq: member.profileMessageSeq ?? null,
-      profileResolved:
-        member.profileRev === member.resolvedProfileRev,
+      profileResolved: member.profileRev === member.resolvedProfileRev,
     };
     return resolved;
   }
@@ -114,9 +131,7 @@ export class MemberProfileRepository {
       search: account,
     });
     return members.find(
-      (member) =>
-        member.account === account &&
-        member.domain === domain,
+      (member) => member.account === account && member.domain === domain,
     );
   }
 
@@ -140,5 +155,4 @@ export class MemberProfileRepository {
     )
       this.notifyChanged([threadId]);
   }
-
 }

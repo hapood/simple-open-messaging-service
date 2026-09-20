@@ -6,6 +6,10 @@ variable "NODE_IMAGE" {
   default = "node:24-bookworm-slim"
 }
 
+variable "BUILD_NETWORK" {
+  default = "default"
+}
+
 variable "GOPROXY" {
   default = "https://proxy.golang.org,direct"
 }
@@ -41,6 +45,7 @@ variable "no_proxy" {
 }
 
 target "runtime-base" {
+  network    = BUILD_NETWORK
   context    = "."
   dockerfile = "Dockerfile.base"
   args = {
@@ -58,6 +63,7 @@ target "runtime-base" {
 }
 
 target "build-base" {
+  network    = BUILD_NETWORK
   context    = "."
   dockerfile = "Dockerfile.build-base"
   args = {
@@ -75,6 +81,7 @@ target "build-base" {
 # Named target contexts keep both bases inside the same BuildKit graph. They are
 # cacheable intermediate targets, not registry dependencies or published images.
 target "app" {
+  network    = BUILD_NETWORK
   context    = "."
   dockerfile = "Dockerfile"
   contexts = {

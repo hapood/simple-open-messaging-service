@@ -301,6 +301,12 @@ export class ThreadRepository {
     await this.paintFromCache();
   }
 
+  /** Re-run the authoritative feed handshake after a mutation that creates a new thread. */
+  async refreshAfterMutation(): Promise<void> {
+    this.ws.disconnect();
+    this.ws.connect();
+  }
+
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
    *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
   private async paintFromCache(): Promise<void> {
@@ -715,7 +721,11 @@ export class ThreadRepository {
     }
     await this.pullDelta(d.stateFeedEndId);
     if (epoch !== this.sessionEpoch) return;
-    if (!port) await this.syncThreadFeed(d.threadFeedEndId);
+    // The worker port owns the durable thread-feed and Group Meta drain when it exists. It still needs
+    // an initial HELLO-driven request: state-feed replay can expose a fresh groupMetaFeedEndId while the
+    // worker has not received a THREAD_FEED_UPDATED wake for that same transaction. Skipping this call
+    // on the worker path leaves the server cursor ahead of the local roster and the group UI empty.
+    await this.syncThreadFeed(d.threadFeedEndId);
   }
 
   private async syncThreadFeed(target: number): Promise<void> {

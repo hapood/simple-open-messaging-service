@@ -163,6 +163,11 @@ export class LoginPageComponent {
     this.serverConfigDialog.open();
   }
 
+  /** Use the guarded configuration route for the failed-connection recovery action. */
+  openServerConfigRoute(): void {
+    this.routeService.redirect(RoutePage.CONFIG);
+  }
+
   /** Immediately unsubscribe the current public-config request and settle on the stopped state. */
   cancelConnection(): void {
     this.config.cancelLoad();

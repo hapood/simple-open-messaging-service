@@ -135,6 +135,7 @@ export class NewGroupComponent {
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data) {
+            void this.convList.refreshAfterMutation();
             this.routeService.closeDlg({ groupId: res.data.groupId });
           } else {
             this.toast.warn(translateBizResult(res, this.transloco));

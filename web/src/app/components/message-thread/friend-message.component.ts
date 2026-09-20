@@ -466,7 +466,9 @@ export class MessageThreadComponent implements OnDestroy {
       search: query,
     });
     const members = roster.map((member) => ({
-      id: member.account,
+      // Mention entity ids are serialized as full SOMFP user addresses. Keeping only the account works
+      // for display but the server rejects the resulting entity because the domain is missing.
+      id: `${member.account}@${member.domain || 'local'}`,
       label: member.name,
       avatarUrl: assetUrl(avatarUrl(member.avatar)),
     }));

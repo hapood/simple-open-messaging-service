@@ -58,6 +58,10 @@ export class ConversationListService {
     this.repo.load(opts);
   }
 
+  refreshAfterMutation(): Promise<void> {
+    return this.repo.refreshAfterMutation();
+  }
+
   /**
    * Mark a thread as open and freeze its entry-time unread boundary before any viewport dwell can advance the
    * read cursor. Opening alone does not mark anything read. The P2P/group metadata refreshes remain lazy.

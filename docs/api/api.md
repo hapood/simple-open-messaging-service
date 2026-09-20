@@ -24,9 +24,9 @@ The SOMS backend listens on `http://localhost:3000` with the global prefix `/api
 
 SOMS authenticates users with a **single opaque session token** — there is **no access/refresh JWT pair**.
 
-- The token is returned once at login (`{ sessionToken }`) and stored sha256-hashed in the `SessionToken` table.
+- The token is returned once at login (`{ session_token }`) and stored sha256-hashed in the `SessionToken` table.
 - **Browser / desktop (web shell)**: the server sets it as an **httpOnly cookie** (auto-attached same-origin; JS never reads it). A non-httpOnly `logged_in` presence cookie lets the SPA observe login state.
-- **Native (`app`)**: the client sends `Authorization: Bearer <sessionToken>` (stored in OS secure storage; under Tauri the Rust transport injects it).
+- **Native (`app`)**: the client sends `Authorization: Bearer <session_token>` (stored in OS secure storage; under Tauri the Rust transport injects it).
 - Every route is authenticated by the global `SessionAuthGuard` (`APP_GUARD`) unless it opts out with `@Public()` — registration, login, `health`, `config`, `.well-known/*`, and `s2s/*` are public.
 - There is **no token-renewal endpoint**. A long-lived token needs no rotation; a revoked/expired token yields `10007` (`SESSION_REVOKED`) and the client re-logs in. On 401 the web client navigates to login (`redoLoginAuth`).
 - **Admin** routes use a separate opaque session (`AdminSession`, own secret, `AdminAuthGuard`) — physically isolated from user sessions but sharing the `User` account namespace.
@@ -68,18 +68,21 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 - **Body**: `{ account: string, password: string, client?: 'app'|'web'|'desktop', persistent?: boolean, trusted?: boolean, device?: string }`
   - `client` defaults to `web`. `persistent` (default `true`) = 14-day sliding cookie vs session cookie. `trusted = client==='app' || (client==='desktop' && trusted===true)` → permanent (revocation-only) session.
-- **Behavior**: `LocalStrategy` verifies the password (argon2); on success issues a `SessionToken` and sets the session cookies (browser) / returns `{ sessionToken }` (native). Failures are counted by the shared `BruteForceService` (ip + user dims, sliding window + graduated ban ladder).
+- **Behavior**: `LocalStrategy` verifies the password (argon2); on success issues a `SessionToken`, sets the session cookies, and returns `{ session_token, mustChangePassword? }`. Native clients use the returned token as `Authorization: Bearer <session_token>`; browser clients use the httpOnly cookie. Failures are counted by the shared `BruteForceService` (ip + user dims, sliding window + graduated ban ladder).
 - **Errors**: `10009` invalid credentials · `10005` banned (`data.bannedUntil`) · `10017` password not set (OTP/QR-only account) · `10018` must change password (admin-generated initial password).
 
-### POST `/auth/otp/login` — OTP login (Android app session) `@Public`
+### POST `/auth/otp/login` — OTP login `@Public`
 
-- **Body**: `{ account: string, code: string, device?: string }` — the admin-issued 6-digit one-time login code.
-- **Behavior**: verifies the `LoginCode` (argon2, single-use via updateMany guard) → issues a trusted `app` `SessionToken`.
+- **Body**: `{ account: string, code: string, client?: 'app'|'web'|'desktop', device?: string }` — the admin-issued 6-digit one-time login code. `client` defaults to `app`.
+- **Behavior**: verifies the `LoginCode` (argon2, single-use via updateMany guard), sets the session cookies, and returns `{ session_token, mustChangePassword? }`.
 - **Errors**: `10012` OTP invalid · `10013` expired · `10014` consumed.
 
-### POST `/auth/qr/{create,poll,scan,confirm}` — QR login `@Public`
+### POST `/auth/qr/{create,poll,scan,confirm}` — QR login
 
-- Desktop calls `create` to render a QR; an already-logged-in device `scan`s it and the desktop `poll`s / `confirm`s to receive a session. Errors: `10015` QR invalid · `10016` expired.
+- `create` and `poll` are public because the desktop is not authenticated yet. `scan` and `confirm`
+  require an already authenticated device. The desktop calls `create` to render a QR; the phone
+  `scan`s and `confirm`s it; the desktop `poll`s until it receives `{ status, session_token }`.
+  Errors: `10015` QR invalid · `10016` expired.
 
 ### POST `/auth/logout` — Logout (current session) `@Public`
 
@@ -97,7 +100,13 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### POST `/auth/sessions` · `POST /auth/revoke-session`
 
 - `sessions`: list the user's active `SessionToken`s (device / userAgent / ip / createdAt / expiresAt / lastSeenAt).
-- `revoke-session`: `{ sessionId }` revoke one of the user's sessions.
+- `revoke-session`: `{ id }` revoke one of the user's sessions by its device-list row id.
+
+### GET `/auth/session-settings` · PUT `/auth/session-settings`
+
+- `GET`: returns the current user's automatic inactive-session termination policy.
+- `PUT`: `{ days }` updates that policy for the current user. This affects automatic termination of
+  old inactive sessions; it does not revoke the current session immediately.
 
 > Full session-hardening rationale (opaque token, trusted vs sliding lifetime, revocation reasons, SSE coordination) is in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
 
@@ -115,11 +124,13 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - **Behavior**: creates a `User` (profile columns inline — name defaults to account) with `domain='local'`.
 - **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
-### POST `/user/my-profile` · `/user/update-profile` · `/user/update-avatar`
+### POST `/user/my-profile` · `/user/update-profile`
 
 - `my-profile`: current user info (password hash omitted).
-- `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
-- `update-avatar`: `multipart/form-data` `file` → validates the image, federation byte limit, and maximum 512×512 dimensions, then stores the accepted bytes unchanged as one avatar resource; returns `{ avatar }`.
+- `update-profile`: `{ name?, bio?, avatarBase64? }` (handle cannot change; bumps `profileRev`).
+  Set `avatarBase64` to a validated image payload to replace the avatar, or `null` to remove it.
+  Avatar bytes are validated, kept byte-for-byte, and returned through the profile response; there is
+  no separate `/user/update-avatar` endpoint.
 
 ### GET `/user/state-feed` — Client state feed
 
@@ -182,6 +193,13 @@ selected revision from the referenced remote fact rather than accepting a revisi
 - The result is an untrusted display card plus relationship status. It is never persisted and never creates
   a stub; clients may close it and start another lookup at any time.
 
+### POST `/message/quote-resolution` — Resolve a message quote
+
+- **Body**: `{ threadId, messageSeq }`.
+- Starts resolution of a visible message quote for the current user. The response is either immediately
+  usable or indicates a pending result; pending completion is announced on the authenticated `/events`
+  stream. The request is authorized against the caller's access to the referenced thread and message.
+
 ---
 
 ## Relationship API
@@ -232,7 +250,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 ### POST `/relationship/accept` — Accept an incoming relationship request
 
 - **Body**: `{ account, domain }`. Address selection supports local and federated user requests as
-  well as local and federated group invitations.
+  well as local and federated group invitations. Database intent ids are not part of the API contract.
 - For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
   active only when both directed intents are effective.
 - For a group invitation, the group mirror becomes active only after the origin's state snapshot
@@ -272,6 +290,13 @@ under `/group/*` because the group, rather than the current user, authors that d
 ### POST `/send-media` — Send media (staged)
 
 - **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
+
+### POST `/link-preview/generations` · GET `/link-preview/generations/:generationId`
+
+- `POST`: `{ url, text?, generationId? }` starts a short-lived, rate-limited OpenGraph/link-card
+  generation and returns its generation id and status. The server fetches the URL asynchronously.
+- `GET`: polls the result for the authenticated owner. Generation records are in-memory and expire;
+  they are not a durable message or media resource.
 
 ### POST `/send-forward` — Send an immutable forwarded-message bundle
 
@@ -502,12 +527,44 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 
 > Controller: [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../../src/upload/upload.service.ts)
 
-### POST `/upload` — Upload (chat media / avatar)
+### POST `/upload` — Upload staged chat media
 
-- **Body**: `multipart/form-data`, field `file`; for chat media, plus `w`/`h` form fields. Allowed: jpg/png/gif/webp (magic-number validated). Size limit per type (video up to ~100 MB; `@fastify/multipart` 100 MB part cap).
-- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`; filename, MIME and message type remain message metadata. Avatars use a separate validated, byte-preserving single-file path. The returned `/uploads/cas/<dd>/<dd>/<digest>` URL is gated by `MediaAccessService` and only READY assets are readable.
-- **Response `data`**: `{ url, w, h }` (chat) or `{ avatar }` (avatar).
-- **Media serving**: `/uploads/*` is served by `@fastify/static` with a root `preHandler` that honors the httpOnly `media_token` cookie **or** a `Bearer` header (resolved by `BearerAuthService`), plus per-object CAS-shard authorization. (Avatars are public.)
+- **Body**: `multipart/form-data`, one or more `file` parts, plus the staged-send `x-client-message-id` and
+  per-file metadata such as `w`, `h`, or `duration`. The staged `/send-media` intent determines which
+  media families are accepted. Files are magic-byte validated; the multipart part cap is 100 MB.
+- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of
+  the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`. The upload
+  also records progress for the staged message; when all expected parts arrive, the pending send is
+  promoted to a `Message`.
+- **Response `data`**: one file returns its result (`digest`, `url`, `size`, and detected metadata); multiple
+  files return `{ items: [...] }`.
+
+### POST `/upload/avatar` — Upload a group avatar
+
+- **Body**: `multipart/form-data`, field `file`.
+- Validates one image, including magic bytes, federation size limits, and maximum 512×512 dimensions,
+  then stores the accepted bytes unchanged under the avatar resource path. This route is for group
+  avatar mutations; user avatars are updated with `POST /user/update-profile` and `avatarBase64`.
+- The returned avatar path does not receive chat-message CAS authorization, but `/uploads/*` still
+  requires an authenticated user session through the `media_token` cookie or `Authorization: Bearer`.
+
+### Resumable upload
+
+- `POST /uploads/resumable/init` initializes or recovers a sequential upload session.
+- `GET /uploads/resumable/:uploadId` returns the authoritative offset.
+- `PUT /uploads/resumable/:uploadId` appends one ordered `application/octet-stream` chunk using
+  `Content-Range`.
+- `POST /uploads/resumable/:uploadId/complete` validates, publishes, and promotes the completed upload.
+- All four endpoints require the authenticated user who owns the upload session. The resumable flow is
+  an upload transport and does not replace `/send-media` or `/upload`'s staged-send contract.
+
+### Authenticated upload resources
+
+- `/uploads/*` is served by `@fastify/static` with the same opaque session authentication as the API:
+  httpOnly `media_token` cookie for browser requests or `Authorization: Bearer` for native clients.
+- Chat-media CAS objects additionally require per-object authorization for the referenced thread/message.
+  Avatar resources do not require membership in a particular chat thread, but they are not anonymous
+  public resources.
 
 > When switching to object storage (S3/OSS/MinIO), only the write target + URL generation change; the API contract stays the same.
 
@@ -517,24 +574,53 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 
 > Controllers under `src/admin/` · Service: [src/admin/admin-auth.service.ts](../../src/admin/admin-auth.service.ts)
 
-Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, `AdminAuthGuard`) — physically isolated from user sessions, but an admin is a linked profile on a `User` row (`Admin.userId → User.id`). `/admin/login` verifies `User.hashPwd` then issues an admin session. All admin routes except `admin/login` require the admin session (httpOnly admin cookie).
+Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, `AdminAuthGuard`) — physically isolated from user sessions, but an admin is a linked profile on a `User` row (`Admin.userId → User.id`). `/admin/login` verifies `User.hashPwd` then issues an admin session. The login and its 2FA/passkey challenge steps are pre-session; all other admin routes require the httpOnly admin cookie.
 
 ### Authentication
 
-- `POST /admin/login` `{ account, password }` → `{ sessionToken }` (sets the admin cookie); updates `Admin.lastLoginAt/lastLoginIp`. `10009` invalid credentials / disabled.
+- `POST /admin/login` `{ account, password }` → either `{ authenticated: true }` (sets the admin cookie)
+  or a 2FA challenge `{ twoFactorRequired, challengeToken, factors }`; updates
+  `Admin.lastLoginAt/lastLoginIp` after successful authentication. `10009` invalid credentials / disabled.
+- `POST /admin/login/verify` `{ challengeToken, code?, backupCode? }` completes TOTP/backup-code login
+  and sets the admin cookie.
+- `POST /admin/webauthn/login/begin` `{ challengeToken }` returns passkey assertion options for a
+  challenge; `POST /admin/webauthn/login/finish` completes the assertion and sets the admin cookie.
 - `POST /admin/logout` — revokes the admin session.
-- Opt-in second factors: **TOTP** (RFC 6238, AES-GCM secret + backup codes) and **WebAuthn passkeys** — enroll/verify flows under `TwoFactorController` / `WebAuthnController`.
+- `POST /admin/2fa/status` — current TOTP status and remaining backup-code count.
+- `POST /admin/2fa/setup` · `/admin/2fa/setup/verify` — begin and confirm TOTP enrollment; the
+  verification response returns backup codes once.
+- `POST /admin/2fa/disable` — disable TOTP; requires the current password and a live TOTP or backup code.
+- `POST /admin/2fa/backup/regenerate` — replace backup codes; requires a live TOTP or backup code.
+- `POST /admin/webauthn/status` — current passkey status.
+- `POST /admin/webauthn/registration/begin` · `/admin/webauthn/registration/finish` — enroll a passkey.
+- `POST /admin/webauthn/credentials` — list saved passkeys.
+- `POST /admin/webauthn/credentials/:id/rename` · `/admin/webauthn/credentials/:id/delete` — manage
+  saved passkeys. All self-service 2FA and passkey-management routes require the admin session.
 
 ### Management
 
 - `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`.
-- `POST /admin/users/:id/{disable,enable,force-logout,sessions,reset-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, reset password (all invalidate sessions).
+- `POST /admin/users/:id/{disable,enable,force-logout,sessions,generate-initial-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, or generate an initial password (password generation invalidates existing sessions). There is no `/reset-password` route.
 - `POST /admin/threads/clear-history` `{ threadId, seq? }` — advances the thread-wide history boundary through `seq` (inclusive), or through the thread's current message sequence when omitted. Requires `ADMIN` or `SUPER_ADMIN` and is audited.
 - `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
 - `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
 - `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
 - `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
 - Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
+
+## Client Diagnostics
+
+- `POST /diagnostics/report` accepts an authenticated `multipart/form-data` diagnostic bundle and
+  manifest for field support. The report is owned by the submitting user; only administrators can list,
+  download, or delete reports.
+
+## Shell Bootstrap
+
+- `GET /shell/compat` returns the server version and public registration/login policy.
+- `GET /shell/web-manifest` returns the current web bundle version and SHA-256 digest.
+- `GET /shell/web-bundle` streams the verified `application/gzip` web bundle as raw bytes, not an
+  `ApiResult` envelope. These three routes are public and rate-limited because the shell calls them
+  before a user session exists.
 
 ---
 

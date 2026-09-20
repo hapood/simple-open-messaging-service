@@ -14,6 +14,14 @@ Run `ng generate component component-name` to generate a new component. You can 
 
 Run `ng build` to build the project. The build artifacts will be stored in the `dist/` directory.
 
+## API types
+
+With the backend serving `http://localhost:3000/api/v1/docs-json`, run `npm run gen:api`
+from this directory to update `src/app/services/api-types.ts`. This command installs the
+generator's locked dependencies on demand. They use TypeScript 5 in an isolated tool
+directory because the frontend uses TypeScript 6. Normal frontend installation and
+Docker builds use the checked-in generated types and do not install the generator.
+
 ## Running unit tests
 
 Run `ng test` to execute the unit tests via [Vitest](https://vitest.dev/).

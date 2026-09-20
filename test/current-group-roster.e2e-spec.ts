@@ -1,3 +1,5 @@
+import { propagateLocalMemberProfileInTx } from '../src/group/meta/member-profile-propagation.js';
+import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { inArray } from 'drizzle-orm';
@@ -104,5 +106,21 @@ describe('current Group Meta roster', () => {
         profileRev: 1,
       }),
     ]);
+  });
+  it('advances profile evidence without changing roles or regressing revisions', async () => {
+    await database.db.transaction(async (tx) => {
+      const meta = new GroupMetaFeedService();
+      await propagateLocalMemberProfileInTx(tx, meta, `owner-${suffix}`, 4);
+      await propagateLocalMemberProfileInTx(tx, meta, `owner-${suffix}`, 2);
+      await propagateLocalMemberProfileInTx(tx, meta, `departed-${suffix}`, 4);
+      const roster = await readCurrentGroupRosterInTx(tx, groupId);
+      expect(roster).toEqual([
+        expect.objectContaining({
+          account: `owner-${suffix}`,
+          role: GroupRole.OWNER,
+          profileRev: 4,
+        }),
+      ]);
+    });
   });
 });

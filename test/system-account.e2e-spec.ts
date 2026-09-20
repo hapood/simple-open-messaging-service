@@ -1,3 +1,4 @@
+import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -38,7 +39,7 @@ describe('system account attribution', () => {
           .where(eq(account.id, systemId)),
       ).rejects.toThrow();
     }
-    const users = new UserService(database);
+    const users = new UserService(database, new GroupMetaFeedService());
     expect(await users.searchUsers('system', { take: 10 })).toEqual({
       list: [],
       total: 0,

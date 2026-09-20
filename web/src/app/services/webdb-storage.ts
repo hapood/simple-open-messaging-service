@@ -363,7 +363,9 @@ export class WebdbStorage {
       domain: key.domain,
       rev: key.rev,
     });
-    if (result.status === 'READY')
+    // Native SSE is delivered after SQLite materialization. Browser commits
+    // notify through the worker instead of emitting again at the request layer.
+    if (isTauri() && result.status === 'READY')
       this.profileWake.next({ event, key });
   }
   private stateFeedWorker: Worker | null = null;
@@ -2730,7 +2732,7 @@ export class WebdbStorage {
         ? `data:image/webp;base64,${profile.avatarBase64}`
         : '',
     };
-    await this.runAccountOperation(async () => {
+    const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
         ['namespaces', 'profiles', 'threads'],
         'readwrite',
@@ -2740,7 +2742,10 @@ export class WebdbStorage {
         snapshot.domain,
         snapshot.namespaceId,
       );
-      await this.writeSnapshot(tx.objectStore('profiles'), snapshot);
+      const written = await this.writeSnapshot(
+        tx.objectStore('profiles'),
+        snapshot,
+      );
       for (const thread of await tx.objectStore('threads').getAll()) {
         if (
           thread.type === 'GROUP' &&
@@ -2776,7 +2781,18 @@ export class WebdbStorage {
           });
       }
       await tx.done;
+      return written;
     });
+    if (written)
+      this.profileWake.next({
+        event: 'PROFILE_AVAILABLE',
+        key: {
+          account: snapshot.account,
+          domain: snapshot.domain,
+          namespaceId: snapshot.namespaceId,
+          rev: snapshot.profileRev,
+        },
+      });
     return snapshot;
   }
 

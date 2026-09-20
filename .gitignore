@@ -74,3 +74,10 @@ dev/federation-lab/local/
 
 # Local federation diagnostic sessions
 /dev/federation-lab/diagnostic-runs/
+
+# Playwright browser test artifacts
+/test-results/
+/test/browser-e2e/test-results/
+/test/browser-e2e/report/
+/test/browser-e2e/playwright-report/
+/test/browser-e2e/**/report/

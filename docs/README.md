@@ -11,6 +11,10 @@ and client behavior.
 - [Architecture](./overview/architecture.md)
 - [Database model](./overview/database.md)
 - [Client and administration API](./api/api.md)
+- [Cross-platform E2E test plan](./development/browser-e2e-test-plan.md)
+- [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
+- [Cross-platform E2E progress](./development/browser-e2e-progress.md)
+- [Browser E2E bug: stale profile update roster](./development/browser-e2e-bug-profile-update-stale-roster.md)
 
 ## Design
 

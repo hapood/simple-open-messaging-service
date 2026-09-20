@@ -19,6 +19,11 @@ describe('filterMentionCandidates', () => {
     expect(filterMentionCandidates(members, 'AL')).toEqual([members[3]]);
   });
 
+  it('matches the full account@domain identity used by mention entities', () => {
+    const member = { id: 'bobmu8azkcm@local', label: 'Bob' };
+    expect(filterMentionCandidates([member], 'bobmu8')).toEqual([member]);
+  });
+
   it('does not impose the old eight-result cap', () => {
     const many = Array.from({ length: 12 }, (_, i) => ({
       id: `zhang${i}@example.com`,

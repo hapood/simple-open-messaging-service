@@ -19,8 +19,13 @@ render() {
     ADMIN_BOOTSTRAP_PASSWORD='admin password with spaces' \
     DATABASE_POOL_MAX=10 \
     CLOUDFLARE_API_TOKEN=cf-token \
+    CADDY_DNS_DIRECTIVE='dns cloudflare {env.CLOUDFLARE_API_TOKEN}' \
     SOMS_RUN_DIR="$SANDBOX/run" \
+    "${@:3}" \
     "$INIT" >/dev/null
+  if [ -n "${CADDY_BIN:-}" ]; then
+    "$CADDY_BIN" adapt --config "$SANDBOX/run/Caddyfile" --adapter caddyfile >/dev/null
+  fi
 }
 
 contains() {
@@ -34,7 +39,8 @@ render single-port
 contains 'https://test.local:7667, https://*.test.local:7667 {'
 # web.test.local is already covered by *.test.local and must not create a duplicate site block.
 test "$(grep -Fc 'https://web.test.local:7667' "$SANDBOX/run/Caddyfile")" = 0
-contains 'dns cloudflare cf-token'
+contains 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}'
+! grep -Fq 'cf-token' "$SANDBOX/run/Caddyfile"
 contains 'handle /api*'
 contains 'handle /.well-known/*'
 contains 'root * /app/public/web'
@@ -55,6 +61,51 @@ contains '@not_lan not remote_ip'
 contains 'handle /admin {'
 contains 'respond @not_lan 403'
 contains 'redir * /admin/ 308'
+
+render single-port public CLOUDFLARE_API_TOKEN=$'sensitive-marker space "quote" \\ backslash & {$OTHER}\nnewline'
+contains 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}'
+! grep -Fq 'sensitive-marker' "$SANDBOX/run/Caddyfile"
+
+render single-port public \
+  CADDY_DNS_DIRECTIVE=$'dns alidns {\n access_key_id {env.ALIYUN_ACCESS_KEY_ID}\n access_key_secret {env.ALIYUN_ACCESS_KEY_SECRET}\n}' \
+  ALIYUN_ACCESS_KEY_ID=example-id ALIYUN_ACCESS_KEY_SECRET=example-secret
+contains 'access_key_secret {env.ALIYUN_ACCESS_KEY_SECRET}'
+! grep -Fq 'example-secret' "$SANDBOX/run/Caddyfile"
+
+render single-port public \
+  CADDY_DNS_DIRECTIVE=$'dns tencentcloud {\n secret_id {env.TENCENTCLOUD_SECRET_ID}\n secret_key {env.TENCENTCLOUD_SECRET_KEY}\n}' \
+  TENCENTCLOUD_SECRET_ID=example-id TENCENTCLOUD_SECRET_KEY=example-secret
+contains 'secret_key {env.TENCENTCLOUD_SECRET_KEY}'
+
+render single-port public CADDY_DNS_DIRECTIVE='dns route53'
+contains 'dns route53'
+render disabled public CLOUDFLARE_API_TOKEN= CADDY_DNS_DIRECTIVE=
+! grep -Fq 'dns cloudflare' "$SANDBOX/run/Caddyfile"
+
+expect_failure() {
+  local expected="$1"
+  shift
+  # Invoke the renderer directly: testing a function in an if-condition disables its errexit.
+  if env -i PATH="$PATH" SOMS_DOMAIN=test.local SOMS_TLS_MODE=single-port \
+    CLOUDFLARE_API_TOKEN=cf-token SOMS_RUN_DIR="$SANDBOX/run" \
+    CADDY_DNS_DIRECTIVE='dns cloudflare {env.CLOUDFLARE_API_TOKEN}' \
+    "$@" "$INIT" >"$SANDBOX/failure.log" 2>&1; then
+    echo 'renderer accepted invalid configuration' >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$SANDBOX/failure.log"
+}
+
+expect_failure 'references {env.CLOUDFLARE_API_TOKEN} but it is not set' CLOUDFLARE_API_TOKEN=
+expect_failure 'CADDY_DNS_DIRECTIVE is required when TLS is enabled' CADDY_DNS_DIRECTIVE=
+expect_failure 'references {env.MISSING_TOKEN} but it is not set' \
+  CADDY_DNS_DIRECTIVE='dns cloudflare {env.MISSING_TOKEN}'
+expect_failure 'must use native {env.NAME} references' \
+  CADDY_DNS_DIRECTIVE='dns cloudflare {CLOUDFLARE_API_TOKEN}'
+expect_failure 'must use native {env.NAME} references' \
+  CADDY_DNS_DIRECTIVE='dns cloudflare {$CLOUDFLARE_API_TOKEN}'
+expect_failure 'SOMS_ADMIN_ACCESS must be one of: public | lan' SOMS_ADMIN_ACCESS=invalid
+! grep -Fq 'unbound variable' "$SANDBOX/failure.log"
 
 if env -i PATH="$PATH" SOMS_TLS_MODE=disabled PGPASSWORD=pw \
   ADMIN_BOOTSTRAP_PASSWORD=admin DATABASE_POOL_MAX=10 SOMS_RUN_DIR="$SANDBOX/run" \

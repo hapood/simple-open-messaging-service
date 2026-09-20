@@ -3,11 +3,12 @@
 # Caddyfile used by the app container. No deployment config is sourced as shell code and no generated
 # environment/password files are shared between containers.
 #
-# Provider-agnostic: the cert DNS line comes from CADDY_DNS_DIRECTIVE (default Cloudflare); any {KEY}
-# references are transcribed from the config, so this script never encodes a provider's credential shape.
+# Provider-agnostic: CADDY_DNS_DIRECTIVE contains native Caddy {env.KEY} placeholders. DNS modules
+# resolve credentials from their process environment; the renderer never inserts credential values.
 #
 # Every config problem is written to stderr and therefore appears in `docker compose logs app`.
 set -euo pipefail
+umask 077
 
 RUN="${SOMS_RUN_DIR:-/tmp/soms}"
 CADDYFILE="${CADDYFILE:-$RUN/Caddyfile}"
@@ -39,7 +40,7 @@ fi
 # .env without this var stays open.
 case "${SOMS_ADMIN_ACCESS:-public}" in
   public|lan) ;;
-  *) die "SOMS_ADMIN_ACCESS must be one of: public | lan (got '${SOMS_ADMIN_ACCESS:-<unset>}') in $CONFIG" ;;
+  *) die "SOMS_ADMIN_ACCESS must be one of: public | lan (got '${SOMS_ADMIN_ACCESS:-<unset>}')" ;;
 esac
 # Registrable-domain (apex) of a bare hostname — last 2 labels. Used to enforce that SOMS_LAN_DOMAIN shares
 # SOMS_DOMAIN's apex (both are certified via ONE DNS-01 provider/zone). Multi-label TLDs (co.uk) reduce
@@ -83,29 +84,21 @@ if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
     die "SOMS_LAN_DOMAIN ('$SOMS_LAN_DOMAIN' → $(apex_of "$SOMS_LAN_DOMAIN")) must share SOMS_DOMAIN's registrable domain ('$SOMS_DOMAIN' → $(apex_of "$SOMS_DOMAIN")) — both are certified via one DNS-01 provider/zone (CADDY_DNS_DIRECTIVE). Use a subdomain of the same apex."
   fi
 fi
-# CADDY_DNS_DIRECTIVE defaults to Cloudflare (the common provider) unless overridden for another.
-# Default set via an explicit test (not `${var:=...}`): the value contains '}', which would terminate a
-# `${...:=...}` expansion early and truncate the default.
-if [ -z "${CADDY_DNS_DIRECTIVE:-}" ]; then
-  CADDY_DNS_DIRECTIVE='dns cloudflare {CLOUDFLARE_API_TOKEN}'
-fi
-
-# --- Resolve the DNS-01 directive (single-port/standard only — disabled serves plain HTTP): transcribe each
-# {KEY} ref from the environment into a literal value. Providers such as Route 53 may instead read
-# their credentials directly from the Caddy process environment. ---
-caddy_refs=""
+# Validate native environment references without expanding secrets. Modules such as Route 53 may
+# also read credentials directly from their environment without explicit placeholders.
 if [ "$SOMS_TLS_MODE" = "disabled" ]; then
   scheme="http"
   tls_block=""
 else
   scheme="https"
+  [ -n "${CADDY_DNS_DIRECTIVE:-}" ] || die 'CADDY_DNS_DIRECTIVE is required when TLS is enabled'
   directive="$CADDY_DNS_DIRECTIVE"
-  for ref in $(printf '%s\n' "$directive" | grep -oE '\{[A-Z0-9_]+\}' | tr -d '{}' | sort -u); do
-    val="${!ref:-}"
-    [ -n "$val" ] || die "CADDY_DNS_DIRECTIVE references {$ref} but it is not set"
-    directive="${directive//\{$ref\}/$val}"
-    caddy_refs="$caddy_refs $ref"
-  done
+  if [[ "$directive" =~ \{[A-Za-z_][A-Za-z0-9_]*\} ]] || [[ "$directive" == *'{$'* ]]; then
+    die 'CADDY_DNS_DIRECTIVE must use native {env.NAME} references, not {NAME} or {$NAME}'
+  fi
+  while IFS= read -r ref; do
+    [ -n "${!ref:-}" ] || die "CADDY_DNS_DIRECTIVE references {env.$ref} but it is not set"
+  done < <(printf '%s\n' "$directive" | grep -oE '\{env\.[A-Za-z_][A-Za-z0-9_]*\}' | sed 's/^{env\.//; s/}$//' | sort -u)
   tls_block="$(printf '\ttls {\n\t\t%s\n\t}' "$directive")"
 fi
 

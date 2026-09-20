@@ -4,7 +4,14 @@ import type { INestApplication } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { accountThreadState, message } from '../src/database/schema.js';
+import {
+  accountThreadState,
+  groupMeta,
+  groupMetaMemberFeed,
+  message,
+} from '../src/database/schema.js';
+import { GroupRole } from '../src/database/enums.js';
+import { readCurrentGroupRosterInTx } from '../src/group/meta/current-group-roster.js';
 import { readThreadHeadSnapshotInTx } from '../src/federation/federation-thread-head-snapshot.js';
 import { GroupService } from '../src/group/group.service.js';
 import { seedUser } from './seed.js';
@@ -60,5 +67,61 @@ describe('group creation', () => {
         readThreadHeadSnapshotInTx(tx, created.threadId),
       ),
     ).toEqual({ messageEndSeq: 0, tombstoneEndSeq: 0 });
+  });
+
+  it('publishes the creator as the first OWNER in the authoritative Group Meta roster', async () => {
+    const owner = await seedUser(
+      app as unknown as INestApplication,
+      'group-creation-roster-owner',
+    );
+    const created = await groups.createNewGroup({
+      owner: owner.id,
+      name: 'Roster group',
+    });
+
+    const [meta] = await database.db
+      .select({ metaEndId: groupMeta.metaEndId })
+      .from(groupMeta)
+      .where(eq(groupMeta.threadId, created.threadId));
+    const facts = await database.db
+      .select({
+        feedId: groupMetaMemberFeed.feedId,
+        account: groupMetaMemberFeed.memberAccount,
+        domain: groupMetaMemberFeed.memberDomain,
+        operation: groupMetaMemberFeed.operation,
+        body: groupMetaMemberFeed.body,
+      })
+      .from(groupMetaMemberFeed)
+      .where(eq(groupMetaMemberFeed.threadId, created.threadId));
+
+    expect(meta?.metaEndId).toBeGreaterThan(0);
+    expect(facts).toEqual([
+      expect.objectContaining({ operation: 'GROUP_PROFILE' }),
+      expect.objectContaining({
+        account: owner.account,
+        domain: 'local',
+        operation: 'UPSERT',
+        body: { role: GroupRole.OWNER, profileRev: 1 },
+      }),
+    ]);
+    expect(
+      await database.db.query.accountThreadState.findFirst({
+        where: and(
+          eq(accountThreadState.accountId, owner.id),
+          eq(accountThreadState.threadId, created.threadId),
+        ),
+      }),
+    ).toMatchObject({ groupMetaFeedEndId: meta?.metaEndId });
+    await expect(
+      database.db.transaction((tx) =>
+        readCurrentGroupRosterInTx(tx, created.threadId),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        account: owner.account,
+        domain: 'local',
+        role: GroupRole.OWNER,
+      }),
+    ]);
   });
 });

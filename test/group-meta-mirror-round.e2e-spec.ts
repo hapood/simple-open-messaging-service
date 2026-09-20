@@ -30,6 +30,7 @@ import {
   type MirrorMetaReplicatedItem,
 } from '../src/group/meta/mirror-meta-shared.js';
 import { seedFederatedPeerNamespace } from './seed.js';
+import { readCurrentGroupRosterInTx } from '../src/group/meta/current-group-roster.js';
 
 describe('mirror Group Meta rounds', () => {
   const suffix = Date.now().toString(36);
@@ -280,6 +281,12 @@ describe('mirror Group Meta rounds', () => {
       rows.find((row) => row.memberAccount === 'stale-member'),
     ).toBeUndefined();
     expect(rows.filter((row) => row.operation === 'UPSERT')).toHaveLength(3);
+    // A mirror must expose the same active roster cardinality as the
+    // authority after the complete Group Meta drain, including the remote
+    // owner. This is the server-side contract consumed by the client mirror.
+    await expect(
+      database.db.transaction((tx) => readCurrentGroupRosterInTx(tx, threadId)),
+    ).resolves.toHaveLength(3);
     expect(rows.find((row) => row.operation === 'GROUP_PROFILE')).toMatchObject(
       {
         feedId: 9,

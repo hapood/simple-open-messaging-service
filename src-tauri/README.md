@@ -45,7 +45,6 @@ npm --prefix web install                                  # so beforeBuildComman
 
 `tauri-cli` here is the `cargo tauri` binary. Pin it to `2.11.4` to match `web/package.json`'s
 `@tauri-apps/cli` — the same version-drift guard the Makefile's host-toolchain check enforces.
-
 ### `gen/android` is tracked; signing keys are secrets
 
 `gen/android/` — the customized Android Studio project (FCM, Kotlin bridges, the dev shell, signing

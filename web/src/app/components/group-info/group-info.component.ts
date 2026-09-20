@@ -232,7 +232,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.rosterSub?.unsubscribe();
   }
 
+  private rosterRequest = 0;
+
   async loadMembers() {
+    const request = ++this.rosterRequest;
     const threadId = this.threadId();
     if (threadId === undefined) return;
     this.loading.set(true);
@@ -240,6 +243,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       take: 50,
       search: this.memberQuery(),
     });
+    if (request !== this.rosterRequest) return;
     this.roster.set(resolved);
     this.rosterHasMore.set(resolved.length === 50);
     this.loading.set(false);
@@ -255,6 +259,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       current.length === 0
     )
       return;
+    const request = this.rosterRequest;
     this.loadingMore.set(true);
     try {
       const page = await this.memberProfiles.queryPage(threadId, {
@@ -262,6 +267,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         take: 50,
         search: this.memberQuery(),
       });
+      if (request !== this.rosterRequest) return;
       this.roster.update((members) => [...members, ...page]);
       this.rosterHasMore.set(page.length === 50);
     } finally {

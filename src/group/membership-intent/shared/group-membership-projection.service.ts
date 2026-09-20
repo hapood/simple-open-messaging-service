@@ -116,6 +116,14 @@ export class GroupMembershipProjectionService {
         applicationEndId: sql<number>`(SELECT ${groupMeta.applicationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
         invitationEndId: sql<number>`(SELECT ${groupMeta.invitationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
       };
+      // A locally authoritative group creates its first Group Meta facts in
+      // this same transaction. Seed the participant cursor with that exact
+      // coordinate so the first thread-feed snapshot pulls the owner roster.
+      // Mirrors use their replicated cursor and must not read the origin's
+      // metaEndId here.
+      const groupMetaFeedEndId = params.hostedLocally
+        ? sql<number>`(SELECT ${groupMeta.metaEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`
+        : undefined;
       const initialManagerProjection = initialGroupManagerProjection(
         role,
         projectionHead,
@@ -132,6 +140,7 @@ export class GroupMembershipProjectionService {
           accountId: localAccount.id,
           threadId: params.threadId,
           role,
+          ...(groupMetaFeedEndId !== undefined ? { groupMetaFeedEndId } : {}),
           ...initialManagerProjection,
           updatedAt: new Date(),
         })
@@ -139,6 +148,11 @@ export class GroupMembershipProjectionService {
           target: [accountThreadState.accountId, accountThreadState.threadId],
           set: {
             role,
+            ...(groupMetaFeedEndId !== undefined
+              ? {
+                  groupMetaFeedEndId: sql<number>`GREATEST(COALESCE("AccountThreadState"."groupMetaFeedEndId", 0), ${groupMetaFeedEndId})`,
+                }
+              : {}),
             ...managerProjection,
             messageVisibleThroughSeq: null,
             updatedAt: new Date(),

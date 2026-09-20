@@ -19,6 +19,10 @@ interface ApplyRequest {
 }
 
 const storage = new WebdbStorage();
+// Forward committed snapshots, including immediate HTTP READY responses.
+storage.profileWake$.subscribe((wake) =>
+  postMessage({ type: 'profile-wake', wake }),
+);
 let openedUserId: string | null = null;
 let queue = Promise.resolve();
 let feedPort: MessagePort | null = null;
@@ -216,19 +220,13 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             queue = queue.then(async () => {
               try {
                 if (message.event === 'PROFILE_AVAILABLE') {
-                  const result = await requestProfile(
-                    data.profileResolutionUrl,
-                  )({
+                  await requestProfile(data.profileResolutionUrl)({
                     type: 'EXACT',
                     account: key.account,
                     domain: key.domain,
                     rev: key.rev,
                   });
-                  if (result.status !== 'READY') return;
-                  postMessage({
-                    type: 'profile-wake',
-                    wake: { event: 'PROFILE_AVAILABLE', key },
-                  });
+                  // The committed snapshot is forwarded by storage.profileWake$.
                   return;
                 }
                 const reason =
