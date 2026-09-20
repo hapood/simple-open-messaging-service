@@ -1,9 +1,6 @@
 import { Injectable, inject, isDevMode } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
-import { firstValueFrom } from 'rxjs';
 import { consumePendingThreadNavigation } from './pending-thread-navigation';
 import {
   PushRegistrationService,
@@ -22,21 +19,8 @@ export type FirebaseClientConfigPayload = {
   gcmSenderId?: string;
 };
 
-export type FcmProbeStatus = {
-  probeId: string;
-  stage: 'fcm_accepted' | 'device_received' | 'failed';
-  createdAt: number;
-  acceptedAt?: number;
-  receivedAt?: number;
-  latencyMs?: number;
-  errorCode?: string;
-};
-
-type ApiEnvelope<T> = { code: number; message: string; data: T };
-
 @Injectable({ providedIn: 'root' })
 export class PushService {
-  private readonly http = inject(HttpClient);
   private readonly nav = inject(NavStateMachineService);
   private readonly registration = inject(PushRegistrationService);
 
@@ -172,34 +156,6 @@ export class PushService {
   /** Native token rotation is another event-driven registration trigger. */
   private onToken(_token: string) {
     this.registration.refresh();
-  }
-
-  /** Start and poll the authenticated current-device FCM delivery probe. The settings UI owns the
-   * one-second cadence and 15-second deadline; these methods only expose the two server operations. */
-  async createFcmProbe(token: string): Promise<FcmProbeStatus> {
-    const response = await firstValueFrom(
-      this.http.post<ApiEnvelope<FcmProbeStatus>>(
-        `${apiPrefix()}/devices/fcm-probes`,
-        { token },
-      ),
-    );
-    return this.unwrap(response);
-  }
-
-  async getFcmProbe(probeId: string): Promise<FcmProbeStatus> {
-    const response = await firstValueFrom(
-      this.http.get<ApiEnvelope<FcmProbeStatus>>(
-        `${apiPrefix()}/devices/fcm-probes/${encodeURIComponent(probeId)}`,
-      ),
-    );
-    return this.unwrap(response);
-  }
-
-  private unwrap<T>(response: ApiEnvelope<T>): T {
-    if (response.code !== 0 || response.data == null) {
-      throw new Error(response.message || 'FCM health check failed');
-    }
-    return response.data;
   }
 
   /** Ask for POST_NOTIFICATIONS once, after the first login (Android 13+). The native side handles the

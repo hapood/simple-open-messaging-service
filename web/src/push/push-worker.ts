@@ -40,14 +40,47 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   scope.addEventListener('push', (event) => {
     event.waitUntil(
       (async () => {
-        // Without cross-context locks, let ordinary page synchronization own the feed.
-        if (!scope.navigator.locks) return;
-        let payload: { type?: string; threadFeedEndId?: unknown };
+        let payload: {
+          type?: string;
+          threadFeedEndId?: unknown;
+          probeId?: unknown;
+        };
         try {
           payload = event.data?.json();
         } catch {
           return;
         }
+        if (payload?.type === 'PUSH_HEALTH_PROBE') {
+          if (
+            typeof payload.probeId !== 'string' ||
+            !/^[0-9a-f-]{36}$/i.test(payload.probeId)
+          )
+            return;
+          const response = await fetch(
+            API_PREFIX + '/devices/push-probes/' + payload.probeId + '/ack',
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              signal: AbortSignal.timeout(10000),
+            },
+          );
+          // A logout or account/session switch must not display an old session's probe.
+          if (!response.ok || (await response.json())?.code !== 0) return;
+          const language =
+            (await preferences.get<string>('global', 'language')) ??
+            scope.navigator.language;
+          const locale = language?.startsWith('zh') ? zh : en;
+          await scope.registration.showNotification(
+            locale.settings.pushProbeTitle,
+            {
+              body: locale.settings.pushProbeNotification,
+              tag: 'soms-push-probe',
+            },
+          );
+          return;
+        }
+        // Without cross-context locks, let ordinary page synchronization own the feed.
+        if (!scope.navigator.locks) return;
         const rawTarget = payload?.threadFeedEndId;
         if (
           typeof rawTarget !== 'number' &&

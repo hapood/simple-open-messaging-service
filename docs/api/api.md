@@ -427,12 +427,33 @@ See the [Android calls client contract](../platform/android/calls.md).
 > Controllers: [device.controller.ts](../../src/controller/device.controller.ts) · [notification.controller.ts](../../src/controller/notification.controller.ts)
 
 - `POST /devices/register` — register a push subscription directly on the authenticated session. Required fields: `sessionId`, `pushSubscriptionRev` (integer, at least 1), `platform`, and `token` (FCM token for ANDROID, endpoint for WEB). WEB also requires `p256dh` and `auth`; `deviceId` is optional diagnostic metadata. The supplied session ID must match authentication. Logout/revocation clears the subscription atomically; there is no separate unregister endpoint.
-- `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
+- `POST /devices/push-probes`, `GET /devices/push-probes/:probeId`, and `POST /devices/push-probes/:probeId/ack` — run and observe a one-off Web Push or Android FCM delivery probe for the authenticated session. No token or target session is accepted in the request body; the server selects the session's stored subscription.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
 - `GET /user/state-feed` — account and relationship metadata.
 - `POST /thread/feed-delta` — unified thread heads, read positions, unread counts and bounded previews.
   Clients reconcile local optimistic reads and compose notifications from this feed.
   Message notifications have no action buttons. Body taps open the thread; dismissal is local.
+
+### Interactive push delivery test
+
+Browser notification settings and Android push settings share a **Send test** control.
+It sends a real `PUSH_HEALTH_PROBE` even when the current session has a live SSE connection.
+The response envelope's `data` contains `probeId`, `stage`, `createdAt`, optional `acceptedAt`,
+`receivedAt`, `latencyMs`, and `errorCode`. Stages are `provider_accepted`, `device_received`,
+or `failed`; only an authenticated receipt from the same user and session confirms delivery.
+Web receives and acknowledges the probe inside its Service Worker, then attempts to display
+a dedicated test notification even with the page open. Android acknowledges from its native
+FCM receiver, independently of the WebView, preserving its silent delivery diagnostic.
+Receipt does not prove the operating system displayed a notification.
+
+The UI polls only during this explicit test, waiting up to 15 seconds after provider acceptance.
+A timeout can mean either failed delivery or a failed receipt request. There is a 30-second
+per-session send cooldown; provider TTL is 30 seconds. Status and cooldown are process-local,
+expire after 60 seconds, and do not survive a server restart; multi-instance deployments need
+sticky routing or a shared probe store. Missing registrations and disabled transports are
+reported as failures. Permanent provider failures use normal revision recovery; the user can
+retry after recovery and cooldown. Leaving settings or changing sessions cancels UI polling.
+This replaces the former Android-only FCM probe endpoints without compatibility aliases.
 
 ### Session push recovery
 

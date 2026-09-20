@@ -1007,7 +1007,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/devices/fcm-probes": {
+    "/api/v1/devices/push-probes": {
         parameters: {
             query?: never;
             header?: never;
@@ -1016,23 +1016,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start an end-to-end FCM delivery probe for the current Android device */
-        post: operations["DeviceController_createFcmProbe"];
+        /** Start an end-to-end push delivery probe for the authenticated session */
+        post: operations["DeviceController_createPushProbe"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/devices/fcm-probes/{probeId}": {
+    "/api/v1/devices/push-probes/{probeId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Read a one-off FCM delivery probe status */
-        get: operations["DeviceController_getFcmProbe"];
+        /** Read a one-off session push delivery probe status */
+        get: operations["DeviceController_getPushProbe"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1041,7 +1041,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/devices/fcm-probes/{probeId}/ack": {
+    "/api/v1/devices/push-probes/{probeId}/ack": {
         parameters: {
             query?: never;
             header?: never;
@@ -1050,8 +1050,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Acknowledge that the Android device received an FCM delivery probe */
-        post: operations["DeviceController_acknowledgeFcmProbe"];
+        /** Acknowledge that this session received a push delivery probe */
+        post: operations["DeviceController_acknowledgePushProbe"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4395,10 +4395,6 @@ export interface components {
             /** @description Optional stable client installation id for diagnostics. Delivery suppression is bound to the authenticated session. */
             deviceId?: string;
         };
-        CreateFcmProbeDto: {
-            /** @description Current Android FCM registration token. */
-            token: string;
-        };
         OtpLoginDto: {
             /**
              * @description Account the one-time code was issued for.
@@ -5046,6 +5042,15 @@ export interface components {
             pushSubscriptionRev: number;
             /** @description False means the submitted revision was stale; reconcile the returned revision. */
             registered: boolean;
+        };
+        PushProbeStatusDto: {
+            probeId: string;
+            stage: "provider_accepted" | "device_received" | "failed";
+            createdAt: number;
+            acceptedAt?: number;
+            receivedAt?: number;
+            latencyMs?: number;
+            errorCode?: string;
         };
     };
     responses: never;
@@ -6398,28 +6403,28 @@ export interface operations {
             };
         };
     };
-    DeviceController_createFcmProbe: {
+    DeviceController_createPushProbe: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateFcmProbeDto"];
-            };
-        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["PushProbeStatusDto"];
+                    };
+                };
             };
         };
     };
-    DeviceController_getFcmProbe: {
+    DeviceController_getPushProbe: {
         parameters: {
             query?: never;
             header?: never;
@@ -6434,11 +6439,15 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["PushProbeStatusDto"];
+                    };
+                };
             };
         };
     };
-    DeviceController_acknowledgeFcmProbe: {
+    DeviceController_acknowledgePushProbe: {
         parameters: {
             query?: never;
             header?: never;
@@ -6453,7 +6462,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["PushProbeStatusDto"];
+                    };
+                };
             };
         };
     };

@@ -43,24 +43,19 @@ import {
 } from './push-registration.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { RegisterDeviceDto } from '../dto/device.dto.js';
+import {
+  RegisterDeviceDto,
+  type PushProbeStatusDto,
+} from '../dto/device.dto.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
-export type FcmProbeStatus = {
-  probeId: string;
-  stage: 'fcm_accepted' | 'device_received' | 'failed';
-  createdAt: number;
-  acceptedAt?: number;
-  receivedAt?: number;
-  latencyMs?: number;
-  errorCode?: string;
-};
+export type PushProbeStatus = PushProbeStatusDto;
 
-type FcmProbeEntry = FcmProbeStatus & {
+type PushProbeEntry = PushProbeStatus & {
   userId: number;
-  token: string;
+  sessionId: number;
   sending?: boolean;
 };
 
@@ -96,8 +91,8 @@ export class PushService implements OnModuleDestroy {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
   private readonly fcmCredentialPath: string;
-  private readonly fcmProbes = new Map<string, FcmProbeEntry>();
-  private readonly fcmProbeCooldowns = new Map<string, number>();
+  private readonly pushProbes = new Map<string, PushProbeEntry>();
+  private readonly pushProbeCooldowns = new Map<string, number>();
   private readonly messageThrottle = new AccountFeedThrottle(
     5_000,
     (userId, threadFeedEndId) =>
@@ -287,120 +282,146 @@ export class PushService implements OnModuleDestroy {
     );
   }
 
-  /** Send a data-only probe to the caller's registered Android token. Probe state is intentionally
+  /** Probe the authenticated session, even with live SSE. Probe state is intentionally
    * process-local and short-lived: this is an interactive diagnostic, not delivery telemetry. */
-  async createFcmProbe(userId: number, token: string): Promise<FcmProbeStatus> {
-    this.pruneFcmProbes();
+  async createPushProbe(
+    userId: number,
+    sessionId: number,
+  ): Promise<PushProbeStatus> {
+    this.prunePushProbes();
+    const [row] = await this.registrations(
+      and(eq(sessionToken.userId, userId), eq(sessionToken.id, sessionId)),
+    );
+    if (!row) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'Current session push subscription is not registered; wait for recovery and retry',
+      );
+    }
+    // No await between the cooldown check and reservation: concurrent clicks send once.
     const now = Date.now();
-    const cooldownKey = `${userId}:${token}`;
-    const lastProbeAt = this.fcmProbeCooldowns.get(cooldownKey) ?? 0;
+    const cooldownKey = `${userId}:${sessionId}`;
+    const lastProbeAt = this.pushProbeCooldowns.get(cooldownKey) ?? 0;
     const retryAfterMs = 30_000 - (now - lastProbeAt);
     if (retryAfterMs > 0) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
-        'FCM health check is cooling down',
+        'Push health check is cooling down',
         HttpStatus.TOO_MANY_REQUESTS,
         { retryAfter: Math.ceil(retryAfterMs / 1000) },
       );
     }
 
-    const [row] = await this.registrations(
-      and(
-        eq(sessionToken.userId, userId),
-        eq(sessionToken.pushToken, token),
-        eq(sessionToken.pushPlatform, 'ANDROID'),
-      ),
-    );
-    if (!row) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'current Android FCM token is not registered',
-      );
-    }
-
-    this.fcmProbeCooldowns.set(cooldownKey, now);
+    this.pushProbeCooldowns.set(cooldownKey, now);
     const probeId = randomUUID();
-    const entry: FcmProbeEntry = {
+    const entry: PushProbeEntry = {
       probeId,
       userId,
-      token,
+      sessionId,
       stage: 'failed',
       createdAt: now,
       sending: true,
     };
-    this.fcmProbes.set(probeId, entry);
+    this.pushProbes.set(probeId, entry);
 
-    if (!this.messaging) {
-      entry.errorCode = 'FCM_NOT_CONFIGURED';
-      return this.publicFcmProbe(entry);
-    }
     try {
-      await this.messaging.send({
-        token,
-        data: { type: 'FCM_HEALTH_PROBE', probeId, ts: String(now) },
-        android: { priority: 'high', ttl: 30_000 },
-      });
-      if (entry.stage !== 'device_received') entry.stage = 'fcm_accepted';
+      const data = { type: 'PUSH_HEALTH_PROBE', probeId, ts: String(now) };
+      if (row.platform === 'WEB') {
+        if (!this.settings.isWebPushConfigured)
+          throw new Error('WEB_PUSH_NOT_CONFIGURED');
+        await this.sendWebPush(
+          {
+            endpoint: row.token,
+            keys: { p256dh: row.webP256dh!, auth: row.webAuth! },
+          },
+          JSON.stringify(data),
+          30,
+        );
+      } else {
+        if (!this.messaging) throw new Error('FCM_NOT_CONFIGURED');
+        await this.messaging.send({
+          token: row.token,
+          data,
+          android: { priority: 'high', ttl: 30_000 },
+        });
+      }
+      if (entry.stage !== 'device_received') entry.stage = 'provider_accepted';
       entry.acceptedAt = Date.now();
     } catch (e) {
       entry.errorCode =
         (e as { code?: string }).code ??
         (e as Error).message ??
-        'FCM_SEND_FAILED';
-      if (entry.errorCode === 'messaging/registration-token-not-registered')
+        'PUSH_SEND_FAILED';
+      const statusCode = (e as { statusCode?: number }).statusCode;
+      if (
+        entry.errorCode === 'messaging/registration-token-not-registered' ||
+        statusCode === 404 ||
+        statusCode === 410
+      )
         await this.invalidateSubscription(row);
     } finally {
       entry.sending = false;
     }
-    return this.publicFcmProbe(entry);
+    return this.publicPushProbe(entry);
   }
 
-  getFcmProbe(userId: number, probeId: string): FcmProbeStatus {
-    this.pruneFcmProbes();
-    const entry = this.fcmProbes.get(probeId);
-    if (!entry || entry.userId !== userId) {
+  getPushProbe(
+    userId: number,
+    sessionId: number,
+    probeId: string,
+  ): PushProbeStatus {
+    this.prunePushProbes();
+    const entry = this.pushProbes.get(probeId);
+    if (!entry || entry.userId !== userId || entry.sessionId !== sessionId) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        'FCM health check not found',
+        'Push health check not found',
       );
     }
-    return this.publicFcmProbe(entry);
+    return this.publicPushProbe(entry);
   }
 
-  acknowledgeFcmProbe(userId: number, probeId: string): FcmProbeStatus {
-    this.pruneFcmProbes();
-    const entry = this.fcmProbes.get(probeId);
-    if (!entry || entry.userId !== userId) {
+  acknowledgePushProbe(
+    userId: number,
+    sessionId: number,
+    probeId: string,
+  ): PushProbeStatus {
+    this.prunePushProbes();
+    const entry = this.pushProbes.get(probeId);
+    if (!entry || entry.userId !== userId || entry.sessionId !== sessionId) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        'FCM health check not found',
+        'Push health check not found',
       );
     }
-    if (entry.sending || entry.stage === 'fcm_accepted') {
+    if (
+      entry.stage !== 'device_received' &&
+      (entry.sending || entry.stage === 'provider_accepted')
+    ) {
       entry.stage = 'device_received';
       entry.receivedAt = Date.now();
       entry.latencyMs = entry.receivedAt - entry.createdAt;
     }
-    return this.publicFcmProbe(entry);
+    return this.publicPushProbe(entry);
   }
 
-  private publicFcmProbe(entry: FcmProbeEntry): FcmProbeStatus {
+  private publicPushProbe(entry: PushProbeEntry): PushProbeStatus {
     const {
       userId: _userId,
-      token: _token,
+      sessionId: _sessionId,
       sending: _sending,
       ...status
     } = entry;
     return status;
   }
 
-  private pruneFcmProbes(): void {
+  private prunePushProbes(): void {
     const cutoff = Date.now() - 60_000;
-    for (const [probeId, entry] of this.fcmProbes) {
-      if (entry.createdAt < cutoff) this.fcmProbes.delete(probeId);
+    for (const [probeId, entry] of this.pushProbes) {
+      if (entry.createdAt < cutoff) this.pushProbes.delete(probeId);
     }
-    for (const [key, createdAt] of this.fcmProbeCooldowns) {
-      if (createdAt < cutoff) this.fcmProbeCooldowns.delete(key);
+    for (const [key, createdAt] of this.pushProbeCooldowns) {
+      if (createdAt < cutoff) this.pushProbeCooldowns.delete(key);
     }
   }
 
@@ -420,10 +441,12 @@ export class PushService implements OnModuleDestroy {
   private async sendWebPush(
     sub: { endpoint: string; keys: { p256dh: string; auth: string } },
     payload: string,
+    ttl?: number,
   ): Promise<void> {
     const vapid = this.settings.getVapid();
     if (!vapid) throw new Error('Web Push not configured');
     await webpush.sendNotification(sub, payload, {
+      ...(ttl === undefined ? {} : { TTL: ttl, timeout: 15_000 }),
       vapidDetails: {
         subject: vapid.subject,
         publicKey: vapid.publicKey,

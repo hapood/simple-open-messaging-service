@@ -85,17 +85,15 @@ describe('PushService — identity-only payloads', () => {
     };
     registrations.mockResolvedValue([snapshot]);
     (svc as unknown as { messaging: unknown }).messaging = {
-      sendEach: vi
-        .fn()
-        .mockResolvedValue({
-          failureCount: 1,
-          responses: [
-            {
-              success: false,
-              error: { code: 'messaging/registration-token-not-registered' },
-            },
-          ],
-        }),
+      sendEach: vi.fn().mockResolvedValue({
+        failureCount: 1,
+        responses: [
+          {
+            success: false,
+            error: { code: 'messaging/registration-token-not-registered' },
+          },
+        ],
+      }),
     };
     const invalidate = vi
       .spyOn(svc, 'invalidateSubscription')
@@ -385,25 +383,25 @@ describe('PushService — identity-only payloads', () => {
       send,
     };
 
-    const created = await svc.createFcmProbe(5, 'android-token');
-    expect(created.stage).toBe('fcm_accepted');
+    const created = await svc.createPushProbe(5, 9);
+    expect(created.stage).toBe('provider_accepted');
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         token: 'android-token',
         data: expect.objectContaining({
-          type: 'FCM_HEALTH_PROBE',
+          type: 'PUSH_HEALTH_PROBE',
           probeId: created.probeId,
         }),
       }),
     );
 
-    const acknowledged = svc.acknowledgeFcmProbe(5, created.probeId);
+    const acknowledged = svc.acknowledgePushProbe(5, 9, created.probeId);
     expect(acknowledged.stage).toBe('device_received');
     expect(acknowledged.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(svc.getFcmProbe(5, created.probeId)).toEqual(acknowledged);
+    expect(svc.getPushProbe(5, 9, created.probeId)).toEqual(acknowledged);
   });
 
-  it('enforces the 30-second probe cooldown per user and token', async () => {
+  it('enforces the 30-second probe cooldown per session', async () => {
     registrations.mockResolvedValue([
       {
         id: 9,
@@ -417,11 +415,104 @@ describe('PushService — identity-only payloads', () => {
       send,
     };
 
-    await svc.createFcmProbe(5, 'android-token');
-    await expect(svc.createFcmProbe(5, 'android-token')).rejects.toMatchObject({
+    await svc.createPushProbe(5, 9);
+    await expect(svc.createPushProbe(5, 9)).rejects.toMatchObject({
       status: 429,
       data: { retryAfter: 30 },
     });
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes a Web session even while SSE is online and keeps receipts session-scoped', async () => {
+    registrations.mockResolvedValue([
+      {
+        token: 'https://push/web',
+        platform: 'WEB',
+        webP256dh: 'key',
+        webAuth: 'auth',
+      },
+    ]);
+    sse.isSessionOnline.mockReturnValue(true);
+    const created = await svc.createPushProbe(5, 9);
+    expect(created.stage).toBe('provider_accepted');
+    expect(sendNotification).toHaveBeenCalledWith(
+      { endpoint: 'https://push/web', keys: { p256dh: 'key', auth: 'auth' } },
+      expect.any(String),
+      expect.objectContaining({ TTL: 30 }),
+    );
+    expect(JSON.parse(sendNotification.mock.calls[0][1])).toMatchObject({
+      type: 'PUSH_HEALTH_PROBE',
+      probeId: created.probeId,
+    });
+    expect(() => svc.getPushProbe(5, 10, created.probeId)).toThrow();
+    expect(() => svc.acknowledgePushProbe(5, 10, created.probeId)).toThrow();
+    expect(() => svc.acknowledgePushProbe(6, 9, created.probeId)).toThrow();
+    const received = svc.acknowledgePushProbe(5, 9, created.probeId);
+    expect(received.stage).toBe('device_received');
+    expect(svc.acknowledgePushProbe(5, 9, created.probeId)).toEqual(received);
+    expect(received).not.toHaveProperty('sessionId');
+  });
+
+  it('preserves receipt arriving before provider acceptance and coalesces concurrent clicks', async () => {
+    registrations.mockResolvedValue([
+      {
+        token: 'https://push/web',
+        platform: 'WEB',
+        webP256dh: 'key',
+        webAuth: 'auth',
+      },
+    ]);
+    sendNotification.mockImplementation(async (_sub, payload) => {
+      svc.acknowledgePushProbe(5, 9, JSON.parse(payload).probeId);
+    });
+    const results = await Promise.allSettled([
+      svc.createPushProbe(5, 9),
+      svc.createPushProbe(5, 9),
+    ]);
+    expect(results[0]).toMatchObject({
+      status: 'fulfilled',
+      value: { stage: 'device_received' },
+    });
+    expect(results[1]).toMatchObject({
+      status: 'rejected',
+      reason: { status: 429 },
+    });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([404, 410, 503])(
+    'handles Web probe HTTP %s through existing recovery',
+    async (statusCode) => {
+      const row = {
+        userId: 5,
+        sessionId: 9,
+        pushSubscriptionRev: 1,
+        token: 'https://push/web',
+        platform: 'WEB',
+        webP256dh: 'key',
+        webAuth: 'auth',
+      };
+      registrations.mockResolvedValue([row]);
+      sendNotification.mockRejectedValue({ statusCode });
+      const invalidate = vi
+        .spyOn(svc, 'invalidateSubscription')
+        .mockResolvedValue();
+      const result = await svc.createPushProbe(5, 9);
+      expect(result.stage).toBe('failed');
+      if (statusCode === 503) expect(invalidate).not.toHaveBeenCalled();
+      else expect(invalidate).toHaveBeenCalledExactlyOnceWith(row);
+    },
+  );
+
+  it('reports disabled Web Push without claiming provider acceptance', async () => {
+    registrations.mockResolvedValue([
+      { platform: 'WEB', token: 'https://push/web' },
+    ]);
+    settings.isWebPushConfigured = false;
+    expect(await svc.createPushProbe(5, 9)).toMatchObject({
+      stage: 'failed',
+      errorCode: 'WEB_PUSH_NOT_CONFIGURED',
+    });
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 });

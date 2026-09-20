@@ -17,6 +17,7 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { WebPushService } from '../../services/web-push.service';
 import { NotificationPrefsService } from '../../services/notification-prefs.service';
+import { SettingsPushProbeComponent } from './settings-push-probe.component';
 
 /**
  * Settings → Notifications sub-page (browser build only — the category is visible when `!isTauri()`).
@@ -50,6 +51,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
     MatSlideToggleModule,
     MatButtonToggleModule,
     TranslocoPipe,
+    SettingsPushProbeComponent,
   ],
   template: `
     <section class="settings-group">
@@ -136,6 +138,9 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
             </mat-list-item>
           }
         </mat-list>
+        @if (supported()) {
+          <app-settings-push-probe [disabled]="!granted()" />
+        }
       </mat-card>
     </section>
   `,

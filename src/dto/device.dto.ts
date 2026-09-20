@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEnum,
   IsNotEmpty,
@@ -95,11 +95,25 @@ export class RegisterDeviceResultDto {
   registered!: boolean;
 }
 
-/** Start a one-off Android FCM delivery probe for the current device. */
-export class CreateFcmProbeDto {
-  @ApiProperty({ description: 'Current Android FCM registration token.' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(512)
-  token!: string;
+export class PushProbeStatusDto {
+  @ApiProperty()
+  probeId!: string;
+
+  @ApiProperty({ enum: ['provider_accepted', 'device_received', 'failed'] })
+  stage!: 'provider_accepted' | 'device_received' | 'failed';
+
+  @ApiProperty()
+  createdAt!: number;
+
+  @ApiPropertyOptional()
+  acceptedAt?: number;
+
+  @ApiPropertyOptional()
+  receivedAt?: number;
+
+  @ApiPropertyOptional()
+  latencyMs?: number;
+
+  @ApiPropertyOptional()
+  errorCode?: string;
 }

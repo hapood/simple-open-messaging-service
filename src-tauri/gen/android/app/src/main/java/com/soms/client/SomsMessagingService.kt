@@ -33,10 +33,10 @@ class SomsMessagingService : FirebaseMessagingService() {
         // push carries { type, threadFeedEndId } (no body); route on `type`.
         val data = msg.data
         when (data["type"]) {
-            "FCM_HEALTH_PROBE" -> {
+            "PUSH_HEALTH_PROBE" -> {
                 // Silent end-to-end diagnostic. Confirm receipt directly from the native service so the
                 // result remains reliable even if the WebView is suspended or the process was recreated.
-                data["probeId"]?.let { acknowledgeFcmProbe(this, it) }
+                data["probeId"]?.let { acknowledgePushProbe(this, it) }
             }
             "ADMIN_TEST" -> {
                 // Admin test push: post the literal title/body as a notification — a delivery check.
@@ -123,11 +123,11 @@ class SomsMessagingService : FirebaseMessagingService() {
             .build()
         private val notificationProjectionGate = NotificationProjectionGate()
 
-        private fun acknowledgeFcmProbe(ctx: Context, probeId: String) {
+        private fun acknowledgePushProbe(ctx: Context, probeId: String) {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
             val origin = SomsSecureStore.getActiveOrigin(ctx) ?: return
             val request = Request.Builder()
-                .url("$origin${SomsSecureStore.API_PREFIX}/devices/fcm-probes/$probeId/ack")
+                .url("$origin${SomsSecureStore.API_PREFIX}/devices/push-probes/$probeId/ack")
                 .post("{}".toRequestBody("application/json".toMediaType()))
                 .addHeader("Authorization", "Bearer $token")
                 .build()

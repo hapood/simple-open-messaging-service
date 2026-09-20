@@ -115,6 +115,47 @@ describe('Push Service Worker entry', () => {
     });
     await pending;
   }
+
+  it('acknowledges a real probe and displays a test notification without syncing messages', async () => {
+    const probeId = '12345678-1234-1234-1234-123456789abc';
+    await dispatch('push', {
+      data: { json: () => ({ type: 'PUSH_HEALTH_PROBE', probeId }) },
+    });
+    expect(fetchSpy).toHaveBeenCalledExactlyOnceWith(
+      '/api/v1/devices/push-probes/' + probeId + '/ack',
+      expect.objectContaining({ method: 'POST', credentials: 'same-origin' }),
+    );
+    expect(show).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ tag: 'soms-push-probe' }),
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('does not display a previous session probe rejected by the server', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ code: 10007 }), { status: 200 }),
+    );
+    await dispatch('push', {
+      data: {
+        json: () => ({
+          type: 'PUSH_HEALTH_PROBE',
+          probeId: '12345678-1234-1234-1234-123456789abc',
+        }),
+      },
+    });
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it('ignores malformed probe IDs without requesting an arbitrary URL', async () => {
+    await dispatch('push', {
+      data: {
+        json: () => ({ type: 'PUSH_HEALTH_PROBE', probeId: '../other' }),
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+  });
   it('consumes the unified feed, posts a notification and wakes the page after committing', async () => {
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },

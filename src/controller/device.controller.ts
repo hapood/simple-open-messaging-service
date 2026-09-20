@@ -9,22 +9,18 @@ import {
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import {
-  CreateFcmProbeDto,
   RegisterDeviceDto,
   RegisterDeviceResultDto,
+  PushProbeStatusDto,
 } from '../dto/device.dto.js';
 import { PushService } from '../push/push.service.js';
 import { ApiResultResponse } from '../common/api-result.js';
 
-/** Session-owned push registration and interactive Android delivery diagnostics. */
+/** Session-owned push registration and interactive delivery diagnostics. */
 @ApiTags('device')
 @ApiBearerAuth()
 @Controller()
@@ -52,37 +48,49 @@ export class DeviceController {
   }
 
   @HttpCode(HttpStatus.OK)
-  @Post('devices/fcm-probes')
+  @Post('devices/push-probes')
+  @ApiResultResponse(PushProbeStatusDto)
   @ApiOperation({
     summary:
-      'Start an end-to-end FCM delivery probe for the current Android device',
+      'Start an end-to-end push delivery probe for the authenticated session',
   })
-  async createFcmProbe(
-    @Request() req: FastifyRequest,
-    @Body() dto: CreateFcmProbeDto,
-  ) {
-    return this.pushService.createFcmProbe(req.user.userId, dto.token);
+  async createPushProbe(@Request() req: FastifyRequest) {
+    return this.pushService.createPushProbe(
+      req.user.userId,
+      req.user.sessionId as number,
+    );
   }
 
-  @Get('devices/fcm-probes/:probeId')
-  @ApiOperation({ summary: 'Read a one-off FCM delivery probe status' })
-  getFcmProbe(
+  @Get('devices/push-probes/:probeId')
+  @ApiResultResponse(PushProbeStatusDto)
+  @ApiOperation({
+    summary: 'Read a one-off session push delivery probe status',
+  })
+  getPushProbe(
     @Request() req: FastifyRequest,
     @Param('probeId') probeId: string,
   ) {
-    return this.pushService.getFcmProbe(req.user.userId, probeId);
+    return this.pushService.getPushProbe(
+      req.user.userId,
+      req.user.sessionId as number,
+      probeId,
+    );
   }
 
   @HttpCode(HttpStatus.OK)
-  @Post('devices/fcm-probes/:probeId/ack')
+  @Post('devices/push-probes/:probeId/ack')
+  @ApiResultResponse(PushProbeStatusDto)
   @ApiOperation({
-    summary:
-      'Acknowledge that the Android device received an FCM delivery probe',
+    summary: 'Acknowledge that this session received a push delivery probe',
   })
-  acknowledgeFcmProbe(
+  acknowledgePushProbe(
     @Request() req: FastifyRequest,
     @Param('probeId') probeId: string,
   ) {
-    return this.pushService.acknowledgeFcmProbe(req.user.userId, probeId);
+    return this.pushService.acknowledgePushProbe(
+      req.user.userId,
+      req.user.sessionId as number,
+      probeId,
+    );
   }
 }
