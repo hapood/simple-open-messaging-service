@@ -176,7 +176,7 @@
         "displayName": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 30
+          "maxLength": 31
         },
         "bio": {
           "type": "string",

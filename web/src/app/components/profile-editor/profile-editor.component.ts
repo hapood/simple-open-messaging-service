@@ -103,13 +103,13 @@ export class ProfileEditorComponent {
       }
     });
 
-    // Name validation: non-empty (trimmed) and ≤30. Mirrors register.component.ts's effect-based validation.
+    // Name validation: non-empty (trimmed) and ≤31. Mirrors register.component.ts's effect-based validation.
     effect(() => {
       const n = this.name().trim();
       if (n.length === 0) {
         this.isNameValid.set(false);
         this.nameHint.set(this.transloco.translate('profile.nameEmpty'));
-      } else if (n.length > 30) {
+      } else if (n.length > 31) {
         this.isNameValid.set(false);
         this.nameHint.set(this.transloco.translate('profile.nameTooLong'));
       } else {

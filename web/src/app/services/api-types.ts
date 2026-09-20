@@ -4039,7 +4039,7 @@ export interface components {
         };
         UpdateProfileDto: {
             /**
-             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @description Display name (1-31 chars; unicode/emoji allowed)
              * @example Alice
              */
             name: string;
@@ -4105,7 +4105,7 @@ export interface components {
              */
             account: string;
             /**
-             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @description Display name (1-31 chars; unicode/emoji allowed)
              * @example Alice
              */
             name: string;
@@ -4588,7 +4588,7 @@ export interface components {
              */
             account: string;
             /**
-             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @description Display name (1-31 chars; unicode/emoji allowed)
              * @example Alice
              */
             name: string;

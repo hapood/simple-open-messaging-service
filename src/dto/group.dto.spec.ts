@@ -1,7 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { describe, expect, it } from 'vitest';
-import { InviteGroupDto } from './group.dto.js';
+import { CreateGroupDto, UpdateGroupDto, InviteGroupDto } from './group.dto.js';
 
 describe('group invitation address validation', () => {
   it.each([
@@ -25,4 +25,28 @@ describe('group invitation address validation', () => {
       ),
     ).toHaveLength(0);
   });
+});
+
+describe('group name boundaries', () => {
+  for (const Dto of [CreateGroupDto, UpdateGroupDto]) {
+    it.each([30, 31])(`${Dto.name} accepts %i characters`, async (length) => {
+      const body = plainToInstance(Dto, {
+        groupId: 1,
+        name: '界'.repeat(length),
+      });
+      expect(await validate(body)).toHaveLength(0);
+    });
+
+    it(`${Dto.name} rejects 32 characters with an actionable message`, async () => {
+      const body = plainToInstance(Dto, { groupId: 1, name: 'a'.repeat(32) });
+      expect(await validate(body)).toEqual([
+        expect.objectContaining({
+          property: 'name',
+          constraints: {
+            maxLength: 'group name must be at most 31 characters',
+          },
+        }),
+      ]);
+    });
+  }
 });

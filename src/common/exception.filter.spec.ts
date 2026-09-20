@@ -1,4 +1,9 @@
-import { HttpException, HttpStatus, type ArgumentsHost } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  type ArgumentsHost,
+} from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from './business-code.js';
 import { BusinessException } from './business.exception.js';
@@ -24,6 +29,19 @@ describe('AllExceptionsFilter federation mapping', () => {
     new AllExceptionsFilter().catch(exception, host);
     return { reply, send };
   }
+
+  it('returns a friendly validation envelope for an over-limit group name', () => {
+    const { reply, send } = capture(
+      new BadRequestException(['group name must be at most 31 characters']),
+      '/api/v1/group/create',
+    );
+    expect(reply.status).toHaveBeenCalledWith(HttpStatus.OK);
+    expect(send).toHaveBeenCalledWith({
+      code: BusinessCode.VALIDATION_FAILED,
+      message: 'group name must be at most 31 characters',
+      data: null,
+    });
+  });
 
   it('forces ordinary federation business refusals onto HTTP 200', () => {
     const { reply, send } = capture(

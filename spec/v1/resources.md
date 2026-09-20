@@ -92,7 +92,7 @@ Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 | ------------- | ------------------------------------------------------------ |
 | `account`     | Equal to the normalized path `account`                       |
 | `domain`      | Equal to the responding server's canonical logical authority |
-| `displayName` | 1–30 code points, without unpaired surrogates                |
+| `displayName` | 1–31 code points, without unpaired surrogates                |
 | `bio`         | 0–120 code points, without unpaired surrogates               |
 | `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
 | `profileRev`  | Required, non-null, positive immutable account revision      |

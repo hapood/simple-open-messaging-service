@@ -28,7 +28,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
 - `account` and `domain` MUST form a valid address. A `UserAccount` identifies a
   personal contact and a `GroupAccount` identifies a group contact; the account
   grammar is the discriminator and no additional type field is carried.
-- `displayName` MUST contain 1–30 Unicode code points and MUST NOT contain an
+- `displayName` MUST contain 1–31 Unicode code points and MUST NOT contain an
   unpaired surrogate.
 - `bio` MUST contain at most 120 Unicode code points and MUST NOT
   contain an unpaired surrogate.
@@ -103,7 +103,7 @@ A consumer MUST reject at least the following cases:
 
 - `account` is absent or invalid.
 - `domain` is absent or invalid.
-- `displayName` is absent, empty, longer than 30 Unicode code points, or contains
+- `displayName` is absent, empty, longer than 31 Unicode code points, or contains
   an unpaired surrogate.
 - `bio` is absent, is not a string, is longer than 120 Unicode code points,
   or contains an unpaired surrogate.

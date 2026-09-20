@@ -94,7 +94,7 @@ export class UpdateProfileDto {
   @ApiProperty({
     required: true,
     example: 'Alice',
-    description: 'Display name (1-30 chars; unicode/emoji allowed)',
+    description: 'Display name (1-31 chars; unicode/emoji allowed)',
   })
   @IsDisplayName()
   name!: string;

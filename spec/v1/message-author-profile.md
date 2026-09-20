@@ -56,7 +56,7 @@ interface MessageAuthorProfile {
 
 `account/domain` MUST equal the author reconstructed from the exact message.
 `profileRev` MUST equal the immutable profile revision selected for the
-requested message copy. `displayName` contains 1–30 Unicode code points without
+requested message copy. `displayName` contains 1–31 Unicode code points without
 unpaired surrogates. `bio` contains 0–120 Unicode code points without unpaired
 surrogates. `avatar` is either `null` or the shared Base64-bearing
 `InlineProfileAvatar`; no URL or independently fetchable avatar reference is

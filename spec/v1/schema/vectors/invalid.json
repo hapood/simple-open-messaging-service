@@ -224,7 +224,7 @@
       }
     },
     {
-      "name": "profile display name exceeds 30 code points",
+      "name": "profile display name exceeds 31 code points",
       "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
@@ -233,7 +233,7 @@
             "eventType": "PROFILE",
             "feedId": "1",
             "body": {
-              "displayName": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "displayName": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
               "bio": "",
               "avatar": null
             }

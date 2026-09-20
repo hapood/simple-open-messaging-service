@@ -1529,7 +1529,7 @@ export const profileTable = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     namespaceId: integer().notNull(),
     profileRev: integer().notNull(),
-    displayName: varchar({ length: 30 }).notNull(),
+    displayName: varchar({ length: 31 }).notNull(),
     avatar: text().default('').notNull(),
     bio: varchar({ length: 255 }).default('').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })

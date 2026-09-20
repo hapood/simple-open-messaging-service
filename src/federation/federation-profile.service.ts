@@ -21,7 +21,7 @@ import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
-const FEDERATED_PROFILE_NAME_MAX_CODE_POINTS = 30;
+const FEDERATED_PROFILE_NAME_MAX_CODE_POINTS = 31;
 const FEDERATED_PROFILE_BIO_MAX_CODE_POINTS = 120;
 
 function truncateCodePoints(value: string, max: number): string {

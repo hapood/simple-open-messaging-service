@@ -629,7 +629,7 @@
     "account": "Account",
     "accountHint": "3-31 chars: letters, digits, dots; start with a letter",
     "name": "Display name",
-    "nameHint": "1 to 30 characters",
+    "nameHint": "1 to 31 characters",
     "password": "Initial password",
     "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
     "passwordOptional": "Optional — leave blank for a passwordless account (login via code)",

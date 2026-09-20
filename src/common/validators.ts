@@ -2,8 +2,8 @@ import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
 import { IsString, Length } from 'class-validator';
 
-/** Max length for a display name (kept aligned with the historical UpdateProfileDto cap). */
-const DISPLAY_NAME_MAX = 30;
+/** Max length for a display name (shared by personal and group profile storage). */
+const DISPLAY_NAME_MAX = 31;
 
 /**
  * C0 (U+0000-U+001F) + C1 (U+007F-U+009F) control characters. Built from a string via new RegExp so

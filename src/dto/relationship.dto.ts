@@ -49,7 +49,7 @@ export class RequestRelationshipDto {
   @ValidateIf((value: RequestRelationshipDto) => value.domain !== 'local')
   @IsString()
   @IsNotEmpty()
-  @MaxLength(30)
+  @MaxLength(31)
   displayName?: string;
 
   @ApiProperty({

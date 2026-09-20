@@ -99,7 +99,7 @@ function validateContactCard(
     ) ||
     typeof value['displayName'] !== 'string' ||
     unicodeCodePointLength(value['displayName']) < 1 ||
-    unicodeCodePointLength(value['displayName']) > 30 ||
+    unicodeCodePointLength(value['displayName']) > 31 ||
     hasUnpairedSurrogate(value['displayName'])
   ) {
     throw new Error('invalid contact card');

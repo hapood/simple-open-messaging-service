@@ -15,13 +15,7 @@ export type {
   ClientGroupMetaApply,
   ClientGroupMetaFeedPage,
 } from './group-meta-model';
-import {
-  openDB,
-  deleteDB,
-  type DBSchema,
-  type IDBPDatabase,
-  type IDBPTransaction,
-} from 'idb';
+import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import {
   localSubjectIdentity,
   parseUserIdentityKey,
@@ -351,7 +345,9 @@ export class WebdbStorage {
     if (!key) return;
     if (event === 'PROFILE_UNAVAILABLE') {
       const reason =
-        data && typeof data === 'object' && typeof (data as { reason?: unknown }).reason === 'string'
+        data &&
+        typeof data === 'object' &&
+        typeof (data as { reason?: unknown }).reason === 'string'
           ? (data as { reason: string }).reason
           : 'TEMPORARILY_UNAVAILABLE';
       this.profileWake.next({ event, key, reason });
@@ -1514,7 +1510,7 @@ export class WebdbStorage {
     );
     await tx.objectStore('threads').clear();
     for (const item of items) {
-      await this.ensureThreadNamespaceInTx(tx, item);
+      await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
       await tx.objectStore('threads').put(item);
     }
     await tx.done;
@@ -1536,12 +1532,48 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'namespaces', 'settings'],
+      ['threads', 'namespaces', 'settings', 'profiles'],
       'readwrite',
     );
     const current = await tx.objectStore('threads').get(item.threadId);
     if ((current?.threadStateFeedId ?? 0) <= (item.threadStateFeedId ?? 0)) {
-      await this.ensureThreadNamespaceInTx(tx, item);
+      await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
+      // Attention writes can carry presentation captured before resolution.
+      // The selected immutable profile owns these fields, not the caller's
+      // copy of the conversation. Read it in this same write transaction.
+      const identity = item.type === 'GROUP' ? item.group : item.peerUser;
+      const profile =
+        identity.profileRev > 0
+          ? await tx
+              .objectStore('profiles')
+              .get([
+                identity.account,
+                identity.domain,
+                identity.namespaceId,
+                identity.profileRev,
+              ])
+          : undefined;
+      if (profile)
+        item =
+          item.type === 'GROUP'
+            ? {
+                ...item,
+                group: {
+                  ...item.group,
+                  name: profile.name,
+                  avatar: profile.avatar,
+                  description: profile.bio,
+                },
+              }
+            : {
+                ...item,
+                peerUser: {
+                  ...item.peerUser,
+                  name: profile.name,
+                  avatar: profile.avatar,
+                  bio: profile.bio,
+                },
+              };
       await tx.objectStore('threads').put(item);
     }
     await tx.done;
@@ -2173,19 +2205,12 @@ export class WebdbStorage {
   }
 
   private async ensureThreadNamespaceInTx(
-    tx: IDBPTransaction<
-      WebdbSchema,
-      ('threads' | 'namespaces' | 'settings')[],
-      'readwrite'
-    >,
+    namespaces: NamespaceRegistryStore,
     thread: ConversationItem,
   ): Promise<void> {
     if (thread.authorityNamespaceId === 0) return;
     const domain =
       thread.type === 'P2P' ? thread.peerUser.domain : thread.group.domain;
-    const namespaces = tx.objectStore(
-      'namespaces',
-    ) as unknown as NamespaceRegistryStore;
     await this.registerNamespace(
       namespaces,
       domain,
@@ -2721,7 +2746,7 @@ export class WebdbStorage {
     bio: string;
     avatarBase64: string | null;
   }): Promise<ProfileSnapshot> {
-    const snapshot: ProfileSnapshot = {
+    const snapshot: ProfileSnapshot = localSubjectIdentity({
       namespaceId: profile.namespaceId,
       account: profile.account,
       domain: profile.domain,
@@ -2731,7 +2756,7 @@ export class WebdbStorage {
       avatar: profile.avatarBase64
         ? `data:image/webp;base64,${profile.avatarBase64}`
         : '',
-    };
+    });
     const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
         ['namespaces', 'profiles', 'threads'],

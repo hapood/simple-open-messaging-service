@@ -84,7 +84,7 @@
           autocomplete="nickname"
           [ngModel]="name()"
           (ngModelChange)="name.set($event)"
-          maxlength="30"
+          maxlength="31"
           [placeholder]="'profile.namePlaceholder' | transloco"
         />
         @if (nameHint()) {

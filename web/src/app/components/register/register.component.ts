@@ -92,7 +92,7 @@ export class RegisterComponent {
       // Display name: lenient charset (unicode/emoji ok), only a length bound client-side. The backend
       // (@IsDisplayName) additionally strips control chars + trims, so this is UX pre-feedback only.
       const name = this.name().trim();
-      if (name.length < 1 || name.length > 30) {
+      if (name.length < 1 || name.length > 31) {
         this.isNameVld.set(false);
         this.nameHint.set(this.transloco.translate('auth.displayNameHint'));
       } else {

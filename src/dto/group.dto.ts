@@ -27,7 +27,7 @@ export class CreateGroupDto {
   /** Group name (≤31 chars). Required — the new-group form supplies a real name now. */
   @ApiProperty({ example: 'dev-team', description: 'Group name (≤31 chars)' })
   @IsString()
-  @MaxLength(31, { message: 'group name must less than 32 characters' })
+  @MaxLength(31, { message: 'group name must be at most 31 characters' })
   name!: string;
 
   @ApiPropertyOptional({
@@ -209,7 +209,7 @@ export class UpdateGroupDto {
     description: 'New group name (≤31 chars)',
   })
   @IsString()
-  @MaxLength(31, { message: 'group name must less than 32 characters' })
+  @MaxLength(31, { message: 'group name must be at most 31 characters' })
   @IsOptional()
   name?: string;
 

@@ -42,7 +42,7 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
           .string()
           .trim()
           .min(1, t('createUser.nameHint'))
-          .max(30, t('createUser.nameHint')),
+          .max(31, t('createUser.nameHint')),
         password: passwordEnabled
           ? z
               .string()

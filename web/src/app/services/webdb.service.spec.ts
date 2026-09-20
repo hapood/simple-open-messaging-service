@@ -2500,6 +2500,90 @@ describe('WebdbService', () => {
       });
     });
 
+    it('keeps a newly created local group visible when thread state and relationship projection arrive together', async () => {
+      await webdb.openForUser('1');
+      const group = {
+        account: '!repro-group',
+        domain: 'local',
+        namespaceId: 0,
+        isLocal: true,
+        name: 'LOCAL-GROUP-REPRO',
+        avatar: '',
+        description: 'created from the Web UI',
+        profileRev: 1,
+      };
+      const relationship = {
+        feedId: 2,
+        namespaceId: 0,
+        eventType: 'RELATIONSHIP_INTENT' as const,
+        account: '!repro-group',
+        domain: 'local',
+        subjectAccount: 'alice',
+        subjectDomain: 'local',
+        body: {
+          status: 'ACCEPTED' as const,
+          direction: 'INCOMING' as const,
+          established: true,
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+          threadId: 95,
+          group,
+        },
+      } satisfies ClientStateFeedItem;
+
+      await webdb.applyStateFeedPage(
+        [
+          threadStateEvent(1, 95, {
+            type: 'GROUP',
+            role: 'OWNER',
+            profile: {
+              account: group.account,
+              domain: 'local',
+              namespaceId: 0,
+              profileRev: 1,
+            },
+          }),
+          relationship,
+        ],
+        2,
+      );
+
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({
+          threadId: 95,
+          type: 'GROUP',
+          visible: true,
+          role: 'OWNER',
+          group: expect.objectContaining({
+            account: group.account,
+            name: '',
+          }),
+        }),
+      ]);
+
+      await webdb.commitResolvedProfile({
+        account: group.account,
+        domain: 'alpha.test',
+        namespaceId: 0,
+        rev: 1,
+        name: group.name,
+        bio: group.description,
+        avatarBase64: null,
+      });
+
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({
+          threadId: 95,
+          visible: true,
+          group: expect.objectContaining({
+            name: group.name,
+            description: group.description,
+          }),
+        }),
+      ]);
+    });
+
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
       await webdb.putMeta('sentinel', 'core');

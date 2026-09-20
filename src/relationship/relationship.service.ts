@@ -49,7 +49,7 @@ export function applyFederatedPendingProfileSnapshot(
 ): { name: string; avatar: string } {
   if (!snapshot) return profile;
   return {
-    name: snapshot.displayName.slice(0, 30),
+    name: [...snapshot.displayName].slice(0, 31).join(''),
     avatar: snapshot.avatar ?? '',
   };
 }

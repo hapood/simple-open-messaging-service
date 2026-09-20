@@ -170,7 +170,7 @@ export class AdminCreateUserDto {
 
   @ApiProperty({
     example: 'Alice',
-    description: 'Display name (1-30 chars; unicode/emoji allowed)',
+    description: 'Display name (1-31 chars; unicode/emoji allowed)',
   })
   @IsDisplayName()
   @IsNotEmpty()

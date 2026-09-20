@@ -839,7 +839,7 @@ export class ForwardBundleService {
           Array.isArray(message.profile) ||
           typeof message.profile.displayName !== 'string' ||
           [...message.profile.displayName].length < 1 ||
-          [...message.profile.displayName].length > 30 ||
+          [...message.profile.displayName].length > 31 ||
           Object.keys(message.profile).some(
             (key) => key !== 'displayName' && key !== 'avatarDigest',
           ) ||

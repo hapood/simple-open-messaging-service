@@ -55,7 +55,7 @@
             "displayName": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 30
+              "maxLength": 31
             },
             "avatarDigest": {
               "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"

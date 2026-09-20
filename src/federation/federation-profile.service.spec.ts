@@ -237,7 +237,7 @@ describe('FederationProfileService localization', () => {
     await subject.materializeExactForeignProfile(
       {
         ...profile(2),
-        displayName: `${'😀'.repeat(30)}tail`,
+        displayName: `${'😀'.repeat(31)}tail`,
         bio: `${'界'.repeat(120)}tail`,
         avatar: {
           digest: createHash('sha256').update(bytes).digest('hex'),
@@ -255,7 +255,7 @@ describe('FederationProfileService localization', () => {
       domain: 'peer.example',
       namespaceId: 12,
       profileRev: 2,
-      displayName: '😀'.repeat(30),
+      displayName: '😀'.repeat(31),
       bio: '界'.repeat(120),
       avatar: '',
     });

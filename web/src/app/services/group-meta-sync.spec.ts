@@ -153,6 +153,55 @@ describe('Group Meta background synchronization', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it('resolves a newly created local group profile after the empty thread shell is committed', async () => {
+    const { storage, thread, unresolved } = fixture();
+    thread.group.name = '';
+    thread.group.description = '';
+    thread.group.groupMetaFeedId = '0';
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          account: 'room',
+          mode: 'full',
+          items: [
+            {
+              feedId: '1',
+              operation: 'GROUP_PROFILE',
+              body: { profileRev: 1 },
+            },
+          ],
+          scannedThrough: '1',
+          groupMetaFeedEndId: '3',
+          hasMore: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          account: 'room',
+          mode: 'full',
+          items: [],
+          scannedThrough: '3',
+          groupMetaFeedEndId: '3',
+          hasMore: false,
+        },
+      });
+    const resolve = vi.fn(async (reference) => {
+      expect(reference).toEqual(unresolved);
+      thread.group.name = 'Created local group';
+      thread.group.description = 'Created from Web';
+      return true;
+    });
+
+    await expect(syncGroupMeta(storage, request, resolve)).resolves.toEqual([
+      12,
+    ]);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(thread.group.name).toBe('Created local group');
+  });
+
   it('continues with delta after finishing an older persisted recovery window', async () => {
     const { storage, thread } = fixture();
     thread.group.groupMetaFeedId = '1';

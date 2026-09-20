@@ -1,3 +1,4 @@
+import { assertGroupNameLength } from './group-profile-validation.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
   groupState as group,
@@ -364,6 +365,7 @@ export class GroupService {
     avatar?: string;
     owner: number;
   }) {
+    assertGroupNameLength(params.name);
     for (let attempt = 0; attempt < 3; attempt++) {
       const account = mintGroupAccount();
       try {
@@ -625,6 +627,7 @@ export class GroupService {
     description?: string;
     avatar?: string;
   }) {
+    assertGroupNameLength(params.name);
     return this.database.db.transaction(async (tx) => {
       // Entry-scope advisory: the group's business scope is held before any row
       // lock; nested writers never take advisories themselves.

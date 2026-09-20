@@ -9,6 +9,8 @@ import {
   groupMeta,
   groupMetaMemberFeed,
   message,
+  profileTable,
+  messageThread,
 } from '../src/database/schema.js';
 import { GroupRole } from '../src/database/enums.js';
 import { readCurrentGroupRosterInTx } from '../src/group/meta/current-group-roster.js';
@@ -28,6 +30,54 @@ describe('group creation', () => {
   });
 
   afterAll(async () => app.close());
+
+  it.each([30, 31])(
+    'persists creation and rename at %i characters',
+    async (length) => {
+      const owner = await seedUser(
+        app as unknown as INestApplication,
+        `name-boundary-${length}`,
+      );
+      const created = await groups.createNewGroup({
+        owner: owner.id,
+        name: 'a'.repeat(length),
+      });
+      await groups.updateGroup({
+        threadId: created.threadId,
+        operatorUserId: owner.id,
+        name: '界'.repeat(length),
+      });
+      const thread = await database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, created.threadId),
+      });
+      const profiles = await database.db
+        .select()
+        .from(profileTable)
+        .where(eq(profileTable.account, thread!.groupAccount!));
+      expect(profiles.map((profile) => profile.displayName).sort()).toEqual(
+        ['a'.repeat(length), '界'.repeat(length)].sort(),
+      );
+      await expect(
+        groups.updateGroup({
+          threadId: created.threadId,
+          operatorUserId: owner.id,
+          name: 'a'.repeat(32),
+        }),
+      ).rejects.toMatchObject({
+        bizCode: 10000,
+        message: 'group name must be at most 31 characters',
+      });
+    },
+  );
+
+  it('rejects an over-limit creation before accessing the database', async () => {
+    await expect(
+      groups.createNewGroup({ owner: -1, name: 'a'.repeat(32) }),
+    ).rejects.toMatchObject({
+      bizCode: 10000,
+      message: 'group name must be at most 31 characters',
+    });
+  });
 
   it('writes one authority-local creation message without advertising it to federation', async () => {
     const owner = await seedUser(
