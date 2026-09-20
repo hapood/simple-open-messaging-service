@@ -11,7 +11,6 @@ import {
   account as user,
   userPreference,
   messageAsset,
-  pushToken,
   adminActionLog,
   pendingMedia,
   groupAccount,
@@ -144,7 +143,6 @@ export const messageThreadRelations = relations(
 
 export const accountRelations = relations(account, ({ one, many }) => ({
   admins: many(admin),
-  pushTokens: many(pushToken),
   loginCodes: many(loginCode),
   sessionTokens: many(sessionToken),
   diagnosticsReports: many(diagnosticsReport),
@@ -166,17 +164,6 @@ export const messageAssetRelations = relations(messageAsset, ({ one }) => ({
   messageThread: one(messageThread, {
     fields: [messageAsset.threadId],
     references: [messageThread.id],
-  }),
-}));
-
-export const pushTokenRelations = relations(pushToken, ({ one }) => ({
-  account: one(account, {
-    fields: [pushToken.userId],
-    references: [account.id],
-  }),
-  session: one(sessionToken, {
-    fields: [pushToken.sessionId],
-    references: [sessionToken.id],
   }),
 }));
 
@@ -261,7 +248,6 @@ export const groupMetaMemberFeedRelations = relations(
   }),
 );
 
-
 export const loginCodeRelations = relations(loginCode, ({ one }) => ({
   account: one(account, {
     fields: [loginCode.userId],
@@ -271,12 +257,11 @@ export const loginCodeRelations = relations(loginCode, ({ one }) => ({
 
 export const sessionTokenRelations = relations(
   sessionToken,
-  ({ one, many }) => ({
+  ({ one }) => ({
     account: one(account, {
       fields: [sessionToken.userId],
       references: [account.id],
     }),
-    pushTokens: many(pushToken),
   }),
 );
 

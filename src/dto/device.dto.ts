@@ -5,24 +5,38 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  IsInt,
+  Min,
+  Max,
 } from 'class-validator';
 import {
   PushPlatform,
   type PushPlatform as PushPlatformType,
 } from '../database/enums.js';
 
-/**
- * Device registration DTOs for FCM push. The client obtains an FCM registration token from the
- * platform Firebase SDK (Android) and POSTs it here so the server can fan out data-only FCM messages
- * as an out-of-band `NEW_MESSAGE` Push payload. A device session with live SSE takes over notification
- * aggregation locally; other registered sessions remain independently eligible for Push.
- */
+/** Session-owned Web Push and FCM registration requests. */
 
 export class RegisterDeviceDto {
   @ApiProperty({
+    description: 'Session push generation received through HELLO or SSE.',
+    minimum: 1,
+  })
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
+  pushSubscriptionRev!: number;
+
+  @ApiProperty({
+    description: 'Authenticated session ID received in HELLO.',
+    minimum: 1,
+  })
+  @IsInt()
+  @Min(1)
+  sessionId!: number;
+  @ApiProperty({
     example: 'dGhpcyBpcyBhIGZjbSB0b2tlbi4u',
     description:
-      'ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.',
+      'ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per installation; stored directly on the authenticated session.',
   })
   @IsString()
   @IsNotEmpty()
@@ -65,6 +79,20 @@ export class RegisterDeviceDto {
   @IsString()
   @MaxLength(127)
   deviceId?: string;
+}
+
+export class RegisterDeviceResultDto {
+  @ApiProperty()
+  sessionId!: number;
+
+  @ApiProperty({ minimum: 1 })
+  pushSubscriptionRev!: number;
+
+  @ApiProperty({
+    description:
+      'False means the submitted revision was stale; reconcile the returned revision.',
+  })
+  registered!: boolean;
 }
 
 /** Start a one-off Android FCM delivery probe for the current device. */

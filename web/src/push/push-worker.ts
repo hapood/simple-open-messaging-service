@@ -12,6 +12,19 @@ import { activePageClientId } from '../app/services/active-page';
 export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   const preferences = new PreferenceStorage();
 
+  scope.addEventListener('pushsubscriptionchange', (event) => {
+    (event as ExtendableEvent).waitUntil(
+      (async () => {
+        for (const client of await scope.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        }))
+          client.postMessage({ type: 'soms-push-subscription-changed' });
+        // With no open page, the next HELLO registers the browser's current subscription.
+      })(),
+    );
+  });
+
   async function accountId(): Promise<number | null> {
     const value = await preferences.get<number>('device', 'soms.lastUserId');
     return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;

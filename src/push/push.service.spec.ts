@@ -18,12 +18,7 @@ import { PushService } from './push.service.js';
  */
 describe('PushService — identity-only payloads', () => {
   let svc: PushService;
-  let pushToken: {
-    findMany: ReturnType<typeof vi.fn>;
-    findFirst: ReturnType<typeof vi.fn>;
-  };
-  let insertValues: ReturnType<typeof vi.fn>;
-  let onConflictDoUpdate: ReturnType<typeof vi.fn>;
+  let registrations: ReturnType<typeof vi.fn>;
   let settings: {
     isWebPushConfigured: boolean;
     getVapid: ReturnType<typeof vi.fn>;
@@ -31,9 +26,7 @@ describe('PushService — identity-only payloads', () => {
   let sse: { isSessionOnline: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     sendNotification.mockReset();
-    pushToken = { findMany: vi.fn(), findFirst: vi.fn() };
-    onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
-    insertValues = vi.fn(() => ({ onConflictDoUpdate }));
+    registrations = vi.fn().mockResolvedValue([]);
     settings = {
       isWebPushConfigured: true,
       getVapid: vi.fn(() => ({
@@ -45,31 +38,70 @@ describe('PushService — identity-only payloads', () => {
     sse = { isSessionOnline: vi.fn(() => false) };
     svc = new PushService(
       {
-        db: {
-          query: { pushToken },
-          insert: vi.fn(() => ({ values: insertValues })),
-        },
+        db: {},
       } as never,
       sse as never,
       settings as never,
       '/definitely-not-present/soms-firebase-service-account.json',
     );
+    svc['registrations'] = registrations;
   });
 
-  it('binds a registered Push token to the authenticated session', async () => {
-    await svc.registerToken(5, 17, {
-      token: 'token-a',
-      platform: 'ANDROID',
-    });
+  it.each([404, 410])(
+    'requests session recovery on Web Push HTTP %s',
+    async (statusCode) => {
+      const snapshot = {
+        userId: 1,
+        sessionId: 10,
+        pushSubscriptionRev: 3,
+        token: 'https://push/dead',
+        platform: 'WEB',
+        webP256dh: 'key',
+        webAuth: 'auth',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 60000),
+      };
+      registrations.mockResolvedValue([snapshot]);
+      sendNotification.mockRejectedValue({ statusCode });
+      const invalidate = vi
+        .spyOn(svc, 'invalidateSubscription')
+        .mockResolvedValue();
+      await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 9 }]);
+      expect(invalidate).toHaveBeenCalledExactlyOnceWith(snapshot);
+    },
+  );
 
-    expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 5, sessionId: 17, token: 'token-a' }),
-    );
-    expect(onConflictDoUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        set: expect.objectContaining({ userId: 5, sessionId: 17 }),
-      }),
-    );
+  it('uses the same recovery for an unregistered Android token', async () => {
+    const snapshot = {
+      userId: 1,
+      sessionId: 10,
+      pushSubscriptionRev: 3,
+      token: 'android-dead',
+      platform: 'ANDROID',
+      webP256dh: null,
+      webAuth: null,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60000),
+    };
+    registrations.mockResolvedValue([snapshot]);
+    (svc as unknown as { messaging: unknown }).messaging = {
+      sendEach: vi
+        .fn()
+        .mockResolvedValue({
+          failureCount: 1,
+          responses: [
+            {
+              success: false,
+              error: { code: 'messaging/registration-token-not-registered' },
+            },
+          ],
+        }),
+    };
+    const invalidate = vi
+      .spyOn(svc, 'invalidateSubscription')
+      .mockResolvedValue();
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 9 }]);
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith(snapshot);
   });
 
   it('coalesces for five seconds and rechecks each device session at trailing delivery', async () => {
@@ -79,11 +111,11 @@ describe('PushService — identity-only payloads', () => {
       expiresAt: new Date(Date.now() + 60_000),
       revokedAt: null,
     };
-    pushToken.findMany.mockResolvedValue(
+    registrations.mockResolvedValue(
       [10, 20].map((sessionId) => ({
         userId: 1,
         sessionId,
-        session,
+        ...session,
         token: `https://push/${sessionId}`,
         platform: 'WEB',
         webP256dh: 'p256',
@@ -115,7 +147,7 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", threadFeedEndId }', async () => {
-    pushToken.findMany.mockResolvedValue([
+    registrations.mockResolvedValue([
       {
         userId: 1,
         sessionId: 10,
@@ -124,11 +156,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256',
         webAuth: 'auth',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
     ]);
     await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
@@ -142,16 +171,16 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('dispatchForMessage deduplicates users without applying a user-wide online filter', async () => {
-    pushToken.findMany.mockResolvedValue([]);
+    registrations.mockResolvedValue([]);
     await svc.dispatchForMessage([
       { userId: 1, threadFeedEndId: 7 },
       { userId: 1, threadFeedEndId: 8 },
     ]);
-    expect(pushToken.findMany).toHaveBeenCalledOnce();
+    expect(registrations).toHaveBeenCalledOnce();
   });
 
   it('uses each recipient account head and keeps the newest duplicate target', async () => {
-    pushToken.findMany.mockResolvedValue(
+    registrations.mockResolvedValue(
       [1, 2].map((userId) => ({
         userId,
         sessionId: userId,
@@ -160,11 +189,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256',
         webAuth: 'auth',
-        session: {
-          userId,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       })),
     );
     await svc.dispatchForMessage([
@@ -184,14 +210,14 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('does not propagate notification database errors to callers', async () => {
-    pushToken.findMany.mockRejectedValue(new Error('database unavailable'));
+    registrations.mockRejectedValue(new Error('database unavailable'));
     await expect(
       svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]),
     ).resolves.toBeUndefined();
   });
 
   it('does not propagate transient Web Push failures to callers', async () => {
-    pushToken.findMany.mockResolvedValue([
+    registrations.mockResolvedValue([
       {
         userId: 1,
         sessionId: 10,
@@ -200,11 +226,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256',
         webAuth: 'auth',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
     ]);
     sendNotification.mockRejectedValue({
@@ -220,7 +243,7 @@ describe('PushService — identity-only payloads', () => {
     sse.isSessionOnline.mockImplementation(
       (_userId: number, sessionId: number) => sessionId === 10,
     );
-    pushToken.findMany.mockResolvedValue([
+    registrations.mockResolvedValue([
       {
         userId: 1,
         sessionId: 10,
@@ -229,11 +252,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-a',
         webAuth: 'auth-a',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
       {
         userId: 1,
@@ -243,11 +263,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-b',
         webAuth: 'auth-b',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
     ]);
 
@@ -260,7 +277,7 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('does not wake a revoked or expired authenticated session', async () => {
-    pushToken.findMany.mockResolvedValue([
+    registrations.mockResolvedValue([
       {
         userId: 1,
         sessionId: 10,
@@ -268,11 +285,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-a',
         webAuth: 'auth-a',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: new Date(),
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: new Date(),
       },
       {
         userId: 1,
@@ -281,11 +295,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-b',
         webAuth: 'auth-b',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() - 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() - 60_000),
+        revokedAt: null,
       },
     ]);
 
@@ -299,7 +310,7 @@ describe('PushService — identity-only payloads', () => {
     sse.isSessionOnline.mockImplementation(
       (_userId: number, sessionId: number) => sessionId === 10,
     );
-    pushToken.findMany.mockResolvedValue([
+    registrations.mockResolvedValue([
       {
         userId: 1,
         sessionId: 10,
@@ -307,11 +318,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-a',
         webAuth: 'auth-a',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
       {
         userId: 1,
@@ -320,11 +328,8 @@ describe('PushService — identity-only payloads', () => {
         platform: 'WEB',
         webP256dh: 'p256-b',
         webAuth: 'auth-b',
-        session: {
-          userId: 1,
-          expiresAt: new Date(Date.now() + 60_000),
-          revokedAt: null,
-        },
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
       },
     ]);
 
@@ -346,12 +351,14 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('sendTestPush emits { type:"ADMIN_TEST", ts, title, body }', async () => {
-    pushToken.findFirst.mockResolvedValue({
-      id: 5,
-      token: 'https://fcm/x',
-      webP256dh: 'p256',
-      webAuth: 'auth',
-    });
+    registrations.mockResolvedValue([
+      {
+        id: 5,
+        token: 'https://fcm/x',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+      },
+    ]);
     const res = await svc.sendTestPush(5, 'Hello', 'World');
     expect(res).toEqual({ ok: true });
     expect(sendNotification).toHaveBeenCalledTimes(1);
@@ -365,12 +372,14 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('runs a current-device FCM probe through accepted → device_received', async () => {
-    pushToken.findFirst.mockResolvedValue({
-      id: 9,
-      userId: 5,
-      token: 'android-token',
-      platform: 'ANDROID',
-    });
+    registrations.mockResolvedValue([
+      {
+        id: 9,
+        userId: 5,
+        token: 'android-token',
+        platform: 'ANDROID',
+      },
+    ]);
     const send = vi.fn().mockResolvedValue('projects/p/messages/1');
     (svc as unknown as { messaging: { send: typeof send } }).messaging = {
       send,
@@ -395,12 +404,14 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('enforces the 30-second probe cooldown per user and token', async () => {
-    pushToken.findFirst.mockResolvedValue({
-      id: 9,
-      userId: 5,
-      token: 'android-token',
-      platform: 'ANDROID',
-    });
+    registrations.mockResolvedValue([
+      {
+        id: 9,
+        userId: 5,
+        token: 'android-token',
+        platform: 'ANDROID',
+      },
+    ]);
     const send = vi.fn().mockResolvedValue('projects/p/messages/1');
     (svc as unknown as { messaging: { send: typeof send } }).messaging = {
       send,

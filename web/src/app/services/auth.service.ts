@@ -472,7 +472,16 @@ export class AuthService {
     // intact until it succeeds; a failure remains retryable instead of producing a half-logged-out state.
     let cacheClear: Promise<void>;
     try {
-      cacheClear = Promise.resolve(this.userService.clearSession());
+      cacheClear = Promise.resolve(this.userService.clearSession()).then(
+        async () => {
+          if (!isTauri()) {
+            const { resetNotificationSince } = await import(
+              './browser-notification-checkpoint'
+            );
+            await resetNotificationSince();
+          }
+        },
+      );
     } catch (error) {
       cacheClear = Promise.reject(error);
     }
@@ -481,8 +490,6 @@ export class AuthService {
         next: () => {
           this.clearLocalSessionState();
           this.sendOutbox.clear();
-          this.push.unregister();
-          void this.webPush.unregister();
 
           if (isTauri()) {
             if (isAndroidNative()) {

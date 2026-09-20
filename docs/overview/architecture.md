@@ -189,7 +189,7 @@ Authentication reuses the same credential as HTTP — the global `SessionAuthGua
 
 ### HELLO handshake
 
-On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, `threadFeedEndId`, and `activeCall`. Metadata and relationship updates use the state feed; content, unread, mention, and preview snapshots use the thread feed. Each feed advances its own durable local cursor after a complete page commit.
+On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, `threadFeedEndId`, `activeCall`, `sessionId`, and `pushSubscriptionRev`. Metadata and relationship updates use the state feed; content, unread, mention, and preview snapshots use the thread feed. Each feed advances its own durable local cursor after a complete page commit. Session push registrations live directly in `SessionToken`; confirmed permanent delivery failures increment `pushSubscriptionRev` and notify only that session through `PUSH_SUBSCRIPTION_CHANGED`. The shared Web/Android coordinator recovers via live events or HELLO, without periodic synchronization.
 
 ### Heartbeat and Liveness
 

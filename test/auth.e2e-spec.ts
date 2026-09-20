@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
+import { createHash } from 'node:crypto';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { pushToken, account as user } from '../src/database/schema';
+import { sessionToken, account as user } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUser, seedSession } from './seed';
 import { createTestApp } from './support/app';
@@ -30,7 +31,10 @@ describe('Session management + login-policy e2e', () => {
   beforeEach(async () => {
     // CASCADE on User also clears SessionToken (FK→User); both listed so a stray session can't leak
     // between tests even if the on-delete weren't CASCADE.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -64,12 +68,42 @@ describe('Session management + login-policy e2e', () => {
     await request(app.getHttpServer())
       .post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${aSession}`)
-      .send({ token: 'fcm-token-a', platform: 'ANDROID' })
+      .send({
+        token: 'fcm-token-a',
+        platform: 'ANDROID',
+        pushSubscriptionRev: 1,
+        sessionId: (
+          await database.db
+            .select({ id: sessionToken.id })
+            .from(sessionToken)
+            .where(
+              eq(
+                sessionToken.tokenHash,
+                createHash('sha256').update(aSession).digest('hex'),
+              ),
+            )
+        )[0].id,
+      })
       .expect(200);
     await request(app.getHttpServer())
       .post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${bSession}`)
-      .send({ token: 'fcm-token-b', platform: 'ANDROID' })
+      .send({
+        token: 'fcm-token-b',
+        platform: 'ANDROID',
+        pushSubscriptionRev: 1,
+        sessionId: (
+          await database.db
+            .select({ id: sessionToken.id })
+            .from(sessionToken)
+            .where(
+              eq(
+                sessionToken.tokenHash,
+                createHash('sha256').update(bSession).digest('hex'),
+              ),
+            )
+        )[0].id,
+      })
       .expect(200);
 
     // Find B's row id via the list authed as A (B is the non-current row).
@@ -88,9 +122,11 @@ describe('Session management + login-policy e2e', () => {
     expect(revoke.body.code).toBe(0);
 
     const registrations = await database.db
-      .select({ token: pushToken.token })
-      .from(pushToken)
-      .where(eq(pushToken.userId, userId));
+      .select({ token: sessionToken.pushToken })
+      .from(sessionToken)
+      .where(
+        and(eq(sessionToken.userId, userId), isNotNull(sessionToken.pushToken)),
+      );
     expect(registrations).toEqual([{ token: 'fcm-token-a' }]);
 
     // B is revoked → 401. revokeById drops its persistent validation entry immediately.
@@ -141,12 +177,42 @@ describe('Session management + login-policy e2e', () => {
     await request(app.getHttpServer())
       .post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ token: 'logout-all-token-a', platform: 'ANDROID' })
+      .send({
+        token: 'logout-all-token-a',
+        platform: 'ANDROID',
+        pushSubscriptionRev: 1,
+        sessionId: (
+          await database.db
+            .select({ id: sessionToken.id })
+            .from(sessionToken)
+            .where(
+              eq(
+                sessionToken.tokenHash,
+                createHash('sha256').update(tokenA).digest('hex'),
+              ),
+            )
+        )[0].id,
+      })
       .expect(200);
     await request(app.getHttpServer())
       .post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ token: 'logout-all-token-b', platform: 'ANDROID' })
+      .send({
+        token: 'logout-all-token-b',
+        platform: 'ANDROID',
+        pushSubscriptionRev: 1,
+        sessionId: (
+          await database.db
+            .select({ id: sessionToken.id })
+            .from(sessionToken)
+            .where(
+              eq(
+                sessionToken.tokenHash,
+                createHash('sha256').update(tokenB).digest('hex'),
+              ),
+            )
+        )[0].id,
+      })
       .expect(200);
 
     const logoutAll = await request(app.getHttpServer())
@@ -155,9 +221,11 @@ describe('Session management + login-policy e2e', () => {
     expect(logoutAll.body.code).toBe(0);
 
     const registrations = await database.db
-      .select({ id: pushToken.id })
-      .from(pushToken)
-      .where(eq(pushToken.userId, userId));
+      .select({ id: sessionToken.id })
+      .from(sessionToken)
+      .where(
+        and(eq(sessionToken.userId, userId), isNotNull(sessionToken.pushToken)),
+      );
     expect(registrations).toEqual([]);
 
     const guarded = await request(app.getHttpServer())

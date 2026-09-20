@@ -4,17 +4,12 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
-import { and, eq, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import {
-  account,
-  pushToken,
-  sessionToken,
-  userPreference,
-} from '../database/schema.js';
+import { account, sessionToken, userPreference } from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 import {
   AUTO_TERMINATE_PREFERENCE_KEY,
@@ -84,17 +79,18 @@ export class SessionTokenService {
   ): Promise<Array<{ id: number; tokenHash: string }>> {
     const revoked = await tx
       .update(sessionToken)
-      .set({ revokedAt: now, revokeReason: reason })
+      .set({
+        revokedAt: now,
+        revokeReason: reason,
+        pushToken: null,
+        pushPlatform: null,
+        pushDeviceId: null,
+        pushP256dh: null,
+        pushAuth: null,
+        pushRegisteredAt: null,
+      })
       .where(where)
       .returning({ id: sessionToken.id, tokenHash: sessionToken.tokenHash });
-    if (revoked.length > 0) {
-      await tx.delete(pushToken).where(
-        inArray(
-          pushToken.sessionId,
-          revoked.map(({ id }) => id),
-        ),
-      );
-    }
     return revoked;
   }
 

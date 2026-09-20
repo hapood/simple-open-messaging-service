@@ -1,11 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SessionTokenService } from './session-token.service.js';
-import {
-  account,
-  pushToken,
-  sessionToken,
-  userPreference,
-} from '../database/schema.js';
+import { account, sessionToken, userPreference } from '../database/schema.js';
 import type { KvStoreService } from '../kv-store/kv-store.service.js';
 
 /**
@@ -25,7 +20,6 @@ describe('SessionTokenService', () => {
       updateMany: vi.fn(),
       updateReturning: vi.fn(),
     },
-    pushToken: { deleteMany: vi.fn() },
   };
   const insert = vi.fn((table: unknown) => ({
     values: (data: Record<string, unknown>) => {
@@ -92,14 +86,7 @@ describe('SessionTokenService', () => {
     };
     return query;
   });
-  const deleteWhere = vi.fn(async () => {
-    await store.pushToken.deleteMany();
-  });
-  const deleteFrom = vi.fn((table: unknown) => {
-    expect(table).toBe(pushToken);
-    return { where: deleteWhere };
-  });
-  const db = { insert, select, update, delete: deleteFrom };
+  const db = { insert, select, update };
   const transaction = vi.fn((callback: (tx: typeof db) => unknown) =>
     callback(db),
   );
@@ -126,12 +113,9 @@ describe('SessionTokenService', () => {
     store.sessionToken.update.mockReset();
     store.sessionToken.updateMany.mockReset();
     store.sessionToken.updateReturning.mockReset();
-    store.pushToken.deleteMany.mockReset();
     insert.mockClear();
     select.mockClear();
     update.mockClear();
-    deleteFrom.mockClear();
-    deleteWhere.mockClear();
     transaction.mockClear();
     kv.get.mockReset();
     kv.setex.mockReset();
@@ -152,7 +136,6 @@ describe('SessionTokenService', () => {
     store.sessionToken.updateReturning.mockResolvedValue([
       { id: 101, tokenHash: 'abc' },
     ]);
-    store.pushToken.deleteMany.mockResolvedValue({ count: 1 });
     kv.get.mockResolvedValue(null); // cache miss by default
     kv.setex.mockResolvedValue(undefined);
     kv.del.mockResolvedValue(0);
@@ -279,7 +262,13 @@ describe('SessionTokenService', () => {
       );
       await expect(svc.validate('c'.repeat(64))).resolves.toBe(null);
       expect(transaction).toHaveBeenCalledTimes(1);
-      expect(store.pushToken.deleteMany).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          pushToken: null,
+          pushP256dh: null,
+          pushAuth: null,
+        }),
+      });
     });
 
     it('rejects a revoked token', async () => {
@@ -382,9 +371,18 @@ describe('SessionTokenService', () => {
       store.sessionToken.updateMany.mockResolvedValue({ count: 1 });
       await svc.revoke('h'.repeat(64));
       expect(store.sessionToken.update).toHaveBeenCalledWith({
-        data: { revokedAt: expect.any(Date), revokeReason: 'logout' },
+        data: expect.objectContaining({
+          revokedAt: expect.any(Date),
+          revokeReason: 'logout',
+        }),
       });
-      expect(store.pushToken.deleteMany).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          pushToken: null,
+          pushP256dh: null,
+          pushAuth: null,
+        }),
+      });
       expect(kv.delPersistent).toHaveBeenCalledTimes(1);
     });
   });
@@ -394,9 +392,18 @@ describe('SessionTokenService', () => {
       const ok = await svc.revokeById(7, 101);
       expect(ok).toBe(true);
       expect(store.sessionToken.update).toHaveBeenCalledWith({
-        data: { revokedAt: expect.any(Date), revokeReason: 'device_revoke' },
+        data: expect.objectContaining({
+          revokedAt: expect.any(Date),
+          revokeReason: 'device_revoke',
+        }),
       });
-      expect(store.pushToken.deleteMany).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          pushToken: null,
+          pushP256dh: null,
+          pushAuth: null,
+        }),
+      });
       expect(kv.delPersistent).toHaveBeenCalledTimes(1);
     });
 
@@ -405,14 +412,17 @@ describe('SessionTokenService', () => {
       const ok = await svc.revokeById(7, 999);
       expect(ok).toBe(false);
       expect(store.sessionToken.update).toHaveBeenCalledTimes(1);
-      expect(store.pushToken.deleteMany).not.toHaveBeenCalled();
+
       expect(kv.delPersistent).not.toHaveBeenCalled();
     });
 
     it('writes the supplied reason instead of the default device_revoke', async () => {
       await svc.revokeById(7, 101, 'admin_revoke');
       expect(store.sessionToken.update).toHaveBeenCalledWith({
-        data: { revokedAt: expect.any(Date), revokeReason: 'admin_revoke' },
+        data: expect.objectContaining({
+          revokedAt: expect.any(Date),
+          revokeReason: 'admin_revoke',
+        }),
       });
     });
   });
@@ -429,9 +439,18 @@ describe('SessionTokenService', () => {
       ]);
       await svc.revokeAllForUser(7, 'password_change');
       expect(store.sessionToken.update).toHaveBeenCalledWith({
-        data: { revokedAt: expect.any(Date), revokeReason: 'password_change' },
+        data: expect.objectContaining({
+          revokedAt: expect.any(Date),
+          revokeReason: 'password_change',
+        }),
       });
-      expect(store.pushToken.deleteMany).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          pushToken: null,
+          pushP256dh: null,
+          pushAuth: null,
+        }),
+      });
       expect(kv.delPersistent).toHaveBeenCalledWith(
         'session:hash-a',
         'session:hash-b',
@@ -453,9 +472,18 @@ describe('SessionTokenService', () => {
         },
       });
       expect(store.sessionToken.update).toHaveBeenCalledWith({
-        data: { revokedAt: expect.any(Date), revokeReason: 'auto_terminated' },
+        data: expect.objectContaining({
+          revokedAt: expect.any(Date),
+          revokeReason: 'auto_terminated',
+        }),
       });
-      expect(store.pushToken.deleteMany).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          pushToken: null,
+          pushP256dh: null,
+          pushAuth: null,
+        }),
+      });
     });
   });
 

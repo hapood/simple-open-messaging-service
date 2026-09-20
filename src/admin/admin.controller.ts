@@ -319,7 +319,7 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('push.token.delete', { targetType: 'push_token', targetParam: 'id' })
+  @Audit('push.token.delete', { targetType: 'user_session', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/tokens/:id/delete')
   @ApiOperation({ summary: 'Delete (revoke) a push device token' })
@@ -329,7 +329,7 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('push.test', { targetType: 'push_token', targetParam: 'id' })
+  @Audit('push.test', { targetType: 'user_session', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/test')
   @ApiOperation({

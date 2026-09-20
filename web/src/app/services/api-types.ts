@@ -999,26 +999,9 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register/refresh an FCM push token for the logged-in user */
+        /** Register a Web Push or FCM subscription at the current session revision */
         post: operations["DeviceController_register"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/devices/register/{token}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Unregister an FCM push token (called on logout) */
-        delete: operations["DeviceController_unregister"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4391,8 +4374,12 @@ export interface components {
             domain: string;
         };
         RegisterDeviceDto: {
+            /** @description Session push generation received through HELLO or SSE. */
+            pushSubscriptionRev: number;
+            /** @description Authenticated session ID received in HELLO. */
+            sessionId: number;
             /**
-             * @description ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.
+             * @description ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per installation; stored directly on the authenticated session.
              * @example dGhpcyBpcyBhIGZjbSB0b2tlbi4u
              */
             token: string;
@@ -4634,7 +4621,7 @@ export interface components {
         };
         AdminPushTestDto: {
             /**
-             * @description PushToken id
+             * @description SessionToken id
              * @example 42
              */
             id: number;
@@ -5053,6 +5040,12 @@ export interface components {
                 | "REJECTED"
                 | "FAILED"
                 | "SUPERSEDED";
+        };
+        RegisterDeviceResultDto: {
+            sessionId: number;
+            pushSubscriptionRev: number;
+            /** @description False means the submitted revision was stale; reconcile the returned revision. */
+            registered: boolean;
         };
     };
     responses: never;
@@ -6397,26 +6390,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-        };
-    };
-    DeviceController_unregister: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                token: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["RegisterDeviceResultDto"];
+                    };
                 };
-                content?: never;
             };
         };
     };

@@ -1555,6 +1555,12 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun getToken(): String? = SomsBridge.FcmToken.current
 
+        @JavascriptInterface
+        fun preparePushRegistration(requestId: String, replace: Boolean) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread { SomsFirebase.preparePushRegistration(a, requestId, replace) }
+        }
+
         /** Trigger an async token refresh (Firebase re-issues via the token task + onNewToken). */
         @JavascriptInterface
         fun requestToken() {

@@ -5,7 +5,6 @@ import {
   admin,
   adminSession,
   loginCode,
-  pushToken,
   sessionToken,
   account as user,
   webAuthnCredential,
@@ -52,7 +51,6 @@ export class AuditTargetLabelService {
       admin: new Set<number>(),
       user_session: new Set<number>(),
       login_code: new Set<number>(),
-      push_token: new Set<number>(),
       webauthn_credential: new Set<number>(),
     };
     for (const r of rows) {
@@ -65,77 +63,62 @@ export class AuditTargetLabelService {
         intBuckets[t as keyof typeof intBuckets].add(Number(id));
     }
 
-    const [
-      users,
-      admins,
-      sessions,
-      adminSessions,
-      loginCodes,
-      pushTokens,
-      webauthns,
-    ] = await Promise.all([
-      intBuckets.user.size
-        ? this.database.db
-            .select({ id: user.id, account: user.account })
-            .from(user)
-            .where(inArray(user.id, [...intBuckets.user]))
-        : [],
-      intBuckets.admin.size
-        ? this.database.db
-            .select({ id: admin.id, account: user.account })
-            .from(admin)
-            .innerJoin(user, eq(user.id, admin.userId))
-            .where(inArray(admin.id, [...intBuckets.admin]))
-        : [],
-      intBuckets.user_session.size
-        ? this.database.db
-            .select({ id: sessionToken.id, account: user.account })
-            .from(sessionToken)
-            .innerJoin(user, eq(user.id, sessionToken.userId))
-            .where(inArray(sessionToken.id, [...intBuckets.user_session]))
-        : [],
-      bigBuckets.admin_session.size
-        ? this.database.db
-            .select({ id: adminSession.id, account: user.account })
-            .from(adminSession)
-            .innerJoin(admin, eq(admin.id, adminSession.adminId))
-            .innerJoin(user, eq(user.id, admin.userId))
-            .where(inArray(adminSession.id, [...bigBuckets.admin_session]))
-        : [],
-      intBuckets.login_code.size
-        ? this.database.db
-            .select({ id: loginCode.id, account: user.account })
-            .from(loginCode)
-            .innerJoin(user, eq(user.id, loginCode.userId))
-            .where(inArray(loginCode.id, [...intBuckets.login_code]))
-        : [],
-      intBuckets.push_token.size
-        ? this.database.db
-            .select({ id: pushToken.id, account: user.account })
-            .from(pushToken)
-            .innerJoin(user, eq(user.id, pushToken.userId))
-            .where(inArray(pushToken.id, [...intBuckets.push_token]))
-        : [],
-      intBuckets.webauthn_credential.size
-        ? this.database.db
-            .select({ id: webAuthnCredential.id, account: user.account })
-            .from(webAuthnCredential)
-            .innerJoin(admin, eq(admin.id, webAuthnCredential.adminId))
-            .innerJoin(user, eq(user.id, admin.userId))
-            .where(
-              inArray(webAuthnCredential.id, [
-                ...intBuckets.webauthn_credential,
-              ]),
-            )
-        : [],
-    ]);
+    const [users, admins, sessions, adminSessions, loginCodes, webauthns] =
+      await Promise.all([
+        intBuckets.user.size
+          ? this.database.db
+              .select({ id: user.id, account: user.account })
+              .from(user)
+              .where(inArray(user.id, [...intBuckets.user]))
+          : [],
+        intBuckets.admin.size
+          ? this.database.db
+              .select({ id: admin.id, account: user.account })
+              .from(admin)
+              .innerJoin(user, eq(user.id, admin.userId))
+              .where(inArray(admin.id, [...intBuckets.admin]))
+          : [],
+        intBuckets.user_session.size
+          ? this.database.db
+              .select({ id: sessionToken.id, account: user.account })
+              .from(sessionToken)
+              .innerJoin(user, eq(user.id, sessionToken.userId))
+              .where(inArray(sessionToken.id, [...intBuckets.user_session]))
+          : [],
+        bigBuckets.admin_session.size
+          ? this.database.db
+              .select({ id: adminSession.id, account: user.account })
+              .from(adminSession)
+              .innerJoin(admin, eq(admin.id, adminSession.adminId))
+              .innerJoin(user, eq(user.id, admin.userId))
+              .where(inArray(adminSession.id, [...bigBuckets.admin_session]))
+          : [],
+        intBuckets.login_code.size
+          ? this.database.db
+              .select({ id: loginCode.id, account: user.account })
+              .from(loginCode)
+              .innerJoin(user, eq(user.id, loginCode.userId))
+              .where(inArray(loginCode.id, [...intBuckets.login_code]))
+          : [],
+        intBuckets.webauthn_credential.size
+          ? this.database.db
+              .select({ id: webAuthnCredential.id, account: user.account })
+              .from(webAuthnCredential)
+              .innerJoin(admin, eq(admin.id, webAuthnCredential.adminId))
+              .innerJoin(user, eq(user.id, admin.userId))
+              .where(
+                inArray(webAuthnCredential.id, [
+                  ...intBuckets.webauthn_credential,
+                ]),
+              )
+          : [],
+      ]);
 
     for (const u of users) put('user', u.id, u.account);
     for (const a of admins) put('admin', a.id, a.account);
     for (const s of sessions) put('user_session', s.id, s.account);
     for (const a of adminSessions) put('admin_session', a.id, a.account);
     for (const c of loginCodes) put('login_code', c.id, c.account);
-    for (const p of pushTokens) put('push_token', p.id, p.account);
     for (const w of webauthns) put('webauthn_credential', w.id, w.account);
 
     return labelByKey;

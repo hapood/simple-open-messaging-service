@@ -29,10 +29,18 @@ import {
   ilike,
   inArray,
   or,
+  isNotNull,
+  isNull,
+  gt,
+  sql,
   type SQL,
 } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { pushToken, account as user } from '../database/schema.js';
+import { sessionToken, account as user } from '../database/schema.js';
+import {
+  clearPushRegistration,
+  pushRegistrationFields,
+} from './push-registration.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
@@ -56,14 +64,14 @@ type FcmProbeEntry = FcmProbeStatus & {
   sending?: boolean;
 };
 
-type SessionBoundPushToken = {
+type SessionPushRegistration = {
+  token: string;
+  platform: string;
   userId: number;
   sessionId: number;
-  session: {
-    userId: number;
-    expiresAt: Date;
-    revokedAt: Date | null;
-  };
+  pushSubscriptionRev: number;
+  expiresAt: Date;
+  revokedAt: Date | null;
 };
 
 /**
@@ -75,7 +83,7 @@ type SessionBoundPushToken = {
  * SSE connection. An online session takes over notification aggregation from its State Feed; other devices
  * remain independently eligible. Duplicate wake delivery is harmless because the pull pipeline is idempotent.
  *
- * Two transports, branched by `PushToken.platform`:
+ * Two transports, branched by `SessionToken.pushPlatform`:
  *  - ANDROID / IOS → firebase-admin `sendEach` (data-only, high priority).
  *  - WEB           → `web-push` lib (standard Web Push + VAPID), payload is the JSON-stringified signal.
  *
@@ -136,56 +144,147 @@ export class PushService implements OnModuleDestroy {
         `FCM service-account file not found at ${this.fcmCredentialPath} — FCM dispatch disabled`,
       );
     }
-    // Web Push: VAPID keys are fixed-file managed by SettingsService and passed PER SEND as the
-    // vapidDetails option (see sendWebPush) — NOT the module-global setVapidDetails. Nothing to init here:
-    // settings.isWebPushConfigured is the runtime gate, and an admin key rotation takes effect on the next
-    // send with no restart.
+    // VAPID credentials are loaded from the managed file at boot and passed per send.
   }
 
-  /** Upsert a registration token for the authenticated user. `token` is globally unique (one row per
-   *  device), so the upsert re-owns the row to the current user on an account switch on the same device
-   *  and bumps lastSeenAt on every re-register (token rotation, app upgrade, periodic heartbeat). For
-   *  WEB the subscription's p256dh + auth keys are stored alongside (the server must encrypt the Web
-   *  Push payload to these keys before sending). */
+  /** The authenticated session owns one registration. A stale generation never
+   * replaces current state, including requests that crossed a logout/login. */
   async registerToken(
     userId: number,
     sessionId: number,
     dto: RegisterDeviceDto,
-  ): Promise<void> {
-    const now = new Date();
-    await this.database.db
-      .insert(pushToken)
-      .values({
-        userId,
-        sessionId,
-        token: dto.token,
-        platform: dto.platform,
-        deviceId: dto.deviceId,
-        webP256dh: dto.p256dh,
-        webAuth: dto.auth,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: pushToken.token,
-        set: {
-          userId,
+  ): Promise<{
+    sessionId: number;
+    pushSubscriptionRev: number;
+    registered: boolean;
+  }> {
+    if (dto.sessionId !== sessionId)
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'push session changed',
+      );
+    if (dto.platform === 'WEB' && (!dto.p256dh || !dto.auth))
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'Web Push requires encryption keys',
+      );
+    return this.database.db.transaction(async (tx) => {
+      // Serialize transfers of the same installation token, including when it
+      // is not yet stored. Session locks are always acquired in ID order.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${dto.token}, 74129))`,
+      );
+      const rows = await tx
+        .select()
+        .from(sessionToken)
+        .where(
+          or(
+            eq(sessionToken.id, sessionId),
+            eq(sessionToken.pushToken, dto.token),
+          ),
+        )
+        .orderBy(sessionToken.id)
+        .for('no key update');
+      const current = rows.find(
+        (row) => row.id === sessionId && row.userId === userId,
+      );
+      if (!current || current.revokedAt || current.expiresAt <= new Date())
+        throw new BusinessException(
+          BusinessCode.SESSION_REVOKED,
+          'session is no longer active',
+        );
+      if (current.pushSubscriptionRev !== dto.pushSubscriptionRev)
+        return {
           sessionId,
-          platform: dto.platform,
-          deviceId: dto.deviceId,
-          webP256dh: dto.p256dh,
-          webAuth: dto.auth,
-          updatedAt: now,
-          lastSeenAt: now,
-        },
-      });
+          pushSubscriptionRev: current.pushSubscriptionRev,
+          registered: false,
+        };
+      // A delayed request from an older login must not steal a newer login's token.
+      if (rows.some((row) => row.id > sessionId && row.pushToken === dto.token))
+        throw new BusinessException(
+          BusinessCode.ALREADY_EXISTS,
+          'push token belongs to a newer session',
+        );
+      for (const row of rows) {
+        if (row.id !== sessionId && row.pushToken === dto.token)
+          await tx
+            .update(sessionToken)
+            .set(clearPushRegistration)
+            .where(eq(sessionToken.id, row.id));
+      }
+      await tx
+        .update(sessionToken)
+        .set({
+          pushToken: dto.token,
+          pushPlatform: dto.platform,
+          pushDeviceId: dto.deviceId ?? null,
+          pushP256dh: dto.platform === 'WEB' ? dto.p256dh! : null,
+          pushAuth: dto.platform === 'WEB' ? dto.auth! : null,
+          pushRegisteredAt: new Date(),
+        })
+        .where(eq(sessionToken.id, sessionId));
+      return {
+        sessionId,
+        pushSubscriptionRev: current.pushSubscriptionRev,
+        registered: true,
+      };
+    });
   }
 
-  /** Remove a registration token. Scoped to the caller — a user cannot unregister another user's device.
-   *  deleteMany (not delete) so a not-found / wrong-owner call is a no-op rather than throwing. */
-  async unregisterToken(userId: number, token: string): Promise<void> {
-    await this.database.db
-      .delete(pushToken)
-      .where(and(eq(pushToken.token, token), eq(pushToken.userId, userId)));
+  /** Compare the exact send snapshot so a late failure cannot invalidate a
+   * replacement. Concurrent failures increment the generation only once. */
+  async invalidateSubscription(
+    snapshot: Pick<
+      SessionPushRegistration,
+      'sessionId' | 'userId' | 'token' | 'pushSubscriptionRev'
+    >,
+  ): Promise<void> {
+    const [changed] = await this.database.db
+      .update(sessionToken)
+      .set({
+        ...clearPushRegistration,
+        pushSubscriptionRev: sql`${sessionToken.pushSubscriptionRev} + 1`,
+      })
+      .where(
+        and(
+          eq(sessionToken.id, snapshot.sessionId),
+          eq(sessionToken.userId, snapshot.userId),
+          eq(sessionToken.pushToken, snapshot.token),
+          eq(sessionToken.pushSubscriptionRev, snapshot.pushSubscriptionRev),
+          isNull(sessionToken.revokedAt),
+        ),
+      )
+      .returning({ pushSubscriptionRev: sessionToken.pushSubscriptionRev });
+    if (changed)
+      this.sse.onPushSubscriptionChanged(
+        snapshot.userId,
+        snapshot.sessionId,
+        changed.pushSubscriptionRev,
+      );
+  }
+
+  private async registrations(where?: SQL) {
+    const rows = await this.database.db
+      .select(pushRegistrationFields)
+      .from(sessionToken)
+      .where(
+        and(
+          where,
+          isNotNull(sessionToken.pushToken),
+          isNull(sessionToken.revokedAt),
+          gt(sessionToken.expiresAt, new Date()),
+        ),
+      );
+    return rows.filter(
+      (
+        row,
+      ): row is typeof row & {
+        token: string;
+        platform: NonNullable<typeof row.platform>;
+        lastSeenAt: Date;
+      } =>
+        row.token !== null && row.platform !== null && row.lastSeenAt !== null,
+    );
   }
 
   /** Send a data-only probe to the caller's registered Android token. Probe state is intentionally
@@ -205,13 +304,13 @@ export class PushService implements OnModuleDestroy {
       );
     }
 
-    const row = await this.database.db.query.pushToken.findFirst({
-      where: and(
-        eq(pushToken.userId, userId),
-        eq(pushToken.token, token),
-        eq(pushToken.platform, 'ANDROID'),
+    const [row] = await this.registrations(
+      and(
+        eq(sessionToken.userId, userId),
+        eq(sessionToken.pushToken, token),
+        eq(sessionToken.pushPlatform, 'ANDROID'),
       ),
-    });
+    );
     if (!row) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -248,6 +347,8 @@ export class PushService implements OnModuleDestroy {
         (e as { code?: string }).code ??
         (e as Error).message ??
         'FCM_SEND_FAILED';
+      if (entry.errorCode === 'messaging/registration-token-not-registered')
+        await this.invalidateSubscription(row);
     } finally {
       entry.sending = false;
     }
@@ -303,25 +404,19 @@ export class PushService implements OnModuleDestroy {
     }
   }
 
-  /** A Push registration inherits the authorization lifetime of the session that created it. The
-   * duplicated user id is checked defensively, then a live SSE on that exact session takes ownership. */
+  /** Session authorization and exact-session SSE ownership gate out-of-band delivery. */
   private canDeliverOutOfBand(
-    token: SessionBoundPushToken,
+    token: SessionPushRegistration,
     now: Date,
   ): boolean {
     return (
-      token.session.userId === token.userId &&
-      token.session.revokedAt === null &&
-      token.session.expiresAt > now &&
+      token.revokedAt === null &&
+      token.expiresAt > now &&
       !this.sse.isSessionOnline(token.userId, token.sessionId)
     );
   }
 
-  /** Send one Web Push notification, passing the VAPID details PER CALL from SettingsService (NOT the
-   *  module-global setVapidDetails). Reading the (DB-backed) keypair on each send means an admin rotation
-   *  takes effect immediately on the next send, with no restart and no event wiring. Throws if Web Push is
-   *  not configured (the caller decides how to surface that); otherwise rethrows web-push's error, which
-   *  carries `.statusCode` (404/410 = subscription gone). */
+  /** Encrypt for the subscription and authenticate with the managed VAPID keypair. */
   private async sendWebPush(
     sub: { endpoint: string; keys: { p256dh: string; auth: string } },
     payload: string,
@@ -347,7 +442,7 @@ export class PushService implements OnModuleDestroy {
    * takes over notification aggregation from `STATE_FEED_UPDATED`. Other devices receive the same payload
    * `{ type:'NEW_MESSAGE', threadFeedEndId }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
    * WEB → Web Push `sendNotification`. Per-token errors that indicate a definitively-dead subscription
-   * (FCM UNREGISTERED / Web Push 404/410) are pruned; transient errors are left alone to self-heal.
+   * (FCM UNREGISTERED / Web Push 404/410) are cleared and advance the session revision; other errors preserve registration.
    */
   async dispatchForMessage(
     targets: { userId: number; threadFeedEndId: number }[],
@@ -369,23 +464,9 @@ export class PushService implements OnModuleDestroy {
       const userIds = [...heads.keys()];
       if (userIds.length === 0) return;
 
-      const tokens = await this.database.db.query.pushToken.findMany({
-        where: inArray(pushToken.userId, userIds),
-        columns: {
-          userId: true,
-          sessionId: true,
-          token: true,
-          deviceId: true,
-          platform: true,
-          webP256dh: true,
-          webAuth: true,
-        },
-        with: {
-          session: {
-            columns: { userId: true, expiresAt: true, revokedAt: true },
-          },
-        },
-      });
+      const tokens = await this.registrations(
+        inArray(sessionToken.userId, userIds),
+      );
       const now = new Date();
       const deliverableTokens = tokens.filter((token) =>
         this.canDeliverOutOfBand(token, now),
@@ -401,7 +482,7 @@ export class PushService implements OnModuleDestroy {
         threadFeedEndId: String(heads.get(userId)!),
       });
 
-      const dead: string[] = [];
+      const dead: SessionPushRegistration[] = [];
       // Branch by SUBSCRIPTION SHAPE, not the platform label: a Web Push subscription is identified by
       // having p256dh+auth keys — true for every browser/PWA context (desktop Chrome/Firefox/Safari,
       // Android webview PWA, AND iOS-Safari-installed-as-PWA). The platform enum is transport-oriented
@@ -427,7 +508,7 @@ export class PushService implements OnModuleDestroy {
             !r.success &&
             r.error?.code === 'messaging/registration-token-not-registered'
           ) {
-            dead.push(fcmTokens[i].token);
+            dead.push(fcmTokens[i]);
           }
         });
         const failed = res.failureCount - dead.length;
@@ -455,7 +536,7 @@ export class PushService implements OnModuleDestroy {
             } catch (e) {
               const code = (e as { statusCode?: number }).statusCode;
               if (code === 404 || code === 410) {
-                dead.push(s.token);
+                dead.push(s);
               } else {
                 this.logger.warn(
                   `Web Push transient failure (${code}): ${(e as Error).message}`,
@@ -466,12 +547,7 @@ export class PushService implements OnModuleDestroy {
         );
       }
 
-      if (dead.length > 0) {
-        await this.database.db
-          .delete(pushToken)
-          .where(inArray(pushToken.token, dead));
-        this.logger.debug(`pruned ${dead.length} stale push subscription(s)`);
-      }
+      for (const snapshot of dead) await this.invalidateSubscription(snapshot);
     } catch (e) {
       // Last-resort guard: a push failure must NEVER surface to the send path (it's fire-and-forget).
       this.logger.error(
@@ -506,22 +582,9 @@ export class PushService implements OnModuleDestroy {
     },
   ): Promise<void> {
     try {
-      const tokens = await this.database.db.query.pushToken.findMany({
-        where: eq(pushToken.userId, calleeUserId),
-        columns: {
-          userId: true,
-          sessionId: true,
-          token: true,
-          platform: true,
-          webP256dh: true,
-          webAuth: true,
-        },
-        with: {
-          session: {
-            columns: { userId: true, expiresAt: true, revokedAt: true },
-          },
-        },
-      });
+      const tokens = await this.registrations(
+        eq(sessionToken.userId, calleeUserId),
+      );
       const now = new Date();
       const deliverableTokens = tokens.filter((token) =>
         this.canDeliverOutOfBand(token, now),
@@ -541,7 +604,7 @@ export class PushService implements OnModuleDestroy {
         callType: payload.callType,
       };
 
-      const dead: string[] = [];
+      const dead: SessionPushRegistration[] = [];
       // Same subscription-shape branch as dispatchForMessage.
       const webSubs = deliverableTokens.filter(
         (t) => !!t.webP256dh && !!t.webAuth,
@@ -563,7 +626,7 @@ export class PushService implements OnModuleDestroy {
             !r.success &&
             r.error?.code === 'messaging/registration-token-not-registered'
           ) {
-            dead.push(fcmTokens[i].token);
+            dead.push(fcmTokens[i]);
           }
         });
         const failed = res.failureCount - dead.length;
@@ -594,7 +657,7 @@ export class PushService implements OnModuleDestroy {
             } catch (e) {
               const code = (e as { statusCode?: number }).statusCode;
               if (code === 404 || code === 410) {
-                dead.push(s.token);
+                dead.push(s);
               } else {
                 this.logger.warn(
                   `Web Push transient failure (call, ${code}): ${(e as Error).message}`,
@@ -605,14 +668,7 @@ export class PushService implements OnModuleDestroy {
         );
       }
 
-      if (dead.length > 0) {
-        await this.database.db
-          .delete(pushToken)
-          .where(inArray(pushToken.token, dead));
-        this.logger.debug(
-          `pruned ${dead.length} stale push subscription(s) (call)`,
-        );
-      }
+      for (const snapshot of dead) await this.invalidateSubscription(snapshot);
     } catch (e) {
       // Fire-and-forget: a push failure must never break the call path.
       this.logger.error(`push dispatchForCall failed: ${(e as Error).message}`);
@@ -690,40 +746,56 @@ export class PushService implements OnModuleDestroy {
     total: number;
   }> {
     const search = opts.search?.trim();
-    const where: SQL | undefined = search
-      ? or(
-          ilike(user.account, `%${search}%`),
-          ilike(pushToken.token, `%${search}%`),
-          ilike(pushToken.deviceId, `%${search}%`),
-        )
-      : undefined;
+    const where = and(
+      isNotNull(sessionToken.pushToken),
+      isNull(sessionToken.revokedAt),
+      gt(sessionToken.expiresAt, new Date()),
+      search
+        ? or(
+            ilike(user.account, `%${search}%`),
+            ilike(sessionToken.pushToken, `%${search}%`),
+            ilike(sessionToken.pushDeviceId, `%${search}%`),
+          )
+        : undefined,
+    );
     const [rows, total] = await Promise.all([
       this.database.db
-        .select({ token: pushToken, userId: user.id, account: user.account })
-        .from(pushToken)
-        .leftJoin(user, eq(user.id, pushToken.userId))
+        .select({
+          token: pushRegistrationFields,
+          userId: user.id,
+          account: user.account,
+        })
+        .from(sessionToken)
+        .leftJoin(user, eq(user.id, sessionToken.userId))
         .where(where)
-        .orderBy(desc(pushToken.lastSeenAt))
+        .orderBy(desc(sessionToken.pushRegisteredAt))
         .offset(opts.skip)
         .limit(opts.take),
       this.database.db
         .select({ value: count() })
-        .from(pushToken)
-        .leftJoin(user, eq(user.id, pushToken.userId))
+        .from(sessionToken)
+        .leftJoin(user, eq(user.id, sessionToken.userId))
         .where(where)
         .then((result) => result[0]?.value ?? 0),
     ]);
     const list = rows.map(({ token, userId, account }) => ({
       ...token,
+      token: token.token!,
+      platform: token.platform!,
+      lastSeenAt: token.lastSeenAt!,
       user:
         userId === null || account === null ? null : { id: userId, account },
     }));
     return { list, total };
   }
 
-  /** Admin: delete a device token by id (unregister). Idempotent via deleteMany. */
+  /** Administrative removal clears delivery without revoking the login or
+   * requesting immediate recovery. A later client bootstrap may register again. */
   async deleteTokenById(tokenId: number): Promise<void> {
-    await this.database.db.delete(pushToken).where(eq(pushToken.id, tokenId));
+    await this.database.db
+      .update(sessionToken)
+      .set(clearPushRegistration)
+      .where(eq(sessionToken.id, tokenId));
   }
 
   /** Admin: send a one-off test push to a specific device token (looked up by id) to verify delivery.
@@ -735,9 +807,7 @@ export class PushService implements OnModuleDestroy {
     title: string,
     body: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    const row = await this.database.db.query.pushToken.findFirst({
-      where: eq(pushToken.id, tokenId),
-    });
+    const [row] = await this.registrations(eq(sessionToken.id, tokenId));
     if (!row) return { ok: false, error: 'token not found' };
     const isWeb = !!row.webP256dh && !!row.webAuth;
     try {
@@ -764,14 +834,13 @@ export class PushService implements OnModuleDestroy {
       });
       return { ok: true };
     } catch (e) {
-      // A definitively-dead FCM token surfaces here — prune it so the list self-cleans.
+      // Both transports use the same conditional invalidation and SSE recovery path.
       if (
         (e as { code?: string }).code ===
-        'messaging/registration-token-not-registered'
+          'messaging/registration-token-not-registered' ||
+        (isWeb && [404, 410].includes((e as { statusCode: number }).statusCode))
       ) {
-        await this.database.db
-          .delete(pushToken)
-          .where(eq(pushToken.id, tokenId));
+        await this.invalidateSubscription(row);
       }
       return { ok: false, error: (e as Error).message };
     }

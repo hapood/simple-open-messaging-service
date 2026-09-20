@@ -8,6 +8,7 @@ import {
   inject,
 } from '@angular/core';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { PushRegistrationService } from './push-registration.service';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { AuthService } from './auth.service';
@@ -68,6 +69,7 @@ export class WebsocketService implements OnDestroy {
 
   private transport: RealtimeTransport;
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly pushRegistration = inject(PushRegistrationService);
   private transportEpoch = this.lifecycle.accountEpoch;
   private readonly createTransport: () => RealtimeTransport;
   /** Wall-clock deadline (ms epoch) of the current backoff sleep; 0 when none scheduled. */
@@ -138,6 +140,7 @@ export class WebsocketService implements OnDestroy {
           this.helloReady$.next(true);
           this.helloGeneration$.next(this.helloGeneration$.value + 1);
         }
+        this.pushRegistration.onEvent(m.event, m.data);
         this.eventSubject.next(m);
       },
       onState: (s) => {

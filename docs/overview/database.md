@@ -84,15 +84,22 @@ Index: `@@index([userId])`.
 | `producedSessionId`                            | Int?         | the `SessionToken.id` it created (audit link; intentionally NOT a FK) |
 | `revokedAt`                                    |              | admin-revoked (only an unused code)                                   |
 
-### PushToken — push registration
+### SessionToken — push subscription fields
 
-One row per registered device session; `token` is globally unique (FCM registration token for ANDROID,
-push endpoint URL for WEB) and is re-owned to the current authenticated session on registration. The required
-`sessionId` references `SessionToken`, allowing message Push to be suppressed only when that exact session
-already owns a live SSE connection. `deviceId` remains optional diagnostic metadata. WEB rows also carry the
-subscription's `webP256dh` + `webAuth`; `platform` is `ANDROID`/`WEB`/`IOS`. Every session soft-revoke path
-deletes its associated Push rows in the same transaction, so revoked and expired devices do not remain in the
-operational registration set.
+Each device session owns at most one subscription directly. `pushSubscriptionRev` is a positive
+integer initialized to 1. `pushToken` is a nullable, globally unique FCM token or Web Push endpoint.
+`pushPlatform`, `pushDeviceId`, `pushP256dh`, `pushAuth`, and `pushRegisteredAt` hold the transport,
+optional diagnostic installation ID, Web Push encryption keys, and last successful registration time.
+A check constraint enforces a complete registration or cleared subscription fields.
+
+Confirmed permanent delivery failures conditionally clear the exact sent subscription and increment
+its revision once. HELLO and session-targeted SSE expose that revision to the shared Web/Android
+registration coordinator. Registration checks the authenticated session and requested revision before
+writing. Soft revocation clears push data in the same session update; expired/revoked sessions are
+excluded from delivery. An exact session's live SSE suppresses its out-of-band push delivery.
+
+The former separate registration table is removed by `0001_session_push`; its records are discarded,
+not migrated. Existing sessions start at revision 1 and obtain registrations through the new protocol.
 
 ### MessageThread — Conversation
 

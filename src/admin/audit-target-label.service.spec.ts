@@ -4,7 +4,6 @@ import {
   admin,
   adminSession,
   loginCode,
-  pushToken,
   sessionToken,
   account as user,
   webAuthnCredential,
@@ -19,7 +18,7 @@ import {
  *  - non-numeric / absent / unknown targets (peer domain, purge-all) are NOT resolved (absent from the
  *    map) and NOT queried;
  *  - empty buckets skip their findMany entirely (the N+1 guard), so rows touching only `user` never
- *    hit the sessionToken / adminSession / pushToken tables.
+ *    hit the sessionToken / adminSession tables.
  *
  * Pure unit (Drizzle mocked inline).
  */
@@ -37,7 +36,6 @@ describe('AuditTargetLabelService.resolve', () => {
       sessionToken: vi.fn(async () => [] as unknown[]),
       adminSession: vi.fn(async () => [] as unknown[]),
       loginCode: vi.fn(async () => [] as unknown[]),
-      pushToken: vi.fn(async () => [] as unknown[]),
       webAuthnCredential: vi.fn(async () => [] as unknown[]),
     };
     for (const query of Object.values(queries)) query.mockResolvedValue([]);
@@ -47,7 +45,6 @@ describe('AuditTargetLabelService.resolve', () => {
       [sessionToken, queries.sessionToken],
       [adminSession, queries.adminSession],
       [loginCode, queries.loginCode],
-      [pushToken, queries.pushToken],
       [webAuthnCredential, queries.webAuthnCredential],
     ]);
     const database = {
@@ -107,7 +104,6 @@ describe('AuditTargetLabelService.resolve', () => {
     expect(queries.sessionToken).not.toHaveBeenCalled();
     expect(queries.adminSession).not.toHaveBeenCalled();
     expect(queries.admin).not.toHaveBeenCalled();
-    expect(queries.pushToken).not.toHaveBeenCalled();
     expect(queries.webAuthnCredential).not.toHaveBeenCalled();
     expect(queries.loginCode).not.toHaveBeenCalled();
   });

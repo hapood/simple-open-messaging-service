@@ -5,23 +5,13 @@ import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
 import { firstValueFrom } from 'rxjs';
 import { consumePendingThreadNavigation } from './pending-thread-navigation';
+import {
+  PushRegistrationService,
+  type PushRegistration,
+} from './push-registration.service';
+import { uuid } from '../lib/uuid';
 
-/**
- * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
- * browser build (every entry point self-guards on isTauri()).
- *
- * The Android side (SomsMessagingService + MainActivity) owns the Firebase SDK and posts the visible
- * notifications; this service is the JS half of the bridge — it registers the device's FCM token with
- * the backend so the server knows where to send pushes, and routes notification-tap deep links to the
- * chat. Deliberately does NOT inject AuthService (that would form a DI cycle, since AuthService injects
- * this service for onLogin/unregister): register() fires the request and swallows a 401 if no session
- * is active yet, and AuthService calls onLogin() right after a successful login.
- *
- * The token handoff is robust to the boot race: Kotlin may emit the token via
- * window.__SOMS_FCM_TOKEN__ before Angular boots, so init() ALSO reads the current token back via
- * SomsFcm.getToken() (the @JavascriptInterface) — whichever fires first wins. The deep-link path uses
- * a native-owned pending target, drained both by the live hook and at boot, then acknowledged.
- */
+/** Android FCM adapter and notification navigation. The shared session coordinator owns registration. */
 /** The Firebase client config payload (folded into /shell/compat). `{configured:false}` when the server has
  *  no google-services.json; otherwise the 4 client fields an Android app needs to init FirebaseApp. */
 export type FirebaseClientConfigPayload = {
@@ -48,11 +38,8 @@ type ApiEnvelope<T> = { code: number; message: string; data: T };
 export class PushService {
   private readonly http = inject(HttpClient);
   private readonly nav = inject(NavStateMachineService);
+  private readonly registration = inject(PushRegistrationService);
 
-  /** The FCM token currently registered with the backend (null = not yet registered). */
-  private registeredToken: string | null = null;
-  /** The most recently seen FCM token (from Kotlin), regardless of registration state. */
-  private currentToken: string | null = null;
   /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. Seeded from the persisted
    *  native flag (set by MainActivity.onRequestPermissionsResult) so the auto-prompt fires only on the
    *  first login EVER — not the first login of every cold start (which would re-prompt users who merely
@@ -76,9 +63,45 @@ export class PushService {
     else window.SomsFcm?.requestToken();
     // Read native pending navigation after registering the live wake handler.
     this.openPendingThread();
+    if (isAndroidNative())
+      this.registration.setAdapter({
+        read: async () => {
+          const token = window.SomsFcm?.getToken();
+          return token ? { platform: 'ANDROID', token } : null;
+        },
+        create: (replace) => this.createRegistration(replace),
+      });
     // The native Firebase client config is NOT synced here at boot — it is applied in the server-config
     // flow (server-config-page.finalize) from the config folded into /shell/compat, and the native
     // SomsApplication.onCreate cold-start reader covers boot from the persisted value. No separate fetch.
+  }
+
+  private createRegistration(
+    replace: boolean,
+  ): Promise<PushRegistration | null> {
+    const bridge = window.SomsFcm;
+    if (!bridge) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      const requestId = uuid();
+      const timer = setTimeout(() => {
+        window.__SOMS_FCM_REGISTRATION__ = undefined;
+        reject(new Error('FCM registration timed out'));
+      }, 30000);
+      window.__SOMS_FCM_REGISTRATION__ = (result) => {
+        if (result.requestId !== requestId) return;
+        clearTimeout(timer);
+        window.__SOMS_FCM_REGISTRATION__ = undefined;
+        if (result.token) resolve({ platform: 'ANDROID', token: result.token });
+        else reject(new Error(result.error ?? 'FCM registration failed'));
+      };
+      try {
+        bridge.preparePushRegistration(requestId, replace);
+      } catch (error) {
+        clearTimeout(timer);
+        window.__SOMS_FCM_REGISTRATION__ = undefined;
+        reject(error);
+      }
+    });
   }
 
   /** Apply a server-provided Firebase client config to native so the Android shell (re)initializes
@@ -139,70 +162,21 @@ export class PushService {
     }
   }
 
-  /** Called by AuthService after a successful login — the access token is now in the interceptor, so
-   *  the register POST will carry the Authorization header. (The Android background fetchers no longer
-   *  need a scoped notification token — Rust authenticates thread-feed synchronization with the session token,
-   *  which AuthService pushes to Kotlin via SomsFcm.setSessionToken.) */
+  /** Permission prompting remains user-session driven; HELLO supplies the registration revision. */
   onLogin() {
     if (!isTauri()) return;
     this.maybePromptPermission();
-    this.register();
+    this.registration.refresh();
   }
 
-  /** Called by AuthService.logout BEFORE it clears the session token, so the DELETE still carries the
-   *  Authorization header. (The token the Android background fetchers use — in EncryptedSharedPreferences —
-   *  is cleared separately by AuthService.clearToken → SomsFcm.setSessionToken(null).) */
-  unregister() {
-    if (!isTauri()) return;
-    // SomsFcm is absent on desktop (this runs under isTauri = desktop + Android), so `?.` is correct
-    // here — getToken() legitimately no-ops on desktop.
-    const token =
-      this.registeredToken ??
-      this.currentToken ??
-      window.SomsFcm?.getToken() ??
-      null;
-    if (token) {
-      this.http
-        .delete(`${apiPrefix()}/devices/register/${encodeURIComponent(token)}`)
-        .subscribe({
-          error: () => {
-            /* best-effort: a stale token is pruned server-side on next send */
-          },
-        });
-    }
-    this.registeredToken = null;
-  }
-
-  /** New token from Kotlin (first fetch or rotation). Stash it and try to register. */
-  private onToken(token: string) {
-    this.currentToken = token;
-    this.register();
-  }
-
-  /** POST the current token to the backend (idempotent upsert). Swallows errors: a 401 means no
-   *  session yet (login will retry via onLogin); other failures retry on the next rotation. */
-  private register() {
-    const token = this.currentToken;
-    if (!token || token === this.registeredToken) return;
-    this.http
-      .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
-        token,
-        platform: 'ANDROID',
-      })
-      .subscribe({
-        next: (r) => {
-          if (r.code === 0) this.registeredToken = token;
-        },
-        error: () => {
-          /* see method doc */
-        },
-      });
+  /** Native token rotation is another event-driven registration trigger. */
+  private onToken(_token: string) {
+    this.registration.refresh();
   }
 
   /** Start and poll the authenticated current-device FCM delivery probe. The settings UI owns the
    * one-second cadence and 15-second deadline; these methods only expose the two server operations. */
   async createFcmProbe(token: string): Promise<FcmProbeStatus> {
-    await this.ensureTokenRegistered(token);
     const response = await firstValueFrom(
       this.http.post<ApiEnvelope<FcmProbeStatus>>(
         `${apiPrefix()}/devices/fcm-probes`,
@@ -219,19 +193,6 @@ export class PushService {
       ),
     );
     return this.unwrap(response);
-  }
-
-  private async ensureTokenRegistered(token: string): Promise<void> {
-    if (this.registeredToken === token) return;
-    const response = await firstValueFrom(
-      this.http.post<ApiEnvelope<null>>(`${apiPrefix()}/devices/register`, {
-        token,
-        platform: 'ANDROID',
-      }),
-    );
-    if (response.code !== 0) throw new Error(response.message);
-    this.currentToken = token;
-    this.registeredToken = token;
   }
 
   private unwrap<T>(response: ApiEnvelope<T>): T {

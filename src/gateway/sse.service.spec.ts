@@ -27,6 +27,7 @@ describe('SseService', () => {
                 stateFeedEndId: 4,
                 threadFeedEndId: 3,
                 profileRev: 2,
+                pushSubscriptionRev: 3,
               },
             ],
           };
@@ -145,6 +146,23 @@ describe('SseService', () => {
 
     const hello = client.writes.find((write) => write.includes('event: HELLO'));
     expect(hello).toContain('"stateFeedEndId":4');
+    expect(hello).toContain('"sessionId":11');
+    expect(hello).toContain('"pushSubscriptionRev":3');
+    svc.onModuleDestroy();
+  });
+
+  it('sends push recovery to every connection of only the affected session', () => {
+    const svc = makeService();
+    const first = mockRes(),
+      second = mockRes(),
+      other = mockRes();
+    svc.register(7, 11, first.res);
+    svc.register(7, 11, second.res);
+    svc.register(7, 22, other.res);
+    svc.onPushSubscriptionChanged(7, 11, 4);
+    expect(first.writes.join('')).toContain('"pushSubscriptionRev":4');
+    expect(second.writes.join('')).toContain('PUSH_SUBSCRIPTION_CHANGED');
+    expect(other.writes.join('')).not.toContain('PUSH_SUBSCRIPTION_CHANGED');
     svc.onModuleDestroy();
   });
 

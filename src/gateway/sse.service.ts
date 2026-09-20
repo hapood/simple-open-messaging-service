@@ -2,9 +2,13 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, account as userTable } from '../database/schema.js';
+import {
+  account,
+  account as userTable,
+  sessionToken,
+} from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
@@ -102,9 +106,13 @@ export class SseService implements OnModuleDestroy {
           stateFeedEndId: account.clientStateFeedEndId,
           threadFeedEndId: account.threadFeedEndId,
           profileRev: userTable.defaultProfileRev,
+          pushSubscriptionRev: sessionToken.pushSubscriptionRev,
         })
         .from(account)
-        .where(eq(account.id, userId))
+        .innerJoin(sessionToken, eq(sessionToken.userId, account.id))
+        .where(
+          and(eq(account.id, userId), eq(sessionToken.id, entry.sessionId)),
+        )
         .limit(1);
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
@@ -113,6 +121,8 @@ export class SseService implements OnModuleDestroy {
         // made the fetch un-skippable). Carrying it here lets the webdb open at connect time, independent
         // of the profile fetch.
         userId,
+        sessionId: entry.sessionId,
+        pushSubscriptionRev: user?.pushSubscriptionRev,
         // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
         // The client pulls (cursor, stateFeedEndId] after this handshake and later feed signals.
         stateFeedEndId: user?.stateFeedEndId ?? 0,
@@ -170,6 +180,25 @@ export class SseService implements OnModuleDestroy {
    * false) is not handled here — left for the next frame / heartbeat to detect the drop. When the
    * user's connection list empties, its slot is deleted.
    */
+  onPushSubscriptionChanged(
+    userId: number,
+    sessionId: number,
+    pushSubscriptionRev: number,
+  ): void {
+    const frame = formatSseFrame('PUSH_SUBSCRIPTION_CHANGED', {
+      sessionId,
+      pushSubscriptionRev,
+    });
+    for (const client of this.clients[userId] ?? []) {
+      if (client.sessionId !== sessionId || client.res.writableEnded) continue;
+      try {
+        client.res.write(frame);
+      } catch {
+        // HELLO recovers the persisted revision when this connection returns.
+      }
+    }
+  }
+
   private pushToUser(userId: number, eventName: string, data: unknown): void {
     const list = this.clients[userId];
     if (!list || list.length === 0) return;

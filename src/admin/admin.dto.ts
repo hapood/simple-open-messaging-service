@@ -242,9 +242,9 @@ export class AdminListPushTokensDto {
   search?: string;
 }
 
-/** Send-test-push input. `id` is a PushToken id; title/body are the literal notification text. */
+/** Send-test-push input. `id` is a SessionToken id; title/body are the literal notification text. */
 export class AdminPushTestDto {
-  @ApiProperty({ example: 42, description: 'PushToken id' })
+  @ApiProperty({ example: 42, description: 'SessionToken id' })
   @Type(() => Number)
   @IsNumber()
   id!: number;

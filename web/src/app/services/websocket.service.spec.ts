@@ -8,6 +8,7 @@ import { WebsocketService } from './websocket.service';
 import type { StandardMessage } from './realtime-transport';
 import { AuthService } from './auth.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { PushRegistrationService } from './push-registration.service';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -62,6 +63,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     liveWorker = undefined;
     TestBed.configureTestingModule({
       providers: [
+        { provide: PushRegistrationService, useValue: { onEvent: vi.fn() } },
         provideZonelessChangeDetection(),
         WebsocketService,
         {
@@ -107,7 +109,8 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     ws.attachThreadFeed(channel.port1, 1);
     expect(post).toHaveBeenCalledTimes(1);
     const [message, transfer] = post.mock.calls[0] as unknown as [
-      { type: string; port: MessagePort; userId: number }, MessagePort[],
+      { type: string; port: MessagePort; userId: number },
+      MessagePort[],
     ];
     expect(message.type).toBe('thread-feed-port');
     expect(message.userId).toBe(1);

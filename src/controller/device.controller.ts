@@ -1,7 +1,6 @@
 import {
   Controller,
   Post,
-  Delete,
   Get,
   Body,
   Param,
@@ -10,23 +9,22 @@ import {
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { CreateFcmProbeDto, RegisterDeviceDto } from '../dto/device.dto.js';
+import {
+  CreateFcmProbeDto,
+  RegisterDeviceDto,
+  RegisterDeviceResultDto,
+} from '../dto/device.dto.js';
 import { PushService } from '../push/push.service.js';
+import { ApiResultResponse } from '../common/api-result.js';
 
-/**
- * Device registration for FCM push. The client obtains an FCM registration token from the platform
- * Firebase SDK and links it to the logged-in account via POST /devices/register; the server fans out
- * data-only `NEW_MESSAGE` payloads to registered devices. Delivery is suppressed only when the exact
- * authenticated device session has a live SSE connection.
- *
- * Token lifecycle: re-register (upsert on token) on every token rotation / app start, bumping
- * lastSeenAt; DELETE on logout so the server stops pushing to a logged-out device. The Android client
- * re-registers on the next login, so a forgotten unregister self-heals the next time the deviceauth
- * token rotates.
- */
+/** Session-owned push registration and interactive Android delivery diagnostics. */
 @ApiTags('device')
 @ApiBearerAuth()
 @Controller()
@@ -37,28 +35,20 @@ export class DeviceController {
   @Throttle('device.register')
   @HttpCode(HttpStatus.OK)
   @Post('devices/register')
+  @ApiResultResponse(RegisterDeviceResultDto)
   @ApiOperation({
-    summary: 'Register/refresh an FCM push token for the logged-in user',
+    summary:
+      'Register a Web Push or FCM subscription at the current session revision',
   })
   async register(
     @Request() req: FastifyRequest,
     @Body() dto: RegisterDeviceDto,
-  ): Promise<void> {
-    await this.pushService.registerToken(
+  ) {
+    return this.pushService.registerToken(
       req.user.userId,
       req.user.sessionId as number,
       dto,
     );
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Delete('devices/register/:token')
-  @ApiOperation({ summary: 'Unregister an FCM push token (called on logout)' })
-  async unregister(
-    @Request() req: FastifyRequest,
-    @Param('token') token: string,
-  ): Promise<void> {
-    await this.pushService.unregisterToken(req.user.userId, token);
   }
 
   @HttpCode(HttpStatus.OK)

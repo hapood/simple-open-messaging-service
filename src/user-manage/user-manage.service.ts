@@ -1,9 +1,18 @@
 import { groupStateSql } from '../group/shared/group-state.js';
 import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  sql,
+} from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, pushToken, account as user } from '../database/schema.js';
+import { account, sessionToken, account as user } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -70,11 +79,18 @@ export class UserManageService {
           })),
         ),
       this.auth.listActiveSessions(id, null),
-      this.database.db.query.pushToken.findMany({
-        where: eq(pushToken.userId, id),
-        columns: { id: true, platform: true, deviceId: true, lastSeenAt: true },
-        orderBy: desc(pushToken.lastSeenAt),
-      }),
+      this.database.db
+        .select({
+          id: sessionToken.id,
+          platform: sessionToken.pushPlatform,
+          deviceId: sessionToken.pushDeviceId,
+          lastSeenAt: sessionToken.pushRegisteredAt,
+        })
+        .from(sessionToken)
+        .where(
+          and(eq(sessionToken.userId, id), isNotNull(sessionToken.pushToken)),
+        )
+        .orderBy(desc(sessionToken.pushRegisteredAt)),
     ]);
     return { user: profile, groups, sessions, pushTokens };
   }

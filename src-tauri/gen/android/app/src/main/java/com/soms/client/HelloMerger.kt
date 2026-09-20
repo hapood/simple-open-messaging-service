@@ -24,6 +24,14 @@ object HelloMerger {
     else {
       val c = cached ?: return null
       when (type) {
+        "PUSH_SUBSCRIPTION_CHANGED" -> {
+          val input = JSONObject(data)
+          val rev = input.optLong("pushSubscriptionRev", 0)
+          if (input.optLong("sessionId", -1) == c.optLong("sessionId", -2) &&
+              rev > c.optLong("pushSubscriptionRev", 0) && rev <= Int.MAX_VALUE) {
+            c.put("pushSubscriptionRev", rev)
+          }
+        }
         "STATE_FEED_UPDATED", "THREAD_FEED_UPDATED" -> {
           val input = if (type == "STATE_FEED_UPDATED") "feedId" else "threadFeedEndId"
           val output = if (type == "STATE_FEED_UPDATED") "stateFeedEndId" else "threadFeedEndId"

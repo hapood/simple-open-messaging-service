@@ -127,6 +127,56 @@ object SomsFirebase {
         }
     }
 
+    /** Explicit recovery differs from getToken: discard the rejected token first. */
+    fun preparePushRegistration(ctx: Context, requestId: String, replace: Boolean) {
+        fun complete(token: String?, error: String?) {
+            val payload = JSONObject().put("requestId", requestId)
+            if (token != null) payload.put("token", token)
+            if (error != null) payload.put("error", error)
+            SomsBridge.eval("window.__SOMS_FCM_REGISTRATION__ && window.__SOMS_FCM_REGISTRATION__($payload);")
+        }
+        try {
+            val app = ensureInitialized(ctx)
+            if (app == null) {
+                complete(null, "FCM_NOT_CONFIGURED")
+                return
+            }
+            val session = SomsSecureStore.getSessionToken(ctx)
+            fun current(): Boolean = session != null && SomsSecureStore.getSessionToken(ctx) == session &&
+                runCatching { FirebaseApp.getInstance() === app }.getOrDefault(false)
+            if (!current()) {
+                complete(null, "SESSION_CHANGED")
+                return
+            }
+            val messaging = FirebaseMessaging.getInstance()
+            fun fetch() {
+                if (!current()) {
+                    complete(null, "SESSION_CHANGED")
+                    return
+                }
+                messaging.token.addOnCompleteListener { task ->
+                    if (!current()) complete(null, "SESSION_CHANGED")
+                    else if (task.isSuccessful) {
+                        SomsBridge.FcmToken.current = task.result
+                        SomsBridge.FcmToken.lastError = null
+                        complete(task.result, null)
+                    } else complete(null, task.exception?.javaClass?.simpleName ?: "TOKEN_FETCH_FAILED")
+                }
+            }
+            if (replace) {
+                messaging.deleteToken().addOnCompleteListener { task ->
+                    if (!current()) complete(null, "SESSION_CHANGED")
+                    else if (task.isSuccessful) {
+                        SomsBridge.FcmToken.current = null
+                        fetch()
+                    } else complete(null, task.exception?.javaClass?.simpleName ?: "TOKEN_DELETE_FAILED")
+                }
+            } else fetch()
+        } catch (e: Exception) {
+            complete(null, e.javaClass.simpleName)
+        }
+    }
+
     private fun freshInit(ctx: Context, options: FirebaseOptions) {
         SomsLog.i("Firebase") { "freshInit start" }
         try {

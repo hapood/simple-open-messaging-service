@@ -3,7 +3,7 @@ import { NotificationPrefsService } from './notification-prefs.service';
 import type { NotificationDescriptor } from './notification-descriptor.model';
 
 /** The SW registration scope the foreground path renders through. The push service worker
- *  (web/public/push/sw-push.js) is registered at `/push/` by WebPushService.subscribeAndRegister whenever
+ *  (web/public/push/sw-push.js) is registered at `/push/` by WebPushService whenever
  *  notification permission is granted; it owns the `notificationclick` handler, so routing the in-tab render
  *  through THIS registration (not in-page `new Notification`) is what makes per-card dismiss + body-tap
  *  deep-link work — the SW's `notificationclick` fires for SW-shown notifications only. */

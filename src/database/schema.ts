@@ -2251,6 +2251,17 @@ export const sessionToken = pgTable(
     client: varchar({ length: 16 }).notNull(),
     lastSeenIp: varchar({ length: 64 }),
     autoTerminateDays: integer().default(30).notNull(),
+    pushSubscriptionRev: integer().default(1).notNull(),
+    pushToken: varchar({ length: 512 }),
+    pushPlatform: pushPlatform(),
+    pushDeviceId: varchar({ length: 127 }),
+    pushP256dh: varchar({ length: 255 }),
+    pushAuth: varchar({ length: 255 }),
+    pushRegisteredAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
   },
   (table) => [
     index('SessionToken_lastSeenAt_active_idx')
@@ -2259,6 +2270,23 @@ export const sessionToken = pgTable(
         table.lastSeenAt.desc().nullsFirst().op('timestamptz_ops'),
       )
       .where(sql`("revokedAt" IS NULL)`),
+    uniqueIndex('SessionToken_pushToken_key')
+      .on(table.pushToken)
+      .where(sql`${table.pushToken} IS NOT NULL`),
+    check(
+      'SessionToken_pushSubscriptionRev_check',
+      sql`${table.pushSubscriptionRev} > 0`,
+    ),
+    check(
+      'SessionToken_push_shape_check',
+      sql`(
+      (${table.pushToken} IS NULL AND ${table.pushPlatform} IS NULL AND ${table.pushP256dh} IS NULL AND ${table.pushAuth} IS NULL AND ${table.pushRegisteredAt} IS NULL)
+      OR (${table.pushToken} IS NOT NULL AND ${table.pushPlatform} IS NOT NULL AND ${table.pushRegisteredAt} IS NOT NULL AND (
+        (${table.pushPlatform} = 'WEB' AND ${table.pushP256dh} IS NOT NULL AND ${table.pushAuth} IS NOT NULL)
+        OR (${table.pushPlatform} <> 'WEB' AND ${table.pushP256dh} IS NULL AND ${table.pushAuth} IS NULL)
+      ))
+    )`,
+    ),
     uniqueIndex('SessionToken_tokenHash_key').using(
       'btree',
       table.tokenHash.asc().nullsLast().op('text_ops'),
@@ -2285,59 +2313,6 @@ export const sessionToken = pgTable(
       'SessionToken_auto_terminate_days_check',
       sql`${table.autoTerminateDays} IN (7, 30, 90, 180, 365)`,
     ),
-  ],
-);
-
-export const pushToken = pgTable(
-  'PushToken',
-  {
-    id: serial().primaryKey().notNull(),
-    userId: integer().notNull(),
-    sessionId: integer().notNull(),
-    token: varchar({ length: 500 }).notNull(),
-    deviceId: varchar({ length: 127 }),
-    platform: pushPlatform().notNull(),
-    webP256dh: varchar('webP256dh', { length: 255 }),
-    webAuth: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    lastSeenAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('PushToken_token_key').using(
-      'btree',
-      table.token.asc().nullsLast().op('text_ops'),
-    ),
-    index('PushToken_userId_idx').using(
-      'btree',
-      table.userId.asc().nullsLast().op('int4_ops'),
-    ),
-    index('PushToken_sessionId_idx').using(
-      'btree',
-      table.sessionId.asc().nullsLast().op('int4_ops'),
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'PushToken_userId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-    foreignKey({
-      columns: [table.sessionId],
-      foreignColumns: [sessionToken.id],
-      name: 'PushToken_sessionId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
   ],
 );
 

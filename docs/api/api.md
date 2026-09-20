@@ -426,13 +426,54 @@ See the [Android calls client contract](../platform/android/calls.md).
 
 > Controllers: [device.controller.ts](../../src/controller/device.controller.ts) · [notification.controller.ts](../../src/controller/notification.controller.ts)
 
-- `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB). Registration binds the token to the current authenticated session; re-registering re-owns it to that session.
+- `POST /devices/register` — register a push subscription directly on the authenticated session. Required fields: `sessionId`, `pushSubscriptionRev` (integer, at least 1), `platform`, and `token` (FCM token for ANDROID, endpoint for WEB). WEB also requires `p256dh` and `auth`; `deviceId` is optional diagnostic metadata. The supplied session ID must match authentication. Logout/revocation clears the subscription atomically; there is no separate unregister endpoint.
 - `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
 - `GET /user/state-feed` — account and relationship metadata.
 - `POST /thread/feed-delta` — unified thread heads, read positions, unread counts and bounded previews.
   Clients reconcile local optimistic reads and compose notifications from this feed.
   Message notifications have no action buttons. Body taps open the thread; dismissal is local.
+
+### Session push recovery
+
+New sessions start at `pushSubscriptionRev: 1`; clients start with completed revision 0.
+HELLO includes `sessionId` and `pushSubscriptionRev`. A confirmed permanent send failure
+(Web Push 404/410 or FCM `registration-token-not-registered`) atomically increments the
+revision and clears the session's token, platform, encryption keys, and registration time.
+The update matches the exact session, token, and revision captured before sending, so a
+late or duplicate failure cannot clear a replacement subscription.
+
+Only connections belonging to the affected session receive:
+
+```text
+event: PUSH_SUBSCRIPTION_CHANGED
+data: {"sessionId":42,"pushSubscriptionRev":2}
+```
+
+Disconnected clients recover the same revision through their next HELLO. Web and Android
+share the registration coordinator: revision 1 reuses or creates a local subscription;
+a later unprepared revision replaces it. Preparation is persisted separately from upload
+completion, so a failed upload or page restart does not repeatedly replace the subscription.
+Web uses `unsubscribe()`/`subscribe()`; Android uses Firebase `deleteToken()`/`getToken()`.
+Platform token changes also trigger registration. There is no periodic registration or
+subscription polling; failed operations have bounded retries and later HELLO retries.
+Android merges push revision events into its native HELLO cache while the WebView is
+suspended, so the shared coordinator sees the latest revision when the WebView resumes.
+
+Registration returns `{ sessionId, pushSubscriptionRev, registered }` in the API envelope's
+`data`. `registered: true` confirms the submitted revision without incrementing it. If the
+revision is stale, `registered: false` returns the current revision and leaves the database
+unchanged. Clients then reconcile that revision. Only successful registration advances the
+client's completed revision. Denied browser permission never triggers an automatic prompt.
+
+An installation token is unique across sessions. A newer login may take it over from an
+older session; a delayed older login cannot take it back. Session push data replaces the
+former separate registration table. Migration `0001_session_push` discards old registrations;
+clients must use the new protocol and re-register through HELLO.
+
+Admin push-list and test IDs now identify sessions. Explicit administrative token removal
+clears the subscription without revoking the login or requesting immediate recovery; a later
+client bootstrap can register again. Provider-reported expiry uses revision-based recovery.
 
 ---
 
@@ -484,7 +525,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-On connect the server pushes a **`HELLO`** frame with `stateFeedEndId` and `activeCall`.
+On connect the server pushes a **`HELLO`** frame with `userId`, `sessionId`, `pushSubscriptionRev`, `stateFeedEndId`, `threadFeedEndId`, `profileRev`, and `activeCall`.
 `stateFeedEndId` bounds catch-up for hydrated thread state (including group/roster invalidation and per-user
 settings/read state), cached profile changes, source-scoped member profiles, incoming friend requests, and
 paired thread content heads. Heartbeat: a `: ping` comment frame every 25s.
@@ -501,6 +542,7 @@ data: <json>
 | Event                        | Purpose                                           | Recovery source                            |
 | ---------------------------- | ------------------------------------------------- | ------------------------------------------ |
 | `HELLO`                      | connection handshake and current high-water marks | sent on every connection                   |
+| `PUSH_SUBSCRIPTION_CHANGED` | session-specific push recovery `{ sessionId, pushSubscriptionRev }` | `HELLO.pushSubscriptionRev` |
 | `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }` | `HELLO.stateFeedEndId` + ranged state pull |
 | `MEDIA_STATUS`               | media-localization completion wake                | message/media query                        |
 | `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling     | active-call snapshot/new negotiation       |

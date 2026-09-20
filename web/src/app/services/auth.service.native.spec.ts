@@ -196,14 +196,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           provide: PushService,
           useValue: {
             onLogin: vi.fn().mockName('onLogin'),
-            unregister: vi.fn().mockName('unregister'),
           },
         },
         {
           provide: WebPushService,
           useValue: {
             onLogin: vi.fn().mockName('onLogin'),
-            unregister: vi.fn().mockName('unregister'),
           },
         },
         // restoreSession() now awaits userService.restoreWebdb() (opens the per-user IDB before the router

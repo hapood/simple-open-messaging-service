@@ -73,7 +73,13 @@ declare global {
      *  are how Kotlin pushes the token (rotation) and a notification-tap deep link (warm start) into JS.
      *  Pending notification navigation stays in Kotlin until PushService opens and acknowledges it.
      *  All absent in the browser build — guarded by isTauri() at every use. */
+    __SOMS_FCM_REGISTRATION__?: (result: {
+      requestId: string;
+      token?: string;
+      error?: string;
+    }) => void;
     SomsFcm?: {
+      preparePushRegistration: (requestId: string, replace: boolean) => void;
       getToken: () => string | null;
       getPendingThreadId: () => string | null;
       acknowledgeThreadId: (threadId: string) => void;

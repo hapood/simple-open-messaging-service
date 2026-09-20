@@ -14,6 +14,15 @@ import org.junit.Test
 class HelloMergerTest {
 
     @Test
+    fun push_revision_survives_webview_suspension_and_is_session_scoped() {
+        var c = HelloMerger.merge(null, "HELLO", """{"sessionId":7,"pushSubscriptionRev":1}""")
+        c = HelloMerger.merge(c, "PUSH_SUBSCRIPTION_CHANGED", """{"sessionId":7,"pushSubscriptionRev":3}""")
+        c = HelloMerger.merge(c, "PUSH_SUBSCRIPTION_CHANGED", """{"sessionId":7,"pushSubscriptionRev":2}""")
+        c = HelloMerger.merge(c, "PUSH_SUBSCRIPTION_CHANGED", """{"sessionId":8,"pushSubscriptionRev":4}""")
+        assertEquals(3, c!!.getInt("pushSubscriptionRev"))
+    }
+
+    @Test
     fun thread_feed_cursor_is_independent_and_monotonic() {
         assertNull(HelloMerger.merge(null, "THREAD_FEED_UPDATED", """{"threadFeedEndId":9}"""))
         var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateFeedEndId":5,"threadFeedEndId":2}""")
