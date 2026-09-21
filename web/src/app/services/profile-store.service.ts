@@ -250,18 +250,6 @@ export class ProfileRepository {
     }
   }
 
-  /** Cache a resolved message snapshot without changing any thread/self avatar selection. */
-  async cacheProfile(
-    snapshot: ProfileSnapshot,
-    sourceServer: string,
-  ): Promise<void> {
-    try {
-      await this.webdb.putProfile({ ...snapshot, sourceServer });
-    } catch {
-      // Cache unavailability does not prevent rendering the resolved message.
-    }
-  }
-
   async getProfile(
     selector: ProfileSelector,
   ): Promise<ProfileSnapshot | undefined> {

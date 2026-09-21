@@ -277,7 +277,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       sessionProfile: () => ({ id: 1, account: 'me', domain: 'local' }),
     } as unknown as UserService;
     const profileRepo = {
-      cacheProfile: vi.fn().mockResolvedValue(undefined),
       getProfile: vi
         .fn()
         .mockName('getProfile')
