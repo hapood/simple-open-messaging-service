@@ -5,6 +5,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { ThreadFeedDeltaDto } from '../dto/message.dto.js';
 import { ThreadPreviewService } from './thread-preview.service.js';
+import { toDisplayText } from '../common/message-entity.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
 
 interface ThreadFeedPreview {
@@ -113,6 +114,7 @@ export class ThreadFeedService {
                       text: deriveMessagePreview(
                         preview.contentType!,
                         preview.content!,
+                        toDisplayText,
                       ),
                     }
                   : {}),

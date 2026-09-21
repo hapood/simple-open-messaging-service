@@ -83,6 +83,29 @@ describe('thread feed database previews', () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  it('renders mention entities as display text in previews, not wire markup', async () => {
+    const { service, read } = setup();
+    read.mockImplementation(async () => [
+      {
+        seq: 3,
+        createdAt: '2026-09-08T00:00:02Z',
+        creatorAccount: 'peer',
+        creatorDomain: 'local',
+        isDeleted: false,
+        deletionType: null,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({
+          text: '[@Reader](somfp://user/reader) hi [@All](somfp://audience/all)',
+        }),
+      },
+    ]);
+    const result = await service.queryThreadFeedDelta(1, {
+      after: 0,
+      previewCount: 1,
+    });
+    expect(result.items[0].previews?.[0]?.text).toBe('@Reader hi @All');
+  });
+
   it('takes one newest entry and rejects counts above the configured limit', async () => {
     const { service, execute } = setup();
     const result = await service.queryThreadFeedDelta(1, {
@@ -117,5 +140,36 @@ describe('thread mention semantics', () => {
       ),
     ).toBe(false);
     expect(mentionsAccount(content('plain text'), 'reader')).toBe(false);
+  });
+
+  it('matches the production full-address entity forms issued by clients', () => {
+    const content = (text: string) => JSON.stringify({ text });
+    // The composer serializes chips as full SOMFP addresses: local members as
+    // account@local, federated members as account@home-domain.
+    expect(
+      mentionsAccount(content('[@Reader](somfp://user/reader%40local)'), 'reader'),
+    ).toBe(true);
+    expect(
+      mentionsAccount(
+        content('[@Reader](somfp://user/reader%40bravo.test)'),
+        'reader',
+        'bravo.test',
+      ),
+    ).toBe(true);
+    // A same-named account on another node must not badge this node's user.
+    expect(
+      mentionsAccount(
+        content('[@Reader](somfp://user/reader%40bravo.test)'),
+        'reader',
+        'alpha.test',
+      ),
+    ).toBe(false);
+    expect(
+      mentionsAccount(
+        content('[@Other](somfp://user/other%40local)'),
+        'reader',
+        'bravo.test',
+      ),
+    ).toBe(false);
   });
 });
