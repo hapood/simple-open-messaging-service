@@ -445,6 +445,30 @@ export class ProfileResolutionCoordinatorService {
               AND manager.body ->> 'role' IN ('OWNER', 'ADMIN')
           )
           OR EXISTS (
+            SELECT 1
+            FROM "GroupMetaMemberFeed" member_fact
+            JOIN "MessageThread" member_thread ON member_thread.id = member_fact."threadId"
+            WHERE member_thread.type = 'GROUP'
+              AND member_fact."memberAccount" = ${account}
+              AND member_fact."memberDomain" = ${storageDomain}
+              AND member_fact.operation = 'UPSERT'
+              AND (member_fact.body ->> 'profileRev')::integer = ${selector.rev}
+              AND group_meta_member_namespace(member_thread.id,
+                member_fact."memberAccount", member_fact."memberDomain") = ${namespaceId}
+              AND EXISTS (
+                SELECT 1 FROM "RelationshipPair" viewer_pair
+                WHERE viewer_pair."threadId" = member_thread.id
+                  AND viewer_pair.kind = 'GROUP_MEMBER'
+                  AND viewer_pair.active = true
+                  AND ((viewer_pair."endpointAType" = 'USER'
+                        AND viewer_pair."endpointAAccount" = self.account
+                        AND viewer_pair."endpointADomain" = self.domain)
+                    OR (viewer_pair."endpointBType" = 'USER'
+                        AND viewer_pair."endpointBAccount" = self.account
+                        AND viewer_pair."endpointBDomain" = self.domain))
+              )
+          )
+          OR EXISTS (
             SELECT 1 FROM ${groupStateSql} group_profile
             JOIN "MessageThread" thread ON thread.id = group_profile.id
             JOIN "AccountThreadState" participant ON participant."threadId" = thread.id
