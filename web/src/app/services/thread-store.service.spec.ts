@@ -57,7 +57,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let applyRelationshipRequestStateRevisionSpy: Mock;
   let applyRelationshipIntentStateRevisionSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
-  let putProfileSpy: Mock;
   let toastWarn: Mock;
 
   beforeEach(async () => {
@@ -108,10 +107,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: vi
-              .fn()
-              .mockName('putProfile')
-              .mockResolvedValue(undefined),
             getProfile: vi
               .fn()
               .mockName('getProfile')
@@ -212,7 +207,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         };
       },
     );
-    putProfileSpy = TestBed.inject(ProfileRepository).putProfile as Mock;
     await webdb.openForUser('1');
     TestBed.flushEffects();
   });
@@ -1082,12 +1076,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         { threadFeedId: 7 },
       ),
     ]);
-    putProfileSpy.mockClear();
+    const write = vi.spyOn(webdb, 'commitResolvedProfile');
     repo.applyGroupUpdate(7, { name: 'Optimistic name' });
     expect(repo.items()[0]).toMatchObject({
       group: { name: 'Optimistic name', profileRev: 3 },
     });
-    expect(putProfileSpy).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
   });
 
   it('applies a member feed that removes the local manager role', async () => {

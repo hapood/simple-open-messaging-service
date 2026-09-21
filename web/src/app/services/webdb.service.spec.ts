@@ -357,10 +357,21 @@ describe('WebdbService', () => {
         bio: '',
         sourceServer: 'authority.test',
       };
-      await webdb.putProfile(profile);
-      await webdb.putProfile({ ...profile, profileRev: 2, name: 'Old' });
-      await webdb.putProfile({
+      await webdb.commitResolvedProfile({
         ...profile,
+        rev: profile.profileRev,
+        avatarBase64: null,
+      });
+      await webdb.commitResolvedProfile({
+        ...profile,
+        avatarBase64: null,
+        rev: 2,
+        name: 'Old',
+      });
+      await webdb.commitResolvedProfile({
+        ...profile,
+        avatarBase64: null,
+        rev: profile.profileRev,
         domain: 'third.test',
         namespaceId: 9,
         name: 'Mirror',
@@ -400,15 +411,14 @@ describe('WebdbService', () => {
           account: '!team',
         }),
       );
-      await webdb.putProfile({
+      await webdb.commitResolvedProfile({
         account: 'alice',
         domain: 'local',
         namespaceId: 0,
-        profileRev: 1,
+        rev: 1,
         name: 'Alice',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
-        sourceServer: 'local',
       });
       await webdb.putMeta('stateFeedId', 98);
       await expect(
@@ -1903,31 +1913,23 @@ describe('WebdbService', () => {
         conversationState: 'ACTIVE',
         peerUser: { domain: 'peer.test', namespaceId: 12 },
       } as never);
-      await webdb.putProfile({
-        identity: 'u11',
-        id: 11,
-        kind: 'user',
+      await webdb.commitResolvedProfile({
         name: 'Old',
         account: 'old',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
         domain: 'peer.test',
         namespaceId: 11,
-        sourceServer: 'peer.test',
-        profileRev: 1,
+        rev: 1,
       });
-      await webdb.putProfile({
-        identity: 'u13',
-        id: 13,
-        kind: 'user',
+      await webdb.commitResolvedProfile({
         name: 'New',
         account: 'new',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
         domain: 'peer.test',
         namespaceId: 13,
-        sourceServer: 'peer.test',
-        profileRev: 1,
+        rev: 1,
       });
 
       expect(await webdb.getNamespaces()).toContainEqual({
@@ -2053,32 +2055,26 @@ describe('WebdbService', () => {
           groupMetaFeedId: '0',
         },
       } as never);
-      await webdb.putProfile({
-        identity: 'u8',
-        id: 8,
-        kind: 'user',
+      await webdb.commitResolvedProfile({
         name: 'Alice',
         account: 'alice',
-        avatar: '/a.webp',
+        avatarBase64: 'YQ==',
         bio: 'About Alice',
         domain: 'home.example',
         namespaceId: 12,
-        sourceServer: 'local',
-        profileRev: 6,
+        rev: 6,
       });
-      await webdb.putProfile({
-        identity: 'u1',
-        id: 1,
-        kind: 'user',
+      await webdb.commitResolvedProfile({
         name: 'Self',
         account: 'self',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
         domain: 'local',
         namespaceId: 0,
-        sourceServer: 'local',
-        profileRev: 1,
+        rev: 1,
       });
+
+      await webdb.putMeta('selfIdentity', { account: 'self', domain: 'local' });
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2272,31 +2268,23 @@ describe('WebdbService', () => {
 
     it('materializes a group from THREAD_STATE before the background meta page commits', async () => {
       await webdb.openForUser('1');
-      await webdb.putProfile({
-        identity: 'u8',
-        id: 8,
-        kind: 'user',
+      await webdb.commitResolvedProfile({
         name: 'Bob',
         account: 'bob',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
         domain: 'remote.test',
         namespaceId: 12,
-        sourceServer: 'local',
-        profileRev: 1,
+        rev: 1,
       });
-      await webdb.putProfile({
-        identity: 'g12',
-        id: 12,
-        kind: 'group',
+      await webdb.commitResolvedProfile({
         name: '!dev',
         account: '!dev',
-        avatar: '',
+        avatarBase64: null,
         bio: '',
         domain: 'local',
         namespaceId: 0,
-        sourceServer: 'local',
-        profileRev: 1,
+        rev: 1,
       });
       const group = {
         account: '!dev',

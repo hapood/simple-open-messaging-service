@@ -12,7 +12,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { CACHE_REBUILD_RELOAD, UserService } from './user.service';
 import { LocalCacheVersionMismatchError, WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
@@ -38,6 +38,9 @@ const profile = (
     avatar: '',
     bio: '',
     domain: 'local',
+    account: 'alice',
+    namespaceId: 0,
+    profileRev: 1,
     ...over,
   } as User,
 });
@@ -86,10 +89,9 @@ describe('UserService profile refresh', () => {
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: vi
+            resolve: vi
               .fn()
-              .mockName('putProfile')
-              .mockResolvedValue(undefined),
+              .mockReturnValue(of({ name: 'A', bio: '', avatarBase64: null })),
           },
         },
       ],
@@ -117,6 +119,17 @@ describe('UserService profile refresh', () => {
     );
     await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('A'));
 
+    vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
+      of({
+        namespaceId: 0,
+        account: 'alice',
+        domain: 'local',
+        rev: 2,
+        name: 'B',
+        bio: '',
+        avatarBase64: null,
+      }),
+    );
     // Second refresh — sessionProfile is already set. The bug would short-circuit here (no request,
     // stale 'A' stays). The fix issues the request regardless and adopts the new value.
     svc.updateSessionProfile();
@@ -124,6 +137,38 @@ describe('UserService profile refresh', () => {
       profile({ name: 'B' }),
     );
     await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('B'));
+  });
+
+  it('publishes self avatar bytes from the runtime instead of caching the endpoint URL', async () => {
+    const result = firstValueFrom(svc.ensureProfile());
+    vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
+      of({
+        namespaceId: 0,
+        account: 'alice',
+        domain: 'local',
+        rev: 2,
+        name: 'Resolved Alice',
+        bio: 'Resolved bio',
+        avatarBase64: 'YQ==',
+      }),
+    );
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
+      profile({ profileRev: 2, avatar: '/uploads/old-path.webp' }),
+    );
+    expect(await result).toMatchObject({
+      name: 'Resolved Alice',
+      avatar: 'data:image/webp;base64,YQ==',
+    });
+    expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
+      type: 'EXACT',
+      account: 'alice',
+      domain: 'local',
+      rev: 2,
+    });
+    expect(TestBed.inject(WebdbService).putMeta).toHaveBeenCalledWith(
+      'selfProfile',
+      expect.objectContaining({ avatar: 'data:image/webp;base64,YQ==' }),
+    );
   });
 
   // Contrast: ensureProfile() (no force) is the idempotent get-or-load — it DOES short-circuit to the
@@ -248,10 +293,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: vi
+            resolve: vi
               .fn()
-              .mockName('putProfile')
-              .mockResolvedValue(undefined),
+              .mockReturnValue(of({ name: 'A', bio: '', avatarBase64: null })),
           },
         },
       ],

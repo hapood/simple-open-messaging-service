@@ -258,25 +258,3 @@ pub(crate) async fn native_db_store_group_member_profile(
         Ok(true)
     }).await.map_err(|e| e.to_string())?
 }
-
-#[tauri::command]
-pub(crate) async fn native_db_put_profile(
-    user_id: i64,
-    profile: Value,
-) -> Result<bool, String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let namespace = profile.get("namespaceId").and_then(Value::as_i64).ok_or("profile has no namespace")?;
-        let source = profile.get("sourceServer").and_then(Value::as_str).ok_or("profile has no source server")?;
-        let namespace = if profile.get("domain").and_then(Value::as_str) == Some("local") { 0 } else { namespace };
-        register_namespace(&tx, user_id, namespace, source)?;
-        if profile.get("kind").and_then(Value::as_str) == Some("user") && profile.get("domain").and_then(Value::as_str) == Some("local") && profile.get("id").and_then(Value::as_i64) == Some(user_id) {
-            tx.execute("INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'selfIdentity',?2) ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-                params![user_id,json_text(&serde_json::json!({"account": profile.get("account"), "domain": "local"}))?]).map_err(|e| e.to_string())?;
-        }
-        let changed = write_profile(&tx, user_id, &profile)?;
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(changed)
-    }).await.map_err(|e| e.to_string())?
-}

@@ -8,7 +8,14 @@ import {
   inject,
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, of, map, shareReplay, firstValueFrom } from 'rxjs';
+import {
+  Observable,
+  of,
+  map,
+  switchMap,
+  shareReplay,
+  firstValueFrom,
+} from 'rxjs';
 import { apiPrefix } from './constants';
 import {
   User,
@@ -442,21 +449,7 @@ export class UserService {
     try {
       const res = await firstValueFrom(this.getMyProfile());
       if (res.code === 0 && res.data) {
-        const u = res.data;
-        this.sessionProfile.set(u);
-        void this.webdb.putMeta('selfProfile', u);
-        // Cache the complete self profile too → avatar-refresh signal on a path change.
-        void this.profileRepo.putProfile(`u${u.id}`, 'user', {
-          id: u.id,
-          name: u.name,
-          account: u.account,
-          avatar: u.avatar,
-          bio: u.bio,
-          domain: u.domain,
-          sourceServer: u.domain,
-          namespaceId: u.namespaceId,
-          profileRev: u.profileRev,
-        });
+        await firstValueFrom(this.publishSelfProfile(res.data));
       }
     } catch {
       /* best-effort — sessionProfile stays undefined; the UI holds a placeholder until a retry */
@@ -597,29 +590,44 @@ export class UserService {
       return this.profileFetch;
     }
     const fetch = this.getMyProfile().pipe(
-      map((res) => {
-        const u = res.data as User;
-        this.sessionProfile.set(u);
-        // Cache the full self profile so the next cold start's HELLO gating can skip this fetch.
-        void this.webdb.putMeta('selfProfile', u);
-        // Cache the complete self profile → IDB + trigger avatar refresh when the path changed.
-        void this.profileRepo.putProfile(`u${u.id}`, 'user', {
-          id: u.id,
-          name: u.name,
-          account: u.account,
-          avatar: u.avatar,
-          bio: u.bio,
-          domain: u.domain,
-          sourceServer: u.domain,
-          namespaceId: u.namespaceId,
-          profileRev: u.profileRev,
-        });
-        return u;
-      }),
+      switchMap((res) => this.publishSelfProfile(res.data as User)),
       shareReplay(1),
     );
     if (!opts?.force) this.profileFetch = fetch;
     return fetch;
+  }
+
+  /** The self endpoint owns account metadata; only the runtime resolves profile bytes. */
+  private publishSelfProfile(user: User): Observable<User> {
+    const epoch = this.sessionLifecycle.accountEpoch;
+    return this.profileRepo
+      .resolve({
+        type: 'EXACT',
+        account: user.account,
+        domain: user.domain,
+        rev: user.profileRev,
+      })
+      .pipe(
+        map((profile) => {
+          const resolved = {
+            ...user,
+            name: profile.name,
+            bio: profile.bio,
+            avatar: profile.avatarBase64
+              ? `data:image/webp;base64,${profile.avatarBase64}`
+              : '',
+          };
+          if (this.sessionLifecycle.isCurrent(epoch)) {
+            this.sessionProfile.set(resolved);
+            void this.webdb.putMeta('selfProfile', resolved);
+            void this.webdb.putMeta('selfIdentity', {
+              account: resolved.account,
+              domain: 'local',
+            });
+          }
+          return resolved;
+        }),
+      );
   }
 
   /** Fire-and-forget profile refresh — ALWAYS hits the network (`force: true`), because every caller

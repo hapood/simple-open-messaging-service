@@ -284,7 +284,8 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       id: 7,
       account: 'alice',
       name: 'Cached Alice',
-      avatar: '/uploads/avatars/self-512.webp',
+      avatar:
+        'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
       bio: '',
       isGroup: false,
       domain: 'local',
@@ -294,21 +295,6 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       profileRev: 3,
       isDeleted: false,
     } satisfies User);
-    await webdb.putAvatar({
-      identity: 'u7',
-      // A real 1×1 GIF: the component's <img> load handler must accept it, just as it would a cached WebP.
-      blob: new Blob(
-        [
-          Uint8Array.from(
-            atob('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='),
-            (c) => c.charCodeAt(0),
-          ),
-        ],
-        { type: 'image/gif' },
-      ),
-      path: '/uploads/avatars/self-512.webp',
-      lastRender: Date.now(),
-    });
   });
 
   afterEach(async () => {
@@ -324,16 +310,11 @@ describe('UserAvatarComponent offline cold-start integration', () => {
     const fixture = TestBed.createComponent(UserAvatarComponent);
     fixture.componentRef.setInput('type', UserAvatarType.SELF);
     fixture.detectChanges();
-    // The component effect deliberately starts an untracked IndexedDB promise; whenStable() cannot see it.
-    // Yield until that repository read has minted the object URL, without allowing any network fallback.
-    for (let i = 0; i < 20 && !fixture.componentInstance.imgSrc(); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      fixture.detectChanges();
-    }
-
     expect(userService.sessionProfile()?.name).toBe('Cached Alice');
     expect(fixture.componentInstance.initial()).toBe('CA');
-    expect(fixture.componentInstance.imgSrc()).toMatch(/^blob:/);
+    expect(fixture.componentInstance.imgSrc()).toMatch(
+      /^data:image\/gif;base64,/,
+    );
     httpMock.expectNone('/uploads/avatars/self-512.webp');
   });
 });

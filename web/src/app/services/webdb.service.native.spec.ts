@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ConversationItem, Message } from './model';
-import type { ProfileWriteRecord } from './webdb.service';
+import type { ProfileSnapshot } from './webdb.service';
 import { WebdbService } from './webdb.service';
 
 describe('WebdbService native SQLite routing', () => {
@@ -132,31 +132,21 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {
-    const profile: ProfileWriteRecord = {
-      identity: 'u8',
-      id: 8,
-      kind: 'user',
+    const profile: ProfileSnapshot = {
       name: 'Alice',
       account: 'alice',
       avatar: '/a.webp',
       bio: '',
       domain: 'local',
       namespaceId: 0,
-      sourceServer: 'local',
       profileRev: 6,
     };
-    responses.set('native_db_put_profile', true);
     responses.set('native_db_get_profile', profile);
     responses.set('native_db_get_meta', 12);
 
-    expect(await service.putProfile(profile)).toBe(true);
     expect(await service.getProfile(profile)).toEqual(profile);
     await service.putMeta('stateFeedId', 12);
     expect(await service.getMeta('stateFeedId')).toBe(12);
-
-    expect(
-      calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
-    ).toEqual(expect.objectContaining({ userId: 42, profile }));
   });
 
   it('queries a paginated group roster through native SQLite', async () => {

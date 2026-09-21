@@ -38,6 +38,7 @@ import type {
   ClientStateFeedItem,
 } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
+import { decodeProfileAvatar } from './profile-avatar-bytes';
 import {
   applyFriendIntentToProjection,
   applyGroupIntentToProjection,
@@ -108,6 +109,7 @@ export interface ProfileSelector {
 export interface ProfileSnapshot extends ProfileSelector {
   name: string;
   avatar: string;
+  avatarDigest: string | null;
   bio: string;
 }
 
@@ -158,14 +160,6 @@ export interface ResolvedMemberRecord extends MemberRecord {
   profileAvatar?: string;
   profileBio: string;
   user: ProfileSnapshot;
-}
-
-/** Optional UI context is used for avatar signalling and the signed-in account address only. */
-export interface ProfileWriteRecord extends ProfileSnapshot {
-  identity?: string;
-  id?: number;
-  kind?: 'user' | 'group';
-  sourceServer: string;
 }
 
 type ClientRelationshipIntentBody = Extract<
@@ -240,6 +234,7 @@ export interface WebdbSchema extends DBSchema {
     key: [string, string, number, number];
     value: ProfileSnapshot;
   };
+  profileAvatarBlobs: { key: string; value: { digest: string; blob: Blob } };
   members: {
     key: [number, string, string, number];
     value: MemberRecord;
@@ -277,7 +272,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 22;
+export const CACHE_SCHEMA_VERSION = 23;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 5;
 const IDB_FORMAT_VERSION = 1;
 
@@ -650,6 +645,7 @@ export class WebdbStorage {
       'avatars',
       'namespaces',
       'profiles',
+      'profileAvatarBlobs',
       'members',
       'threads',
       'threadStates',
@@ -692,6 +688,7 @@ export class WebdbStorage {
         db.createObjectStore('profiles', {
           keyPath: ['account', 'domain', 'namespaceId', 'profileRev'],
         });
+        db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
         const members = db.createObjectStore('members', {
           keyPath: ['threadId', 'account', 'domain', 'namespaceId'],
         });
@@ -2737,47 +2734,6 @@ export class WebdbStorage {
     return snapshot;
   }
 
-  async putProfile(record: ProfileWriteRecord): Promise<boolean> {
-    record = localSubjectIdentity(record);
-    return this.runAccountOperation(async () => {
-      if (record.profileRev < 1) return false;
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>('native_db_put_profile', {
-          userId: Number(this.currentUserId),
-          profile: record,
-        });
-      const tx = (await this.db()).transaction(
-        ['namespaces', 'profiles', 'settings'],
-        'readwrite',
-      );
-      await this.registerNamespace(
-        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-        record.sourceServer,
-        record.namespaceId,
-      );
-      if (
-        record.kind === 'user' &&
-        record.domain === 'local' &&
-        record.id === Number(this.currentUserId)
-      )
-        await tx.objectStore('settings').put({
-          key: 'selfIdentity',
-          value: { account: record.account, domain: 'local' },
-        });
-      const written = await this.writeSnapshot(tx.objectStore('profiles'), {
-        account: record.account,
-        domain: record.domain,
-        namespaceId: record.namespaceId,
-        profileRev: record.profileRev,
-        name: record.name,
-        avatar: record.avatar,
-        bio: record.bio,
-      });
-      await tx.done;
-      return written;
-    });
-  }
-
   private async writeSnapshot(
     store: {
       get(
@@ -2806,7 +2762,6 @@ export class WebdbStorage {
         await store.transaction.done.catch(() => {});
         throw new Error('conflicting cached profile revision');
       }
-      // Avatar URLs and inline bytes are transport representations of the same revision.
       return false;
     }
     await store.put(record);
