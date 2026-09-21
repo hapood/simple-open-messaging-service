@@ -229,10 +229,6 @@ export const router = createBrowserRouter(
                 ),
             },
             {
-              path: '/audit',
-              element: <Navigate to="/durable-tasks" replace />,
-            },
-            {
               path: '/settings',
               lazy: () =>
                 import('@/routes/settings/settings-page').then((m) => ({
