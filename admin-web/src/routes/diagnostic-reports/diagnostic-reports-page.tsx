@@ -97,9 +97,6 @@ export function DiagnosticReportsPage() {
       <p className="text-sm text-muted-foreground">
         {t('diagnosticReports.desc')}
       </p>
-      <p className="text-sm text-muted-foreground">
-        {t('diagnosticReports.desc')}
-      </p>
 
       <div className="flex items-center justify-end">
         <div className="relative w-72">
