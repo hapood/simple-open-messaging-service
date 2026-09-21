@@ -178,16 +178,6 @@ export interface Ban {
   remainingMs: number;
 }
 
-// Refresh token reuse alert (POST /admin/reuse-alerts)
-export interface ReuseAlert {
-  userId: number;
-  familyId: string;
-  jti: string;
-  ip: string | null;
-  userAgent: string | null;
-  revokedAt: number;
-}
-
 // Online SSE connection (POST /admin/connections, aggregated by user; since = that user's earliest connect time in ms)
 interface ConnectionClient {
   userId: number;

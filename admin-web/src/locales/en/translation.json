@@ -336,8 +336,7 @@
     "empty": "No active sessions",
     "tabs": {
       "users": "User sessions",
-      "admins": "Admin sessions",
-      "reuse": "Reuse alerts"
+      "admins": "Admin sessions"
     }
   },
   "connections": {
@@ -369,19 +368,6 @@
       "expires": "Expires"
     },
     "empty": "No active admin sessions"
-  },
-  "reuse": {
-    "title": "Reuse Alerts",
-    "desc": "Refresh token reuse events (revokeReason=reuse; the family has been revoked at the root).",
-    "col": {
-      "userId": "userId",
-      "familyId": "familyId",
-      "jti": "jti",
-      "ip": "IP",
-      "ua": "User-Agent",
-      "revokedAt": "Revoked At"
-    },
-    "empty": "No reuse alerts"
   },
   "push": {
     "title": "Push Management",

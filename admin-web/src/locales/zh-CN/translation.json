@@ -334,7 +334,7 @@
       "expires": "过期"
     },
     "empty": "无活跃会话",
-    "tabs": { "users": "用户会话", "admins": "管理员会话", "reuse": "重用告警" }
+    "tabs": { "users": "用户会话", "admins": "管理员会话" }
   },
   "connections": {
     "title": "实时连接",
@@ -365,19 +365,6 @@
       "expires": "过期"
     },
     "empty": "无活跃管理员会话"
-  },
-  "reuse": {
-    "title": "重用告警",
-    "desc": "refresh token 重用事件（revokeReason=reuse，家族已连根吊销）。",
-    "col": {
-      "userId": "userId",
-      "familyId": "familyId",
-      "jti": "jti",
-      "ip": "IP",
-      "ua": "User-Agent",
-      "revokedAt": "吊销时间"
-    },
-    "empty": "无重用告警"
   },
   "push": {
     "title": "推送管理",

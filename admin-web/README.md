@@ -1,7 +1,7 @@
 # admin-web
 
 The admin console for **SOMS** — a React single-page app that drives user
-management, session auditing, login-ban control, and refresh-token reuse review.
+management, session auditing, and login-ban control.
 It talks to the same NestJS API as the Angular client (`web/`) but authenticates
 through a **physically isolated admin account system** (independent JWT secret,
 `scope: 'admin'` claims, separate `Admin` / `AdminRefreshToken` tables). Admin
@@ -63,7 +63,7 @@ npm run lint --prefix admin-web    # oxlint
 
 ```
 admin-web/src/
-├── api/            # per-domain API functions (auth, users, sessions, bans, reuse, …)
+├── api/            # per-domain API functions (auth, users, sessions, bans, …)
 │   └── client.ts   # unified request(): Bearer injection, envelope unwrap, 401 retry
 ├── auth/           # AuthProvider, token-store, single-flight refresh, force-logout
 ├── components/
@@ -73,7 +73,7 @@ admin-web/src/
 │   └── ui/         # shadcn / Base UI primitives
 ├── hooks/          # TanStack Query hooks
 ├── lib/            # constants, api-error, utils
-├── routes/         # one folder per page (login, users, sessions, admin-sessions, bans, reuse)
+├── routes/         # one folder per page (login, users, sessions, admin-sessions, bans)
 └── types/          # ApiResult<T> envelope + domain types
 ```
 
@@ -130,7 +130,6 @@ API's `src/common/business-code.ts`):
 | `/sessions` | `SessionsPage` | active **user** sessions across the system |
 | `/admin-sessions` | `AdminSessionsPage` | active **admin** sessions (audits who is logged into the console itself) |
 | `/bans` | `BansPage` | login bans (IP / account), unban |
-| `/reuse` | `ReuseAlertsPage` | refresh-token reuse incidents |
 | `*` | `NotFoundPage` | |
 
 All non-login routes are wrapped in `ProtectedRoute`, which redirects to

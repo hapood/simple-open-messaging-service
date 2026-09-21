@@ -108,13 +108,6 @@ export const router = createBrowserRouter(
                       (m) => ({ Component: m.AdminSessionsPage }),
                     ),
                 },
-                {
-                  path: 'reuse',
-                  lazy: () =>
-                    import('@/routes/reuse/reuse-alerts-page').then((m) => ({
-                      Component: m.ReuseAlertsPage,
-                    })),
-                },
               ],
             },
             {
