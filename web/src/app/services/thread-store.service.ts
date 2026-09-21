@@ -278,6 +278,7 @@ export class ThreadRepository {
     this.pendingUnknownContentHeads.clear();
     this.threadFeedCursor = undefined;
     this.threadSyncInFlight = false;
+    this.threadSyncPending = false;
     this.threadSyncTarget = 0;
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
   }
@@ -658,6 +659,7 @@ export class ThreadRepository {
 
   private threadFeedCursor: number | undefined;
   private threadSyncInFlight = false;
+  private threadSyncPending = false;
   private threadSyncTarget = 0;
 
   /** HELLO (the SSE connect handshake) — the network-refresh half of boot (the cache-paint is owned by
@@ -718,16 +720,17 @@ export class ThreadRepository {
   private async syncThreadFeed(target: number): Promise<void> {
     if (!Number.isInteger(target) || target < 0) return;
     this.threadSyncTarget = Math.max(this.threadSyncTarget, target);
+    this.threadSyncPending = true;
     if (this.threadSyncInFlight || this.threadFeedCursor === undefined) return;
     this.threadSyncInFlight = true;
     const epoch = this.sessionEpoch;
     try {
-      let attempted = false;
       while (
         this.threadFeedCursor !== undefined &&
-        (!attempted || this.threadFeedCursor < this.threadSyncTarget)
+        (this.threadSyncPending ||
+          this.threadFeedCursor < this.threadSyncTarget)
       ) {
-        attempted = true;
+        this.threadSyncPending = false;
         const result = await this.webdb.syncThreadFeed(
           this.threadSyncTarget,
           this.threadFeedCursor,
@@ -1156,6 +1159,17 @@ export class ThreadRepository {
               await this.projectThread(thread.threadId);
             }
           }
+          // A background thread-feed drain may have skipped Group Meta before this shell existed.
+          // Revisit durable heads even when their feed cursor was already consumed. Do not await
+          // network work here: this state page and its cursor are already committed independently.
+          if (
+            persistedRelationshipThreads.some(
+              (thread) =>
+                thread.type === 'GROUP' &&
+                thread.conversationState !== 'READ_ONLY',
+            )
+          )
+            void this.syncThreadFeed(this.threadSyncTarget);
         }
         if (relationshipIntentRevision !== undefined)
           this._drainRelationshipIntentRevision = Math.max(

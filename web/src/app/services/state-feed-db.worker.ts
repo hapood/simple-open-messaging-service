@@ -246,7 +246,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             });
             return;
           }
-          wake(message.target);
+          if (typeof message.target === 'number') wake(message.target);
         };
         port.start();
         postMessage({ id: data.id, ok: true });
@@ -276,6 +276,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           ok: true,
           result: {
             ...changes,
+            groupThreadIds: result.groupThreadIds,
             states: changes.states.map((state) => {
               const transient = notificationStates.get(state.threadId);
               return transient?.server &&

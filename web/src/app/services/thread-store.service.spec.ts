@@ -1128,6 +1128,80 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
 
+  it.each([false, true])(
+    'drains Group Meta after a late group shell (sync in flight: %s)',
+    async (inFlight) => {
+      emitHello({ userId: 1, stateFeedEndId: 0 });
+      await helloSettled();
+      cursorSignal.set(1);
+      // The background consumer has already committed the head while the group is unknown.
+      await webdb.mergeThreadStates(
+        [{ ...threadSnapshot(), threadId: 9, groupMetaFeedEndId: '3' }],
+        1,
+      );
+      eventSubject.next({
+        event: 'LOCAL_THREAD_FEED_COMMITTED',
+        data: { userId: 1, cursor: 1 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      let release: (() => void) | undefined;
+      if (inFlight) {
+        let started!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        vi.mocked(webdb.syncThreadFeed).mockImplementationOnce(async () => {
+          started();
+          await gate;
+          return { cursor: 1, states: [], groupThreadIds: [] };
+        });
+        eventSubject.next({
+          event: 'THREAD_FEED_UPDATED',
+          data: { threadFeedEndId: 1 },
+        });
+        await entered;
+      }
+      queryStateFeedSpy.mockReturnValue(
+        of({
+          code: 0,
+          data: {
+            mode: 'delta',
+            items: [
+              threadStateEvent(2, 9, {
+                type: 'GROUP',
+                role: 'MEMBER',
+                profile: {
+                  account: '!dev',
+                  domain: 'local',
+                  namespaceId: 0,
+                  profileRev: 0,
+                },
+              }),
+            ],
+            hasMore: false,
+            scannedThrough: 2,
+            stateFeedEndId: 2,
+          },
+        }),
+      );
+      eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
+      await vi.waitFor(() => expect(cursorSignal()).toBe(2));
+      release?.();
+      await vi.waitFor(async () => {
+        const group = (await webdb.getThreads()).find(
+          (thread) => thread.threadId === 9,
+        );
+        expect(group?.type === 'GROUP' && group.group.groupMetaFeedId).toBe(
+          '3',
+        );
+      });
+      expect(queryThreadFeedSpy).not.toHaveBeenCalled();
+    },
+  );
+
   it('hydrates a newly activated zero-message friendship thread from THREAD_STATE', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await helloSettled();
