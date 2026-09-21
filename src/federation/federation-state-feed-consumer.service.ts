@@ -638,8 +638,15 @@ export class FederationStateFeedConsumerService {
             AND group_user."namespaceId" = ${namespaceId}
             AND EXISTS (
               SELECT 1
-              FROM "AccountThreadState" local_state
-              WHERE local_state."threadId" = message_thread.id
+              -- Retained participant history survives departure. Only an active
+              -- local membership authorizes content synchronization; a pending
+              -- reapplication must not block the later approval's feed page.
+              FROM "RelationshipPair" membership
+              WHERE membership."threadId" = message_thread.id
+                AND membership.kind = 'GROUP_MEMBER'
+                AND membership.active = true
+                AND membership."endpointBType" = 'USER'
+                AND membership."endpointBDomain" = 'local'
             ))
         )
       LIMIT 1

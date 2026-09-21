@@ -8,6 +8,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
+import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
@@ -573,6 +574,122 @@ describe('mirror group intent application', () => {
     expect(
       rejoined.intents.find((intent) => intent.authorSide === 'B'),
     ).toMatchObject({ status: 'ACCEPTED' });
+  });
+
+  it('consumes a content head before the approval of a departed member reapplication', async () => {
+    await freshGroup();
+    const bob = await member('head-before-rejoin');
+    await run(bob, invitationBody());
+    const authored = app.get(MemberAuthoredGroupMembershipIntentService);
+    const { pair } = await findPair(bob.account);
+    const threadId = pair!.threadId!;
+    await authored.execute({
+      threadId,
+      memberUserId: bob.id,
+      decision: 'ACCEPTED',
+    });
+    await run(bob, acceptanceBody());
+    await database.db.insert(tables.groupMetaMemberFeed).values({
+      threadId,
+      feedId: 1,
+      memberAccount: bob.account,
+      memberDomain: 'local',
+      operation: 'UPSERT',
+      body: { role: 'MEMBER', profileRev: 1 },
+    });
+    await authored.execute({
+      threadId,
+      memberUserId: bob.id,
+      decision: 'REVOKED',
+    });
+    await run(bob, revocationBody());
+    await authored.execute({
+      threadId,
+      memberUserId: bob.id,
+      decision: 'REQUESTED',
+    });
+    expect((await findPair(bob.account)).pair?.active).toBe(false);
+    const retained = await database.db.query.accountThreadState.findFirst({
+      where: and(
+        eq(tables.accountThreadState.threadId, threadId),
+        eq(tables.accountThreadState.accountId, bob.id),
+      ),
+    });
+    expect(retained).toBeDefined();
+    const beforeThread = await database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+    });
+    const beforeSync =
+      await database.db.query.federationThreadSyncState.findFirst({
+        where: and(
+          eq(tables.federationThreadSyncState.threadId, threadId),
+          eq(tables.federationThreadSyncState.namespaceId, group.namespaceId),
+        ),
+      });
+    expect(beforeThread?.federationRoundsEnabled).toBe(true);
+    expect(beforeSync?.authorizationEpoch).not.toBe(
+      beforeThread?.authorizationEpoch,
+    );
+    const consumer = app.get(FederationStateFeedConsumerService);
+    // A page boundary prevents the consumer's within-page intent prioritization
+    // from moving the later approval ahead of this already-advertised head.
+    const head = await database.db.transaction((tx) =>
+      consumer.applyPageInTx(tx, group.domain, group.namespaceId, {
+        items: [
+          {
+            account: group.account,
+            eventType: 'THREAD_CONTENT_HEAD',
+            feedId: '1',
+            body: {
+              messageEndSeq: 7,
+              tombstoneEndSeq: 1,
+              groupMetaFeedEndId: 4,
+            },
+          },
+        ],
+        scannedThrough: '1',
+        stateFeedEndId: '1',
+        hasMore: false,
+      }),
+    );
+    expect(
+      head.threadRoundWakes.some((wake) => wake.direction === 'forward'),
+    ).toBe(false);
+    expect((await findPair(bob.account)).pair?.active).toBe(false);
+    const result = await database.db.transaction((tx) =>
+      consumer.applyPageInTx(tx, group.domain, group.namespaceId, {
+        items: [
+          {
+            account: group.account,
+            peerAccount: bob.account,
+            eventType: 'RELATIONSHIP_INTENT',
+            feedId: '2',
+            body: acceptanceBody({ messageEndSeq: 7 }),
+          },
+        ],
+        scannedThrough: '2',
+        stateFeedEndId: '2',
+        hasMore: false,
+      }),
+    );
+    expect((await findPair(bob.account)).pair?.active).toBe(true);
+    expect(result.threadRoundWakes).toContainEqual({
+      threadId,
+      peerDomain: group.domain,
+      namespaceId: group.namespaceId,
+      direction: 'both',
+    });
+    const state = await database.db.query.federationThreadSyncState.findFirst({
+      where: and(
+        eq(tables.federationThreadSyncState.threadId, threadId),
+        eq(tables.federationThreadSyncState.namespaceId, group.namespaceId),
+      ),
+    });
+    const thread = await database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+    });
+    expect(state?.authorizationEpoch).toBe(thread?.authorizationEpoch);
+    expect(state?.messageTargetSeq).toBe(7);
   });
 
   it('kicks an active member: relationship closes at intent time, epoch on the last member only', async () => {
