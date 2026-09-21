@@ -34,7 +34,7 @@ export class UserManageService {
   async getUserDetail(id: number) {
     const localAccount = await this.database.db.query.account.findFirst({
       where: eq(account.id, id),
-      columns: { id: true },
+      columns: { id: true, disabledAt: true },
     });
     if (!localAccount) return null;
     const profile = await this.userService.findUniqueUser({ id });
@@ -92,7 +92,12 @@ export class UserManageService {
         )
         .orderBy(desc(sessionToken.pushRegisteredAt)),
     ]);
-    return { user: profile, groups, sessions, pushTokens };
+    return {
+      user: { ...profile, isDeleted: localAccount.disabledAt !== null },
+      groups,
+      sessions,
+      pushTokens,
+    };
   }
 
   // ── Admin user-management operations ────────────────────────────────────────
