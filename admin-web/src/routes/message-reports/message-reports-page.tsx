@@ -42,7 +42,7 @@ const targetKey = (target: MessageTarget) => `${target.threadId}:${target.seq}`;
 
 export function MessageReportsPage() {
   const { t } = useTranslation();
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(0);
   const [isDeleted, setIsDeleted] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<{
@@ -50,7 +50,7 @@ export function MessageReportsPage() {
     action: 'DELETE' | 'DISMISS';
   } | null>(null);
   const query = useMessageReports({
-    skip: (page - 1) * PAGE_SIZE,
+    skip: page * PAGE_SIZE,
     take: PAGE_SIZE,
     isDeleted,
   });
@@ -58,6 +58,10 @@ export function MessageReportsPage() {
   const deletion = useDeleteReportedMessages();
   const canManage = useIsAdminPlus();
   const busy = dismiss.isPending || deletion.isPending;
+  const filterItems = {
+    ACTIVE: t('messageReports.active'),
+    REMOVED: t('messageReports.removed'),
+  };
   const selectable = (query.data?.list ?? []).filter(
     (report) => !report.message.isDeleted,
   );
@@ -108,9 +112,10 @@ export function MessageReportsPage() {
           value={isDeleted ? 'REMOVED' : 'ACTIVE'}
           onValueChange={(value) => {
             setIsDeleted(value === 'REMOVED');
-            setPage(1);
+            setPage(0);
             setSelected(new Set());
           }}
+          items={filterItems}
         >
           <SelectTrigger
             className="w-48"
