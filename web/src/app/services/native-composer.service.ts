@@ -141,23 +141,6 @@ interface NativeComposerLinkMarker {
   end: number;
 }
 
-interface NativeMentionCandidate {
-  kind: 'user' | 'all';
-  id: string;
-  label: string;
-  avatar:
-    | {
-        kind: 'user';
-        url?: string;
-        fallbackText: string;
-        colorSeed: string;
-      }
-    | {
-        kind: 'builtin';
-        icon: 'everyone';
-      };
-}
-
 export interface NativeVoiceUploadEvent {
   contextId: number;
   threadId: number;

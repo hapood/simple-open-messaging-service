@@ -119,8 +119,8 @@ const MAX_RECORD_SECS = 60;
  * in-flow as a keyboard replacement and uses one atomic native IME visibility capability.
  *
  * Plain-text payload: the editor is rich for composition UX, but the text send serializes to plain text
- * (`editor.getText()`) — no HTML is stored. `members` drives the @mention suggestion popup (pass `[]` for
- * 1-on-1 where mentions are meaningless; a group host passes its member roster).
+ * (`editor.getText()`) — no HTML is stored. `memberSearch` drives the @mention suggestion popup (a group
+ * host passes its member-roster lookup; 1-on-1 leaves it unset where mentions are meaningless).
  *
  * `ViewEncapsulation.None` + the `ci-` prefix (mirrors the playground's global `pg-` pattern): the styles are
  * global, loaded once `<app-chat-input>` renders in either host.
@@ -141,9 +141,6 @@ const MAX_RECORD_SECS = 60;
 export class ChatInputComponent implements OnDestroy {
   readonly AppIconType = AppIconType;
   private readonly nativeUploads = inject(NativeUploadService);
-  /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
-   *  the editor; updates do NOT recreate the editor. */
-  readonly members = input<ChatMember[]>([]);
   readonly memberSearch = input<
     ((query: string) => Promise<ChatMember[]>) | undefined
   >();

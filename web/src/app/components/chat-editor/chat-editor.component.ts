@@ -18,12 +18,11 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
-import { filterMentionCandidates } from './mention-candidates';
 import { serializeEditorBlocks } from './editor-message-serializer';
 import { ALL_MENTION_ID } from '../../lib/message-entity';
 
-/** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
- *  so the production port swaps in GroupService.getMembers() unchanged. */
+/** A mention candidate — id is stored on the chip (data-id, a full SOMFP user address), label is
+ *  shown. Produced by the host's memberSearch lookup. */
 export interface ChatMember {
   id: string;
   label: string;
@@ -65,9 +64,6 @@ export interface ComposerLinkMarker {
   encapsulation: ViewEncapsulation.None,
 })
 export class ChatEditorComponent {
-  /** Mention candidates (playground: mock members; production: GroupService.getMembers()). Read into a
-   *  ref so member updates do NOT recreate the editor (the init effect depends only on the host element). */
-  readonly members = input<ChatMember[]>([]);
   readonly memberSearch = input<
     ((query: string) => Promise<ChatMember[]>) | undefined
   >();
@@ -95,12 +91,6 @@ export class ChatEditorComponent {
 
   /** Whether the editor currently has content (drives the send-button enabled state on the host). */
   readonly isEmpty = signal(true);
-
-  private membersRef: ChatMember[] = [];
-  /** Keep membersRef fresh without re-running the editor-init effect. */
-  private readonly syncMembers = effect(() => {
-    this.membersRef = this.members();
-  });
 
   /** Force the Tiptap Placeholder to re-evaluate its placeholder function on a language switch — the
    *  placeholder reads the active language, and without a transaction the empty-state hint would stay in
@@ -142,12 +132,10 @@ export class ChatEditorComponent {
           suggestion: {
             char: '@',
             allowSpaces: false,
-            // P2P conversations deliberately pass no candidates. Do not start a suggestion session at
+            // P2P conversations deliberately disable mentions. Do not start a suggestion session at
             // all there: showing an empty popup makes a literal @ look like a supported P2P mention.
-            allow: () =>
-              this.mentionsEnabled() || this.membersRef.length > 0,
-            items: ({ query }) =>
-              this.memberSearch()?.(query) ?? this.filterMembers(query),
+            allow: () => this.mentionsEnabled(),
+            items: ({ query }) => this.memberSearch()?.(query) ?? [],
             render: () => suggestionPopup(),
           },
         }),
@@ -192,10 +180,6 @@ export class ChatEditorComponent {
       .replace(/<\/p>\s*<p[^>]*>/g, '<br>')
       .replace(/^<p[^>]*>/, '')
       .replace(/<\/p>$/, '');
-  }
-
-  private filterMembers(query: string): ChatMember[] {
-    return filterMentionCandidates(this.membersRef, query);
   }
 
   // ---------- imperative API (parent drives via viewChild) ----------

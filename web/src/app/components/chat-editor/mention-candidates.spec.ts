@@ -1,34 +1,39 @@
-import { filterMentionCandidates } from './mention-candidates';
+import { isSelfMentionMember } from './mention-candidates';
 
-describe('filterMentionCandidates', () => {
-  const members = [
-    { id: 'zhangsan@example.com', label: '张三' },
-    { id: 'zhangwei@example.com', label: '张伟' },
-    { id: 'xiaozhang@example.com', label: '小张' },
-    { id: 'alice@example.com', label: 'Alice' },
-  ];
-
-  it('returns every display name with the typed prefix', () => {
-    expect(filterMentionCandidates(members, '张')).toEqual([
-      members[0],
-      members[1],
-    ]);
+describe('isSelfMentionMember', () => {
+  it('flags the session identity with the roster domain normalized to local', () => {
+    expect(
+      isSelfMentionMember(
+        { account: 'alice06295391', domain: 'local' },
+        { account: 'alice06295391', domain: '' },
+      ),
+    ).toBe(true);
   });
 
-  it('also matches canonical-account prefixes case-insensitively', () => {
-    expect(filterMentionCandidates(members, 'AL')).toEqual([members[3]]);
+  it('flags the session identity when the profile domain is missing', () => {
+    expect(
+      isSelfMentionMember(
+        { account: 'alice06295391', domain: '' },
+        { account: 'alice06295391', domain: 'local' },
+      ),
+    ).toBe(true);
   });
 
-  it('matches the full account@domain identity used by mention entities', () => {
-    const member = { id: 'bobmu8azkcm@local', label: 'Bob' };
-    expect(filterMentionCandidates([member], 'bobmu8')).toEqual([member]);
+  it('keeps a same-named account on another federation node mentionable', () => {
+    expect(
+      isSelfMentionMember(
+        { account: 'alice06295391', domain: 'local' },
+        { account: 'alice06295391', domain: 'bravo.test' },
+      ),
+    ).toBe(false);
   });
 
-  it('does not impose the old eight-result cap', () => {
-    const many = Array.from({ length: 12 }, (_, i) => ({
-      id: `zhang${i}@example.com`,
-      label: `张${i}`,
-    }));
-    expect(filterMentionCandidates(many, '张')).toHaveLength(12);
+  it('excludes nothing when the session profile has not loaded', () => {
+    expect(
+      isSelfMentionMember(undefined, {
+        account: 'alice06295391',
+        domain: 'local',
+      }),
+    ).toBe(false);
   });
 });

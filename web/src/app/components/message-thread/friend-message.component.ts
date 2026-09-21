@@ -94,7 +94,7 @@ import {
   type StandardResponse,
 } from '../../services/model';
 import { serializeNativeComposerText } from '../chat-editor/editor-message-serializer';
-import { filterMentionCandidates } from '../chat-editor/mention-candidates';
+import { isSelfMentionMember } from '../chat-editor/mention-candidates';
 import {
   MediaTransferService,
   type MediaTransferKind,
@@ -453,7 +453,6 @@ export class MessageThreadComponent implements OnDestroy {
     this.composerDrafts,
     this.linkGenerations,
   );
-  readonly mentionMembers = signal<ChatMember[]>([]);
   readonly searchMentionMembers = async (
     query: string,
   ): Promise<ChatMember[]> => {
@@ -464,7 +463,12 @@ export class MessageThreadComponent implements OnDestroy {
       take: 20,
       search: query,
     });
-    const members = roster.map((member) => ({
+    const members = roster
+      .filter(
+        (member) =>
+          !isSelfMentionMember(this.userService.sessionProfile(), member),
+      )
+      .map((member) => ({
       // Mention entity ids are serialized as full SOMFP user addresses. Keeping only the account works
       // for display but the server rejects the resulting entity because the domain is missing.
       id: `${member.account}@${member.domain || 'local'}`,
@@ -671,35 +675,6 @@ export class MessageThreadComponent implements OnDestroy {
           this.onMessageDeleted(threadId, seq, type);
       },
     );
-    effect((onCleanup) => {
-      const trd = this.userMsgTrd();
-      const threadId = this.threadId();
-      if (!trd || trd.type !== 'GROUP' || threadId === undefined) {
-        this.mentionMembers.set([]);
-        return;
-      }
-      let active = true;
-      const load = async () => {
-        if (!active) return;
-        const members: ChatMember[] = [];
-        if (this.chatContext.canAdministerGroup()) {
-          members.unshift({
-            id: ALL_MENTION_ID,
-            label: this.transloco.translate('chat.mentionAll'),
-            avatarUrl: '',
-          });
-        }
-        this.mentionMembers.set(members);
-      };
-      void load();
-      const sub = this.memberProfiles.changed$.subscribe((threadIds) => {
-        if (threadIds.includes(threadId)) void load();
-      });
-      onCleanup(() => {
-        active = false;
-        sub.unsubscribe();
-      });
-    });
     // The aggregate attachment card is a single kernel tail item. Moving the Angular-owned node into the
     // kernel's measured tail cap makes it part of the scrollable content/total-height model instead of a
     // fixed row above the composer. The cap's ResizeObserver accounts for show/hide and progress updates.
@@ -945,30 +920,7 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       case 'queryMentions': {
-        const items = filterMentionCandidates(
-          this.mentionMembers(),
-          event.query,
-        ).map((member) => ({
-          kind:
-            member.id === ALL_MENTION_ID ? ('all' as const) : ('user' as const),
-          id: member.id,
-          label: member.label,
-          avatar:
-            member.id === ALL_MENTION_ID
-              ? ({ kind: 'builtin', icon: 'everyone' } as const)
-              : ({
-                  kind: 'user',
-                  url: member.avatarUrl || undefined,
-                  fallbackText: avatarFallbackText(member.label),
-                  colorSeed: member.id,
-                } as const),
-        }));
-        this.nativeComposer.update(event.contextId, {
-          mentionResults: {
-            requestId: event.requestId,
-            items,
-          },
-        });
+        void this.answerNativeMentionQuery(event);
         return;
       }
       case 'cancelQuote':
@@ -997,6 +949,39 @@ export class MessageThreadComponent implements OnDestroy {
       case 'geometry':
       case 'recording':
         return;
+    }
+  }
+
+  /** The native composer owns no roster of its own: every mention popup, native or web, resolves
+   *  through searchMentionMembers so both surfaces present the same candidates (self excluded).
+   *  A failed lookup answers with an empty page — the native popup renders it as "no matches". */
+  private async answerNativeMentionQuery(
+    event: Extract<NativeComposerEvent, { kind: 'queryMentions' }>,
+  ): Promise<void> {
+    try {
+      const members = await this.searchMentionMembers(event.query);
+      const items = members.map((member) => ({
+        kind:
+          member.id === ALL_MENTION_ID ? ('all' as const) : ('user' as const),
+        id: member.id,
+        label: member.label,
+        avatar:
+          member.id === ALL_MENTION_ID
+            ? ({ kind: 'builtin', icon: 'everyone' } as const)
+            : ({
+                kind: 'user',
+                url: member.avatarUrl || undefined,
+                fallbackText: avatarFallbackText(member.label),
+                colorSeed: member.id,
+              } as const),
+      }));
+      this.nativeComposer.update(event.contextId, {
+        mentionResults: { requestId: event.requestId, items },
+      });
+    } catch {
+      this.nativeComposer.update(event.contextId, {
+        mentionResults: { requestId: event.requestId, items: [] },
+      });
     }
   }
 
