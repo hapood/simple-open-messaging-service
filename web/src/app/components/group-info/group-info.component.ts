@@ -296,6 +296,13 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     return false;
   }
 
+  /** Privileged-role actions (admin grant, ownership transfer) only apply to
+   * local members: the group origin refuses them for members on other servers,
+   * so the owner menu does not offer them there. */
+  canChangePrivilegedRole(m: ResolvedMemberProfile): boolean {
+    return this.isOwner() && m.domain === 'local';
+  }
+
   /** The non-current role an owner can switch a member to (admin↔member toggle; never OWNER). */
   toggleRoleLabel(m: ResolvedMemberProfile): 'ADMIN' | 'MEMBER' {
     return m.role === 'ADMIN' ? 'MEMBER' : 'ADMIN';

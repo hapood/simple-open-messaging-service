@@ -385,7 +385,7 @@
                 />
               </button>
               <mat-menu #memberActions="matMenu">
-                @if (isOwner()) {
+                @if (canChangePrivilegedRole(m)) {
                   <button mat-menu-item (click)="doSetRole(m)">
                     {{
                       (m.role === 'ADMIN'
@@ -398,7 +398,7 @@
                 <button mat-menu-item (click)="askKick(m)">
                   {{ 'group.kick' | transloco }}
                 </button>
-                @if (isOwner()) {
+                @if (canChangePrivilegedRole(m)) {
                   <button
                     mat-menu-item
                     style="color: var(--app-danger)"

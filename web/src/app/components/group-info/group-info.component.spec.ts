@@ -63,3 +63,48 @@ describe('GroupInfoComponent roster query ordering', () => {
     expect(state.loadingMore()).toBe(false);
   });
 });
+
+describe('GroupInfoComponent privileged-role action gating', () => {
+  const localMember = {
+    identityKey: 'bob@local',
+    name: 'Bob',
+    account: 'bob',
+    domain: 'local',
+    role: 'MEMBER',
+  } as ResolvedMemberProfile;
+  const federatedMember = {
+    identityKey: 'charlie@bravo.test',
+    name: 'Charlie',
+    account: 'charlie',
+    domain: 'bravo.test',
+    role: 'MEMBER',
+  } as ResolvedMemberProfile;
+  const withRole = (role: 'OWNER' | 'ADMIN' | 'MEMBER') =>
+    ({ isOwner: () => role === 'OWNER' }) as unknown as GroupInfoComponent;
+
+  it('offers privileged-role actions only for local members when owner', () => {
+    const component = withRole('OWNER');
+    expect(
+      GroupInfoComponent.prototype.canChangePrivilegedRole.call(
+        component,
+        localMember,
+      ),
+    ).toBe(true);
+    expect(
+      GroupInfoComponent.prototype.canChangePrivilegedRole.call(
+        component,
+        federatedMember,
+      ),
+    ).toBe(false);
+  });
+
+  it('offers them to no one when the caller is not the owner', () => {
+    const component = withRole('ADMIN');
+    expect(
+      GroupInfoComponent.prototype.canChangePrivilegedRole.call(
+        component,
+        localMember,
+      ),
+    ).toBe(false);
+  });
+});
