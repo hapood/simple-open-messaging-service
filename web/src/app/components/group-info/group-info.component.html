@@ -25,7 +25,6 @@
           [name]="group()?.name ?? ''"
           [identityId]="$safeNavigationMigration(group()?.id)"
           [account]="$safeNavigationMigration(group()?.account)"
-          [src]="avatarUrl()"
           [federatedDomain]="displayDomain()"
           [profileEvidence]="groupProfileEvidence()"
         ></app-user-avatar>
@@ -134,7 +133,6 @@
                 [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
-                [src]="m.avatar"
                 [profileEvidence]="memberProfileEvidence(m)"
                 [title]="m.name"
               ></app-user-avatar>
@@ -352,7 +350,6 @@
                 [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
-                [src]="m.avatar"
                 [profileEvidence]="memberProfileEvidence(m)"
               ></app-user-avatar>
               <div class="member-info">

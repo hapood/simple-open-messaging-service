@@ -74,7 +74,12 @@ describe('pickStickyAvatarPlacement', () => {
 });
 
 describe('resolveStickyAvatar', () => {
-  function measuredRow(creator: string, top: number, avatar = false) {
+  function measuredRow(
+    creator: string,
+    top: number,
+    avatar = false,
+    account?: string,
+  ) {
     const naturalAvatar = avatar ? document.createElement('div') : undefined;
     const tailAvatar = document.createElement('div');
     return {
@@ -87,7 +92,7 @@ describe('resolveStickyAvatar', () => {
       naturalAvatar,
       tailAvatar,
       name: creator,
-      src: '',
+      account,
     };
   }
 
@@ -113,6 +118,18 @@ describe('resolveStickyAvatar', () => {
     expect(
       resolveStickyAvatar([row], 12, 0, true).view?.identityId,
     ).toBeUndefined();
+  });
+
+  // Regression: an omitted account made the overlay's <app-user-avatar> hash the empty string and
+  // pin every float avatar's fallback background to PALETTE[0], diverging from the natural row avatar.
+  // The head must sit above the sticky line while the group bottom holds below it for the overlay
+  // view (not the tail hand-off) to paint.
+  it('forwards the row account so the float avatar hashes the same fallback color', () => {
+    const head = measuredRow('Alice', -30, true, 'alice');
+    const next = measuredRow('Alice', 20);
+    expect(
+      resolveStickyAvatar([head, next], 12, 0, true).view?.account,
+    ).toBe('alice');
   });
 
   it('keeps the natural avatar at the viewport scroll origin', () => {

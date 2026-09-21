@@ -245,7 +245,7 @@ export function createMsgCbElement(
     tailAvatarRef.setInput('identityId', message.avatarIdentityId);
     tailAvatarRef.setInput('account', message.avatarAccount);
     tailAvatarRef.setInput('federatedDomain', message.avatarDomain);
-    tailAvatarRef.setInput('src', message.avatar);
+    tailAvatarRef.setInput('src', message.snapshotAvatarUrl);
     tailAvatarRef.setInput('profileEvidence', message.profileEvidence);
     tailAvatarRef.changeDetectorRef.detectChanges();
   };
@@ -274,7 +274,8 @@ export function createMsgCbElement(
       host.dataset['messageSide'] = message.isSelf ? 'self' : 'other';
       writeStickyAvatarIdentity(host, {
         name: message.name,
-        src: message.avatar,
+        profileEvidence: message.profileEvidence,
+        snapshotAvatarUrl: message.snapshotAvatarUrl,
         identityId: message.avatarIdentityId,
         account: message.avatarAccount,
         domain: message.avatarDomain,

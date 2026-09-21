@@ -112,7 +112,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     {
       name: string;
       account: string;
-      avatar: string;
       domain: string;
       isSelf: boolean;
       avatarIdentityId?: string;
@@ -135,7 +134,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     {
       name: string;
       account: string;
-      avatar: string;
       domain: string;
       isSelf: boolean;
       avatarIdentityId: string;
@@ -791,7 +789,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       isSelf: p.isSelf,
       isGroupConversation: this.conv.type === 'GROUP',
       name: p.name,
-      avatar: p.avatar,
       ...(p.avatarIdentityId === undefined
         ? {}
         : { avatarIdentityId: p.avatarIdentityId }),
@@ -892,7 +889,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const presentation = {
           name: cached?.name ?? identity.account,
           account: identity.account,
-          avatar: cached?.avatar ?? '',
           avatarIdentityId: JSON.stringify([
             key,
             'profile',
@@ -906,7 +902,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           this.profiles.set(key, {
             ...presentation,
             name: identity.account,
-            avatar: '',
           });
       }),
     );

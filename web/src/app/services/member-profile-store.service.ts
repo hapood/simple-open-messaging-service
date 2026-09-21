@@ -66,10 +66,7 @@ export class MemberProfileRepository {
         member.resolvedProfileRev === member.profileRev
           ? (member.profileName ?? member.user.name)
           : member.account,
-      avatar:
-        member.resolvedProfileRev === member.profileRev
-          ? (member.profileAvatar ?? member.user.avatar)
-          : '',
+      avatar: '',
       bio:
         member.resolvedProfileRev === member.profileRev
           ? member.profileBio
@@ -106,10 +103,7 @@ export class MemberProfileRepository {
         member.resolvedProfileRev === member.profileRev
           ? (member.profileName ?? member.user.name)
           : member.account,
-      avatar:
-        member.resolvedProfileRev === member.profileRev
-          ? (member.profileAvatar ?? member.user.avatar)
-          : '',
+      avatar: '',
       bio:
         member.resolvedProfileRev === member.profileRev
           ? member.profileBio

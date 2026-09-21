@@ -41,6 +41,10 @@ describe('resolved thread profile identity', () => {
       avatarBase64: 'YWJj',
     });
     expect(profile.domain).toBe('local');
+    expect(profile.avatarDigest).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(await (await storage.getProfileAvatarBlob(profile.avatarDigest!))?.text()).toBe('abc');
     expect(wake).toHaveBeenCalledWith({
       event: 'PROFILE_AVAILABLE',
       key: { account: '!group', domain: 'local', namespaceId: 0, rev: 1 },
@@ -50,7 +54,7 @@ describe('resolved thread profile identity', () => {
         group: expect.objectContaining({
           name: 'Created group',
           description: 'Description',
-          avatar: 'data:image/webp;base64,YWJj',
+          avatar: '',
         }),
       }),
     ]);

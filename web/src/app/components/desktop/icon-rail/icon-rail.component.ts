@@ -41,7 +41,6 @@ import { LanguageService } from '../../../services/language.service';
             [loading]="!sessionProfile()"
             [name]="$safeNavigationMigration(sessionProfile()?.name)"
             [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
-            [src]="$safeNavigationMigration(sessionProfile()?.avatar)"
           />
         </button>
         <button

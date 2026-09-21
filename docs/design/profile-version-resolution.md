@@ -187,18 +187,28 @@ The backend SSE success event is a wake-up containing no profile body:
 interface ProfileAvailableEvent extends ProfileKey {}
 ```
 
-On `READY`, the Web Worker or Rust runtime validates and commits the profile to
-the client database before returning the committed snapshot over IPC. On a
-backend `PROFILE_AVAILABLE`, the platform event bridge submits `EXACT` evidence
+On `READY`, the Web Worker or Rust runtime decodes the JSON transport avatar,
+computes its SHA-256 digest, and commits the complete profile before returning
+the committed snapshot over IPC. The profile row contains name, biography, and
+an optional avatar digest; it never contains base64 image bytes. Web stores the
+binary avatar as an IndexedDB Blob keyed by digest. Native stores it as a file
+under the account's private application data directory, also keyed by digest.
+The native file is published before the profile row can reference it. Cache
+schema recreation discards the old inline-avatar data without a compatibility
+read path.
+The Settings action for clearing chat cache rebuilds message storage and clears
+cached chat media only; it preserves profile rows and their avatar blobs/files.
+
+On a backend `PROFILE_AVAILABLE`, the platform event bridge submits `EXACT` evidence
 made from the event key to the Web Worker or Rust database executor. The
 executor retrieves the backend-cached profile, commits it, and only then
 publishes a scoped local wake. A repository whose unresolved
 subscription has the same pending key rereads through IPC; the runtime returns
 the committed client-database row without another federation request.
 
-The database commit and IPC completion are strictly ordered. Components
-subscribe only to repositories; they do not consume backend profile SSE
-directly.
+The binary write, profile commit, and IPC completion are strictly ordered.
+Components subscribe only to repositories; they do not consume backend profile
+SSE directly.
 
 Lost SSE frames do not lose state. A reconnect, runtime restart, or later UI
 demand repeats unresolved evidence. Since the backend snapshot is durable, the
@@ -210,9 +220,11 @@ The Web main thread maintains an access-ordered 1,000-entry LRU of profiles,
 keyed by `ProfileKey`. It is cleared on account/session changes. It caches only
 values read from client storage after a committed runtime write.
 
-`ProfileRepository.watch(evidence)` submits an IPC demand to the runtime, which
-performs the local read first. Live subscribers for identical evidence share
-one entry. A `PENDING` result records only its four-tuple key so an unrelated
+`ProfileRepository.resolve(evidence)` submits an IPC demand to the runtime, which
+performs the local read first. On `READY`, the repository reads the selected
+avatar bytes by digest and returns a Blob with the profile metadata. The avatar
+component creates a short-lived object URL for that Blob. Live subscribers for
+identical evidence share one entry. A `PENDING` result records only its four-tuple key so an unrelated
 profile event cannot retry it; there is no request-ID map or main-thread HTTP
 queue. The entry is removed when it completes, fails, or loses its final UI
 subscriber.
@@ -222,6 +234,46 @@ views subscribe through this repository. A resolving avatar wrapper may feed
 the existing presentational avatar primitive, but no component calls a
 resolution service. Message sources and repositories do not write profile
 bytes or keep independent resolved-profile maps.
+
+### Self profile publication
+
+The self-profile endpoint supplies account metadata and the selected revision.
+`UserService` resolves that revision through `ProfileRepository.resolve(EXACT)`
+before publishing and persisting the self view. Avatar content comes from the
+runtime result, including explicit absence. Endpoint avatar URLs must never be
+inserted into the immutable four-part profile cache.
+
+The old main-thread profile write APIs and native `native_db_put_profile`
+command are removed. Runtime materialization owns profile writes. Self identity
+is persisted separately for membership projection, and no URL-to-byte cache
+compatibility or old-data conversion is performed.
+
+### Conversation display updates
+
+Conversation profiles have two independent delivery paths. When a conversation
+is loaded or its selected profile reference changes, `ThreadRepository` submits
+the evidence through `WebdbService.resolveProfileEvidence`. The platform runtime
+returns a local cache hit immediately, or resolves the evidence with the backend.
+A `READY` response updates the matching conversation display; `PENDING` leaves
+completion to the local worker notification.
+
+The repository also handles `profileWake$` availability events. It matches all
+four fields (`namespaceId`, `account`, `domain`, `rev`) against the current
+conversation reference, rereads through the same runtime entry point, and updates
+the displayed name, avatar, and biography. An earlier cache hit does not disable
+this handler. No additional SSE subscription, completion event type, or
+"already resolved" flag is needed. Delayed responses are applied only to the
+matching current reference and account session.
+
+Conversation rows can contain empty display fields even when their selected
+profile already exists in the profile store. Reading the profile on conversation
+load handles this ordering without requiring another backend notification or
+copying profile fields into every structural projection writer.
+
+A resolved profile with a null avatar digest explicitly selects no avatar. Avatar
+components must render their generated fallback instead of falling back to an
+older input image. This rule applies both to immediate query results and to
+pending resolutions completed by a local wake.
 
 ## 8. Required verification
 

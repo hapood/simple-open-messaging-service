@@ -135,7 +135,7 @@ describe('WebdbService native SQLite routing', () => {
     const profile: ProfileSnapshot = {
       name: 'Alice',
       account: 'alice',
-      avatar: '/a.webp',
+      avatarDigest: null,
       bio: '',
       domain: 'local',
       namespaceId: 0,
@@ -196,34 +196,16 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('converts avatar blobs at the IPC boundary and reconstructs a Blob on read', async () => {
-    await service.putAvatar({
-      identity: 'u8',
-      path: '/a.webp',
-      blob: new Blob(['avatar'], { type: 'image/webp' }),
-      lastRender: 10,
-    });
-    const put = calls.find((call) => call.cmd === 'native_db_put_avatar');
-    expect(put?.args).toEqual(
-      expect.objectContaining({
-        userId: 42,
-        identity: 'u8',
-        path: '/a.webp',
-        mime: 'image/webp',
-        data: Array.from(new TextEncoder().encode('avatar')),
-      }),
-    );
-
-    responses.set('native_db_get_avatar', {
-      identity: 'u8',
-      path: '/a.webp',
-      mime: 'image/webp',
-      data: Array.from(new TextEncoder().encode('cached')),
-      lastRender: 11,
-    });
-    const avatar = await service.getAvatar('u8');
-    expect(avatar?.blob.type).toBe('image/webp');
-    expect(await avatar?.blob.text()).toBe('cached');
+  it('reads a digest-selected native file as a Blob', async () => {
+    const digest = 'a'.repeat(64);
+    responses.set('native_db_get_profile_avatar', Array.from(new TextEncoder().encode('cached')));
+    const blob = await service.getProfileAvatarBlob(digest);
+    expect(blob?.type).toBe('image/webp');
+    expect(await blob?.text()).toBe('cached');
+    expect(calls).toContainEqual(expect.objectContaining({
+      cmd: 'native_db_get_profile_avatar',
+      args: expect.objectContaining({ userId: 42, digest }),
+    }));
   });
 
   it('routes message cache maintenance, point reads, newest reads and thread cleanup to SQLite', async () => {

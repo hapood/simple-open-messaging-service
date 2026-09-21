@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub(crate) mod avatars;
+pub(crate) mod profile_avatars;
 pub(crate) mod attention;
 pub(crate) mod client_state;
 pub(crate) mod contacts;
@@ -22,7 +22,7 @@ use messages::{
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 24;
+const CACHE_SCHEMA_VERSION: i64 = 25;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -106,7 +106,6 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "relationship_intents",
         "sync_state",
         "notification_global_state",
-        "avatars",
         "messages",
         "message_ranges",
     ] {
@@ -268,15 +267,6 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           cursor_seq INTEGER,
           updated_at INTEGER NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS avatars (
-          user_id INTEGER NOT NULL,
-          identity TEXT NOT NULL,
-          source_path TEXT NOT NULL,
-          mime TEXT NOT NULL,
-          data BLOB NOT NULL,
-          last_render INTEGER NOT NULL,
-          PRIMARY KEY (user_id, identity)
-        );
         CREATE TABLE IF NOT EXISTS messages (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,
@@ -354,7 +344,8 @@ pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
         drop_cache_schema(&tx)?;
         create_cache_schema(&tx)?;
         tx.commit()
-            .map_err(|e| format!("commit native cache recreation: {e}"))
+            .map_err(|e| format!("commit native cache recreation: {e}"))?;
+        profile_avatars::clear()
     })
     .await
     .map_err(|e| format!("join native cache initialization: {e}"))?
@@ -495,7 +486,6 @@ pub(crate) async fn native_db_clear_user(
             "relationship_requests",
             "relationship_intents",
             "sync_state",
-            "avatars",
             "messages",
             "message_ranges",
         ] {
@@ -505,7 +495,8 @@ pub(crate) async fn native_db_clear_user(
             )
             .map_err(|e| format!("clear {table}: {e}"))?;
         }
-        tx.commit().map_err(|e| format!("commit user clear: {e}"))
+        tx.commit().map_err(|e| format!("commit user clear: {e}"))?;
+        profile_avatars::clear_user(user_id)
     })
     .await
     .map_err(|e| format!("join user clear: {e}"))?
@@ -526,14 +517,13 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                  DELETE FROM relationship_requests;
                  DELETE FROM relationship_intents;
                  DELETE FROM sync_state;
-                 DELETE FROM avatars;
                  DELETE FROM messages;
                  DELETE FROM message_ranges;
                  VACUUM;",
             )
             .map_err(|e| format!("clear native db: {e}"))?;
         }
-        Ok(())
+        profile_avatars::clear()
     })
     .await
     .map_err(|e| format!("join native db clear: {e}"))?

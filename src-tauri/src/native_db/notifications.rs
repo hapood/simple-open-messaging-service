@@ -109,6 +109,7 @@ pub(crate) async fn synchronize(
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use super::super::attention::ThreadFeedSnapshot;
     use super::*;
 
@@ -120,8 +121,7 @@ mod tests {
           CREATE TABLE messages(user_id INTEGER,thread_id INTEGER,seq INTEGER,payload_json TEXT);
           CREATE TABLE members(user_id INTEGER,thread_id INTEGER,member_account TEXT,member_domain TEXT,namespace_id INTEGER,profile_rev INTEGER);
           CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,status TEXT);
-          CREATE TABLE profiles(user_id INTEGER,account TEXT,domain TEXT,namespace_id INTEGER,profile_rev INTEGER,payload_json TEXT);
-          CREATE TABLE avatars(user_id INTEGER,identity TEXT,source_path TEXT,mime TEXT,data BLOB,last_render INTEGER);").unwrap();
+          CREATE TABLE profiles(user_id INTEGER,account TEXT,domain TEXT,namespace_id INTEGER,profile_rev INTEGER,payload_json TEXT);").unwrap();
         conn.execute(
             "INSERT INTO sync_state VALUES(1,'selfProfile',?1)",
             [r#"{"account":"me"}"#],
@@ -201,15 +201,16 @@ mod tests {
             [r#"{"peerUser":{"account":"peer","domain":"local","namespaceId":0,"profileRev":1}}"#],
         )
         .unwrap();
+        let bytes = vec![0_u8, 128, 255];
+        let directory = tempfile::tempdir().unwrap();
+        super::super::location::initialize(directory.path()).unwrap();
+        let digest = super::super::profile_avatars::save(
+            1,
+            Some(&base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        ).unwrap().unwrap();
         conn.execute(
             "INSERT INTO profiles VALUES(1,'peer','local',0,1,?1)",
-            [r#"{"name":"Peer","avatar":"/avatar"}"#],
-        )
-        .unwrap();
-        let bytes = vec![0_u8, 128, 255];
-        conn.execute(
-            "INSERT INTO avatars VALUES(1,'peer','/avatar','image/png',?1,0)",
-            [&bytes],
+            [serde_json::json!({"name":"Peer","avatarDigest":digest}).to_string()],
         )
         .unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
@@ -221,7 +222,7 @@ mod tests {
             metadata["threads"][0]["previews"][0]["status"],
             "USER_RETRACTION"
         );
-        assert!(!batch.metadata.contains("image/png"));
+        assert!(!batch.metadata.contains(&digest));
         save(&conn, &state(5));
         let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
@@ -342,18 +343,17 @@ fn assemble(
                 .unwrap_or_else(|| format!("{account}@{domain}"));
             let mut value = preview.clone();
             value["senderName"] = Value::String(name);
-            if let Some(path) = profile
+            if let Some(digest) = profile
                 .as_ref()
-                .and_then(|value| value["avatar"].as_str())
-                .filter(|path| !path.is_empty())
+                .and_then(|value| value["avatarDigest"].as_str())
             {
-                let index = match avatar_indices.get(path) {
+                let index = match avatar_indices.get(digest) {
                     Some(index) => Some(*index),
-                    None => match super::avatars::read_avatar_by_source(&tx, user_id, path)? {
-                        Some(avatar) => {
+                    None => match super::profile_avatars::read(user_id, digest)? {
+                        Some(bytes) => {
                             let index = avatars.len();
-                            avatars.push(avatar.data);
-                            avatar_indices.insert(path.to_owned(), index);
+                            avatars.push(bytes);
+                            avatar_indices.insert(digest.to_owned(), index);
                             Some(index)
                         }
                         None => None,

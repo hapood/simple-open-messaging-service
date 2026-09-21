@@ -28,7 +28,8 @@ import {
         [identityId]="other().identityId"
         [account]="other().account"
         [federatedDomain]="other().domain"
-        [src]="other().src"
+        [profileEvidence]="other().profileEvidence"
+        [src]="other().snapshotAvatarUrl"
       />
     </div>
     <div
@@ -41,7 +42,8 @@ import {
         [name]="self().name"
         [identityId]="self().identityId"
         [federatedDomain]="self().domain"
-        [src]="self().src"
+        [profileEvidence]="self().profileEvidence"
+        [src]="self().snapshotAvatarUrl"
       />
     </div>
   `,
@@ -53,13 +55,11 @@ export class StickyAvatarOverlayComponent {
   readonly avatar = input<StickyAvatarView | null>(null);
   readonly other = signal<StickyAvatarView>({
     name: '',
-    src: '',
     side: 'other',
     top: 0,
   });
   readonly self = signal<StickyAvatarView>({
     name: '',
-    src: '',
     side: 'self',
     top: 0,
   });

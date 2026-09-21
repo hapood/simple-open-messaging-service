@@ -34,6 +34,7 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FocusedInputRevealDirective } from '../../directives/focused-input-reveal.directive';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
+import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.util';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -82,7 +83,7 @@ import { FederationNamespaceService } from '../../services/federation-namespace.
               [name]="peer()?.name ?? ''"
               [identityId]="$safeNavigationMigration(peer()?.id)"
               [account]="$safeNavigationMigration(peer()?.account)"
-              [src]="$safeNavigationMigration(peer()?.avatar)"
+              [profileEvidence]="peerProfileEvidence()"
               [federatedDomain]="peerDomain()"
             />
           </span>
@@ -451,6 +452,10 @@ export class PeerProfileComponent {
     return id !== undefined
       ? this.convList.items().find((t) => t.threadId === id)
       : undefined;
+  });
+  readonly peerProfileEvidence = computed(() => {
+    const thread = this.userMsgTrd();
+    return thread ? conversationAvatarEvidence(thread) : undefined;
   });
   readonly peer = computed(() => this.userMsgTrd()?.peerUser);
   /** Display label for the peer — the nickname, with federation indicated on the avatar. */

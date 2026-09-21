@@ -21,7 +21,6 @@ export interface FriendRequestCardModel {
   id: string;
   peerId?: number | string;
   name?: string;
-  avatar?: string;
   account?: string;
   domain?: string;
   reqMessage?: string;
@@ -47,7 +46,7 @@ export interface FriendRequestCardModel {
 })
 export class FriendRequestCardComponent {
   readonly RequestProjectionStatus = RequestProjectionStatus;
-  readonly request = input.required<FriendRequestCardModel>();
+  readonly requestItem = input.required<FriendRequestCardModel>();
   readonly direction = input.required<'INCOMING' | 'OUTGOING'>();
   readonly relativeDate = input.required<string>();
   readonly actionPending = input(false);
@@ -58,7 +57,7 @@ export class FriendRequestCardComponent {
   readonly UserAvatarType = UserAvatarType;
 
   profileEvidence(): ProfileSelector | undefined {
-    const request = this.request();
+    const request = this.requestItem();
     return request.account && request.domain && request.profileRev
       ? {
           type: 'EXACT',

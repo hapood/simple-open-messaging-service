@@ -534,6 +534,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       profileRev: 1,
       name: 'Cached team',
       avatar: '',
+      avatarDigest: null,
       bio: 'About team',
     };
     vi.mocked(webdb.resolveProfileEvidence).mockResolvedValue({
@@ -571,6 +572,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         profileRev: 1,
         name: 'Team',
         avatar: '',
+        avatarDigest: null,
         bio: '',
       };
       const key = {

@@ -249,7 +249,7 @@
           } @else {
             <ng-template #incomingCard let-req>
               <app-friend-request-card
-                [request]="req"
+                [requestItem]="req"
                 [direction]="req.direction"
                 [relativeDate]="relativeDate(req.date)"
                 [actionPending]="isInviteActionPending(req.id)"
@@ -301,7 +301,7 @@
           } @else {
             <ng-template #outgoingCard let-req>
               <app-friend-request-card
-                [request]="req"
+                [requestItem]="req"
                 [direction]="req.direction"
                 [relativeDate]="relativeDate(req.date)"
                 [actionPending]="isInviteActionPending(req.id)"
@@ -345,7 +345,6 @@
             [name]="req.name ?? ''"
             [identityId]="req.peerId"
             [account]="req.account"
-            [src]="req.avatar"
             [federatedDomain]="
               req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
             "

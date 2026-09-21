@@ -50,7 +50,7 @@ export class NativeMediaCacheService {
       await tauriInvoke<NativeMediaCacheInfo>('clear_media_cache'),
     );
     // Android WebView may retain a second, non-authoritative decoded/HTTP cache. Clear it too so the
-    // user-facing action means "clear everything currently reusable on this device".
+    // media-cache action also clears the WebView's decoded media; durable profile avatar files stay intact.
     if (isAndroidNative()) clearNativeMediaCache();
   }
 }

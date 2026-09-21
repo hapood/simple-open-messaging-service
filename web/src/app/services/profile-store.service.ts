@@ -5,8 +5,8 @@ import type { ProfileSelector as ProfileEvidence } from '../../../../shared/prof
 import {
   WebdbService,
   type ProfileWake,
-  type ProfileSnapshot,
   type ProfileSelector,
+  type ProfileSnapshot,
 } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 
@@ -17,7 +17,8 @@ export interface ResolvedProfile {
   rev: number;
   name: string;
   bio: string;
-  avatarBase64: string | null;
+  avatarDigest: string | null;
+  avatarBlob: Blob | null;
 }
 
 interface ResolutionEntry {
@@ -53,6 +54,11 @@ export class ProfileRepository {
         this.evidenceKeys.clear();
         this.wakes.clear();
       });
+  }
+
+  /** Read only an already committed profile for message text presentation. */
+  getProfile(selector: ProfileSelector): Promise<ProfileSnapshot | undefined> {
+    return this.webdb.getProfile(selector);
   }
 
   /** Resolve one evidence through the platform database executor. The main thread performs no HTTP. */
@@ -111,7 +117,7 @@ export class ProfileRepository {
     entry.rerun = false;
     void this.webdb
       .resolveProfileEvidence(entry.selector)
-      .then((result) => {
+      .then(async (result) => {
         if (result.status === 'PENDING') {
           entry.state = { kind: 'PENDING', key: profileKey(result.key) };
           const wake = this.wakes.get(entry.state.key);
@@ -119,6 +125,11 @@ export class ProfileRepository {
           return;
         }
         const snapshot = result.profile;
+        const avatarBlob = snapshot.avatarDigest
+          ? await this.webdb.getProfileAvatarBlob(snapshot.avatarDigest)
+          : null;
+        if (snapshot.avatarDigest && !avatarBlob)
+          throw new Error('resolved profile avatar bytes are missing');
         const profile: ResolvedProfile = {
           namespaceId: snapshot.namespaceId,
           account: snapshot.account,
@@ -126,9 +137,8 @@ export class ProfileRepository {
           rev: snapshot.profileRev,
           name: snapshot.name,
           bio: snapshot.bio,
-          avatarBase64: snapshot.avatar.startsWith('data:image/webp;base64,')
-            ? snapshot.avatar.slice('data:image/webp;base64,'.length)
-            : null,
+          avatarDigest: snapshot.avatarDigest,
+          avatarBlob: avatarBlob ?? null,
         };
         const key = JSON.stringify([
           profile.namespaceId,
@@ -186,15 +196,6 @@ export class ProfileRepository {
     this.run(entry);
   }
 
-  async getProfile(
-    selector: ProfileSelector,
-  ): Promise<ProfileSnapshot | undefined> {
-    try {
-      return await this.webdb.getProfile(selector);
-    } catch {
-      return undefined;
-    }
-  }
 }
 
 function normalizeEvidence(selector: ProfileEvidence): ProfileEvidence {

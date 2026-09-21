@@ -1,4 +1,5 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
+import type { ProfileSelector } from '../../../../shared/profile-selector';
 
 const STICKY_AVATAR_TOP_GAP_PX = 12;
 const STICKY_AVATAR_SIZE_PX = 40;
@@ -23,7 +24,8 @@ interface StickyAvatarPlacement {
 
 export interface StickyAvatarView {
   readonly name: string;
-  readonly src: string;
+  readonly profileEvidence?: ProfileSelector;
+  readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
@@ -33,7 +35,8 @@ export interface StickyAvatarView {
 
 export interface StickyAvatarIdentity {
   readonly name: string;
-  readonly src?: string;
+  readonly profileEvidence?: ProfileSelector;
+  readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
@@ -41,7 +44,8 @@ export interface StickyAvatarIdentity {
 
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly name: string;
-  readonly src: string;
+  readonly profileEvidence?: ProfileSelector;
+  readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
@@ -61,7 +65,14 @@ export function writeStickyAvatarIdentity(
   avatar: StickyAvatarIdentity,
 ): void {
   host.dataset['messageAvatarName'] = avatar.name;
-  host.dataset['messageAvatarSrc'] = avatar.src ?? '';
+  if (avatar.profileEvidence)
+    host.dataset['messageAvatarEvidence'] = JSON.stringify(
+      avatar.profileEvidence,
+    );
+  else delete host.dataset['messageAvatarEvidence'];
+  if (avatar.snapshotAvatarUrl)
+    host.dataset['messageSnapshotAvatarUrl'] = avatar.snapshotAvatarUrl;
+  else delete host.dataset['messageSnapshotAvatarUrl'];
   host.dataset['messageAvatarAccount'] = avatar.account ?? '';
   host.dataset['messageAvatarDomain'] = avatar.domain ?? '';
   if (avatar.identityId == null) {
@@ -164,8 +175,12 @@ export function resolveStickyAvatar(
     hiddenHead: naturalHead,
     view: {
       name: row.name,
-      src: row.src,
+      profileEvidence: row.profileEvidence,
+      snapshotAvatarUrl: row.snapshotAvatarUrl,
       identityId: row.identityId,
+      // The overlay's <app-user-avatar> needs the same account+domain identity key as the natural row
+      // avatar: an omitted account hashes the empty string and pins every float avatar to PALETTE[0].
+      account: row.account,
       domain: row.domain,
       side: placement.side,
       // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The

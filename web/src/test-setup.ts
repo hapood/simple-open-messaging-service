@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { Blob as NodeBlob, File as NodeFile } from 'node:buffer';
 import { FormData as UndiciFormData } from 'undici';
+import { webcrypto } from 'node:crypto';
 
 class TestResizeObserver implements ResizeObserver {
   disconnect(): void {}
@@ -33,6 +34,10 @@ Object.defineProperty(globalThis, 'File', {
   configurable: true,
   writable: true,
   value: NodeFile,
+});
+Object.defineProperty(globalThis, 'crypto', {
+  configurable: true,
+  value: webcrypto,
 });
 Object.defineProperty(globalThis, 'FormData', {
   configurable: true,

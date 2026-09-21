@@ -31,7 +31,6 @@ import {
   conversationAvatarIdentityId,
   conversationAvatarAccount,
   conversationAvatarEvidence,
-  conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
@@ -216,10 +215,6 @@ export class ThreadListComponent implements OnInit {
 
   avatarAccount(t: ConversationItem): string {
     return conversationAvatarAccount(t);
-  }
-
-  avatarSrc(t: ConversationItem): string | null | undefined {
-    return conversationAvatarSrc(t);
   }
 
   readonly avatarEvidence = conversationAvatarEvidence;

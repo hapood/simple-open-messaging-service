@@ -5,12 +5,10 @@ import {
   signal,
   effect,
   inject,
-  DestroyRef,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { UserAvatarType } from './model';
 import { assetUrl } from '../../services/runtime';
-import { AvatarRepository } from '../../services/avatar-cache.service';
 import { UserService } from '../../services/user.service';
 import {
   ProfileRepository,
@@ -36,10 +34,8 @@ import type { ProfileSelector } from '../../../../../shared/profile-selector';
  * and drawers), independent of the parent's size or clipping — zero layout changes at call sites (nav-drawer /
  * icon-rail containers must drop the forced-circular overflow/border-radius).
  *
- * Avatar bytes are read ONLY from the DB layer ({@link AvatarRepository} → IndexedDB), keyed by stable
- * identity (`identityId` + `type`), never by URL. On a cache miss the repository fetches + caches; on a
- * hit the bytes come straight from IDB. A local preview (`blob:`/`data:`/absolute `src`) passes through
- * unchanged (new-group / edit-profile in-progress uploads).
+ * Resolved profiles provide a binary avatar through the profile repository. The component
+ * owns the short-lived object URL. Local previews without profile evidence pass through.
  */
 const PALETTE = [
   '#E53935',
@@ -78,7 +74,6 @@ function firstGrapheme(value: string): string {
   styleUrl: './user-avatar.component.scss',
 })
 export class UserAvatarComponent {
-  private readonly avatarRepo = inject(AvatarRepository);
   private readonly userService = inject(UserService);
   private readonly profiles = inject(ProfileRepository);
 
@@ -87,21 +82,36 @@ export class UserAvatarComponent {
   /** Stable account identifier used with the home domain for the generated fallback color. Display
    * names and database ids are deliberately excluded because both can change across time/localization. */
   readonly account = input<string | undefined | null>(undefined);
-  /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
-   *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
+  /** Optional unresolved image URL or local preview. Empty selects the generated fallback. */
   readonly src = input<string | undefined | null>(undefined);
   /** Identity home domain. `local` means local; a foreign domain renders the shared top-right globe marker. */
   readonly federatedDomain = input<string | undefined | null>(undefined);
-  /** Stable identity of the user/group this avatar depicts — the IDB cache key (combined with {@link
-   *  type}: GROUP → `g<id>`, else `u<id>`). Usually the numeric id; for a group known only by its
-   *  `!account` (an invite card) the account string is accepted too. Required for a server-path avatar;
-   *  unused for local previews. */
+  /** Stable identity supplied by callers for avatar context. */
   readonly identityId = input<number | string | undefined | null>(undefined);
   /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
   readonly loading = input(false);
   readonly profileEvidence = input<ProfileSelector | undefined>(undefined);
+  private readonly effectiveProfileEvidence = computed(() => {
+    const explicit = this.profileEvidence();
+    if (explicit) return explicit;
+    const preview = this.src();
+    if (
+      this.type() !== UserAvatarType.SELF ||
+      (preview && !preview.startsWith('/'))
+    )
+      return undefined;
+    const self = this.userService.sessionProfile();
+    return self && (self.profileRev ?? 0) > 0
+      ? {
+          type: 'EXACT' as const,
+          account: self.account,
+          domain: self.domain,
+          rev: self.profileRev,
+        }
+      : undefined;
+  });
   readonly UserAvatarType = UserAvatarType;
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
 
@@ -114,7 +124,7 @@ export class UserAvatarComponent {
   /** Message cards deliberately carry only render-ready message data, so their SELF avatar call sites do
    *  not repeat the session profile on every row. Resolve omitted SELF inputs from the cached session
    *  profile here; explicit inputs still win for profile editors/previews. This also gives every message
-   *  card the same `u<selfId>` IndexedDB lookup while offline. */
+   *  card the same source reset when the session identity changes. */
   private readonly effectiveIdentityId = computed(
     () =>
       this.identityId() ??
@@ -124,16 +134,8 @@ export class UserAvatarComponent {
   );
   private readonly effectiveSrc = computed(() => {
     const profile = this.resolvedProfile();
-    if (profile)
-      return profile.avatarBase64
-        ? `data:image/webp;base64,${profile.avatarBase64}`
-        : '';
-    return (
-      this.src() ??
-      (this.type() === UserAvatarType.SELF
-        ? this.userService.sessionProfile()?.avatar
-        : undefined)
-    );
+    if (profile) return '';
+    return this.src();
   });
   private readonly effectiveName = computed(
     () =>
@@ -147,25 +149,32 @@ export class UserAvatarComponent {
   /** Image load failure (corrupt/404) → fall back to initials. Reset on src/identity change to retry the new image. */
   readonly imgFailed = signal(false);
 
-  /** The DB-backed blob URL for a server avatar (empty until resolved, or for local-preview/no-avatar). */
-  private readonly objectUrl = signal('');
-  /** Tracks the currently-live object URL so it can be revoked on change + destroy (no leak). */
-  private currentObjectUrl = '';
+  private readonly profileObjectUrl = signal('');
 
   /**
-   * The `<img>` src. A local preview (`blob:`/`data:`/absolute — does not start with `/`) passes through
-   * `assetUrl` directly; a server avatar uses the DB-resolved object URL; otherwise empty (initial-letter
-   * fallback). This is the single chokepoint — every [src] caller routes here.
+   * The `<img>` src. Profile evidence selects only committed bytes; previews without
+   * profile evidence use their supplied source.
    */
   readonly imgSrc = computed(() => {
+    if (this.effectiveProfileEvidence())
+      return this.resolvedProfile()?.avatarBlob ? this.profileObjectUrl() : '';
     const s = this.effectiveSrc();
-    if (s && !s.startsWith('/')) return assetUrl(s); // local preview pass-through
-    return this.objectUrl(); // DB blob URL, or '' → initial-letter fallback
+    return s ? assetUrl(s) : '';
   });
 
   constructor() {
     effect((onCleanup) => {
-      const evidence = this.profileEvidence();
+      const blob = this.resolvedProfile()?.avatarBlob;
+      if (!blob) {
+        this.profileObjectUrl.set('');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      this.profileObjectUrl.set(url);
+      onCleanup(() => URL.revokeObjectURL(url));
+    });
+    effect((onCleanup) => {
+      const evidence = this.effectiveProfileEvidence();
       this.resolvedProfile.set(null);
       if (!evidence) return;
       const subscription = this.profiles.resolve(evidence).subscribe({
@@ -180,46 +189,7 @@ export class UserAvatarComponent {
       this.effectiveIdentityId();
       this.imgFailed.set(false);
     });
-
-    // Resolve a server avatar from IDB by identity; mint + revoke object URLs across changes. Reads are
-    // async (IDB); a hit paints within a microtask. A stale resolution (identity/src moved on) is dropped.
-    effect(() => {
-      const identity = this.identityKey();
-      const src = this.effectiveSrc();
-      // Track refreshes so a refreshed blob (overwritten by ProfileRepository→refresh) re-resolves —
-      // signal-driven freshness; the component never compares URLs.
-      const tick = identity ? this.avatarRepo.refreshTick(identity) : 0;
-      if (!identity || !src || !src.startsWith('/')) {
-        this.clearObjectUrl();
-        return;
-      }
-      void this.avatarRepo
-        .getBlob(identity, src)
-        .then((blob) => {
-          // Drop if the avatar moved on OR was refreshed since this read started.
-          if (
-            this.identityKey() !== identity ||
-            this.effectiveSrc() !== src ||
-            this.avatarRepo.refreshTick(identity) !== tick
-          )
-            return;
-          if (blob) this.setObjectUrl(URL.createObjectURL(blob));
-          else this.clearObjectUrl();
-        })
-        // getBlob swallows IDB/fetch errors internally, but guard the chain so a reject — e.g. an
-        // in-flight fetch aborted by a webview reload/handoff — never surfaces as an unhandled rejection.
-        .catch(() => {});
-    });
-
-    inject(DestroyRef).onDestroy(() => this.clearObjectUrl());
   }
-
-  /** The DB cache key derived from {@link type} + {@link identityId} (GROUP → `g<id>`, else `u<id>`). */
-  private identityKey = computed(() => {
-    const id = this.effectiveIdentityId();
-    if (id == null) return undefined;
-    return this.type() === UserAvatarType.GROUP ? `g${id}` : `u${id}`;
-  });
 
   /** Whether to render the real image (valid src present and not failed). */
   readonly showImage = computed(() => !!this.imgSrc() && !this.imgFailed());
@@ -283,18 +253,6 @@ export class UserAvatarComponent {
       to: PALETTE[(a + 5) % PALETTE.length],
     };
   });
-
-  private setObjectUrl(url: string): void {
-    if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
-    this.currentObjectUrl = url;
-    this.objectUrl.set(url);
-  }
-
-  private clearObjectUrl(): void {
-    if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
-    this.currentObjectUrl = '';
-    this.objectUrl.set('');
-  }
 }
 
 export { UserAvatarType } from './model';

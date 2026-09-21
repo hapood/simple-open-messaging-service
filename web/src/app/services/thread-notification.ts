@@ -1,25 +1,20 @@
 import type { ConversationItem } from './model';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import type { NotificationDescriptor } from './notification-descriptor.model';
-import { cachedAvatarDataUrl } from './cached-avatar';
-import {
-  conversationAvatarIdentityId,
-  conversationAvatarSrc,
-} from '../components/user-avatar/conversation-avatar.util';
+import type { WebdbStorage } from './webdb-storage';
+import { avatarBlobDataUrl } from './profile-avatar-bytes';
 
 export async function threadNotificationIcon(
-  storage: Parameters<typeof cachedAvatarDataUrl>[0],
+  storage: Pick<WebdbStorage, 'getProfile' | 'getProfileAvatarBlob'>,
   item: ConversationItem,
 ): Promise<string> {
-  const id = conversationAvatarIdentityId(item);
-  const identity = `${item.type === 'GROUP' ? 'g' : 'u'}${id}`;
-  return (
-    (await cachedAvatarDataUrl(
-      storage,
-      identity,
-      conversationAvatarSrc(item) ?? '',
-    )) ?? '/icons/icon-192.png'
-  );
+  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
+  if (subject.profileRev < 1) return '/icons/icon-192.png';
+  const profile = await storage.getProfile(subject);
+  const blob = profile?.avatarDigest
+    ? await storage.getProfileAvatarBlob(profile.avatarDigest)
+    : undefined;
+  return blob ? avatarBlobDataUrl(blob) : '/icons/icon-192.png';
 }
 
 /** Published only after the existing local unread projection succeeds. */

@@ -106,7 +106,10 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           naturalAvatar: naturalAvatar ?? undefined,
           tailAvatar: tailAvatar ?? undefined,
           name: host.dataset['messageAvatarName'] ?? '',
-          src: host.dataset['messageAvatarSrc'] ?? '',
+          profileEvidence: host.dataset['messageAvatarEvidence']
+            ? JSON.parse(host.dataset['messageAvatarEvidence'])
+            : undefined,
+          snapshotAvatarUrl: host.dataset['messageSnapshotAvatarUrl'],
           account: host.dataset['messageAvatarAccount'] || undefined,
           identityId: identity,
           domain: host.dataset['messageAvatarDomain'] || undefined,
@@ -257,8 +260,11 @@ function sameStickyAvatar(
     (a !== null &&
       b !== null &&
       a.name === b.name &&
-      a.src === b.src &&
+      JSON.stringify(a.profileEvidence) === JSON.stringify(b.profileEvidence) &&
+      a.snapshotAvatarUrl === b.snapshotAvatarUrl &&
       a.identityId === b.identityId &&
+      a.account === b.account &&
+      a.domain === b.domain &&
       a.side === b.side &&
       a.top === b.top)
   );

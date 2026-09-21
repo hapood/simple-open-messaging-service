@@ -66,11 +66,10 @@ fn commit_resolved_profile(
         .and_then(Value::as_str)
         .ok_or("resolved profile has no name")?;
     let bio = profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?;
-    let avatar = profile
-        .get("avatarBase64")
-        .and_then(Value::as_str)
-        .map(|value| format!("data:image/webp;base64,{value}"))
-        .unwrap_or_default();
+    let avatar_digest = super::profile_avatars::save(
+        user_id,
+        profile.get("avatarBase64").and_then(Value::as_str),
+    )?;
     super::contacts::register_namespace(conn, user_id, namespace_id, domain)?;
     let snapshot = serde_json::json!({
         "account": account,
@@ -78,7 +77,7 @@ fn commit_resolved_profile(
         "namespaceId": namespace_id,
         "profileRev": profile_rev,
         "name": name,
-        "avatar": avatar,
+        "avatarDigest": avatar_digest,
         "bio": bio,
     });
     super::contacts::write_profile(conn, user_id, &snapshot)?;
@@ -386,11 +385,10 @@ fn commit_group_meta_profile(
     if !current {
         return Ok(());
     }
-    let avatar = profile
-        .get("avatarBase64")
-        .and_then(Value::as_str)
-        .map(|value| format!("data:image/webp;base64,{value}"))
-        .unwrap_or_default();
+    let avatar_digest = super::profile_avatars::save(
+        user_id,
+        profile.get("avatarBase64").and_then(Value::as_str),
+    )?;
     super::contacts::register_namespace(conn, user_id, reference.namespace_id, &reference.domain)?;
     super::contacts::write_profile(
         conn,
@@ -401,7 +399,7 @@ fn commit_group_meta_profile(
             "namespaceId": reference.namespace_id,
             "profileRev": actual_rev,
             "name": profile.get("name").and_then(Value::as_str).ok_or("resolved profile has no name")?,
-            "avatar": avatar,
+            "avatarDigest": avatar_digest,
             "bio": profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?,
         }),
     )?;
@@ -417,7 +415,7 @@ fn commit_group_meta_profile(
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or("resolved profile has no name")?,
-                avatar,
+                "",
                 profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?
             ],
         )

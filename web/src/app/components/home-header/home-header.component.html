@@ -10,7 +10,6 @@
         [loading]="!sessionProfile()"
         [name]="$safeNavigationMigration(sessionProfile()?.name)"
         [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
-        [src]="$safeNavigationMigration(sessionProfile()?.avatar)"
       />
     </span>
   </button>

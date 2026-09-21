@@ -91,7 +91,7 @@ describe('UserService profile refresh', () => {
           useValue: {
             resolve: vi
               .fn()
-              .mockReturnValue(of({ name: 'A', bio: '', avatarBase64: null })),
+              .mockReturnValue(of({ name: 'A', bio: '', avatarDigest: null, avatarBlob: null })),
           },
         },
       ],
@@ -127,7 +127,8 @@ describe('UserService profile refresh', () => {
         rev: 2,
         name: 'B',
         bio: '',
-        avatarBase64: null,
+        avatarDigest: null,
+        avatarBlob: null,
       }),
     );
     // Second refresh — sessionProfile is already set. The bug would short-circuit here (no request,
@@ -139,7 +140,7 @@ describe('UserService profile refresh', () => {
     await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('B'));
   });
 
-  it('publishes self avatar bytes from the runtime instead of caching the endpoint URL', async () => {
+  it('uses runtime avatar presence without caching base64 in the self profile', async () => {
     const result = firstValueFrom(svc.ensureProfile());
     vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
       of({
@@ -149,7 +150,8 @@ describe('UserService profile refresh', () => {
         rev: 2,
         name: 'Resolved Alice',
         bio: 'Resolved bio',
-        avatarBase64: 'YQ==',
+        avatarDigest: 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+        avatarBlob: new Blob(['a'], { type: 'image/webp' }),
       }),
     );
     (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
@@ -157,7 +159,7 @@ describe('UserService profile refresh', () => {
     );
     expect(await result).toMatchObject({
       name: 'Resolved Alice',
-      avatar: 'data:image/webp;base64,YQ==',
+      avatar: '',
     });
     expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
       type: 'EXACT',
@@ -167,7 +169,7 @@ describe('UserService profile refresh', () => {
     });
     expect(TestBed.inject(WebdbService).putMeta).toHaveBeenCalledWith(
       'selfProfile',
-      expect.objectContaining({ avatar: 'data:image/webp;base64,YQ==' }),
+      expect.objectContaining({ avatar: '' }),
     );
   });
 
@@ -295,7 +297,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
           useValue: {
             resolve: vi
               .fn()
-              .mockReturnValue(of({ name: 'A', bio: '', avatarBase64: null })),
+              .mockReturnValue(of({ name: 'A', bio: '', avatarDigest: null, avatarBlob: null })),
           },
         },
       ],

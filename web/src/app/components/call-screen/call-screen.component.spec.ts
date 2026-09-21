@@ -3,7 +3,6 @@ import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { AvatarRepository } from '../../services/avatar-cache.service';
 import {
   IDLE_CALL,
   CallAdapterService,
@@ -84,13 +83,6 @@ describe('CallScreenComponent', () => {
         {
           provide: UserService,
           useValue: { sessionProfile: signal(undefined) },
-        },
-        {
-          provide: AvatarRepository,
-          useValue: {
-            refreshTick: () => 0,
-            getBlob: () => Promise.resolve(undefined),
-          },
         },
       ],
     });

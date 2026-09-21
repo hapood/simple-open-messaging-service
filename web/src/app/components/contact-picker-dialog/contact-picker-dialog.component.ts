@@ -7,6 +7,7 @@ import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarAccount,
   conversationAvatarDomain,
+  conversationAvatarEvidence,
   conversationAvatarIdentityId,
   conversationAvatarSrc,
   conversationAvatarType,
@@ -29,6 +30,7 @@ export class ContactPickerDialogComponent {
   readonly avatarId = conversationAvatarIdentityId;
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarDomain = conversationAvatarDomain;
+  readonly avatarEvidence = conversationAvatarEvidence;
   readonly avatarSrc = conversationAvatarSrc;
 
   choose(item: ReturnType<typeof this.items>[number]): void {
@@ -42,9 +44,8 @@ export class ContactPickerDialogComponent {
       name: this.displayName(item),
       avatar: this.avatarSrc(item),
       bio:
-        (item.type === 'GROUP'
-          ? item.group.description
-          : item.peerUser.bio) ?? '',
+        (item.type === 'GROUP' ? item.group.description : item.peerUser.bio) ??
+        '',
     });
   }
 }

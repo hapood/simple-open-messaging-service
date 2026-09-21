@@ -7,7 +7,6 @@ import {
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
 import { CallBannerComponent } from '../app/components/call-banner/call-banner.component';
-import { AvatarRepository } from '../app/services/avatar-cache.service';
 import { CallAdapterService, IDLE_CALL } from '../app/services/call-adapter';
 import { CallEventService } from '../app/services/call-event.service';
 import { CallPresentationService } from '../app/services/call-presentation.service';
@@ -71,13 +70,6 @@ describe('PlaygroundRootComponent', () => {
           useValue: {
             sessionProfile: signal(undefined),
             sessionUserId: signal(null),
-          },
-        },
-        {
-          provide: AvatarRepository,
-          useValue: {
-            refreshTick: () => 0,
-            getBlob: () => Promise.resolve(undefined),
           },
         },
       ],

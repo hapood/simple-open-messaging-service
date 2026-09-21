@@ -345,6 +345,20 @@ describe('WebdbService', () => {
       expect(await db!.getAll('profiles')).toEqual([]);
     });
 
+    it('rejects a different avatar for an immutable profile revision', async () => {
+      await webdb.openForUser('1');
+      const profile = {
+        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
+        name: 'Alice', bio: '',
+      };
+      await webdb.commitResolvedProfile({ ...profile, avatarBase64: 'YQ==' });
+      await expect(
+        webdb.commitResolvedProfile({ ...profile, avatarBase64: null }),
+      ).rejects.toThrow('conflicting cached profile revision');
+      const snapshot = await webdb.getProfile({ ...profile, profileRev: 1 });
+      expect(await (await webdb.getProfileAvatarBlob(snapshot!.avatarDigest!))?.text()).toBe('a');
+    });
+
     it('caches exact profile versions independently and normalizes namespace-zero subjects', async () => {
       const db = await webdb.openForUser('1');
       const profile = {
@@ -729,9 +743,9 @@ describe('WebdbService', () => {
       expect(db, 'opened handle').toBeTruthy();
       expect(db!.name, 'per-user partition key').toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
-        'avatars',
         'members',
         'namespaces',
+        'profileAvatarBlobs',
         'profiles',
         'relationshipIntents',
         'relationshipRequests',
@@ -815,56 +829,6 @@ describe('WebdbService', () => {
 
       expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
       expect(await webdb.getMeta('sentinel')).toBeUndefined();
-    });
-
-    it('stores and reads an avatar by identity', async () => {
-      await webdb.openForUser('1');
-      await webdb.putAvatar({
-        identity: 'u9',
-        blob: new Blob(['hi']),
-        path: '/a.webp',
-        lastRender: 5,
-      });
-      const got = await webdb.getAvatar('u9');
-      expect(got, 'avatar hit').toBeTruthy();
-      expect(await got!.blob.text()).toBe('hi');
-      expect(got!.path).toBe('/a.webp');
-    });
-
-    it('overwrites in place — one blob per identity, no accumulation', async () => {
-      await webdb.openForUser('1');
-      await webdb.putAvatar({
-        identity: 'u9',
-        blob: new Blob(['old']),
-        path: '/a',
-        lastRender: 1,
-      });
-      await webdb.putAvatar({
-        identity: 'u9',
-        blob: new Blob(['new']),
-        path: '/b',
-        lastRender: 2,
-      });
-      const got = await webdb.getAvatar('u9');
-      expect(await got!.blob.text()).toBe('new');
-      expect(got!.path).toBe('/b');
-      const db = await webdb.db();
-      expect(await db.count('avatars')).toBe(1);
-    });
-
-    it('bumps lastRender on read', async () => {
-      await webdb.openForUser('1');
-      await webdb.putAvatar({
-        identity: 'u9',
-        blob: new Blob(['x']),
-        path: '/a',
-        lastRender: 1,
-      });
-      await webdb.getAvatar('u9');
-      await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget recency write settle
-      const db = await webdb.db();
-      const rec = await db.get('avatars', 'u9');
-      expect(rec!.lastRender).toBeGreaterThan(1);
     });
 
     it('counts only cached message rows', async () => {
@@ -984,18 +948,16 @@ describe('WebdbService', () => {
 
     it('closeAndDelete physically removes the database (per-user wipe)', async () => {
       await webdb.openForUser('1');
-      await webdb.putAvatar({
-        identity: 'u9',
-        blob: new Blob(['x']),
-        path: '/a',
-        lastRender: 1,
+      const snapshot = await webdb.commitResolvedProfile({
+        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
+        name: 'Alice', bio: '', avatarBase64: 'eA==',
       });
       await webdb.closeAndDelete('1');
       expect(webdb.ready()).toBe(false);
       // Reopen → empty: the DB was deleted, not just closed. (Combined with the name-embeds-user
       // assertion above, this is the per-user isolation guarantee.)
       await webdb.openForUser('1');
-      expect(await webdb.getAvatar('u9')).toBeUndefined();
+      expect(await webdb.getProfileAvatarBlob(snapshot.avatarDigest!)).toBeUndefined();
     });
 
     // Regression guard for the stale-currentUserId bug: closeAndDelete must null currentUserId, so a
@@ -2158,14 +2120,15 @@ describe('WebdbService', () => {
         ),
       ).toBe(false);
       expect(
-        await webdb.storeGroupMemberResolvedProfile(
-          9,
+        await webdb.commitResolvedGroupMetaProfile(
           {
+            type: 'GROUP_MEMBER', threadId: 9, rev: 3,
             account: 'alice',
             domain: 'home.example',
             namespaceId: 12,
           },
-          { rev: 3, name: 'Alice in team', avatar: '/team.webp', bio: 'Team' },
+          { rev: 3, name: 'Alice in team', avatarBase64: 'YWJj', bio: 'Team',
+            account: 'alice', domain: 'home.example', namespaceId: 12 },
         ),
       ).toBe(true);
       expect(
@@ -2175,7 +2138,6 @@ describe('WebdbService', () => {
         profileMessageSeq: 20,
         resolvedProfileRev: 3,
         profileName: 'Alice in team',
-        profileAvatar: '/team.webp',
         profileBio: 'Team',
       });
 
@@ -2559,6 +2521,10 @@ describe('WebdbService', () => {
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
       await webdb.putMeta('sentinel', 'core');
+      const profile = await webdb.commitResolvedProfile({
+        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
+        name: 'Alice', bio: '', avatarBase64: 'eA==',
+      });
       await webdb.commitBrowserMessagePage({
         threadId: 7,
         scan: { left: 0, right: 1 },
@@ -2570,6 +2536,7 @@ describe('WebdbService', () => {
       await webdb.recreateMessageCache();
 
       expect(await webdb.getMeta('sentinel')).toBe('core');
+      expect(await (await webdb.getProfileAvatarBlob(profile.avatarDigest!))?.text()).toBe('x');
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
       expect(await webdb.getMessageRanges(7)).toEqual([]);
       expect(await webdb.getMessageHead(7)).toBeUndefined();

@@ -564,7 +564,7 @@ fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
         ("own.test", 0, 2, "Old"),
         ("third.test", 7, 3, "Mirror"),
     ] {
-        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"namespaceId":namespace,"profileRev":rev,"name":name,"avatar":"","bio":""})).unwrap();
+        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"namespaceId":namespace,"profileRev":rev,"name":name,"avatarDigest":null,"bio":""})).unwrap();
     }
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
@@ -586,7 +586,7 @@ fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
 fn native_profile_cache_rejects_missing_text_instead_of_synthesizing_it() {
     let conn = profile_cache_db();
     for missing in ["name", "bio"] {
-        let mut profile = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,"profileRev":1,"name":"Alice","avatar":"","bio":""});
+        let mut profile = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,"profileRev":1,"name":"Alice","avatarDigest":null,"bio":""});
         profile.as_object_mut().unwrap().remove(missing);
         assert!(super::contacts::write_profile(&conn, 1, &profile).is_err());
     }
@@ -594,6 +594,18 @@ fn native_profile_cache_rejects_missing_text_instead_of_synthesizing_it() {
         .query_row("SELECT count(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn native_profile_cache_rejects_a_different_avatar_for_one_revision() {
+    let conn = profile_cache_db();
+    super::contacts::register_namespace(&conn, 1, 0, "local").unwrap();
+    let profile = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,
+        "profileRev":1,"name":"Alice","avatarDigest":"a","bio":""});
+    assert!(super::contacts::write_profile(&conn, 1, &profile).unwrap());
+    let changed = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,
+        "profileRev":1,"name":"Alice","avatarDigest":null,"bio":""});
+    assert!(super::contacts::write_profile(&conn, 1, &changed).is_err());
 }
 
 #[test]

@@ -67,7 +67,6 @@ type PendingReq = {
   /** Stable Address key used by the avatar and selection projections. */
   peerId?: string;
   name?: string;
-  avatar?: string;
   account?: string;
   domain?: string;
   reqMessage?: string;
@@ -684,7 +683,6 @@ export class FriendRequestsComponent implements OnDestroy {
         direction: projection.direction,
         peerId: this.userIdentity(peer),
         name: peer.name,
-        avatar: peer.avatar,
         account: peer.account,
         domain: peer.domain,
         reqMessage: projection.note,
@@ -702,7 +700,6 @@ export class FriendRequestsComponent implements OnDestroy {
       direction: projection.direction,
       peerId: JSON.stringify(['pending-group', group.domain, group.account]),
       name: group.name,
-      avatar: group.avatar,
       account: group.account,
       domain: group.domain,
       reqMessage: group.description,

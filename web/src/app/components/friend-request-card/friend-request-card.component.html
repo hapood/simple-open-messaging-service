@@ -8,15 +8,14 @@
   <span class="avatar">
     <app-user-avatar
       [type]="
-        request().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
+        requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
       "
-      [name]="request().name ?? ''"
-      [identityId]="request().peerId"
-      [account]="request().account"
-      [src]="request().avatar"
+      [name]="requestItem().name ?? ''"
+      [identityId]="requestItem().peerId"
+      [account]="requestItem().account"
       [federatedDomain]="
-        request().kind === 'GROUP' || request().domain !== 'local'
-          ? request().domain
+        requestItem().kind === 'GROUP' || requestItem().domain !== 'local'
+          ? requestItem().domain
           : null
       "
       [profileEvidence]="profileEvidence()"
@@ -25,39 +24,39 @@
   <span class="content">
     <span class="heading">
       <app-user-identity-label
-        [name]="request().name ?? ('friend.invalidUser' | transloco)"
+        [name]="requestItem().name ?? ('friend.invalidUser' | transloco)"
         [domain]="
-          request().kind === 'GROUP'
-            ? request().sourceLabel
-            : request().domain !== 'local'
-              ? request().domain
+          requestItem().kind === 'GROUP'
+            ? requestItem().sourceLabel
+            : requestItem().domain !== 'local'
+              ? requestItem().domain
               : null
         "
       />
     </span>
-    <span class="message" [class.error]="request().errText">
+    <span class="message" [class.error]="requestItem().errText">
       {{
-        request().errText ||
-          request().reqMessage ||
+        requestItem().errText ||
+          requestItem().reqMessage ||
           ('friend.noMessage' | transloco)
       }}
     </span>
   </span>
   <span class="date">{{ relativeDate() }}</span>
   <span class="action">
-    @if (request().status === RequestProjectionStatus.ACCEPTED) {
+    @if (requestItem().status === RequestProjectionStatus.ACCEPTED) {
       <button mat-button type="button" disabled>
         {{ 'friend.approved' | transloco }}
       </button>
-    } @else if (request().status === RequestProjectionStatus.WITHDRAWN) {
+    } @else if (requestItem().status === RequestProjectionStatus.WITHDRAWN) {
       <button mat-button type="button" disabled>
         {{ 'friend.revoked' | transloco }}
       </button>
-    } @else if (request().status === RequestProjectionStatus.REJECTED) {
+    } @else if (requestItem().status === RequestProjectionStatus.REJECTED) {
       <button mat-button type="button" disabled>
         {{ 'friend.rejected' | transloco }}
       </button>
-    } @else if (request().status === RequestProjectionStatus.EXPIRED) {
+    } @else if (requestItem().status === RequestProjectionStatus.EXPIRED) {
       <button mat-button type="button" disabled>
         {{ 'friend.expired' | transloco }}
       </button>
@@ -78,7 +77,7 @@
         (click)="act($event, 'approve')"
       >
         {{
-          (request().kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
+          (requestItem().kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
             | transloco
         }}
       </button>

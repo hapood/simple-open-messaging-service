@@ -613,9 +613,7 @@ export class UserService {
             ...user,
             name: profile.name,
             bio: profile.bio,
-            avatar: profile.avatarBase64
-              ? `data:image/webp;base64,${profile.avatarBase64}`
-              : '',
+            avatar: '',
           };
           if (this.sessionLifecycle.isCurrent(epoch)) {
             this.sessionProfile.set(resolved);

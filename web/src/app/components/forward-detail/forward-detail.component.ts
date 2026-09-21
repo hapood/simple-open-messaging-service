@@ -292,7 +292,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       creator,
       isSelf: false,
       name: message.profile?.displayName || message.author.account,
-      avatar: this.avatarUrl(message, bundle),
+      snapshotAvatarUrl: this.avatarUrl(message, bundle),
       avatarIdentityId: creator,
       avatarAccount: message.author.account,
       avatarDomain: message.author.domain,

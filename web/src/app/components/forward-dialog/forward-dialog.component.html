@@ -122,7 +122,6 @@
                   [identityId]="selfProfile()?.id"
                   [account]="selfProfile()?.account"
                   [federatedDomain]="selfProfile()?.domain"
-                  [src]="selfProfile()?.avatar"
                 />
                 <div class="forward-dialog__direct-more-content">
                   <span class="forward-dialog__direct-more-name">{{
@@ -191,7 +190,7 @@
                       [identityId]="avatarIdentityId(item)"
                       [account]="avatarAccount(item)"
                       [federatedDomain]="avatarDomain(item)"
-                      [src]="avatarSrc(item)"
+                      [profileEvidence]="avatarEvidence(item)"
                     ></app-user-avatar>
                     <span
                       class="forward-dialog__recent-check"
@@ -234,7 +233,7 @@
                   [identityId]="avatarIdentityId(item)"
                   [account]="avatarAccount(item)"
                   [federatedDomain]="avatarDomain(item)"
-                  [src]="avatarSrc(item)"
+                  [profileEvidence]="avatarEvidence(item)"
                 ></app-user-avatar>
               </span>
               <span class="forward-dialog__recipient-name">{{

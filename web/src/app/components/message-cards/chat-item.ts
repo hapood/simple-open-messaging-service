@@ -78,8 +78,8 @@ interface ChatMessageBase {
   isGroupConversation?: boolean;
   /** Sender display name (profile.account; filled for self too — template decides via showName). */
   name: string;
-  /** Cached sender profile data used by message-card avatars, including offline opens. */
-  avatar?: string;
+  /** Avatar asset embedded in a forwarded snapshot; ordinary profiles use profileEvidence. */
+  snapshotAvatarUrl?: string;
   /** Full user identity key encoded as `[namespaceId, domain, account]`. */
   avatarIdentityId?: string;
   /** Stable sender account used with avatarDomain for deterministic fallback colors. */

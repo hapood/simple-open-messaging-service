@@ -512,12 +512,10 @@ pub(crate) async fn perform_api_request_with_events(
 
 // --- IPC media_request (the webview→backend MEDIA transport under Tauri) ------------------
 
-/// The webview→backend MEDIA transport under the Tauri shell. The avatar repository
-/// (`AvatarRepository.fetchBlob`) does `http.get(assetUrl(path), { responseType: 'blob' })`; `assetUrl`
-/// rewrites `/uploads/*` to `media://localhost/...` under Tauri. `media://` works for a bare `<img src>`
+/// The webview→backend MEDIA transport under the Tauri shell. `assetUrl` rewrites `/uploads/*`
+/// to `media://localhost/...` under Tauri. `media://` works for a bare `<img src>`
 /// (the resource loader consults `shouldInterceptRequest` → the `proxy_media` scheme handler), but
-/// Android's Chromium WebView rejects non-standard schemes in `fetch()`, so the BLOB fetch path the
-/// avatar cache uses could not fetch `media://` there. `TauriHttpBackend` therefore routes `media://`
+/// Android's Chromium WebView rejects non-standard schemes in `fetch()`. `TauriHttpBackend` routes `media://`
 /// requests to THIS command: a reqwest GET to `${api_origin}${path}` with the Bearer injected from
 /// `ProxyState.token` (so JS still never touches the token), returning the raw bytes. Mirrors `proxy_media`
 /// but as an IPC command returning bytes (not a scheme-handler `Response`); reuses the cached per-origin

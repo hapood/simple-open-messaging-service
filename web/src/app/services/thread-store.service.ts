@@ -303,7 +303,7 @@ export class ThreadRepository {
                 group: {
                   ...current.group,
                   name: profile.name,
-                  avatar: profile.avatar,
+                  avatar: '',
                   description: profile.bio,
                 },
               }
@@ -312,7 +312,7 @@ export class ThreadRepository {
                 peerUser: {
                   ...current.peerUser,
                   name: profile.name,
-                  avatar: profile.avatar,
+                  avatar: '',
                   bio: profile.bio,
                 },
               };

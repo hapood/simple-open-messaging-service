@@ -61,7 +61,6 @@ import {
   conversationAvatarDomain,
   conversationAvatarType,
   conversationAvatarIdentityId,
-  conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import {
   ChatInputComponent,
@@ -648,10 +647,6 @@ export class MessageThreadComponent implements OnDestroy {
   readonly emptyAvatarDomain = computed<string | undefined>(() => {
     const t = this.userMsgTrd();
     return t ? conversationAvatarDomain(t) : undefined;
-  });
-  readonly emptyAvatarSrc = computed<string | null | undefined>(() => {
-    const t = this.userMsgTrd();
-    return t ? conversationAvatarSrc(t) : undefined;
   });
   readonly emptyAvatarEvidence = computed(() => {
     const t = this.userMsgTrd();

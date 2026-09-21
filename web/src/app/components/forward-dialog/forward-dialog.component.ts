@@ -21,7 +21,7 @@ import {
   conversationAvatarIdentityId,
   conversationAvatarAccount,
   conversationAvatarDomain,
-  conversationAvatarSrc,
+  conversationAvatarEvidence,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
 import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
@@ -166,7 +166,7 @@ export class ForwardDialogComponent {
   readonly avatarIdentityId = conversationAvatarIdentityId;
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarDomain = conversationAvatarDomain;
-  readonly avatarSrc = conversationAvatarSrc;
+  readonly avatarEvidence = conversationAvatarEvidence;
   readonly directPreviewMessage = computed<ChatMsgData | null>(() => {
     const original = this.messages()[0]?.original;
     if (!original) return null;

@@ -8,12 +8,15 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { translateBizResult } from '../../services/biz-code';
 import { displayUserName } from '../../services/model';
 import { User, UserService } from '../../services/user.service';
 import { RouteService } from '../../services/route.service';
-import { AvatarRepository } from '../../services/avatar-cache.service';
+import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
+import { assetUrl } from '../../services/runtime';
 import { GroupService } from '../../services/group.service';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
 import {
@@ -37,7 +40,7 @@ export class FriendInviteDialogComponent {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
   private readonly route = inject(RouteService);
-  private readonly avatarRepo = inject(AvatarRepository);
+  private readonly http = inject(HttpClient);
   private readonly groupService = inject(GroupService);
 
   readonly user = input.required<User>();
@@ -69,10 +72,20 @@ export class FriendInviteDialogComponent {
     this.sending.set(true);
     this.errorText.set('');
     const user = this.user();
-    const avatarIdentity = `${user.isGroup ? 'g' : 'u'}${this.avatarIdentity()}`;
-    const avatar = user.avatar
-      ? await this.avatarRepo.getCachedDataUrl(avatarIdentity, user.avatar)
-      : undefined;
+    let avatar: string | undefined;
+    if (user.avatar) {
+      try {
+        avatar = user.avatar.startsWith('data:')
+          ? user.avatar
+          : await avatarBlobDataUrl(
+              await firstValueFrom(
+                this.http.get(assetUrl(user.avatar), { responseType: 'blob' }),
+              ),
+            );
+      } catch {
+        avatar = undefined;
+      }
+    }
     const note = this.note().trim().slice(0, 255);
     const request = this.userService.requestRelationship({
       account: user.account,

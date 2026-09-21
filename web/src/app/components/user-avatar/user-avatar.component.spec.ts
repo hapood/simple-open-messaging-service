@@ -1,23 +1,13 @@
 import { Subject } from 'rxjs';
-import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from './user-avatar.component';
-import { AvatarRepository } from '../../services/avatar-cache.service';
 import { UserService } from '../../services/user.service';
 import { WebdbService, type ProfileWake } from '../../services/webdb.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { provideHttpClient, withXhr } from '@angular/common/http';
-import {
-  HttpTestingController,
-  provideHttpClientTesting,
-} from '@angular/common/http/testing';
-import type { User } from '../../services/model';
-import { PreferenceStore } from '../../services/preference-store.service';
 
 describe('UserAvatarComponent (imgSrc branching)', () => {
   let fixture: ComponentFixture<UserAvatarComponent>;
-  let getBlobSpy: Mock;
   const sessionProfile = signal<unknown>(undefined);
 
   beforeEach(() => {
@@ -26,20 +16,9 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
         provideZonelessChangeDetection(),
         UserAvatarComponent,
         { provide: UserService, useValue: { sessionProfile } },
-        {
-          provide: AvatarRepository,
-          useValue: {
-            getBlob: vi
-              .fn()
-              .mockName('getBlob')
-              .mockResolvedValue(new Blob(['x'])),
-            refreshTick: vi.fn().mockName('refreshTick').mockReturnValue(0),
-          },
-        },
       ],
     });
     fixture = TestBed.createComponent(UserAvatarComponent);
-    getBlobSpy = TestBed.inject(AvatarRepository).getBlob as Mock;
     sessionProfile.set(undefined);
   });
 
@@ -59,7 +38,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
         domain: 'alpha.test',
         profileRev: 2,
         name: 'Alice',
-        avatar: '',
+        avatarDigest: null,
         bio: '',
       };
       const resolve = vi.spyOn(db, 'resolveProfileEvidence');
@@ -75,28 +54,25 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
       fixture.detectChanges();
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
       if (pending) {
-        expect(fixture.componentInstance.imgSrc()).toBe(
-          'data:image/webp;base64,b2xk',
-        );
+        expect(fixture.componentInstance.imgSrc()).toBe('');
         (
           db as unknown as { profileWake: Subject<ProfileWake> }
         ).profileWake.next({ event: 'PROFILE_AVAILABLE', key });
       }
       await vi.waitFor(() =>
-        expect(fixture.componentInstance.imgSrc()).toBe(''),
+        expect(fixture.componentInstance.initial()).toBe('AL'),
       );
+      expect(fixture.componentInstance.imgSrc()).toBe('');
       expect(fixture.componentInstance.showImage()).toBe(false);
-      expect(fixture.componentInstance.initial()).toBe('AL');
     },
   );
 
-  it('falls back to the first two characters when there is no src (no DB call)', () => {
+  it('falls back to the first two characters when there is no src', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     fixture.componentRef.setInput('name', 'Bob');
     fixture.componentRef.setInput('src', undefined);
     expect(fixture.componentInstance.showImage()).toBe(false);
     expect(fixture.componentInstance.initial()).toBe('BO');
-    expect(getBlobSpy).not.toHaveBeenCalled();
   });
 
   it('keeps an identified user color stable when the display name changes', () => {
@@ -157,7 +133,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.groupFill().from).toBe(color);
   });
 
-  it('uses account and domain without changing the avatar cache identity', () => {
+  it('uses account and domain rather than a numeric identity for fallback color', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
     fixture.componentRef.setInput('identityId', 12);
     fixture.componentRef.setInput('account', '!group-account');
@@ -221,24 +197,22 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     ).toBeNull();
   });
 
-  it('passes a local-preview src (blob:/data:) straight through without the DB', () => {
+  it('passes a local-preview src straight through', () => {
     fixture.componentRef.setInput('identityId', 9);
     fixture.componentRef.setInput('src', 'blob:http://localhost/abc');
     expect(fixture.componentInstance.imgSrc()).toBe(
       'blob:http://localhost/abc',
     );
-    expect(getBlobSpy).not.toHaveBeenCalled();
   });
 
-  it('renders nothing for a server-path avatar before the async DB resolve lands', () => {
-    // A /uploads path goes through IDB (async); imgSrc is '' until the blob resolves → initial-letter.
+  it('uses a supplied server path when there is no profile evidence', () => {
     fixture.componentRef.setInput('identityId', 5);
     fixture.componentRef.setInput('src', '/uploads/avatars/g-512.webp');
-    expect(fixture.componentInstance.imgSrc()).toBe('');
-    expect(fixture.componentInstance.showImage()).toBe(false);
+    expect(fixture.componentInstance.imgSrc()).toContain('/uploads/avatars/g-512.webp');
+    expect(fixture.componentInstance.showImage()).toBe(true);
   });
 
-  it('resolves an omitted SELF avatar through the session identity and IndexedDB repository', async () => {
+  it('uses the generated fallback while the self profile has no revision', async () => {
     sessionProfile.set({
       id: 7,
       name: 'Alice',
@@ -249,72 +223,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(getBlobSpy).toHaveBeenCalledWith(
-      'u7',
-      '/uploads/avatars/self-512.webp',
-    );
-    expect(fixture.componentInstance.showImage()).toBe(true);
-  });
-});
-
-describe('UserAvatarComponent offline cold-start integration', () => {
-  let webdb: WebdbService;
-  let httpMock: HttpTestingController;
-  let preferences: PreferenceStore;
-
-  beforeEach(async () => {
-    TestBed.configureTestingModule({
-      providers: [
-        provideZonelessChangeDetection(),
-        provideHttpClient(withXhr()),
-        provideHttpClientTesting(),
-        UserService,
-        WebdbService,
-        ProfileRepository,
-        AvatarRepository,
-      ],
-    });
-    webdb = TestBed.inject(WebdbService);
-    httpMock = TestBed.inject(HttpTestingController);
-    preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('device', 'soms.lastUserId', 7);
-
-    await webdb.openForUser('7');
-    await webdb.putMeta('selfProfile', {
-      id: 7,
-      account: 'alice',
-      name: 'Cached Alice',
-      avatar:
-        'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
-      bio: '',
-      isGroup: false,
-      domain: 'local',
-      namespaceId: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      profileRev: 3,
-      isDeleted: false,
-    } satisfies User);
-  });
-
-  afterEach(async () => {
-    httpMock.verify();
-    await preferences.remove('device', 'soms.lastUserId');
-    await webdb.closeAndDelete('7');
-  });
-
-  it('restores the self name and avatar entirely from IndexedDB without HTTP', async () => {
-    const userService = TestBed.inject(UserService);
-    await userService.restoreWebdb();
-
-    const fixture = TestBed.createComponent(UserAvatarComponent);
-    fixture.componentRef.setInput('type', UserAvatarType.SELF);
-    fixture.detectChanges();
-    expect(userService.sessionProfile()?.name).toBe('Cached Alice');
-    expect(fixture.componentInstance.initial()).toBe('CA');
-    expect(fixture.componentInstance.imgSrc()).toMatch(
-      /^data:image\/gif;base64,/,
-    );
-    httpMock.expectNone('/uploads/avatars/self-512.webp');
+    expect(fixture.componentInstance.showImage()).toBe(false);
+    expect(fixture.componentInstance.initial()).toBe('AL');
   });
 });

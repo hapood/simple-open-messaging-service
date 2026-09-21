@@ -14,10 +14,13 @@ describe('ProfileRepository resolution scheduler', () => {
   const profileWake = new Subject<ProfileWake>();
   const sessionEnded = new Subject<void>();
   const resolveProfileEvidence = vi.fn();
+  const getProfileAvatarBlob = vi.fn();
   let repository: ProfileRepository;
 
   beforeEach(() => {
     resolveProfileEvidence.mockReset();
+    getProfileAvatarBlob.mockReset();
+    getProfileAvatarBlob.mockResolvedValue(new Blob(['a'], { type: 'image/webp' }));
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -27,6 +30,7 @@ describe('ProfileRepository resolution scheduler', () => {
           useValue: {
             profileWake$: profileWake,
             resolveProfileEvidence,
+            getProfileAvatarBlob,
           },
         },
         {
@@ -45,7 +49,7 @@ describe('ProfileRepository resolution scheduler', () => {
       namespaceId: 4,
       profileRev: 7,
       name: 'Alice',
-      avatar: 'data:image/webp;base64,YQ==',
+      avatarDigest: 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
       bio: 'Bio',
     };
     resolveProfileEvidence.mockResolvedValue({
@@ -64,13 +68,15 @@ describe('ProfileRepository resolution scheduler', () => {
       account: 'alice',
       domain: 'peer.test',
       rev: 7,
-      avatarBase64: 'YQ==',
+      avatarDigest: snapshot.avatarDigest,
+      avatarBlob: expect.any(Blob),
     });
     expect(await firstValueFrom(repository.resolve(evidence))).toMatchObject({
       namespaceId: 4,
       rev: 7,
     });
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
+    expect(getProfileAvatarBlob).toHaveBeenCalledOnce();
   });
 
   it('keeps a pending evidence subscription and retries it after a runtime wake', async () => {
@@ -80,7 +86,7 @@ describe('ProfileRepository resolution scheduler', () => {
       namespaceId: 4,
       profileRev: 7,
       name: 'Alice',
-      avatar: '',
+      avatarDigest: null,
       bio: '',
     };
     resolveProfileEvidence
@@ -127,7 +133,7 @@ describe('ProfileRepository resolution scheduler', () => {
       domain: 'peer.test',
       profileRev: 7,
       name: 'Alice',
-      avatar: '',
+      avatarDigest: null,
       bio: '',
     } satisfies ProfileSnapshot;
     resolveProfileEvidence.mockImplementation(

@@ -5,8 +5,8 @@ import { UserAvatarType } from './model';
 /**
  * Derive `<app-user-avatar>` inputs from a {@link ConversationItem}. The single source of truth shared by
  * every surface that renders a conversation avatar (the conversation list, the empty-thread hero, …) so the
- * IDB cache key (`u<id>` for P2P, `g<id>` for a group) and the avatar source stay identical across surfaces —
- * a cached / aliased avatar renders the same everywhere.
+ * selected profile evidence stays identical across surfaces, so each surface reads
+ * the same digest-addressed avatar bytes.
  *
  * Pure functions (no `this`): safe to assign as component fields for template use, and trivially unit-testable.
  */

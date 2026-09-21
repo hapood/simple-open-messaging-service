@@ -88,17 +88,6 @@ import type {
  * elsewhere.
  */
 
-/** Avatar blob record. Keyed by stable identity (`u<userId>` / `g<groupId>`), NEVER by URL — see plan. */
-export interface AvatarRecord {
-  identity: string;
-  blob: Blob;
-  /** The source path this blob was fetched from (opaque; used only for change detection by the profile
-   *  layer — NOT a cache key, NOT parsed for a version). */
-  path: string;
-  /** Last render timestamp (ms), retained as cache metadata. */
-  lastRender: number;
-}
-
 export interface ProfileSelector {
   account: string;
   domain: string;
@@ -108,7 +97,6 @@ export interface ProfileSelector {
 
 export interface ProfileSnapshot extends ProfileSelector {
   name: string;
-  avatar: string;
   avatarDigest: string | null;
   bio: string;
 }
@@ -157,7 +145,6 @@ export interface ResolvedMemberRecord extends MemberRecord {
   /** Presentation is joined from the selected immutable profile. */
   resolvedProfileRev?: number;
   profileName?: string;
-  profileAvatar?: string;
   profileBio: string;
   user: ProfileSnapshot;
 }
@@ -229,7 +216,6 @@ export interface WebdbSchema extends DBSchema {
     value: NamespaceRecord;
     indexes: { domain: string };
   };
-  avatars: { key: string; value: AvatarRecord };
   profiles: {
     key: [string, string, number, number];
     value: ProfileSnapshot;
@@ -642,7 +628,6 @@ export class WebdbStorage {
     db: IDBPDatabase<WebdbSchema>,
   ): Promise<boolean> {
     const required = [
-      'avatars',
       'namespaces',
       'profiles',
       'profileAvatarBlobs',
@@ -675,7 +660,6 @@ export class WebdbStorage {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion !== 0)
           throw new Error('cache recreation expected an empty IndexedDB');
-        db.createObjectStore('avatars', { keyPath: 'identity' });
         const namespaces = db.createObjectStore('namespaces', {
           keyPath: ['domain', 'namespaceId'],
         });
@@ -1296,67 +1280,6 @@ export class WebdbStorage {
     }
   }
 
-  // ---- avatar store: identity-keyed blobs --------------------------------------------------
-
-  /** Read an avatar blob by identity and refresh its last-render metadata. */
-  async getAvatar(identity: string): Promise<AvatarRecord | undefined> {
-    return this.runAccountOperation(() => this.getAvatarInternal(identity));
-  }
-
-  private async getAvatarInternal(
-    identity: string,
-  ): Promise<AvatarRecord | undefined> {
-    if (isTauri() && this.currentUserId != null) {
-      const record = await tauriInvoke<{
-        identity: string;
-        path: string;
-        mime: string;
-        data: number[];
-        lastRender: number;
-      } | null>('native_db_get_avatar', {
-        userId: Number(this.currentUserId),
-        identity,
-      });
-      if (!record) return undefined;
-      return {
-        identity: record.identity,
-        path: record.path,
-        blob: new Blob([new Uint8Array(record.data)], { type: record.mime }),
-        lastRender: record.lastRender,
-      };
-    }
-    const db = await this.db();
-    const rec = await db.get('avatars', identity);
-    if (!rec) return undefined;
-    const now = Date.now();
-    if (rec.lastRender !== now) {
-      rec.lastRender = now;
-      await db.put('avatars', rec).catch(() => {});
-    }
-    return rec;
-  }
-
-  /** Store/overwrite an avatar blob under its stable identity. */
-  async putAvatar(record: AvatarRecord): Promise<void> {
-    return this.runAccountOperation(() => this.putAvatarInternal(record));
-  }
-
-  private async putAvatarInternal(record: AvatarRecord): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_put_avatar', {
-        userId: Number(this.currentUserId),
-        identity: record.identity,
-        path: record.path,
-        mime: record.blob.type || 'application/octet-stream',
-        data: Array.from(new Uint8Array(await record.blob.arrayBuffer())),
-        lastRender: record.lastRender,
-      });
-      return;
-    }
-    const db = await this.db();
-    await db.put('avatars', record);
-  }
-
   async getThreads(): Promise<ConversationItem[]> {
     return this.runAccountOperation(() => this.getThreadsInternal());
   }
@@ -1559,7 +1482,7 @@ export class WebdbStorage {
                 group: {
                   ...item.group,
                   name: profile.name,
-                  avatar: profile.avatar,
+                  avatar: '',
                   description: profile.bio,
                 },
               }
@@ -1568,7 +1491,7 @@ export class WebdbStorage {
                 peerUser: {
                   ...item.peerUser,
                   name: profile.name,
-                  avatar: profile.avatar,
+                  avatar: '',
                   bio: profile.bio,
                 },
               };
@@ -2265,7 +2188,7 @@ export class WebdbStorage {
       namespaceId: member.namespaceId,
       profileRev: member.profileRev,
       name: snapshot?.name ?? member.account,
-      avatar: snapshot?.avatar ?? '',
+      avatarDigest: snapshot?.avatarDigest ?? null,
       bio: snapshot?.bio ?? '',
     };
   }
@@ -2279,7 +2202,6 @@ export class WebdbStorage {
       user: this.memberUser(member, snapshot),
       resolvedProfileRev: snapshot?.profileRev,
       profileName: snapshot?.name,
-      profileAvatar: snapshot?.avatar,
       profileBio: snapshot?.bio ?? '',
     };
   }
@@ -2526,27 +2448,23 @@ export class WebdbStorage {
     });
   }
 
-  async storeGroupMemberResolvedProfile(
+  private async storeGroupMemberResolvedProfile(
     threadId: number,
     identity: {
       account: string;
       domain: string;
       namespaceId: number;
     },
-    profile: { rev: number; name: string; avatar: string; bio: string },
+    profile: {
+      rev: number;
+      name: string;
+      avatarDigest?: string | null;
+      avatarBlob?: Blob;
+      bio: string;
+    },
   ): Promise<boolean> {
     identity = localSubjectIdentity(identity);
     return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>('native_db_store_group_member_profile', {
-          userId: Number(this.currentUserId),
-          threadId,
-          ...identity,
-          profileRev: profile.rev,
-          name: profile.name,
-          avatar: profile.avatar,
-          bio: profile.bio,
-        });
       const db = await this.db();
       let key: [number, string, string, number] = [
         threadId,
@@ -2554,7 +2472,7 @@ export class WebdbStorage {
         identity.domain,
         identity.namespaceId,
       ];
-      const tx = db.transaction(['members', 'profiles'], 'readwrite');
+      const tx = db.transaction(['members', 'profiles', 'profileAvatarBlobs'], 'readwrite');
       let previous = await tx.objectStore('members').get(key);
 
       if (!previous || previous.left || previous.profileRev !== profile.rev) {
@@ -2565,9 +2483,14 @@ export class WebdbStorage {
         ...identity,
         profileRev: profile.rev,
         name: profile.name,
-        avatar: profile.avatar,
+        avatarDigest: profile.avatarDigest ?? null,
         bio: profile.bio,
       });
+      if (profile.avatarDigest && profile.avatarBlob)
+        await tx.objectStore('profileAvatarBlobs').put({
+          digest: profile.avatarDigest,
+          blob: profile.avatarBlob,
+        });
       await tx.done;
       return true;
     });
@@ -2592,9 +2515,7 @@ export class WebdbStorage {
       profile.namespaceId !== reference.namespaceId
     )
       throw new Error('resolved profile does not match Group Meta reference');
-    const avatar = profile.avatarBase64
-      ? `data:image/webp;base64,${profile.avatarBase64}`
-      : '';
+    const decodedAvatar = await decodeProfileAvatar(profile.avatarBase64);
     if (reference.type === 'GROUP_MEMBER')
       return this.storeGroupMemberResolvedProfile(
         reference.threadId,
@@ -2603,11 +2524,17 @@ export class WebdbStorage {
           domain: reference.domain,
           namespaceId: reference.namespaceId,
         },
-        { rev: profile.rev, name: profile.name, avatar, bio: profile.bio },
+        {
+          rev: profile.rev,
+          name: profile.name,
+          avatarDigest: decodedAvatar?.digest ?? null,
+          avatarBlob: decodedAvatar?.blob,
+          bio: profile.bio,
+        },
       );
     return this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['threads', 'namespaces', 'profiles'],
+        ['threads', 'namespaces', 'profiles', 'profileAvatarBlobs'],
         'readwrite',
       );
       const thread = await tx.objectStore('threads').get(reference.threadId);
@@ -2632,15 +2559,17 @@ export class WebdbStorage {
         namespaceId: reference.namespaceId,
         profileRev: reference.rev,
         name: profile.name,
-        avatar,
+        avatarDigest: decodedAvatar?.digest ?? null,
         bio: profile.bio,
       });
+      if (decodedAvatar)
+        await tx.objectStore('profileAvatarBlobs').put(decodedAvatar);
       await tx.objectStore('threads').put({
         ...thread,
         group: {
           ...thread.group,
           name: profile.name,
-          avatar,
+          avatar: '',
           description: profile.bio,
         },
       });
@@ -2659,6 +2588,7 @@ export class WebdbStorage {
     bio: string;
     avatarBase64: string | null;
   }): Promise<ProfileSnapshot> {
+    const avatar = await decodeProfileAvatar(profile.avatarBase64);
     const snapshot: ProfileSnapshot = localSubjectIdentity({
       namespaceId: profile.namespaceId,
       account: profile.account,
@@ -2666,15 +2596,15 @@ export class WebdbStorage {
       profileRev: profile.rev,
       name: profile.name,
       bio: profile.bio,
-      avatar: profile.avatarBase64
-        ? `data:image/webp;base64,${profile.avatarBase64}`
-        : '',
+      avatarDigest: avatar?.digest ?? null,
     });
     const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['namespaces', 'profiles', 'threads'],
+        ['namespaces', 'profiles', 'profileAvatarBlobs', 'threads'],
         'readwrite',
       );
+      if (avatar)
+        await tx.objectStore('profileAvatarBlobs').put(avatar);
       await this.registerNamespace(
         tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
         snapshot.domain,
@@ -2697,7 +2627,7 @@ export class WebdbStorage {
             group: {
               ...thread.group,
               name: snapshot.name,
-              avatar: snapshot.avatar,
+              avatar: '',
               description: snapshot.bio,
             },
           });
@@ -2713,7 +2643,7 @@ export class WebdbStorage {
             peerUser: {
               ...thread.peerUser,
               name: snapshot.name,
-              avatar: snapshot.avatar,
+              avatar: '',
               bio: snapshot.bio,
             },
           });
@@ -2732,6 +2662,21 @@ export class WebdbStorage {
         },
       });
     return snapshot;
+  }
+
+  /** Read the binary avatar selected by an immutable profile snapshot. */
+  async getProfileAvatarBlob(digest: string): Promise<Blob | undefined> {
+    if (!/^[a-f0-9]{64}$/.test(digest)) return undefined;
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        const bytes = await tauriInvoke<number[] | null>('native_db_get_profile_avatar', {
+          userId: Number(this.currentUserId),
+          digest,
+        });
+        return bytes ? new Blob([new Uint8Array(bytes)], { type: 'image/webp' }) : undefined;
+      }
+      return (await (await this.db()).get('profileAvatarBlobs', digest))?.blob;
+    });
   }
 
   private async writeSnapshot(
@@ -2757,7 +2702,11 @@ export class WebdbStorage {
       record.profileRev,
     ]);
     if (previous) {
-      if (previous.name !== record.name || previous.bio !== record.bio) {
+      if (
+        previous.name !== record.name ||
+        previous.bio !== record.bio ||
+        previous.avatarDigest !== record.avatarDigest
+      ) {
         store.transaction.abort();
         await store.transaction.done.catch(() => {});
         throw new Error('conflicting cached profile revision');

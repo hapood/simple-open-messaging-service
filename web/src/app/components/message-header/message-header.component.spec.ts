@@ -18,7 +18,6 @@ import { RouteService } from '../../services/route.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { IDLE_CALL } from '../../services/call-adapter';
-import { AvatarRepository } from '../../services/avatar-cache.service';
 import { ChatContextService } from '../message-thread/chat-context.service';
 import {
   ConversationItem,
@@ -108,7 +107,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
           provide: CallEventService,
           useValue: { callState: signal({ ...IDLE_CALL }) },
         },
-        { provide: AvatarRepository, useValue: {} },
       ],
     });
     fixture = TestBed.createComponent(MessageHeaderComponent);

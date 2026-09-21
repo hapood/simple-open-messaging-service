@@ -46,7 +46,7 @@ pub(super) fn write_profile(
     }
     let snapshot = serde_json::json!({ "account": account, "domain": domain, "namespaceId": namespace,
         "profileRev": rev, "name": profile.get("name").and_then(Value::as_str).ok_or("profile has no name")?,
-        "avatar": profile.get("avatar").and_then(Value::as_str).unwrap_or(""),
+        "avatarDigest": profile.get("avatarDigest").and_then(Value::as_str),
         "bio": profile.get("bio").and_then(Value::as_str).ok_or("profile has no bio")? });
     let existing: Option<String> = conn.query_row(
         "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
@@ -56,6 +56,7 @@ pub(super) fn write_profile(
         let previous = parse_json(existing)?;
         if previous.get("name") != snapshot.get("name")
             || previous.get("bio") != snapshot.get("bio")
+            || previous.get("avatarDigest") != snapshot.get("avatarDigest")
         {
             return Err("conflicting cached profile revision".into());
         }
@@ -116,10 +117,9 @@ pub(crate) async fn native_db_get_group_member(
                'profileMessageSeq',member.profile_message_seq,
                'resolvedProfileRev',identity.profile_rev,
                'profileName',json_extract(identity.payload_json,'$.name'),
-               'profileAvatar',json_extract(identity.payload_json,'$.avatar'),
                'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
                'user',json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
-                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatar','','bio',''))))
+                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio',''))))
              FROM members member LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
               AND identity.domain=member.member_domain
@@ -165,10 +165,9 @@ pub(crate) async fn native_db_query_group_members(
                    'profileMessageSeq',member.profile_message_seq,
                    'resolvedProfileRev',identity.profile_rev,
                    'profileName',json_extract(identity.payload_json,'$.name'),
-                   'profileAvatar',json_extract(identity.payload_json,'$.avatar'),
                    'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
                    'user', json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
-                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatar','','bio','')))
+                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','')))
                  )
                  FROM members member LEFT JOIN profiles identity
                    ON identity.user_id=member.user_id
@@ -233,28 +232,4 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
     })
     .await
     .map_err(|e| format!("join group member profile reference write: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_store_group_member_profile(
-    user_id: i64,
-    thread_id: i64,
-    account: String,
-    domain: String,
-    namespace_id: i64,
-    profile_rev: i64,
-    name: String,
-    avatar: String,
-    bio: String,
-) -> Result<bool, String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let selected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2 AND member_account=?3 AND member_domain=?4 AND namespace_id=?5 AND profile_rev=?6 AND left_state=0)",
-            params![user_id,thread_id,account,domain,namespace_id,profile_rev], |row| row.get(0)).map_err(|e| e.to_string())?;
-        if !selected { return Ok(false); }
-        write_profile(&tx,user_id,&serde_json::json!({"account":account,"domain":domain,"namespaceId":namespace_id,"profileRev":profile_rev,"name":name,"avatar":avatar,"bio":bio}))?;
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(true)
-    }).await.map_err(|e| e.to_string())?
 }
