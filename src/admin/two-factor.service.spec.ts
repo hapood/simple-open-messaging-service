@@ -227,7 +227,7 @@ describe('TwoFactorService', () => {
     const { svc } = makeService();
     const jwt = new JwtService({});
     const accessLike = jwt.sign(
-      { sub: 42, scope: 'admin', tver: 0 },
+      { sub: 42, scope: 'admin' },
       { secret: jwtConstants.adminSecret, expiresIn: '1m' },
     );
     expect(svc.verifyChallenge(accessLike)).toBeNull();
@@ -296,7 +296,7 @@ describe('TwoFactorService', () => {
 
   // ── enable / disable / regenerate (atomic Admin-row state) ─────────────────────
 
-  it('enableWithBackupCodes atomically enables, bumps tokenVersion, and replaces backup codes', async () => {
+  it('enableWithBackupCodes atomically enables and replaces backup codes', async () => {
     const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
     const deleteMany = vi.fn(async () => ({ count: 0 }));
     const created: Array<{ adminId: number; codeHash: string }> = [];

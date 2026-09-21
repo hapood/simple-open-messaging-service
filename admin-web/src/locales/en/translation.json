@@ -229,7 +229,6 @@
       "foreigner": "Foreign",
       "status": "Status",
       "quota": "Quota",
-      "tokenVer": "tokenVer",
       "createdAt": "Created",
       "actions": "Quick actions"
     },
@@ -270,7 +269,6 @@
     "field": {
       "domain": "Domain",
       "foreigner": "Foreigner",
-      "tokenVer": "tokenVer",
       "createdAt": "Created",
       "updatedAt": "Updated",
       "bio": "Bio"

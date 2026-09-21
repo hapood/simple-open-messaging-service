@@ -33,9 +33,10 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
 /**
- * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
- * lives on the linked User; this service operates on the separate Admin/AdminRefreshToken tables and signs tokens with
- * a separate adminSecret carrying scope:'admin' (physically isolated from user auth — the two never interoperate).
+ * Admin auth service: opaque admin sessions persisted in the separate AdminSession table (token-hashed,
+ * independently revocable). Identity (account + password) lives on the linked User; the only JWT is the
+ * single-use 2FA/WebAuthn login-challenge token, signed with a separate adminSecret (physically isolated
+ * from user auth — the two never interoperate).
  */
 type AdminSessionOpts = { ip?: string; userAgent?: string };
 
@@ -910,7 +911,7 @@ export class AdminAuthService implements OnModuleInit {
   }
 
   // ── Admin session reads + identity (moved from AdminController) ──────────────
-  // Owns the AdminRefreshToken table. Services return domain data; the controller wraps the envelope.
+  // Owns the AdminSession table. Services return domain data; the controller wraps the envelope.
 
   /** Active admin refresh-session list (joins Admin → linked user account for display). */
   async listAdminSessions(opts: { skip?: number; take?: number; ip?: string }) {

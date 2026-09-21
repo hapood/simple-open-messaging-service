@@ -584,7 +584,7 @@ export class AdminController {
     };
   }
 
-  // ===== Admin sessions (separate AdminRefreshToken table) =====
+  // ===== Admin sessions (separate AdminSession table) =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)

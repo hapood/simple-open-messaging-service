@@ -180,10 +180,6 @@ export function UserDetailPage() {
                 value={u.domain !== 'local' ? t('common.yes') : t('common.no')}
               />
               <Field
-                label={t('userDetail.field.tokenVer')}
-                value={String(u.tokenVersion)}
-              />
-              <Field
                 label={t('userDetail.field.createdAt')}
                 value={<Timestamp value={u.createdAt} />}
               />

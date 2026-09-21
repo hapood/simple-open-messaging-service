@@ -19,8 +19,8 @@ import { PasswordHasher } from './password-hasher.service.js';
  * (issue/validate/revoke live in {@link SessionTokenService}). There is no access JWT and no refresh
  * token — one opaque session credential per device authenticates everything, revoked wholesale by
  * {@link invalidateAllSessions} (logout-all / password change / admin purge), which also emits so online
- * SSE clients are FORCE_LOGOUT'd at once. The admin console's SEPARATE JWT+refresh auth
- * (AdminAuthService / AdminRefreshToken / Admin.tokenVersion) is a different system, untouched here.
+ * SSE clients are FORCE_LOGOUT'd at once. The admin console's SEPARATE opaque-session auth
+ * (AdminAuthService / AdminSession) is a different system, untouched here.
  */
 @Injectable()
 export class AuthService {
@@ -237,7 +237,7 @@ export class AuthService {
 
   // ── Admin session/overview reads ─────────────────────────────────────────────
   // User-side sessions live on SessionToken (the canonical credential). Admin-session reads
-  // (AdminRefreshToken) live in AdminAuthService. Services return domain data; the controller wraps
+  // (AdminSession) live in AdminAuthService. Services return domain data; the controller wraps
   // the HTTP envelope.
 
   /** System-wide active session overview — SessionToken rows (filter by userId / ip). Active = not

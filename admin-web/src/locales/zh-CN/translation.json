@@ -229,7 +229,6 @@
       "foreigner": "外宾",
       "status": "状态",
       "quota": "额度",
-      "tokenVer": "tokenVer",
       "createdAt": "创建时间",
       "actions": "快捷操作"
     },
@@ -270,7 +269,6 @@
     "field": {
       "domain": "域",
       "foreigner": "境外",
-      "tokenVer": "tokenVer",
       "createdAt": "创建时间",
       "updatedAt": "更新时间",
       "bio": "简介"

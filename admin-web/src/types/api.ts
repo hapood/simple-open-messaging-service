@@ -82,9 +82,6 @@ export interface User {
   createdAt: number;
   updatedAt: number;
   isDeleted: boolean;
-  tokenVersion: number;
-  userExtraId: number;
-  userNotiBoxId: number;
   quota: UserQuotaSummary | null;
 }
 
@@ -483,7 +480,6 @@ interface UserDetailUser {
   domain: string | null;
   isGroup: boolean;
   isDeleted: boolean;
-  tokenVersion: number;
   createdAt: number;
   updatedAt: number;
 }

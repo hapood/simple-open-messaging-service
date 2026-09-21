@@ -253,11 +253,11 @@ export class TwoFactorService {
 
   // ── Admin.twoFactor* + TwoFactorBackupCode persistence ──────────────────────────
 
-  /** Atomically enable 2FA: persist the encrypted secret + flags, replace backup codes, AND bump
-   *  tokenVersion — all in one transaction, so the moment `twoFactorEnabled` is observable as true, every
-   *  outstanding access token is already invalid (its tver check fails on the next request). This makes the
-   *  "no 2FA-bypassing session can exist" invariant atomic; the caller (AdminAuthService.completeSetup)
-   *  then revokes refresh tokens best-effort. Returns the plaintext backup codes ONCE. */
+  /** Atomically enable 2FA: persist the encrypted secret + flags and replace backup codes in one
+   *  transaction, so the moment `twoFactorEnabled` is observable as true the enrollment write is
+   *  complete. The caller (AdminAuthService.completeSetup) then revokes every outstanding admin
+   *  session (revokeSessionsByAdmin '2fa_enabled'), so no pre-enrollment session can bypass the new
+   *  factor — the admin re-logs in through the 2FA challenge. Returns the plaintext backup codes ONCE. */
   async enableWithBackupCodes(
     adminId: number,
     secretBase32: string,

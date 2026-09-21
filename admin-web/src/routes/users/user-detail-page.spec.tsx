@@ -32,7 +32,6 @@ vi.mock('@/hooks/use-user-detail', () => ({
         domain: 'local',
         isGroup: false,
         isDeleted: state.isDeleted,
-        tokenVersion: 1,
         createdAt: 1,
         updatedAt: 1,
       },

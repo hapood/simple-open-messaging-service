@@ -212,7 +212,6 @@ export function UsersPage() {
               <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
               <TableHead className="w-28">{t('users.col.quota')}</TableHead>
-              <TableHead className="w-28">{t('users.col.tokenVer')}</TableHead>
               <TableHead>{t('users.col.createdAt')}</TableHead>
               <TableHead className="w-48 text-right">
                 {t('users.col.actions')}
@@ -224,7 +223,7 @@ export function UsersPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={10}
+              colSpan={9}
             >
               {data?.list.map((u) => (
                 <TableRow key={u.id}>
@@ -288,9 +287,6 @@ export function UsersPage() {
                         {t('quota.notApplicable')}
                       </span>
                     )}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {u.tokenVersion}
                   </TableCell>
                   <TableCell>
                     <Timestamp value={u.createdAt} />

@@ -344,10 +344,11 @@ export class WebAuthnService {
     }
   }
 
-  /** Delete a credential. Flips webauthnEnabled off when the last one is removed, AND bumps tokenVersion
-   *  on every removal (a 2FA-config change) so every outstanding session is invalidated and the admin must
-   *  re-authenticate — surfacing the change at next login (the Google/GitHub posture). Returns the
-   *  remaining count. Throws NOT_FOUND if the credential belongs to another admin. */
+  /** Delete a credential. Flips webauthnEnabled off when the last one is removed. Deliberately does NOT
+   *  revoke sessions: a passkey is an additive optional factor whose removal must not log the admin out
+   *  (enrollment already required password re-auth, so a session hijacker cannot have enrolled their own
+   *  — the same rationale applies on the way out). Returns the remaining count. Throws NOT_FOUND if the
+   *  credential belongs to another admin. */
   async removeCredential(
     adminId: number,
     rowId: number,
