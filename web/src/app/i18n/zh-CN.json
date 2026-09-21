@@ -557,6 +557,7 @@
       "groupJoined": "{{name}} 加入了群聊",
       "groupLeft": "{{name}} 已离开群聊",
       "groupLeftSelf": "你已不在该群聊中",
+      "groupDissolved": "群聊已解散",
       "groupAdminGranted": "{{name}} 已成为管理员",
       "groupAdminRevoked": "{{name}} 已不再是管理员",
       "groupOwnerTransferred": "{{name}} 已成为群主",

@@ -77,6 +77,7 @@ describe('SystemRowComponent', () => {
     [{ type: 'GROUP_CREATED', creator: me }, 'me 创建了群聊'],
     [{ type: 'GROUP_JOINED', member: alice }, 'alice@peer.test 加入了群聊'],
     [{ type: 'GROUP_LEFT', member: me }, '你已不在该群聊中'],
+    [{ type: 'GROUP_DISSOLVED' }, '群聊已解散'],
     [
       {
         type: 'GROUP_ADMIN_GRANTED',

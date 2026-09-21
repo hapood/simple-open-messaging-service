@@ -199,6 +199,8 @@ export class SystemRowComponent {
           return translate(
             this.isCurrentUser(body.member) ? 'groupLeftSelf' : 'groupLeft',
           );
+        case 'GROUP_DISSOLVED':
+          return translate('groupDissolved');
         case 'GROUP_ADMIN_GRANTED':
           return translate('groupAdminGranted');
         case 'GROUP_ADMIN_REVOKED':

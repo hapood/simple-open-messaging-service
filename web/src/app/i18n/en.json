@@ -557,6 +557,7 @@
       "groupJoined": "{{name}} joined the group",
       "groupLeft": "{{name}} is no longer in the group",
       "groupLeftSelf": "You are no longer in this group",
+      "groupDissolved": "The group was dissolved",
       "groupAdminGranted": "{{name}} became an administrator",
       "groupAdminRevoked": "{{name}} is no longer an administrator",
       "groupOwnerTransferred": "{{name}} became the group owner",
