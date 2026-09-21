@@ -150,7 +150,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
     expect(history.body.data.data).toHaveLength(1);
-    expect(history.body.data.data[0].status).toBe('REVOKED');
+    expect(history.body.data.data[0].status).toBe('REJECTED');
     expect(history.body.data.data[0].feedId).toBe(
       pending.body.data.data[0].feedId,
     );
@@ -182,7 +182,7 @@ describe('group join request projection', () => {
       memberProfileRev: 1,
       direction: 'APPLICATION',
       feedId: history.body.data.data[0].feedId + 1,
-      status: 'REVOKED',
+      status: 'REJECTED',
       note: 'please',
       requestedAt: now,
       expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
@@ -275,7 +275,7 @@ describe('group join request projection', () => {
       .post('/api/v1/group/invitations')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
-    expect(history.body.data.data[0].status).toBe('REVOKED');
+    expect(history.body.data.data[0].status).toBe('WITHDRAWN');
   });
 
   it('updates an existing application on manager ACK without creating an invitation projection', async () => {

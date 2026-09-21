@@ -17,7 +17,14 @@
         } @else if (invitations().length === 0) {
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
-          @for (request of invitations(); track request.account + '@' + request.domain + ':' + request.namespaceId) {
+          @for (
+            request of invitations();
+            track request.account +
+              '@' +
+              request.domain +
+              ':' +
+              request.namespaceId
+          ) {
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -81,7 +88,14 @@
         } @else if (applications().length === 0) {
           <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
         } @else {
-          @for (request of applications(); track request.account + '@' + request.domain + ':' + request.namespaceId) {
+          @for (
+            request of applications();
+            track request.account +
+              '@' +
+              request.domain +
+              ':' +
+              request.namespaceId
+          ) {
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -122,10 +136,7 @@
                   </button>
                 } @else {
                   <span class="request-status">{{
-                    (request.status === 'ACCEPTED'
-                      ? 'group.joinRequestAccepted'
-                      : 'group.joinRequestRejected'
-                    ) | transloco
+                    applicationStatusKey(request.status) | transloco
                   }}</span>
                 }
               </div>

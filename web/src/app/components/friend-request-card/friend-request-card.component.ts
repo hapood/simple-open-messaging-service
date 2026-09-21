@@ -1,4 +1,8 @@
 import {
+  RequestProjectionStatus,
+  type RequestProjectionStatusValue,
+} from '../../../../../shared/request-projection-status';
+import {
   ChangeDetectionStrategy,
   Component,
   input,
@@ -21,7 +25,7 @@ export interface FriendRequestCardModel {
   account?: string;
   domain?: string;
   reqMessage?: string;
-  status: number;
+  status: RequestProjectionStatusValue;
   date: number;
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
@@ -42,6 +46,7 @@ export interface FriendRequestCardModel {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class FriendRequestCardComponent {
+  readonly RequestProjectionStatus = RequestProjectionStatus;
   readonly request = input.required<FriendRequestCardModel>();
   readonly direction = input.required<'INCOMING' | 'OUTGOING'>();
   readonly relativeDate = input.required<string>();

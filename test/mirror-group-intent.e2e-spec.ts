@@ -485,6 +485,25 @@ describe('mirror group intent application', () => {
     ).toBe('REVOKED');
     const feeds = await feedRows(bob.id);
     expect(feeds.some((f) => bodyOf(f).status === 'REVOKED')).toBe(true);
+    const terminal = feeds.find((f) => bodyOf(f).status === 'REVOKED');
+    expect(bodyOf(terminal!)).toMatchObject({
+      requestStatus: 'WITHDRAWN',
+      requestDirection: 'INCOMING',
+    });
+  });
+
+  it('persists WITHDRAWN/INCOMING when a mirror invitation is revoked', async () => {
+    await freshGroup();
+    const bob = await member('withdraw-invite');
+    await run(bob, invitationBody());
+    await run(bob, revocationBody());
+    const feeds = await feedRows(bob.id);
+    const terminal = feeds.find((f) => bodyOf(f).status === 'REVOKED');
+    expect(terminal).toBeDefined();
+    expect(bodyOf(terminal!)).toMatchObject({
+      requestStatus: 'WITHDRAWN',
+      requestDirection: 'INCOMING',
+    });
   });
 
   it('concludes a live application on rejection and permits a new request', async () => {
@@ -509,6 +528,16 @@ describe('mirror group intent application', () => {
     expect(after.sideA!.status).toBe('REVOKED');
     const sideB = after.intents.find((i) => i.authorSide === 'B');
     expect(sideB!.status).toBe('REVOKED');
+    const terminalFeeds = (await feedRows(bob.id)).filter(
+      (f) => bodyOf(f).status === 'REVOKED',
+    );
+    expect(terminalFeeds.length).toBeGreaterThan(0);
+    for (const feed of terminalFeeds)
+      expect(bodyOf(feed)).toMatchObject({
+        requestStatus: 'REJECTED',
+        requestDirection: 'OUTGOING',
+      });
+
     await database.db.transaction((tx) =>
       app
         .get(GroupRelationshipMutationService)

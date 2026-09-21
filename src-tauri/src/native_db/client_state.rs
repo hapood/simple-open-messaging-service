@@ -188,7 +188,7 @@ pub(crate) async fn native_db_page_relationship_requests(
                 "SELECT payload_json FROM relationship_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
-                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')
+                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')
                    AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
                      OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
                        AND stable_key < ?5))
@@ -221,7 +221,7 @@ pub(crate) async fn native_db_page_relationship_requests(
                 "SELECT COUNT(*) FROM relationship_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
-                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')",
+                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')",
                 params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )

@@ -365,13 +365,20 @@
         </div>
       </mat-card>
       <div class="detail-actions">
-        @if (selectedDirection() === 'INCOMING') {
+        @if (req.status !== RequestProjectionStatus.REQUESTED) {
+          <button mat-button type="button" disabled>
+            {{ requestStatusLabel(req.status) | transloco }}
+          </button>
+        } @else if (selectedDirection() === 'INCOMING') {
           <button
             mat-flat-button
             color="primary"
             type="button"
             (click)="approve(req)"
-            [disabled]="req.status !== 0 || isInviteActionPending(req.id)"
+            [disabled]="
+              req.status !== RequestProjectionStatus.REQUESTED ||
+              isInviteActionPending(req.id)
+            "
           >
             {{
               (req.kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
@@ -379,39 +386,19 @@
             }}
           </button>
         }
-        @if (selectedDirection() === 'OUTGOING') {
+        @if (req.status === RequestProjectionStatus.REQUESTED) {
           <button
             mat-button
             type="button"
             class="delete-btn"
             (click)="deleteSelected(req)"
-            [disabled]="
-              req.status === -2 ||
-              req.status === -3 ||
-              req.status === -4 ||
-              isInviteActionPending(req.id)
-            "
+            [disabled]="isInviteActionPending(req.id)"
           >
             {{
-              (req.status === -3
-                ? 'friend.revoked'
-                : req.status === -4
-                  ? 'friend.rejected'
-                  : 'friend.revoke'
+              (selectedDirection() === 'OUTGOING'
+                ? 'friend.revoke'
+                : 'friend.decline'
               ) | transloco
-            }}
-          </button>
-        } @else {
-          <button
-            mat-button
-            type="button"
-            class="delete-btn"
-            (click)="deleteSelected(req)"
-            [disabled]="req.status !== 0 || isInviteActionPending(req.id)"
-          >
-            {{
-              (req.status === -4 ? 'friend.rejected' : 'friend.decline')
-                | transloco
             }}
           </button>
         }

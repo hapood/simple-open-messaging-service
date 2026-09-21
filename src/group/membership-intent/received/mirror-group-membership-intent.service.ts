@@ -414,6 +414,18 @@ export class MirrorGroupMembershipIntentService {
 
     // REVOKED
     if (lockedPairId === null) return { routed: 'noop:no-mirror-anchor' };
+    const requestStatus =
+      fresh.memberIntentStatus === 'REQUESTED'
+        ? ('REJECTED' as const)
+        : fresh.groupIntentStatus === 'REQUESTED'
+          ? ('WITHDRAWN' as const)
+          : undefined;
+    const requestDirection =
+      fresh.memberIntentStatus === 'REQUESTED'
+        ? ('OUTGOING' as const)
+        : fresh.groupIntentStatus === 'REQUESTED'
+          ? ('INCOMING' as const)
+          : undefined;
     if (
       !fresh.pairActive &&
       fresh.groupIntentStatus === 'REVOKED' &&
@@ -433,6 +445,8 @@ export class MirrorGroupMembershipIntentService {
         presentation,
         memberAccount,
         localMemberId: memberId,
+        requestStatus,
+        requestDirection,
       }),
     );
     const row = result.rows[0]!;
@@ -451,6 +465,8 @@ export class MirrorGroupMembershipIntentService {
         memberId,
         clientUpdates,
         peers,
+        requestStatus,
+        requestDirection,
       );
       return { routed: 'kick' };
     }
@@ -468,6 +484,8 @@ export class MirrorGroupMembershipIntentService {
         memberId,
         clientUpdates,
         peers,
+        requestStatus,
+        requestDirection,
       );
       return {
         routed:
@@ -569,6 +587,8 @@ export class MirrorGroupMembershipIntentService {
     memberUserId: number,
     clientUpdates: PendingClientStateFeedUpdate[],
     peers: Set<string>,
+    requestStatus?: 'WITHDRAWN' | 'REJECTED',
+    requestDirection?: 'INCOMING' | 'OUTGOING',
   ): Promise<void> {
     const allocated =
       await this.deps.memberMutations.writeMemberRelationshipIntentInTx(
@@ -577,6 +597,12 @@ export class MirrorGroupMembershipIntentService {
         memberUserId,
         'REVOKED',
         clientUpdates,
+        '',
+        undefined,
+        {
+          clientRequestStatus: requestStatus,
+          clientRequestDirection: requestDirection,
+        },
       );
     for (const peerDomain of allocated.keys()) peers.add(peerDomain);
   }

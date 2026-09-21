@@ -66,7 +66,18 @@ pub(super) fn apply_relationship_request_effect(
     if status == "ACCEPTED" && direction == "OUTGOING" {
         return Ok(());
     }
-    let reverse = status == "ACCEPTED";
+    let request_direction = body
+        .get("requestDirection")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "INCOMING" | "OUTGOING"));
+    let target_direction = request_direction.unwrap_or_else(|| {
+        if status == "ACCEPTED" && direction == "INCOMING" {
+            "OUTGOING"
+        } else {
+            direction
+        }
+    });
+    let reverse = target_direction != direction;
     let key = if reverse {
         serde_json::json!([
             "friend",
@@ -89,7 +100,22 @@ pub(super) fn apply_relationship_request_effect(
         .to_string()
     };
     if status != "REQUESTED" {
-        return update_live_request_projection(tx, user_id, &key, status, now);
+        let projection_status = if status == "REVOKED" {
+            if request_direction.is_none() {
+                return Ok(());
+            }
+            if body
+                .get("requestStatus")
+                .and_then(Value::as_str)
+                .is_none_or(|value| !matches!(value, "WITHDRAWN" | "REJECTED"))
+            {
+                return Ok(());
+            }
+            body.get("requestStatus").and_then(Value::as_str).unwrap()
+        } else {
+            status
+        };
+        return update_live_request_projection(tx, user_id, &key, projection_status, now);
     }
     let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
     let Some(expires_at) = body
@@ -161,11 +187,15 @@ pub(super) fn apply_group_request_effect(
     if status == "ACCEPTED" && direction == "OUTGOING" {
         return Ok(());
     }
-    let target_direction = if status == "ACCEPTED" {
+    let request_direction = body
+        .get("requestDirection")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "INCOMING" | "OUTGOING"));
+    let target_direction = request_direction.unwrap_or(if status == "ACCEPTED" {
         "OUTGOING"
     } else {
         direction
-    };
+    });
     let key = serde_json::json!([
         "group",
         namespace_id,
@@ -175,7 +205,20 @@ pub(super) fn apply_group_request_effect(
     ])
     .to_string();
     if status != "REQUESTED" {
-        return update_live_request_projection(tx, user_id, &key, status, now);
+        let projection_status = if status == "REVOKED" {
+            if request_direction.is_none()
+                || body
+                    .get("requestStatus")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| !matches!(value, "WITHDRAWN" | "REJECTED"))
+            {
+                return Ok(());
+            }
+            body.get("requestStatus").and_then(Value::as_str).unwrap()
+        } else {
+            status
+        };
+        return update_live_request_projection(tx, user_id, &key, projection_status, now);
     }
     let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
     let Some(expires_at) = body

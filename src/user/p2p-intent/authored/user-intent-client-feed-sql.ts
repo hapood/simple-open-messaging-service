@@ -45,6 +45,7 @@ export function userIntentClientBodiesSql(
      * values when the write no-oped. */
     reverseState?: string;
     establishedOverride?: SQL;
+    requestRevocation?: boolean;
   },
 ): SQL {
   const established = input.establishedOverride
@@ -63,6 +64,25 @@ export function userIntentClientBodiesSql(
   const reverseJoin = input.reverseState
     ? sql`LEFT JOIN ${sql.raw(input.reverseState)} rv ON rv."authorSide" = s."authorSide"`
     : sql``;
+  // Read the live request from the statement snapshot, before the revocation write.
+  // Request authorship identifies withdrawal versus rejection; later relationship
+  // closure without a live request has no request-card effect.
+  const requestOutcome = input.requestRevocation
+    ? sql` || COALESCE((
+        SELECT jsonb_build_object(
+          'requestStatus', CASE WHEN pending."authorSide" = ${input.actorSide}
+            THEN 'WITHDRAWN' ELSE 'REJECTED' END,
+          'requestDirection', CASE WHEN pending."authorSide" = cp."authorSide"
+            THEN cp.direction ELSE CASE WHEN cp.direction = 'OUTGOING'
+              THEN 'INCOMING' ELSE 'OUTGOING' END END)
+        FROM "RelationshipIntent" pending
+        WHERE pending."pairId" = ${input.pairId} AND pending.status = 'REQUESTED'
+          AND pending."expiresAt" > CURRENT_TIMESTAMP
+          AND cp.status = 'REVOKED' AND cp."authorSide" = ${input.actorSide}
+        ORDER BY (pending."authorSide" = ${input.actorSide}) DESC
+        LIMIT 1
+      ), '{}'::jsonb)`
+    : sql.empty();
   return sql`
     sides AS MATERIALIZED (
       SELECT 'A'::text AS "authorSide", p."endpointAAccount" AS "actorAccount",
@@ -128,7 +148,7 @@ export function userIntentClientBodiesSql(
             COALESCE(pr."displayName", cp."clientPeerAccount"), 'avatar', COALESCE(pr.avatar, ''),
             'bio', COALESCE(pr.bio, ''), 'domain', cp."clientPeerDomain",
             'profileRev', cp."clientPeerProfileRev")
-        ) AS body
+        )${requestOutcome} AS body
       FROM client_peers cp
       LEFT JOIN "Profile" pr ON cp."clientPeerProfileRev" > 0
         AND pr."profileRev" = cp."clientPeerProfileRev"

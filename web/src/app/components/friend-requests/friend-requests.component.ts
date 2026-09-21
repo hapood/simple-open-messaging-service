@@ -1,4 +1,8 @@
 import {
+  RequestProjectionStatus,
+  type RequestProjectionStatusValue,
+} from '../../../../../shared/request-projection-status';
+import {
   Component,
   computed,
   effect,
@@ -67,7 +71,7 @@ type PendingReq = {
   account?: string;
   domain?: string;
   reqMessage?: string;
-  status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked, -4 rejected
+  status: RequestProjectionStatusValue;
   date: number;
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
@@ -102,6 +106,7 @@ type RelationshipState =
   styleUrl: './friend-requests.component.scss',
 })
 export class FriendRequestsComponent implements OnDestroy {
+  readonly RequestProjectionStatus = RequestProjectionStatus;
   readonly searchText = signal('');
   /** Set when the server reports recognition or Health progress for a federated resolve. */
   readonly connectingDomain = signal<string | null>(null);
@@ -204,12 +209,24 @@ export class FriendRequestsComponent implements OnDestroy {
         if (res.code === 0) {
           this.pendingReqList.update((items) =>
             items.map((item) =>
-              item.id === req.id ? { ...item, status: -4, errText: '' } : item,
+              item.id === req.id
+                ? {
+                    ...item,
+                    status: RequestProjectionStatus.REJECTED,
+                    errText: '',
+                  }
+                : item,
             ),
           );
           if (this.selectedRequest()?.id === req.id)
             this.selectedRequest.update((item) =>
-              item ? { ...item, status: -4, errText: '' } : item,
+              item
+                ? {
+                    ...item,
+                    status: RequestProjectionStatus.REJECTED,
+                    errText: '',
+                  }
+                : item,
             );
         } else {
           this.pendingReqList.update((items) =>
@@ -510,7 +527,13 @@ export class FriendRequestsComponent implements OnDestroy {
           // then showed the reset loader before the IndexedDB refresh removed/replaced it.
           this.pendingReqList.update((items) =>
             items.map((item) =>
-              item.id === req.id ? { ...item, status: 1, errText: '' } : item,
+              item.id === req.id
+                ? {
+                    ...item,
+                    status: RequestProjectionStatus.ACCEPTED,
+                    errText: '',
+                  }
+                : item,
             ),
           );
           // Optimistic "added": patch the current row by identity. A state-feed refresh may have
@@ -530,7 +553,7 @@ export class FriendRequestsComponent implements OnDestroy {
               item.id === req.id
                 ? {
                     ...item,
-                    status: 0,
+                    status: RequestProjectionStatus.REQUESTED,
                     errText: translateBizResult(res, this.transloco),
                   }
                 : item,
@@ -555,12 +578,24 @@ export class FriendRequestsComponent implements OnDestroy {
           // Keep the tombstone visible so the sent-request history reflects the final state.
           this.sentReqList.update((items) =>
             items.map((item) =>
-              item.id === req.id ? { ...item, status: -3, errText: '' } : item,
+              item.id === req.id
+                ? {
+                    ...item,
+                    status: RequestProjectionStatus.WITHDRAWN,
+                    errText: '',
+                  }
+                : item,
             ),
           );
           if (this.selectedRequest()?.id === req.id)
             this.selectedRequest.update((item) =>
-              item ? { ...item, status: -3, errText: '' } : item,
+              item
+                ? {
+                    ...item,
+                    status: RequestProjectionStatus.WITHDRAWN,
+                    errText: '',
+                  }
+                : item,
             );
           this.snackBar.open(
             this.transloco.translate('friend.revokedToast'),
@@ -625,6 +660,21 @@ export class FriendRequestsComponent implements OnDestroy {
     return { account: req.account, domain: req.domain };
   }
 
+  requestStatusLabel(status: RequestProjectionStatusValue): string {
+    switch (status) {
+      case RequestProjectionStatus.ACCEPTED:
+        return 'friend.approved';
+      case RequestProjectionStatus.WITHDRAWN:
+        return 'friend.revoked';
+      case RequestProjectionStatus.REJECTED:
+        return 'friend.rejected';
+      case RequestProjectionStatus.EXPIRED:
+        return 'friend.expired';
+      default:
+        return 'group.invitationPending';
+    }
+  }
+
   private projectionToPending(projection: FriendRequestProjection): PendingReq {
     if (projection.kind === 'FRIEND') {
       const peer = projection.peer!;
@@ -638,14 +688,7 @@ export class FriendRequestsComponent implements OnDestroy {
         account: peer.account,
         domain: peer.domain,
         reqMessage: projection.note,
-        status:
-          projection.status === 'ACCEPTED'
-            ? 1
-            : projection.status === 'REVOKED'
-              ? projection.direction === 'OUTGOING'
-                ? -4
-                : -3
-              : 0,
+        status: projection.status,
         date: projection.requestedAt,
         errText: '',
         kind: 'FRIEND',
@@ -663,12 +706,7 @@ export class FriendRequestsComponent implements OnDestroy {
       account: group.account,
       domain: group.domain,
       reqMessage: group.description,
-      status:
-        projection.status === 'ACCEPTED'
-          ? 1
-          : projection.status === 'REVOKED'
-            ? -4
-            : 0,
+      status: projection.status,
       date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',

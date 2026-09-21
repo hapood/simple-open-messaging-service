@@ -1,3 +1,4 @@
+import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
 import type { ThreadListRecord } from './model';
 import { isThreadStateSnapshot } from '../../../../shared/thread-state';
 import { applyThreadStateSnapshot } from './thread-state-projection';
@@ -1388,7 +1389,7 @@ export class WebdbStorage {
       const index = db
         .transaction('relationshipRequests')
         .store.index('bucketStatus');
-      const statuses = ['REQUESTED', 'ACCEPTED', 'REVOKED'] as const;
+      const statuses = Object.values(RequestProjectionStatus);
       const buckets = await Promise.all(
         statuses.map((status) =>
           index.getAll(
@@ -1867,10 +1868,12 @@ export class WebdbStorage {
           const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
           const direction =
             body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING');
-          const targetDirection = projectionDirectionForFact({
-            status: body.status,
-            direction,
-          });
+          const targetDirection =
+            body.requestDirection ??
+            projectionDirectionForFact({
+              status: body.status,
+              direction,
+            });
           if (targetDirection === null) return;
           const group = {
             ...body.group,
@@ -1911,7 +1914,8 @@ export class WebdbStorage {
           | 'subjectDomain'
           | 'requestedSort'
         >;
-        const targetDirection = projectionDirectionForFact(body);
+        const targetDirection =
+          body.requestDirection ?? projectionDirectionForFact(body);
         if (targetDirection === null) return;
         const projectionKey = friendRequestKey(
           { ...op, direction: body.direction },

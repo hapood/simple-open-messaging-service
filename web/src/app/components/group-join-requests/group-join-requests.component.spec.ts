@@ -188,6 +188,20 @@ describe('GroupJoinRequestsComponent', () => {
     expect(component.candidates()[0].state).toBe('AVAILABLE');
   });
 
+  it('does not attribute a withdrawn or expired application to a manager rejection', async () => {
+    const withdrawn = row(2, 'WITHDRAWN');
+    const { component, groups } = create(
+      vi.fn(() => of(response(withdrawn))),
+      true,
+    );
+    await Promise.resolve();
+    expect(
+      component.applicationStatusKey(component.applications()[0].status),
+    ).toBe('friend.revoked');
+    expect(groups.rejectJoinRequest).not.toHaveBeenCalled();
+    expect(component.applicationStatusKey('EXPIRED')).toBe('friend.expired');
+  });
+
   it('retains a rejected application as a terminal record', async () => {
     const { component, groups } = create(vi.fn(() => of(response())));
     component.applications.set([row(1)]);
@@ -197,6 +211,9 @@ describe('GroupJoinRequestsComponent', () => {
       account: 'user-1',
       domain: 'local',
     });
-    expect(component.applications()[0].status).toBe('REVOKED');
+    expect(component.applications()[0].status).toBe('REJECTED');
+    expect(
+      component.applicationStatusKey(component.applications()[0].status),
+    ).toBe('friend.rejected');
   });
 });

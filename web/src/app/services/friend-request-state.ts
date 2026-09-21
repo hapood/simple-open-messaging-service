@@ -1,5 +1,10 @@
+import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
+import {
+  RequestProjectionStatus,
+  type RequestProjectionStatusValue,
+} from '../../../../shared/request-projection-status';
 export type FriendRequestIntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-type FriendRequestProjectionStatus = FriendRequestIntentStatus;
+type FriendRequestProjectionStatus = RequestProjectionStatusValue;
 type FriendRequestBucket = 'RECEIVED' | 'SENT';
 export type FriendRequestDirection = 'INCOMING' | 'OUTGOING';
 
@@ -56,6 +61,8 @@ export interface FriendRequestProjection {
 }
 
 export interface FriendIntentProjectionInput {
+  requestStatus?: RequestRevocationStatus;
+  requestDirection?: FriendRequestDirection;
   namespaceId: number;
   account: string;
   domain: string;
@@ -71,6 +78,8 @@ export interface FriendIntentProjectionInput {
 }
 
 export interface GroupInviteProjectionInput {
+  requestStatus?: RequestRevocationStatus;
+  requestDirection?: FriendRequestDirection;
   namespaceId: number;
   account: string;
   domain: string;
@@ -146,8 +155,16 @@ export function applyFriendIntentToProjection(
 ): ProjectionTransition {
   if (input.status === 'ACCEPTED' && input.direction === 'OUTGOING')
     return { record: current ?? null, becameActionable: false };
+  if (input.status === 'REVOKED' && !input.requestStatus)
+    return { record: current ?? null, becameActionable: false };
   if (input.status !== 'REQUESTED')
-    return updateLiveProjection(current, input.status, now);
+    return updateLiveProjection(
+      current,
+      input.status === 'REVOKED'
+        ? input.requestStatus!
+        : RequestProjectionStatus.ACCEPTED,
+      now,
+    );
 
   const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
   if (expiresAt === null || expiresAt <= now)
@@ -192,8 +209,16 @@ export function applyGroupIntentToProjection(
   const direction = input.direction ?? 'INCOMING';
   if (input.status === 'ACCEPTED' && direction === 'OUTGOING')
     return { record: current ?? null, becameActionable: false };
+  if (input.status === 'REVOKED' && !input.requestStatus)
+    return { record: current ?? null, becameActionable: false };
   if (input.status !== 'REQUESTED')
-    return updateLiveProjection(current, input.status, now);
+    return updateLiveProjection(
+      current,
+      input.status === 'REVOKED'
+        ? input.requestStatus!
+        : RequestProjectionStatus.ACCEPTED,
+      now,
+    );
 
   const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
   if (expiresAt === null || expiresAt <= now)
@@ -229,7 +254,7 @@ export function applyGroupIntentToProjection(
 
 function updateLiveProjection(
   current: FriendRequestProjection | undefined,
-  status: Exclude<FriendRequestIntentStatus, 'REQUESTED'>,
+  status: Exclude<RequestProjectionStatusValue, 'REQUESTED'>,
   now: number,
 ): ProjectionTransition {
   if (!current || current.status !== 'REQUESTED' || current.expiresAt <= now)

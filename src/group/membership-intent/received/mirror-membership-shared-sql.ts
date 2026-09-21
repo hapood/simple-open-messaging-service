@@ -111,7 +111,13 @@ export function mirrorIntentFeedBodySql(params: {
   established: SQL;
   threadId: number;
   presentation: MirrorGroupPresentationInput;
+  requestStatus?: 'WITHDRAWN' | 'REJECTED';
+  requestDirection?: 'INCOMING' | 'OUTGOING';
 }): SQL {
+  const provenance = params.requestStatus
+    ? sql`jsonb_build_object('requestStatus', ${params.requestStatus}::text,
+        'requestDirection', ${params.requestDirection}::text)`
+    : sql`'{}'::jsonb`;
   return sql`jsonb_build_object('status', ${params.status}, 'note', ${params.note},
       'requestedAt', ${params.requestedAt}, 'expiresAt', ${params.expiresAt},
       'established', ${params.established},
@@ -120,7 +126,7 @@ export function mirrorIntentFeedBodySql(params: {
         'domain', ${params.presentation.groupDomain}::text, 'isLocal', false,
         'name', ${params.presentation.groupName}::text, 'avatar', ${params.presentation.groupAvatar}::text,
         'description', ${params.presentation.groupDescription}::text,
-        'profileRev', ${params.presentation.groupProfileRev}::integer))`;
+        'profileRev', ${params.presentation.groupProfileRev}::integer)) || ${provenance}`;
 }
 
 /** Millisecond wire timestamps from nullable timestamp columns. */

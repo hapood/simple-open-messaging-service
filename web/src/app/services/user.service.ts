@@ -1,3 +1,4 @@
+import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
 import type { ThreadStateSnapshot } from '../../../../shared/thread-state';
 import {
   Injectable,
@@ -87,6 +88,8 @@ interface ClientIntentUser {
 }
 
 interface ClientFriendIntentBase {
+  requestStatus?: RequestRevocationStatus;
+  requestDirection?: FriendIntentDirection;
   established?: boolean;
   key: string;
   account: string;
@@ -127,6 +130,8 @@ export type ClientFriendIntent = ClientFriendIntentBase &
   );
 
 export interface ClientGroupInviteIntent {
+  requestStatus?: RequestRevocationStatus;
+  requestDirection?: FriendIntentDirection;
   established?: boolean;
   key: string;
   kind: 'GROUP_INVITE';

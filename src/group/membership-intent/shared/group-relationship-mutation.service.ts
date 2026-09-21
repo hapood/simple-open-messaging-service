@@ -34,6 +34,10 @@ import {
   PeerStateFeedService,
   type PeerStateFeedWrite,
 } from '../../../federation/peer-state-feed.service.js';
+import type {
+  RequestRevocationStatus,
+  RequestProjectionStatusValue,
+} from '../../../../shared/request-projection-status.js';
 
 function groupIntentEndpoints(
   groupAccount: string,
@@ -46,6 +50,9 @@ function groupIntentEndpoints(
 }
 
 export interface GroupRelationshipMutationOptions {
+  /** Client-visible cause for an authored terminal request transition. */
+  clientRequestStatus?: RequestRevocationStatus;
+  clientRequestDirection?: 'INCOMING' | 'OUTGOING';
   publishGroupState?: boolean;
   allowOwnerDeactivation?: boolean;
   initialRole?: typeof GroupRole.OWNER;
@@ -112,6 +119,8 @@ export class GroupRelationshipMutationService {
       lockedGroupPair,
       validatedPairActive,
       expectedAuthorization,
+      clientRequestStatus,
+      clientRequestDirection,
     } = options;
     if (validatedPairActive !== undefined && !lockedGroupPair)
       throw new Error('validated pair fold requires a locked group pair');
@@ -211,7 +220,11 @@ export class GroupRelationshipMutationService {
         tx,
         threadId,
         memberUserId,
-        membership.shouldBeActive ? 'ACCEPTED' : membership.request.status,
+        membership.shouldBeActive
+          ? 'ACCEPTED'
+          : membership.request.status === 'REVOKED'
+            ? (clientRequestStatus ?? 'WITHDRAWN')
+            : membership.request.status,
         membership.request.status === 'ACCEPTED' ? 'INVITATION' : 'APPLICATION',
         membership.request.status === 'REQUESTED',
       );
@@ -232,6 +245,12 @@ export class GroupRelationshipMutationService {
           subjectDomain: 'local',
           body: {
             status: membership.request.status,
+            ...(clientRequestStatus
+              ? { requestStatus: clientRequestStatus }
+              : {}),
+            ...(clientRequestDirection
+              ? { requestDirection: clientRequestDirection }
+              : {}),
             note: membership.request.note,
             requestedAt: clientRequestedAt,
             expiresAt: membership.request.expiresAt,
@@ -287,6 +306,12 @@ export class GroupRelationshipMutationService {
         subjectDomain: group.domain,
         body: {
           status: membership.request.status,
+          ...(clientRequestStatus
+            ? { requestStatus: clientRequestStatus }
+            : {}),
+          ...(clientRequestDirection
+            ? { requestDirection: clientRequestDirection }
+            : {}),
           note: membership.request.note,
           requestedAt: clientRequestedAt,
           expiresAt: membership.request.expiresAt,
@@ -326,6 +351,8 @@ export class GroupRelationshipMutationService {
       allowOwnerDeactivation,
       initialRole,
       expectedAuthorization,
+      clientRequestStatus,
+      clientRequestDirection,
     } = options;
     if (status !== 'REVOKED' && (await isGroupDissolvedInTx(tx, threadId)))
       return new Map<string, bigint>();
@@ -396,7 +423,12 @@ export class GroupRelationshipMutationService {
       tx,
       threadId,
       memberUserId,
-      membership.request.status,
+      membership.request.status === 'REVOKED'
+        ? (clientRequestStatus ??
+            (requestProjectionDirection === 'APPLICATION'
+              ? 'REJECTED'
+              : 'WITHDRAWN'))
+        : membership.request.status,
       requestProjectionDirection ??
         (membership.request.status === 'ACCEPTED'
           ? 'APPLICATION'
@@ -422,6 +454,12 @@ export class GroupRelationshipMutationService {
         subjectDomain: 'local',
         body: {
           status: membership.request.status,
+          ...(clientRequestStatus
+            ? { requestStatus: clientRequestStatus }
+            : {}),
+          ...(clientRequestDirection
+            ? { requestDirection: clientRequestDirection }
+            : {}),
           note: membership.request.note,
           requestedAt: membership.request.requestedAt?.getTime() ?? null,
           expiresAt: membership.request.expiresAt?.getTime() ?? null,
@@ -492,7 +530,7 @@ export class GroupRelationshipMutationService {
     tx: DatabaseTransaction,
     threadId: number,
     memberUserId: AccountTarget,
-    status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' = 'REQUESTED',
+    status: RequestProjectionStatusValue = 'REQUESTED',
     direction: 'APPLICATION' | 'INVITATION' = 'APPLICATION',
     createIfMissing = true,
   ): Promise<void> {

@@ -393,12 +393,17 @@ describe('group join decision', () => {
       ]);
       expect(result.projection).toMatchObject({
         direction: 'APPLICATION',
-        status: decision,
+        status: decision === 'ACCEPTED' ? 'ACCEPTED' : 'REJECTED',
       });
       expect(result.feed?.body).toMatchObject({
         status: decision,
         note: decision === 'ACCEPTED' ? 'please' : '',
       });
+      if (decision === 'REVOKED')
+        expect(result.feed?.body).toMatchObject({
+          requestStatus: 'REJECTED',
+          requestDirection: 'OUTGOING',
+        });
       if (decision === 'ACCEPTED') {
         expect(result.roster).toMatchObject({
           role: 'MEMBER',
@@ -1368,7 +1373,9 @@ describe('group join decision', () => {
     expect(after.pair?.active).toBe(false);
     expect(after.roster).toBeUndefined();
     expect(after.audience).toBeUndefined();
-    expect(after.projection).toMatchObject({ status: 'REVOKED' });
+    // The relationship intent is revoked, while the already accepted request
+    // projection remains accepted as historical request state.
+    expect(after.projection).toMatchObject({ status: 'ACCEPTED' });
     expect(after.feed?.body).toMatchObject({
       status: 'REVOKED',
       // The kicked member's pair was established before; only a rejected
@@ -1764,7 +1771,7 @@ describe('group join decision', () => {
     // The application is member-authored (side B); the group never authored a row.
     expect(result.intents.map((intent) => intent.status)).toEqual(['REVOKED']);
     // The withdrawal itself flipped the projection; the no-op left it untouched.
-    expect(result.projection).toMatchObject({ status: 'REVOKED' });
+    expect(result.projection).toMatchObject({ status: 'WITHDRAWN' });
   });
 
   it('unified acceptance completes an invitation whose invitee already acked', async () => {
@@ -2532,7 +2539,7 @@ describe('group join decision', () => {
             eq(tables.groupRequestProjection.memberAccount, f.member.account),
           ),
         });
-      expect(projection).toMatchObject({ status: 'REVOKED' });
+      expect(projection).toMatchObject({ status: 'WITHDRAWN' });
       // No departure facts: the applicant was never rostered.
       const departures = await database.pool.query(
         `SELECT count(*)::int AS n FROM "GroupMetaMemberFeed"
@@ -2580,7 +2587,7 @@ describe('group join decision', () => {
             eq(tables.groupRequestProjection.memberAccount, f.member.account),
           ),
         });
-      expect(projection).toMatchObject({ status: 'REVOKED' });
+      expect(projection).toMatchObject({ status: 'REJECTED' });
     });
 
     it('leaves the roster with the full departure effect', async () => {
@@ -2667,7 +2674,7 @@ describe('group join decision', () => {
           eq(tables.groupRequestProjection.memberAccount, f.member.account),
         ),
       });
-      expect(rows.every((row) => row.status === 'REVOKED')).toBe(true);
+      expect(rows.every((row) => row.status === 'ACCEPTED')).toBe(true);
     });
 
     it('rejects and no-ops the edges', async () => {

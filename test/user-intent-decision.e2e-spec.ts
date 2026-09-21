@@ -414,6 +414,15 @@ describe('user intent decision', () => {
     expect(authored).toMatchObject({ status: 'REVOKED' });
     expect(after.messages).toHaveLength(0);
     expect(after.threadTasks).toHaveLength(0);
+    const ended = after.feeds.filter(
+      (feed) => body(feed.body).status === 'REVOKED',
+    );
+    expect(ended).toHaveLength(2);
+    for (const feed of ended)
+      expect(body(feed.body)).toMatchObject({
+        requestStatus: 'WITHDRAWN',
+        requestDirection: feed.userId === alice.id ? 'OUTGOING' : 'INCOMING',
+      });
   });
 
   it('rejects an incoming request through the same revocation', async () => {
@@ -435,6 +444,15 @@ describe('user intent decision', () => {
     expect(after.intents.map((intent) => intent.status)).toContain('REQUESTED');
     expect(after.intents.map((intent) => intent.status)).toContain('REVOKED');
     expect(after.messages).toHaveLength(0);
+    const ended = after.feeds.filter(
+      (feed) => body(feed.body).status === 'REVOKED',
+    );
+    expect(ended).toHaveLength(2);
+    for (const feed of ended)
+      expect(body(feed.body)).toMatchObject({
+        requestStatus: 'REJECTED',
+        requestDirection: feed.userId === alice.id ? 'OUTGOING' : 'INCOMING',
+      });
   });
 
   it('ends a friendship with the full departure effect set', async () => {

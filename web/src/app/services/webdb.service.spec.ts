@@ -1295,6 +1295,88 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(22);
     });
 
+    it.each(['WITHDRAWN', 'REJECTED'] as const)(
+      'retains a group request outcome %s after reopening storage and convergence replay',
+      async (requestStatus) => {
+        const db = await webdb.openForUser('1');
+        const now = Date.now();
+        const group = {
+          account: '!group',
+          domain: 'local',
+          namespaceId: 0,
+          isLocal: true,
+          name: 'Group',
+          avatar: '',
+          description: '',
+          profileRev: 1,
+        };
+        const request: ClientStateFeedItem = {
+          feedId: 1,
+          namespaceId: 0,
+          account: 'me',
+          domain: 'local',
+          subjectAccount: '!group',
+          subjectDomain: 'local',
+          eventType: 'RELATIONSHIP_INTENT',
+          body: {
+            status: 'REQUESTED',
+            direction: 'OUTGOING',
+            requestedAt: now,
+            expiresAt: now + 60_000,
+            note: '',
+            threadId: 7,
+            group,
+          },
+        };
+        await webdb.applyStateFeedPage([request], 1);
+        const outcome: ClientStateFeedItem = {
+          ...request,
+          feedId: 2,
+          account: '!group',
+          subjectAccount: 'me',
+          body: {
+            ...request.body,
+            status: 'REVOKED',
+            direction: 'INCOMING',
+            requestStatus,
+            requestDirection: 'OUTGOING',
+          },
+        };
+        await webdb.applyStateFeedPage([outcome], 2);
+        expect((await db!.getAll('relationshipRequests'))[0].status).toBe(
+          requestStatus,
+        );
+        await webdb.close();
+        await webdb.openForUser('1');
+        await webdb.applyStateFeedPage(
+          [
+            {
+              ...request,
+              feedId: 3,
+              body: { ...request.body, status: 'REVOKED' },
+            },
+          ],
+          3,
+        );
+        const page = await webdb.getRelationshipRequestPage('SENT', null, 20);
+        expect(page.items[0].status).toBe(requestStatus);
+        await webdb.applyStateFeedPage(
+          [
+            {
+              ...request,
+              feedId: 4,
+              body: { ...request.body, requestedAt: now + 1 },
+            },
+          ],
+          4,
+        );
+        expect(
+          (await webdb.getRelationshipRequestPage('SENT', null, 20)).items[0]
+            .status,
+        ).toBe('REQUESTED');
+      },
+    );
+
     it('keeps accepted sent history and makes accepted received history non-actionable', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
@@ -1404,13 +1486,19 @@ describe('WebdbService', () => {
       ): ClientStateFeedItem => ({
         feedId,
         namespaceId: 12,
-        account: 'alice',
-        domain: 'peer.test',
+        account: direction === 'INCOMING' ? 'alice' : 'me',
+        domain: direction === 'INCOMING' ? 'peer.test' : 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'me',
-        subjectDomain: 'local.test',
+        subjectAccount: direction === 'INCOMING' ? 'me' : 'alice',
+        subjectDomain: direction === 'INCOMING' ? 'local.test' : 'peer.test',
         body: {
           status,
+          ...(status === 'REVOKED'
+            ? {
+                requestStatus: 'REJECTED' as const,
+                requestDirection: 'INCOMING' as const,
+              }
+            : {}),
           note: 'hello',
           requestedAt: status === 'REQUESTED' ? requestedAt : null,
           expiresAt: status === 'REQUESTED' ? expiresAt : null,
@@ -1438,7 +1526,7 @@ describe('WebdbService', () => {
       expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           bucket: 'RECEIVED',
-          status: 'REVOKED',
+          status: 'REJECTED',
           requestedSort: requestedAt,
         }),
       ]);
@@ -1449,7 +1537,7 @@ describe('WebdbService', () => {
       );
       expect(rejectedPage).toMatchObject({ total: 1, actionableTotal: 0 });
       expect(rejectedPage.items).toEqual([
-        expect.objectContaining({ bucket: 'RECEIVED', status: 'REVOKED' }),
+        expect.objectContaining({ bucket: 'RECEIVED', status: 'REJECTED' }),
       ]);
     });
 

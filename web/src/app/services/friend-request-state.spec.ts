@@ -148,9 +148,79 @@ describe('request projection effects', () => {
     expect(
       applyGroupIntentToProjection(
         request,
-        { ...groupInput, status: 'REVOKED' },
+        { ...groupInput, status: 'REVOKED', requestStatus: 'WITHDRAWN' },
         3_000,
       ).record?.status,
-    ).toBe('REVOKED');
+    ).toBe('WITHDRAWN');
   });
+  it.each(['WITHDRAWN', 'REJECTED'] as const)(
+    'persists %s across replay and resets it only for a new request',
+    (requestStatus) => {
+      const requested = applyGroupIntentToProjection(
+        undefined,
+        groupInput,
+        2_000,
+      ).record!;
+      const terminal = applyGroupIntentToProjection(
+        requested,
+        {
+          ...groupInput,
+          status: 'REVOKED',
+          requestStatus,
+        },
+        3_000,
+      ).record!;
+      expect(terminal.status).toBe(requestStatus);
+      const reloaded = JSON.parse(JSON.stringify(terminal));
+      expect(
+        applyGroupIntentToProjection(
+          reloaded,
+          {
+            ...groupInput,
+            status: 'REVOKED',
+            requestStatus:
+              requestStatus === 'REJECTED' ? 'WITHDRAWN' : 'REJECTED',
+          },
+          4_000,
+        ).record,
+      ).toEqual(terminal);
+      const next = applyGroupIntentToProjection(
+        terminal,
+        {
+          ...groupInput,
+          requestedAt: 5_000,
+          expiresAt: 15_000,
+        },
+        6_000,
+      ).record!;
+      expect(next.status).toBe('REQUESTED');
+      expect(next.requestedAt).toBe(5_000);
+
+      const friend = applyFriendIntentToProjection(
+        undefined,
+        friendInput,
+        2_000,
+      ).record!;
+      const closedFriend = applyFriendIntentToProjection(
+        friend,
+        {
+          ...friendInput,
+          status: 'REVOKED',
+          requestStatus,
+        },
+        3_000,
+      ).record!;
+      expect(closedFriend.status).toBe(requestStatus);
+      expect(
+        applyFriendIntentToProjection(
+          closedFriend,
+          {
+            ...friendInput,
+            status: 'REVOKED',
+          },
+          4_000,
+        ).record,
+      ).toEqual(closedFriend);
+    },
+  );
 });

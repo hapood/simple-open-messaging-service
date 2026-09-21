@@ -1,3 +1,4 @@
+import { RequestProjectionStatus } from '../../../../../shared/request-projection-status';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -92,6 +93,81 @@ describe('FriendRequestsComponent federated search progress', () => {
       'friend:2',
     ]);
   });
+
+  it.each(['FRIEND', 'GROUP'] as const)(
+    'restores the persisted rejected %s request status',
+    async (kind) => {
+      const identity = {
+        namespaceId: 0,
+        id: 41,
+        account: 'peer',
+        domain: 'alpha.test',
+        name: 'Peer',
+        avatar: '',
+        bio: '',
+        description: '',
+        isLocal: false,
+      };
+      const userService = {
+        sessionUserId: signal<number | null>(null),
+        relationshipRequestStateRevision: signal(0),
+        relationshipIntentStateRevision: signal(0),
+        friendReqBadge: signal(false),
+        listLocalFriendRequests: vi
+          .fn()
+          .mockImplementation((direction: 'INCOMING' | 'OUTGOING') =>
+            Promise.resolve({
+              items: [
+                {
+                  key: 'request:41',
+                  namespaceId: 0,
+                  kind,
+                  bucket: direction === 'OUTGOING' ? 'SENT' : 'RECEIVED',
+                  direction,
+                  status: RequestProjectionStatus.REJECTED,
+                  expiresAt: null,
+                  localThreadId: null,
+                  note: '',
+                  requestedAt: 1,
+                  requestedSort: 1,
+                  updatedAt: 2,
+                  peer: identity,
+                  group: identity,
+                },
+              ],
+              scannedThrough: null,
+              hasMore: false,
+              total: 1,
+              actionableTotal: 0,
+            }),
+          ),
+      };
+      TestBed.configureTestingModule({
+        imports: [FriendRequestsComponent],
+        providers: [
+          provideZonelessChangeDetection(),
+          { provide: UserService, useValue: userService },
+          { provide: RouteService, useValue: {} },
+          { provide: MatSnackBar, useValue: { open: vi.fn() } },
+          {
+            provide: TranslocoService,
+            useValue: { translate: (key: string) => key },
+          },
+        ],
+      }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+      const component = TestBed.createComponent(
+        FriendRequestsComponent,
+      ).componentInstance;
+      await component.loadOutgoingInvites(true);
+      await component.loadIncomingInvites(true);
+      expect(component.sentReqList()[0].status).toBe(
+        RequestProjectionStatus.REJECTED,
+      );
+      expect(component.pendingReqList()[0].status).toBe(
+        RequestProjectionStatus.REJECTED,
+      );
+    },
+  );
 
   it('opens the shared invite step directly for a local profile shortcut', () => {
     const local = {
@@ -533,7 +609,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'alice',
       domain: 'local',
       direction: 'INCOMING' as const,
-      status: 0,
+      status: RequestProjectionStatus.REQUESTED,
       date: 1,
       errText: '',
     };
@@ -594,7 +670,10 @@ describe('FriendRequestsComponent federated search progress', () => {
     await Promise.resolve();
 
     expect(component.pendingReqList()[0]).toEqual(
-      expect.objectContaining({ id: request.id, status: 1 }),
+      expect.objectContaining({
+        id: request.id,
+        status: RequestProjectionStatus.ACCEPTED,
+      }),
     );
     expect(userService.markRelationshipRequestAccepted).toHaveBeenCalledWith(
       request.projectionKey,

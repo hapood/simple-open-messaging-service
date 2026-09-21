@@ -68,7 +68,7 @@ export function memberAuthoredMembershipRequestSql(
       SELECT ${input.threadId}, ${input.memberAccount}, ${input.memberDomain},
         ${input.memberNamespaceId},
         v."profileRev", 'APPLICATION',
-        v.status, v.note, v."requestedAt", v."expiresAt",
+        v.status::text::"RequestProjectionStatus", v.note, v."requestedAt", v."expiresAt",
         (SELECT "feedId" FROM projection_alloc)
       FROM request_state v
       WHERE EXISTS (SELECT 1 FROM projection_alloc)

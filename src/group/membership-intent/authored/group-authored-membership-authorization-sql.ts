@@ -200,7 +200,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
         FROM "GroupRequestProjection" p
         WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.targetAccount}
           AND p."memberDomain" = ${input.targetDomain} AND p."memberNamespaceId" = ${input.targetNamespaceId}
-          AND p.status <> 'REVOKED'), '[]'::jsonb) AS "projectionDirections"
+          AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
     FROM ${groupStateSql} g
     LEFT JOIN reverse rev ON true
     LEFT JOIN side_a ON true

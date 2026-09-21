@@ -1,3 +1,4 @@
+import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
 import type { GroupJoinRequest } from './group.service';
 
 export type GroupJoinRequestAction = 'ACCEPT' | 'REJECT';
@@ -26,7 +27,10 @@ export function applyGroupJoinRequestAction(
   if (current.status !== 'REQUESTED') return current;
   return {
     ...current,
-    status: action === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+    status:
+      action === 'ACCEPT'
+        ? RequestProjectionStatus.ACCEPTED
+        : RequestProjectionStatus.REJECTED,
   };
 }
 

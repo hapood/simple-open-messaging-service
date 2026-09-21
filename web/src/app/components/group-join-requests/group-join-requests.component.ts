@@ -1,3 +1,4 @@
+import { RequestProjectionStatus } from '../../../../../shared/request-projection-status';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -186,7 +187,9 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       if (res.code !== 0) return this.showBusinessError(res);
       this.invitations.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key ? { ...row, status: 'REVOKED' } : row,
+          this.candidateKey(row) === key
+            ? { ...row, status: RequestProjectionStatus.WITHDRAWN }
+            : row,
         ),
       );
       this.candidates.update((rows) =>
@@ -289,11 +292,23 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       });
   }
 
+  applicationStatusKey(status: GroupJoinRequest['status']): string {
+    switch (status) {
+      case RequestProjectionStatus.ACCEPTED:
+        return 'group.joinRequestAccepted';
+      case RequestProjectionStatus.WITHDRAWN:
+        return 'friend.revoked';
+      case RequestProjectionStatus.REJECTED:
+        return 'friend.rejected';
+      case RequestProjectionStatus.EXPIRED:
+        return 'friend.expired';
+      default:
+        return 'group.invitationPending';
+    }
+  }
+
   requestStatusKey(status: GroupJoinRequest['status']): string {
-    if (status === 'ACCEPTED') return 'group.invitationAccepted';
-    if (status === 'REVOKED') return 'group.invitationRevoked';
-    if (status === 'EXPIRED') return 'group.invitationExpired';
-    return 'group.invitationPending';
+    return this.applicationStatusKey(status);
   }
 
   candidateActionKey(candidate: GroupInviteCandidate): string {

@@ -364,7 +364,7 @@ export class FederationService {
               tx,
               request.threadId,
               member,
-              'REVOKED',
+              'EXPIRED',
               request.authorSide === 'A' ? 'INVITATION' : 'APPLICATION',
               false,
             );

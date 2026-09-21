@@ -15,6 +15,8 @@ export interface MirrorMembershipRevocationInput {
   presentation: MirrorGroupPresentationInput;
   memberAccount: string;
   localMemberId: number;
+  requestStatus?: 'WITHDRAWN' | 'REJECTED';
+  requestDirection?: 'INCOMING' | 'OUTGOING';
 }
 
 /** Persist received side A REVOKED, deactivate an active pair, and publish the
@@ -94,6 +96,8 @@ export function mirrorMembershipRevocationSql(
             WHERE p.id = ${input.pairId})`,
           threadId: input.threadId,
           presentation: input.presentation,
+          requestStatus: input.requestStatus,
+          requestDirection: input.requestDirection,
         })} AS body
       FROM persisted_intent v
     ), ${clientIntentFeedWriteSql()}

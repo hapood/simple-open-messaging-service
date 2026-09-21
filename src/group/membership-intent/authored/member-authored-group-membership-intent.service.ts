@@ -520,8 +520,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     base: ValidatedBase,
   ): Promise<ValidatedMembership> | MemberAuthoredGroupMembershipIntentResult {
     const { row } = base;
-    if (row.pairActive)
-      return { status: 'NO_OP', reason: 'ALREADY_MEMBER' };
+    if (row.pairActive) return { status: 'NO_OP', reason: 'ALREADY_MEMBER' };
     if (
       row.memberIntentStatus === 'ACCEPTED' &&
       !row.invitationOutstanding &&
@@ -567,8 +566,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     base: ValidatedBase,
   ): Promise<ValidatedMembership> | MemberAuthoredGroupMembershipIntentResult {
     const { row } = base;
-    if (row.pairActive)
-      return { status: 'NO_OP', reason: 'ALREADY_MEMBER' };
+    if (row.pairActive) return { status: 'NO_OP', reason: 'ALREADY_MEMBER' };
     if (!row.invitationOutstanding)
       return this.reject(
         row.groupIntentStatus === 'REQUESTED'
@@ -644,7 +642,11 @@ export class MemberAuthoredGroupMembershipIntentService {
         BusinessCode.GROUP_DISSOLVED,
         'group has been dissolved',
       );
-    if (!row.pairActive && !row.applicationPending && !row.invitationOutstanding)
+    if (
+      !row.pairActive &&
+      !row.applicationPending &&
+      !row.invitationOutstanding
+    )
       return this.reject(
         row.memberIntentStatus === 'REQUESTED' ||
           row.groupIntentStatus === 'REQUESTED'
@@ -765,6 +767,17 @@ export class MemberAuthoredGroupMembershipIntentService {
             threadLock: context.threadLock,
           },
           validatedPairActive: false,
+          ...(context.row.applicationPending
+            ? {
+                clientRequestStatus: 'WITHDRAWN' as const,
+                clientRequestDirection: 'OUTGOING' as const,
+              }
+            : context.row.invitationOutstanding
+              ? {
+                  clientRequestStatus: 'REJECTED' as const,
+                  clientRequestDirection: 'INCOMING' as const,
+                }
+              : {}),
         },
       );
     if (context.kind === 'mirror-positive')

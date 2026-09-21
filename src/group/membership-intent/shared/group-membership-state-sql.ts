@@ -115,7 +115,7 @@ export function groupMembershipStateSql(input: {
         WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.memberAccount}
           AND p."memberDomain" = ${input.memberDomain}
           AND p."memberNamespaceId" = ${input.memberNamespaceId}
-          AND p.status <> 'REVOKED'), '[]'::jsonb) AS "projectionDirections"
+          AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
     FROM ${groupStateSql} g
     LEFT JOIN side_b ON true
     LEFT JOIN side_a ON true

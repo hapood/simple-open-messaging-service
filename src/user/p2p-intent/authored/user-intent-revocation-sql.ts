@@ -65,7 +65,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       RETURNING id
     ), departed AS MATERIALIZED (
       SELECT EXISTS (SELECT 1 FROM pair_change) AS departed
-    ), ${userIntentClientBodiesSql({ ...input, ownState: 'revocation' })}, seq_alloc AS (
+    ), ${userIntentClientBodiesSql({ ...input, ownState: 'revocation', requestRevocation: true })}, seq_alloc AS (
       -- One update per row per statement: the epoch bump, the round disable,
       -- the head allocation, and the touch share this single write.
       UPDATE "MessageThread" t SET "curSeq" = t."curSeq" + 1,

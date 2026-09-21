@@ -1,3 +1,4 @@
+import type { RequestProjectionStatusValue } from '../../../../shared/request-projection-status';
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
@@ -10,7 +11,7 @@ export interface GrpCreateInfo {
 
 export interface GroupJoinRequest {
   feedId: number;
-  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
+  status: RequestProjectionStatusValue;
   namespaceId: number;
   profileRev: number;
   account: string;

@@ -1,3 +1,4 @@
+import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -8,7 +9,7 @@ import type { DatabaseTransaction } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 
-type GroupRequestStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+type GroupRequestStatus = RequestProjectionStatusValue;
 type GroupRequestDirection = 'APPLICATION' | 'INVITATION';
 
 /** Maintains the shared request projection derived from group relationship intents. */

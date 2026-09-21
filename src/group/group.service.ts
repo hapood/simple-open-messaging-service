@@ -7,6 +7,7 @@ import {
 } from './shared/group-state.js';
 import { p2pPeerRelation } from '../relationship/shared/relationship-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
+import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -195,7 +196,7 @@ export class GroupService {
   ) {
     const rows = await this.database.db.execute<{
       feedId: number;
-      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
+      status: RequestProjectionStatusValue;
       namespaceId: number;
       profileRev: number;
       account: string;

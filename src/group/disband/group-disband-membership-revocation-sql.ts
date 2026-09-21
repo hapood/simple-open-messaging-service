@@ -137,6 +137,7 @@ export function groupDisbandMembershipRevocationSql(
       memberDomain: input.memberDomain,
       memberNamespaceId: input.memberNamespaceId,
       status: 'REVOKED',
+      authorSide: 'A',
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta

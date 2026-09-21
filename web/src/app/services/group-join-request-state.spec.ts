@@ -52,18 +52,18 @@ describe('group join request projection state', () => {
       'ACCEPTED',
     );
     expect(applyGroupJoinRequestAction(request(1), 'REJECT').status).toBe(
-      'REVOKED',
+      'REJECTED',
     );
   });
 
   it('does not reopen a terminal local transition', () => {
-    const terminal = request(1, 'REVOKED');
+    const terminal = request(1, 'REJECTED');
     expect(applyGroupJoinRequestAction(terminal, 'ACCEPT')).toBe(terminal);
   });
 
   it('deduplicates pages by applicant and accepts only newer feed coordinates', () => {
     const older = request(1);
-    const newer = { ...older, feedId: 3, status: 'REVOKED' as const };
+    const newer = { ...older, feedId: 3, status: 'REJECTED' as const };
     expect(mergeGroupJoinRequestPage([newer], [older])).toEqual([newer]);
     expect(mergeGroupJoinRequestPage([older], [newer])).toEqual([newer]);
   });

@@ -30,6 +30,10 @@ export interface GroupMembershipRevocationInput {
   /** Alternate validated writer used by received peer intents: the wire
    * snapshot replaces the locally derived authored write. */
   authoredSql?: SQL;
+  /** Optional explicit cause; absent callers use the authored side and the
+   * still-open projection direction to classify the terminal feed. */
+  clientRequestStatus?: 'WITHDRAWN' | 'REJECTED';
+  clientRequestDirection?: 'INCOMING' | 'OUTGOING';
 }
 
 function accountFanoutScopeKey(threadId: number, accountId: number): string {
@@ -161,6 +165,7 @@ export function groupMembershipRevocationSql(
       memberDomain: input.memberDomain,
       memberNamespaceId: input.memberNamespaceId,
       status: 'REVOKED',
+      authorSide: input.authorSide,
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
@@ -195,6 +200,21 @@ export function groupMembershipRevocationSql(
  * dedupe, so a repeated revocation neither allocates a feed id nor wakes anyone.
  * `established` is false: the pair is already inactive within this statement. */
 function localRecipient(input: GroupMembershipRevocationInput): SQL {
+  const projection = input.projectionDirections[0];
+  const direction =
+    input.clientRequestDirection ??
+    (projection === 'APPLICATION' ? 'OUTGOING' : 'INCOMING');
+  const status =
+    input.clientRequestStatus ??
+    (projection === undefined
+      ? null
+      : input.authorSide === 'A'
+        ? projection === 'APPLICATION'
+          ? 'REJECTED'
+          : 'WITHDRAWN'
+        : projection === 'APPLICATION'
+          ? 'WITHDRAWN'
+          : 'REJECTED');
   return sql`
     recipient_body AS MATERIALIZED (
       SELECT ${localRecipientKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
@@ -207,7 +227,9 @@ function localRecipient(input: GroupMembershipRevocationInput): SQL {
           'group', jsonb_build_object('account', ${input.groupAccount}::text, 'domain', 'local',
             'isLocal', true, 'name', ${input.groupName}::text, 'avatar', ${input.groupAvatar}::text,
             'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer)
-        ) AS body
+        ) || CASE WHEN ${status === null} THEN '{}'::jsonb
+          ELSE jsonb_build_object('requestStatus', ${status}::text,
+            'requestDirection', ${direction}::text) END AS body
       FROM revocation v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,

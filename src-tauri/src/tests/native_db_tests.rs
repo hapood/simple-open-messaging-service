@@ -410,6 +410,54 @@ fn native_projection_persists_a_local_accept_side_effect() {
 }
 
 #[test]
+fn native_projection_uses_request_metadata_for_revocation() {
+    let mut conn = request_connection();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let tx = conn.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO relationship_requests VALUES(1, ?1, ?2)",
+        [
+            &serde_json::json!(["friend", 12, "peer.test", "peer", "local.test", "me"]).to_string(),
+            &serde_json::json!({
+                "status": "REQUESTED", "expiresAt": now + 60_000,
+                "bucket": "RECEIVED", "direction": "INCOMING"
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+    let mut body = friend_body("OUTGOING", "REVOKED", None);
+    body["requestStatus"] = serde_json::json!("REJECTED");
+    body["requestDirection"] = serde_json::json!("INCOMING");
+    apply_relationship_request_effect(
+        &tx,
+        1,
+        1,
+        12,
+        "me",
+        "local.test",
+        "peer",
+        "peer.test",
+        &body,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM relationship_requests",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(projection["status"], "REJECTED");
+}
+
+#[test]
 fn native_cleanup_removes_expired_request_projections_after_retention() {
     let conn = request_connection();
     conn.execute(
@@ -542,7 +590,9 @@ fn native_profile_cache_rejects_missing_text_instead_of_synthesizing_it() {
         profile.as_object_mut().unwrap().remove(missing);
         assert!(super::contacts::write_profile(&conn, 1, &profile).is_err());
     }
-    let count: i64 = conn.query_row("SELECT count(*) FROM profiles", [], |row| row.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM profiles", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 0);
 }
 

@@ -15,6 +15,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
+import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 
 export interface ClientStateFeedWrite {
   userId: number;
@@ -193,7 +194,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
       memberNamespaceId: number;
       memberProfileRev: number;
       direction: 'APPLICATION' | 'INVITATION';
-      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      status: RequestProjectionStatusValue;
       note: string;
       requestedAt: Date | null;
       expiresAt: Date | null;
@@ -218,6 +219,8 @@ export class ClientStateFeedService implements OnModuleDestroy {
         ),
       )
       .limit(1);
+    if (write.status !== 'REQUESTED' && current?.status !== 'REQUESTED')
+      return null;
     const requestedAt = write.requestedAt ?? current?.requestedAt;
     const expiresAt = write.expiresAt ?? current?.expiresAt;
     if (!requestedAt || !expiresAt) return null;

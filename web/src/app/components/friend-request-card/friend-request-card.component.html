@@ -45,19 +45,19 @@
   </span>
   <span class="date">{{ relativeDate() }}</span>
   <span class="action">
-    @if (request().status === 1) {
+    @if (request().status === RequestProjectionStatus.ACCEPTED) {
       <button mat-button type="button" disabled>
         {{ 'friend.approved' | transloco }}
       </button>
-    } @else if (request().status === -3) {
+    } @else if (request().status === RequestProjectionStatus.WITHDRAWN) {
       <button mat-button type="button" disabled>
         {{ 'friend.revoked' | transloco }}
       </button>
-    } @else if (request().status === -4) {
+    } @else if (request().status === RequestProjectionStatus.REJECTED) {
       <button mat-button type="button" disabled>
         {{ 'friend.rejected' | transloco }}
       </button>
-    } @else if (request().status === -2) {
+    } @else if (request().status === RequestProjectionStatus.EXPIRED) {
       <button mat-button type="button" disabled>
         {{ 'friend.expired' | transloco }}
       </button>
