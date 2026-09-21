@@ -30,6 +30,13 @@ describe('matchNav', () => {
     expect(matchNav('/logs')?.group.labelKey).toBe('nav.group.system');
   });
 
+  it('matches the Federation hub and its child routes (prefix)', () => {
+    expect(matchNav('/federation')?.item.key).toBe('federation');
+    expect(matchNav('/federation/self-check')?.item.key).toBe('federation');
+    expect(matchNav('/federation/example.com')?.item.key).toBe('federation');
+    expect(matchNav('/federation')?.group.labelKey).toBe('nav.group.overview');
+  });
+
   it('does not match disabled first-release entries or their child routes', () => {
     for (const path of [
       '/dashboard',
@@ -38,7 +45,6 @@ describe('matchNav', () => {
       '/bans',
       '/durable-tasks',
       '/sessions/admins',
-      '/federation/example.com',
       '/push/config',
       '/media',
       '/rate-limits',
@@ -72,7 +78,13 @@ describe('NAV_GROUPS shape', () => {
     const enabled = NAV_GROUPS.flatMap((group) => group.items)
       .filter((item) => !item.disabled)
       .map((item) => item.key);
-    expect(enabled).toEqual(['users', 'messageReports', 'logs', 'security']);
+    expect(enabled).toEqual([
+      'users',
+      'federation',
+      'messageReports',
+      'logs',
+      'security',
+    ]);
   });
 
   it('no primary group is accidentally marked footer', () => {

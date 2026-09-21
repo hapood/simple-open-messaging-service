@@ -75,7 +75,7 @@ export const NAV_GROUPS: NavGroup[] = [
         disabled: true,
       },
       { to: '/users', key: 'users', icon: Users },
-      { to: '/federation', key: 'federation', icon: Globe, disabled: true },
+      { to: '/federation', key: 'federation', icon: Globe },
       { to: '/connections', key: 'connections', icon: Radio, disabled: true },
     ],
   },
