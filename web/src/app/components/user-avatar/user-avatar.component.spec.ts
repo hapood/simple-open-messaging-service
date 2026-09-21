@@ -1,10 +1,11 @@
+import { Subject } from 'rxjs';
 import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from './user-avatar.component';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { UserService } from '../../services/user.service';
-import { WebdbService } from '../../services/webdb.service';
+import { WebdbService, type ProfileWake } from '../../services/webdb.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { provideHttpClient, withXhr } from '@angular/common/http';
 import {
@@ -41,6 +42,53 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     getBlobSpy = TestBed.inject(AvatarRepository).getBlob as Mock;
     sessionProfile.set(undefined);
   });
+
+  it.each([false, true])(
+    'uses resolved avatar absence instead of stale src (pending: %s)',
+    async (pending) => {
+      const db = TestBed.inject(WebdbService);
+      const key = {
+        namespaceId: 1,
+        account: 'alice',
+        domain: 'alpha.test',
+        rev: 2,
+      };
+      const profile = {
+        namespaceId: 1,
+        account: 'alice',
+        domain: 'alpha.test',
+        profileRev: 2,
+        name: 'Alice',
+        avatar: '',
+        bio: '',
+      };
+      const resolve = vi.spyOn(db, 'resolveProfileEvidence');
+      if (pending) resolve.mockResolvedValueOnce({ status: 'PENDING', key });
+      resolve.mockResolvedValue({ status: 'READY', profile });
+      fixture.componentRef.setInput('src', 'data:image/webp;base64,b2xk');
+      fixture.componentRef.setInput('profileEvidence', {
+        type: 'EXACT',
+        account: key.account,
+        domain: key.domain,
+        rev: key.rev,
+      });
+      fixture.detectChanges();
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
+      if (pending) {
+        expect(fixture.componentInstance.imgSrc()).toBe(
+          'data:image/webp;base64,b2xk',
+        );
+        (
+          db as unknown as { profileWake: Subject<ProfileWake> }
+        ).profileWake.next({ event: 'PROFILE_AVAILABLE', key });
+      }
+      await vi.waitFor(() =>
+        expect(fixture.componentInstance.imgSrc()).toBe(''),
+      );
+      expect(fixture.componentInstance.showImage()).toBe(false);
+      expect(fixture.componentInstance.initial()).toBe('AL');
+    },
+  );
 
   it('falls back to the first two characters when there is no src (no DB call)', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);

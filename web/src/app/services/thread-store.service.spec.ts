@@ -182,6 +182,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     repo = TestBed.inject(ThreadRepository);
     webdb = TestBed.inject(WebdbService);
+    vi.spyOn(webdb, 'resolveProfileEvidence').mockResolvedValue({
+      status: 'PENDING',
+      key: { namespaceId: 0, account: 'unused', domain: 'local', rev: 1 },
+    });
     vi.spyOn(webdb, 'createThreadFeedPort').mockResolvedValue(null);
     vi.spyOn(webdb, 'syncThreadFeed').mockImplementation(
       async (target, after) => {
@@ -527,6 +531,98 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(webdb.syncThreadFeed).not.toHaveBeenCalled();
     expect(queryThreadFeedSpy).not.toHaveBeenCalled();
   });
+
+  it('renders a cached profile when the conversation shell has no name', async () => {
+    const profile = {
+      namespaceId: 1,
+      account: '!team',
+      domain: 'alpha.test',
+      profileRev: 1,
+      name: 'Cached team',
+      avatar: '',
+      bio: 'About team',
+    };
+    vi.mocked(webdb.resolveProfileEvidence).mockResolvedValue({
+      status: 'READY',
+      profile,
+    });
+    await populate([
+      createGroupConversation(
+        12,
+        { id: 12, ownerId: 1, ...profile, name: '' },
+        { threadFeedId: 1 },
+      ),
+    ]);
+    TestBed.flushEffects();
+    await vi.waitFor(() =>
+      expect(repo.items()[0]).toMatchObject({
+        group: { name: 'Cached team', description: 'About team' },
+      }),
+    );
+    expect(webdb.resolveProfileEvidence).toHaveBeenCalledWith({
+      type: 'GROUP_META',
+      threadId: 12,
+      profileRev: 1,
+      subject: { type: 'GROUP' },
+    });
+  });
+
+  it.each(['PENDING', 'READY'] as const)(
+    'refreshes the matching profile on a worker wake after %s',
+    async (initialStatus) => {
+      const profile = {
+        namespaceId: 1,
+        account: '!team',
+        domain: 'alpha.test',
+        profileRev: 1,
+        name: 'Team',
+        avatar: '',
+        bio: '',
+      };
+      const key = {
+        namespaceId: 1,
+        account: '!team',
+        domain: 'alpha.test',
+        rev: 1,
+      };
+      const resolve = vi.mocked(webdb.resolveProfileEvidence);
+      resolve.mockResolvedValue(
+        initialStatus === 'READY'
+          ? { status: 'READY', profile }
+          : { status: 'PENDING', key },
+      );
+      await populate([
+        createGroupConversation(
+          12,
+          { id: 12, ownerId: 1, ...profile, name: '' },
+          { threadFeedId: 1 },
+        ),
+      ]);
+      TestBed.flushEffects();
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+      await Promise.resolve();
+      resolve.mockClear();
+      // The same address in another namespace/revision must not update this selection.
+      const wakes = (webdb as any).profileWake as Subject<unknown>;
+      wakes.next({
+        event: 'PROFILE_AVAILABLE',
+        key: { ...key, namespaceId: 2 },
+      });
+      wakes.next({ event: 'PROFILE_AVAILABLE', key: { ...key, rev: 2 } });
+      expect(resolve).not.toHaveBeenCalled();
+      resolve.mockResolvedValue({
+        status: 'READY',
+        profile: { ...profile, name: 'Resolved team' },
+      });
+      wakes.next({ event: 'PROFILE_AVAILABLE', key });
+      await vi.waitFor(() =>
+        expect(repo.items()[0]).toMatchObject({
+          group: { name: 'Resolved team' },
+        }),
+      );
+      expect(resolve).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('routes a committed Group Meta wake to thread-scoped domain listeners', async () => {
     await populate([

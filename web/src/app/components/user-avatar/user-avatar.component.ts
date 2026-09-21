@@ -122,16 +122,19 @@ export class UserAvatarComponent {
         ? this.userService.sessionProfile()?.id
         : undefined),
   );
-  private readonly effectiveSrc = computed(
-    () =>
-      (this.resolvedProfile()?.avatarBase64
-        ? `data:image/webp;base64,${this.resolvedProfile()!.avatarBase64}`
-        : undefined) ??
+  private readonly effectiveSrc = computed(() => {
+    const profile = this.resolvedProfile();
+    if (profile)
+      return profile.avatarBase64
+        ? `data:image/webp;base64,${profile.avatarBase64}`
+        : '';
+    return (
       this.src() ??
       (this.type() === UserAvatarType.SELF
         ? this.userService.sessionProfile()?.avatar
-        : undefined),
-  );
+        : undefined)
+    );
+  });
   private readonly effectiveName = computed(
     () =>
       this.resolvedProfile()?.name ||

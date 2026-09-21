@@ -164,6 +164,19 @@ export class ThreadRepository {
   private readonly sseSub: Subscription;
 
   constructor() {
+    this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
+      if (wake.event !== 'PROFILE_AVAILABLE') return;
+      for (const item of this._items()) {
+        const reference = threadProfileReference(item);
+        if (
+          reference.namespaceId === wake.key.namespaceId &&
+          reference.account === wake.key.account &&
+          reference.domain === wake.key.domain &&
+          reference.profileRev === wake.key.rev
+        )
+          void this.resolveThreadProfile(item);
+      }
+    });
     this.messageRepo.slotsChanged$
       .pipe(takeUntilDestroyed())
       .subscribe((threadId) => {
@@ -252,6 +265,63 @@ export class ThreadRepository {
       const id = this.userService.sessionUserId();
       if (id === null) this.reset();
     });
+  }
+
+  /** Both query results and local worker wakes refresh the selected immutable snapshot. */
+  private async resolveThreadProfile(item: ConversationItem): Promise<void> {
+    const reference = threadProfileReference(item);
+    if (reference.profileRev < 1) return;
+    const epoch = this.sessionEpoch;
+    try {
+      const result = await this.webdb.resolveProfileEvidence(
+        item.type === 'GROUP'
+          ? {
+              type: 'GROUP_META',
+              threadId: item.threadId,
+              profileRev: reference.profileRev,
+              subject: { type: 'GROUP' },
+            }
+          : {
+              type: 'EXACT',
+              account: reference.account,
+              domain: reference.domain,
+              rev: reference.profileRev,
+            },
+      );
+      if (epoch !== this.sessionEpoch || result.status === 'PENDING') return;
+      const profile = result.profile;
+      this._items.update((items) =>
+        items.map((current) => {
+          if (
+            threadProfileKey(threadProfileReference(current)) !==
+            threadProfileKey(profile)
+          )
+            return current;
+          return current.type === 'GROUP'
+            ? {
+                ...current,
+                group: {
+                  ...current.group,
+                  name: profile.name,
+                  avatar: profile.avatar,
+                  description: profile.bio,
+                },
+              }
+            : {
+                ...current,
+                peerUser: {
+                  ...current.peerUser,
+                  name: profile.name,
+                  avatar: profile.avatar,
+                  bio: profile.bio,
+                },
+              };
+        }),
+      );
+    } catch (error) {
+      if (epoch === this.sessionEpoch)
+        console.warn('[profile] thread resolution failed', error);
+    }
   }
 
   /**
@@ -476,6 +546,8 @@ export class ThreadRepository {
     );
     if (changed) {
       void this.persistThread(changed);
+      if (patch.profileRev !== undefined)
+        void this.resolveThreadProfile(changed);
     }
   }
 
@@ -608,11 +680,13 @@ export class ThreadRepository {
     });
     this._status.set('READY');
     if (threadFeedId !== undefined) void this.persistThread(reconciled);
+    void this.resolveThreadProfile(reconciled);
   }
 
   private applyItems(items: ConversationItem[]): void {
     const ordered = sortThreadItems(items);
     this._items.set(ordered);
+    for (const item of ordered) void this.resolveThreadProfile(item);
     this._status.set('READY');
   }
 
@@ -1340,4 +1414,25 @@ function sortThreadItems(items: ConversationItem[]): ConversationItem[] {
     ),
     ...items.filter((item) => item.visible === false),
   ];
+}
+
+function threadProfileReference(item: ConversationItem) {
+  const profile = item.type === 'GROUP' ? item.group : item.peerUser;
+  return {
+    account: profile.account,
+    domain: profile.domain,
+    namespaceId: profile.namespaceId,
+    profileRev: profile.profileRev,
+  };
+}
+
+function threadProfileKey(
+  profile: ReturnType<typeof threadProfileReference>,
+): string {
+  return JSON.stringify([
+    profile.namespaceId,
+    profile.account,
+    profile.domain,
+    profile.profileRev,
+  ]);
 }
