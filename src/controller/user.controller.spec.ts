@@ -34,12 +34,12 @@ describe('UserController.queryStateFeed', () => {
     clientStateFeed.query.mockResolvedValue([
       {
         feedId: 5,
-        account: 'alice',
-        domain: 'local',
-        eventType: 'PROFILE',
+        account: '' as const,
+        domain: 'local' as const,
+        eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
         subjectDomain: 'local',
-        body: { displayName: 'Alice', avatar: null, bio: '', profileRev: 2 },
+        body: { readThroughFeedId: 0 },
       },
     ]);
 
@@ -47,7 +47,12 @@ describe('UserController.queryStateFeed', () => {
       controller.queryStateFeed(req, 'full', '0', '100', '6'),
     ).resolves.toEqual({
       mode: 'full',
-      items: [expect.objectContaining({ feedId: 5, eventType: 'PROFILE' })],
+      items: [
+        expect.objectContaining({
+          feedId: 5,
+          eventType: 'INCOMING_INVITE_HEAD',
+        }),
+      ],
       scannedThrough: 6,
       stateFeedEndId: 6,
       hasMore: false,

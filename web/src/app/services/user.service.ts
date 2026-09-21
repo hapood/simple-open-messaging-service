@@ -183,21 +183,6 @@ export type ClientStateFeedItem =
       account: string;
       domain: string;
       namespaceId: number;
-      eventType: 'PROFILE';
-      subjectAccount: '';
-      subjectDomain: 'local';
-      body: {
-        profileRev: number;
-        displayName: string;
-        bio: string;
-        avatar: string | null;
-      };
-    }
-  | {
-      feedId: number;
-      account: string;
-      domain: string;
-      namespaceId: number;
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
       subjectDomain: string;
@@ -455,7 +440,7 @@ export class UserService {
         const u = res.data;
         this.sessionProfile.set(u);
         void this.webdb.putMeta('selfProfile', u);
-        // Write-through the partial profile too → avatar-refresh signal on a path change.
+        // Cache the complete self profile too → avatar-refresh signal on a path change.
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id,
           name: u.name,
@@ -513,27 +498,6 @@ export class UserService {
   applyRelationshipRequestReadHead(readThroughFeedId: number): void {
     if (readThroughFeedId > this.relationshipRequestReadThroughFeedId())
       this.relationshipRequestReadThroughFeedId.set(readThroughFeedId);
-  }
-
-  applyStateProfile(u: User): void {
-    if (u.id === this.sessionUserId()) {
-      const current = this.sessionProfile();
-      if (!current || u.profileRev >= current.profileRev) {
-        this.sessionProfile.set(u);
-        void this.webdb.putMeta('selfProfile', u);
-      }
-    }
-    void this.profileRepo.putProfile(`u${u.id}`, 'user', {
-      id: u.id,
-      name: u.name,
-      account: u.account,
-      avatar: u.avatar,
-      bio: u.bio,
-      domain: u.domain,
-      sourceServer: u.domain,
-      namespaceId: u.namespaceId,
-      profileRev: u.profileRev,
-    });
   }
 
   /** Boot-time webdb restore on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB and restores
@@ -633,7 +597,7 @@ export class UserService {
         this.sessionProfile.set(u);
         // Cache the full self profile so the next cold start's HELLO gating can skip this fetch.
         void this.webdb.putMeta('selfProfile', u);
-        // Write-through the partial profile → IDB + trigger avatar refresh when the path changed.
+        // Cache the complete self profile → IDB + trigger avatar refresh when the path changed.
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id,
           name: u.name,

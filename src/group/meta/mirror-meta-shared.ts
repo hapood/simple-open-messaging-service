@@ -9,10 +9,6 @@ import {
   messageThread,
 } from '../../database/schema.js';
 import { loadFederationConfig } from '../../federation/federation.config.js';
-import type {
-  ClientStateFeedService,
-  PendingClientStateFeedUpdate,
-} from '../../client-state-feed/client-state-feed.service.js';
 import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import { groupStateFields, groupStateSql } from '../shared/group-state.js';
@@ -113,7 +109,11 @@ export async function requireMirrorMetaInTx(
 }
 
 /** Full and delta pages upsert each stable key and its coordinate. A mirror
- * DEPART removes the current member row rather than retaining a tombstone. */
+ * DEPART retains a tombstone at the item's coordinate: the feed is a shared
+ * coordinate space, and deleting the row would leave a hole that delta
+ * readers skip past without ever learning the departure. Current-roster and
+ * full-page readers filter to UPSERT rows, so the tombstone stays invisible
+ * to them. */
 export async function applyMirrorMetaFactInTx(
   tx: DatabaseTransaction,
   threadId: number,
@@ -132,15 +132,16 @@ export async function applyMirrorMetaFactInTx(
       },
       loadFederationConfig().domain,
     );
-    await tx
-      .delete(groupMetaMemberFeed)
-      .where(
-        and(
-          eq(groupMetaMemberFeed.threadId, threadId),
-          eq(groupMetaMemberFeed.memberAccount, subject.account),
-          eq(groupMetaMemberFeed.memberDomain, subject.domain),
-        ),
-      );
+    await upsertCurrentGroupMetaFactsInTx(tx, [
+      {
+        threadId,
+        feedId: item.feedId,
+        memberAccount: subject.account,
+        memberDomain: subject.domain,
+        operation: 'DEPART',
+        body: {},
+      },
+    ]);
     return;
   }
   await upsertCurrentGroupMetaFactsInTx(tx, [
@@ -265,12 +266,8 @@ export async function finalizeMirrorMetaRecoveryInTx(
     threadId: number;
     through: number;
     threadLock: ThreadContentLock;
-    clientStateFeed: Pick<
-      ClientStateFeedService,
-      'publishGroupProfileToLocalAccountsInTx'
-    >;
   },
-): Promise<PendingClientStateFeedUpdate[]> {
+): Promise<void> {
   const [feed] = await tx
     .select({ metaEndId: groupMeta.metaEndId })
     .from(groupMeta)
@@ -304,8 +301,4 @@ export async function finalizeMirrorMetaRecoveryInTx(
       updatedAt: new Date(),
     })
     .where(eq(messageThread.id, input.threadId));
-  return input.clientStateFeed.publishGroupProfileToLocalAccountsInTx(
-    tx,
-    input.threadId,
-  );
 }

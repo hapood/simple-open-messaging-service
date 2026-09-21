@@ -47,7 +47,7 @@ function localRecipientKey(
  * The pair row already exists (the transaction owner minted it), so sibling
  * CTEs read the intent back through the same UNION ALL fallback as revocation.
  * Manager notification stays projection-only — no client-state attention head or
- * PROFILE feed rows — matching the decision-time doctrine; the reconcile path
+ * profile snapshots — matching the decision-time doctrine; the reconcile path
  * rebuilds those cosmetic rows. */
 export function groupAuthoredMembershipRequestSql(
   input: GroupAuthoredMembershipRequestInput,

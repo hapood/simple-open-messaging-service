@@ -64,8 +64,8 @@ fn commit_resolved_profile(
     let name = profile
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or(account);
-    let bio = profile.get("bio").and_then(Value::as_str).unwrap_or("");
+        .ok_or("resolved profile has no name")?;
+    let bio = profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?;
     let avatar = profile
         .get("avatarBase64")
         .and_then(Value::as_str)
@@ -400,9 +400,9 @@ fn commit_group_meta_profile(
             "domain": reference.domain,
             "namespaceId": reference.namespace_id,
             "profileRev": actual_rev,
-            "name": profile.get("name").and_then(Value::as_str).unwrap_or(&reference.account),
+            "name": profile.get("name").and_then(Value::as_str).ok_or("resolved profile has no name")?,
             "avatar": avatar,
-            "bio": profile.get("bio").and_then(Value::as_str).unwrap_or(""),
+            "bio": profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?,
         }),
     )?;
     if reference.is_group && actual_rev == reference.rev {
@@ -416,9 +416,9 @@ fn commit_group_meta_profile(
                 profile
                     .get("name")
                     .and_then(Value::as_str)
-                    .unwrap_or(&reference.account),
+                    .ok_or("resolved profile has no name")?,
                 avatar,
-                profile.get("bio").and_then(Value::as_str).unwrap_or("")
+                profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?
             ],
         )
         .map_err(|e| format!("update resolved group profile: {e}"))?;

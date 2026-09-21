@@ -585,6 +585,9 @@ describe('group join decision', () => {
       const f = await fixture();
       await database.db.transaction(async (tx) => {
         await tx
+          .delete(tables.message)
+          .where(eq(tables.message.threadId, f.group.threadId));
+        await tx
           .update(tables.messageThread)
           .set({ curSeq: 3 })
           .where(eq(tables.messageThread.id, f.group.threadId));
@@ -1938,6 +1941,10 @@ describe('group join decision', () => {
       .select()
       .from(tables.groupMeta)
       .where(eq(tables.groupMeta.threadId, group.threadId));
+    const messagesBefore = await database.pool.query(
+      'SELECT count(*)::int AS n FROM "Message" WHERE "threadId" = $1',
+      [group.threadId],
+    );
     businessLocks.length = 0;
     await authoredIntents.execute({
       threadId: group.threadId,
@@ -1977,7 +1984,7 @@ describe('group join decision', () => {
       'SELECT count(*)::int AS n FROM "Message" WHERE "threadId" = $1',
       [group.threadId],
     );
-    expect(messages.rows[0].n).toBe(0);
+    expect(messages.rows[0].n).toBe(messagesBefore.rows[0].n);
     const [meta] = await database.db
       .select()
       .from(tables.groupMeta)
@@ -2276,6 +2283,10 @@ describe('group join decision', () => {
 
     it('applies to join, refreshes the application, and admits the projection fan-out', async () => {
       const f = await memberFixture();
+      const messagesBefore = await database.pool.query(
+        'SELECT count(*)::int AS n FROM "Message" WHERE "threadId" = $1',
+        [f.group.threadId],
+      );
       const initialMeta = await database.db.query.groupMeta.findFirst({
         where: eq(tables.groupMeta.threadId, f.group.threadId),
       });
@@ -2307,7 +2318,7 @@ describe('group join decision', () => {
         'SELECT count(*)::int AS n FROM "Message" WHERE "threadId" = $1',
         [f.group.threadId],
       );
-      expect(messages.rows[0].n).toBe(0);
+      expect(messages.rows[0].n).toBe(messagesBefore.rows[0].n);
       const [metaBefore] = await database.db
         .select()
         .from(tables.groupMeta)

@@ -109,13 +109,13 @@ describe('WebdbService native SQLite routing', () => {
     const items = [
       {
         feedId: 81,
-        account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
-        eventType: 'PROFILE' as const,
+        account: '' as const,
+        domain: 'local' as const,
+        namespaceId: 0 as const,
+        eventType: 'INCOMING_INVITE_HEAD' as const,
         subjectAccount: '' as const,
         subjectDomain: 'local' as const,
-        body: { displayName: 'Alice', avatar: '', bio: '', profileRev: 2 },
+        body: { readThroughFeedId: 0 },
       },
     ];
     await service.applyStateFeedPage(items, 81, true);

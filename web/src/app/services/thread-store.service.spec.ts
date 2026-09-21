@@ -680,71 +680,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await repo.load();
   }
 
-  it('applies a profile fact only to the matching namespace in memory and storage', async () => {
-    const old = p2p(91, 0);
-    const current = p2p(92, 0);
-    Object.assign(old.peerUser, {
-      account: 'peer',
-      domain: 'peer.test',
-      namespaceId: 7,
-      profileRev: 2,
-      name: 'Old namespace',
-    });
-    Object.assign(current.peerUser, {
-      account: 'peer',
-      domain: 'peer.test',
-      namespaceId: 8,
-      profileRev: 2,
-      name: 'Current namespace',
-    });
-    old.authorityNamespaceId = 7;
-    current.authorityNamespaceId = 8;
-    await populate([old, current]);
-    cursorSignal.set(98);
-    queryStateFeedSpy.mockReturnValueOnce(
-      of({
-        code: 0,
-        data: {
-          mode: 'delta',
-          scannedThrough: 99,
-          stateFeedEndId: 99,
-          hasMore: false,
-          items: [
-            {
-              feedId: 99,
-              eventType: 'PROFILE',
-              account: 'peer',
-              domain: 'peer.test',
-              namespaceId: 8,
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                displayName: 'Updated',
-                avatar: '',
-                bio: '',
-                profileRev: 2,
-              },
-            },
-          ],
-        },
-      }),
-    );
-    repo.onStateFeedUpdated(99);
-    await vi.waitFor(() => expect(cursorSignal()).toBe(99));
-    expect(repo.items().find((item) => item.threadId === 91)).toMatchObject({
-      peerUser: { name: 'Old namespace', namespaceId: 7 },
-    });
-    expect(repo.items().find((item) => item.threadId === 92)).toMatchObject({
-      peerUser: { name: 'Updated', namespaceId: 8 },
-    });
-    expect(
-      (await webdb.getThreads()).find((item) => item.threadId === 91),
-    ).toMatchObject({ peerUser: { name: 'Old namespace' } });
-    expect(
-      (await webdb.getThreads()).find((item) => item.threadId === 92),
-    ).toMatchObject({ peerUser: { name: 'Updated' } });
-  });
-
   it('asks the database runtime to materialize profile availability', async () => {
     const apply = vi
       .spyOn(webdb, 'applyProfileEvent')
@@ -1035,6 +970,28 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await repo.setOpenThread(1);
     await emitThreadContentHead(1, 100);
     expect(repo.items()[0].unreadCount).toBe(0);
+  });
+
+  it('does not pin optimistic group presentation as an immutable profile', async () => {
+    await populate([
+      createGroupConversation(
+        7,
+        {
+          id: 70,
+          account: '!team',
+          name: 'Old name',
+          ownerId: 1,
+          profileRev: 3,
+        },
+        { threadFeedId: 7 },
+      ),
+    ]);
+    putProfileSpy.mockClear();
+    repo.applyGroupUpdate(7, { name: 'Optimistic name' });
+    expect(repo.items()[0]).toMatchObject({
+      group: { name: 'Optimistic name', profileRev: 3 },
+    });
+    expect(putProfileSpy).not.toHaveBeenCalled();
   });
 
   it('applies a member feed that removes the local manager role', async () => {

@@ -166,6 +166,13 @@ modify relationship, membership, peer-health, or Group Meta state.
 
 ## 6. Client protocol and persistence
 
+ClientStateFeed carries relationship intents, invitation read heads, and thread
+state. It has no PROFILE event and never transports profile snapshots. Group
+Meta carries only role and revision references. Neither metadata ingestion nor
+optimistic conversation display updates may populate the immutable profile
+cache. Only complete resolved snapshots are committed through the profile
+runtime; missing content remains unresolved.
+
 The start response is:
 
 ```ts

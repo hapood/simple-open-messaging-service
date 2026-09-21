@@ -279,7 +279,7 @@ describe('WebdbService', () => {
               account: 'me',
               domain: 'local',
               namespaceId: 7,
-              body: { role: 'MEMBER', profileRev: 2, profileResolved: false },
+              body: { role: 'MEMBER', profileRev: 2 },
             },
             {
               feedId: '2',
@@ -290,9 +290,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'MEMBER',
                 profileRev: 2,
-                displayName: 'Other',
-                avatar: null,
-                bio: '',
               },
             },
             {
@@ -315,7 +312,7 @@ describe('WebdbService', () => {
       ).toMatchObject({
         domain: 'third.test',
         namespaceId: 7,
-        user: { name: 'Other' },
+        user: { name: 'other' },
       });
       expect(await webdb.getGroupMember(90, 'me', 'local', 7)).toMatchObject({
         namespaceId: 0,
@@ -324,8 +321,28 @@ describe('WebdbService', () => {
         authorityNamespaceId: 7,
         group: { domain: 'authority.test', namespaceId: 7, profileRev: 4 },
       });
-      expect(await db!.getAll('profiles')).toHaveLength(1);
+      expect(await db!.getAll('profiles')).toHaveLength(0);
       expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
+    });
+
+    it('rejects incomplete profile text without pinning a placeholder', async () => {
+      const db = await webdb.openForUser('1');
+      for (const missing of ['name', 'bio']) {
+        const profile = {
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          rev: 1,
+          name: 'Alice',
+          bio: '',
+          avatarBase64: null,
+        };
+        delete (profile as Record<string, unknown>)[missing];
+        await expect(webdb.commitResolvedProfile(profile)).rejects.toThrow(
+          'profile snapshot text is incomplete',
+        );
+      }
+      expect(await db!.getAll('profiles')).toEqual([]);
     });
 
     it('caches exact profile versions independently and normalizes namespace-zero subjects', async () => {
@@ -373,7 +390,7 @@ describe('WebdbService', () => {
       );
     });
 
-    it('rolls back the entire state page when an exact profile conflicts', async () => {
+    it('applies metadata references without accepting inline profile content', async () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread(
         createGroupConversation(90, {
@@ -423,15 +440,14 @@ describe('WebdbService', () => {
                 body: {
                   role: 'ADMIN',
                   profileRev: 1,
-                  displayName: 'Conflicting name',
-                  bio: '',
+                  ...{ displayName: 'Conflicting name', profileResolved: true },
                 },
               },
             ],
           },
         }),
-      ).rejects.toThrow('conflicting cached profile revision');
-      expect(await db!.getAll('members')).toEqual([]);
+      ).resolves.toBeUndefined();
+      expect(await db!.getAll('members')).toHaveLength(2);
       expect(await webdb.getMeta('stateFeedId')).toBe(98);
       expect(
         await webdb.getProfile({
@@ -1591,111 +1607,6 @@ describe('WebdbService', () => {
       expect(await db!.getAll('relationshipRequests')).toEqual([]);
     });
 
-    it.each([undefined, 10])(
-      'keeps the selected intent/message profile when a different general PROFILE revision arrives (seq=%s)',
-      async (peerProfileMessageSeq) => {
-        await webdb.openForUser('1');
-        await webdb.putThread(
-          createP2PConversation(
-            9,
-            {
-              id: 2,
-              account: 'peer',
-              name: 'Message profile',
-              domain: 'local',
-              profileRev: 1,
-              avatar: 'data:image/webp;base64,aW1hZ2U=',
-            },
-            { peerProfileMessageSeq },
-          ),
-        );
-        await webdb.applyStateFeedPage(
-          [
-            {
-              feedId: 1,
-              namespaceId: 0,
-              account: 'peer',
-              domain: 'local',
-              eventType: 'PROFILE',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                profileRev: 99,
-                displayName: 'Public profile',
-                avatar: '',
-                bio: '',
-              },
-            },
-          ],
-          1,
-        );
-        expect((await webdb.getThreads())[0]).toMatchObject({
-          peerProfileMessageSeq,
-          peerUser: { name: 'Message profile', profileRev: 1 },
-        });
-      },
-    );
-
-    it('refreshes a pending group invite when its authoritative profile arrives', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const invite: ClientStateFeedItem = {
-        feedId: 22,
-        namespaceId: 12,
-        account: '!group',
-        domain: 'groups.test',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'me',
-        subjectDomain: 'local.test',
-        body: {
-          status: 'REQUESTED',
-          note: 'join us',
-          requestedAt,
-          expiresAt: requestedAt + 60_000,
-          direction: 'INCOMING',
-          threadId: 8,
-          group: {
-            namespaceId: 12,
-            account: '!group',
-            domain: 'groups.test',
-            isLocal: false,
-            name: '!group',
-            avatar: '',
-            description: '',
-            profileRev: 0,
-          },
-        },
-      };
-      const profile: ClientStateFeedItem = {
-        feedId: 23,
-        namespaceId: 12,
-        account: '!group',
-        domain: 'groups.test',
-        eventType: 'PROFILE',
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: {
-          profileRev: 3,
-          displayName: 'Product Team',
-          avatar: 'team.webp',
-          bio: 'Product discussions',
-        },
-      };
-
-      await webdb.applyStateFeedPage([invite, profile], 23);
-
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          group: expect.objectContaining({
-            name: 'Product Team',
-            avatar: 'team.webp',
-            description: 'Product discussions',
-            profileRev: 3,
-          }),
-        }),
-      ]);
-    });
-
     it('uses explicit OUTGOING direction for a legacy group-first federated key', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
@@ -2098,9 +2009,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'OWNER',
                 profileRev: 1,
-                displayName: 'Self',
-                avatar: null,
-                bio: '',
               },
             },
             {
@@ -2112,9 +2020,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'ADMIN',
                 profileRev: 6,
-                displayName: 'Alice',
-                avatar: '/a.webp',
-                bio: 'About Alice',
               },
             },
           ],
@@ -2207,9 +2112,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'ADMIN',
                 profileRev: 1,
-                displayName: 'Self',
-                avatar: null,
-                bio: '',
               },
             },
           ],
@@ -2384,9 +2286,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'OWNER',
                 profileRev: 1,
-                displayName: 'Alice',
-                avatar: null,
-                bio: '',
               },
             },
             {
@@ -2398,9 +2297,6 @@ describe('WebdbService', () => {
               body: {
                 role: 'MEMBER',
                 profileRev: 1,
-                displayName: 'Bob',
-                avatar: null,
-                bio: '',
               },
             },
           ],

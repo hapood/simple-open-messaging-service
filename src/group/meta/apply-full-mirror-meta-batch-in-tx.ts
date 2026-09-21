@@ -1,14 +1,17 @@
 import { eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../database/database.service.js';
-import { groupMeta, groupMetaMemberFeed, messageThread } from '../../database/schema.js';
 import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../../client-state-feed/client-state-feed.service.js';
+  groupMeta,
+  groupMetaMemberFeed,
+  messageThread,
+} from '../../database/schema.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
-import type { MirrorGroupAddress, MirrorMetaReplicatedItem } from './mirror-meta-shared.js';
+import type {
+  MirrorGroupAddress,
+  MirrorMetaReplicatedItem,
+} from './mirror-meta-shared.js';
 import {
   advanceMirrorProcessedThroughInTx,
   currentMirrorMetaFact,
@@ -27,10 +30,6 @@ export interface FullMirrorMetaBatchInput {
   /** True for the drain's last page: the applied end advances to `through`,
    * the drain closes, and the shell projection refreshes here. */
   reachedBoundary: boolean;
-  clientStateFeed: Pick<
-    ClientStateFeedService,
-    'publishGroupProfileToLocalAccountsInTx'
-  >;
 }
 
 /** Commit a complete full Group Meta drain in one transaction, without
@@ -42,7 +41,6 @@ export async function applyFullMirrorMetaBatchInTx(
   input: FullMirrorMetaBatchInput,
 ): Promise<{
   threadId: number;
-  clientFeedUpdates: PendingClientStateFeedUpdate[];
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
@@ -66,7 +64,9 @@ export async function applyFullMirrorMetaBatchInTx(
     return currentMirrorMetaFact(mirror.threadId, input.group, item);
   });
   await upsertCurrentGroupMetaFactsInTx(tx, facts);
-  const profile = input.items.find((item) => item.operation === 'GROUP_PROFILE');
+  const profile = input.items.find(
+    (item) => item.operation === 'GROUP_PROFILE',
+  );
   if (profile?.operation === 'GROUP_PROFILE')
     await tx
       .update(groupMeta)
@@ -86,12 +86,10 @@ export async function applyFullMirrorMetaBatchInTx(
     messageEndSeq: messageEnd.rows[0]!.head,
     tombstoneEndSeq: thread.tombstoneEndSeq,
   });
-  let clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-  clientFeedUpdates = await finalizeMirrorMetaRecoveryInTx(tx, {
+  await finalizeMirrorMetaRecoveryInTx(tx, {
     threadId: mirror.threadId,
     through: input.through,
     threadLock,
-    clientStateFeed: input.clientStateFeed,
   });
   await advanceMirrorProcessedThroughInTx(
     tx,
@@ -99,5 +97,5 @@ export async function applyFullMirrorMetaBatchInTx(
     input.scannedThrough,
     input.through,
   );
-  return { threadId: mirror.threadId, clientFeedUpdates };
+  return { threadId: mirror.threadId };
 }

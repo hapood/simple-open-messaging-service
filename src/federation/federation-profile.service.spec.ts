@@ -107,7 +107,7 @@ describe('FederationProfileService localization', () => {
     });
   });
 
-  it('publishes a live local group through the account resolver', async () => {
+  it('returns no group profile when only a presentation fallback is available', async () => {
     const { subject, database } = makeSubject();
     database.db
       .select()
@@ -125,28 +125,22 @@ describe('FederationProfileService localization', () => {
           dissolvedAt: null,
         },
       ] as never);
-    const serialize = vi.spyOn(subject, 'toS2SProfile').mockResolvedValueOnce({
-      account: '!group',
-      domain: loadFederationConfig().domain,
-      displayName: 'Federated group',
-      avatar: null,
-      bio: 'Group biography',
-      profileRev: 2,
-    });
+    const stored = vi
+      .spyOn(subject, 'getStoredProfile')
+      .mockResolvedValue(null);
 
-    await subject.getLocalAccountProfile({
-      account: '!group',
-      domain: loadFederationConfig().domain,
-    });
-
-    expect(serialize).toHaveBeenCalledWith({
-      account: '!group',
-      domain: loadFederationConfig().domain,
-      name: 'Federated group',
-      avatar: '',
-      bio: 'Group biography',
-      profileRev: 2,
-    });
+    await expect(
+      subject.getLocalAccountProfile({
+        account: '!group',
+        domain: loadFederationConfig().domain,
+      }),
+    ).resolves.toBeNull();
+    expect(stored).toHaveBeenCalledWith(
+      '!group',
+      loadFederationConfig().domain,
+      0,
+      2,
+    );
   });
 
   it('authorizes an intent author profile for either remote user or group endpoints', async () => {

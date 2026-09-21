@@ -55,11 +55,7 @@ type ClientStateFeedItem = {
   account: string;
   domain: string;
   namespaceId: number;
-  eventType:
-    | 'PROFILE'
-    | 'RELATIONSHIP_INTENT'
-    | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_STATE';
+  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD' | 'THREAD_STATE';
   subjectAccount: string;
   subjectDomain: string;
   body: unknown;

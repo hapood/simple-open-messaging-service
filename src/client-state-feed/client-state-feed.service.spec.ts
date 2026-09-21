@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SQL } from 'drizzle-orm';
-import { PgDialect } from 'drizzle-orm/pg-core';
 import { ClientStateFeedService } from './client-state-feed.service.js';
-
-const dialect = new PgDialect();
 
 describe('ClientStateFeedService', () => {
   it('merges independent thread heads and does not suppress them with an unchanged state head', async () => {
@@ -156,76 +152,6 @@ describe('ClientStateFeedService', () => {
           requestedAt: requestedAt.getTime(),
           established: false,
         },
-      }),
-    );
-  });
-
-  it('checks canonical Group Meta before removing an unreferenced profile', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      rows: [{ referenced: true }],
-    });
-    const tx = {
-      query: {
-        account: {
-          findFirst: vi.fn().mockResolvedValue({
-            account: 'member',
-            domain: 'peer.test',
-          }),
-        },
-      },
-      execute,
-    };
-    const service = new ClientStateFeedService(
-      undefined as never,
-      undefined as never,
-    );
-
-    await service.cleanupProfileStateIfUnreferencedInTx(tx as never, 1, 2);
-
-    const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL).sql;
-    expect(query).toContain('FROM "GroupMetaMemberFeed" member_fact');
-    expect(query).toContain('JOIN "RelationshipPair" owner_pair');
-    expect(query).not.toContain('ClientGroupMetaMemberFeed');
-  });
-
-  it('publishes the group profile to each active local account state', async () => {
-    const service = new ClientStateFeedService(
-      undefined as never,
-      undefined as never,
-    );
-    vi.spyOn(service, 'writeInTx').mockResolvedValue(9);
-    const tx = {
-      execute: vi
-        .fn()
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              groupId: 3,
-              account: '!team',
-              domain: 'local',
-              displayName: 'Team',
-              bio: 'Group bio',
-              avatar: '',
-              profileRev: 1,
-              namespaceId: 0,
-            },
-          ],
-        })
-        .mockResolvedValueOnce({
-          rows: [{ userId: 7 }],
-        }),
-    };
-
-    await expect(
-      service.publishGroupProfileToLocalAccountsInTx(tx as never, 11),
-    ).resolves.toEqual([{ userId: 7, feedId: 9 }]);
-
-    expect(service.writeInTx).toHaveBeenNthCalledWith(
-      1,
-      tx,
-      expect.objectContaining({
-        userId: 7,
-        eventType: 'PROFILE',
       }),
     );
   });

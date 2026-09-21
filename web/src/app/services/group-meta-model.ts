@@ -11,11 +11,6 @@ export interface ClientGroupMetaFeedPage {
         body: {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
-          profileMessageSeq?: number | null;
-          profileResolved?: boolean;
-          displayName?: string;
-          avatar?: string | null;
-          bio?: string;
         };
       }
     | {

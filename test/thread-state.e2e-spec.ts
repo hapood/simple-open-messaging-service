@@ -1,3 +1,4 @@
+import { UserService } from '../src/user/user.service.js';
 import type { ThreadStateSnapshot } from '../shared/thread-state.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -33,6 +34,32 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     database = mod.get(DatabaseService);
   });
   afterAll(async () => mod.close());
+
+  it('does not return an account fallback as an unresolved self profile', async () => {
+    const [owner] = await database.db
+      .insert(tables.account)
+      .values({
+        account: 'self-profile-unresolved',
+        defaultProfileRev: 9,
+      })
+      .returning();
+    const users = new UserService(database, {} as never);
+    expect(await users.findSelfProfile(owner.id)).toBeNull();
+    await database.db.insert(tables.profileTable).values({
+      account: owner.account,
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: 9,
+      displayName: 'Resolved self',
+      avatar: '',
+      bio: 'Complete',
+    });
+    expect(await users.findSelfProfile(owner.id)).toMatchObject({
+      name: 'Resolved self',
+      defaultProfileRev: 9,
+      bio: 'Complete',
+    });
+  });
 
   async function fixture(foreign = false) {
     const id = ++counter;
@@ -313,18 +340,19 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const blocked = await f.snapshot();
     expect(blocked.feedId).toBeGreaterThan(first.feedId);
     expect(blocked.body).toEqual({ ...first.body, blocked: true });
-    await database.db.transaction((tx) =>
-      feed().writeInTx(tx, {
-        userId: f.owner.id,
-        eventType: 'PROFILE',
-        account: f.target,
-        domain: 'local',
-        namespaceId: 0,
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: { profileRev: 8, displayName: 'Updated', bio: '', avatar: null },
-      }),
-    );
+    await database.db.insert(tables.profileTable).values({
+      account: f.target,
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: 8,
+      displayName: 'Updated',
+      avatar: '',
+      bio: '',
+    });
+    await database.db
+      .update(tables.account)
+      .set({ defaultProfileRev: 8 })
+      .where(eq(tables.account.account, f.target));
     expect((await f.snapshot()).body).toMatchObject({
       establishedAt: first.body.establishedAt,
       profile: { profileRev: 7 },

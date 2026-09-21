@@ -144,14 +144,12 @@ export class FederationProfileService {
         ),
       );
       if (!group || group.profileRev === 0 || group.dissolvedAt) return null;
-      return this.toS2SProfile({
-        account: group.account,
-        domain: this.config.domain,
-        name: group.name,
-        avatar: group.avatar,
-        bio: group.description,
-        profileRev: group.profileRev,
-      });
+      return this.getStoredProfile(
+        group.account,
+        this.config.domain,
+        0,
+        group.profileRev,
+      );
     }
     const user = await this.database.db.query.account.findFirst({
       where: and(

@@ -6,10 +6,6 @@ import { loadFederationConfig } from '../../federation/federation.config.js';
 import { MessageService } from '../../message/message.service.js';
 import { SystemMessageType } from '../../message/system-message.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../../client-state-feed/client-state-feed.service.js';
 import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from './current-group-roster.js';
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
 import type {
@@ -33,10 +29,6 @@ export interface DeltaMirrorMetaItemInput {
    * and the shell projection refreshes in this same transaction. */
   reachedBoundary: boolean;
   messages: Pick<MessageService, 'writeSystemMessageInTx'>;
-  clientStateFeed: Pick<
-    ClientStateFeedService,
-    'publishGroupProfileToLocalAccountsInTx'
-  >;
 }
 
 /** Delta Group Meta consumption: one feed item per transaction. The replica
@@ -50,7 +42,6 @@ export async function applyDeltaMirrorMetaItemInTx(
   input: DeltaMirrorMetaItemInput,
 ): Promise<{
   threadId: number;
-  clientFeedUpdates: PendingClientStateFeedUpdate[];
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
@@ -103,11 +94,10 @@ export async function applyDeltaMirrorMetaItemInTx(
     });
   }
   if (input.reachedBoundary) {
-    const clientFeedUpdates = await finalizeMirrorMetaRecoveryInTx(tx, {
+    await finalizeMirrorMetaRecoveryInTx(tx, {
       threadId: mirror.threadId,
       through: input.through,
       threadLock,
-      clientStateFeed: input.clientStateFeed,
     });
     await advanceMirrorProcessedThroughInTx(
       tx,
@@ -115,7 +105,7 @@ export async function applyDeltaMirrorMetaItemInTx(
       input.item.feedId,
       input.through,
     );
-    return { threadId: mirror.threadId, clientFeedUpdates };
+    return { threadId: mirror.threadId };
   }
   await advanceMirrorProcessedThroughInTx(
     tx,
@@ -123,7 +113,7 @@ export async function applyDeltaMirrorMetaItemInTx(
     input.item.feedId,
     input.through,
   );
-  return { threadId: mirror.threadId, clientFeedUpdates: [] };
+  return { threadId: mirror.threadId };
 }
 
 /** Closes a delta round whose final page carried no items: the applied end
@@ -134,14 +124,9 @@ export async function finalizeDeltaMirrorMetaRoundInTx(
   input: {
     group: MirrorGroupAddress;
     through: number;
-    clientStateFeed: Pick<
-      ClientStateFeedService,
-      'publishGroupProfileToLocalAccountsInTx'
-    >;
   },
 ): Promise<{
   threadId: number;
-  clientFeedUpdates: PendingClientStateFeedUpdate[];
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
@@ -152,11 +137,10 @@ export async function finalizeDeltaMirrorMetaRoundInTx(
     mirror.threadId,
     mirror.threadId,
   );
-  const clientFeedUpdates = await finalizeMirrorMetaRecoveryInTx(tx, {
+  await finalizeMirrorMetaRecoveryInTx(tx, {
     threadId: mirror.threadId,
     through: input.through,
     threadLock,
-    clientStateFeed: input.clientStateFeed,
   });
   await advanceMirrorProcessedThroughInTx(
     tx,
@@ -164,7 +148,7 @@ export async function finalizeDeltaMirrorMetaRoundInTx(
     input.through,
     input.through,
   );
-  return { threadId: mirror.threadId, clientFeedUpdates };
+  return { threadId: mirror.threadId };
 }
 
 /** Read the compacted member fact before replacing or deleting it. */

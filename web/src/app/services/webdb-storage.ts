@@ -2019,18 +2019,6 @@ export class WebdbStorage {
             continue;
           }
           const body = item.body;
-          const profileResolved =
-            body.profileResolved ?? typeof body.displayName === 'string';
-          if (profileResolved && body.profileRev > 0)
-            await this.writeSnapshot(tx.objectStore('profiles'), {
-              account: item.account,
-              domain: item.domain,
-              namespaceId: item.namespaceId,
-              profileRev: body.profileRev,
-              name: body.displayName ?? item.account,
-              avatar: body.avatar ?? '',
-              bio: body.bio ?? '',
-            });
           await members.put({
             threadId: update.threadId,
             account: item.account,
@@ -2039,7 +2027,7 @@ export class WebdbStorage {
             role: body.role,
             left: false,
             profileRev: body.profileRev,
-            profileMessageSeq: body.profileMessageSeq ?? null,
+            profileMessageSeq: null,
           });
         }
         const currentMembers = await members
@@ -2071,84 +2059,8 @@ export class WebdbStorage {
           });
         }
       }
-      for (const entry of items) {
-        const op =
-          entry.eventType === 'PROFILE' ? localSubjectIdentity(entry) : entry;
+      for (const op of items) {
         if (op.eventType === 'RELATIONSHIP_INTENT') continue;
-        if (op.eventType === 'PROFILE') {
-          const body = op.body;
-          if (typeof body.displayName === 'string' && body.profileRev > 0)
-            await this.writeSnapshot(tx.objectStore('profiles'), {
-              account: op.account,
-              domain: op.domain,
-              namespaceId: op.namespaceId,
-              profileRev: body.profileRev,
-              name: body.displayName,
-              avatar: body.avatar ?? '',
-              bio: body.bio ?? '',
-            });
-          const relationshipRequests = tx.objectStore('relationshipRequests');
-          for (const request of await relationshipRequests.getAll()) {
-            if (request.kind === 'GROUP') {
-              if (
-                request.group?.account !== op.account ||
-                request.group.domain !== op.domain ||
-                request.group.namespaceId !== op.namespaceId
-              )
-                continue;
-              await relationshipRequests.put({
-                ...request,
-                group: {
-                  ...request.group,
-                  name: body.displayName,
-                  avatar: body.avatar ?? '',
-                  description: body.bio,
-                  profileRev: body.profileRev,
-                },
-              });
-              continue;
-            }
-          }
-          const threads = tx.objectStore('threads');
-          for (const thread of await threads.getAll()) {
-            if (
-              thread.type === 'P2P' &&
-              thread.peerProfileMessageSeq == null &&
-              thread.peerUser.profileRev === body.profileRev &&
-              thread.peerUser.account === op.account &&
-              (thread.peerUser.domain ?? '') === op.domain &&
-              thread.peerUser.namespaceId === op.namespaceId
-            )
-              await threads.put({
-                ...thread,
-                peerUser: {
-                  ...thread.peerUser,
-                  name: body.displayName,
-                  bio: body.bio,
-                  avatar: body.avatar ?? '',
-                  profileRev: body.profileRev,
-                },
-              });
-            else if (
-              thread.type === 'GROUP' &&
-              thread.group.account === op.account &&
-              thread.group.domain === op.domain &&
-              thread.group.namespaceId === op.namespaceId &&
-              thread.group.profileRev <= body.profileRev
-            )
-              await threads.put({
-                ...thread,
-                group: {
-                  ...thread.group,
-                  name: body.displayName,
-                  avatar: body.avatar ?? '',
-                  description: body.bio,
-                  profileRev: body.profileRev,
-                },
-              });
-          }
-          continue;
-        }
         if (op.eventType === 'INCOMING_INVITE_HEAD') {
           await tx.objectStore('settings').put({
             key: 'relationshipRequestReadHead',
@@ -2872,6 +2784,11 @@ export class WebdbStorage {
     },
     record: ProfileSnapshot,
   ): Promise<boolean> {
+    if (typeof record.name !== 'string' || typeof record.bio !== 'string') {
+      store.transaction.abort();
+      await store.transaction.done.catch(() => {});
+      throw new Error('profile snapshot text is incomplete');
+    }
     record = localSubjectIdentity(record);
     const previous = await store.get([
       record.account,

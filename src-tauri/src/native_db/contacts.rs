@@ -45,9 +45,9 @@ pub(super) fn write_profile(
         return Ok(false);
     }
     let snapshot = serde_json::json!({ "account": account, "domain": domain, "namespaceId": namespace,
-        "profileRev": rev, "name": profile.get("name").and_then(Value::as_str).unwrap_or(account),
+        "profileRev": rev, "name": profile.get("name").and_then(Value::as_str).ok_or("profile has no name")?,
         "avatar": profile.get("avatar").and_then(Value::as_str).unwrap_or(""),
-        "bio": profile.get("bio").and_then(Value::as_str).unwrap_or("") });
+        "bio": profile.get("bio").and_then(Value::as_str).ok_or("profile has no bio")? });
     let existing: Option<String> = conn.query_row(
         "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
         params![user_id, account, domain, namespace, rev], |row| row.get(0))

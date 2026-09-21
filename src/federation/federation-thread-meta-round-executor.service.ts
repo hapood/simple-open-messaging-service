@@ -20,10 +20,6 @@ import {
 } from '../common/account.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
@@ -63,7 +59,6 @@ export class FederationThreadMetaRoundExecutorService {
   constructor(
     private readonly database: DatabaseService,
     private readonly client: FederationGroupMetaClient,
-    private readonly clientStateFeed: ClientStateFeedService,
     private readonly messages: MessageService,
     private readonly profiles: FederationProfileService,
   ) {}
@@ -180,30 +175,25 @@ export class FederationThreadMetaRoundExecutorService {
       const items = fetched.items.map((item) => validateItem(item, 'delta'));
       const reachedBoundary = !fetched.hasMore;
       if (items.length === 0 && reachedBoundary) {
-        const { clientFeedUpdates } = await this.database.db.transaction(
-          async (tx) =>
-            finalizeDeltaMirrorMetaRoundInTx(tx, {
-              group,
-              through: plan.metaTargetId,
-              clientStateFeed: this.clientStateFeed,
-            }),
+        await this.database.db.transaction(async (tx) =>
+          finalizeDeltaMirrorMetaRoundInTx(tx, {
+            group,
+            through: plan.metaTargetId,
+          }),
         );
-        this.notify(clientFeedUpdates);
+
         return false;
       }
       for (const [index, item] of items.entries()) {
-        const { clientFeedUpdates } = await this.database.db.transaction(
-          async (tx) =>
-            applyDeltaMirrorMetaItemInTx(tx, {
-              group,
-              item,
-              through: plan.metaTargetId,
-              reachedBoundary: reachedBoundary && index === items.length - 1,
-              messages: this.messages,
-              clientStateFeed: this.clientStateFeed,
-            }),
+        await this.database.db.transaction(async (tx) =>
+          applyDeltaMirrorMetaItemInTx(tx, {
+            group,
+            item,
+            through: plan.metaTargetId,
+            reachedBoundary: reachedBoundary && index === items.length - 1,
+            messages: this.messages,
+          }),
         );
-        this.notify(clientFeedUpdates);
       }
       after = fetched.scannedThrough;
       if (!fetched.hasMore) return false;
@@ -231,28 +221,22 @@ export class FederationThreadMetaRoundExecutorService {
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {
-        const { clientFeedUpdates } = await this.database.db.transaction(
-          async (tx) =>
-            applyFullMirrorMetaBatchInTx(tx, {
-              group,
-              items: snapshot,
-              through,
-              scannedThrough: page.scannedThrough,
-              reachedBoundary: true,
-              clientStateFeed: this.clientStateFeed,
-            }),
+        await this.database.db.transaction(async (tx) =>
+          applyFullMirrorMetaBatchInTx(tx, {
+            group,
+            items: snapshot,
+            through,
+            scannedThrough: page.scannedThrough,
+            reachedBoundary: true,
+          }),
         );
-        this.notify(clientFeedUpdates);
+
         return;
       }
       if (pages >= MAX_FULL_SNAPSHOT_PAGES)
         throw new Error('full group-meta snapshot exceeded the page ceiling');
       after = page.scannedThrough;
     }
-  }
-
-  private notify(updates: PendingClientStateFeedUpdate[]): void {
-    if (updates.length > 0) this.clientStateFeed.notifyFeedUpdates(updates);
   }
 }
 

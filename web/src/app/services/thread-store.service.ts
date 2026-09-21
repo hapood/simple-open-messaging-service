@@ -4,7 +4,6 @@ import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { UserService, type ClientStateFeedItem } from './user.service';
 import { WebsocketService } from './websocket.service';
-import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
 import {
   ConversationItem,
@@ -76,7 +75,6 @@ export class ThreadRepository {
   private readonly webdb = inject(WebdbService);
   private readonly userService = inject(UserService);
   private readonly ws = inject(WebsocketService);
-  private readonly profileRepo = inject(ProfileRepository);
   private readonly messageRepo = inject(MessageRepository);
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly toast = inject(ToastService);
@@ -221,13 +219,13 @@ export class ThreadRepository {
             | {
                 userId?: number;
                 cursor?: number;
-                changes?: Array<'THREADS' | 'GROUP_META' | 'PROFILE'>;
+                changes?: Array<'THREADS' | 'GROUP_META'>;
                 groupThreadIds?: number[];
               }
             | undefined;
           if (data?.userId === this.userService.sessionUserId()) {
             const groupProjectionChanged = data.changes?.some(
-              (change) => change === 'GROUP_META' || change === 'PROFILE',
+              (change) => change === 'GROUP_META',
             );
             void this.refreshCommittedThreadFeed(
               groupProjectionChanged ? data.groupThreadIds : undefined,
@@ -434,7 +432,6 @@ export class ThreadRepository {
     });
     if (changed) {
       void this.persistThread(changed);
-      this.writePeerProfile(changed.peerUser);
     }
   }
 
@@ -478,7 +475,6 @@ export class ThreadRepository {
     );
     if (changed) {
       void this.persistThread(changed);
-      this.writeGroupProfile(changed.group);
     }
   }
 
@@ -611,15 +607,6 @@ export class ThreadRepository {
     });
     this._status.set('READY');
     if (threadFeedId !== undefined) void this.persistThread(reconciled);
-    if (
-      reconciled.type === 'P2P' &&
-      reconciled.peerProfileMessageSeq == null &&
-      reconciled.peerUser.name.trim()
-    ) {
-      this.writePeerProfile(reconciled.peerUser);
-    } else if (reconciled.type === 'GROUP' && reconciled.group.name.trim()) {
-      this.writeGroupProfile(reconciled.group);
-    }
   }
 
   private applyItems(items: ConversationItem[]): void {
@@ -1122,8 +1109,6 @@ export class ThreadRepository {
               relationshipIntentRevision ?? 0,
               op.feedId,
             );
-          } else if (op.eventType === 'PROFILE') {
-            this.applyStateProfile(op);
           } else if (op.eventType === 'INCOMING_INVITE_HEAD') {
             this.userService.applyRelationshipRequestReadHead(
               op.body.readThroughFeedId,
@@ -1259,55 +1244,6 @@ export class ThreadRepository {
     }
   }
 
-  private applyStateProfile(
-    item: Extract<
-      import('./user.service').ClientStateFeedItem,
-      { eventType: 'PROFILE' }
-    >,
-  ): void {
-    item = localSubjectIdentity(item);
-    this._items.update((threads) =>
-      threads.map((thread) => {
-        if (
-          thread.type === 'P2P' &&
-          thread.peerProfileMessageSeq == null &&
-          thread.peerUser.profileRev === item.body.profileRev &&
-          thread.peerUser.account === item.account &&
-          (thread.peerUser.domain ?? '') === item.domain &&
-          thread.peerUser.namespaceId === item.namespaceId
-        )
-          return {
-            ...thread,
-            peerUser: {
-              ...thread.peerUser,
-              name: item.body.displayName,
-              bio: item.body.bio,
-              avatar: item.body.avatar ?? '',
-              profileRev: item.body.profileRev,
-            },
-          };
-        if (
-          thread.type === 'GROUP' &&
-          thread.group.account === item.account &&
-          thread.group.domain === item.domain &&
-          thread.group.namespaceId === item.namespaceId &&
-          thread.group.profileRev <= item.body.profileRev
-        )
-          return {
-            ...thread,
-            group: {
-              ...thread.group,
-              name: item.body.displayName,
-              avatar: item.body.avatar ?? '',
-              description: item.body.bio,
-              profileRev: item.body.profileRev,
-            },
-          };
-        return thread;
-      }),
-    );
-  }
-
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
 
   /** Read cached threads and restore the authoritative account-scoped feed order. */
@@ -1352,34 +1288,6 @@ export class ThreadRepository {
     } catch {
       /* best-effort */
     }
-  }
-
-  private writePeerProfile(u: User): void {
-    void this.profileRepo.putProfile(`u${u.id}`, 'user', {
-      id: u.id,
-      name: u.name,
-      account: u.account,
-      avatar: u.avatar,
-      bio: u.bio,
-      domain: u.domain,
-      sourceServer: u.domain,
-      namespaceId: u.namespaceId,
-      profileRev: u.profileRev,
-    });
-  }
-
-  private writeGroupProfile(g: GroupConversationItem['group']): void {
-    void this.profileRepo.putProfile(`g${g.id}`, 'group', {
-      id: g.id,
-      name: g.name,
-      account: g.account,
-      avatar: g.avatar,
-      bio: g.description,
-      domain: g.domain,
-      sourceServer: g.domain,
-      namespaceId: g.namespaceId,
-      profileRev: g.profileRev,
-    });
   }
 }
 

@@ -20,7 +20,10 @@ describe('incoming invitation read watermark', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -34,17 +37,14 @@ describe('incoming invitation read watermark', () => {
     await database.db.transaction((tx) =>
       stateFeed.writeInTx(tx, {
         userId: seeded.id,
-        account: 'inviter',
+        account: '',
         domain: 'local',
-        namespaceId: 0,
-        eventType: 'PROFILE',
+        namespaceId: 0 as const,
+        eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: {
-          profileRev: 1,
-          displayName: 'Inviter',
-          bio: '',
-          avatar: null,
+          readThroughFeedId: 0,
         },
       }),
     );

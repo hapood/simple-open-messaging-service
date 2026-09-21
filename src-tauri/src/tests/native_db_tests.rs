@@ -535,13 +535,25 @@ fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
 }
 
 #[test]
+fn native_profile_cache_rejects_missing_text_instead_of_synthesizing_it() {
+    let conn = profile_cache_db();
+    for missing in ["name", "bio"] {
+        let mut profile = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,"profileRev":1,"name":"Alice","avatar":"","bio":""});
+        profile.as_object_mut().unwrap().remove(missing);
+        assert!(super::contacts::write_profile(&conn, 1, &profile).is_err());
+    }
+    let count: i64 = conn.query_row("SELECT count(*) FROM profiles", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     let mut conn = profile_cache_db();
     conn.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(1,90,?1)", [serde_json::json!({"threadId":90,"type":"GROUP","authorityNamespaceId":7,"group":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":1}}).to_string()]).unwrap();
     let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"operation":"UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2,"profileResolved":false}},
-        {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2,"displayName":"Other","bio":""}},
+        {"operation":"UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
+        {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
         {"operation":"GROUP_PROFILE","body":{"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
@@ -568,7 +580,7 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     let profiles: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(profiles, 1);
+    assert_eq!(profiles, 0);
     let source: String = conn
         .query_row(
             "SELECT domain FROM namespaces WHERE user_id=1 AND namespace_id=7",

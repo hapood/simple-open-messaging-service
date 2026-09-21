@@ -609,30 +609,6 @@ pub(super) fn apply_state_feed_page(
                 .get("profileRev")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "group-meta UPSERT has no profileRev".to_string())?;
-            let profile_message_seq = item.body.get("profileMessageSeq").and_then(Value::as_i64);
-            let profile_resolved = item
-                .body
-                .get("profileResolved")
-                .and_then(Value::as_bool)
-                .unwrap_or_else(|| {
-                    item.body
-                        .get("displayName")
-                        .and_then(Value::as_str)
-                        .is_some()
-                });
-            if profile_resolved {
-                let profile = serde_json::json!({
-                    "account": item.account,
-                    "domain": item.domain,
-                    "namespaceId": item.namespace_id,
-                    "name": item.body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
-                    "avatar": item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                    "bio": item.body.get("bio").and_then(Value::as_str).unwrap_or(""),
-                    "availability": "AVAILABLE",
-                    "profileRev": profile_rev,
-                });
-                super::contacts::write_profile(&tx, user_id, &profile)?;
-            }
             tx.execute(
                     "INSERT INTO members(
                        user_id,thread_id,member_account,member_domain,namespace_id,role,left_state,
@@ -645,7 +621,7 @@ pub(super) fn apply_state_feed_page(
                         user_id, update.thread_id, item.account, item.domain, item.namespace_id,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                         profile_rev,
-                        profile_message_seq,
+                        Option::<i64>::None,
                     ],
                 ).map_err(|e| format!("upsert group member: {e}"))?;
         }
@@ -692,151 +668,6 @@ pub(super) fn apply_state_feed_page(
     for op in items {
         match op.event_type.as_deref().unwrap_or("") {
             "RELATIONSHIP_INTENT" => {}
-            "PROFILE" => {
-                let account = op
-                    .account
-                    .ok_or_else(|| "PROFILE has no account".to_string())?;
-                let domain = op
-                    .domain
-                    .ok_or_else(|| "PROFILE has no domain".to_string())?;
-                let (domain, namespace_id) = if domain == "local" || op.namespace_id == 0 {
-                    ("local".to_string(), 0)
-                } else {
-                    (domain, op.namespace_id)
-                };
-                let body = op.body.ok_or_else(|| "PROFILE has no body".to_string())?;
-                let profile_rev = body
-                    .get("profileRev")
-                    .and_then(Value::as_i64)
-                    .ok_or_else(|| "PROFILE has no profileRev".to_string())?;
-                if body.get("displayName").and_then(Value::as_str).is_some() && profile_rev > 0 {
-                    super::contacts::write_profile(
-                        &tx,
-                        user_id,
-                        &serde_json::json!({
-                            "account": account, "domain": domain, "namespaceId": namespace_id,
-                            "profileRev": profile_rev, "name": body.get("displayName"),
-                            "avatar": body.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                            "bio": body.get("bio").and_then(Value::as_str).unwrap_or("") }),
-                    )?;
-                }
-                tx.execute(
-                    "UPDATE relationship_requests SET
-                           payload_json=json_set(payload_json,
-                             '$.group.name', ?4,
-                             '$.group.avatar', ?5,
-                             '$.group.description', ?6,
-                             '$.group.profileRev', ?7,
-                             '$.group.namespaceId', ?8)
-                         WHERE user_id=?1
-                           AND json_extract(payload_json, '$.kind')='GROUP'
-                           AND json_extract(payload_json, '$.group.account')=?2
-                           AND json_extract(payload_json, '$.group.domain')=?3
-                           AND json_extract(payload_json, '$.group.namespaceId')=?8
-                           AND COALESCE(json_extract(payload_json, '$.group.profileRev'), 0) <= ?7",
-                    params![
-                        user_id,
-                        account,
-                        domain,
-                        body.get("displayName")
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
-                        body.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                        body.get("bio").and_then(Value::as_str).unwrap_or(""),
-                        profile_rev,
-                        namespace_id,
-                    ],
-                )
-                .map_err(|e| format!("apply group request profile state: {e}"))?;
-                let mut statement = tx
-                    .prepare(
-                        "SELECT thread_id,payload_json FROM threads
-                         WHERE user_id=?1 AND (
-                           (json_extract(payload_json,'$.type')='P2P'
-                            AND json_extract(payload_json,'$.peerUser.account')=?2
-                            AND COALESCE(json_extract(payload_json,'$.peerUser.domain'),'')=?3
-                            AND json_extract(payload_json,'$.peerUser.namespaceId')=?4)
-                           OR (json_extract(payload_json,'$.type')='GROUP'
-                            AND json_extract(payload_json,'$.group.account')=?2
-                            AND COALESCE(json_extract(payload_json,'$.group.domain'),'')=?3
-                            AND json_extract(payload_json,'$.group.namespaceId')=?4))",
-                    )
-                    .map_err(|e| format!("prepare profile thread projection: {e}"))?;
-                let rows = statement
-                    .query_map(params![user_id, account, domain, namespace_id], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(|e| format!("query profile thread projection: {e}"))?;
-                let mut replacements = Vec::new();
-                for row in rows {
-                    let (thread_id, payload) =
-                        row.map_err(|e| format!("read profile thread projection: {e}"))?;
-                    let mut thread = parse_json(payload)?;
-                    let is_p2p = thread.get("type").and_then(Value::as_str) == Some("P2P");
-                    if is_p2p
-                        && thread
-                            .get("peerProfileMessageSeq")
-                            .and_then(Value::as_i64)
-                            .is_some()
-                    {
-                        continue;
-                    }
-                    let target = if is_p2p {
-                        thread.get_mut("peerUser")
-                    } else {
-                        thread.get_mut("group")
-                    };
-                    if let Some(target) = target.and_then(Value::as_object_mut) {
-                        let current = target
-                            .get("profileRev")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        if (is_p2p && profile_rev == current) || (!is_p2p && profile_rev >= current)
-                        {
-                            target.insert(
-                                "name".into(),
-                                body.get("displayName")
-                                    .cloned()
-                                    .unwrap_or(Value::String(String::new())),
-                            );
-                            target.insert(
-                                "avatar".into(),
-                                Value::String(
-                                    body.get("avatar")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .to_string(),
-                                ),
-                            );
-                            target.insert("profileRev".into(), Value::from(profile_rev));
-                            if is_p2p {
-                                target.insert(
-                                    "bio".into(),
-                                    body.get("bio")
-                                        .cloned()
-                                        .unwrap_or(Value::String(String::new())),
-                                );
-                            } else {
-                                target.insert(
-                                    "description".into(),
-                                    body.get("bio")
-                                        .cloned()
-                                        .unwrap_or(Value::String(String::new())),
-                                );
-                            }
-                            replacements.push((thread_id, json_text(&thread)?));
-                        }
-                    }
-                }
-                drop(statement);
-                for (thread_id, payload) in replacements {
-                    tx.execute(
-                        "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
-                        params![user_id, thread_id, payload],
-                    )
-                    .map_err(|e| format!("update profile thread projection: {e}"))?;
-                }
-            }
             "THREAD_STATE" => {}
             "INCOMING_INVITE_HEAD" => {
                 let body = op

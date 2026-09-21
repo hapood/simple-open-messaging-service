@@ -62,8 +62,20 @@ export class UserService {
       .then(([row]) => row ?? null);
   }
 
+  /** Profile responses require the exact stored snapshot, not account display fallbacks. */
   findSelfProfile(userId: number) {
-    return this.findUniqueUser({ id: userId });
+    return this.database.db
+      .select({
+        ...publicUserColumns,
+        name: profileTable.displayName,
+        avatar: profileTable.avatar,
+        bio: profileTable.bio,
+      })
+      .from(accountTable)
+      .innerJoin(profileTable, selectedProfile)
+      .where(eq(accountTable.id, userId))
+      .limit(1)
+      .then(([row]) => row ?? null);
   }
 
   async updateProfile(

@@ -1,10 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   accountThreadState,
+  clientStateFeed,
   federatedPeer,
   groupMeta,
   groupMetaMemberFeed,
@@ -15,7 +16,6 @@ import {
   account as user,
 } from '../src/database/schema.js';
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../src/message/message.service.js';
 import { mergeMirrorGroupMetaTargetInTx } from '../src/group/meta/merge-mirror-meta-target-in-tx.js';
 import {
@@ -31,6 +31,7 @@ import {
 } from '../src/group/meta/mirror-meta-shared.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { readCurrentGroupRosterInTx } from '../src/group/meta/current-group-roster.js';
+import { readGroupMetaPageInTx } from '../src/group/meta/group-meta-page.js';
 
 describe('mirror Group Meta rounds', () => {
   const suffix = Date.now().toString(36);
@@ -40,7 +41,6 @@ describe('mirror Group Meta rounds', () => {
   let module: TestingModule;
   let database: DatabaseService;
   let messages: MessageService;
-  let clientStateFeed: ClientStateFeedService;
   let originNamespaceId: number;
   let threadId: number;
   let localUserId: number;
@@ -56,7 +56,6 @@ describe('mirror Group Meta rounds', () => {
     }).compile();
     database = module.get(DatabaseService);
     messages = new MessageService(database, {} as never, {} as never);
-    clientStateFeed = new ClientStateFeedService(database, {} as never);
     originNamespaceId = await seedFederatedPeerNamespace(
       database.db,
       originDomain,
@@ -248,7 +247,6 @@ describe('mirror Group Meta rounds', () => {
           through: 9,
           scannedThrough: 3,
           reachedBoundary: false,
-          clientStateFeed,
         }),
       ),
     ).rejects.toThrow('complete fixed-through drain');
@@ -259,23 +257,38 @@ describe('mirror Group Meta rounds', () => {
       metaProcessedThroughId: 0,
       metaRecoveryThroughId: 9,
     });
-    const committed = await database.db.transaction((tx) =>
+    await database.db.transaction((tx) =>
       applyFullMirrorMetaBatchInTx(tx, {
         group,
         items,
         through: 9,
         scannedThrough: 9,
         reachedBoundary: true,
-        clientStateFeed,
       }),
     );
-    expect(committed.clientFeedUpdates.length).toBe(1);
     expect(await readMirrorMeta()).toMatchObject({
       metaEndId: 9,
       metaTargetId: 9,
       metaProcessedThroughId: 9,
       metaRecoveryThroughId: null,
     });
+    // Group Meta commits only version references, even before profile content exists.
+    expect(
+      (
+        await database.db
+          .select()
+          .from(clientStateFeed)
+          .where(eq(clientStateFeed.userId, localUserId))
+      ).map((row) => row.eventType),
+    ).toEqual(['THREAD_STATE']);
+    expect(
+      await database.db.query.profileTable.findFirst({
+        where: and(
+          eq(profileTable.account, groupAccount),
+          eq(profileTable.profileRev, 4),
+        ),
+      }),
+    ).toBeUndefined();
     const rows = await roster();
     expect(
       rows.find((row) => row.memberAccount === 'stale-member'),
@@ -315,7 +328,6 @@ describe('mirror Group Meta rounds', () => {
           through: 5,
           scannedThrough: 0,
           reachedBoundary: false,
-          clientStateFeed,
         }),
       ),
     ).rejects.toThrow('changed');
@@ -336,7 +348,6 @@ describe('mirror Group Meta rounds', () => {
           through: 9,
           scannedThrough: 0,
           reachedBoundary: false,
-          clientStateFeed,
         }),
       ),
     ).rejects.toThrow('closed');
@@ -351,17 +362,15 @@ describe('mirror Group Meta rounds', () => {
       .set({ metaRecoveryThroughId: null })
       .where(eq(groupMeta.threadId, threadId));
 
-    const applied = await database.db.transaction((tx) =>
+    await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
         item: upsert(2, 'peer-one'),
         through: 8,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
-    expect(applied.clientFeedUpdates).toEqual([]);
     expect(
       await database.db
         .select({ cursor: groupMeta.metaProcessedThroughId })
@@ -386,7 +395,6 @@ describe('mirror Group Meta rounds', () => {
         through: 8,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     const transitions = await database.db
@@ -411,7 +419,6 @@ describe('mirror Group Meta rounds', () => {
         through: 8,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     expect(
@@ -429,22 +436,80 @@ describe('mirror Group Meta rounds', () => {
       ).length,
     ).toBe(2);
 
-    const last = await database.db.transaction((tx) =>
+    await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
         item: upsert(8, 'peer-two', 'OWNER'),
         through: 8,
         reachedBoundary: true,
         messages,
-        clientStateFeed,
       }),
     );
-    expect(last.clientFeedUpdates.length).toBe(1);
     expect(await readMirrorMeta()).toMatchObject({
       metaEndId: 8,
       metaProcessedThroughId: 8,
       metaRecoveryThroughId: null,
     });
+  });
+
+  it('emits no system messages when a full drain restores a previously departed member', async () => {
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 8 }),
+    );
+    await database.db
+      .update(groupMeta)
+      .set({ metaRecoveryThroughId: null })
+      .where(eq(groupMeta.threadId, threadId));
+
+    // Live delta observation: the member joins and later departs, leaving a
+    // DEPART tombstone in the replica and both boundary messages.
+    await database.db.transaction((tx) =>
+      applyDeltaMirrorMetaItemInTx(tx, {
+        group,
+        item: upsert(2, 'peer-one'),
+        through: 8,
+        reachedBoundary: false,
+        messages,
+      }),
+    );
+    await database.db.transaction((tx) =>
+      applyDeltaMirrorMetaItemInTx(tx, {
+        group,
+        item: depart(4, 'peer-one'),
+        through: 8,
+        reachedBoundary: false,
+        messages,
+      }),
+    );
+
+    // The origin compacted below the delta cursor, so the mirror re-opens a
+    // recovery drain; the full snapshot carries the member's rejoin.
+    await database.db.transaction((tx) =>
+      reopenMirrorMetaRecoveryInTx(tx, group, 8),
+    );
+    await database.db.transaction((tx) =>
+      applyFullMirrorMetaBatchInTx(tx, {
+        group,
+        items: [upsert(5, 'peer-one')],
+        through: 8,
+        scannedThrough: 8,
+        reachedBoundary: true,
+      }),
+    );
+
+    const transitions = (
+      await database.db
+        .select({ content: message.content })
+        .from(message)
+        .where(eq(message.threadId, threadId))
+    ).map((row) => JSON.parse(row.content as string).type);
+    expect(transitions).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
+    expect(await roster()).toEqual([
+      expect.objectContaining({
+        memberAccount: 'peer-one',
+        operation: 'UPSERT',
+      }),
+    ]);
   });
 
   it('closes an empty final delta page without facts', async () => {
@@ -459,7 +524,6 @@ describe('mirror Group Meta rounds', () => {
       finalizeDeltaMirrorMetaRoundInTx(tx, {
         group,
         through: 3,
-        clientStateFeed,
       }),
     );
     expect(await readMirrorMeta()).toMatchObject({
@@ -484,7 +548,6 @@ describe('mirror Group Meta rounds', () => {
         through: 2,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     await database.db.transaction((tx) =>
@@ -494,7 +557,6 @@ describe('mirror Group Meta rounds', () => {
         through: 2,
         reachedBoundary: true,
         messages,
-        clientStateFeed,
       }),
     );
     const [thread] = await database.db
@@ -510,7 +572,6 @@ describe('mirror Group Meta rounds', () => {
       finalizeDeltaMirrorMetaRoundInTx(tx, {
         group,
         through: 2,
-        clientStateFeed,
       }),
     );
     const [revokedThread] = await database.db
@@ -628,7 +689,6 @@ describe('mirror Group Meta rounds', () => {
       through: 1,
       reachedBoundary: false,
       messages,
-      clientStateFeed,
     };
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, input),
@@ -681,7 +741,6 @@ describe('mirror Group Meta rounds', () => {
         through: 5,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     const joined = await database.db
@@ -712,7 +771,6 @@ describe('mirror Group Meta rounds', () => {
           through: 5,
           reachedBoundary: false,
           messages,
-          clientStateFeed,
         }),
       );
     }
@@ -722,11 +780,19 @@ describe('mirror Group Meta rounds', () => {
         .from(message)
         .where(eq(message.threadId, threadId)),
     ).toHaveLength(1);
-    const identicalUpserts = await database.db
-      .select({ feedId: groupMetaMemberFeed.feedId })
+    // The departure stays as a tombstone at its coordinate: mirror feeds
+    // share the origin's coordinate space, and deleting the row would hide
+    // the departure from delta readers.
+    const retainedFacts = await database.db
+      .select({
+        feedId: groupMetaMemberFeed.feedId,
+        operation: groupMetaMemberFeed.operation,
+      })
       .from(groupMetaMemberFeed)
       .where(eq(groupMetaMemberFeed.threadId, threadId));
-    expect(identicalUpserts).toHaveLength(0);
+    expect(retainedFacts).toEqual([
+      expect.objectContaining({ operation: 'DEPART' }),
+    ]);
     await database.db
       .update(relationshipPair)
       .set({ active: false, established: true })
@@ -751,7 +817,6 @@ describe('mirror Group Meta rounds', () => {
         through: 5,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     expect(
@@ -776,7 +841,6 @@ describe('mirror Group Meta rounds', () => {
         through: 5,
         reachedBoundary: false,
         messages,
-        clientStateFeed,
       }),
     );
     const notices = await database.db
@@ -788,5 +852,79 @@ describe('mirror Group Meta rounds', () => {
     expect(
       notices.map((row) => JSON.parse(row.content as string).type),
     ).toEqual(['GROUP_JOINED', 'GROUP_JOINED']);
+  });
+
+  it('retains a DEPART tombstone so later delta pages carry the departure', async () => {
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 41 }),
+    );
+    await database.db
+      .update(groupMeta)
+      .set({ metaRecoveryThroughId: null })
+      .where(eq(groupMeta.threadId, threadId));
+    await database.db.transaction((tx) =>
+      applyDeltaMirrorMetaItemInTx(tx, {
+        group,
+        item: upsert(40, 'peer-tombstone'),
+        through: 40,
+        reachedBoundary: false,
+        messages,
+      }),
+    );
+    await database.db.transaction((tx) =>
+      applyDeltaMirrorMetaItemInTx(tx, {
+        group,
+        item: depart(41, 'peer-tombstone'),
+        through: 41,
+        reachedBoundary: false,
+        messages,
+      }),
+    );
+    const facts = await database.db
+      .select({
+        feedId: groupMetaMemberFeed.feedId,
+        operation: groupMetaMemberFeed.operation,
+      })
+      .from(groupMetaMemberFeed)
+      .where(
+        and(
+          eq(groupMetaMemberFeed.threadId, threadId),
+          eq(groupMetaMemberFeed.memberAccount, 'peer-tombstone'),
+        ),
+      );
+    expect(facts).toEqual([{ feedId: 41, operation: 'DEPART' }]);
+    await database.db.transaction((tx) =>
+      finalizeDeltaMirrorMetaRoundInTx(tx, {
+        group,
+        through: 41,
+      }),
+    );
+    const [head] = await database.db
+      .select({ end: groupMeta.metaEndId })
+      .from(groupMeta)
+      .where(eq(groupMeta.threadId, threadId));
+    const page = await database.db.transaction((tx) =>
+      readGroupMetaPageInTx(tx, {
+        groupId: threadId,
+        account: groupAccount,
+        mode: 'delta',
+        after: 40,
+        take: 100,
+        end: head.end,
+        visibleAfter: 0,
+      }),
+    );
+    expect(page.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'DEPART',
+          account: 'peer-tombstone',
+        }),
+      ]),
+    );
+    const roster = await database.db.transaction((tx) =>
+      readCurrentGroupRosterInTx(tx, threadId),
+    );
+    expect(roster.some((row) => row.account === 'peer-tombstone')).toBe(false);
   });
 });

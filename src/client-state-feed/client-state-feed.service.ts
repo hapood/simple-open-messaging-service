@@ -1,11 +1,5 @@
 import { hasEstablishedThreadRelationship } from '../relationship/shared/relationship-authorization.js';
-import { groupStateSql } from '../group/shared/group-state.js';
 
-import {
-  accountAddressInTx,
-  type AccountTarget,
-} from '../user/account-address.js';
-import { accountProfileFields } from '../user/account-profile.js';
 import { HttpStatus, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
@@ -14,7 +8,6 @@ import {
   clientStateFeed,
   groupMeta,
   groupRequestProjection,
-  account as user,
 } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -27,11 +20,7 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType:
-    | 'PROFILE'
-    | 'RELATIONSHIP_INTENT'
-    | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_STATE';
+  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD' | 'THREAD_STATE';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;
@@ -348,180 +337,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
     });
     if (pending) this.notifyFeedUpdated(pending);
     return readThroughFeedId;
-  }
-
-  async recordProfileStateInTx(
-    tx: DatabaseTransaction,
-    subjectUserId: number,
-    consumerUserIds: readonly number[],
-  ): Promise<PendingClientStateFeedUpdate[]> {
-    const subject = await tx.query.account.findFirst({
-      where: eq(user.id, subjectUserId),
-      extras: {
-        name: accountProfileFields().name.as('name'),
-        avatar: accountProfileFields().avatar.as('avatar'),
-        bio: accountProfileFields().bio.as('bio'),
-      },
-      columns: {
-        account: true,
-        domain: true,
-        defaultProfileRev: true,
-        namespaceId: true,
-      },
-    });
-    if (!subject) return [];
-    const pending: PendingClientStateFeedUpdate[] = [];
-    for (const userId of [...new Set(consumerUserIds)].sort((a, b) => a - b)) {
-      const feedId = await this.writeInTx(tx, {
-        userId,
-        account: subject.account,
-        domain: subject.domain,
-        namespaceId: subject.namespaceId,
-        eventType: 'PROFILE',
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: {
-          profileRev: subject.defaultProfileRev,
-          displayName: subject.name,
-          bio: subject.bio,
-          avatar: subject.avatar || null,
-        },
-      });
-      if (feedId !== null) pending.push({ userId, feedId });
-    }
-    return pending;
-  }
-
-  /** Remove a member PROFILE only after every client-facing reference owned by this user is gone. */
-  async cleanupProfileStateIfUnreferencedInTx(
-    tx: DatabaseTransaction,
-    ownerUserId: number,
-    subjectUserId: AccountTarget,
-  ): Promise<void> {
-    const subject = await accountAddressInTx(tx, subjectUserId);
-    const domain = subject.domain;
-    const references = await tx.execute<{ referenced: boolean }>(sql`
-      SELECT EXISTS (
-        SELECT 1 FROM "GroupRequestProjection" projection
-        WHERE projection."memberAccount" = ${subject.account}
-          AND projection."memberDomain" = ${subject.domain}
-          AND projection."memberNamespaceId" = ${subject.namespaceId}
-        UNION ALL
-        SELECT 1 FROM "ClientStateFeed" intent
-        WHERE intent."userId" = ${ownerUserId}
-          AND intent."eventType" = 'RELATIONSHIP_INTENT'
-          AND ((intent.account = ${subject.account} AND intent.domain = ${domain})
-            OR (intent."subjectAccount" = ${subject.account}
-              AND intent."subjectDomain" = ${domain}))
-        UNION ALL
-        SELECT 1
-        FROM "MessageThread" thread
-        JOIN "Account" owner_identity ON owner_identity.id = ${ownerUserId}
-        JOIN "RelationshipPair" owner_pair
-          ON owner_pair."threadId" = thread.id
-         AND owner_pair.kind = 'GROUP_MEMBER'
-         AND owner_pair.active = true
-         AND ((owner_pair."endpointAType" = 'USER'
-               AND owner_pair."endpointAAccount" = owner_identity.account
-               AND owner_pair."endpointADomain" = owner_identity.domain)
-           OR (owner_pair."endpointBType" = 'USER'
-               AND owner_pair."endpointBAccount" = owner_identity.account
-               AND owner_pair."endpointBDomain" = owner_identity.domain))
-        WHERE thread.type = 'GROUP'
-          AND (
-            SELECT member_fact.operation
-            FROM "GroupMetaMemberFeed" member_fact
-            WHERE member_fact."threadId" = thread.id
-              AND member_fact."memberAccount" = ${subject.account}
-              AND member_fact."memberDomain" = ${subject.domain}
-              AND group_meta_member_namespace(member_fact."threadId",
-                member_fact."memberAccount", member_fact."memberDomain") = ${subject.namespaceId}
-            ORDER BY member_fact."feedId" DESC
-            LIMIT 1
-          ) = 'UPSERT'
-      ) AS referenced
-    `);
-    if (references.rows[0]?.referenced) return;
-    await tx
-      .delete(clientStateFeed)
-      .where(
-        and(
-          eq(clientStateFeed.userId, ownerUserId),
-          eq(clientStateFeed.account, subject.account),
-          eq(clientStateFeed.domain, domain),
-          eq(clientStateFeed.eventType, 'PROFILE'),
-        ),
-      );
-  }
-
-  /** Publish the compacted group profile after a mirror round commits. */
-  async publishGroupProfileToLocalAccountsInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-  ): Promise<PendingClientStateFeedUpdate[]> {
-    const groupRows = await tx.execute<{
-      groupId: number;
-      account: string;
-      domain: string;
-      displayName: string;
-      bio: string;
-      avatar: string;
-      profileRev: number;
-      namespaceId: number;
-    }>(sql`
-      SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
-             group_state."namespaceId",
-             group_state.name AS "displayName", group_state.description AS bio,
-             group_state.avatar, group_state."profileRev" AS "profileRev"
-      FROM "MessageThread" thread
-      JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
-      LIMIT 1
-    `);
-    const group = groupRows.rows[0];
-    if (!group) return [];
-    const consumers = await tx.execute<{
-      userId: number;
-    }>(sql`
-      SELECT DISTINCT participant."accountId" AS "userId"
-      FROM "AccountThreadState" participant
-      JOIN "Account" identity ON identity.id = participant."accountId"
-      JOIN "RelationshipPair" pair
-        ON pair."threadId" = participant."threadId"
-       AND pair.kind = 'GROUP_MEMBER'
-       AND pair.active = true
-       AND ((pair."endpointAType" = 'USER'
-             AND pair."endpointAAccount" = identity.account
-             AND pair."endpointADomain" = 'local')
-         OR (pair."endpointBType" = 'USER'
-             AND pair."endpointBAccount" = identity.account
-             AND pair."endpointBDomain" = 'local'))
-      WHERE participant."threadId" = ${threadId}
-        AND identity.domain = 'local'
-        AND identity."namespaceId" = 0
-      ORDER BY participant."accountId"
-    `);
-    const pending: PendingClientStateFeedUpdate[] = [];
-    for (const { userId } of consumers.rows) {
-      const profileFeedId = await this.writeInTx(tx, {
-        userId,
-        account: group.account,
-        domain: group.domain,
-        namespaceId: group.namespaceId,
-        eventType: 'PROFILE',
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: {
-          profileRev: group.profileRev,
-          displayName: group.displayName,
-          bio: group.bio,
-          avatar: group.avatar || null,
-        },
-      });
-      if (profileFeedId !== null)
-        pending.push({ userId, feedId: profileFeedId });
-    }
-    return pending;
   }
 
   query(

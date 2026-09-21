@@ -251,7 +251,7 @@ instead of re-deriving it. The mode is read from the mirror's
 
 A delta round consumes one feed item per transaction. Each commit rejects a
 coordinate at or below the committed cursor, replaces the stable-key fact or
-deletes it for DEPART, and writes GROUP_JOINED for an observed join or
+retains a tombstone for DEPART, and writes GROUP_JOINED for an observed join or
 GROUP_LEFT for a third-party departure. A local join requires a matching
 active relationship pair, while a local departure notice comes from the
 REVOKED relationship-intent transaction. Active local pairs determine the

@@ -129,7 +129,7 @@ export class SseService implements OnModuleDestroy {
         threadFeedEndId: user?.threadFeedEndId ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
-        // cache) or a changed rev still fetches. PROFILE deltas advance the same state revision.
+        // cache) or a changed rev still fetches.
         profileRev: user?.profileRev ?? 0,
         // The user's active call (or null). Lets a reconnecting / freshly-booted client reconcile: a device
         // offline when the call's CALL_EVENT frames fired learns "I'm in a call with X" here. The native
