@@ -12,9 +12,11 @@ export type AppLang = (typeof SUPPORTED_LANGS)[number]
 // the web/Angular end (zh* → zh-CN, en* → en, anything else → en).
 const FALLBACK_LANG: AppLang = 'en'
 
-// localStorage key is prefixed with `admin_` to stay isolated from the C-end app
-// on the same origin (mirrors the `admin_refresh_token` convention).
-const LANG_STORAGE_KEY = 'admin_lang'
+// Deliberately localStorage, NOT the C-end PreferenceStore doctrine (IndexedDB/SQLite): admin is a
+// desktop-browser-only internal tool storing nothing sensitive client-side (auth is the
+// __Host-admin_session cookie), so a synchronous storage key beats the async-storage first-paint
+// complexity. The `admin_` prefix keeps it isolated from the C-end app on a shared origin.
+export const LANG_STORAGE_KEY = 'admin_lang'
 
 const resources = {
   'zh-CN': { translation: zhCN },
