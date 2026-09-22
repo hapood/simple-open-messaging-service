@@ -10,6 +10,39 @@ import { RouteService } from '../../services/route.service';
 import { NewGroupComponent } from './new-group.component';
 
 describe('NewGroupComponent', () => {
+  function createComponent() {
+    TestBed.configureTestingModule({
+      imports: [NewGroupComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: GroupService, useValue: { createGroup: vi.fn() } },
+        { provide: RouteService, useValue: { closeDlg: vi.fn() } },
+        {
+          provide: ConversationListService,
+          useValue: { items: signal([]) },
+        },
+        { provide: HttpClient, useValue: {} },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    });
+    return TestBed.createComponent(NewGroupComponent).componentInstance;
+  }
+
+  it('counts and limits group name and description by Unicode code points', () => {
+    const component = createComponent();
+
+    component.onNameInput('😀'.repeat(40));
+    component.onDescInput('🧪'.repeat(300));
+
+    expect(component.name()).toBe('😀'.repeat(31));
+    expect(component.nameLength()).toBe(31);
+    expect(component.description()).toBe('🧪'.repeat(240));
+    expect(component.descriptionLength()).toBe(240);
+  });
+
   it('allows only one create request while submission is pending', () => {
     const response = new Subject<StandardResponse<GrpCreateInfo>>();
     const groupService = { createGroup: vi.fn().mockReturnValue(response) };

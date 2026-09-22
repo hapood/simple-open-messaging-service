@@ -23,6 +23,10 @@ import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import {
+  limitUnicodeCodePoints,
+  unicodeCodePointLength,
+} from '../../lib/unicode-text';
 
 /**
  * New-group dialog for entering the group's name, avatar, and optional description.
@@ -72,12 +76,20 @@ export class NewGroupComponent {
 
   /** User typed into the name field. */
   onNameInput(v: string) {
-    this.name.set(v);
+    this.name.set(limitUnicodeCodePoints(v, this.NAME_MAX));
   }
 
   /** User typed into the description field. */
   onDescInput(v: string) {
-    this.description.set(v);
+    this.description.set(limitUnicodeCodePoints(v, this.DESC_MAX));
+  }
+
+  nameLength(): number {
+    return unicodeCodePointLength(this.name());
+  }
+
+  descriptionLength(): number {
+    return unicodeCodePointLength(this.description());
   }
 
   /** Close the dialog unless a create request is in flight. */

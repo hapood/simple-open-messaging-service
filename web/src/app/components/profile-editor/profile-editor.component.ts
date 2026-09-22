@@ -22,6 +22,10 @@ import {
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import {
+  limitUnicodeCodePoints,
+  unicodeCodePointLength,
+} from '../../lib/unicode-text';
 
 /**
  * Host-agnostic profile-editing body: avatar + identity + editable display name/bio + logout. Self-contained —
@@ -61,6 +65,8 @@ export class ProfileEditorComponent {
   readonly AppIconType = AppIconType;
   /** Inline compact pages sit beneath the native status bar; centered dialogs leave this disabled. */
   readonly respectTopSafeArea = input(false);
+  readonly NAME_MAX = 31;
+  readonly BIO_MAX = 120;
 
   readonly back = output<void>();
   readonly saved = output<void>();
@@ -80,6 +86,22 @@ export class ProfileEditorComponent {
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
   private savedTimer?: ReturnType<typeof setTimeout>;
+
+  nameLength(): number {
+    return unicodeCodePointLength(this.name());
+  }
+
+  bioLength(): number {
+    return unicodeCodePointLength(this.bio());
+  }
+
+  onNameInput(value: string): void {
+    this.name.set(limitUnicodeCodePoints(value, this.NAME_MAX));
+  }
+
+  onBioInput(value: string): void {
+    this.bio.set(limitUnicodeCodePoints(value, this.BIO_MAX));
+  }
 
   constructor() {
     const p = this.sessionProfile();
@@ -103,13 +125,13 @@ export class ProfileEditorComponent {
       }
     });
 
-    // Name validation: non-empty (trimmed) and ≤31. Mirrors register.component.ts's effect-based validation.
+    // Name validation: non-empty (trimmed) and <=31 Unicode code points.
     effect(() => {
       const n = this.name().trim();
       if (n.length === 0) {
         this.isNameValid.set(false);
         this.nameHint.set(this.transloco.translate('profile.nameEmpty'));
-      } else if (n.length > 31) {
+      } else if (unicodeCodePointLength(n) > this.NAME_MAX) {
         this.isNameValid.set(false);
         this.nameHint.set(this.transloco.translate('profile.nameTooLong'));
       } else {

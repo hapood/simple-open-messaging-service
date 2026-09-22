@@ -38,13 +38,12 @@
           matInput
           type="text"
           autocomplete="off"
-          [maxlength]="NAME_MAX"
           [disabled]="submitting()"
           [ngModel]="name()"
           (ngModelChange)="onNameInput($event)"
           (keydown.enter)="confirm()"
         />
-        <mat-hint align="end">{{ name().length }} / {{ NAME_MAX }}</mat-hint>
+        <mat-hint align="end">{{ nameLength() }} / {{ NAME_MAX }}</mat-hint>
       </mat-form-field>
 
       <mat-form-field appearance="outline" subscriptSizing="dynamic">
@@ -52,13 +51,12 @@
         <textarea
           matInput
           rows="3"
-          [maxlength]="DESC_MAX"
           [disabled]="submitting()"
           [ngModel]="description()"
           (ngModelChange)="onDescInput($event)"
         ></textarea>
         <mat-hint align="end">
-          {{ description().length }} / {{ DESC_MAX }}
+          {{ descriptionLength() }} / {{ DESC_MAX }}
         </mat-hint>
       </mat-form-field>
     </div>

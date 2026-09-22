@@ -83,8 +83,7 @@
           matInput
           autocomplete="nickname"
           [ngModel]="name()"
-          (ngModelChange)="name.set($event)"
-          maxlength="31"
+          (ngModelChange)="onNameInput($event)"
           [placeholder]="'profile.namePlaceholder' | transloco"
         />
         @if (nameHint()) {
@@ -98,11 +97,10 @@
           matInput
           rows="3"
           [ngModel]="bio()"
-          (ngModelChange)="bio.set($event)"
-          maxlength="120"
+          (ngModelChange)="onBioInput($event)"
           [placeholder]="'profile.bioPlaceholder' | transloco"
         ></textarea>
-        <mat-hint align="end">{{ bio().length }}/120</mat-hint>
+        <mat-hint align="end">{{ bioLength() }}/{{ BIO_MAX }}</mat-hint>
       </mat-form-field>
 
       <div class="account-actions">

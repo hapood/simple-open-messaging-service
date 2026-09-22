@@ -299,8 +299,7 @@
           <input
             matInput
             [ngModel]="nameEdit()"
-            (ngModelChange)="nameEdit.set($event)"
-            maxlength="31"
+            (ngModelChange)="onNameEditInput($event)"
             autocomplete="off"
           />
         </mat-form-field>
@@ -309,12 +308,11 @@
           <textarea
             matInput
             rows="4"
-            [maxlength]="DESC_MAX"
             [ngModel]="descEdit()"
-            (ngModelChange)="descEdit.set($event)"
+            (ngModelChange)="onDescEditInput($event)"
           ></textarea>
           <mat-hint align="end"
-            >{{ descEdit().length }}/{{ DESC_MAX }}</mat-hint
+            >{{ descEditLength() }}/{{ DESC_MAX }}</mat-hint
           >
         </mat-form-field>
       </div>

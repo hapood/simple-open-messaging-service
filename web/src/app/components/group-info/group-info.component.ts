@@ -43,6 +43,10 @@ import {
 } from '../../services/member-profile-store.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ChatContextService } from '../message-thread/chat-context.service';
+import {
+  limitUnicodeCodePoints,
+  unicodeCodePointLength,
+} from '../../lib/unicode-text';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
@@ -160,6 +164,22 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly descEdit = signal('');
   /** staged new avatar URL (uploaded already); undefined = unchanged. */
   readonly pendingAvatar = signal<string | undefined>(undefined);
+
+  nameEditLength(): number {
+    return unicodeCodePointLength(this.nameEdit());
+  }
+
+  descEditLength(): number {
+    return unicodeCodePointLength(this.descEdit());
+  }
+
+  onNameEditInput(value: string): void {
+    this.nameEdit.set(limitUnicodeCodePoints(value, 31));
+  }
+
+  onDescEditInput(value: string): void {
+    this.descEdit.set(limitUnicodeCodePoints(value, this.DESC_MAX));
+  }
 
   readonly myUserId = computed(() => this.userService.sessionProfile()?.id);
   readonly sessionAccount = computed(

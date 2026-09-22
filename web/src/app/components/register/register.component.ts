@@ -21,6 +21,10 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import {
+  limitUnicodeCodePoints,
+  unicodeCodePointLength,
+} from '../../lib/unicode-text';
 
 @Component({
   selector: 'app-register',
@@ -44,6 +48,7 @@ export class RegisterComponent {
   }>();
 
   readonly AppIcon = AppIconType;
+  readonly NAME_MAX = 31;
   private readonly transloco = inject(TranslocoService);
 
   account = signal('');
@@ -92,7 +97,8 @@ export class RegisterComponent {
       // Display name: lenient charset (unicode/emoji ok), only a length bound client-side. The backend
       // (@IsDisplayName) additionally strips control chars + trims, so this is UX pre-feedback only.
       const name = this.name().trim();
-      if (name.length < 1 || name.length > 31) {
+      const nameLength = unicodeCodePointLength(name);
+      if (nameLength < 1 || nameLength > this.NAME_MAX) {
         this.isNameVld.set(false);
         this.nameHint.set(this.transloco.translate('auth.displayNameHint'));
       } else {
@@ -122,7 +128,7 @@ export class RegisterComponent {
   }
 
   onNameInput(v: string) {
-    this.name.set(v);
+    this.name.set(limitUnicodeCodePoints(v, this.NAME_MAX));
     this.clearError();
   }
 
