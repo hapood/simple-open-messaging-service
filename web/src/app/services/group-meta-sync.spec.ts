@@ -23,6 +23,8 @@ function fixture() {
       threadFeedId: 1,
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
+      alias: null,
+      threadProfileRev: 0,
       groupMetaFeedEndId: '3',
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,

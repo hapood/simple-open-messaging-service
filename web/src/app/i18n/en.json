@@ -708,6 +708,7 @@
     "searchCount": "{{i}} of {{n}}",
     "alias": "Remark",
     "aliasAdd": "Add remark",
+    "aliasSaveFailed": "Couldn't save the remark. Please try again.",
     "aliasPlaceholder": "Enter a remark (e.g. Alice (work))"
   },
   "gallery": {

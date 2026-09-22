@@ -442,6 +442,17 @@ async fn open_one_stream(
                     if let Some(error) = &result.error {
                         warn!("thread feed wake failed; next wake retries: {error}");
                     }
+                    for alias in result.alias_events(user_id) {
+                        let _ = feed_app.emit(
+                            "soms-sse-event",
+                            SseEventPayload {
+                                event: "THREAD_ALIAS_APPLIED".into(),
+                                status: 0,
+                                message: "thread alias applied".into(),
+                                data: alias,
+                            },
+                        );
+                    }
                     let mut changes = Vec::new();
                     if !result.states.is_empty() {
                         changes.push("THREADS");

@@ -19,6 +19,8 @@ import {
 import { Message, MessageQueryRow, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
+import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
 
@@ -60,9 +62,7 @@ export interface MessageQueryCursorData {
   resumeBefore: number;
 }
 
-type MessageHistoryBackendData =
-  | MessageQueryPage
-  | MessageQueryCursorData;
+type MessageHistoryBackendData = MessageQueryPage | MessageQueryCursorData;
 
 export interface MessageHistoryBackendRequest {
   threadId: number;
@@ -88,7 +88,15 @@ export class MsgService {
   >();
   private streamProgressListener?: Promise<void>;
 
-  constructor(private http: HttpClient) {}
+  private readonly aliasWrites = new Map<
+    string,
+    Promise<StandardResponse<ThreadAliasApplied>>
+  >();
+
+  constructor(
+    private http: HttpClient,
+    private readonly lifecycle: SessionLifecycleService,
+  ) {}
 
   addUser(params: { account: string; password: string }) {
     return this.http.post(`${apiPrefix()}/add-user`, params);
@@ -474,10 +482,32 @@ export class MsgService {
   /** Set a per-user alias/remark for a conversation — overrides the displayed name for the caller.
    *  An empty string clears it. */
   setAlias(params: { threadId: number; alias?: string }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/thread/set-alias`,
-      params,
-    );
+    return defer(() => {
+      const epoch = this.lifecycle.accountEpoch;
+      const body = { ...params };
+      const key = `${epoch}:${body.threadId}`;
+      // Serialize edits even when separate mounted editors share one conversation.
+      const previous = this.aliasWrites.get(key) ?? Promise.resolve();
+      const pending = previous
+        .catch(() => undefined)
+        .then(() => {
+          if (!this.lifecycle.isCurrent(epoch))
+            throw new Error('alias edit belongs to an expired session');
+          return firstValueFrom(
+            this.http.post<StandardResponse<ThreadAliasApplied>>(
+              `${apiPrefix()}/thread/set-alias`,
+              body,
+            ),
+          );
+        });
+      this.aliasWrites.set(key, pending);
+      const release = () => {
+        if (this.aliasWrites.get(key) === pending)
+          this.aliasWrites.delete(key);
+      };
+      void pending.then(release, release);
+      return pending;
+    });
   }
 
   /**

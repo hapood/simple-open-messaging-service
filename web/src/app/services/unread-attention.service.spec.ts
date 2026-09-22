@@ -36,6 +36,8 @@ describe('UnreadAttentionService committed thread notifications', () => {
       threadFeedId: feed,
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
+      alias: null,
+      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,

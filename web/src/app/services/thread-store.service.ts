@@ -26,9 +26,11 @@ import {
   attentionCountRange,
   createLocalThreadAttention,
   mergeThreadAttention,
+  threadNotificationChanged,
   projectThreadAttention,
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
+  type ThreadAliasApplied,
 } from '../../../../shared/thread-attention';
 
 const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
@@ -161,6 +163,8 @@ export class ThreadRepository {
   /** Account-scoped first thread initialization barrier. It is independent of HELLO payload state;
    * both the list mount and a fast-arriving HELLO await this same single-flight operation. */
 
+  private readonly confirmedAliases = new Map<number, ThreadAliasApplied>();
+
   private readonly sseSub: Subscription;
 
   constructor() {
@@ -209,6 +213,15 @@ export class ThreadRepository {
             },
           );
           break;
+        case 'THREAD_ALIAS_APPLIED': {
+          const data = m.data as ThreadAliasApplied & { userId: number };
+          if (
+            data?.userId > 0 &&
+            data.userId === this.userService.sessionUserId()
+          )
+            this.applyThreadAlias(data);
+          break;
+        }
         case 'STATE_FEED_UPDATED':
           if (m.data !== undefined)
             this.onStateFeedUpdated((m.data as { feedId: number }).feedId);
@@ -332,6 +345,7 @@ export class ThreadRepository {
   private reset(): void {
     this.sessionEpoch++;
     this.threadStates.clear();
+    this.confirmedAliases.clear();
     this.projectionTokens.clear();
     this._items.set([]);
     this._status.set('LOADING');
@@ -437,7 +451,7 @@ export class ThreadRepository {
 
   // ── list mutations (each writes through to IDB + emits a fine-grained signal update) ───────
 
-  /** Patch per-user thread metadata (mute/pin/block/alias) on a row. Only pin changes re-sort the
+  /** Patch per-user thread metadata (mute/pin/block) on a row. Only pin changes re-sort the
    *  list; display-state changes stay at the row's current position.
    *  Only defined fields are applied. Used for optimistic UI patches
    *  (multi-device) and (via the facade) from local optimistic actions (mute/pin toggle, block/unblock). */
@@ -450,7 +464,6 @@ export class ThreadRepository {
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';
-      alias?: string | null;
     },
   ): void {
     let changed: ConversationItem | undefined;
@@ -465,6 +478,52 @@ export class ThreadRepository {
       return next;
     });
     if (changed) void this.persistThread(changed);
+  }
+
+  /** Successful HTTP acknowledgements refresh names immediately without advancing the durable cursor. */
+  confirmThreadAlias(result: ThreadAliasApplied): void {
+    this.publishThreadAlias(result);
+    void this.syncThreadFeed(result.threadFeedId);
+  }
+
+  private publishThreadAlias(result: ThreadAliasApplied): void {
+    this.ws.eventSubject.next({
+      event: 'THREAD_ALIAS_APPLIED',
+      status: 0,
+      message: 'thread alias applied',
+      data: {
+        userId: this.userService.sessionUserId(),
+        threadId: result.threadId,
+        threadFeedId: result.threadFeedId,
+        alias: result.alias,
+      },
+    });
+  }
+
+  private applyThreadAlias(result: ThreadAliasApplied): void {
+    if (
+      !Number.isSafeInteger(result.threadId) ||
+      result.threadId < 1 ||
+      !Number.isSafeInteger(result.threadFeedId) ||
+      result.threadFeedId < 1 ||
+      (result.alias !== null && typeof result.alias !== 'string')
+    )
+      return;
+    const previous = this.confirmedAliases.get(result.threadId);
+    if (previous && previous.threadFeedId >= result.threadFeedId) return;
+    this.confirmedAliases.set(result.threadId, result);
+    this._items.update((items) =>
+      items.map((item) =>
+        item.threadId === result.threadId
+          ? { ...item, alias: result.alias }
+          : item,
+      ),
+    );
+  }
+
+  private withConfirmedAlias(item: ConversationItem): ConversationItem {
+    const confirmed = this.confirmedAliases.get(item.threadId);
+    return confirmed ? { ...item, alias: confirmed.alias } : item;
   }
 
   markAuthorityNamespaceInactive(threadId: number): void {
@@ -637,7 +696,7 @@ export class ThreadRepository {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
       if (idx === -1) {
-        base.unshift(reconciled);
+        base.unshift(this.withConfirmedAlias(reconciled));
       } else {
         const current = base[idx];
         if (
@@ -674,7 +733,7 @@ export class ThreadRepository {
             lastMessageSenderId: current.lastMessageSenderId,
           };
         }
-        base[idx] = reconciled;
+        base[idx] = this.withConfirmedAlias(reconciled);
       }
       return sortThreadItems(base);
     });
@@ -684,7 +743,9 @@ export class ThreadRepository {
   }
 
   private applyItems(items: ConversationItem[]): void {
-    const ordered = sortThreadItems(items);
+    const ordered = sortThreadItems(
+      items.map((item) => this.withConfirmedAlias(item)),
+    );
     this._items.set(ordered);
     for (const item of ordered) void this.resolveThreadProfile(item);
     this._status.set('READY');
@@ -870,6 +931,12 @@ export class ThreadRepository {
     const notifications: ThreadNotificationUpdate[] = [];
     for (const stored of states) {
       if (epoch !== this.sessionEpoch) return;
+      const notify =
+        stored.server &&
+        threadNotificationChanged(
+          this.threadStates.get(stored.threadId)?.server,
+          stored.server,
+        );
       let state = this.threadStates.get(stored.threadId) ?? stored;
       if (stored.server) state = mergeThreadAttention(state, stored.server);
       const local = Math.max(
@@ -888,6 +955,7 @@ export class ThreadRepository {
       }
       if (state.server) {
         const snapshot = state.server;
+        this.publishThreadAlias(snapshot);
         this.applyThreadFeedOrder(snapshot.threadId, snapshot.threadFeedId);
         this.applyGroupProjectionHeads(snapshot);
         this.serverLastReadSeq.set(state.threadId, snapshot.lastReadSeq);
@@ -904,7 +972,7 @@ export class ThreadRepository {
           );
       }
       const item = await this.projectThread(state.threadId);
-      if (item && state.server)
+      if (notify && item && state.server)
         notifications.push({ item, state: state.server });
     }
     if (emitLive && epoch === this.sessionEpoch && notifications.length)

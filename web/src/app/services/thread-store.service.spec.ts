@@ -314,6 +314,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     threadFeedId: 1,
     messageEndSeq: 8,
     tombstoneEndSeq: 0,
+    alias: null,
+    threadProfileRev: 0,
     groupMetaFeedEndId: null,
     joinRequestEndFeedId: 0,
     joinRequestReadFeedId: -1,
@@ -378,6 +380,28 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       localReadSeq: 3,
       server: { threadFeedId: 3, lastReadSeq: 0 },
     });
+  });
+
+  it('applies alias-only feed snapshots without alerting again for unread messages', async () => {
+    await populate([p2p(1, 11)]);
+    await publishThreadState(threadSnapshot(), true);
+    const notified = vi.fn();
+    const subscription = repo.threadNotifications$.subscribe(notified);
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadFeedId: 2,
+      alias: 'Private name',
+    });
+    expect(repo.items()[0].alias).toBe('Private name');
+    expect(notified).not.toHaveBeenCalled();
+    await publishThreadState({
+      ...threadSnapshot(),
+      threadFeedId: 3,
+      alias: null,
+    });
+    expect(repo.items()[0].alias).toBeNull();
+    expect(notified).not.toHaveBeenCalled();
+    subscription.unsubscribe();
   });
 
   it('keeps server previews while optimistic reads clear unread and mentions', async () => {
@@ -818,6 +842,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               threadFeedId: feedId,
               messageEndSeq: seq,
               tombstoneEndSeq,
+              alias: null,
+              threadProfileRev: 0,
               groupMetaFeedEndId: null,
               joinRequestEndFeedId: 0,
               joinRequestReadFeedId: -1,
@@ -1142,6 +1168,29 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items().map((thread) => thread.threadId)).toEqual([1, 2]);
   });
 
+  it('reconciles alias acknowledgements and feed events by revision', async () => {
+    sessionUserId.set(1);
+    await populate([p2p(1, 11)]);
+    const publish = (threadFeedId: number, alias: string | null) =>
+      eventSubject.next({
+        event: 'THREAD_ALIAS_APPLIED',
+        data: { userId: sessionUserId(), threadId: 1, threadFeedId, alias },
+      });
+    publish(8, 'New');
+    publish(7, 'Stale');
+    expect(repo.items()[0].alias).toBe('New');
+    repo.confirmThreadAlias({
+      threadId: 1,
+      threadFeedId: 6,
+      alias: 'Late response',
+    });
+    expect(repo.items()[0].alias).toBe('New');
+    publish(9, null);
+    expect(repo.items()[0].alias).toBeNull();
+    publish(8, 'Old label');
+    expect(repo.items()[0].alias).toBeNull();
+  });
+
   it('applyThreadMeta patches the row, re-sorts (pin), and writes through to IDB', async () => {
     await populate([
       p2p(1, 11, { lastMessageAt: 100 }),
@@ -1168,11 +1217,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     repo.applyThreadMeta(2, {
       muted: true,
       blocked: true,
-      alias: 'Quiet',
     });
     await vi.waitFor(() =>
       expect(repo.items()[0]).toEqual(
-        expect.objectContaining({ muted: true, blocked: true, alias: 'Quiet' }),
+        expect.objectContaining({ muted: true, blocked: true }),
       ),
     );
 

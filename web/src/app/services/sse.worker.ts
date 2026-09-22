@@ -338,6 +338,16 @@ sw.addEventListener('message', (e: MessageEvent) => {
           event.data?.userId !== helloUserId
         )
           return;
+        for (const alias of event.data.aliases)
+          post({
+            type: 'event',
+            payload: {
+              event: 'THREAD_ALIAS_APPLIED',
+              status: 0,
+              message: 'thread alias applied',
+              data: { ...alias, userId: event.data.userId },
+            },
+          });
         post({
           type: 'event',
           payload: {

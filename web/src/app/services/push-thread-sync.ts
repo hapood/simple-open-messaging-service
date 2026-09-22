@@ -4,6 +4,7 @@ import { syncThreadFeed } from './thread-feed-sync';
 import {
   attentionCountRange,
   projectThreadAttention,
+  threadNotificationChanged,
 } from '../../../../shared/thread-attention';
 import {
   threadNotificationDescriptor,
@@ -35,6 +36,12 @@ export async function syncPushThreads(
   requestGroupMeta: GroupMetaRequester,
   resolveGroupMetaProfile: GroupMetaProfileResolver,
 ): Promise<PushThreadResult> {
+  const previous = new Map(
+    (await storage.getThreadStates()).map((state) => [
+      state.threadId,
+      state.server,
+    ]),
+  );
   const result = await syncThreadFeed(
     storage,
     target,
@@ -61,6 +68,8 @@ export async function syncPushThreads(
       !state?.server ||
       state.server.threadFeedId !== delivered.server?.threadFeedId
     )
+      continue;
+    if (!threadNotificationChanged(previous.get(state.threadId), state.server))
       continue;
     const range = attentionCountRange(state);
     if (!range) continue;

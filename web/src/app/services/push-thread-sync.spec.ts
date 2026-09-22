@@ -25,6 +25,8 @@ describe('Push thread-feed synchronization', () => {
       threadFeedId: feed,
       messageEndSeq: 7,
       tombstoneEndSeq: 1,
+      alias: null,
+      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,
@@ -111,6 +113,37 @@ describe('Push thread-feed synchronization', () => {
       ),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it('uses the delivered alias for offline notifications and does not notify for alias-only changes', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue(page({ ...snapshot(), alias: 'Offline label' }));
+    const first = await syncPushThreads(
+      storage,
+      userId,
+      1,
+      request,
+      preferences,
+      copy,
+      groupMetaRequest,
+      profileResolver,
+    );
+    expect(first.notifications[0].title).toBe('Offline label');
+    request.mockResolvedValue(page({ ...snapshot(2), alias: null }));
+    const cleared = await syncPushThreads(
+      storage,
+      userId,
+      2,
+      request,
+      preferences,
+      copy,
+      groupMetaRequest,
+      profileResolver,
+    );
+    expect(cleared.cursor).toBe(2);
+    expect(cleared.notifications).toEqual([]);
+    expect((await storage.getThreads())[0].alias).toBeNull();
   });
 
   it('rebases the server count using local read progress, counting tomb slots and excluding own messages', async () => {

@@ -258,7 +258,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 23;
+export const CACHE_SCHEMA_VERSION = 24;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 5;
 const IDB_FORMAT_VERSION = 1;
 
@@ -1387,13 +1387,33 @@ export class WebdbStorage {
         userId: Number(this.currentUserId),
       });
     }
-    return (await (await this.db()).getAll('threads')).filter(
-      (thread): thread is ConversationItem =>
-        thread.type !== 'PENDING' && thread.visible !== false,
+    const tx = (await this.db()).transaction(
+      ['threads', 'threadStates'],
+      'readonly',
     );
+    const [threads, states] = await Promise.all([
+      tx.objectStore('threads').getAll(),
+      tx.objectStore('threadStates').getAll(),
+    ]);
+    const aliases = new Map(
+      states.map((state) => [state.threadId, state.server?.alias ?? null]),
+    );
+    await tx.done;
+    return threads
+      .filter(
+        (thread): thread is ConversationItem =>
+          thread.type !== 'PENDING' && thread.visible !== false,
+      )
+      .map((thread) => ({
+        ...thread,
+        alias: aliases.get(thread.threadId) ?? null,
+      }));
   }
 
   private normalizeThreadSubject(item: ConversationItem): ConversationItem {
+    // Private aliases are derived from threadStates; structural writes never own them.
+    item = { ...item };
+    delete item.alias;
     return item.type === 'P2P'
       ? {
           ...item,

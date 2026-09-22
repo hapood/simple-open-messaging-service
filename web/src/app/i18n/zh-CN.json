@@ -708,6 +708,7 @@
     "searchCount": "{{i}} / {{n}}",
     "alias": "备注",
     "aliasAdd": "添加备注",
+    "aliasSaveFailed": "备注保存失败，请重试。",
     "aliasPlaceholder": "输入备注（如：Alice（工作））"
   },
   "gallery": {

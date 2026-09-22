@@ -1,4 +1,5 @@
 import { RelationshipIntentService } from '../relationship/relationship-intent.service.js';
+import { GatewayModule } from '../gateway/gateway.module.js';
 import { Module } from '@nestjs/common';
 import { AccountThreadStateService } from './account-thread-state.service.js';
 import { ThreadAccessGuard } from './thread-access.guard.js';
@@ -9,7 +10,7 @@ import { DurableTaskModule } from '../durable-task/durable-task.module.js';
   // ThreadAccessGuard injects AccountThreadStateService to resolve the caller's membership; export it
   // so MessageController and GroupController (both declared in AppModule) can @UseGuards it — group
   // routes reuse it now that groups are `!`-User threads.
-  imports: [MessageModule, DurableTaskModule],
+  imports: [MessageModule, DurableTaskModule, GatewayModule],
   providers: [
     RelationshipIntentService,
     AccountThreadStateService,

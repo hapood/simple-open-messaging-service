@@ -420,3 +420,30 @@ Notifications remain recoverable hints, with the committed thread feed owning de
 P2P and group revocation preserve the client's historical thread as read-only. The
 client relationship feed carries the monotonic establishment fact so this behavior
 also holds on a device that never saw the original activation.
+
+## Private conversation aliases
+
+`AccountThreadState.alias` is a required nullable field in every thread-feed
+snapshot. A changed alias allocates a thread feed ID in the same transaction;
+identical submissions allocate nothing. `/thread/set-alias` returns the committed
+`{ threadId, threadFeedId, alias }` and publishes `THREAD_FEED_UPDATED` only after
+commit, only to the editing account. Whitespace-only labels become `null`.
+
+An editor keeps its draft private until a successful HTTP response. Writes are
+serialized per account session and thread; queued writes from expired sessions are
+discarded. Both that
+response and committed worker/native feed snapshots publish the local
+`THREAD_ALIAS_APPLIED` event. The Angular repository compares per-thread feed IDs,
+so duplicate events and late responses cannot overwrite a newer confirmed label.
+Acknowledgements never advance the local feed cursor or fabricate full snapshots.
+
+The complete feed snapshot owns durable aliases. Conversation records are
+structural projections; reading them joins the alias from thread state. Rebuilding
+or refreshing a relationship cannot overwrite that label. Browser and native cache
+versions are bumped and old cache data is rebuilt, without importing old labels.
+
+Online and offline notification titles use the delivered thread snapshot's alias,
+independently of structural-cache writes. An empty alias falls back to the selected
+profile name, then the normal account fallback. Metadata-only feed changes update
+names without alerting again for existing unread messages. List ordering continues
+to use the unified thread feed ID, including revisions allocated by alias edits.

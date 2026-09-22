@@ -17,6 +17,7 @@ interface ThreadFeedPreview {
 }
 
 interface ThreadFeedState {
+  alias: string | null;
   threadId: number;
   threadFeedId: number;
   messageEndSeq: number;
@@ -78,7 +79,7 @@ export class ThreadFeedService {
         const resultRows = await tx.execute<
           ThreadFeedState & Record<string, unknown>
         >(sql`
-        SELECT "threadId", "threadFeedId", "messageEndSeq", "tombstoneEndSeq",
+        SELECT "threadId", "threadFeedId", alias, "messageEndSeq", "tombstoneEndSeq",
                "groupMetaFeedEndId", "joinRequestEndFeedId",
                "joinRequestReadFeedId", "groupInviteEndFeedId",
                "threadProfileRev", "lastReadSeq", "unreadCount", "lastMentionSeq"

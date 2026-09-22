@@ -195,6 +195,17 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     ...(result.groupThreadIds.length ? ['GROUP_META'] : []),
                   ],
                   groupThreadIds: result.groupThreadIds,
+                  aliases: result.states.flatMap(({ server }) =>
+                    server
+                      ? [
+                          {
+                            threadId: server.threadId,
+                            threadFeedId: server.threadFeedId,
+                            alias: server.alias,
+                          },
+                        ]
+                      : [],
+                  ),
                 });
             } catch (error) {
               console.warn(

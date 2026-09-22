@@ -12,17 +12,15 @@ import { FormsModule } from '@angular/forms';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatCardModule } from '@angular/material/card';
 import { MatInputModule } from '@angular/material/input';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { MsgService } from '../../services/message.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 
 /**
  * Inline alias/remark editor for a conversation, embedded in the peer-profile + group-info panels.
- * Shows the caller's current alias for the thread (or an "add remark" affordance); tapping toggles an
- * same-height input + Done action. Done, Enter, or blur hits `thread/set-alias` and patches the conv list
- * optimistically so the chat
- * header + conversation list update the displayed name immediately; the state delta re-confirms it
- * on the caller's other devices. An empty submit clears the alias (real name shows again).
+ * The draft stays private to this editor until the server confirms it. Successful writes and
+ * feed snapshots publish the same versioned alias event. Empty submissions restore the profile name.
  *
  * Rendered as a Material-style info card (WhatsApp/Telegram contact-detail rows): a leading tag icon +
  * a label on the left and value/action on the right, contained in a rounded surface card that is centered
@@ -63,7 +61,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
           </span>
           <span class="field-label">{{ 'chat.alias' | transloco }}</span>
         </span>
-        <span class="alias-control">
+        <span class="alias-control" [attr.aria-busy]="saving()">
           @if (editing()) {
             <input
               matInput
@@ -83,6 +81,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
               type="button"
               (mousedown)="$event.preventDefault()"
               (click)="save()"
+              [disabled]="saving()"
               [attr.aria-label]="'common.done' | transloco"
             >
               <app-icon
@@ -108,6 +107,11 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
           }
         </span>
       </mat-card>
+      @if (failed()) {
+        <span role="alert" style="line-height: 20px">{{
+          'chat.aliasSaveFailed' | transloco
+        }}</span>
+      }
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -224,6 +228,7 @@ export class ThreadAliasEditorComponent {
   readonly AppIconType = AppIconType;
   readonly threadId = input.required<number>();
 
+  private readonly lifecycle = inject(SessionLifecycleService);
   private readonly msgService = inject(MsgService);
   private readonly convList = inject(ConversationListService);
 
@@ -237,10 +242,13 @@ export class ThreadAliasEditorComponent {
 
   readonly editing = signal(false);
   readonly draft = signal('');
+  readonly saving = signal(false);
+  readonly failed = signal(false);
   private readonly aliasInput =
     viewChild<ElementRef<HTMLInputElement>>('aliasInput');
 
   start(): void {
+    this.failed.set(false);
     this.draft.set(this.currentAlias());
     this.editing.set(true);
     requestAnimationFrame(() => this.aliasInput()?.nativeElement.focus());
@@ -250,19 +258,33 @@ export class ThreadAliasEditorComponent {
     this.draft.set('');
   }
   save(): void {
-    if (!this.editing()) return;
-    const next = this.draft().trim();
+    if (!this.editing() || this.saving()) return;
+    const submitted = this.draft();
     const tid = this.threadId();
-    const previous = this.currentAlias();
-    // Optimistic patch so the header/list title flips instantly; the state delta re-confirms it.
-    this.convList.applyThreadMeta(tid, {
-      alias: next.length > 0 ? next : null,
-    });
-    this.msgService.setAlias({ threadId: tid, alias: next }).subscribe({
-      error: () =>
-        this.convList.applyThreadMeta(tid, { alias: previous || null }), // revert on failure
-    });
-    this.editing.set(false);
-    this.draft.set('');
+    const epoch = this.lifecycle.accountEpoch;
+    this.saving.set(true);
+    this.failed.set(false);
+    this.msgService
+      .setAlias({ threadId: tid, alias: submitted.trim() })
+      .subscribe({
+        next: (response) => {
+          this.saving.set(false);
+          if (!this.lifecycle.isCurrent(epoch)) return;
+          if (response.code !== 0 || !response.data) {
+            this.failed.set(true);
+            return;
+          }
+          this.convList.confirmThreadAlias(response.data);
+          // A response confirms the submitted value, not text typed while it was in flight.
+          if (this.threadId() === tid && this.draft() === submitted) {
+            this.editing.set(false);
+            this.draft.set('');
+          }
+        },
+        error: () => {
+          this.saving.set(false);
+          if (this.lifecycle.isCurrent(epoch)) this.failed.set(true);
+        },
+      });
   }
 }

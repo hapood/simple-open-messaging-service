@@ -12,6 +12,8 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   threadFeedId: feedId,
   messageEndSeq: feedId,
   tombstoneEndSeq: 0,
+  alias: null,
+  threadProfileRev: 0,
   groupMetaFeedEndId: null,
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,

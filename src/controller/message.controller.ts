@@ -26,6 +26,7 @@ import {
   MessageResponseDto,
   MessageTombstoneQueryPageDto,
   ThreadFeedDeltaPageDto,
+  ThreadAliasResultDto,
   ThreadReadPositionResultDto,
 } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
@@ -920,6 +921,7 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-alias')
+  @ApiResultResponse(ThreadAliasResultDto)
   @ApiOperation({
     summary:
       'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
@@ -927,8 +929,8 @@ export class MessageController {
   async setAlias(
     @Request() req: FastifyRequest,
     @Body() dto: SetAliasDto,
-  ): Promise<void> {
-    await this.participantService.setAlias(
+  ): Promise<ThreadAliasResultDto> {
+    return this.participantService.setAlias(
       req.user.userId,
       dto.threadId,
       dto.alias,

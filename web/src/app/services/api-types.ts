@@ -208,7 +208,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/thread/read-delta": {
+    "/api/v1/thread/feed-delta": {
         parameters: {
             query?: never;
             header?: never;
@@ -217,8 +217,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fetch read-state delta in (fromRevision, toRevision] */
-        post: operations["MessageController_readDelta"];
+        /** Fetch unified thread snapshots in a bounded feed range */
+        post: operations["MessageController_threadFeedDelta"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1560,7 +1560,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Upload one validated avatar image without transforming its bytes */
+        /** Upload one federation-sized avatar without transformation */
         post: operations["UploadController_uploadAvatar"];
         delete?: never;
         options?: never;
@@ -3168,7 +3168,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Enqueue durable deletion of one message */
+        /** Delete one message and enqueue content fanout */
         post: operations["MessageReportAdminController_deleteMessage"];
         delete?: never;
         options?: never;
@@ -3466,6 +3466,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/message/quote-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a visible message quote; pending results arrive on the authenticated events stream */
+        post: operations["QuoteResolutionController_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3594,17 +3611,7 @@ export interface components {
              * @description Content type
              * @enum {string}
              */
-            contentType:
-                | "PURE_TEXT"
-                | "IMAGE"
-                | "VIDEO"
-                | "FILE"
-                | "AUDIO"
-                | "LINK"
-                | "CONTACT_CARD"
-                | "FORWARD"
-                | "GALLERY"
-                | "SYSTEM";
+            contentType: "PURE_TEXT" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CONTACT_CARD" | "FORWARD" | "GALLERY" | "SYSTEM";
             /**
              * @description Message content
              * @example hello
@@ -3622,9 +3629,7 @@ export interface components {
              *       "domain": "local"
              *     }
              */
-            creator:
-                | components["schemas"]["MessageAuthorAddressResponseDto"]
-                | null;
+            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
@@ -3632,7 +3637,7 @@ export interface components {
             /** @example false */
             isDeleted: boolean;
             /**
-             * @description Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.
+             * @description Local materialization state. STUB and FAILED remain client-visible message slots independent of download completion.
              * @example READY
              * @enum {string}
              */
@@ -3666,7 +3671,7 @@ export interface components {
              */
             contentType?: "PURE_TEXT" | "LINK";
             /**
-             * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
+             * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit when retry identity is not required.
              * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
              */
             clientMessageId?: string;
@@ -3750,6 +3755,41 @@ export interface components {
              */
             threadId: number;
         };
+        MessageTombResponseDto: {
+            /**
+             * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
+             * @example 42
+             */
+            seq: number;
+            /**
+             * @description Immutable complete-profile revision selected when this message was authored
+             * @example 7
+             */
+            profileRev: number;
+            /**
+             * @description Owning thread id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Sender address snapshot; SYSTEM notifications use $system@local at namespace 0
+             * @example {
+             *       "account": "alice",
+             *       "domain": "local"
+             *     }
+             */
+            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
+            /** @example 1700000000000 */
+            createdAt: number;
+            /** @example 1700000000000 */
+            updatedAt: number;
+            /** @enum {string} */
+            contentType: "TOMB";
+            /** @enum {boolean} */
+            isDeleted: true;
+            /** @enum {string} */
+            deletionType: "USER_RETRACTION" | "MODERATION_REMOVAL";
+        };
         MessageHistoryGapDto: {
             /**
              * @description First missing message sequence
@@ -3765,7 +3805,7 @@ export interface components {
             recoverable: boolean;
         };
         MessageQueryPageDto: {
-            messages: components["schemas"]["MessageResponseDto"][];
+            messages: (components["schemas"]["MessageResponseDto"] | components["schemas"]["MessageTombResponseDto"])[];
             gaps: components["schemas"]["MessageHistoryGapDto"][];
             /**
              * @description Direction-relative scan cursor
@@ -3810,6 +3850,17 @@ export interface components {
              */
             userId: number;
         };
+        ThreadReadPositionResultDto: {
+            /**
+             * @example APPLIED
+             * @enum {string}
+             */
+            status: "APPLIED" | "REJECTED";
+            /** @example THREAD_NOT_FOUND */
+            reason?: string;
+            /** @example 42 */
+            lastReadSeq?: number;
+        };
         MarkReadDto: {
             /**
              * @description Conversation (MessageThread) id
@@ -3821,8 +3872,74 @@ export interface components {
              * @example 42
              */
             localReadHwm: number;
+            /**
+             * @description Explicitly allow the read position to move backwards.
+             * @default false
+             */
+            force: boolean;
         };
-        ReadDeltaDto: Record<string, never>;
+        ThreadFeedPreviewDto: {
+            seq: number;
+            /** Format: date-time */
+            createdAt: string;
+            sender?: {
+                account: string;
+                domain: string;
+            };
+            /** @enum {string} */
+            status: "LIVE" | "USER_RETRACTION" | "MODERATION_REMOVAL";
+            text?: string;
+        };
+        ThreadFeedStateDto: {
+            threadProfileRev: number;
+            alias: string | null;
+            previews?: components["schemas"]["ThreadFeedPreviewDto"][];
+            /** @example 12 */
+            threadFeedId: number;
+            /**
+             * @description Conversation id
+             * @example 12
+             */
+            threadId: number;
+            messageEndSeq: number;
+            tombstoneEndSeq: number;
+            /** @example 42 */
+            groupMetaFeedEndId: string | null;
+            joinRequestEndFeedId: number;
+            joinRequestReadFeedId: number;
+            groupInviteEndFeedId: number;
+            /**
+             * @description Server-confirmed read position; explicit force may move it backwards
+             * @example 42
+             */
+            lastReadSeq: number;
+            /**
+             * @description Exact persisted unread count
+             * @example 3
+             */
+            unreadCount: number;
+            /** @description Latest projected surviving mention seq; clients decide whether to display attention */
+            lastMentionSeq: number | null;
+        };
+        ThreadFeedDeltaPageDto: {
+            threadFeedEndId: number;
+            through: number;
+            scannedThrough: number;
+            hasMore: boolean;
+            items: components["schemas"]["ThreadFeedStateDto"][];
+        };
+        ThreadFeedDeltaDto: {
+            /**
+             * @description Number of memory previews, up to 3.
+             * @default 0
+             */
+            previewCount: number;
+            /** @example 0 */
+            after: number;
+            through?: number;
+            /** @default 100 */
+            take: number;
+        };
         SetMutedDto: {
             /**
              * @description Conversation (MessageThread) id
@@ -3858,6 +3975,11 @@ export interface components {
              * @example true
              */
             pinned: boolean;
+        };
+        ThreadAliasResultDto: {
+            threadId: number;
+            threadFeedId: number;
+            alias: string | null;
         };
         SetAliasDto: {
             /**
@@ -4213,32 +4335,21 @@ export interface components {
              */
             joinRequestReadFeedId: number;
         };
-        DurableTaskAcceptedDto: {
-            /**
-             * @description Durable task ID
-             * @example 123
-             */
-            taskId: string;
-            /** @enum {string} */
-            status: "PENDING";
-        };
-        ThreadReadPositionResultDto: {
-            /** @enum {string} */
-            status: "APPLIED" | "REJECTED";
-            /** @example THREAD_NOT_FOUND */
-            reason?: string;
-            /** @example 42 */
-            lastReadSeq?: number;
-        };
         HandleGroupJoinRequestDto: {
             /**
              * @description Group id
              * @example 12
              */
             groupId: number;
-            /** @description Member account */
+            /**
+             * @description Member account
+             * @example alice
+             */
             account: string;
-            /** @description Member home domain */
+            /**
+             * @description Member home domain
+             * @example example.com
+             */
             domain: string;
         };
         GroupIdDto: {
@@ -4247,6 +4358,15 @@ export interface components {
              * @example 12
              */
             groupId: number;
+        };
+        DurableTaskAcceptedDto: {
+            /**
+             * @description Durable task ID
+             * @example 123
+             */
+            taskId: string;
+            /** @enum {string} */
+            status: "PENDING";
         };
         KickGroupDto: {
             /**
@@ -4373,6 +4493,12 @@ export interface components {
             /** @description Peer user or group domain */
             domain: string;
         };
+        RegisterDeviceResultDto: {
+            sessionId: number;
+            pushSubscriptionRev: number;
+            /** @description False means the submitted revision was stale; reconcile the returned revision. */
+            registered: boolean;
+        };
         RegisterDeviceDto: {
             /** @description Session push generation received through HELLO or SSE. */
             pushSubscriptionRev: number;
@@ -4394,6 +4520,16 @@ export interface components {
             auth?: string;
             /** @description Optional stable client installation id for diagnostics. Delivery suppression is bound to the authenticated session. */
             deviceId?: string;
+        };
+        PushProbeStatusDto: {
+            probeId: string;
+            /** @enum {string} */
+            stage: "provider_accepted" | "device_received" | "failed";
+            createdAt: number;
+            acceptedAt?: number;
+            receivedAt?: number;
+            latencyMs?: number;
+            errorCode?: string;
         };
         OtpLoginDto: {
             /**
@@ -4437,7 +4573,7 @@ export interface components {
             /** @description Client-generated canonical lowercase RFC UUID — the call idempotency key + the address every signaling frame carries. */
             callSid: string;
             /**
-             * @description The callee userId (must be a friend — share an active P2P thread).
+             * @description The active P2P thread identifying the call peer.
              * @example 7
              */
             threadId: number;
@@ -4485,10 +4621,6 @@ export interface components {
             id: string;
             /** @description The callSid this frame belongs to. */
             callSid: string;
-            /**
-             * @description The peer userId to relay to (must be the OTHER call participant).
-             * @example 7
-             */
             /**
              * @description Signaling frame kind.
              * @enum {string}
@@ -5009,11 +5141,11 @@ export interface components {
         };
         AdminListMessageReportsDto: {
             /** @default 0 */
-            skip?: number;
+            skip: number;
             /** @default 20 */
-            take?: number;
+            take: number;
             /** @default false */
-            isDeleted?: boolean;
+            isDeleted: boolean;
         };
         MessageTargetDto: {
             /** @example 12 */
@@ -5029,28 +5161,7 @@ export interface components {
             /** @description Substring over task type or scope key */
             search?: string;
             /** @enum {string} */
-            status?:
-                | "PENDING"
-                | "PROCESSING"
-                | "SUCCEEDED"
-                | "REJECTED"
-                | "FAILED"
-                | "SUPERSEDED";
-        };
-        RegisterDeviceResultDto: {
-            sessionId: number;
-            pushSubscriptionRev: number;
-            /** @description False means the submitted revision was stale; reconcile the returned revision. */
-            registered: boolean;
-        };
-        PushProbeStatusDto: {
-            probeId: string;
-            stage: "provider_accepted" | "device_received" | "failed";
-            createdAt: number;
-            acceptedAt?: number;
-            receivedAt?: number;
-            latencyMs?: number;
-            errorCode?: string;
+            status?: "PENDING" | "PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED" | "SUPERSEDED";
         };
     };
     responses: never;
@@ -5339,7 +5450,7 @@ export interface operations {
             };
         };
     };
-    MessageController_readDelta: {
+    MessageController_threadFeedDelta: {
         parameters: {
             query?: never;
             header?: never;
@@ -5348,7 +5459,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ReadDeltaDto"];
+                "application/json": components["schemas"]["ThreadFeedDeltaDto"];
             };
         };
         responses: {
@@ -5356,7 +5467,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["ThreadFeedDeltaPageDto"];
+                    };
+                };
             };
         };
     };
@@ -5440,7 +5555,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["ThreadAliasResultDto"];
+                    };
+                };
             };
         };
     };
@@ -6057,11 +6176,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6082,11 +6197,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6107,11 +6218,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6132,11 +6239,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6157,11 +6260,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6207,11 +6306,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6232,11 +6327,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6257,11 +6348,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6324,11 +6411,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -6349,11 +6432,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["DurableTaskAcceptedDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -9298,38 +9377,33 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json":
-                    | {
-                          /** @enum {string} */
-                          type: "EXACT";
-                          account: string;
-                          domain: string;
-                          rev: number;
-                      }
-                    | {
-                          /** @enum {string} */
-                          type: "MESSAGE_AUTHOR";
-                          threadId: number;
-                          messageSeq: number;
-                          rev: number;
-                      }
-                    | {
-                          /** @enum {string} */
-                          type: "GROUP_META";
-                          threadId: number;
-                          profileRev: number;
-                          subject:
-                              | {
-                                    /** @enum {string} */
-                                    type: "GROUP";
-                                }
-                              | {
-                                    /** @enum {string} */
-                                    type: "MEMBER";
-                                    account: string;
-                                    domain: string;
-                                };
-                      };
+                "application/json": {
+                    /** @enum {string} */
+                    type: "EXACT";
+                    account: string;
+                    domain: string;
+                    rev: number;
+                } | {
+                    /** @enum {string} */
+                    type: "MESSAGE_AUTHOR";
+                    threadId: number;
+                    messageSeq: number;
+                    rev: number;
+                } | {
+                    /** @enum {string} */
+                    type: "GROUP_META";
+                    threadId: number;
+                    profileRev: number;
+                    subject: {
+                        /** @enum {string} */
+                        type: "GROUP";
+                    } | {
+                        /** @enum {string} */
+                        type: "MEMBER";
+                        account: string;
+                        domain: string;
+                    };
+                };
             };
         };
         responses: {
@@ -9338,31 +9412,53 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json":
-                        | {
-                              /** @enum {string} */
-                              status: "READY";
-                              profile: {
-                                  namespaceId: number;
-                                  account: string;
-                                  domain: string;
-                                  rev: number;
-                                  name: string;
-                                  bio: string;
-                                  avatarBase64: string | null;
-                              };
-                          }
-                        | {
-                              /** @enum {string} */
-                              status: "PENDING";
-                              key: {
-                                  namespaceId: number;
-                                  account: string;
-                                  domain: string;
-                                  rev: number;
-                              };
-                          };
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "READY";
+                        profile: {
+                            namespaceId: number;
+                            account: string;
+                            domain: string;
+                            rev: number;
+                            name: string;
+                            bio: string;
+                            avatarBase64: string | null;
+                        };
+                    } | {
+                        /** @enum {string} */
+                        status: "PENDING";
+                        key: {
+                            namespaceId: number;
+                            account: string;
+                            domain: string;
+                            rev: number;
+                        };
+                    };
                 };
+            };
+        };
+    };
+    QuoteResolutionController_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    threadId: number;
+                    messageSeq: number;
+                };
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

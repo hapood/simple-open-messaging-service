@@ -569,6 +569,7 @@ export const accountThreadState = pgTable(
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     /** Inclusive upper message sequence visible after this local participant leaves the relationship. */
     messageVisibleThroughSeq: bigint({ mode: 'number' }),
+    /** Private label published through the thread feed; null restores the profile name. */
     alias: varchar({ length: 64 }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)

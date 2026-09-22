@@ -951,7 +951,7 @@ pub(crate) async fn sync_thread_feed(
     })
     .await
     .map_err(|e| format!("join thread feed cursor read: {e}"))??;
-    let mut states = BTreeMap::new();
+    let mut states: BTreeMap<i32, LocalThreadAttention> = BTreeMap::new();
     let mut group_thread_ids = Vec::new();
     // Only scheduled polling lacks a wake head. Its first page discovers the server boundary.
     let mut target = (target >= 0).then_some(target);
@@ -996,7 +996,10 @@ pub(crate) async fn sync_thread_feed(
             })
             .await
             .map_err(|e| format!("join thread feed merge: {e}"))??;
-            for state in merged {
+            for mut state in merged {
+                state.notification_changed |= states
+                    .get(&state.thread_id)
+                    .is_some_and(|old| old.notification_changed);
                 states.insert(state.thread_id, state);
             }
             cursor = scanned;
@@ -1020,12 +1023,32 @@ pub(crate) async fn sync_thread_feed(
     })
 }
 
+impl ThreadFeedSyncResult {
+    pub(crate) fn alias_events(&self, user_id: i64) -> Vec<Value> {
+        self.states
+            .iter()
+            .filter_map(|state| state.server.as_ref())
+            .map(|snapshot| {
+                serde_json::json!({
+                    "userId": user_id,
+                    "threadId": snapshot.thread_id,
+                    "threadFeedId": snapshot.thread_feed_id,
+                    "alias": snapshot.alias,
+                })
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadFeedSnapshot {
     pub(super) thread_id: i32,
     pub(super) thread_feed_id: i32,
+    #[serde(deserialize_with = "required_alias")]
+    pub(super) alias: Option<String>,
     pub(super) message_end_seq: i32,
+    pub(super) thread_profile_rev: i32,
     pub(super) tombstone_end_seq: i32,
     pub(super) group_meta_feed_end_id: Option<String>,
     #[serde(default)]
@@ -1041,6 +1064,12 @@ pub(crate) struct ThreadFeedSnapshot {
     pub(super) previews: Option<Vec<serde_json::Value>>,
 }
 
+fn required_alias<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
 fn disabled_join_request_read_feed_id() -> i32 {
     -1
 }
@@ -1048,6 +1077,9 @@ fn disabled_join_request_read_feed_id() -> i32 {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LocalThreadAttention {
+    /// Transient eligibility from the consumed page; never part of the durable snapshot.
+    #[serde(skip)]
+    pub(super) notification_changed: bool,
     pub(super) thread_id: i32,
     pub(super) server: Option<ThreadFeedSnapshot>,
     pub(super) local_read_seq: Option<i32>,
@@ -1089,6 +1121,7 @@ pub(super) fn read_state(
             serde_json::from_str(&payload).map_err(|e| format!("decode attention: {e}"))
         }
         None => Ok(LocalThreadAttention {
+            notification_changed: false,
             thread_id,
             server: None,
             local_read_seq: None,
@@ -1170,7 +1203,15 @@ fn merge_states(
             if state.local_read_seq.is_none() {
                 state.local_read_seq = Some(snapshot.last_read_seq);
             }
+            let notification_changed = state.server.as_ref().is_none_or(|old| {
+                old.message_end_seq != snapshot.message_end_seq
+                    || old.tombstone_end_seq != snapshot.tombstone_end_seq
+                    || old.last_read_seq != snapshot.last_read_seq
+                    || old.unread_count != snapshot.unread_count
+                    || old.last_mention_seq != snapshot.last_mention_seq
+            });
             state.server = Some(snapshot);
+            state.notification_changed = notification_changed;
             write_state(&tx, user_id, &state)?;
         }
         merged.insert(state.thread_id, state);
@@ -1372,7 +1413,9 @@ mod tests {
         ThreadFeedSnapshot {
             thread_id: 7,
             thread_feed_id: feed,
+            alias: None,
             message_end_seq: 200,
+            thread_profile_rev: 0,
             tombstone_end_seq: 0,
             group_meta_feed_end_id: None,
             join_request_end_feed_id: 0,
@@ -1384,6 +1427,27 @@ mod tests {
             previews: None,
         }
     }
+    #[test]
+    fn aliases_follow_the_feed_and_metadata_only_changes_do_not_notify() {
+        let mut conn = db();
+        let mut first = snapshot(1, 0);
+        first.alias = Some("Private".into());
+        assert!(merge_states(&mut conn, 1, vec![first.clone()], Some(1)).unwrap()[0]
+            .notification_changed);
+        let mut cleared = first.clone();
+        cleared.thread_feed_id = 2;
+        cleared.alias = None;
+        let result = merge_states(&mut conn, 1, vec![cleared], Some(2)).unwrap();
+        assert!(!result[0].notification_changed);
+        merge_states(&mut conn, 1, vec![first], Some(1)).unwrap();
+        let state = read_state(&conn, 1, 7).unwrap();
+        assert_eq!(state.server.as_ref().unwrap().alias, None);
+        assert_eq!(state.server.as_ref().unwrap().thread_feed_id, 2);
+        let mut encoded = serde_json::to_value(snapshot(3, 0)).unwrap();
+        encoded.as_object_mut().unwrap().remove("alias");
+        assert!(serde_json::from_value::<ThreadFeedSnapshot>(encoded).is_err());
+    }
+
     #[test]
     fn snapshot_merge_preserves_local_position_and_orders_by_feed() {
         let mut conn = db();

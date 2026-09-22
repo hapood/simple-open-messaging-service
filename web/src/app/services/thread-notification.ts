@@ -42,11 +42,11 @@ export function threadNotificationDescriptor(
     ? `${preview.sender.account}@${preview.sender.domain}`
     : 'SOMS';
   const title =
-    item.type === 'GROUP'
+    state.alias ||
+    (item.type === 'GROUP'
       ? item.group.name || fallback
-      : item.alias ||
-        item.peerUser.name ||
-        `${item.peerUser.account}@${item.peerUser.domain}`;
+      : item.peerUser.name ||
+        `${item.peerUser.account}@${item.peerUser.domain}`);
   const textFor = (
     preview: NonNullable<ThreadFeedSnapshot['previews']>[number],
   ) =>
@@ -58,12 +58,11 @@ export function threadNotificationDescriptor(
   const recent = state.previews?.filter(
     (p) => p.seq > (item.lastReadSeq ?? state.lastReadSeq),
   );
-  const text =
-    recent?.length
-      ? recent.map(textFor).join('\n')
-      : preview
-        ? textFor(preview)
-        : copy.privateBody;
+  const text = recent?.length
+    ? recent.map(textFor).join('\n')
+    : preview
+      ? textFor(preview)
+      : copy.privateBody;
   return {
     tag: `soms-thread-${item.threadId}`,
     kind: 'thread-message',

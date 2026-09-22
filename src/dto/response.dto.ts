@@ -98,8 +98,17 @@ export class ThreadFeedPreviewDto {
   @ApiProperty({ required: false }) text?: string;
 }
 
+/** Committed private label and its account-scoped feed coordinate. */
+export class ThreadAliasResultDto {
+  @ApiProperty() threadId!: number;
+  @ApiProperty() threadFeedId!: number;
+  @ApiProperty({ type: String, nullable: true }) alias!: string | null;
+}
+
 /** Complete server thread snapshot; content and attention share one feed coordinate. */
 export class ThreadFeedStateDto {
+  @ApiProperty({ minimum: 0 }) threadProfileRev!: number;
+  @ApiProperty({ type: String, nullable: true }) alias!: string | null;
   @ApiProperty({ type: [ThreadFeedPreviewDto], required: false })
   previews?: ThreadFeedPreviewDto[];
   @ApiProperty({ example: 12, minimum: 1, maximum: 2147483647 })

@@ -1,4 +1,4 @@
-import { createP2PConversation } from './model';
+import { createP2PConversation, createGroupConversation } from './model';
 import {
   threadNotificationDescriptor,
   type ThreadNotificationUpdate,
@@ -23,6 +23,8 @@ describe('thread notification presentation', () => {
         threadFeedId: 9,
         messageEndSeq: 8,
         tombstoneEndSeq: 1,
+        alias: null,
+        threadProfileRev: 0,
         groupMetaFeedEndId: null,
         joinRequestEndFeedId: 0,
         joinRequestReadFeedId: -1,
@@ -47,6 +49,32 @@ describe('thread notification presentation', () => {
       },
     };
   }
+  it('uses the feed alias regardless of stale conversation cache and falls back to profiles', () => {
+    const value = update();
+    value.item.alias = 'Stale cache';
+    value.state.alias = 'Current label';
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'Current label',
+    );
+    value.state.alias = null;
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'Peer',
+    );
+    value.item = createGroupConversation(
+      7,
+      { id: 7, account: '!group', name: 'Group profile', ownerId: 1 },
+      { alias: 'Stale group label' },
+    );
+    value.state.alias = 'My group';
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'My group',
+    );
+    value.state.alias = null;
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'Group profile',
+    );
+  });
+
   it('uses projected count, latest sequence and the moderation reason', () => {
     expect(
       threadNotificationDescriptor(update(), 'message', copy),

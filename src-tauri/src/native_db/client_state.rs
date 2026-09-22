@@ -69,7 +69,9 @@ pub(crate) async fn native_db_threads(user_id: i64) -> Result<Vec<Value>, String
     super::lifetime::spawn(move || {
         let conn = open()?;
         let mut stmt = conn
-            .prepare("SELECT payload_json FROM threads WHERE user_id = ?1 AND COALESCE(json_extract(payload_json, '$.visible'), 1) = 1")
+            .prepare("SELECT json_set(t.payload_json, '$.alias', json_extract(s.payload_json, '$.server.alias'))
+              FROM threads t LEFT JOIN thread_states s ON s.user_id=t.user_id AND s.thread_id=t.thread_id
+              WHERE t.user_id = ?1 AND COALESCE(json_extract(t.payload_json, '$.visible'), 1) = 1")
             .map_err(|e| format!("prepare thread read: {e}"))?;
         let rows = stmt
             .query_map([user_id], |row| row.get::<_, String>(0))
@@ -806,7 +808,7 @@ pub(super) fn apply_thread_state(
         .and_then(Value::as_i64);
     let mut thread = previous.filter(|item| item.get("type").and_then(Value::as_str) != Some("PENDING")).unwrap_or_else(|| serde_json::json!({
         "threadId": thread_id, "type": kind, "role": null, "lastMessageAt": null, "lastMessageSeq": null,
-        "muted": false, "pinned": false, "pinnedAt": null, "alias": null,
+        "muted": false, "pinned": false, "pinnedAt": null,
         "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null, "lastMessageSenderId": null
     }));
     if thread

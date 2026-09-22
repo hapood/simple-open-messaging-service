@@ -131,7 +131,7 @@ export class ConversationListService {
 
   // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──
 
-  /** Patch per-user thread metadata (mute/pin/block/alias); called from local optimistic actions. */
+  /** Patch per-user thread metadata (mute/pin/block); called from local optimistic actions. */
   applyThreadMeta(
     threadId: number,
     patch: {
@@ -141,10 +141,15 @@ export class ConversationListService {
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';
-      alias?: string | null;
     },
   ): void {
     this.repo.applyThreadMeta(threadId, patch);
+  }
+
+  confirmThreadAlias(
+    result: import('../../../../shared/thread-attention').ThreadAliasApplied,
+  ): void {
+    this.repo.confirmThreadAlias(result);
   }
 
   markAuthorityNamespaceInactive(threadId: number): void {

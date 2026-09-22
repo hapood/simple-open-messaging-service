@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { createP2PConversation } from './model';
 import { syncThreadFeed } from './thread-feed-sync';
 
 describe('shared background storage', () => {
@@ -33,6 +34,8 @@ describe('shared background storage', () => {
               threadFeedId: 1,
               messageEndSeq: 2,
               tombstoneEndSeq: 0,
+              alias: null,
+              threadProfileRev: 0,
               groupMetaFeedEndId: null,
               joinRequestEndFeedId: 0,
               joinRequestReadFeedId: -1,
@@ -62,6 +65,46 @@ describe('shared background storage', () => {
     } finally {
       await page.close();
     }
+  });
+
+  it('restores aliases from feed state after structural writes, stale replay and reopening', async () => {
+    await storage.openForUser(userId);
+    const state = {
+      threadId: 7,
+      threadFeedId: 1,
+      threadProfileRev: 0,
+      alias: 'Private',
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
+      groupMetaFeedEndId: null,
+      joinRequestEndFeedId: 0,
+      joinRequestReadFeedId: -1,
+      groupInviteEndFeedId: 0,
+      lastReadSeq: 0,
+      unreadCount: 0,
+      lastMentionSeq: null,
+    };
+    await storage.mergeThreadStates([state], 1);
+    await storage.putThread(
+      createP2PConversation(
+        7,
+        { id: 2, account: 'peer', name: 'Profile' },
+        { alias: 'Stale structure' },
+      ),
+    );
+    expect((await storage.getThreads())[0].alias).toBe('Private');
+    expect(await (await storage.db()).get('threads', 7)).not.toHaveProperty(
+      'alias',
+    );
+    await storage.close();
+    await storage.openExistingForUser(userId);
+    expect((await storage.getThreads())[0].alias).toBe('Private');
+    await storage.mergeThreadStates(
+      [{ ...state, threadFeedId: 2, alias: null }],
+      2,
+    );
+    await storage.mergeThreadStates([state], 1);
+    expect((await storage.getThreads())[0].alias).toBeNull();
   });
 
   it('does not create a missing account cache on the background existing-only path', async () => {

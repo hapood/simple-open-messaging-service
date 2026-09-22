@@ -62,6 +62,7 @@ describe('account feed notification delivery', () => {
     });
     Object.assign(feed, { previews: new ThreadPreviewService(database) });
     Object.assign(participants, {
+      sse,
       previews: new ThreadPreviewService(database),
     });
     for (const [index, writes] of devices.entries()) {
@@ -151,6 +152,95 @@ describe('account feed notification delivery', () => {
       'feedId',
       unblocked.clientStateFeedEndId,
     );
+  });
+
+  it('publishes normalized private aliases to both devices and recovers them from the feed', async () => {
+    const before = await heads();
+    const saved = await participants.setAlias(
+      userId,
+      threadId,
+      '  Work friend  ',
+    );
+    expect(saved).toEqual({
+      threadId,
+      alias: 'Work friend',
+      threadFeedId: before.threadFeedEndId + 1,
+    });
+    await expectDelivered(
+      'THREAD_FEED_UPDATED',
+      'threadFeedEndId',
+      saved.threadFeedId,
+    );
+    const delta = await feed.queryThreadFeedDelta(userId, {
+      after: before.threadFeedEndId,
+    });
+    expect(delta.items).toEqual([expect.objectContaining(saved)]);
+    const cold = await feed.queryThreadFeedDelta(userId, { after: 0 });
+    expect(cold.items).toContainEqual(expect.objectContaining(saved));
+    hints.mockClear();
+    expect(
+      await participants.setAlias(userId, threadId, 'Work friend'),
+    ).toEqual(saved);
+    expect(hints).not.toHaveBeenCalled();
+    const cleared = await participants.setAlias(userId, threadId, '   ');
+    expect(cleared.alias).toBeNull();
+    expect(cleared.threadFeedId).toBe(saved.threadFeedId + 1);
+    expect(
+      (await feed.queryThreadFeedDelta(userId, { after: saved.threadFeedId }))
+        .items,
+    ).toEqual([expect.objectContaining(cleared)]);
+    expect((await heads()).clientStateFeedEndId).toBe(
+      before.clientStateFeedEndId,
+    );
+  });
+
+  it('isolates private labels and serializes concurrent edits', async () => {
+    const [other] = await database.db
+      .insert(account)
+      .values({ account: 'alias-other' })
+      .returning();
+    await database.db
+      .insert(accountThreadState)
+      .values({ accountId: other.id, threadId, updatedAt: new Date() });
+    const results = await Promise.all([
+      participants.setAlias(userId, threadId, 'First'),
+      participants.setAlias(userId, threadId, 'Second'),
+    ]);
+    const latest = results.sort((a, b) => b.threadFeedId - a.threadFeedId)[0];
+    expect(
+      (
+        await feed.queryThreadFeedDelta(userId, {
+          after: latest.threadFeedId - 1,
+        })
+      ).items,
+    ).toEqual([expect.objectContaining(latest)]);
+    expect(
+      (await feed.queryThreadFeedDelta(other.id, { after: 0 })).items[0].alias,
+    ).toBeNull();
+  });
+
+  it('never publishes an alias from a rolled back transaction', async () => {
+    hints.mockClear();
+    const before = await heads();
+    const transaction = database.db.transaction.bind(database.db);
+    const mocked = vi
+      .spyOn(database.db, 'transaction')
+      .mockImplementation((run, config) =>
+        transaction(async (tx) => {
+          await run(tx);
+          expect(hints).not.toHaveBeenCalled();
+          throw new Error('abort alias');
+        }, config),
+      );
+    try {
+      await expect(
+        participants.setAlias(userId, threadId, 'Rolled back'),
+      ).rejects.toThrow('abort alias');
+      expect(await heads()).toEqual(before);
+      expect(hints).not.toHaveBeenCalled();
+    } finally {
+      mocked.mockRestore();
+    }
   });
 
   it('does not notify or change heads when a business transaction rolls back', async () => {

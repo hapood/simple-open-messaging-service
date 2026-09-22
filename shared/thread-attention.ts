@@ -2,6 +2,9 @@
 export interface ThreadFeedSnapshot {
   threadId: number;
   threadFeedId: number;
+  /** Private label owned by this account. Null restores the canonical name. */
+  alias: string | null;
+  threadProfileRev: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
   /** Canonical Group Meta coordinate; null for P2P threads. */
@@ -50,8 +53,11 @@ export function mergeThreadAttention(
   current: LocalThreadAttention,
   incoming: ThreadFeedSnapshot,
 ): LocalThreadAttention {
+  if (incoming.alias !== null && typeof incoming.alias !== 'string')
+    throw new Error('Invalid thread alias');
   coordinate(incoming.threadId, 'threadId', 1);
   coordinate(incoming.threadFeedId, 'feed ID');
+  coordinate(incoming.threadProfileRev, 'profile revision');
   coordinate(incoming.messageEndSeq, 'message end');
   coordinate(incoming.tombstoneEndSeq, 'tombstone end');
   coordinate(incoming.joinRequestEndFeedId, 'join request end');
@@ -138,4 +144,25 @@ export function projectThreadAttention(
       current.server.lastMentionSeq !== null &&
       current.server.lastMentionSeq > current.localReadSeq,
   };
+}
+
+/** Confirmed private label, delivered by a successful mutation or a committed feed page. */
+export type ThreadAliasApplied = Pick<
+  ThreadFeedSnapshot,
+  'threadId' | 'threadFeedId' | 'alias'
+>;
+
+/** Metadata-only feed revisions must not re-alert existing unread messages. */
+export function threadNotificationChanged(
+  previous: ThreadFeedSnapshot | null | undefined,
+  next: ThreadFeedSnapshot,
+): boolean {
+  return (
+    !previous ||
+    previous.messageEndSeq !== next.messageEndSeq ||
+    previous.tombstoneEndSeq !== next.tombstoneEndSeq ||
+    previous.lastReadSeq !== next.lastReadSeq ||
+    previous.unreadCount !== next.unreadCount ||
+    previous.lastMentionSeq !== next.lastMentionSeq
+  );
 }

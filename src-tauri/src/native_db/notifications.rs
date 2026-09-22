@@ -132,12 +132,15 @@ mod tests {
 
     fn state(local: i32) -> LocalThreadAttention {
         LocalThreadAttention {
+            notification_changed: true,
             thread_id: 7,
             local_read_seq: Some(local),
             server: Some(ThreadFeedSnapshot {
                 thread_id: 7,
                 thread_feed_id: 8,
+                alias: None,
                 message_end_seq: 10,
+                thread_profile_rev: 0,
                 tombstone_end_seq: 4,
                 group_meta_feed_end_id: None,
                 join_request_end_feed_id: 0,
@@ -234,6 +237,30 @@ mod tests {
     }
 
     #[test]
+    fn alias_titles_use_the_snapshot_and_clear_to_the_profile() {
+        let mut conn = db();
+        conn.execute(
+            "INSERT INTO threads VALUES(1,7,?1)",
+            [r#"{"alias":"Stale cache","group":{"name":"Profile name"}}"#],
+        ).unwrap();
+        let mut delivered = state(2);
+        delivered.server.as_mut().unwrap().alias = Some("Private name".into());
+        save(&conn, &delivered);
+        let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(metadata["threads"][0]["title"], "Private name");
+        delivered.server.as_mut().unwrap().alias = None;
+        save(&conn, &delivered);
+        let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(metadata["threads"][0]["title"], "Profile name");
+        delivered.notification_changed = false;
+        let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert!(metadata["threads"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn no_consumed_states_means_no_notification_even_if_database_has_unread() {
         let mut conn = db();
         save(&conn, &state(2));
@@ -279,6 +306,9 @@ fn assemble(
     let mut avatars = Vec::new();
     let mut avatar_indices = BTreeMap::new();
     for delivered in states {
+        if !delivered.notification_changed {
+            continue;
+        }
         // UI reads may have advanced since the page commit. Reconcile against the current local position.
         let current = read_state(&tx, user_id, delivered.thread_id)?;
         let Some(server) = current.server.as_ref() else {
@@ -365,8 +395,9 @@ fn assemble(
             }
             previews.push(value);
         }
-        let title = thread["group"]["name"]
-            .as_str()
+        let title = server.alias.as_deref()
+            .filter(|alias| !alias.is_empty())
+            .or_else(|| thread["group"]["name"].as_str())
             .or_else(|| thread["peerUser"]["name"].as_str())
             .filter(|name| !name.is_empty())
             .map(str::to_owned)

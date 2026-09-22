@@ -42,6 +42,8 @@ describe('Push Service Worker entry', () => {
                 threadFeedId: 1,
                 messageEndSeq: 1,
                 tombstoneEndSeq: 0,
+                alias: null,
+                threadProfileRev: 0,
                 groupMetaFeedEndId: null,
                 joinRequestEndFeedId: 0,
                 joinRequestReadFeedId: -1,

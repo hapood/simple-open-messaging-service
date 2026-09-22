@@ -26,10 +26,13 @@ import {
 import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
+import { SseService } from '../gateway/sse.service.js';
 import { ThreadPreviewService } from '../message/thread-preview.service.js';
 /** Per-local-account conversation state. Membership and authorization live in their domain facts. */
 @Injectable()
 export class AccountThreadStateService {
+  @Inject(SseService)
+  private readonly sse!: SseService;
   @Inject(ThreadPreviewService)
   private readonly previews!: ThreadPreviewService;
   constructor(
@@ -180,11 +183,42 @@ export class AccountThreadStateService {
     );
   }
 
-  setAlias(userId: number, threadId: number, alias: string | undefined) {
-    const trimmed = alias?.trim();
-    return this.updateParticipant(userId, threadId, {
-      alias: trimmed && trimmed.length > 0 ? trimmed : null,
+  async setAlias(userId: number, threadId: number, alias: string | undefined) {
+    const normalized = alias?.trim() || null;
+    const committed = await this.database.db.transaction(async (tx) => {
+      // Serialize edits of this account's private label without locking the conversation.
+      const current = await tx.execute<{
+        alias: string | null;
+        threadFeedId: number;
+      }>(sql`
+        SELECT alias, "threadFeedId" FROM "AccountThreadState"
+        WHERE "accountId" = ${userId} AND "threadId" = ${threadId}
+        FOR NO KEY UPDATE`);
+      const previous = current.rows[0];
+      if (!previous) throw new Error('thread participant is missing');
+      if (previous.alias === normalized)
+        return { changed: false, result: { threadId, ...previous } };
+      const [result] = await tx
+        .update(accountThreadState)
+        .set({ alias: normalized, updatedAt: new Date() })
+        .where(
+          and(
+            eq(accountThreadState.accountId, userId),
+            eq(accountThreadState.threadId, threadId),
+          ),
+        )
+        .returning({
+          threadId: accountThreadState.threadId,
+          alias: accountThreadState.alias,
+          threadFeedId: accountThreadState.threadFeedId,
+        });
+      return { changed: true, result };
     });
+    if (committed.changed)
+      this.sse.onThreadFeedUpdated(userId, {
+        threadFeedEndId: committed.result.threadFeedId,
+      });
+    return committed.result;
   }
 
   async queryParticipants(params: ParticipantQuery) {
