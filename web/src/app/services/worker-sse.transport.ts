@@ -26,6 +26,13 @@ export class WorkerSseTransport extends RealtimeTransport {
   private worker?: Worker;
   /** The pending 1s respawn from {@link onWorkerError}, cancelled if {@link retryNow} fires first. */
   private respawnTimer?: ReturnType<typeof setTimeout>;
+  /** Main-thread fallback for browsers that do not deliver online/offline to DedicatedWorkerGlobalScope. */
+  private readonly onOffline = (): void => {
+    this.worker?.postMessage({ type: 'network-offline' } satisfies ToWorker);
+  };
+  private readonly onOnline = (): void => {
+    this.worker?.postMessage({ type: 'network-online' } satisfies ToWorker);
+  };
 
   constructor(sink: RealtimeSink) {
     super(sink);
@@ -60,11 +67,16 @@ export class WorkerSseTransport extends RealtimeTransport {
       if (this.worker === worker) this.onWorkerError();
     };
     this.worker = worker;
+    if (typeof window !== 'undefined') {
+      window.addEventListener('offline', this.onOffline);
+      window.addEventListener('online', this.onOnline);
+    }
     worker.postMessage({ type: 'start', url: sseUrl() } satisfies ToWorker);
   }
 
   /** Logout / force-login / origin swap: tell the worker to stop, terminate it. */
   stop(): void {
+    this.removeNetworkListeners();
     this.worker?.postMessage({ type: 'stop' } satisfies ToWorker);
     this.worker?.terminate();
     this.worker = undefined;
@@ -117,12 +129,22 @@ export class WorkerSseTransport extends RealtimeTransport {
    *  so SSE would silently stop forever. Flip to `reconnecting` (so the banner explains the outage) and
    *  respawn the worker after a short delay; the worker's own backoff then paces reconnect attempts. */
   private onWorkerError(): void {
+    this.removeNetworkListeners();
     this.worker?.terminate();
     this.worker = undefined;
     this.sink.onState('reconnecting');
     // Announce the respawn delay so the countdown ticks during this main-thread wait too (the worker
     // isn't alive to emit its own deadline; `start()` posts `connecting` on respawn, which clears it).
     this.sink.onReconnectIn(1000);
-    this.respawnTimer = setTimeout(() => this.start(), 1000);
+    this.respawnTimer = setTimeout(() => {
+      this.respawnTimer = undefined;
+      this.start();
+    }, 1000);
+  }
+
+  private removeNetworkListeners(): void {
+    if (typeof window === 'undefined') return;
+    window.removeEventListener('offline', this.onOffline);
+    window.removeEventListener('online', this.onOnline);
   }
 }

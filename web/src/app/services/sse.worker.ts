@@ -306,10 +306,9 @@ function stopWatchdog(): void {
 
 // --- browser online/offline (fast path) --------------------------------------
 
-// DedicatedWorkerGlobalScope inherits `online`/`offline` from WorkerGlobalScope, so the worker detects
-// network changes directly — no need to relay from the main thread. These fire instantly on OS network
-// changes, far faster than the heartbeat watchdog (which is the backstop for silent half-open stalls
-// where navigator.onLine is still true).
+// DedicatedWorkerGlobalScope may receive `online`/`offline` directly, but browsers and WebViews do not
+// guarantee that behavior. WorkerSseTransport therefore forwards the main-thread events through the
+// protocol as a fallback. Both paths below are idempotent and share the same reconnect behavior.
 sw.addEventListener('offline', () => {
   if (manualClose) return;
   post({ type: 'state', state: 'reconnecting' });
@@ -387,6 +386,16 @@ sw.addEventListener('message', (e: MessageEvent) => {
       // wherever the loop had climbed to) and resolve the current backoff sleep so the loop reconnects
       // at once. Mirrors the browser `online` fast-path. No-op when not in backoff (sleepResolver
       // undefined) — e.g. already open — which is the correct harmless behavior.
+      if (manualClose) return;
+      attempt = 0;
+      sleepResolver?.();
+      break;
+    case 'network-offline':
+      if (manualClose) return;
+      post({ type: 'state', state: 'reconnecting' });
+      aborter?.abort();
+      break;
+    case 'network-online':
       if (manualClose) return;
       attempt = 0;
       sleepResolver?.();

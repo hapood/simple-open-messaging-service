@@ -34,11 +34,13 @@ import { PushRegistrationService } from './push-registration.service';
 class FakeWorker {
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onerror: ((e: unknown) => void) | null = null;
+  readonly posted: unknown[] = [];
   constructor(_url: unknown, _opts?: unknown) {
     liveWorker = this;
   }
-  postMessage(_msg: unknown): void {
-    /* captured: the transport posts `start`/`retry-now`/`stop` here */
+  postMessage(msg: unknown): void {
+    this.posted.push(msg);
+    /* captured: the transport posts lifecycle commands here */
   }
   terminate(): void {
     /* no-op */
@@ -125,6 +127,27 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(liveWorker).toBeInstanceOf(FakeWorker);
     expect(ws.state()).toBe('connecting');
     expect(ws.reconnectIn()).toBeNull();
+  });
+
+  it('forwards main-thread network changes to the active worker', () => {
+    const posted = liveWorker!.posted as Array<{ type: string }>;
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+    expect(posted.map((message) => message.type)).toContain('network-offline');
+    expect(posted.map((message) => message.type)).toContain('network-online');
+  });
+
+  it('removes main-thread network listeners when the transport stops', () => {
+    ws.disconnect();
+    const stoppedWorker = liveWorker!;
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+    expect(stoppedWorker.posted.map((message: any) => message.type)).not.toContain(
+      'network-offline',
+    );
+    expect(stoppedWorker.posted.map((message: any) => message.type)).not.toContain(
+      'network-online',
+    );
   });
 
   it('records the deadline on reconnect-in and the ticker decrements it over time', async () => {

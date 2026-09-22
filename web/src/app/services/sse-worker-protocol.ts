@@ -29,7 +29,9 @@ export type ToWorker =
   | { type: 'start'; url: string }
   | { type: 'thread-feed-port'; port: MessagePort; userId: number }
   | { type: 'stop' }
-  | { type: 'retry-now' }; // user tapped the disconnected chip: skip the current backoff sleep and retry at once
+  | { type: 'retry-now' } // user tapped the disconnected chip: skip the current backoff sleep and retry at once
+  | { type: 'network-offline' }
+  | { type: 'network-online' };
 
 /** Worker → Main. */
 export type ToMain =
