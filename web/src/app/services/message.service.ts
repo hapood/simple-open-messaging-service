@@ -187,7 +187,7 @@ export class MsgService {
       StandardResponse<
         Array<{
           clientMessageId: string;
-          contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO';
+          contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
           content: string;
           status: 'pending' | 'failed';
           failReason: string | null;
@@ -196,6 +196,13 @@ export class MsgService {
         }>
       >
     >(`${apiPrefix()}/query-media-stages`, { threadId });
+  }
+
+  abandonMediaStage(threadId: number, clientMessageId: string) {
+    return this.http.post<StandardResponse<{ abandoned: boolean }>>(
+      `${apiPrefix()}/abandon-media-stage`,
+      { threadId, clientMessageId },
+    );
   }
 
   /** Upload one logical message part. The server derives digest, size and media metadata; the client

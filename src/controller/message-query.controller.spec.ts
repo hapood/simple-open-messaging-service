@@ -369,3 +369,37 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
     );
   });
 });
+
+describe('MessageController.abandonMediaStage', () => {
+  it('abandons the caller-owned staged media send', async () => {
+    const abandonMediaStage = vi
+      .fn()
+      .mockResolvedValue({ abandoned: true });
+    const controller = new MessageController(
+      { abandonMediaStage } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const req = { user: { userId: 7 } } as unknown as FastifyRequest;
+
+    await controller.abandonMediaStage(req, {
+      threadId: 42,
+      clientMessageId: '00000000-0000-4000-8000-000000000003',
+    });
+
+    expect(abandonMediaStage).toHaveBeenCalledWith(
+      7,
+      42,
+      '00000000-0000-4000-8000-000000000003',
+    );
+  });
+});

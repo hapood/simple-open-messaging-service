@@ -204,6 +204,18 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     });
   }
 
+  override queryMediaStages(_threadId: number) {
+    return of({ code: 0, message: 'ok', data: [] });
+  }
+
+  override abandonMediaStage(_threadId: number, _clientMessageId: string) {
+    return of({
+      code: 0,
+      message: 'ok',
+      data: { abandoned: true },
+    });
+  }
+
   override uploadPart<T>(
     file: File,
     _identity: UploadPartIdentity,

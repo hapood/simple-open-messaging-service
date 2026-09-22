@@ -100,6 +100,17 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     tid = 42,
     outbox = new ThreadSendOutbox(),
     resolutionRepo?: ProfileRepository,
+    stageResponse: StandardResponse<
+      Array<{
+        clientMessageId: string;
+        contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
+        content: string;
+        status: 'pending' | 'failed';
+        failReason: string | null;
+        createdAt: number;
+        updatedAt: number;
+      }>
+    > = { code: 0, message: 'ok', data: [] },
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -274,8 +285,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
       // the stub must expose it — user 1 is "Me" in the fixtures above.
       sessionUserId: () => 1,
-      sessionProfile: () => ({ id: 1, account: 'me', domain: 'local' }),
+      sessionProfile: () => ({ id: 1, account: 'me', name: 'Me', domain: 'local' }),
     } as unknown as UserService;
+    const messages = {
+      queryMediaStages: vi.fn().mockName('queryMediaStages').mockReturnValue(of(stageResponse)),
+      abandonMediaStage: vi
+        .fn()
+        .mockName('abandonMediaStage')
+        .mockReturnValue(of({ code: 0, message: 'ok', data: { abandoned: true } })),
+    };
     const profileRepo = {
       getProfile: vi
         .fn()
@@ -321,6 +339,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         onQuoteDeleted,
         onNewerAvailable: newerAvailable,
       },
+      messages as never,
       activeProfileRepo,
     );
     return {
@@ -335,6 +354,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       newerAvailable,
       outbox,
       queryUserInfo,
+      messages,
     };
   }
 
@@ -999,6 +1019,76 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     expect(src.getPending()).toEqual([]);
     expect(src.markPendingAccepted('cid-image')).toBe(true);
+  });
+
+  it('restores durable media stages as failed pending attachments on init', async () => {
+    const { src, messages } = setup(
+      { code: 0, message: 'ok', data: [], hasMore: false },
+      42,
+      new ThreadSendOutbox(),
+      undefined,
+      {
+        code: 0,
+        message: 'ok',
+        data: [
+          {
+            clientMessageId: 'cid-stage-file',
+            contentType: 'FILE',
+            content: '{}',
+            status: 'pending',
+            failReason: null,
+            createdAt: 1700000000000,
+            updatedAt: 1700000000000,
+          },
+        ],
+      },
+    );
+
+    await src.init(-1, 50, 0);
+
+    expect(messages.queryMediaStages).toHaveBeenCalledWith(42);
+    expect(src.getPending()).toEqual([
+      expect.objectContaining({
+        clientMessageId: 'cid-stage-file',
+        data: expect.objectContaining({
+          contentType: 'FILE',
+          status: 'failed',
+          file: expect.objectContaining({ name: 'Unfinished upload' }),
+        }),
+      }),
+    ]);
+  });
+
+  it('abandons a durable media stage when the restored failed item is discarded', async () => {
+    const { src, messages } = setup(
+      { code: 0, message: 'ok', data: [], hasMore: false },
+      42,
+      new ThreadSendOutbox(),
+      undefined,
+      {
+        code: 0,
+        message: 'ok',
+        data: [
+          {
+            clientMessageId: 'cid-stage-discard',
+            contentType: 'FILE',
+            content: '{}',
+            status: 'pending',
+            failReason: null,
+            createdAt: 1700000000000,
+            updatedAt: 1700000000000,
+          },
+        ],
+      },
+    );
+
+    await src.init(-1, 50, 0);
+
+    expect(src.discardPending('cid-stage-discard')).toBe(true);
+    expect(messages.abandonMediaStage).toHaveBeenCalledWith(
+      42,
+      'cid-stage-discard',
+    );
   });
 
   it('rawToItems: a real whose cid matches a still-sending pending entry carries status sent (SSE-first → real owns the choreography)', async () => {

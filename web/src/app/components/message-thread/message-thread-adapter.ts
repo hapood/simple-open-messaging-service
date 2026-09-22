@@ -85,6 +85,16 @@ export interface StageMediaRequest {
   retry?: boolean;
 }
 
+export interface MediaStageState {
+  clientMessageId: string;
+  contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
+  content: string;
+  status: 'pending' | 'failed';
+  failReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Runtime boundary for the production chatbox. Alternate hosts replace data and transport, never its UI. */
 export abstract class MessageThreadAdapter {
   abstract createSource(
@@ -145,6 +155,15 @@ export abstract class MessageThreadAdapter {
     request: StageMediaRequest,
   ): Observable<StandardResponse<{ clientMessageId: string }>>;
 
+  abstract queryMediaStages(
+    threadId: number,
+  ): Observable<StandardResponse<MediaStageState[]>>;
+
+  abstract abandonMediaStage(
+    threadId: number,
+    clientMessageId: string,
+  ): Observable<StandardResponse<{ abandoned: boolean }>>;
+
   abstract uploadPart<T>(
     file: File,
     identity: UploadPartIdentity,
@@ -187,6 +206,7 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
       this.users,
       this.outbox,
       callbacks,
+      this.messages,
       this.profiles,
       this.memberProfiles,
     );
@@ -264,6 +284,14 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
 
   override stageMedia(request: StageMediaRequest) {
     return this.messages.sendMedia(request);
+  }
+
+  override queryMediaStages(threadId: number) {
+    return this.messages.queryMediaStages(threadId);
+  }
+
+  override abandonMediaStage(threadId: number, clientMessageId: string) {
+    return this.messages.abandonMediaStage(threadId, clientMessageId);
   }
 
   override uploadPart<T>(

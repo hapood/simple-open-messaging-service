@@ -777,6 +777,28 @@ export class MessageService {
     });
   }
 
+  /** Abandon a local outbound media stage that has not promoted to a Message. */
+  async abandonMediaStage(
+    userId: number,
+    threadId: number,
+    clientMessageId: string,
+  ): Promise<{ abandoned: boolean }> {
+    const author = await this.localAuthor(userId);
+    const rows = await this.database.db
+      .delete(pendingMedia)
+      .where(
+        and(
+          eq(pendingMedia.threadId, threadId),
+          eq(pendingMedia.clientMessageId, clientMessageId),
+          eq(pendingMedia.creatorAccount, author.account),
+          eq(pendingMedia.creatorDomain, author.domain),
+          eq(pendingMedia.namespaceId, author.namespaceId),
+        ),
+      )
+      .returning({ id: pendingMedia.id });
+    return { abandoned: rows.length > 0 };
+  }
+
   /**
    * Record one uploaded file of an outbound batch as SUCCEEDED (Phase 7 type-agnostic upload, design
    * doc §12.3). Each upload part upserts a FileSyncProgress(OUTBOUND, SUCCEEDED) row keyed by

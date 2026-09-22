@@ -42,6 +42,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   SendMessageDto,
   SendMediaDto,
+  AbandonMediaStageDto,
   QueryMediaStagesDto,
   QueryMessagesDto,
   MarkReadDto,
@@ -739,6 +740,25 @@ export class MessageController {
     @Body() dto: QueryMediaStagesDto,
   ) {
     return this.messageService.queryMediaStages(req.user.userId, dto.threadId);
+  }
+
+  @UseGuards(ThreadAccessGuard)
+  @ResourceId<AbandonMediaStageDto>('threadId')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('abandon-media-stage')
+  @ApiOperation({
+    summary: 'Abandon one uncommitted local media-send stage',
+  })
+  async abandonMediaStage(
+    @Request() req: FastifyRequest,
+    @Body() dto: AbandonMediaStageDto,
+  ) {
+    return this.messageService.abandonMediaStage(
+      req.user.userId,
+      dto.threadId,
+      dto.clientMessageId,
+    );
   }
 
   @UseGuards(ThreadAccessGuard)

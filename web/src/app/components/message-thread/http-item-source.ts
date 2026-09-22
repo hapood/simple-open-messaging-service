@@ -39,6 +39,7 @@ import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
+import { MsgService } from '../../services/message.service';
 import {
   isRenderableMessageTomb,
   messageCreatorKey,
@@ -168,6 +169,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly userService: UserService,
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
+    private readonly messages: MsgService,
     private readonly profileRepo?: ProfileRepository,
     private readonly memberProfiles?: MemberProfileRepository,
   ) {
@@ -239,6 +241,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           },
     );
     if (result.failed) throw new MessagePageLoadError();
+    await this.restoreMediaStages();
     const items = await this.historyItemsToCb(result.items);
     this.noOlder = !result.hasOlder;
     this.noNewer = !result.hasNewer;
@@ -388,11 +391,109 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
       if (item.data.type !== 'msg') return true;
       return !(
-        item.data.contentType === 'IMAGE' ||
-        item.data.contentType === 'VIDEO' ||
-        item.data.contentType === 'FILE'
+        item.data.status !== 'failed' &&
+        (item.data.contentType === 'IMAGE' ||
+          item.data.contentType === 'VIDEO' ||
+          item.data.contentType === 'FILE' ||
+          item.data.contentType === 'AUDIO' ||
+          item.data.contentType === 'GALLERY')
       );
     });
+  }
+
+  private async restoreMediaStages(): Promise<void> {
+    let response;
+    try {
+      response = await firstValueFrom(
+        this.messages.queryMediaStages(this.conv.threadId),
+      );
+    } catch {
+      return;
+    }
+    if (response.code !== 0 || !Array.isArray(response.data)) return;
+    const profile = this.userService.sessionProfile();
+    if (!profile) return;
+    for (const stage of response.data) {
+      if (
+        this.pending.some(
+          (item) => item.clientMessageId === stage.clientMessageId,
+        )
+      )
+        continue;
+      this.pending.push(
+        this.mediaStageToFailedItem(stage, {
+          account: profile.account,
+          name: profile.name,
+        }),
+      );
+    }
+  }
+
+  private mediaStageToFailedItem(
+    stage: {
+      clientMessageId: string;
+      contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
+      createdAt: number;
+    },
+    author: { account: string; name: string },
+  ): CbItem<ChatMsgData> {
+    const createdAtMs = Number(stage.createdAt) || Date.now();
+    const date = new Date(createdAtMs);
+    const msgId = this.outbox.allocatePlaceholderId();
+    const base = {
+      type: 'msg' as const,
+      msgId,
+      creator: messageCreatorKey({
+        account: author.account,
+        domain: 'local',
+        namespaceId: 0,
+      }),
+      isSelf: true,
+      isGroupConversation: this.conv.type === 'GROUP',
+      name: author.name,
+      text: '',
+      time: `${String(date.getHours()).padStart(2, '0')}:${String(
+        date.getMinutes(),
+      ).padStart(2, '0')}`,
+      createdAtMs,
+      status: 'failed' as const,
+      images: null,
+      file: null,
+    };
+    const failedMedia = {
+      kind: 'file' as const,
+      src: '',
+      w: 1,
+      h: 1,
+      name: 'Unfinished upload',
+      size: 0,
+      mimeType: 'application/octet-stream',
+      msgId,
+      status: 'failed' as MediaStatus,
+    };
+    const data: ChatMsgData =
+      stage.contentType === 'FILE'
+        ? {
+            ...base,
+            contentType: 'FILE',
+            file: {
+              url: '',
+              name: 'Unfinished upload',
+              size: 0,
+              mimeType: 'application/octet-stream',
+            },
+          }
+        : {
+            ...base,
+            contentType: stage.contentType,
+            images: [failedMedia],
+            mediaStatus: 'failed',
+          };
+    return {
+      id: msgId,
+      clientMessageId: stage.clientMessageId,
+      data,
+    };
   }
 
   /** Store an in-flight optimistic send (separate from the reloadable sequence). */
@@ -463,6 +564,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.pending.splice(index, 1);
     this.outbox.releaseResource(clientMessageId, true);
     this.outbox.releaseIfEmpty(this.conv.threadId);
+    void firstValueFrom(
+      this.messages.abandonMediaStage(this.conv.threadId, clientMessageId),
+    ).catch(() => undefined);
     return true;
   }
 
