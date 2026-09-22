@@ -174,4 +174,18 @@ describe('PeerProfileComponent', () => {
     expect(setBlocked).toHaveBeenCalledWith({ threadId: 5, blocked: true });
     expect(applyThreadMeta).toHaveBeenCalledWith(5, { blocked: true });
   });
+
+  it('keeps only conversation preferences after the friendship ends', () => {
+    items.update(([item]) => [
+      { ...item, friendshipActive: false, conversationState: 'READ_ONLY' },
+    ]);
+
+    expect(comp.friendshipEnded()).toBe(true);
+    comp.shareContact();
+    comp.setBlocked(true);
+    comp.removeFriend();
+
+    expect(shareContact).not.toHaveBeenCalled();
+    expect(setBlocked).not.toHaveBeenCalled();
+  });
 });

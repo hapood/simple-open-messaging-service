@@ -1,120 +1,122 @@
 <div class="panel">
   <app-page-header [title]="'group.title' | transloco" (back)="goBack()">
-    <button
-      pageHeaderAction
-      class="share-action"
-      type="button"
-      (click)="shareGroup()"
-      [attr.aria-label]="'profile.shareCardAria' | transloco"
-      [title]="'profile.shareCardAria' | transloco"
-    >
-      <app-icon
-        [type]="AppIconType.SHARE"
-        [style]="{ width: '18px', height: '18px' }"
-      />
-      <span>{{ 'profile.share' | transloco }}</span>
-    </button>
+    @if (!readOnly()) {
+      <button
+        pageHeaderAction
+        class="share-action"
+        type="button"
+        (click)="shareGroup()"
+        [attr.aria-label]="'profile.shareCardAria' | transloco"
+        [title]="'profile.shareCardAria' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.SHARE"
+          [style]="{ width: '18px', height: '18px' }"
+        />
+        <span>{{ 'profile.share' | transloco }}</span>
+      </button>
+    }
   </app-page-header>
 
   <div class="body">
     <!-- Identity -->
-    <div class="identity">
-      <span class="profile-avatar">
-        <app-user-avatar
-          [type]="UserAvatarType.GROUP"
-          [name]="group()?.name ?? ''"
-          [identityId]="$safeNavigationMigration(group()?.id)"
-          [account]="$safeNavigationMigration(group()?.account)"
-          [federatedDomain]="displayDomain()"
-          [profileEvidence]="groupProfileEvidence()"
-        ></app-user-avatar>
-      </span>
-    </div>
-    <mat-card appearance="outlined" class="group-profile-card">
-      <div class="profile-meta">
-        {{ group()?.account }}&#64;{{ displayDomain() }}
-      </div>
-      <button
-        class="group-profile-row"
-        type="button"
-        [disabled]="!isAdmin() || readOnly()"
-        (click)="beginEdit()"
-      >
-        <span class="profile-copy">
-          <strong>{{ group()?.name }}</strong>
-          <span class="profile-description">{{
-            group()?.description || ('group.noDescription' | transloco)
-          }}</span>
-        </span>
-        @if (isAdmin() && !readOnly()) {
-          <app-icon
-            class="profile-chevron"
-            [type]="AppIconType.CHEVRON_RIGHT"
-            [style]="{ width: '20px', height: '20px' }"
-          />
-        }
-      </button>
-    </mat-card>
-
-    <!-- Per-user alias: the caller's private label for this group, separate from the real group
-         name above (which only admins can change). -->
-    @if (threadId() !== undefined) {
-      <app-thread-alias-editor [threadId]="threadId()!" />
-    }
-
     @if (!readOnly()) {
-      <mat-card appearance="outlined" class="conversation-actions">
-        <button type="button" class="action-row" (click)="openSearch()">
-          <span class="action-icon" aria-hidden="true">
+      <div class="identity">
+        <span class="profile-avatar">
+          <app-user-avatar
+            [type]="UserAvatarType.GROUP"
+            [name]="group()?.name ?? ''"
+            [identityId]="$safeNavigationMigration(group()?.id)"
+            [account]="$safeNavigationMigration(group()?.account)"
+            [federatedDomain]="displayDomain()"
+            [profileEvidence]="groupProfileEvidence()"
+          ></app-user-avatar>
+        </span>
+      </div>
+      <mat-card appearance="outlined" class="group-profile-card">
+        <div class="profile-meta">
+          {{ group()?.account }}&#64;{{ displayDomain() }}
+        </div>
+        <button
+          class="group-profile-row"
+          type="button"
+          [disabled]="!isAdmin() || readOnly()"
+          (click)="beginEdit()"
+        >
+          <span class="profile-copy">
+            <strong>{{ group()?.name }}</strong>
+            <span class="profile-description">{{
+              group()?.description || ('group.noDescription' | transloco)
+            }}</span>
+          </span>
+          @if (isAdmin()) {
             <app-icon
-              [type]="AppIconType.SEARCH"
+              class="profile-chevron"
+              [type]="AppIconType.CHEVRON_RIGHT"
               [style]="{ width: '20px', height: '20px' }"
             />
-          </span>
-          <span class="action-label">{{ 'chat.menuSearch' | transloco }}</span>
-          <app-icon
-            class="action-chevron"
-            [type]="AppIconType.CHEVRON_RIGHT"
-            [style]="{ width: '18px', height: '18px' }"
-          />
+          }
         </button>
-        <div class="action-row">
-          <span class="action-icon" aria-hidden="true">
-            <app-icon
-              [type]="AppIconType.MUTE"
-              [style]="{ width: '20px', height: '20px' }"
-            />
-          </span>
-          <span class="action-label">{{ 'chat.menuMute' | transloco }}</span>
-          <mat-slide-toggle
-            [checked]="userMsgTrd()?.muted === true"
-            [disabled]="mutedSaving()"
-            [attr.aria-label]="'chat.menuMute' | transloco"
-            (change)="setMuted($event.checked)"
-          />
-        </div>
-        <div class="action-row">
-          <span class="action-icon" aria-hidden="true">
-            <app-icon
-              [type]="AppIconType.PIN"
-              [style]="{ width: '20px', height: '20px' }"
-            />
-          </span>
-          <span class="action-label">{{ 'chat.menuPin' | transloco }}</span>
-          <mat-slide-toggle
-            [checked]="userMsgTrd()?.pinned === true"
-            [disabled]="pinnedSaving()"
-            [attr.aria-label]="'chat.menuPin' | transloco"
-            (change)="setPinned($event.checked)"
-          />
-        </div>
       </mat-card>
     }
 
+    <!-- Per-user alias: the caller's private label for this group, separate from the real group
+         name above (which only admins can change). -->
+    @if (threadId() !== undefined && !readOnly()) {
+      <app-thread-alias-editor [threadId]="threadId()!" />
+    }
+
+    <mat-card appearance="outlined" class="conversation-actions">
+      <button type="button" class="action-row" (click)="openSearch()">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.SEARCH"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuSearch' | transloco }}</span>
+        <app-icon
+          class="action-chevron"
+          [type]="AppIconType.CHEVRON_RIGHT"
+          [style]="{ width: '18px', height: '18px' }"
+        />
+      </button>
+      <div class="action-row">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.MUTE"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuMute' | transloco }}</span>
+        <mat-slide-toggle
+          [checked]="userMsgTrd()?.muted === true"
+          [disabled]="mutedSaving()"
+          [attr.aria-label]="'chat.menuMute' | transloco"
+          (change)="setMuted($event.checked)"
+        />
+      </div>
+      <div class="action-row">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.PIN"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuPin' | transloco }}</span>
+        <mat-slide-toggle
+          [checked]="userMsgTrd()?.pinned === true"
+          [disabled]="pinnedSaving()"
+          [attr.aria-label]="'chat.menuPin' | transloco"
+          (change)="setPinned($event.checked)"
+        />
+      </div>
+    </mat-card>
+
     <!-- Compact roster preview; the complete searchable roster lives in the role-aware member list. -->
-    @if (loading()) {
+    @if (loading() && !readOnly()) {
       <div class="muted center">{{ 'common.loading' | transloco }}</div>
-    } @else {
+    } @else if (!readOnly()) {
       <mat-card appearance="outlined" class="member-overview-card">
         <button
           class="member-overview-row"
@@ -245,13 +247,9 @@
         }
       </div>
     }
-    @if (dissolved()) {
+    @if (dissolved() && !readOnly()) {
       <div class="muted center hint">
         {{ 'group.dissolvedNote' | transloco }}
-      </div>
-    } @else if (readOnly()) {
-      <div class="muted center hint">
-        {{ 'chat.leftGroupBanner' | transloco }}
       </div>
     }
   </div>

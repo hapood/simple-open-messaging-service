@@ -59,20 +59,22 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
   template: `
     <div class="panel">
       <app-page-header [title]="'profile.title' | transloco" (back)="goBack()">
-        <button
-          pageHeaderAction
-          class="share-action"
-          type="button"
-          (click)="shareContact()"
-          [attr.aria-label]="'profile.shareCardAria' | transloco"
-          [title]="'profile.shareCardAria' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.SHARE"
-            [style]="{ width: '18px', height: '18px' }"
-          />
-          <span>{{ 'profile.share' | transloco }}</span>
-        </button>
+        @if (!friendshipEnded()) {
+          <button
+            pageHeaderAction
+            class="share-action"
+            type="button"
+            (click)="shareContact()"
+            [attr.aria-label]="'profile.shareCardAria' | transloco"
+            [title]="'profile.shareCardAria' | transloco"
+          >
+            <app-icon
+              [type]="AppIconType.SHARE"
+              [style]="{ width: '18px', height: '18px' }"
+            />
+            <span>{{ 'profile.share' | transloco }}</span>
+          </button>
+        }
       </app-page-header>
 
       <div class="body" appFocusedInputReveal>
@@ -101,7 +103,9 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
           </div>
         </mat-card>
 
-        <app-thread-alias-editor [threadId]="threadId()!" />
+        @if (!friendshipEnded()) {
+          <app-thread-alias-editor [threadId]="threadId()!" />
+        }
 
         <mat-card appearance="outlined" class="conversation-actions">
           <button type="button" class="action-row" (click)="openSearch()">
@@ -152,36 +156,36 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
           </div>
         </mat-card>
 
-        <mat-card
-          appearance="outlined"
-          class="permission-card block-card"
-          [class.on]="blockedControl()"
-        >
-          <span
-            class="block-icon"
+        @if (!friendshipEnded()) {
+          <mat-card
+            appearance="outlined"
+            class="permission-card block-card"
             [class.on]="blockedControl()"
-            aria-hidden="true"
           >
-            <app-icon
-              [type]="AppIconType.BLOCK"
-              [style]="{ width: '20px', height: '20px' }"
+            <span
+              class="block-icon"
+              [class.on]="blockedControl()"
+              aria-hidden="true"
+            >
+              <app-icon
+                [type]="AppIconType.BLOCK"
+                [style]="{ width: '20px', height: '20px' }"
+              />
+            </span>
+            <span class="permission-copy">
+              <strong>{{ 'profile.block' | transloco }}</strong>
+            </span>
+            <mat-slide-toggle
+              class="danger-switch"
+              [checked]="blockedControl()"
+              [class.saving]="blockedSaving()"
+              [disabled]="unfriendPending()"
+              [attr.aria-busy]="blockedSaving()"
+              [attr.aria-label]="'profile.block' | transloco"
+              (change)="setBlocked($event.checked)"
             />
-          </span>
-          <span class="permission-copy">
-            <strong>{{ 'profile.block' | transloco }}</strong>
-          </span>
-          <mat-slide-toggle
-            class="danger-switch"
-            [checked]="blockedControl()"
-            [class.saving]="blockedSaving()"
-            [disabled]="unfriendPending()"
-            [attr.aria-busy]="blockedSaving()"
-            [attr.aria-label]="'profile.block' | transloco"
-            (change)="setBlocked($event.checked)"
-          />
-        </mat-card>
+          </mat-card>
 
-        @if (userMsgTrd()?.friendshipActive !== false) {
           <div class="relationship-actions">
             <button
               mat-button
@@ -458,6 +462,11 @@ export class PeerProfileComponent {
     return thread ? conversationAvatarEvidence(thread) : undefined;
   });
   readonly peer = computed(() => this.userMsgTrd()?.peerUser);
+  readonly friendshipEnded = computed(
+    () =>
+      this.userMsgTrd()?.friendshipActive === false ||
+      this.userMsgTrd()?.conversationState === 'READ_ONLY',
+  );
   /** Display label for the peer — the nickname, with federation indicated on the avatar. */
   readonly peerDisplayName = computed(() => {
     const p = this.peer();
@@ -489,6 +498,7 @@ export class PeerProfileComponent {
   }
 
   shareContact(): void {
+    if (this.friendshipEnded()) return;
     const trd = this.userMsgTrd();
     if (trd) this.contactCardShare.open(trd);
   }
@@ -554,7 +564,8 @@ export class PeerProfileComponent {
 
   setBlocked(blocked: boolean): void {
     const trd = this.userMsgTrd();
-    if (!trd || this.relationshipActionPending()) return;
+    if (!trd || this.friendshipEnded() || this.relationshipActionPending())
+      return;
     const previous = trd.blocked === true;
     this.blockedControl.set(blocked);
     this.blockedSaving.set(true);
@@ -579,7 +590,13 @@ export class PeerProfileComponent {
   removeFriend(): void {
     const trd = this.userMsgTrd();
     const peer = trd?.peerUser;
-    if (!trd || !peer || this.relationshipActionPending()) return;
+    if (
+      !trd ||
+      !peer ||
+      this.friendshipEnded() ||
+      this.relationshipActionPending()
+    )
+      return;
     this.route.popupDlg(
       PopupType.CONFIRM,
       {

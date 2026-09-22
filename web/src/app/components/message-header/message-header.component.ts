@@ -63,6 +63,14 @@ export class MessageHeaderComponent {
     );
   });
 
+  readonly groupInactive = computed(() => {
+    const trd = this.userMsgTrd();
+    return (
+      trd?.type === 'GROUP' &&
+      (trd.group.dissolvedAt != null || trd.conversationState === 'READ_ONLY')
+    );
+  });
+
   /** Place an outgoing audio-first call to the P2P peer. Video is enabled from the shared in-call UI instead
    *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
    *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
@@ -132,7 +140,8 @@ export class MessageHeaderComponent {
   /** Group size shown as quiet context beside the title. P2P threads omit it. */
   readonly groupMemberCount = computed(() => {
     const trd = this.userMsgTrd();
-    return trd?.type === 'GROUP' ? trd.group.memberCount : undefined;
+    if (trd?.type !== 'GROUP') return undefined;
+    return this.groupInactive() ? 1 : trd.group.memberCount;
   });
 
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).

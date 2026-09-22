@@ -228,7 +228,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       const threadId = this.threadId();
       const groupMetaFeedId = this.group()?.groupMetaFeedId;
       const search = this.memberQuery();
-      if (threadId !== undefined && groupMetaFeedId !== undefined) {
+      if (
+        threadId !== undefined &&
+        groupMetaFeedId !== undefined &&
+        !this.readOnly()
+      ) {
         void search;
         untracked(() => void this.loadMembers());
       }
@@ -257,7 +261,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   async loadMembers() {
     const request = ++this.rosterRequest;
     const threadId = this.threadId();
-    if (threadId === undefined) return;
+    if (threadId === undefined || this.readOnly()) return;
     this.loading.set(true);
     const resolved = await this.memberProfiles.queryPage(threadId, {
       take: 50,

@@ -18,6 +18,7 @@ function harness() {
     memberQuery: signal(''),
     loading: signal(false),
     loadingMore: signal(false),
+    readOnly: () => false,
     roster: signal<ResolvedMemberProfile[]>([]),
     rosterHasMore: signal(true),
     memberProfiles: { queryPage },
@@ -33,6 +34,16 @@ const member = (name: string) =>
   ({ identityKey: 'alice@local', name }) as ResolvedMemberProfile;
 
 describe('GroupInfoComponent roster query ordering', () => {
+  it('does not query the member roster after membership becomes read-only', async () => {
+    const { state, component, queryPage } = harness();
+    (component as unknown as { readOnly: () => boolean }).readOnly = () => true;
+
+    await GroupInfoComponent.prototype.loadMembers.call(component);
+
+    expect(queryPage).not.toHaveBeenCalled();
+    expect(state.loading()).toBe(false);
+  });
+
   it('does not let an older query overwrite a refreshed roster', async () => {
     const { state, component, queryPage } = harness();
     const old = deferred<ResolvedMemberProfile[]>();

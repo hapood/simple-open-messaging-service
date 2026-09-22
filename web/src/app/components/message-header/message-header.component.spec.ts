@@ -190,4 +190,43 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
     expect(comp.moreExpanded()).toBe(true);
   });
+
+  it('uses one as the member count and keeps More available after leaving a group', () => {
+    const active = createGroupConversation(8, {
+      id: 80,
+      account: 'group-80',
+      name: 'Group 80',
+      ownerId: 1,
+    });
+    const chat = {
+      ...active,
+      conversationState: 'READ_ONLY' as const,
+      group: { ...active.group, memberCount: 8 },
+    };
+    fixture.componentRef.setInput('userMsgTrd', chat);
+    expect(comp.groupInactive()).toBe(true);
+    expect(comp.groupMemberCount()).toBe(1);
+    comp.toggleMenu();
+    expect(openAside).toHaveBeenCalledWith('group-info');
+    asideTop.set({ panel: 'group-info' });
+    expect(comp.moreExpanded()).toBe(true);
+  });
+
+  it('also keeps More available for a dissolved group', () => {
+    const active = createGroupConversation(8, {
+      id: 80,
+      account: 'group-80',
+      name: 'Group 80',
+      ownerId: 1,
+    });
+    const chat = {
+      ...active,
+      group: { ...active.group, dissolvedAt: Date.now() },
+    };
+    fixture.componentRef.setInput('userMsgTrd', chat);
+
+    expect(comp.groupMemberCount()).toBe(1);
+    comp.toggleMenu();
+    expect(openAside).toHaveBeenCalledWith('group-info');
+  });
 });
