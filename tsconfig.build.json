@@ -8,17 +8,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "exclude": [
-    "node_modules",
-    "test",
-    "dist",
-    "**/*spec.ts",
-    "web",
-    "admin-web",
-    // `src-tauri` is a self-contained Tauri project (Rust + vendored plugin guest-js built by its
-    // own rollup toolchain) consumed by the Angular `web` app, not by this Nest API. Its guest-js
-    // imports `@tauri-apps/api`, which is not a server dependency, so it must stay out of the API
-    // compilation — same boundary as the `web` / `admin-web` sibling packages above.
-    "src-tauri"
-  ]
+  "files": ["src/main.ts", "src/common/fastify-request-user.d.ts"]
 }

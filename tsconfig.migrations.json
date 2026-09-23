@@ -4,6 +4,5 @@
     "incremental": false,
     "rootDir": "."
   },
-  "include": ["scripts/migrate-db.ts"],
-  "exclude": ["node_modules", "dist"]
+  "files": ["scripts/migrate-db.ts"]
 }
