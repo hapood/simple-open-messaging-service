@@ -334,18 +334,20 @@ export function toFederatedMessageContent(
           : { avatarDigest: digestFromUrl(value['avatar']) }),
       });
     case ContentType.FORWARD:
+      // Imported cards use the URL-free wire shape. Local cards additionally carry the fields used
+      // by the chat renderer; both forms publish to the same minimal wire reference.
       if (Object.keys(value).length === 1) {
-        // Imported forward cards are deliberately stored in their URL-free wire shape. They can
-        // later appear inside another bundle, so publishing must be idempotent for that shape.
         assertKeys(value, ['bundleId']);
       } else {
-        assertKeys(value, [
-          'version',
-          'bundleId',
-          'summaryLines',
-          'messageCount',
-          'assetCount',
-        ]);
+        assertKeys(value, ['bundleId', 'summaryLines', 'messageCount']);
+        if (
+          !Array.isArray(value['summaryLines']) ||
+          !value['summaryLines'].every((line) => typeof line === 'string') ||
+          !Number.isSafeInteger(value['messageCount']) ||
+          Number(value['messageCount']) < 0
+        ) {
+          throw new Error('invalid forward card');
+        }
       }
       if (typeof value['bundleId'] !== 'string')
         throw new Error('invalid forward card');

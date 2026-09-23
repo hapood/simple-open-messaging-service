@@ -814,11 +814,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
   it('preserves a forward card descriptor when shaping a message', async () => {
     const content = JSON.stringify({
-      version: 1,
       bundleId: 'bundle-1',
       summaryLines: ['Alice：hello'],
       messageCount: 1,
-      assetCount: 0,
     });
     const forwarded = {
       ...row(13, 2),

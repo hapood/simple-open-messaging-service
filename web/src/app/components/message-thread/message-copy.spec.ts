@@ -107,11 +107,9 @@ describe('message copy', () => {
         message({
           contentType: 'FORWARD',
           text: JSON.stringify({
-            version: 1,
             bundleId: 'bundle-1',
             summaryLines: ['张三：你好'],
             messageCount: 6,
-            assetCount: 0,
           }),
         }),
         labels,

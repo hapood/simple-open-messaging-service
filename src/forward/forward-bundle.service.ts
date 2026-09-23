@@ -52,6 +52,7 @@ import type {
 } from '../federation/federated-message-types.js';
 
 const FORWARD_MAX_MESSAGES = 500;
+const FORWARD_MAX_DEPTH = 3;
 const FORWARD_MAX_ASSETS = 500;
 const FORWARD_SUMMARY_LINES = 2;
 const FORWARD_SUMMARY_CHARS = 100;
@@ -385,6 +386,25 @@ export class ForwardBundleService {
         'one or more source messages are inaccessible',
       );
     }
+    const childBundleIds = [
+      ...new Set(
+        sourceRows.flatMap((row) =>
+          row!.forwardMessage ? [row!.forwardMessage.bundleId] : [],
+        ),
+      ),
+    ];
+    const childDepths = await Promise.all(
+      childBundleIds.map((bundleId) => this.bundleDepth(bundleId)),
+    );
+    if (
+      childDepths.some((depth) => depth + 1 > FORWARD_MAX_DEPTH)
+    ) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
+        `forward bundle depth cannot exceed ${FORWARD_MAX_DEPTH}`,
+      );
+    }
+
     const enrichedRows = await this.messagesService.attachQuotePreviews(
       sourceRows.map((row) => row!),
       quoteFilters,
@@ -490,13 +510,11 @@ export class ForwardBundleService {
     );
     const assetList = [...assets.values()];
     const content = JSON.stringify({
-      version: 1,
       bundleId,
       summaryLines: messages
         .slice(0, FORWARD_SUMMARY_LINES)
         .map((message) => this.summaryLine(message)),
       messageCount: messages.length + descendantMessageCount,
-      assetCount: assetList.length,
     });
     return {
       bundleId,
@@ -1010,6 +1028,41 @@ export class ForwardBundleService {
     return { localRootBundleId: localRootId };
   }
 
+  private async bundleDepth(
+    bundleId: string,
+    ancestors = new Set<string>(),
+  ): Promise<number> {
+    if (ancestors.has(bundleId)) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'forward bundle dependency cycle detected',
+      );
+    }
+    const bundle = await this.database.db.query.forwardBundle.findFirst({
+      where: eq(forwardBundle.id, bundleId),
+      columns: { messages: true },
+    });
+    if (!bundle) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'forward child bundle is missing',
+      );
+    }
+    const nextAncestors = new Set(ancestors).add(bundleId);
+    const childIds = [
+      ...new Set(
+        (bundle.messages as ForwardBundleMessage[]).flatMap((message) =>
+          message.childBundleId ? [message.childBundleId] : [],
+        ),
+      ),
+    ];
+    if (childIds.length === 0) return 1;
+    const childDepths = await Promise.all(
+      childIds.map((childId) => this.bundleDepth(childId, nextAncestors)),
+    );
+    return 1 + Math.max(...childDepths);
+  }
+
   private async assetsFromContent(
     contentType: ContentType,
     content: string,
@@ -1186,13 +1239,11 @@ export class ForwardBundleService {
       ...closure.children.flatMap((child) => child.messages),
     ];
     return JSON.stringify({
-      version: 1,
       bundleId: localBundleId,
       summaryLines: messages
         .slice(0, FORWARD_SUMMARY_LINES)
         .map((message) => this.summaryLine(message)),
       messageCount: messages.length,
-      assetCount: closure.assets.length,
     });
   }
 

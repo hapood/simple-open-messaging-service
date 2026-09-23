@@ -30,12 +30,19 @@ class TestCallScreenComponent {}
 class TestRootPopupComponent {}
 
 @Component({
-  selector: 'app-playground-shell',
+  selector: 'app-home-shell',
   imports: [CallBannerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: '<app-call-banner />',
 })
-class TestPlaygroundShellComponent {}
+class TestHomeShellComponent {}
+
+@Component({
+  selector: 'app-playground-controls',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '',
+})
+class TestPlaygroundControlsComponent {}
 
 describe('PlaygroundRootComponent', () => {
   let fixture: ComponentFixture<PlaygroundRootComponent>;
@@ -78,7 +85,8 @@ describe('PlaygroundRootComponent', () => {
       set: {
         imports: [
           TestCallScreenComponent,
-          TestPlaygroundShellComponent,
+          TestHomeShellComponent,
+          TestPlaygroundControlsComponent,
           TestRootPopupComponent,
         ],
       },

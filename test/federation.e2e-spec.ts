@@ -1384,8 +1384,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`);
     expect(closureResponse.body.code).toBe(BusinessCode.OK);
     const closure = closureResponse.body.data as {
-      messages: Array<{ contentType: ContentType }>;
-      children: Array<{ messages: Array<{ contentType: ContentType }> }>;
+      messages: Array<{
+        contentType: ContentType;
+        content: string;
+        childBundleId?: string;
+      }>;
+      children: Array<{ id: string; messages: Array<{ contentType: ContentType }> }>;
       assets: Array<{ digest: string; bytes: number }>;
       accessContext: { threadId: number; seq: number };
     };
@@ -1393,6 +1397,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       ...sourceSpecs.map((item) => item.contentType),
       ContentType.FORWARD,
     ]);
+    const nestedCard = closure.messages.at(-1)!;
+    expect(nestedCard.childBundleId).toBe(closure.children[0]?.id);
+    expect(JSON.parse(nestedCard.content)).toEqual({
+      bundleId: nestedCard.childBundleId,
+    });
     expect(closure.children).toHaveLength(1);
     expect(
       closure.children[0].messages.map((item) => item.contentType),
@@ -1483,6 +1492,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 15_000, interval: 100 },
     );
 
+    const depth4ClientMessageId = randomUUID();
     const nestedOnA = await request(appA.baseUrl)
       .post('/api/v1/send-forward')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -1492,48 +1502,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           { threadId: relayedOnA!.threadId, seq: relayedOnA!.seq },
         ],
         mode: 'HISTORY',
-        clientMessageId: randomUUID(),
+        clientMessageId: depth4ClientMessageId,
       });
-    expect(nestedOnA.body.code).toBe(BusinessCode.OK);
-
-    await vi.waitFor(
-      async () => {
-        const finalOnB = await findLatestForwardMessage(appB, {
-          account: 'alice',
-          domain: DOM_A,
-        });
-        expect(finalOnB?.forwardMessage?.bundle.messageCount).toBe(
-          outerMessageCount + 2,
-        );
-        expect(
-          await appB.database.query.forwardBundleDependency.findMany({
-            where: eq(
-              forwardBundleDependency.parentBundleId,
-              finalOnB!.forwardMessage!.bundleId,
-            ),
-          }),
-        ).toHaveLength(3);
-        const finalAssets =
-          await appB.database.query.forwardBundleAsset.findMany({
-            where: eq(
-              forwardBundleAsset.bundleId,
-              finalOnB!.forwardMessage!.bundleId,
-            ),
-          });
-        expect(new Set(finalAssets.map((asset) => asset.digest)).size).toBe(
-          finalAssets.length,
-        );
-        expect(finalAssets.length).toBeGreaterThanOrEqual(
-          closure.assets.length,
-        );
-        for (const asset of closure.assets) {
-          expect(finalAssets.map((item) => item.digest)).toContain(
-            asset.digest,
-          );
-        }
-      },
-      { timeout: 15_000, interval: 100 },
+    expect(nestedOnA.body.code).toBe(
+      BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
     );
+    expect(
+      await countMessages(
+        appA,
+        eq(message.clientMessageId, depth4ClientMessageId),
+      ),
+    ).toBe(0);
+
+    const depth3Bundle = relayedOnA!.forwardMessage!.bundleId;
+    expect(
+      await appA.database.query.forwardBundle.findFirst({
+        where: eq(forwardBundle.id, depth3Bundle),
+      }),
+    ).toBeDefined();
   }, 120_000);
 
   it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {

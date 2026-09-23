@@ -18,7 +18,11 @@ function sourceRow(childDepth: number) {
     creatorDomain: 'local',
     profileRev: 1,
     contentType: ContentType.FORWARD,
-    content: JSON.stringify({ version: 1, bundleId: 'child' }),
+    content: JSON.stringify({
+      bundleId: 'child',
+      summaryLines: ['Alice：child'],
+      messageCount: 1,
+    }),
     createdAt: new Date('2026-07-31T00:00:00Z'),
     updatedAt: new Date('2026-07-31T00:00:00Z'),
     isDeleted: false,
@@ -554,6 +558,44 @@ describe('ForwardBundleService', () => {
         }),
       ),
     ).resolves.toMatchObject([{ digest, bytes: 10 }]);
+  });
+
+  it('rejects forwarding a depth-3 child bundle before preparing or persisting', async () => {
+    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    database.db.query.forwardBundle.findFirst
+      .mockResolvedValueOnce({
+        id: '01childbundle00000000000000',
+        messages: [
+          {
+            childBundleId: '01grandchildbundle0000000000',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: '01grandchildbundle0000000000',
+        messages: [
+          {
+            childBundleId: '01greatgrandbundle00000000',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: '01greatgrandbundle00000000',
+        messages: [
+          {
+            contentType: ContentType.PURE_TEXT,
+          },
+        ],
+      });
+    const service = forwardService(database);
+    messageServiceFake.attachQuotePreviews.mockClear();
+
+    await expect(
+      service.prepareFromMessages(9, [{ threadId: 4, seq: 7 }]),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
+    });
+    expect(messageServiceFake.attachQuotePreviews).not.toHaveBeenCalled();
   });
 
   it('assigns every message an ordered id and links the reply to its selected target', async () => {

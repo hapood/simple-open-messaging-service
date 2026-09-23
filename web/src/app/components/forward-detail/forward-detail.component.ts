@@ -41,6 +41,7 @@ import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { toDisplayText } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
+import { deriveMessagePreview } from '../../../../../shared/message-preview';
 import type {
   ForwardManifestMessage,
   ForwardWireChild,
@@ -278,7 +279,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
         msgId: id,
         isSelf: false,
         name: '',
-        text: snapshotContent(snapshotMessage),
+        text: this.snapshotContent(snapshotMessage),
         time: dayjs(message.sentAt).format('HH:mm'),
         contentType: 'SYSTEM',
         images: null,
@@ -292,7 +293,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       creator,
       isSelf: false,
       name: message.profile?.displayName || message.author.account,
-      snapshotAvatarUrl: this.avatarUrl(message, bundle),
+      snapshotAvatarUrl: this.avatarUrl(message),
       avatarIdentityId: creator,
       avatarAccount: message.author.account,
       avatarDomain: message.author.domain,
@@ -301,7 +302,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
           ? toDisplayText(
               requireTextMessageContent(snapshotMessage.content).text,
             )
-          : snapshotContent(snapshotMessage),
+          : this.snapshotContent(snapshotMessage),
       time: dayjs(message.sentAt).format('HH:mm'),
       contentType,
       images:
@@ -335,17 +336,50 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
   };
 
-  private avatarUrl(
-    message: ForwardManifestMessage,
-    _bundle: ForwardWireChild,
-  ): string {
-    const digest = message.profile?.avatarDigest;
-    if (!digest) return '';
-    const asset = this.closure()?.assets.find(
-      (candidate) => candidate.kind === 'avatar' && candidate.digest === digest,
+  private snapshotContent(message: ForwardManifestMessage): string {
+    if (message.contentType !== 'FORWARD' || !message.childBundleId) {
+      return message.content;
+    }
+    const child = this.closure()?.children.find(
+      (candidate) => candidate.id === message.childBundleId,
     );
-    if (!asset) return '';
-    const context = this.closure()?.accessContext;
+    if (!child) return message.content;
+
+    const seen = new Set<string>();
+    const messages: ForwardManifestMessage[] = [];
+    const collect = (bundle: ForwardWireChild): void => {
+      if (seen.has(bundle.id)) return;
+      seen.add(bundle.id);
+      for (const item of bundle.messages) {
+        messages.push(item);
+        if (item.childBundleId) {
+          const nested = this.closure()?.children.find(
+            (candidate) => candidate.id === item.childBundleId,
+          );
+          if (nested) collect(nested);
+        }
+      }
+    };
+    collect(child);
+    return JSON.stringify({
+      bundleId: child.id,
+      summaryLines: messages.slice(0, 2).map((item) =>
+        `${item.profile?.displayName || item.author.account}：${deriveMessagePreview(
+          item.contentType,
+          item.content,
+          toDisplayText,
+        )}`,
+      ),
+      messageCount: messages.length,
+    });
+  }
+
+  private avatarUrl(message: ForwardManifestMessage): string {
+    const digest = message.profile?.avatarDigest;
+    if (!digest || !/^[a-f0-9]{64}$/.test(digest)) return '';
+    const closure = this.closure();
+    if (!closure?.assets.some((asset) => asset.digest === digest)) return '';
+    const context = closure.accessContext;
     if (!context) return '';
     return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
   }
@@ -384,17 +418,6 @@ function parseMedia(
       file: null,
     };
   return { images: null, file: null };
-}
-
-function snapshotContent(message: ForwardManifestMessage): string {
-  if (message.contentType !== 'FORWARD' || !message.childBundleId)
-    return message.content;
-  try {
-    const value = JSON.parse(message.content) as Record<string, unknown>;
-    return JSON.stringify({ ...value, bundleId: message.childBundleId });
-  } catch {
-    return message.content;
-  }
 }
 
 function snapshotPreview(message: ForwardManifestMessage): string {
