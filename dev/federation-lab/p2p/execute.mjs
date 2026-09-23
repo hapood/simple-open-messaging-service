@@ -162,48 +162,42 @@ export async function waitForIncoming(receiver, initiator, timeoutMs) {
     `${receiver.address} incoming invite from ${initiator.address}`,
     timeoutMs,
     async () => {
-      if (receiver.node.name === initiator.node.name) {
-        let after = 0;
-        let through;
-        for (;;) {
-          const page = await receiver.queryStateFeed({
-            mode: 'full',
-            after,
-            take: 200,
-            through,
-          });
-          through ??= page.stateFeedEndId;
-          const item = page.items.find(
-            (candidate) =>
-              candidate.eventType === 'RELATIONSHIP_INTENT' &&
-              candidate.account === initiator.account &&
-              candidate.domain === 'local' &&
-              candidate.subjectAccount === receiver.account &&
-              candidate.subjectDomain === 'local' &&
-              candidate.body?.direction === 'INCOMING' &&
-              candidate.body?.status === 'REQUESTED' &&
-              candidate.body?.expiresAt > Date.now(),
-          );
-          if (item) {
-            return {
-              relationship: 'INCOMING_PENDING',
-              user: item.body.peer,
-            };
-          }
-          if (!page.hasMore) return undefined;
-          if (page.scannedThrough <= after) {
-            throw new Error('client state-feed cursor did not advance');
-          }
-          after = page.scannedThrough;
+      let after = 0;
+      let through;
+      for (;;) {
+        const page = await receiver.queryStateFeed({
+          mode: 'full',
+          after,
+          take: 200,
+          through,
+        });
+        through ??= page.stateFeedEndId;
+        const item = page.items.find(
+          (candidate) =>
+            candidate.eventType === 'RELATIONSHIP_INTENT' &&
+            candidate.account === initiator.account &&
+            candidate.domain ===
+              (receiver.node.name === initiator.node.name
+                ? 'local'
+                : initiator.domain) &&
+            candidate.subjectAccount === receiver.account &&
+            candidate.subjectDomain === 'local' &&
+            candidate.body?.direction === 'INCOMING' &&
+            candidate.body?.status === 'REQUESTED' &&
+            candidate.body?.expiresAt > Date.now(),
+        );
+        if (item) {
+          return {
+            relationship: 'INCOMING_PENDING',
+            user: item.body.peer,
+          };
         }
+        if (!page.hasMore) return undefined;
+        if (page.scannedThrough <= after) {
+          throw new Error('client state-feed cursor did not advance');
+        }
+        after = page.scannedThrough;
       }
-      const resolved = await receiver.resolveFederatedUser({
-        account: initiator.account,
-        domain: initiator.domain,
-      });
-      return resolved?.relationship === 'INCOMING_PENDING'
-        ? resolved
-        : undefined;
     },
   );
 }

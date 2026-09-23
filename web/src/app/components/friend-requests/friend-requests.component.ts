@@ -123,6 +123,7 @@ export class FriendRequestsComponent implements OnDestroy {
     };
   });
   private searchSub: Subscription | undefined;
+  private searchGeneration = 0;
   /** Exact account resolution always yields zero or one row. */
   readonly localResults = signal<User[]>([]);
   readonly inviteUser = signal<User | null>(null);
@@ -339,7 +340,7 @@ export class FriendRequestsComponent implements OnDestroy {
     const account = at > 0 ? curSearchText.slice(0, at) : curSearchText;
 
     // Local exact resolve remains a normal request. Federated resolve is a temporary SSE proxy and
-    // returns a transient id=0 card plus its Address-based relationship state.
+    // returns a transient id=0 card. Both search paths read relationship state from local projections.
     const runResolve = () => {
       this.searchSub = domain
         ? this.userService
@@ -348,13 +349,9 @@ export class FriendRequestsComponent implements OnDestroy {
               this.federationStage.set(stage);
             })
             .subscribe({
-              next: ({ user, relationship }) => {
+              next: ({ user }) => {
                 this.connectingDomain.set(null);
-                this.relationshipStates.set(
-                  new Map([[this.userIdentity(user), relationship]]),
-                );
-                this.localResults.set([user]);
-                this.addTabStatus.set(AddTabStatus.SUCCESS);
+                this.applySelectedUser(user);
               },
               error: (error: unknown) => {
                 this.connectingDomain.set(null);
@@ -421,6 +418,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   private async showResults(users: User[]) {
+    const generation = this.searchGeneration;
     const states = await Promise.all(
       users.map(
         async (user) =>
@@ -430,6 +428,7 @@ export class FriendRequestsComponent implements OnDestroy {
           ] as const,
       ),
     );
+    if (generation !== this.searchGeneration) return;
     this.relationshipStates.set(new Map(states));
     this.localResults.set(users);
     this.addTabStatus.set(AddTabStatus.SUCCESS);
@@ -494,6 +493,7 @@ export class FriendRequestsComponent implements OnDestroy {
   /** Abort any in-flight resolve and drop the connecting banner. Recognition is idempotent, so an
    * interrupted attempt is safe to repeat on the next search. */
   private cancelInFlight() {
+    this.searchGeneration++;
     this.searchSub?.unsubscribe();
     this.searchSub = undefined;
     this.connectingDomain.set(null);

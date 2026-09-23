@@ -365,11 +365,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(userService.localRelationship).not.toHaveBeenCalled();
   });
 
-  it('shows first-contact handshake progress until resolve and localization finish', () => {
-    const resolve = new Subject<{
-      user: User;
-      relationship: 'NONE';
-    }>();
+  it('shows first-contact handshake progress until resolve and localization finish', async () => {
+    const resolve = new Subject<{ user: User }>();
     const remote = {
       id: 0,
       account: 'bob',
@@ -378,7 +375,9 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
+      relationshipIntentStateRevision: signal(0),
       resolveFederatedUser: vi.fn().mockReturnValue(resolve),
+      localRelationship: vi.fn().mockResolvedValue('NONE'),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -411,14 +410,15 @@ describe('FriendRequestsComponent federated search progress', () => {
       percent: 80,
     });
     expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
-    resolve.next({ user: remote, relationship: 'NONE' });
+    resolve.next({ user: remote });
     resolve.complete();
     expect(component.connectingDomain()).toBeNull();
+    await vi.waitFor(() => expect(component.localResults()).toEqual([remote]));
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
-    expect(component.localResults()).toEqual([remote]);
+    expect(userService.localRelationship).toHaveBeenCalledWith(remote);
   });
 
-  it('keeps the relationship state keyed to a locally resolved own-domain user', () => {
+  it('uses the local relationship projection for a resolved own-domain user', async () => {
     const local = {
       id: 7,
       account: 'alice',
@@ -427,9 +427,9 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      resolveFederatedUser: vi
-        .fn()
-        .mockReturnValue(of({ user: local, relationship: 'FRIEND' })),
+      relationshipIntentStateRevision: signal(0),
+      resolveFederatedUser: vi.fn().mockReturnValue(of({ user: local })),
+      localRelationship: vi.fn().mockResolvedValue('FRIEND'),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -452,12 +452,52 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    expect(component.localResults()).toEqual([local]);
+    await vi.waitFor(() => expect(component.localResults()).toEqual([local]));
     expect(
       component.relationshipStates().get(component.userIdentity(local)),
     ).toBe('FRIEND');
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+  });
+
+  it('allows a new federated request after the synchronized projection records rejection', async () => {
+    const remote = {
+      id: 0,
+      account: 'bob',
+      name: 'Bob',
+      domain: 'peer.test',
+    } as User;
+    const userService = {
+      sessionProfile: () => ({ id: 1 }),
+      relationshipIntentStateRevision: signal(0),
+      resolveFederatedUser: vi.fn().mockReturnValue(of({ user: remote })),
+      localRelationship: vi.fn().mockResolvedValue('NONE'),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    component.searchText.set('bob@peer.test');
+
+    component.searchUser();
+
+    await vi.waitFor(() => expect(component.localResults()).toEqual([remote]));
+    expect(component.relationshipLabel(remote)).toBe('friend.addAction');
+    component.activateResult(remote);
+    expect(component.inviteUser()).toEqual(remote);
   });
 
   it('shows but does not activate the current user resolved through an explicit own-domain address', () => {
@@ -469,9 +509,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => self,
-      resolveFederatedUser: vi
-        .fn()
-        .mockReturnValue(of({ user: self, relationship: 'NONE' })),
+      resolveFederatedUser: vi.fn().mockReturnValue(of({ user: self })),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -503,10 +541,7 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('cancels an in-flight resolve and clears the handshake affordance', () => {
-    const resolve = new Subject<{
-      user: User;
-      relationship: 'NONE';
-    }>();
+    const resolve = new Subject<{ user: User }>();
     const userService = {
       sessionProfile: () => ({ id: 1 }),
       resolveFederatedUser: () => resolve,

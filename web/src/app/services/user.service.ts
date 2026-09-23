@@ -34,7 +34,6 @@ export type { User } from './model';
 
 export type FederatedResolveResult = {
   user: User;
-  relationship: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
 };
 export type FederatedResolveStage =
   | 'DISCOVERING'
@@ -857,7 +856,7 @@ export class UserService {
       (item) =>
         item.type === 'P2P' &&
         item.friendshipActive !== false &&
-        (item.peerUser.id === user.id ||
+        ((user.id > 0 && item.peerUser.id === user.id) ||
           (item.peerUser.account === user.account &&
             item.peerUser.domain === (user.domain || 'local'))),
     );
@@ -866,15 +865,20 @@ export class UserService {
       item.kind === 'FRIEND' &&
       item.status === 'REQUESTED' &&
       item.expiresAt > Date.now() &&
-      (item.peer?.id === user.id ||
+      ((user.id > 0 && item.peer?.id === user.id) ||
         (item.peer?.account === user.account &&
           item.peer.domain === (user.domain || 'local')));
-    const [incoming, outgoing] = await Promise.all([
-      this.listLocalFriendRequests('INCOMING', null, 200),
-      this.listLocalFriendRequests('OUTGOING', null, 200),
-    ]);
-    if (outgoing.items.some(matches)) return 'OUTGOING_PENDING' as const;
-    if (incoming.items.some(matches)) return 'INCOMING_PENDING' as const;
+    const hasPending = async (direction: FriendIntentDirection) => {
+      let cursor: string | null = null;
+      for (;;) {
+        const page = await this.listLocalFriendRequests(direction, cursor, 200);
+        if (page.items.some(matches)) return true;
+        if (!page.hasMore) return false;
+        cursor = page.scannedThrough;
+      }
+    };
+    if (await hasPending('OUTGOING')) return 'OUTGOING_PENDING' as const;
+    if (await hasPending('INCOMING')) return 'INCOMING_PENDING' as const;
     return 'NONE' as const;
   }
 

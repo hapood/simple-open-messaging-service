@@ -160,7 +160,9 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
             ...input,
             ownState: 'revocation',
             revoked: true,
-            always: false,
+            // A later incoming request may be rejected while our authored
+            // direction is already REVOKED. It still needs a new peer feed ID.
+            always: true,
             resultName: 'peer_result',
           })}`
         : sql``

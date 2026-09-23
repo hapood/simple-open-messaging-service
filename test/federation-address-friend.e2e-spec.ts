@@ -65,6 +65,7 @@ describe('federated Address friend requests', () => {
     expect(lookup.text).toContain('event: resolved');
     expect(lookup.text).toContain(`\"id\":${aliceId}`);
     expect(lookup.text).toContain('"domain":"local"');
+    expect(lookup.text).not.toContain('"relationship"');
     expect(lookup.text).not.toContain('event: progress');
   });
 
@@ -77,6 +78,7 @@ describe('federated Address friend requests', () => {
     expect(lookup.status).toBe(200);
     expect(lookup.text).toContain('event: resolved');
     expect(lookup.text).toContain('"id":0');
+    expect(lookup.text).not.toContain('"relationship"');
 
     expect(
       await appA.database.query.account.findFirst({
@@ -395,6 +397,141 @@ describe('federated Address friend requests', () => {
       ).toEqual([]);
     }
   });
+
+  it('propagates a second rejection when the recipient direction is already revoked', async () => {
+    const alice = await registerAndLogin(
+      appA,
+      'address-reject-alice',
+      'Reject Alice',
+    );
+    const bob = await registerAndLogin(
+      appB,
+      'address-reject-bob',
+      'Reject Bob',
+    );
+    const target = { account: bob.account, domain: FED_DOMAIN_B };
+    const reverseTarget = { account: alice.account, domain: FED_DOMAIN_A };
+    const send = async (note: string) => {
+      const response = await request(appA.baseUrl)
+        .post('/api/v1/relationship/request')
+        .set('Authorization', `Bearer ${alice.token}`)
+        .send({ ...target, displayName: 'Reject Bob', note });
+      expect(response.body.code, JSON.stringify(response.body)).toBe(
+        BusinessCode.OK,
+      );
+    };
+    const reject = async () => {
+      const response = await request(appB.baseUrl)
+        .post('/api/v1/relationship/revoke')
+        .set('Authorization', `Bearer ${bob.token}`)
+        .send(reverseTarget);
+      expect(response.body.code, JSON.stringify(response.body)).toBe(
+        BusinessCode.OK,
+      );
+    };
+    const requesterRequestFeed = () =>
+      appA.database.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, alice.id),
+          eq(clientStateFeed.account, alice.account),
+          eq(clientStateFeed.subjectAccount, bob.account),
+          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        ),
+      });
+    const requesterRevokeFeed = () =>
+      appA.database.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, alice.id),
+          eq(clientStateFeed.account, bob.account),
+          eq(clientStateFeed.subjectAccount, alice.account),
+          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        ),
+      });
+    const recipientFeed = () =>
+      appB.database.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, bob.id),
+          eq(clientStateFeed.account, alice.account),
+          eq(clientStateFeed.subjectAccount, bob.account),
+          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        ),
+      });
+    const peerRevoke = () =>
+      appB.database.query.peerStateFeed.findFirst({
+        where: and(
+          eq(peerStateFeed.account, bob.account),
+          eq(peerStateFeed.subjectAccount, alice.account),
+          eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        ),
+      });
+
+    const lookup = await request(appA.baseUrl)
+      .get('/api/v1/user/resolve-federated-stream')
+      .query(target)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .set('Accept', 'text/event-stream');
+    expect(lookup.status).toBe(200);
+    expect(lookup.text).toContain('event: resolved');
+
+    await send('first request');
+    await vi.waitFor(
+      async () => {
+        expect((await recipientFeed())?.body).toMatchObject({
+          status: 'REQUESTED',
+          note: 'first request',
+        });
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    await reject();
+    const firstTerminal = await vi.waitFor(
+      async () => {
+        const row = await requesterRevokeFeed();
+        expect(row?.body).toMatchObject({
+          status: 'REVOKED',
+          requestStatus: 'REJECTED',
+          requestDirection: 'OUTGOING',
+        });
+        return row!;
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const firstPeerRevoke = (await peerRevoke())!;
+
+    await send('second request');
+    await vi.waitFor(
+      async () => {
+        expect((await recipientFeed())?.body).toMatchObject({
+          status: 'REQUESTED',
+          note: 'second request',
+        });
+        expect((await requesterRequestFeed())?.body).toMatchObject({
+          status: 'REQUESTED',
+          note: 'second request',
+        });
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const secondPending = (await requesterRequestFeed())!;
+    expect(secondPending.feedId).toBeGreaterThan(firstTerminal.feedId);
+    await reject();
+    const secondPeerRevoke = (await peerRevoke())!;
+    expect(secondPeerRevoke.body).toEqual(firstPeerRevoke.body);
+    expect(secondPeerRevoke.feedId).toBeGreaterThan(firstPeerRevoke.feedId);
+    await vi.waitFor(
+      async () => {
+        const terminal = await requesterRevokeFeed();
+        expect(terminal?.feedId).toBeGreaterThan(secondPending.feedId);
+        expect(terminal?.body).toMatchObject({
+          status: 'REVOKED',
+          requestStatus: 'REJECTED',
+          requestDirection: 'OUTGOING',
+        });
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+  });
+
   it('converges a federated kick through a system-operated local member revoke', async () => {
     const created = await request(appA.baseUrl)
       .post('/api/v1/group/create')

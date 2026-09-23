@@ -6,14 +6,15 @@ import { toFederationWireDomain } from '../../federation/federation-wire-domain.
  * "compactionKey", account, domain, "subjectAccount", "subjectDomain", body —
  * one row per (recipient, direction); a recipient may hold several. A repeated
  * identical body neither allocates a feed id nor wakes anyone, matching
- * ClientStateFeedService.writeInTx's body-level dedupe. */
-export function clientIntentFeedWriteSql(): SQL {
+ * ClientStateFeedService.writeInTx's body-level dedupe. Callers may force a
+ * fresh position for a repeated terminal effect on a newer request. */
+export function clientIntentFeedWriteSql(options?: { force?: SQL }): SQL {
   return sql`
     fresh_bodies AS MATERIALIZED (
       SELECT b.*, row_number() OVER (PARTITION BY b."userId" ORDER BY b.ordinal) AS position,
         count(*) OVER (PARTITION BY b."userId") AS total
       FROM candidate_bodies b
-      WHERE NOT EXISTS (SELECT 1 FROM "ClientStateFeed" f
+      WHERE (${options?.force ?? sql`false`}) OR NOT EXISTS (SELECT 1 FROM "ClientStateFeed" f
         WHERE f."userId" = b."userId" AND f."compactionKey" = b."compactionKey" AND f.body = b.body)
     ), recipient_alloc AS (
       UPDATE "Account" a SET "clientStateFeedEndId" = a."clientStateFeedEndId" + t.total,

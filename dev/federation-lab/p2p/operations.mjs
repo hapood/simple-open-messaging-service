@@ -59,7 +59,6 @@ async function sendRequest(actor, peer, timeoutMs) {
           preflight: {
             endpoint: '/user/resolve-federated-stream',
             target: peer.address,
-            observedRelationship: resolved.relationship ?? null,
           },
         }
       : {}),
@@ -140,7 +139,6 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       preflight = {
         endpoint: '/user/resolve-federated-stream',
         target: operation.group,
-        observedRelationship: resolved.relationship ?? null,
       };
     }
     body = {

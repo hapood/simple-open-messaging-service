@@ -154,7 +154,16 @@ export function userIntentClientBodiesSql(
         AND pr."profileRev" = cp."clientPeerProfileRev"
         AND pr.account = cp."clientPeerAccount" AND pr.domain = cp."clientPeerDomain"
         AND pr."namespaceId" = (CASE WHEN cp."clientPeerDomain" = 'local' THEN 0 ELSE ${input.namespaceId} END)
-    ), ${clientIntentFeedWriteSql()}
+    ), ${clientIntentFeedWriteSql(
+      input.requestRevocation
+        ? {
+            // A new request can be rejected while our own direction remains
+            // REVOKED from an earlier decision. Re-announce the terminal card
+            // effect after every live request, even when the body is identical.
+            force: sql`b.body ? 'requestStatus' AND b.body->>'status' = 'REVOKED'`,
+          }
+        : undefined,
+    )}
   `;
 }
 

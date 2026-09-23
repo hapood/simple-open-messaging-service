@@ -849,7 +849,6 @@ test('admits a remote group application with the observed group profile', async 
       });
       return {
         user: { account, name: 'Resolved remote group' },
-        relationship: 'NONE',
       };
     },
     post: async (endpoint, body) => {
@@ -896,7 +895,6 @@ test('admits a remote group application with the observed group profile', async 
   assert.deepEqual(admitted.preflight, {
     endpoint: '/user/resolve-federated-stream',
     target: '!group@bravo.test',
-    observedRelationship: 'NONE',
   });
 });
 

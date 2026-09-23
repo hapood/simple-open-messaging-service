@@ -2,8 +2,7 @@ import {
   applyFederatedPendingProfileSnapshot,
   RelationshipService,
 } from './relationship.service.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SQL } from 'drizzle-orm';
+import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { messageThread, accountThreadState } from '../database/schema.js';
 
@@ -89,7 +88,6 @@ describe('relationship client profile references', () => {
     const writeInTx = vi.fn().mockResolvedValue(1);
     const service = new RelationshipService(
       {} as never,
-      {} as never,
       { writeInTx } as never,
       {
         readP2PRelationshipInTx: vi.fn().mockResolvedValue({
@@ -101,7 +99,6 @@ describe('relationship client profile references', () => {
               : { ...intent, profileRev: peerRev },
         }),
       } as never,
-      {} as never,
     );
     return { service, tx, writeInTx };
   }
@@ -162,69 +159,6 @@ describe('relationship client profile references', () => {
   });
 });
 
-describe('RelationshipService.friendRelationshipStatuses', () => {
-  process.env.SOMS_DOMAIN = 'local.test';
-  const findMany = vi.fn();
-  const getActiveP2PPeerUserIds = vi.fn();
-  const execute = vi.fn(async (_query: SQL) => ({ rows: await findMany() }));
-  const database = {
-    db: {
-      execute,
-    },
-  };
-  const service = new RelationshipService(
-    database as never,
-    { getActiveP2PPeerUserIds } as never,
-    {} as never,
-    {} as never,
-    {} as never,
-  );
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('returns an authoritative state for every unique requested peer', async () => {
-    getActiveP2PPeerUserIds.mockResolvedValue([2]);
-    findMany.mockResolvedValue([
-      { id: 31n, peerUserId: 3, direction: 'OUTGOING' },
-      { id: 41n, peerUserId: 4, direction: 'INCOMING' },
-      // A stale pending row cannot override an active friendship.
-      { id: 21n, peerUserId: 2, direction: 'OUTGOING' },
-    ]);
-
-    await expect(
-      service.friendRelationshipStatuses(1, [2, 3, 4, 5, 5, 1]),
-    ).resolves.toEqual([
-      { userId: 2, status: 'FRIEND' },
-      { userId: 3, status: 'OUTGOING_PENDING' },
-      { userId: 4, status: 'INCOMING_PENDING' },
-      { userId: 5, status: 'NONE' },
-    ]);
-    expect(findMany).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not query for an empty/self-only target set', async () => {
-    await expect(
-      service.friendRelationshipStatuses(1, [1, 1]),
-    ).resolves.toEqual([]);
-    expect(findMany).not.toHaveBeenCalled();
-    expect(getActiveP2PPeerUserIds).not.toHaveBeenCalled();
-  });
-
-  it('binds a single requested peer as an IN-list scalar', async () => {
-    getActiveP2PPeerUserIds.mockResolvedValue([]);
-    findMany.mockResolvedValue([]);
-
-    await service.friendRelationshipStatuses(1, [2]);
-
-    const query = new PgDialect().sqlToQuery(execute.mock.calls[0][0]);
-    expect(query.sql).toContain('peer.id IN ($2)');
-    expect(query.sql).not.toContain('ANY');
-    expect(query.params).toEqual([1, 2]);
-  });
-});
-
 describe('RelationshipService P2P shell GC', () => {
   it('cleans an unused shell without a separate endpoint projection table', async () => {
     const deletedTables: unknown[] = [];
@@ -251,8 +185,6 @@ describe('RelationshipService P2P shell GC', () => {
           ),
         },
       } as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
     );
@@ -309,7 +241,6 @@ describe('RelationshipService local relationship client-state projection', () =>
       .mockImplementation(async () => writeInTx.mock.calls.length);
     const service = new RelationshipService(
       {} as never,
-      {} as never,
       { writeInTx } as never,
       {
         readP2PRelationshipInTx: vi.fn().mockResolvedValue({
@@ -318,7 +249,6 @@ describe('RelationshipService local relationship client-state projection', () =>
           pair: { threadId: 7 },
         }),
       } as never,
-      {} as never,
     );
     const tx = {
       select: localRecipientQuery([alice, bob]),
@@ -400,7 +330,6 @@ describe('RelationshipService local relationship client-state projection', () =>
     const writeInTx = vi.fn().mockResolvedValue(1);
     const service = new RelationshipService(
       {} as never,
-      {} as never,
       { writeInTx } as never,
       {
         readP2PRelationshipInTx: vi.fn().mockResolvedValue({
@@ -415,7 +344,6 @@ describe('RelationshipService local relationship client-state projection', () =>
           pair: { threadId: null },
         }),
       } as never,
-      {} as never,
     );
     const tx = {
       select: localRecipientQuery([

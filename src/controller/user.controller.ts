@@ -424,14 +424,7 @@ export class UserController {
         finish('failed', { reason: 'NOT_FOUND' });
         return;
       }
-      const [relationship] =
-        await this.relationships.friendRelationshipStatuses(req.user.userId, [
-          localUser.id,
-        ]);
-      finish('resolved', {
-        user: localUser,
-        relationship: relationship?.status ?? 'NONE',
-      });
+      finish('resolved', { user: localUser });
       return;
     }
     let unsubscribeProgress: () => void = () => undefined;
@@ -497,17 +490,7 @@ export class UserController {
         })(),
         deadline,
       ]);
-      const relationship = profile.account.startsWith('!')
-        ? 'NONE'
-        : await this.relationships.federatedRelationshipStatus(
-            req.user.userId,
-            account,
-            domain,
-          );
-      finish('resolved', {
-        user: this.transientFederatedUser(profile),
-        relationship,
-      });
+      finish('resolved', { user: this.transientFederatedUser(profile) });
     } catch (error) {
       if (closed) return;
       const reason =

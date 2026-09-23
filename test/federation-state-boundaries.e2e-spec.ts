@@ -43,12 +43,10 @@ describe('federation directed-state boundaries', () => {
     relationshipIntents = new RelationshipIntentService();
     relationships = new RelationshipService(
       database,
-      {} as never,
       new ClientStateFeedService(database, {
         onStateFeedUpdated: () => undefined,
       } as never),
       relationshipIntents,
-      {} as never,
     );
     Object.assign(relationships, {
       previews: new ThreadPreviewService(database),

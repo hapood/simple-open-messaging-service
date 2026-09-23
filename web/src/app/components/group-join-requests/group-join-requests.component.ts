@@ -255,29 +255,34 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     this.resolveSub = this.users
       .resolveFederatedUser(address, (stage) => this.federationStage.set(stage))
       .subscribe({
-        next: (result) => {
-          if (result.user.isGroup) {
-            this.invalidGroupAddress.set(true);
-            return;
+        next: async ({ user }) => {
+          try {
+            if (user.isGroup) {
+              this.invalidGroupAddress.set(true);
+              return;
+            }
+            if ((await this.users.localRelationship(user)) !== 'FRIEND') {
+              this.toast.warn(this.transloco.translate('group.friendRequired'));
+              return;
+            }
+            this.candidates.set([
+              {
+                namespaceId: user.namespaceId,
+                profileRev: user.profileRev,
+                account: user.account,
+                domain: user.domain || 'local',
+                name: user.name,
+                avatar: user.avatar,
+                bio: user.bio ?? '',
+                state: 'AVAILABLE',
+              },
+            ]);
+            this.federatedAddress.set(null);
+          } catch {
+            this.toast.warn(this.transloco.translate('errors.networkError'));
+          } finally {
+            this.resolvingFederated.set(false);
           }
-          if (result.relationship !== 'FRIEND') {
-            this.toast.warn(this.transloco.translate('group.friendRequired'));
-            return;
-          }
-          const user = result.user;
-          this.candidates.set([
-            {
-              namespaceId: user.namespaceId,
-              profileRev: user.profileRev,
-              account: user.account,
-              domain: user.domain || 'local',
-              name: user.name,
-              avatar: user.avatar,
-              bio: user.bio ?? '',
-              state: 'AVAILABLE',
-            },
-          ]);
-          this.federatedAddress.set(null);
         },
         error: (error: unknown) => {
           this.resolvingFederated.set(false);
@@ -288,7 +293,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
               : 'errors.networkError';
           this.toast.warn(this.transloco.translate(key));
         },
-        complete: () => this.resolvingFederated.set(false),
       });
   }
 

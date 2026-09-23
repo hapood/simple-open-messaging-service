@@ -355,9 +355,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const resolved = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
     expect(resolved.event, JSON.stringify(resolved)).toBe('resolved');
     expect(resolved.data).toMatchObject({
-      relationship: 'NONE',
       user: { id: 0, domain: DOM_B },
     });
+    expect(resolved.data).not.toHaveProperty('relationship');
     expect(
       await appA.database.query.account.findFirst({
         where: and(eq(account.account, 'bob'), eq(account.domain, DOM_B)),

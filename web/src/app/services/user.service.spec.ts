@@ -45,6 +45,56 @@ const profile = (
   } as User,
 });
 
+describe('UserService.localRelationship', () => {
+  it('matches transient federated users by exact Address across request pages', async () => {
+    const service = Object.create(UserService.prototype) as UserService;
+    const listLocalFriendRequests = vi.fn(
+      async (direction: string, cursor: string | null) => {
+        const item = (account: string) => ({
+          kind: 'FRIEND',
+          status: 'REQUESTED',
+          expiresAt: Date.now() + 60_000,
+          peer: { id: 0, account, domain: 'bravo.test' },
+        });
+        const items =
+          direction === 'OUTGOING'
+            ? cursor
+              ? [item('bob')]
+              : [item('someone-else')]
+            : [];
+        return {
+          items,
+          scannedThrough: cursor ?? 'next-page',
+          hasMore: direction === 'OUTGOING' && cursor === null,
+          total: 2,
+          actionableTotal: 2,
+        };
+      },
+    );
+    Object.assign(service, {
+      webdb: {
+        getThreads: async () => [
+          {
+            type: 'P2P',
+            friendshipActive: true,
+            peerUser: { id: 0, account: 'someone-else', domain: 'bravo.test' },
+          },
+        ],
+      },
+      listLocalFriendRequests,
+    });
+
+    await expect(
+      service.localRelationship({
+        id: 0,
+        account: 'bob',
+        domain: 'bravo.test',
+      }),
+    ).resolves.toBe('OUTGOING_PENDING');
+    expect(listLocalFriendRequests).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('UserService profile refresh', () => {
   let svc: UserService;
   let httpMock: HttpTestingController;
@@ -89,9 +139,14 @@ describe('UserService profile refresh', () => {
         {
           provide: ProfileRepository,
           useValue: {
-            resolve: vi
-              .fn()
-              .mockReturnValue(of({ name: 'A', bio: '', avatarDigest: null, avatarBlob: null })),
+            resolve: vi.fn().mockReturnValue(
+              of({
+                name: 'A',
+                bio: '',
+                avatarDigest: null,
+                avatarBlob: null,
+              }),
+            ),
           },
         },
       ],
@@ -150,7 +205,8 @@ describe('UserService profile refresh', () => {
         rev: 2,
         name: 'Resolved Alice',
         bio: 'Resolved bio',
-        avatarDigest: 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+        avatarDigest:
+          'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
         avatarBlob: new Blob(['a'], { type: 'image/webp' }),
       }),
     );
@@ -295,9 +351,14 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         {
           provide: ProfileRepository,
           useValue: {
-            resolve: vi
-              .fn()
-              .mockReturnValue(of({ name: 'A', bio: '', avatarDigest: null, avatarBlob: null })),
+            resolve: vi.fn().mockReturnValue(
+              of({
+                name: 'A',
+                bio: '',
+                avatarDigest: null,
+                avatarBlob: null,
+              }),
+            ),
           },
         },
       ],

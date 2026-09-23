@@ -136,9 +136,6 @@ describe('UserController.resolveFederatedUserStream', () => {
         calls.push('recognize');
       }),
     };
-    const inviteService = {
-      federatedRelationshipStatus: vi.fn().mockResolvedValue('NONE'),
-    };
     const controller = new UserController(
       {} as never,
       {} as never,
@@ -151,7 +148,7 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      inviteService as never,
+      {} as never,
       {} as never,
     );
     const reply = streamReply();
@@ -171,5 +168,6 @@ describe('UserController.resolveFederatedUserStream', () => {
     expect(raw.chunks.join('')).toContain('"stage":"WAITING_FOR_PEER"');
     expect(raw.chunks.join('')).toContain('"stage":"FETCHING_USER"');
     expect(raw.chunks.join('')).toContain('event: resolved');
+    expect(raw.chunks.join('')).not.toContain('"relationship"');
   });
 });

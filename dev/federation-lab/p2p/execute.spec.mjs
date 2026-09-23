@@ -50,10 +50,7 @@ test('waitForTaskQueueIdle prints active ids and requires two empty samples', as
   });
   assert.match(output[0], /processing=\[12\]/);
   assert.match(output.at(-1), /pending=0/);
-  assert.match(
-    output[0],
-    /statusMs=\[PENDING:17,PROCESSING:35\]/,
-  );
+  assert.match(output[0], /statusMs=\[PENDING:17,PROCESSING:35\]/);
   assert.match(
     output[0],
     /sample=1 idleSamples=0\/2 sampleMs=\d+ queryTotalMs=\d+ sleepTotalMs=0/,
@@ -102,7 +99,7 @@ test('queue drain reports failed tasks immediately, including when no pending ta
   }
 });
 
-test('wait helpers use actual incoming and resolved API observations', async () => {
+test('wait helpers use incoming state-feed and resolved profile observations', async () => {
   const initiator = {
     node: { name: 'alpha' },
     account: 'alice',
@@ -112,9 +109,26 @@ test('wait helpers use actual incoming and resolved API observations', async () 
   const receiver = {
     node: { name: 'bravo' },
     address: 'bob@bravo.test',
-    resolveFederatedUser: async () => ({
-      user: { account: 'alice', name: 'Alice' },
-      relationship: 'INCOMING_PENDING',
+    account: 'bob',
+    queryStateFeed: async () => ({
+      stateFeedEndId: 7,
+      scannedThrough: 7,
+      hasMore: false,
+      items: [
+        {
+          eventType: 'RELATIONSHIP_INTENT',
+          account: 'alice',
+          domain: 'alpha.test',
+          subjectAccount: 'bob',
+          subjectDomain: 'local',
+          body: {
+            direction: 'INCOMING',
+            status: 'REQUESTED',
+            expiresAt: Date.now() + 60_000,
+            peer: { account: 'alice', name: 'Alice' },
+          },
+        },
+      ],
     }),
   };
   assert.equal(
@@ -125,7 +139,6 @@ test('wait helpers use actual incoming and resolved API observations', async () 
   const resolver = {
     resolveFederatedUser: async () => ({
       user: { account: 'alice', name: 'Alice' },
-      relationship: 'NONE',
     }),
   };
   assert.equal(

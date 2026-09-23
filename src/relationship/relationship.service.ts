@@ -23,20 +23,11 @@ import {
   accountThreadState,
   account as user,
 } from '../database/schema.js';
-import { normalizeAccount } from '../common/account.js';
-import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { openFederatedAudienceInTx } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
-import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
 
 const RELATIONSHIP_SHELL_GC_INTERVAL_MS = 60 * 60 * 1000;
-
-export type FriendRelationshipState =
-  | 'NONE'
-  | 'OUTGOING_PENDING'
-  | 'INCOMING_PENDING'
-  | 'FRIEND';
 
 export interface FederatedPendingProfileSnapshot {
   displayName: string;
@@ -61,10 +52,8 @@ export function applyFederatedPendingProfileSnapshot(
 export class RelationshipService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly participantService: AccountThreadStateService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly relationshipIntents: RelationshipIntentService,
-    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   /** Reap never-activated request shells after every authored request has expired. The transaction
@@ -178,44 +167,6 @@ export class RelationshipService {
       pendingFeedUpdates.push({ userId: memberUserId, feedId });
   }
 
-  /** Relationship state for an exact federated Address without a local account row. */
-  async federatedRelationshipStatus(
-    localUserId: number,
-    remoteAccount: string,
-    remoteDomain: string,
-  ): Promise<FriendRelationshipState> {
-    const account = normalizeAccount(remoteAccount);
-    const { relationship } = await this.database.db.transaction(async (tx) => {
-      const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
-      const relationship =
-        await this.relationshipIntents.readP2PRelationshipByAddressInTx(
-          tx,
-          localUserId,
-          {
-            account,
-            domain: remoteDomain,
-            namespaceId: context.namespaceId,
-          },
-        );
-      return { relationship };
-    });
-    if (relationship?.pair.active) return 'FRIEND';
-    const now = new Date();
-    if (
-      relationship?.remoteIntent?.status === 'REQUESTED' &&
-      relationship.remoteIntent.expiresAt !== null &&
-      relationship.remoteIntent.expiresAt > now
-    )
-      return 'INCOMING_PENDING';
-    if (
-      relationship?.localIntent?.status === 'REQUESTED' &&
-      relationship.localIntent.expiresAt !== null &&
-      relationship.localIntent.expiresAt > now
-    )
-      return 'OUTGOING_PENDING';
-    return 'NONE';
-  }
-
   async writeRelationshipRequestClientStateInTx(
     tx: DatabaseTransaction,
     firstTarget: AccountTarget,
@@ -228,80 +179,6 @@ export class RelationshipService {
       this.relationshipIntents,
       this.clientStateFeed,
     );
-  }
-
-  /**
-   * Authoritative relationship state for discovery UI. FRIEND takes precedence over stale pending
-   * rows; only unexpired PENDING requests count. The result contains every requested id so clients do
-   * not need to infer missing rows.
-   */
-  async friendRelationshipStatuses(
-    me: number,
-    requestedUserIds: number[],
-  ): Promise<
-    Array<{
-      userId: number;
-      status: FriendRelationshipState;
-    }>
-  > {
-    const userIds = [...new Set(requestedUserIds)].filter((id) => id !== me);
-    if (userIds.length === 0) return [];
-
-    const [friendIds, requestRows] = await Promise.all([
-      this.participantService.getActiveP2PPeerUserIds(me),
-      this.database.db.execute<{
-        peerUserId: number;
-        direction: 'INCOMING' | 'OUTGOING';
-      }>(sql`
-        SELECT peer.id AS "peerUserId",
-          CASE
-            WHEN (intent."authorSide" = 'A'
-              AND pair."endpointAAccount" = self.account
-              AND pair."endpointADomain" = self.domain)
-              OR (intent."authorSide" = 'B'
-                AND pair."endpointBAccount" = self.account
-                AND pair."endpointBDomain" = self.domain)
-            THEN 'OUTGOING' ELSE 'INCOMING'
-          END AS direction
-        FROM "RelationshipIntent" intent
-        JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-        JOIN "Account" self ON self.id = ${me}
-        JOIN "Account" peer ON peer.id IN (${sql.join(
-          userIds.map((userId) => sql`${userId}`),
-          sql`, `,
-        )})
-         AND ((peer.account = pair."endpointAAccount" AND peer.domain = pair."endpointADomain")
-           OR (peer.account = pair."endpointBAccount" AND peer.domain = pair."endpointBDomain"))
-        WHERE pair.kind = 'P2P'
-          AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
-          AND self."namespaceId" = 0
-          AND pair."endpointANamespaceId" = peer."namespaceId"
-          AND intent.status = 'REQUESTED'
-          AND intent."expiresAt" > CURRENT_TIMESTAMP
-          AND ((self.account = pair."endpointAAccount" AND self.domain = pair."endpointADomain")
-            OR (self.account = pair."endpointBAccount" AND self.domain = pair."endpointBDomain"))
-          AND peer.id <> self.id
-      `),
-    ]);
-    const requests = requestRows.rows;
-    const friends = new Set(friendIds);
-    const outgoing = new Set(
-      requests
-        .filter((request) => request.direction === 'OUTGOING')
-        .map((request) => request.peerUserId),
-    );
-    const incoming = new Set(
-      requests
-        .filter((request) => request.direction === 'INCOMING')
-        .map((request) => request.peerUserId),
-    );
-
-    return userIds.map((userId) => {
-      if (friends.has(userId)) return { userId, status: 'FRIEND' };
-      if (outgoing.has(userId)) return { userId, status: 'OUTGOING_PENDING' };
-      if (incoming.has(userId)) return { userId, status: 'INCOMING_PENDING' };
-      return { userId, status: 'NONE' };
-    });
   }
 
   /** Create or refresh one group membership invitation. */
