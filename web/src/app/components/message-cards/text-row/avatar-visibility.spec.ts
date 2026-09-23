@@ -41,6 +41,7 @@ import { RouteService } from '../../../services/route.service';
 class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
+  readonly p2pThreadId = input<number | undefined>(undefined);
   readonly identityId = input<number | undefined>(undefined);
   readonly account = input<string | undefined | null>(undefined);
   readonly federatedDomain = input<string | undefined | null>(undefined);
