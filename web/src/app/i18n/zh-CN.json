@@ -1,19 +1,11 @@
 {
   "playground": {
-    "general": "Playground 设置",
-    "language": "语言",
-    "conversationType": "会话类型",
-    "directChat": "单聊",
-    "groupChat": "群聊",
     "callResponse": "通话对方响应",
     "callDecline": "直接挂断",
     "callBusy": "忙碌",
     "callNoAnswer": "无人接听",
     "callAccept": "接听",
-    "callResponseHint": "从单聊中发起通话时生效；群聊不支持通话。",
-    "muted": "静音通知",
-    "blocked": "屏蔽新消息",
-    "blockedOverridesMuted": "屏蔽生效时静音状态会保留，但界面只突出屏蔽。"
+    "callResponseHint": "从单聊中发起通话时生效；群聊不支持通话。"
   },
   "transfer": {
     "sendingCount": "正在发送 {{count}} 项",

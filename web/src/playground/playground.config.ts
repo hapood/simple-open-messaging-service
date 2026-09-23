@@ -1,6 +1,7 @@
 import {
   ApplicationConfig,
   CSP_NONCE,
+  computed,
   provideZonelessChangeDetection,
   signal,
 } from '@angular/core';
@@ -82,6 +83,10 @@ const playgroundMemberProfiles = {
     ),
 };
 
+const playgroundRelationshipRequestRevision = signal(0);
+const playgroundRelationshipIntentRevision = signal(0);
+const playgroundRelationshipReadThrough = signal(0);
+
 const playgroundUserService = {
   sessionUserId: signal<number | null>(1),
   sessionProfile: signal({
@@ -91,6 +96,27 @@ const playgroundUserService = {
     avatar: '',
     domain: 'local',
   }),
+  /** Relationship request state is empty in the playground, but keeps the production signal contract intact. */
+  relationshipRequestStateRevision: playgroundRelationshipRequestRevision,
+  relationshipIntentStateRevision: playgroundRelationshipIntentRevision,
+  relationshipRequestReadThroughFeedId: playgroundRelationshipReadThrough,
+  friendReqBadge: computed(
+    () =>
+      playgroundRelationshipRequestRevision() >
+      playgroundRelationshipReadThrough(),
+  ),
+  listLocalFriendRequests: async () => ({
+    items: [],
+    scannedThrough: null,
+    hasMore: false,
+    total: 0,
+    actionableTotal: 0,
+  }),
+  markRelationshipRequestsRead: () => {
+    playgroundRelationshipReadThrough.set(
+      playgroundRelationshipRequestRevision(),
+    );
+  },
   requestRelationship: () =>
     of({ code: 0, message: 'ok', data: { taskId: 'playground-task' } }),
   revokeRelationship: () =>
