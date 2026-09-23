@@ -1,5 +1,7 @@
 export type Platform = 'browser' | 'android';
 
+export type TestOutcome = 'PASS' | 'FAIL' | 'BUG' | 'BLOCKED' | 'SKIPPED';
+
 export interface NaturalLanguageCase {
   id: string;
   title: string;
@@ -31,16 +33,24 @@ export interface Observation {
   elements: ElementSummary[];
   screenshotBase64?: string;
   recentErrors: string[];
+  businessErrors?: string[];
+  transportErrors?: string[];
+  consoleErrors?: string[];
 }
 
 export type TestAction =
   | { type: 'tap'; target: string; reason: string }
   | { type: 'type'; target: string; text: string; reason: string }
   | { type: 'press'; key: 'ENTER' | 'BACK' | 'ESCAPE'; reason: string }
-  | { type: 'scroll'; direction: 'up' | 'down'; amount?: number; reason: string }
+  | {
+      type: 'scroll';
+      direction: 'up' | 'down';
+      amount?: number;
+      reason: string;
+    }
   | { type: 'switchContext'; context: 'webview' | 'native'; reason: string }
   | { type: 'wait'; milliseconds: number; reason: string }
-  | { type: 'finish'; passed: boolean; reason: string };
+  | { type: 'finish'; outcome: TestOutcome; reason: string };
 
 export interface Decision {
   action: TestAction;

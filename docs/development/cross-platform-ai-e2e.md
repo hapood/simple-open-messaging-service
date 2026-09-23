@@ -71,15 +71,14 @@ Useful environment variables:
 - `CROSS_PLATFORM_BROWSER_URL`, default `http://localhost:3101/`
 - `CROSS_PLATFORM_PLATFORM`, default `both`; also accepts `browser` or `android`
 - `CROSS_PLATFORM_SCENARIOS`, default `docs/development/browser-e2e-test-plan.md`
-- `AI_TEST_CASE`, exact numeric ID preferred, defaults to `0.1`; selection also
-  uses a title-substring match and chooses the first match. Inspect the loaded
-  case for ambiguous IDs/titles before relying on selection.
+- `AI_TEST_CASE`, exact numeric ID preferred, defaults to `0.1`; exact IDs are
+  required when available. A title-substring selector must match exactly one
+  case; ambiguous matches are rejected with candidate IDs.
 - `AI_TEST_MODEL`, default `gpt-4.1-mini`
 - `AI_TEST_MAX_STEPS`, default `24`
 - `AI_TEST_ARTIFACT_DIR`, default `/tmp/soms-cross-platform`
 
-If the AI key, browser edge, Appium server, device, or selected case is unavailable, the run is blocked or fails with
-an explicit reason. It must not be reported as a product pass.
+If the AI key, browser edge, Appium server, device, or selected case is unavailable, the run is `BLOCKED` with an explicit reason. It must not be reported as a product pass. The final artifact is `result.json` under `AI_TEST_ARTIFACT_DIR`.
 
 ## Current Implementation Limits (2026-09-20)
 
@@ -104,9 +103,10 @@ broader than its implemented execution capabilities.
 - Case loading does not automatically include global platform rules, fixture
   tables, or all parent-section context with a selected numbered item. Review
   preconditions manually; loading an item does not prepare its prerequisites.
-- `finish` carries a boolean, so output is PASS/FAIL. BLOCKED can appear in a
-  reason, but BUG/BLOCKED/SKIPPED are not structured outcomes. Reconcile runner
-  output with the acceptance-plan outcome definitions in the progress log.
+- `finish` carries a structured outcome: `PASS`, `FAIL`, `BUG`, `BLOCKED`, or
+  `SKIPPED`. The runner writes these outcomes to `result.json`; `FAIL`, `BUG`,
+  and `BLOCKED` return a non-zero exit code. `SKIPPED` is explicit and is not
+  converted into a product failure.
 - Observations and decisions are written verbatim, with screenshots, and sent
   to the configured AI endpoint; there is no credential redaction. Do not run
   through password/OTP entry or sensitive screens. The browser's fresh-context
@@ -114,9 +114,11 @@ broader than its implemented execution capabilities.
   can satisfy that requirement. Screenshots are serialized as JSON text rather
   than supplied as image input; automated visual judgment is not established.
 - Artifact filenames repeat for the same platform/case/step. Set a distinct
-  `AI_TEST_ARTIFACT_DIR` for each run to preserve earlier evidence. Android
-  `recentErrors` is not a collected logcat/WebView-console feed; an empty list
-  does not prove an error-free run.
+  `AI_TEST_ARTIFACT_DIR` for each run to preserve earlier evidence. Browser
+  observations distinguish business HTTP errors, transport failures, and
+  console/page errors; normal HMR and favicon cancellations are filtered.
+  Android `recentErrors` is not a collected logcat/WebView-console feed; an
+  empty list does not prove an error-free run.
 
 Record manual Android results in the
 [shared progress log](./browser-e2e-progress.md#android-validation-status), using

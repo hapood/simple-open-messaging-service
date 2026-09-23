@@ -89,7 +89,7 @@ APK_FIND := find $(RAW_APK_DIR) $(DIST_DIR) -name '*.apk'
 # Caching & proxying are native now: cargo (~/.cargo) + gradle (~/.gradle) caches persist on the host;
 # set HTTP_PROXY/HTTPS_PROXY or a ~/.cargo/config.toml mirror in your shell if behind a proxy.
 
-.PHONY: help apk apk-debug install run clean macos macos-run dev
+.PHONY: help apk apk-debug apk-e2e-debug install run clean macos macos-run dev
 help:  ## show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
@@ -137,7 +137,7 @@ define do_build
 	@# so tauri doesn't re-run npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the
 	@# Angular "development" configuration (sourcemaps on, unminified) so the webview JS is debuggable;
 	@# release uses "production".
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --configuration $(if $(filter debug,$(1)),development,production))
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --configuration $(if $(filter 1,$(E2E_TESTING)),automation,$(if $(filter debug,$(1)),development,production)))
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore), so it
 	@# persists across builds and pins the debug signature (no more uninstall-per-rebuild). No-op once
 	@# present.
@@ -152,6 +152,7 @@ define do_build
 	fi
 	@mkdir -p $(DIST_DIR); set -e; \
 	dbflag=; dsuffix=; [ "$(1)" = debug ] && { dbflag=--debug; dsuffix=-debug; }; \
+	[ "$(E2E_TESTING)" = 1 ] && dsuffix=-e2e-debug; \
 	for v in $(VARIANTS); do \
 	  case "$$v" in \
 	    aarch64)   tag=arm64-v8a;   targs="--target aarch64";; \
@@ -176,6 +177,10 @@ apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 
 	$(call do_build,release)
 
 apk-debug:  ## build DEBUG variants (debug-signed, no minify — fastest iteration).
+	$(call do_build,debug)
+
+apk-e2e-debug: E2E_TESTING=1
+apk-e2e-debug:  ## build the Android browser-automation APK with test selectors retained.
 	$(call do_build,debug)
 
 install:  ## adb install -r the newest built APK (dist/android/ preferred) onto a connected device

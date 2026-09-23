@@ -12,7 +12,7 @@
 //   {"id":8,"action":"close"}
 // Secrets (admin password, OTPs) are read from .env / kept in memory only.
 import { chromium, expect } from '@playwright/test';
-import { readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, rmSync, existsSync, mkdirSync, readdirSync, readlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 
@@ -69,6 +69,40 @@ function requireAdminPassword() {
 }
 
 const contexts = new Map(); // name -> { context, page, consoleErrors[], pageErrors[] }
+
+function profileOwner(name) {
+  const lock = `${PROFILES}/${name}/SingletonLock`;
+  if (!existsSync(`${PROFILES}/${name}`)) return null;
+  let target;
+  try {
+    target = readlinkSync(lock);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    return { state: 'unknown', reason: 'Cannot inspect Chrome profile lock' };
+  }
+  const match = /-(\d+)$/.exec(target);
+  if (!match) return { state: 'unknown', reason: 'Chrome profile lock has no recognizable PID' };
+  const pid = Number(match[1]);
+  try {
+    process.kill(pid, 0);
+    return { state: 'occupied', pid };
+  } catch (error) {
+    // EPERM still means a live owner. A stale lock must not be removed by
+    // this diagnostic; Chromium owns its own profile locking lifecycle.
+    if (error?.code === 'EPERM') return { state: 'occupied', pid };
+    if (error?.code === 'ESRCH') return { state: 'stale', pid };
+    return { state: 'unknown', reason: 'Could not verify Chrome profile owner' };
+  }
+}
+
+function externalProfiles() {
+  return readdirSync(PROFILES, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !contexts.has(entry.name))
+    .flatMap((entry) => {
+      const owner = profileOwner(entry.name);
+      return owner ? [{ name: entry.name, ...owner }] : [];
+    });
+}
 const otps = new Map(); // account -> code (memory only, never printed)
 
 function out(id, ok, data) {
@@ -87,10 +121,16 @@ function fail(id, err) {
 async function newSession(name, viewport) {
   validName(name);
   if (contexts.has(name)) return contexts.get(name);
+  const owner = profileOwner(name);
+  if (owner?.state === 'occupied') {
+    throw new Error(
+      `Profile ${name} is held by Chrome PID ${owner.pid} outside this driver. Close its owning driver/context cleanly, then retry; do not delete SingletonLock or reset the profile.`,
+    );
+  }
   const context = await chromium.launchPersistentContext(
     `${PROFILES}/${name}`,
     {
-      headless: true,
+      headless: process.env.BROWSER_HEADFUL !== '1',
       executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
       ignoreHTTPSErrors: true,
       viewport: viewport || { width: 1440, height: 1000 },
@@ -139,7 +179,8 @@ async function adminLogin(node) {
     await page.locator('#password').fill(requireAdminPassword());
     await page.locator('form button[type="submit"]').click();
     // Users page renders a search input; this is the reliable logged-in signal.
-    await page.waitForSelector('input[placeholder*="搜索"]', {
+    await page.getByRole('searchbox').waitFor({
+      state: 'visible',
       timeout: 20000,
     });
   }
@@ -152,28 +193,49 @@ async function issueOtp(node, account) {
   if (!contexts.has(name)) await adminLogin(node);
   const { page } = contexts.get(name);
   const base = NODES[node].admin;
-  await page.goto(base.replace(/\/$/, '') + '/users', {
-    waitUntil: 'domcontentloaded',
-  });
-  await page.locator('input[placeholder*="搜索"]').first().fill(account);
-  const row = page.getByText(account, { exact: true }).first();
-  await row.waitFor({ state: 'visible', timeout: 15000 });
-  await row.click();
-  await page.waitForURL(/\/admin\/users\/\d+/);
-  await page
-    .getByRole('button', { name: /生成初始密码|Generate initial password/i })
-    .waitFor();
-  const openIssue = page.getByRole('button', {
-    name: /签发登录码|Issue login code/i,
-  });
+  const matches = [];
+  const take = 20;
+  let skip = 0;
+  let total = Infinity;
+  while (skip < total) {
+    const result = await page.request.post(
+      new URL('/api/v1/admin/users', base).href,
+      { data: { search: account, skip, take } },
+    );
+    const users = await result.json();
+    if (
+      !result.ok() ||
+      users.code !== 0 ||
+      !Array.isArray(users.data?.list) ||
+      !Number.isInteger(users.data?.total)
+    ) {
+      throw new Error(`admin user lookup failed for ${account}`);
+    }
+    total = users.data.total;
+    matches.push(
+      ...users.data.list.filter(
+        (user) => user.account === account && user.domain === 'local',
+      ),
+    );
+    skip += take;
+  }
+  if (matches.length !== 1) {
+    throw new Error(`expected one exact local account for ${account}`);
+  }
+  const targetId = matches[0].id;
+  await page.goto(
+    base.replace(/\/$/, '') + `/users/${targetId}`,
+    { waitUntil: 'domcontentloaded' },
+  );
+  const openIssue = page.locator(
+    'button[aria-controls="issue-login-code-dialog"]',
+  );
   await openIssue.waitFor({ state: 'visible', timeout: 10000 });
   await openIssue.click();
   await page.waitForTimeout(600);
-  const dialog = page.locator('[data-slot="dialog-content"]').last();
+  const dialog = page.locator('#issue-login-code-dialog');
   await dialog.waitFor({ state: 'visible', timeout: 10000 });
-  const confirm = dialog
-    .getByRole('button', { name: /^签发$|Issue$/i })
-    .first();
+  const confirm = dialog.locator('button[type="submit"]');
   await confirm.waitFor({ state: 'visible', timeout: 10000 });
   await confirm.click();
   const codeInput = dialog.locator('#ilc-code');
@@ -189,8 +251,8 @@ async function userLogin(user, node, account) {
   const { page } = await newSession(user);
   await page.goto(NODES[node].edge, { waitUntil: 'domcontentloaded' });
   // Wait for either the authenticated shell or the login entry.
-  const hint = page.getByRole('button', { name: '好友请求', exact: true });
-  const other = page.getByText('其他登录方式', { exact: true });
+  const hint = page.locator('app-icon-rail .icon-rail');
+  const other = page.locator('app-auth-method-menu > button');
   await expect(hint.or(other)).toBeVisible({ timeout: 30000 });
   if (await hint.isVisible())
     return { user, node, url: page.url(), resumed: true };
@@ -198,11 +260,12 @@ async function userLogin(user, node, account) {
   if (!code) throw new Error(`no OTP in memory for ${account}; issue first`);
   if (await other.isVisible().catch(() => false)) {
     await other.click();
-    await page.getByText('使用一次性密码登录').first().click();
+    // Password sign-in does not offer a password menu item, so OTP is first.
+    await page.getByRole('menu').getByRole('menuitem').first().click();
   }
   await page.locator('input[name="account"]').fill(account);
   await page.locator('input[name="code"]').fill(code);
-  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.locator('form button[type="submit"]').click();
   // Wait for the authenticated shell, including when a thread is selected.
   await hint.waitFor({ state: 'visible', timeout: 30000 });
   otps.delete(account);
@@ -251,6 +314,7 @@ const actions = {
       name,
       url: rec.page.url(),
     })),
+    externalProfiles: externalProfiles(),
     nodes: NODES,
     artifacts: SHOTS,
   }),

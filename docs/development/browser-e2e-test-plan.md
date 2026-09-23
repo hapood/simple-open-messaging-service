@@ -8,23 +8,60 @@ messages, media, calls, administrative actions, and visual defects. Backend API
 calls may be used only to prepare fixtures or verify a result after a visible
 client action. An API-only result is not an E2E pass.
 
+## Document ownership and lifecycle
+
+This document is the canonical acceptance inventory. It contains stable test
+scope, execution rules, matrices, and result semantics; it does not contain run
+history or current completion claims.
+
+Browser E2E documentation has four distinct owners:
+
+- `browser-e2e-test-plan.md` defines what must be tested.
+- `browser-e2e-progress.md` records only current coverage, current blockers,
+  next work, and concise evidence for the latest authoritative result.
+- `browser-e2e-handoff.md` records only ephemeral state needed to resume the
+  current run, such as running services, retained fixtures, cleanup obligations,
+  and the exact stop point.
+- `browser-e2e-bug-*.md` is temporary investigation state for an open defect or
+  a fix awaiting required regression. After the fix has durable automated
+  coverage and the required browser regression passes, summarize the outcome in
+  the progress dashboard and delete the bug document. Git history and the
+  regression test preserve closed-defect detail. A corrected observation that
+  was not a product bug is also removed after its harness or contract lesson is
+  incorporated into the plan or tooling guide.
+
+Do not copy the same narrative among these documents. Replace superseded current
+status instead of appending another session diary. Keep durable reusable harness
+instructions in `browser-e2e-tools.md`, not in progress or handoff.
+
 ## Execution Status
 
-Use the [current progress and resume checklist](./browser-e2e-progress.md) for
-completed scopes, retained fixtures, closed findings and the remaining queue.
-This document defines coverage, not completed results. The
-[Profile/avatar roster bug](./browser-e2e-bug-profile-update-stale-roster.md)
-currently has automated checks passing and browser regression pending.
-New independent runs use fresh fixture prefixes; a documented continuation may
-reuse the retained fixtures after confirming their current roles and state.
+Use the [current coverage dashboard](./browser-e2e-progress.md#current-coverage-dashboard)
+for tested scopes, remaining work, current blockers, and links to active defect
+records. New independent runs use fresh fixture prefixes; a documented
+continuation may reuse retained fixtures after confirming their current roles
+and state.
 
 ## Test Rules
 
-The deterministic browser smoke runner is Playwright. Use it with:
+The deterministic browser runner is Playwright against the HMR frontend only.
+Start the backend and HMR frontend first:
 
 ```bash
-npx playwright test --config test/browser-e2e/playwright.config.ts
+npm run dev:be
+npm run dev:fe
 ```
+
+Use the runner with:
+
+```bash
+npm run test:browser
+```
+
+The runner refuses to start unless both Angular Web and Admin Vite report a
+current successful HMR build in `/tmp/soms-browser-e2e/status/`. Built frontend
+assets are not a browser acceptance target. Android uses the separate automation
+APK target `npm run build:android:e2e` and is reported independently.
 
 The adaptive runner reads the numbered cases in this document and lets an AI
 agent operate either Playwright or Android Appium through a restricted action
@@ -45,6 +82,50 @@ The Playwright runner uses the installed system Chrome by default
 is required. Set `BROWSER_HEADFUL=1` for a visible browser. AI-run artifacts
 default to `/tmp/soms-cross-platform/` and must not contain authentication
 state.
+
+### 0.7 Browser harness self-check
+
+Run this self-check before product acceptance work and after changing the browser
+harness. A harness failure is **BLOCKED**, not a product **FAIL** or **BUG**.
+
+- The three edge URLs are reachable through the HMR frontend at ports 3101,
+  3102, and 3103; browser acceptance must not use built frontend assets.
+- The Web and Admin HMR status files report the current lab session and a
+  successful build; a compilation failure is surfaced before browser actions.
+- Persistent driver `status`, `open`, `inspect`, and `close` work without
+  resetting a profile or database.
+- Headful mode is available through `BROWSER_HEADFUL=1`; default runs remain
+  headless.
+- Invalid edge URLs and eval paths outside the repository or temporary step
+  directory are rejected.
+- Independent profiles do not share cookies, visible account identity, or
+  IndexedDB state.
+- Screenshots and traces are written under the local artifact directory with
+  restrictive permissions; OTPs and passwords never enter artifacts or logs.
+- Browser observations include console errors, failed requests, and relevant
+  HTTP error responses, while normal HMR/favicons are filtered.
+- The adaptive runner validates AI actions at runtime, writes `result.json`,
+  distinguishes PASS/FAIL/BUG/BLOCKED/SKIPPED, and refuses unsupported
+  single-participant execution for coordinated multi-user cases.
+
+### Acceptance and execution boundaries
+
+- Expand matrix bullets into stable case IDs before execution. Record platform,
+  local/federated topology, fixture, build, and evidence per case. Use NOT RUN
+  for planned work; SKIPPED requires a reason. A targeted unit test does not
+  complete a browser or Android acceptance case.
+- Establish the expected product behavior before labeling a difference a BUG.
+  Record the selected profile revision for versioned identity surfaces and the
+  refresh trigger for snapshot lists. A historical avatar or a request list
+  awaiting explicit refresh is not automatically stale.
+- Record the observation deadline and actual convergence time for asynchronous
+  checks. On timeout, separate a broken locator, unavailable environment, and
+  completed product action with a missing result; do not invent a product SLA.
+- Test only exposed capabilities. An absent avatar-reset control, for example,
+  cannot earn a UI PASS from a component test. Record that boundary explicitly.
+- Prioritize identity isolation, authorization, send/receive, profile resolution,
+  and recovery before expanding media, layout, and node combinations. These
+  priorities change execution order, not the required coverage.
 
 ### Platform coverage
 
@@ -93,12 +174,12 @@ For each completed small item, record:
 
 ## Lab Topology
 
-| Node | Federation domain | Browser edge | Backend | Database |
-| --- | --- | --- | --- | --- |
-| Alpha | `alpha.test` | `http://localhost:3101` | `http://127.0.0.1:3201` | `soms_fed_lab_alpha` |
-| Bravo | `bravo.test` | `http://localhost:3102` | `http://127.0.0.1:3202` | `soms_fed_lab_bravo` |
-| Charlie | `charlie.test` | `http://localhost:3103` | `http://127.0.0.1:3203` | `soms_fed_lab_charlie` |
-| Admin | selected lab node | `http://localhost:5180/admin/` | selected backend | selected lab database |
+| Node    | Federation domain | Browser edge                 | Backend                 | Database               |
+| ------- | ----------------- | ---------------------------- | ----------------------- | ---------------------- |
+| Alpha   | `alpha.test`      | `http://localhost:3101`      | `http://127.0.0.1:3201` | `soms_fed_lab_alpha`   |
+| Bravo   | `bravo.test`      | `http://localhost:3102`      | `http://127.0.0.1:3202` | `soms_fed_lab_bravo`   |
+| Charlie | `charlie.test`    | `http://localhost:3103`      | `http://127.0.0.1:3203` | `soms_fed_lab_charlie` |
+| Admin   | selected lab node | selected node edge `/admin/` | selected backend        | selected lab database  |
 
 Always use the edge URL for a browser test. Do not point the SPA at port
 `320x` directly unless the test specifically targets an API or transport
@@ -106,13 +187,13 @@ failure. The edge selects the correct backend and federation identity.
 
 ## Fixed Browser Entrances
 
-| Purpose | URL |
-| --- | --- |
-| Alpha Web | `http://localhost:3101/` |
-| Bravo Web | `http://localhost:3102/` |
-| Charlie Web | `http://localhost:3103/` |
-| Alpha Admin | `http://localhost:3101/admin/` |
-| Bravo Admin | `http://localhost:3102/admin/` |
+| Purpose       | URL                            |
+| ------------- | ------------------------------ |
+| Alpha Web     | `http://localhost:3101/`       |
+| Bravo Web     | `http://localhost:3102/`       |
+| Charlie Web   | `http://localhost:3103/`       |
+| Alpha Admin   | `http://localhost:3101/admin/` |
+| Bravo Admin   | `http://localhost:3102/admin/` |
 | Charlie Admin | `http://localhost:3103/admin/` |
 
 The Admin console is served through the same edge as its node. Do not use
@@ -130,7 +211,7 @@ the standalone Vite development entry and is not the federation edge.
    Admin account, without resetting lab databases or recording the replacement
    password. The reset must be followed by a real Admin-page login check.
 3. Open Users, locate the target account, open its detail view, and choose the
-   visible `签发登录码` action.
+   visible issue-login-code action.
 4. Read the one-time value from `#ilc-code` immediately. Never write it to a
    file, screenshot, report, terminal log, or this document.
 5. In that user's independent Web context, open the edge URL. Choose the OTP
@@ -173,17 +254,82 @@ state only in a local temporary directory and never commit it.
 
 Recommended context names:
 
-| Context | Account type | Edge URL |
-| --- | --- | --- |
-| `admin` | administrator | `http://localhost:5180/admin/` |
-| `alice-alpha` | local user | `http://localhost:3101` |
-| `bob-alpha` | local user | `http://localhost:3101` |
-| `charlie-bravo` | federated user | `http://localhost:3102` |
-| `diana-charlie` | federated user | `http://localhost:3103` |
+| Context                                         | Account type       | Edge URL                     |
+| ----------------------------------------------- | ------------------ | ---------------------------- |
+| `admin-alpha` / `admin-bravo` / `admin-charlie` | node administrator | selected node edge `/admin/` |
+| `alice-alpha`                                   | local user         | `http://localhost:3101`      |
+| `bob-alpha`                                     | local user         | `http://localhost:3101`      |
+| `charlie-bravo`                                 | federated user     | `http://localhost:3102`      |
+| `diana-charlie`                                 | federated user     | `http://localhost:3103`      |
 
 The test runner must assert the active account after every login by reading the
 visible profile/account label. A context must be discarded and recreated after
 logout, forced logout, disable/enable, or an unexpected account label.
+
+### Context lifetime and login-rate-limit rule
+
+Contexts are long-lived fixtures for the duration of a related test batch. The
+runner must create and retain one Admin context per node and one user context
+per participant, then reuse those contexts for adjacent cases. Do not create a
+new Admin context or perform a new Admin login for every small test item:
+Admin login is rate-limited, and repeated login attempts create a test-harness
+failure that can obscure the product result. Re-authenticate only when the
+visible session is invalid, the backend has restarted, or the test explicitly
+exercises logout or session expiry.
+
+Admin contexts are node-specific because all lab edges use the `localhost`
+host; sharing one Admin context across Alpha, Bravo, and Charlie would replace
+the host-scoped Admin cookie and produce a false authentication failure.
+
+If the retained Admin password is stale, reset only the local lab Admin
+credential as test setup. Generate a random temporary password in memory, pass
+it through the current process environment, and use it only to log in through
+the visible Admin page. Never write that password to source, documentation,
+logs, screenshots, shell history, or test artifacts. The reset must not reset
+the lab databases, users, groups, messages, or federation state.
+
+### Browser-control execution principles
+
+The browser controller is part of the test harness and must be debugged
+separately from the product under test. A locator timeout or detached DOM node
+is not an unstable product UI. Inspect the live DOM and identify the owning UI
+framework before deciding the result:
+
+- Locate interactive controls through form semantics, accessibility
+  relationships, routes, or scoped component structure. Never locate a control
+  by localized or user-visible text. Text is allowed only for scoped business
+  assertions.
+- Admin React dialogs use `[data-slot="dialog-content"]` and must be reacquired
+  after a dialog state transition.
+- Web Angular root popups use `.material-modal.modal-show` inside
+  `app-root-popup`; they are not Admin dialogs.
+- Scope actions to the visible modal and close it through its visible action
+  before clicking a background element with matching text.
+- Scope identity, message, and domain assertions to the visible header, result
+  card, message row, or dialog; whole-page text includes hidden emoji and
+  attachment content.
+- After reload, reopen the target conversation before asserting history.
+- The group invite page renders inside `section.join-workspace`. Its
+  `role=tab` elements must be scoped to that section; the chat emoji panel also
+  renders `role=tab` elements globally, so a global `role=tab` locator selects
+  the wrong tab.
+- The Admin login success signal is the visible searchbox on `/admin/users`.
+  Do not use `waitForURL` or localized heading text as
+  the success condition; the sidebar, breadcrumb, and page title repeat the
+  same translated label.
+- Group names are capped at 31 characters. A test name longer than that is
+  truncated by the form; subsequent assertions must match the truncated
+  visible name (use a regex on the stable prefix) rather than the full input.
+- Group invitation candidates require an active friendship. A user who
+  removed the friend relationship earlier in the run cannot be invited until
+  the relationship is re-established through the UI. Plan fixture order so a
+  removal test does not silently break a later invitation test, or re-add the
+  friendship first (which itself exercises the relationship re-add cut).
+
+Only stop with a product BUG after the UI action is complete and the expected
+versus actual difference is reproduced with a scoped assertion. Fix a
+control-layer failure in the harness and retry; repair or explicitly record an
+environment failure. Neither is a product result.
 
 Do not use ordinary tabs, multiple accounts in one context, or multiple private
 windows as an alternative. Ports do not isolate cookies, and private windows
@@ -207,13 +353,13 @@ should use its home-node browser edge for UI assertions.
 Use unique, timestamped accounts created by the Admin UI or the documented
 admin provisioning flow. The following roles cover the main matrix:
 
-| Fixture | Home node | Role |
-| --- | --- | --- |
-| Alice | Alpha | local user, P2P sender, group owner |
-| Bob | Alpha | local user, P2P recipient, group member |
-| Charlie | Bravo | federated user, mixed group member |
-| Diana | Charlie | federated user, third-node group member |
-| Admin | Alpha | administrator |
+| Fixture | Home node | Role                                    |
+| ------- | --------- | --------------------------------------- |
+| Alice   | Alpha     | local user, P2P sender, group owner     |
+| Bob     | Alpha     | local user, P2P recipient, group member |
+| Charlie | Bravo     | federated user, mixed group member      |
+| Diana   | Charlie   | federated user, third-node group member |
+| Admin   | Alpha     | administrator                           |
 
 Keep the fixture address visible in the test log, including its domain. A
 display name alone is insufficient when checking local/federated identity.
@@ -252,8 +398,7 @@ display name alone is insufficient when checking local/federated identity.
 
 - **2.1** Alice searches for Bob by local account.
 - **2.2** Alice sends a friend request. The browser flow includes the search
-  result's `添加好友` action followed by the confirmation dialog's
-  `发送请求` action; Bob sees the incoming request without a refresh.
+  result's add-friend action followed by the confirmation dialog's send-request action; Bob sees the incoming request without a refresh.
 - **2.3** Bob accepts; both windows show the active relationship and the same
   P2P thread.
 - **2.4** Repeat the request and acceptance to verify idempotent or explicit
@@ -289,6 +434,14 @@ Run the following matrix for both `Alice ↔ Bob` (local) and
 - Local identity must remain `@local`/local presentation; federated identity
   must retain the source domain at search, request, thread, message, profile,
   preview, system event, and error surfaces.
+
+- **2.x.cancel.federated**: Alpha sends a request to Bravo, then withdraws
+  it while Bravo retains the incoming-list snapshot. Verify the sender shows
+  a disabled withdrawn status, accepting the stale receiver card is rejected,
+  refreshing the incoming tab removes decision controls, and both whole-page
+  reloads retain the withdrawn state and read-only history. Reapply and accept
+  to restore the fixture; confirm a new message arrives once. Record the
+  snapshot refresh trigger separately from live delivery.
 
 ### 3. Federated user relationships
 
@@ -344,13 +497,13 @@ Run the following matrix for both `Alice ↔ Bob` (local) and
 
 Every group membership scenario must be executed twice:
 
-| Dimension | Local case | Federated case |
-| --- | --- | --- |
-| Inviter/owner | Alice Alpha | Alice Alpha |
-| Invitee/applicant | Bob Alpha | Charlie Bravo, then Diana Charlie |
-| Browser contexts | Alice + Bob | Alice + Charlie/Diana |
-| Identity check | local account | full account + home domain |
-| Transport check | local state feed | federation delivery and mirror projection |
+| Dimension         | Local case       | Federated case                            |
+| ----------------- | ---------------- | ----------------------------------------- |
+| Inviter/owner     | Alice Alpha      | Alice Alpha                               |
+| Invitee/applicant | Bob Alpha        | Charlie Bravo, then Diana Charlie         |
+| Browser contexts  | Alice + Bob      | Alice + Charlie/Diana                     |
+| Identity check    | local account    | full account + home domain                |
+| Transport check   | local state feed | federation delivery and mirror projection |
 
 For each side of the matrix test:
 
@@ -378,11 +531,11 @@ separate contexts where applicable.
 - Single federated mention: `@Charlie@bravo.test` semantics, source domain,
   and Charlie's mention unread on Bravo.
 - Multiple mentions across local and federated members in one message.
-- `@所有人` by OWNER, ADMIN, and MEMBER. Verify authorization, including
+- The all-members mention by OWNER, ADMIN, and MEMBER. Verify authorization, including
   whether a MEMBER sees the candidate but receives a clear rejection or does
   not see the candidate; the behavior must be consistent with the product
   contract.
-- `@所有人` in a local group and a federated group, including remote delivery,
+- The all-members mention in a local group and a federated group, including remote delivery,
   per-account unread isolation, and no duplicate notifications.
 - Invalid account, invalid domain, unknown member, removed member, long
   account/display name, whitespace/case variants, and manually typed protocol
@@ -404,13 +557,13 @@ This matrix is required separately for a local group and a federated group. It
 must use at least three independent browsers so that one participant can leave
 while the remaining participants continue sending messages.
 
-| Phase | Local case | Federated case |
-| --- | --- | --- |
-| Members | Alice/Bob/another Alpha member | Alice Alpha/Charlie Bravo/Diana Charlie |
-| Leave | Bob leaves Alpha group | Charlie leaves from Bravo |
-| Active senders during leave | Alice and the remaining local member | Alice and Diana on their home nodes |
-| Rejoin | Bob is invited again and accepts | Charlie is invited again and accepts |
-| Required assertions | roster, unread, count, order, preview, system events | all local assertions plus domain, S2S delivery, mirror convergence |
+| Phase                       | Local case                                           | Federated case                                                     |
+| --------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------ |
+| Members                     | Alice/Bob/another Alpha member                       | Alice Alpha/Charlie Bravo/Diana Charlie                            |
+| Leave                       | Bob leaves Alpha group                               | Charlie leaves from Bravo                                          |
+| Active senders during leave | Alice and the remaining local member                 | Alice and Diana on their home nodes                                |
+| Rejoin                      | Bob is invited again and accepts                     | Charlie is invited again and accepts                               |
+| Required assertions         | roster, unread, count, order, preview, system events | all local assertions plus domain, S2S delivery, mirror convergence |
 
 For each local and federated run:
 
@@ -427,6 +580,10 @@ For each local and federated run:
 - After rejoin, verify the member receives the documented catch-up boundary,
   not an arbitrary full history or a missing permitted message. Check message
   order, sender account/domain, system events, and duplicate suppression.
+- Full Group Meta recovery must not generate GROUP_JOINED or GROUP_LEFT,
+  even when the snapshot restores a previously departed member or removes a
+  previously present member. Do not require a system-message preview or unread
+  increment from full recovery; check roster and message catch-up separately.
 - Send a post-rejoin message from every member and verify all participants
   converge on the same sequence and thread preview.
 - Verify unread count and `@` unread independently for the rejoining account and
@@ -519,7 +676,7 @@ sender, recipient, and observing browser visible in the test log.
   local domain, remote domain, thread count/order, preview eligibility, unread,
   mention unread, and refresh/reconnect result in each record.
 - **6.11** Withdraw a message containing a single mention, multiple mentions,
-  and `@所有人`; verify the recipient's mention marker and notification do not
+  and the all-members mention; verify the recipient's mention marker and notification do not
   survive solely because the withdrawn body once contained an @ entity.
 - **6.12** Report a message from the Web client, process it from the Admin Web
   message-report page, and delete the reported message through the server-side
@@ -530,13 +687,13 @@ sender, recipient, and observing browser visible in the test log.
   - federated P2P: report on one node and verify deletion on both homes;
   - federated group: report from a remote member and verify all authorized
     local/remote members converge on the deletion tombstone.
-  For every case, record the exact message sequence, report success, Admin list
-  visibility, Admin delete response, tombstone/system presentation, and the
-  report row transition. Verify that the original text/media/URL is no longer
-  shown to any authorized participant and that unauthorized participants do not
-  gain access through the report flow.
+    For every case, record the exact message sequence, report success, Admin list
+    visibility, Admin delete response, tombstone/system presentation, and the
+    report row transition. Verify that the original text/media/URL is no longer
+    shown to any authorized participant and that unauthorized participants do not
+    gain access through the report flow.
 - **6.12a** Repeat 6.12 with unread state and attention state already pending.
-  Assert unread count, mention unread, `@所有人`, thread item count, thread
+  Assert unread count, mention unread, all-members mention, thread item count, thread
   order, preview, notification, and in-thread ordering after deletion. Repeat
   while one client is offline, then refresh/reconnect it; the result must
   converge without duplicate tombstones or the original content flashing.
@@ -571,7 +728,7 @@ sender, recipient, and observing browser visible in the test log.
   or forward must preserve the original author account/domain and must not
   replace a federated origin with the mirror's local sequence or domain.
 - **7.10** Quote a message containing a local mention, a federated mention,
-  multiple mentions, and `@所有人`; then send a new reply with and without a
+  multiple mentions, and the all-members mention; then send a new reply with and without a
   new mention. Verify source and new mention identities independently.
 - **7.11** Withdraw the source of each quoted/forwarded mention message before
   and after the target reads it. Verify the quote's documented tombstone or
@@ -585,6 +742,32 @@ sender, recipient, and observing browser visible in the test log.
   sources; attempt depth 4 for both and assert a clear limit error with no
   partial message. Withdraw the source at every depth and compare quote versus
   immutable history snapshot behavior.
+
+#### 7.14 Forwarded identity and avatar acceptance
+
+Run direct forwards, multi-author history forwards, and nested forwards
+separately, with local and federated authors and recipients:
+
+- **7.14a** Distinguish the outer sending user's avatar from each inner source
+  author's avatar. Verify account, domain, and the revision selected by each
+  card's evidence. Include equal account names on different home domains.
+- **7.14b** Inspect both the collapsed card and opened history/detail view,
+  including depth 2/3. Check real image loading, not only an accessible image
+  label that can also describe an SVG fallback.
+- **7.14c** Repeat with a warm profile cache and a fresh client cache whose
+  profile becomes available later. Keep the card open during completion;
+  verify the correct avatar appears without reopening or reloading.
+- **7.14d** Change the source author's profile before and after forwarding.
+  Judge each surface against its selected revision; an immutable historical
+  reference need not adopt the latest revision. Test a revision with no avatar
+  and confirm the generated fallback replaces any previously rendered image.
+- **7.14e** Scroll the card offscreen and back, switch conversations, open and
+  close details repeatedly, and reload. Reused views must not retain another
+  author's image, name, or domain. Include narrow layouts and a recipient who
+  has no direct friendship with the original author but may view the forward.
+- **7.14f** Repeat the applicable withdrawal, moderation, and access-loss checks
+  from 7.7/6.12b; record the permitted snapshot behavior separately from live
+  source access. Do not assume cached, already-authorized history must vanish.
 
 ### 8. System messages and lifecycle events
 
@@ -608,7 +791,7 @@ details unless the product explicitly defines them as user-visible.
   cancellation. Verify the call-ended system message is consistent on both
   participants and does not reveal raw signaling payloads.
 - **8.5a** Verify the missed-call system event and incoming-call controls
-  (`接听`/`拒绝`) before testing connected media.
+  (accept/decline) before testing connected media.
 - **8.6** Refresh and reconnect after every lifecycle event. The event must not
   duplicate, reorder, disappear, or briefly reveal an obsolete state.
 - **8.7** Check narrow layouts, long display names, federated domains, and
@@ -701,15 +884,15 @@ The words "local" and "federated" are test dimensions, not labels that can be
 substituted after the fact. Every applicable small item below requires two
 separate browser records:
 
-| Dimension | Local execution | Federated execution |
-| --- | --- | --- |
-| Accounts | Alice/Bob on Alpha | Alice Alpha + Charlie Bravo, and Diana Charlie where relevant |
-| Web edges | Alpha for both contexts | Each user uses its home-node edge |
-| Identity | `account@local`/Alpha-local presentation | full `account@alpha.test`, `account@bravo.test`, or `account@charlie.test` |
-| Transport | Alpha HTTP/SSE/state feed | S2S delivery, mirror projection, remote HTTP/SSE |
-| Assertions | local thread, role, unread, system event | same assertions plus origin domain, mirror sequence, convergence |
-| Recovery | browser refresh/reconnect | browser refresh, remote-node reconnect, delayed/duplicate federation event |
-| UI | 1440x1000 and 390x844 | 1440x1000 and 390x844 on both home edges |
+| Dimension  | Local execution                          | Federated execution                                                        |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------------------- |
+| Accounts   | Alice/Bob on Alpha                       | Alice Alpha + Charlie Bravo, and Diana Charlie where relevant              |
+| Web edges  | Alpha for both contexts                  | Each user uses its home-node edge                                          |
+| Identity   | `account@local`/Alpha-local presentation | full `account@alpha.test`, `account@bravo.test`, or `account@charlie.test` |
+| Transport  | Alpha HTTP/SSE/state feed                | S2S delivery, mirror projection, remote HTTP/SSE                           |
+| Assertions | local thread, role, unread, system event | same assertions plus origin domain, mirror sequence, convergence           |
+| Recovery   | browser refresh/reconnect                | browser refresh, remote-node reconnect, delayed/duplicate federation event |
+| UI         | 1440x1000 and 390x844                    | 1440x1000 and 390x844 on both home edges                                   |
 
 Never mark a federated case PASS because its local analogue passed. The result
 log must use suffixes such as `2.4-local` and `3.4-federated` and include the
@@ -791,9 +974,9 @@ and federated cases unless the domain is explicitly local-only.
 ### F. Mention and Notification
 
 - Single local mention, single federated mention, mixed multiple mentions,
-  `@所有人`, invalid target, long target, mention in quote, mention in forward,
+  all-members mention, invalid target, long target, mention in quote, mention in forward,
   and mention in nested forward.
-- Test OWNER/ADMIN/MEMBER permission for `@所有人`, mention unread isolation,
+- Test OWNER/ADMIN/MEMBER permission for the all-members mention, mention unread isolation,
   push/notification text, thread preview, read clearing, refresh/reconnect,
   and withdrawal of the only or one-of-many unread mentions.
 
@@ -838,40 +1021,43 @@ participants where the identity is visible across nodes.
 - Verify avatar propagation in profile page, friend search result, request
   card, P2P thread list, message sender label, member roster, mention popup,
   notification, call UI, quote card, and forward card.
-- Verify avatar cache invalidation: old image must not remain in one surface
-  after the new image is visible in another. Check cache-busting and object URL
-  cleanup after repeated switches.
+- Verify every surface renders the profile revision selected by its evidence.
+  Different historical and current references may legitimately show different
+  images. Check object URL cleanup after repeated switches and remounts.
 
 #### I.2 Local/federated personal avatar matrix
 
-| Scenario | Local assertion | Federated assertion |
-| --- | --- | --- |
-| Alice changes avatar | Bob sees new avatar on Alpha | Charlie sees new Alice avatar on Bravo |
-| Charlie changes avatar | Alice sees the remote update after federation | Alpha/Bravo source and mirror labels stay correct |
-| Refresh/reconnect | Both local browsers converge | Both home-node browsers converge after S2S replay |
-| Offline/delayed update | Old avatar remains until committed | No partial or stale remote profile is shown |
-| Remove/reset avatar | Default avatar appears everywhere | Default avatar propagates without wrong local fallback |
+| Scenario               | Local assertion                               | Federated assertion                                    |
+| ---------------------- | --------------------------------------------- | ------------------------------------------------------ |
+| Alice changes avatar   | Bob sees new avatar on Alpha                  | Charlie sees new Alice avatar on Bravo                 |
+| Charlie changes avatar | Alice sees the remote update after federation | Alpha/Bravo source and mirror labels stay correct      |
+| Refresh/reconnect      | Both local browsers converge                  | Both home-node browsers converge after S2S replay      |
+| Offline/delayed update | Old avatar remains until committed            | No partial or stale remote profile is shown            |
+| Remove/reset avatar    | Default avatar appears everywhere             | Default avatar propagates without wrong local fallback |
 
 For every federated avatar assertion verify the domain and account remain
 correct; a remote avatar must never be attached to a same-account local row.
 
 #### I.2a Profile-update trigger matrix
 
-The avatar/profile update must be tested as an event that invalidates existing
-identity surfaces, not only as an isolated profile-page mutation. For each
-profile change A → B → C, run the local and federated columns separately:
+Test both profile-reference changes and availability of the selected immutable
+profile. A new revision does not globally invalidate historical references.
+For each profile change A → B → C, record each surface's selected revision and
+run the local and federated columns separately. Consecutive messages may share
+an existing sender run; use an intervening peer message when checking a new run.
+Snapshot lists are checked after their supported refresh action.
 
-| Trigger/surface | Local execution | Federated execution |
-| --- | --- | --- |
-| New friend request | Bob's Alpha request card updates Alice's avatar/name | Charlie's Bravo request card updates Alice's remote avatar/name and domain |
-| Accepted friendship | Existing P2P header/list/message sender refreshes | Remote P2P header/list/message sender refreshes after S2S replay |
-| Group invitation | Pending local invite card shows current group/owner/avatar | Remote invite/application card shows current group/owner/avatar and source domain |
-| Group join/roster | Existing member row and group header refresh | Mirror roster and group header refresh on the remote home node |
-| New message | Sender avatar in a new message and thread preview uses the newest profile | Federated sender avatar/domain update arrives with or before the message projection |
-| Existing message history | Scrolled/loaded old message sender profile updates without rewriting message identity | Remote historical sender profile resolves to the new revision without local-domain substitution |
-| Mention popup | Candidate label/avatar updates | Federated candidate retains remote account/domain and new avatar |
-| Quote/forward card | Newly created cards use the latest profile evidence | Remote quote/forward retains source account/domain and latest permitted profile |
-| Call UI/system event | Caller/callee avatar updates in an active/local call | Federated call UI uses the remote profile and domain |
+| Trigger/surface          | Local execution                                                                   | Federated execution                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| New friend request       | Bob's Alpha request card updates Alice's avatar/name                              | Charlie's Bravo request card updates Alice's remote avatar/name and domain          |
+| Accepted friendship      | Existing P2P header/list/message sender refreshes                                 | Remote P2P header/list/message sender refreshes after S2S replay                    |
+| Group invitation         | Pending local invite card shows current group/owner/avatar                        | Remote invite/application card shows current group/owner/avatar and source domain   |
+| Group join/roster        | Existing member row and group header refresh                                      | Mirror roster and group header refresh on the remote home node                      |
+| New message              | Sender avatar in a new message and thread preview uses the newest profile         | Federated sender avatar/domain update arrives with or before the message projection |
+| Existing message history | Render the revision selected by the message/sender run without rewriting identity | Resolve the selected historical revision without local-domain substitution          |
+| Mention popup            | Candidate label/avatar updates                                                    | Federated candidate retains remote account/domain and new avatar                    |
+| Quote/forward card       | Render the revision selected by card evidence; execute 7.14                       | Preserve source account/domain and the selected permitted revision; execute 7.14    |
+| Call UI/system event     | Caller/callee avatar updates in an active/local call                              | Federated call UI uses the remote profile and domain                                |
 
 For every row:
 
@@ -885,9 +1071,9 @@ For every row:
   federation, and a new login; no surface may require a full database reset.
 - Compare the visible avatar URL/image digest only through browser-rendered
   behavior. Do not use cookies or internal storage state as a PASS assertion.
-- Verify stale cached avatars do not remain in invitation cards, thread rows,
-  message bubbles, quote/forward cards, member rows, or notifications after the
-  latest profile revision is visible elsewhere.
+- Verify each rendered image matches its surface's selected revision after
+  that reference changes or its pending resolution completes. A newer image
+  elsewhere is not by itself evidence that this surface is incorrect.
 
 #### I.2b Profile fields beyond avatar
 
@@ -895,6 +1081,33 @@ Repeat the same matrix for display name, bio, and default-avatar reset. A
 profile update must not change the immutable account/domain identity, message
 author identity, group membership role, or thread ordering unless the product
 explicitly defines that behavior.
+
+#### I.2c Resolution paths and lifecycle isolation
+
+- **I.2c.1** Warm-cache/READY: mount each identity surface with the selected
+  profile already cached. It must render without requiring a later event.
+- **I.2c.2** Cold-cache/PENDING: keep the surface mounted through runtime
+  completion and local notification. It must update without manual refresh.
+  Exercise proactive UI demand and state-feed-triggered resolution separately.
+- **I.2c.3** Match `(namespaceId, account, domain, rev)`: notifications for a
+  different namespace, same account on another domain, or an older revision
+  must not overwrite the current identity. A cache hit must not disable later
+  matching notification handling.
+- **I.2c.4** Delay completion, switch the selected revision or conversation,
+  unmount/remount, and log out into another account. Late results must not
+  change the new session or reuse an old avatar. Include self-profile views.
+- **I.2c.5** Disconnect during pending resolution, then reconnect or restart
+  the client runtime. Repeat the demand and verify recovery without resetting
+  data. Test an unavailable profile and a subsequent successful retry.
+- **I.2c.6** Clear chat cache using Settings, then reopen/reload identity
+  surfaces. Profile rows and avatar assets must remain usable according to the
+  profile-cache contract. Test fresh-cache behavior separately; no historical
+  schema conversion or legacy avatar compatibility is required.
+
+Browser assertions establish visible behavior. Deterministic event ordering,
+commit-before-notification, and four-field mismatch cases also require focused
+runtime/repository tests; record those separately and do not claim that UI code
+subscribes to raw backend SSE. Android needs its own runtime evidence.
 
 #### I.3 Group avatar lifecycle
 
@@ -949,11 +1162,11 @@ Alpha/Bravo/Charlie group.
 
 For every major page and each high-risk mutation, capture at least:
 
-| Viewport | Width | Height | Focus |
-| --- | ---: | ---: | --- |
-| Desktop | 1440 | 1000 | sidebar, chat, member panel, admin tables |
-| Tablet | 900 | 1100 | collapsed navigation, dialogs, two-column transitions |
-| Mobile | 390 | 844 | composer, menus, quotes, media, call overlay |
+| Viewport | Width | Height | Focus                                                 |
+| -------- | ----: | -----: | ----------------------------------------------------- |
+| Desktop  |  1440 |   1000 | sidebar, chat, member panel, admin tables             |
+| Tablet   |   900 |   1100 | collapsed navigation, dialogs, two-column transitions |
+| Mobile   |   390 |    844 | composer, menus, quotes, media, call overlay          |
 
 Check the full visible page and not only the target control. Mark a **BUG** for
 any of the following:

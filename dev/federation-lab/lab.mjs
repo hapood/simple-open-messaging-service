@@ -1,6 +1,13 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
@@ -30,6 +37,25 @@ const runBackend = !frontendOnly;
 const runFrontend = !backendOnly;
 const webDevPort = 4200;
 const adminDevPort = 5180;
+const browserE2eRoot =
+  process.env.BROWSER_ARTIFACT_DIR || '/tmp/soms-browser-e2e';
+const hmrLogDir = join(browserE2eRoot, 'logs');
+const hmrStatusDir = join(browserE2eRoot, 'status');
+const hmrSessionId = new Date().toISOString();
+let hmrRecoveryTimer;
+
+function restoreHmrSessionMarker() {
+  const marker = join(hmrStatusDir, 'session.json');
+  if (existsSync(marker)) return;
+  mkdirSync(hmrStatusDir, { recursive: true, mode: 0o700 });
+  // Only restore the original session identity for this still-running lab.
+  // Never claim a successful build; each frontend must rebuild its own status.
+  writeFileSync(
+    marker,
+    `${JSON.stringify({ sessionId: hmrSessionId, pid: process.pid, startedAt: hmrSessionId }, null, 2)}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+}
 
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
 if (runBackend && !baseDatabaseUrl) {
@@ -59,6 +85,7 @@ function stop(exitCode = 0) {
   stopping = true;
   process.exitCode = exitCode;
   shutdown.abort();
+  if (hmrRecoveryTimer) clearInterval(hmrRecoveryTimer);
   console.log(
     children.length
       ? '[lab] stopping children gracefully (up to 60s)'
@@ -304,6 +331,29 @@ function spawnChild(command, args, options = {}) {
   return child;
 }
 
+function spawnLoggedChild(name, command, args, options = {}) {
+  mkdirSync(hmrLogDir, { recursive: true, mode: 0o700 });
+  const log = createWriteStream(join(hmrLogDir, `${name}.log`), {
+    flags: 'a',
+    mode: 0o600,
+  });
+  const child = spawnChild(command, args, {
+    stdio: ['inherit', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      SOMS_HMR_STATUS_DIR: hmrStatusDir,
+      SOMS_HMR_SESSION_ID: hmrSessionId,
+    },
+    ...options,
+  });
+  child.stdout.pipe(process.stdout);
+  child.stdout.pipe(log);
+  child.stderr.pipe(process.stderr);
+  child.stderr.pipe(log);
+  child.once('exit', () => log.end());
+  return child;
+}
+
 try {
   if (runBackend) {
     mkdirSync(runtimeDir, { recursive: true });
@@ -337,7 +387,22 @@ try {
   }
 
   if (runFrontend && devServer && !stopping) {
-    spawnChild('npm', [
+    mkdirSync(hmrStatusDir, { recursive: true, mode: 0o700 });
+    restoreHmrSessionMarker();
+    hmrRecoveryTimer = setInterval(() => {
+      try {
+        restoreHmrSessionMarker();
+      } catch (error) {
+        console.error('[lab] HMR session marker recovery failed', error);
+      }
+    }, 2_000);
+    hmrRecoveryTimer.unref();
+    spawnLoggedChild('web', process.execPath, [
+      join(root, 'scripts', 'hmr-observer.mjs'),
+      'web',
+      hmrStatusDir,
+      '--',
+      'npm',
       'run',
       'start',
       '--prefix',
@@ -348,7 +413,7 @@ try {
       '--port',
       String(webDevPort),
     ]);
-    spawnChild('npm', ['run', 'dev', '--prefix', 'admin-web']);
+    spawnLoggedChild('admin', 'npm', ['run', 'dev', '--prefix', 'admin-web']);
   }
 
   if (runBackend && !stopping) {
@@ -389,20 +454,23 @@ try {
         }
       });
     }
-    const ready = await waitForServices([
-      {
-        name: 'be',
-        check: (signal) =>
-          Promise.all(
-            nodes.map((node) =>
-              waitForUrl(
-                `http://127.0.0.1:${node.backendPort}/api/v1/health`,
-                signal,
+    const ready = await waitForServices(
+      [
+        {
+          name: 'be',
+          check: (signal) =>
+            Promise.all(
+              nodes.map((node) =>
+                waitForUrl(
+                  `http://127.0.0.1:${node.backendPort}/api/v1/health`,
+                  signal,
+                ),
               ),
             ),
-          ),
-      },
-    ], shutdown.signal);
+        },
+      ],
+      shutdown.signal,
+    );
     if (ready) {
       console.log('\nThree-node federation backends are ready:');
       for (const node of nodes) {
@@ -448,13 +516,15 @@ try {
         )
       : true;
     if (ready) {
-      spawnChild('caddy', [
+      const caddyArgs = [
         'run',
         '--config',
         join(labDir, devServer ? 'Caddyfile.hmr' : 'Caddyfile.built'),
         '--adapter',
         'caddyfile',
-      ]);
+      ];
+      if (devServer) spawnLoggedChild('caddy', 'caddy', caddyArgs);
+      else spawnChild('caddy', caddyArgs);
       console.log(
         `\nFederation frontend is ready (${devServer ? 'shared dev servers with HMR' : 'built assets'}):`,
       );
@@ -463,7 +533,9 @@ try {
           `  ${node.domain.padEnd(14)} http://localhost:${node.edgePort}  admin: /admin/`,
         );
       }
-      console.log('Use three separate browser profiles. Press Ctrl+C to stop.\n');
+      console.log(
+        'Use three separate browser profiles. Press Ctrl+C to stop.\n',
+      );
     }
   }
 } catch (error) {

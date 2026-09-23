@@ -66,25 +66,13 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true,
-              "outputHashing": "none",
-              "fileReplacements": [
-                {
-                  "replace": "src/app/common/automation-testing.ts",
-                  "with": "src/app/common/automation-testing.e2e.ts"
-                }
-              ]
+              "outputHashing": "none"
             },
             "automation": {
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true,
-              "outputHashing": "all",
-              "fileReplacements": [
-                {
-                  "replace": "src/app/common/automation-testing.ts",
-                  "with": "src/app/common/automation-testing.e2e.ts"
-                }
-              ]
+              "outputHashing": "all"
             },
             "playground": {
               "browser": "src/playground/main.ts",
