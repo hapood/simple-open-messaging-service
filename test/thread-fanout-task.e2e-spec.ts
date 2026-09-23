@@ -130,13 +130,30 @@ describe('transactional thread fanout queue', () => {
     );
     return users;
   }
-  async function depart(users: Array<{ id: number }>) {
+  const participant = (user: {
+    account: string;
+    defaultProfileRev: number;
+  }) => ({
+    account: user.account,
+    domain: 'local',
+    namespaceId: 0,
+    profileRev: user.defaultProfileRev,
+  });
+  const added = {
+    type: 'FRIEND_ADDED' as const,
+    participants: [
+      { account: 'direct-a', domain: 'local', namespaceId: 0, profileRev: 0 },
+      { account: 'direct-b', domain: 'local', namespaceId: 0, profileRev: 0 },
+    ] as [ReturnType<typeof participant>, ReturnType<typeof participant>],
+  };
+  async function depart(users: Awaited<ReturnType<typeof departingPair>>) {
     await database.db.transaction(async (tx) => {
       // The event carries its own participants: the initiator (users[0]) is
       // the content fact; the departing users[1] needs no separate argument.
       const boundary = await messages.writeSystemMessageInTx(tx, threadId, {
         type: 'FRIEND_REMOVED',
-        initiator: users[0].id,
+        initiator: participant(users[0]),
+        participants: [participant(users[0]), participant(users[1])],
       });
       await tx
         .update(accountThreadState)
@@ -236,7 +253,8 @@ describe('transactional thread fanout queue', () => {
       database.db.transaction(async (tx) => {
         await messages.writeSystemMessageInTx(tx, threadId, {
           type: 'FRIEND_REMOVED',
-          initiator: users[0].id,
+          initiator: participant(users[0]),
+          participants: [participant(users[0]), participant(users[1])],
         });
         throw new Error('departure rollback');
       }),
@@ -281,7 +299,7 @@ describe('transactional thread fanout queue', () => {
       .values({ accountId: member.id, threadId });
     await messages.writeSystemMessage(threadId, {
       type: 'GROUP_LEFT',
-      member: member.id,
+      member: participant(member),
     });
     const [first] = (await database.db.select().from(durableTask)).filter(
       (task) => task.taskType === directedType,
@@ -476,8 +494,8 @@ describe('transactional thread fanout queue', () => {
   });
 
   it('admits system-message fanout in its source transaction and coalesces repeated notices', async () => {
-    await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
-    await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
+    await messages.writeSystemMessage(threadId, added);
+    await messages.writeSystemMessage(threadId, added);
     const queued = await database.db.select().from(durableTask);
     expect(queued).toHaveLength(1);
     expect(queued[0].payload).toEqual({
@@ -492,9 +510,7 @@ describe('transactional thread fanout queue', () => {
   it('does not leak system-message fanout after a relationship transaction rolls back', async () => {
     await expect(
       database.db.transaction(async (tx) => {
-        await messages.writeSystemMessageInTx(tx, threadId, {
-          type: 'FRIEND_ADDED',
-        });
+        await messages.writeSystemMessageInTx(tx, threadId, added);
         throw new Error('relationship rollback');
       }),
     ).rejects.toThrow('relationship rollback');
@@ -549,7 +565,7 @@ describe('transactional thread fanout queue', () => {
         .update(messageThread)
         .set({ curSeq: 1 })
         .where(eq(messageThread.id, threadId));
-      await messages.writeSystemMessage(threadId, { type: 'FRIEND_ADDED' });
+      await messages.writeSystemMessage(threadId, added);
       await enqueueBoth(2);
       const task = (await database.db.select().from(durableTask)).find(
         (row) => row.taskType === federationType,

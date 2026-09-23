@@ -64,9 +64,10 @@ import {
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
-import type {
-  ProfileKey,
-  ProfileSelector as ProfileEvidence,
+import {
+  isProfileSelector,
+  type ProfileKey,
+  type ProfileSelector as ProfileEvidence,
 } from '../../../../shared/profile-selector';
 
 /**
@@ -106,7 +107,7 @@ export type ProfileResolutionAttempt =
   | { status: 'PENDING'; key: ProfileKey };
 
 export type ProfileWake =
-  | { event: 'PROFILE_AVAILABLE'; key: ProfileKey }
+  | { event: 'PROFILE_AVAILABLE'; key: ProfileKey; evidence?: ProfileEvidence }
   | {
       event: 'PROFILE_UNAVAILABLE';
       key: ProfileKey;
@@ -173,6 +174,24 @@ type CachedMessageBody = Message;
 type CachedMessageTombstone = MessageDeletionMarker | MessageTomb;
 
 type CachedMessage = CachedMessageBody | CachedMessageTombstone;
+
+function mergeCachedMessage(
+  current: CachedMessage | undefined,
+  incoming: MessageQueryRow,
+): CachedMessage {
+  const merged = mergeMessageSlot<Message>(current, incoming);
+  if (
+    isCachedMessageBody(merged) &&
+    merged.contentType === 'SYSTEM' &&
+    current &&
+    isCachedMessageBody(current) &&
+    current.contentType === 'SYSTEM' &&
+    current.content === merged.content &&
+    current.localSystemProfileRevs
+  )
+    return { ...merged, localSystemProfileRevs: current.localSystemProfileRevs };
+  return merged;
+}
 
 function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
@@ -343,8 +362,13 @@ export class WebdbStorage {
     });
     // Native SSE is delivered after SQLite materialization. Browser commits
     // notify through the worker instead of emitting again at the request layer.
-    if (isTauri() && result.status === 'READY')
-      this.profileWake.next({ event, key });
+    if (isTauri() && result.status === 'READY') {
+      const evidence =
+        data && typeof data === 'object' && 'evidence' in data &&
+        isProfileSelector(data.evidence) ? data.evidence : undefined;
+      if (evidence) await this.applyGroupMetaProfileDrift(evidence, key);
+      this.profileWake.next({ event, key, ...(evidence ? { evidence } : {}) });
+    }
   }
   private stateFeedWorker: Worker | null = null;
   private stateFeedWorkerRequestId = 0;
@@ -1963,6 +1987,11 @@ export class WebdbStorage {
             continue;
           }
           const body = item.body;
+          // A message sequence is stronger profile evidence than a compacted Meta
+          // fact. Only a new membership incarnation discards its message anchor.
+          const messageAnchor = !previous?.left
+            ? (previous?.profileMessageSeq ?? null)
+            : null;
           await members.put({
             threadId: update.threadId,
             account: item.account,
@@ -1970,8 +1999,9 @@ export class WebdbStorage {
             namespaceId: item.namespaceId,
             role: body.role,
             left: false,
-            profileRev: body.profileRev,
-            profileMessageSeq: null,
+            profileRev:
+              messageAnchor === null ? body.profileRev : previous!.profileRev,
+            profileMessageSeq: messageAnchor,
           });
         }
         const currentMembers = await members
@@ -2417,6 +2447,41 @@ export class WebdbStorage {
     });
   }
 
+  /** A newer remote Meta profile may outrun the compacted member fact. Message
+   * evidence always wins; updating this local reference never advances a feed. */
+  async applyGroupMetaProfileDrift(
+    evidence: ProfileEvidence,
+    key: ProfileKey,
+  ): Promise<boolean> {
+    if (
+      evidence.type !== 'GROUP_META' || evidence.subject.type !== 'MEMBER' ||
+      evidence.profileRev === key.rev ||
+      evidence.subject.account !== key.account ||
+      evidence.subject.domain !== key.domain
+    ) return false;
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<boolean>('native_db_apply_group_member_profile_drift', {
+          userId: Number(this.currentUserId),
+          threadId: evidence.threadId,
+          account: key.account, domain: key.domain,
+          namespaceId: key.namespaceId,
+          expectedRev: evidence.profileRev, actualRev: key.rev,
+        });
+      const tx = (await this.db()).transaction('members', 'readwrite');
+      const address: [number, string, string, number] = [
+        evidence.threadId, key.account, key.domain, key.namespaceId,
+      ];
+      const member = await tx.store.get(address);
+      const changed = !!member && !member.left &&
+        member.profileMessageSeq == null &&
+        member.profileRev === evidence.profileRev;
+      if (changed) await tx.store.put({ ...member, profileRev: key.rev });
+      await tx.done;
+      return changed;
+    });
+  }
+
   async recordGroupMemberMessageProfile(
     threadId: number,
     identity: {
@@ -2751,6 +2816,49 @@ export class WebdbStorage {
     );
   }
 
+  /** Persist a correction for one participant of one cached SYSTEM row only. */
+  async correctSystemMessageProfile(
+    threadId: number,
+    seq: number,
+    account: string,
+    domain: string,
+    profileRev: number,
+  ): Promise<boolean> {
+    if (
+      !Number.isSafeInteger(threadId) || threadId < 1 ||
+      !Number.isSafeInteger(seq) || seq < 1 ||
+      !account || !domain ||
+      !Number.isSafeInteger(profileRev) || profileRev < 1
+    ) throw new Error('invalid system profile correction');
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<boolean>('native_db_correct_system_message_profile', {
+          userId: Number(this.currentUserId), threadId, seq,
+          account, domain, profileRev,
+        });
+      const tx = (await this.messageDb()).transaction('messages', 'readwrite');
+      const message = await tx.store.get([threadId, seq]);
+      if (!message || !isCachedMessageBody(message) || message.contentType !== 'SYSTEM') {
+        await tx.done;
+        return false;
+      }
+      const participant = JSON.stringify([account, domain]);
+      if (message.localSystemProfileRevs?.[participant] === profileRev) {
+        await tx.done;
+        return false;
+      }
+      await tx.store.put({
+        ...message,
+        localSystemProfileRevs: {
+          ...message.localSystemProfileRevs,
+          [participant]: profileRev,
+        },
+      });
+      await tx.done;
+      return true;
+    });
+  }
+
   async putCachedMessages(messages: MessageQueryRow[]): Promise<void> {
     messages = messages.map((message) => ({
       ...message,
@@ -2768,7 +2876,7 @@ export class WebdbStorage {
       const tx = (await this.messageDb()).transaction('messages', 'readwrite');
       for (const message of messages) {
         const existing = await tx.store.get([message.threadId, message.seq]);
-        await tx.store.put(mergeMessageSlot<Message>(existing, message));
+        await tx.store.put(mergeCachedMessage(existing, message));
       }
       await tx.done;
     });
@@ -3002,7 +3110,7 @@ export class WebdbStorage {
         creator: entry.creator && localSubjectIdentity(entry.creator),
       };
       const existing = await messageStore.get([input.threadId, message.seq]);
-      const merged = mergeMessageSlot<Message>(existing, message);
+      const merged = mergeCachedMessage(existing, message);
       await messageStore.put(merged);
       if (isCachedTimelineSlot(merged)) committedMessages.push(merged);
     }

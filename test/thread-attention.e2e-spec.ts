@@ -381,9 +381,7 @@ describe('transactional thread attention', () => {
       after: 0,
       previewCount: 3,
     });
-    expect(deleted.items[0].previews?.map((row) => row.seq)).toEqual([
-      5, 6, 7,
-    ]);
+    expect(deleted.items[0].previews?.map((row) => row.seq)).toEqual([5, 6, 7]);
     expect(deleted.items[0].previews?.at(-1)).toMatchObject({
       seq: 7,
       status: 'USER_RETRACTION',
@@ -441,7 +439,13 @@ describe('transactional thread attention', () => {
   it('keeps a system preview after mark-read and later own messages', async () => {
     await put(1, '', {
       contentType: 'SYSTEM',
-      content: JSON.stringify({ type: 'FRIEND_ADDED' }),
+      content: JSON.stringify({
+        type: 'FRIEND_ADDED',
+        participants: [
+          { account: 'reader', domain: 'local', namespaceId: 0, profileRev: 0 },
+          { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+        ],
+      }),
       creatorAccount: '$system',
     });
     await projectCurrentHeads();

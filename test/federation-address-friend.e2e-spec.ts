@@ -233,6 +233,26 @@ describe('federated Address friend requests', () => {
           },
         );
         expect(acceptingSideNotice).toBeDefined();
+        const remoteNamespaceId =
+          pairB!.endpointADomain === FED_DOMAIN_A
+            ? pairB!.endpointANamespaceId
+            : pairB!.endpointBNamespaceId;
+        expect(JSON.parse(acceptingSideNotice!.content).participants).toEqual(
+          expect.arrayContaining([
+            {
+              account: 'address-alice',
+              domain: FED_DOMAIN_A,
+              namespaceId: remoteNamespaceId,
+              profileRev: expect.any(Number),
+            },
+            {
+              account: 'address-bob',
+              domain: 'local',
+              namespaceId: 0,
+              profileRev: expect.any(Number),
+            },
+          ]),
+        );
 
         const bobClientIntents =
           await appB.database.query.clientStateFeed.findMany({

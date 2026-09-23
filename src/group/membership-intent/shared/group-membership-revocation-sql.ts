@@ -77,10 +77,18 @@ export function groupMembershipRevocationSql(
     input.localMemberId === null
       ? ''
       : accountFanoutScopeKey(input.threadId, input.localMemberId);
-  const content = JSON.stringify({
-    type: 'GROUP_LEFT',
-    member: { account: input.memberAccount, domain: input.memberDomain },
-  });
+  // The compacted DEPART fact no longer contains a profile revision. Capture
+  // the member's authored direction in the same transaction as the notice.
+  const memberProfileRev =
+    input.authorSide === 'B'
+      ? sql`(SELECT "profileRev" FROM revocation)`
+      : sql`(SELECT "profileRev" FROM "RelationshipIntent"
+        WHERE "pairId" = ${input.pairId} AND "authorSide" = 'B' LIMIT 1)`;
+  const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
+    jsonb_build_object('account', ${input.memberAccount}::text,
+      'domain', ${input.memberDomain}::text,
+      'namespaceId', ${input.memberNamespaceId}::integer,
+      'profileRev', COALESCE(${memberProfileRev}, 0)))`;
   return sql`
     WITH authored AS (
       ${

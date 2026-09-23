@@ -1,3 +1,5 @@
+import { isProfiledAddress, type ProfiledAddress } from './profiled-address.js';
+
 export type CallMediaType = 'AUDIO' | 'VIDEO';
 export const CALL_OUTCOMES = [
   'completed',
@@ -12,8 +14,8 @@ export type CallOutcome = (typeof CALL_OUTCOMES)[number];
 export interface CallEndedContent {
   type: 'CALL_ENDED';
   callId: string;
-  caller: { account: string; domain: string };
-  callee: { account: string; domain: string };
+  caller: ProfiledAddress;
+  callee: ProfiledAddress;
   mediaType: CallMediaType;
   outcome: CallOutcome;
   initiatedAt: number;
@@ -48,17 +50,8 @@ export function parseCallEndedContent(
       return null;
     const time = (x: unknown): x is number =>
       Number.isSafeInteger(x) && (x as number) >= 0;
-    const address = (x: unknown): boolean => {
-      if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
-      const a = x as Record<string, unknown>;
-      return (
-        Object.keys(a).length === 2 &&
-        typeof a['account'] === 'string' &&
-        a['account'].length > 0 &&
-        typeof a['domain'] === 'string' &&
-        a['domain'].length > 0
-      );
-    };
+    const address = (x: unknown): x is ProfiledAddress =>
+      isProfiledAddress(x) && x.account !== '$system' && x.profileRev === 0;
     if (
       v['type'] !== 'CALL_ENDED' ||
       typeof v['callId'] !== 'string' ||

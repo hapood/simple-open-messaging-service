@@ -255,14 +255,15 @@ export class SseService implements OnModuleDestroy {
 
   onProfileAvailable(
     userId: number,
-    data: {
+    key: {
       namespaceId: number;
       account: string;
       domain: string;
       rev: number;
     },
+    evidence: import('../../shared/profile-selector.js').ProfileSelector,
   ) {
-    this.pushToUser(userId, 'PROFILE_AVAILABLE', data);
+    this.pushToUser(userId, 'PROFILE_AVAILABLE', { ...key, evidence });
   }
 
   onQuoteResolution(

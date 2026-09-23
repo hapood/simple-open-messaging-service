@@ -28,10 +28,21 @@ describe('MemberProfileRepository invalidation', () => {
     wakes.next({ event: 'PROFILE_UNAVAILABLE', key, reason: 'PENDING' });
     expect(changed).not.toHaveBeenCalled();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
-    expect(changed).toHaveBeenCalledWith([42, 43]);
+    expect(changed).not.toHaveBeenCalled();
+    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
+      type: 'GROUP_META', threadId: 42, profileRev: 4,
+      subject: { type: 'MEMBER', account: 'alice', domain: 'local' },
+    } });
+    expect(changed).toHaveBeenCalledWith([42]);
+    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
+      type: 'MESSAGE_AUTHOR', threadId: 43, messageSeq: 12, rev: 4,
+    } });
+    expect(changed).toHaveBeenCalledWith([43]);
     ended.next();
     changed.mockClear();
-    wakes.next({ event: 'PROFILE_AVAILABLE', key });
+    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
+      type: 'MESSAGE_AUTHOR', threadId: 42, messageSeq: 12, rev: 4,
+    } });
     expect(changed).not.toHaveBeenCalled();
   });
 

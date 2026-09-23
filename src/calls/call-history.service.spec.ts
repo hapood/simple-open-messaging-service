@@ -12,8 +12,13 @@ const snapshot: CallHistorySnapshot = {
   content: {
     type: 'CALL_ENDED',
     callId: 'test-call',
-    caller: { account: 'alice', domain: 'a.test' },
-    callee: { account: 'bob', domain: 'b.test' },
+    caller: {
+      account: 'alice',
+      domain: 'a.test',
+      namespaceId: 1,
+      profileRev: 0,
+    },
+    callee: { account: 'bob', domain: 'b.test', namespaceId: 2, profileRev: 0 },
     mediaType: 'AUDIO',
     outcome: 'missed',
     initiatedAt: 100,

@@ -285,14 +285,24 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
       // the stub must expose it — user 1 is "Me" in the fixtures above.
       sessionUserId: () => 1,
-      sessionProfile: () => ({ id: 1, account: 'me', name: 'Me', domain: 'local' }),
+      sessionProfile: () => ({
+        id: 1,
+        account: 'me',
+        name: 'Me',
+        domain: 'local',
+      }),
     } as unknown as UserService;
     const messages = {
-      queryMediaStages: vi.fn().mockName('queryMediaStages').mockReturnValue(of(stageResponse)),
+      queryMediaStages: vi
+        .fn()
+        .mockName('queryMediaStages')
+        .mockReturnValue(of(stageResponse)),
       abandonMediaStage: vi
         .fn()
         .mockName('abandonMediaStage')
-        .mockReturnValue(of({ code: 0, message: 'ok', data: { abandoned: true } })),
+        .mockReturnValue(
+          of({ code: 0, message: 'ok', data: { abandoned: true } }),
+        ),
     };
     const profileRepo = {
       getProfile: vi
@@ -393,8 +403,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       creator: { account: '$system', domain: 'local', namespaceId: 0 },
       content: JSON.stringify({
         type: 'FRIEND_REMOVED',
-        reason: 'USER_REQUEST',
-        initiator: { account: 'alice', domain: 'local' },
+        initiator: {
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 0,
+        },
+        participants: [
+          { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 0 },
+          { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 0 },
+        ],
       }),
     };
     const { src } = setup(
@@ -408,7 +426,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       type: 'system',
       threadId: 42,
       isSelf: false,
-      systemPeer: { account: 'alice', domain: 'local', name: 'Alice' },
     });
     expect(repository.resolve).not.toHaveBeenCalled();
     src.destroy();

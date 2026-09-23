@@ -15,6 +15,7 @@ import { RouteService, PopupType } from '../../../services/route.service';
 import { UserService } from '../../../services/user.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
+import { AUTOMATION_TESTING } from '../../../common/automation-testing';
 
 /**
  * Telegram-style left rail (desktop): account avatar + navigation actions (friend requests / new group /
@@ -45,6 +46,7 @@ import { LanguageService } from '../../../services/language.service';
         </button>
         <button
           class="rail-btn"
+          [attr.data-testid]="friendRequestsTestId"
           (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco"
           [attr.aria-label]="'nav.friendRequests' | transloco"
@@ -152,6 +154,9 @@ import { LanguageService } from '../../../services/language.service';
   ],
 })
 export class IconRailComponent {
+  protected readonly friendRequestsTestId = AUTOMATION_TESTING
+    ? 'friend-requests'
+    : null;
   readonly UserAvatarType = UserAvatarType;
   readonly AppIconType = AppIconType;
   /** fired after a group is created so the parent can refresh the thread list */

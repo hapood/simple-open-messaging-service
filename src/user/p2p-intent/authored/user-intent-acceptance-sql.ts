@@ -7,6 +7,7 @@ import {
   type UserIntentFeedInput,
 } from './user-intent-client-feed-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
+import { userIntentSystemParticipantsSql } from './user-intent-system-participants-sql.js';
 
 export interface UserIntentAcceptanceInput extends UserIntentFeedInput {
   actorSide: 'A' | 'B';
@@ -107,7 +108,9 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
     ), system_message AS (
       INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
-        '{"type":"FRIEND_ADDED"}'::jsonb, '$system', 'local', CURRENT_TIMESTAMP
+        jsonb_build_object('type', 'FRIEND_ADDED', 'participants',
+          ${userIntentSystemParticipantsSql({ pairId: input.pairId, actorSide: input.actorSide, actorState: 'accepted' })}),
+        '$system', 'local', CURRENT_TIMESTAMP
       FROM seq_alloc s
       RETURNING seq
     ), ${threadFanoutAdmissionSql({

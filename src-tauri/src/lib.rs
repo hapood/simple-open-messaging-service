@@ -675,6 +675,7 @@ pub fn run() {
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::contacts::native_db_record_group_member_profile_ref,
+                    native_db::contacts::native_db_apply_group_member_profile_drift,
                     native_db::native_db_get_meta,
                     native_db::attention::native_db_thread_states,
                     native_db::attention::native_thread_feed_sync,
@@ -703,6 +704,7 @@ pub fn run() {
                     native_db::messages::native_db_get_message,
                     native_db::messages::native_db_get_deleted_message_seqs,
                     native_db::messages::native_db_newest_messages,
+                    native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
                     navigation::open_external_url,
                 ]
@@ -757,6 +759,7 @@ pub fn run() {
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::contacts::native_db_record_group_member_profile_ref,
+                    native_db::contacts::native_db_apply_group_member_profile_drift,
                     native_db::native_db_get_meta,
                     native_db::attention::native_db_thread_states,
                     native_db::attention::native_thread_feed_sync,
@@ -785,6 +788,7 @@ pub fn run() {
                     native_db::messages::native_db_get_message,
                     native_db::messages::native_db_get_deleted_message_seqs,
                     native_db::messages::native_db_newest_messages,
+                    native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
                     navigation::open_external_url,
                 ]

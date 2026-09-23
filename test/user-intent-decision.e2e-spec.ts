@@ -240,6 +240,23 @@ describe('user intent decision', () => {
     };
   }
 
+  function eventParticipants(after: Awaited<ReturnType<typeof state>>) {
+    const pair = after.pair!;
+    return (['A', 'B'] as const).map((side) => ({
+      account: side === 'A' ? pair.endpointAAccount : pair.endpointBAccount,
+      domain: side === 'A' ? pair.endpointADomain : pair.endpointBDomain,
+      namespaceId:
+        (side === 'A' ? pair.endpointADomain : pair.endpointBDomain) === 'local'
+          ? 0
+          : side === 'A'
+            ? pair.endpointANamespaceId
+            : pair.endpointBNamespaceId,
+      profileRev:
+        after.intents.find((intent) => intent.authorSide === side)
+          ?.profileRev ?? 0,
+    }));
+  }
+
   it('requests a fresh local friendship with shell-only effects', async () => {
     vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
       undefined,
@@ -312,7 +329,10 @@ describe('user intent decision', () => {
       contentType: 'SYSTEM',
       creatorAccount: '$system',
     });
-    expect(contentOf(after.messages[0])).toEqual({ type: 'FRIEND_ADDED' });
+    expect(contentOf(after.messages[0])).toEqual({
+      type: 'FRIEND_ADDED',
+      participants: eventParticipants(after),
+    });
     expect(after.audiences).toHaveLength(2);
     // Activation starts read at the boundary with no preview and no unread.
     for (const participant of after.states) {
@@ -354,7 +374,10 @@ describe('user intent decision', () => {
       after.intents.find((intent) => intent.note === 'from alice'),
     ).toBeTruthy();
     expect(after.messages).toHaveLength(1);
-    expect(contentOf(after.messages[0])).toEqual({ type: 'FRIEND_ADDED' });
+    expect(contentOf(after.messages[0])).toEqual({
+      type: 'FRIEND_ADDED',
+      participants: eventParticipants(after),
+    });
   });
 
   it('no-ops an already-active acceptance and rejects a stale one', async () => {
@@ -474,7 +497,10 @@ describe('user intent decision', () => {
     expect(after.messages).toHaveLength(1);
     expect(contentOf(after.messages[0])).toEqual({
       type: 'FRIEND_REMOVED',
-      initiator: { account: alice.account, domain: 'local' },
+      initiator: eventParticipants(after).find(
+        (participant) => participant.account === alice.account,
+      ),
+      participants: eventParticipants(after),
     });
     const departureSeq = after.messages[0].seq;
     for (const participant of after.states)

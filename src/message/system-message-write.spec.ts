@@ -30,7 +30,12 @@ describe('MessageService local system messages', () => {
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
         type: SystemMessageType.GROUP_JOINED,
-        member: { account: 'alice', domain: 'local.test' },
+        member: {
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 2,
+        },
       }),
       isDeleted: false,
       createdAt: new Date(),
@@ -77,7 +82,12 @@ describe('MessageService local system messages', () => {
 
     const result = await service.writeSystemMessageInTx(tx as never, 7, {
       type: SystemMessageType.GROUP_JOINED,
-      member: 2,
+      member: {
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+      },
     });
 
     expect(result.message.contentType).toBe(ContentType.SYSTEM);
@@ -92,7 +102,12 @@ describe('MessageService local system messages', () => {
     });
     expect(JSON.parse(insertValues.mock.calls[0][0].content)).toEqual({
       type: 'GROUP_JOINED',
-      member: { account: 'alice', domain: 'local' },
+      member: {
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+      },
     });
     expect(threadUpdate).toBe(1);
   });
@@ -108,7 +123,12 @@ describe('MessageService local system messages', () => {
     await expect(
       service.tryWriteSystemMessage(7, {
         type: SystemMessageType.GROUP_JOINED,
-        member: 2,
+        member: {
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 2,
+        },
       }),
     ).resolves.toBeNull();
     expect(logger.error).toHaveBeenCalledWith(
@@ -128,7 +148,16 @@ describe('MessageService local system messages', () => {
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
         type: SystemMessageType.FRIEND_REMOVED,
-        initiator: { account: 'bob', domain: 'local' },
+        initiator: {
+          account: 'bob',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 1,
+        },
+        participants: [
+          { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+          { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 2 },
+        ],
       }),
       isDeleted: false,
       createdAt: new Date(),
@@ -160,7 +189,16 @@ describe('MessageService local system messages', () => {
 
     await service.writeSystemMessageInTx(tx as never, 7, {
       type: SystemMessageType.FRIEND_REMOVED,
-      initiator: 2,
+      initiator: {
+        account: 'bob',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 1,
+      },
+      participants: [
+        { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+        { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 2 },
+      ],
     });
 
     expect(enqueueDepartureFanoutsInTx).toHaveBeenLastCalledWith(

@@ -407,6 +407,8 @@ describe('CallsService terminal bubble persistence', () => {
     });
     // An unanswered call never connected → no startedAt/duration.
     const c = lastBubbleContent(m)!;
+    expect(c.caller).toMatchObject({ namespaceId: 0, profileRev: 0 });
+    expect(c.callee).toMatchObject({ namespaceId: 0, profileRev: 0 });
     expect(c.connectedAt).toBeUndefined();
     expect(
       c.connectedAt === undefined ? undefined : c.endedAt - c.connectedAt,
@@ -973,6 +975,12 @@ describe('CallsService federated initiate (outbound)', () => {
       (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
     );
     expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
+    expect(lastBubbleContent(m)?.callee).toEqual({
+      account: 'bob',
+      domain: 'bbb.local',
+      namespaceId: 3,
+      profileRev: 0,
+    });
     // Slots released → a fresh call can start.
     m.federation.sendCallFrame.mockResolvedValue(undefined);
     await expect(

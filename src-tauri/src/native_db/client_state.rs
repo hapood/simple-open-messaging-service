@@ -618,7 +618,10 @@ pub(super) fn apply_state_feed_page(
                      ) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
                      ON CONFLICT(user_id,thread_id,member_account,member_domain,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0,
-                       profile_rev=excluded.profile_rev,profile_message_seq=excluded.profile_message_seq",
+                       profile_rev=CASE WHEN members.left_state=0 AND members.profile_message_seq IS NOT NULL
+                         THEN members.profile_rev ELSE excluded.profile_rev END,
+                       profile_message_seq=CASE WHEN members.left_state=0
+                         THEN members.profile_message_seq ELSE NULL END",
                     params![
                         user_id, update.thread_id, item.account, item.domain, item.namespace_id,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),

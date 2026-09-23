@@ -33,6 +33,9 @@ export type Message = Omit<
   contentType: S['MessageResponseDto']['contentType'];
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
+  /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [account, domain].
+   * The server content remains immutable; cache merges preserve corrections for the same content. */
+  localSystemProfileRevs?: Record<string, number>;
   /** Federated media localize status (absent = ready). Carried on query-messages rows; one mounted-message
    * service reconciles mount, reconnect and media-status updates. */
   mediaStatus?: MediaStatus;

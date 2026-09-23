@@ -3,6 +3,11 @@ import {
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
+import { ProfileRepository } from '../../../services/profile-store.service';
+import { WebdbService } from '../../../services/webdb.service';
+import { ConversationListService } from '../../../services/conversation-list.service';
+
+import type { ProfileSelector } from '../../../../../../shared/profile-selector';
 import { UserService } from '../../../services/user.service';
 import { displayUserAccount } from '../../../services/model';
 import {
@@ -67,6 +72,9 @@ export class SystemRowComponent {
   readonly isGroupStart = input(false);
   readonly showDate = input(false);
   private readonly members = inject(MemberProfileRepository);
+  private readonly profiles = inject(ProfileRepository);
+  private readonly webdb = inject(WebdbService);
+  private readonly conversations = inject(ConversationListService);
   private readonly users = inject(UserService);
   private readonly profileName = signal('');
   private readonly event = computed(() =>
@@ -76,15 +84,17 @@ export class SystemRowComponent {
     (): SystemEventAddress | undefined => {
       const event = this.event();
       if (!event) return undefined;
+      if ('participants' in event) {
+        const self = this.users.sessionProfile();
+        return event.participants.find(
+          (participant) =>
+            participant.account !== self?.account ||
+            participant.domain !== self?.domain,
+        );
+      }
       if ('member' in event) return event.member;
       if (event.type === 'GROUP_CREATED') return event.creator;
       if (event.type === 'GROUP_OWNER_TRANSFERRED') return event.newOwner;
-      if (event.type === 'FRIEND_REMOVED') {
-        const data = this.data();
-        return this.isCurrentUser(event.initiator) && data.type === 'system'
-          ? data.systemPeer
-          : event.initiator;
-      }
       return undefined;
     },
   );
@@ -94,24 +104,104 @@ export class SystemRowComponent {
       const data = this.data();
       const identity = this.displayIdentity();
       this.profileName.set('');
-      if (!identity || !data.isGroupConversation || !data.threadId) return;
-      const threadId = data.threadId;
-      let cancelled = false;
-      const refresh = () => {
-        void this.members
-          .findByAddress(threadId, identity.account, identity.domain)
-          .then((member) => {
-            if (!cancelled) this.profileName.set(member?.name.trim() ?? '');
-          });
-      };
-      refresh();
-      const subscription = this.members.changed$.subscribe((threadIds) => {
-        if (threadIds.includes(threadId)) refresh();
-      });
-      onCleanup(() => {
-        cancelled = true;
-        subscription.unsubscribe();
-      });
+      if (!identity || !data.threadId) return;
+      this.resolveProfiledParticipant(data, identity, onCleanup);
+    });
+  }
+
+  /** Resolve a four-tuple without ever deriving a member namespace from the group. */
+  private resolveProfiledParticipant(
+    data: ChatMsgData,
+    identity: SystemEventAddress,
+    onCleanup: (callback: () => void) => void,
+  ): void {
+    const threadId = data.threadId!;
+    const participantKey = JSON.stringify([identity.account, identity.domain]);
+    let revision =
+      data.type === 'system'
+        ? (data.localSystemProfileRevs?.[participantKey] ?? identity.profileRev)
+        : identity.profileRev;
+    let cancelled = false;
+    let request = 0;
+    const refresh = () => {
+      const current = ++request;
+      if (!revision) return;
+      void this.profiles
+        .getProfile({
+          account: identity.account,
+          domain: identity.domain,
+          namespaceId: identity.namespaceId,
+          profileRev: revision,
+        })
+        .then((profile) => {
+          if (!cancelled && current === request)
+            this.profileName.set(profile?.name.trim() ?? '');
+        });
+    };
+    refresh();
+    const subscription = this.members.changed$.subscribe((threadIds) => {
+      if (threadIds.includes(threadId)) refresh();
+    });
+    const event = this.event();
+    let evidence: ProfileSelector | undefined;
+    if (revision > 0 && revision === identity.profileRev && event) {
+      if (
+        data.isGroupConversation &&
+        [
+          'GROUP_CREATED',
+          'GROUP_JOINED',
+          'GROUP_ADMIN_GRANTED',
+          'GROUP_ADMIN_REVOKED',
+          'GROUP_OWNER_TRANSFERRED',
+        ].includes(event.type)
+      )
+        evidence = {
+          type: 'GROUP_META',
+          threadId,
+          profileRev: revision,
+          subject: {
+            type: 'MEMBER',
+            account: identity.account,
+            domain: identity.domain,
+          },
+        };
+      else if (event.type === 'FRIEND_ADDED')
+        evidence = {
+          type: 'EXACT',
+          account: identity.account,
+          domain: identity.domain,
+          rev: revision,
+        };
+    }
+    const profileSubscription = evidence
+      ? this.profiles.resolve(evidence).subscribe({
+          next: (profile) => {
+            if (cancelled) return;
+            if (
+              profile.namespaceId !== identity.namespaceId ||
+              profile.account !== identity.account ||
+              profile.domain !== identity.domain
+            )
+              return;
+            revision = profile.rev;
+            request++; // Invalidate a slower cache read of the previous revision.
+            this.profileName.set(profile.name.trim());
+            if (profile.rev !== identity.profileRev)
+              void this.webdb.correctSystemMessageProfile(
+                threadId,
+                data.msgId,
+                identity.account,
+                identity.domain,
+                profile.rev,
+              );
+          },
+          error: () => {}, // Preserve the committed local snapshot or address fallback.
+        })
+      : undefined;
+    onCleanup(() => {
+      cancelled = true;
+      subscription.unsubscribe();
+      profileSubscription?.unsubscribe();
     });
   }
 
@@ -166,15 +256,20 @@ export class SystemRowComponent {
         return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
       }
       const identity = this.displayIdentity();
-      const peer = data.type === 'system' ? data.systemPeer : undefined;
-      const peerName =
-        peer &&
-        identity?.account === peer.account &&
-        identity.domain === peer.domain
-          ? peer.name.trim()
-          : '';
+      const alias = identity
+        ? (this.conversations
+            .items()
+            .find(
+              (item) =>
+                item.type === 'P2P' &&
+                item.peerUser.account === identity.account &&
+                item.peerUser.domain === identity.domain &&
+                item.peerUser.namespaceId === identity.namespaceId,
+            )
+            ?.alias?.trim() ?? '')
+        : '';
       const name =
-        this.profileName() || peerName || displayUserAccount(identity ?? {});
+        alias || this.profileName() || displayUserAccount(identity ?? {});
       const translate = (key: string) =>
         this.transloco.translate(`chat.systemMessage.${key}`, { name });
       switch (body.type) {

@@ -1,4 +1,9 @@
-<button mat-button type="button" [matMenuTriggerFor]="methods">
+<button
+  mat-button
+  [attr.data-testid]="methodMenuTestId"
+  type="button"
+  [matMenuTriggerFor]="methods"
+>
   {{ 'auth.otherMethods' | transloco }}
   <app-icon
     class="chevron"
@@ -15,7 +20,12 @@
     </button>
   }
   @if (otp()) {
-    <button mat-menu-item type="button" (click)="otpSelected.emit()">
+    <button
+      mat-menu-item
+      [attr.data-testid]="otpMethodTestId"
+      type="button"
+      (click)="otpSelected.emit()"
+    >
       {{ 'auth.switchToOtp' | transloco }}
     </button>
   }

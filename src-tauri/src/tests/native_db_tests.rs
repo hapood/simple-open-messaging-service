@@ -665,6 +665,34 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
         )
         .unwrap();
     assert_eq!(cursor, "99");
+
+    conn.execute(
+        "UPDATE members SET profile_rev=3, profile_message_seq=20 WHERE member_account='other'",
+        [],
+    )
+    .unwrap();
+    let delta = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
+        "mode":"delta","scannedThrough":"4","items":[
+            {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,
+             "body":{"role":"ADMIN","profileRev":2}}
+        ]}}]);
+    super::client_state::apply_state_feed_page(
+        &mut conn,
+        1,
+        vec![],
+        100,
+        serde_json::from_value(delta).unwrap(),
+        false,
+    )
+    .unwrap();
+    let (rev, seq, role): (i64, Option<i64>, String) = conn
+        .query_row(
+            "SELECT profile_rev, profile_message_seq, role FROM members WHERE member_account='other'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((rev, seq, role.as_str()), (3, Some(20), "ADMIN"));
 }
 
 #[test]

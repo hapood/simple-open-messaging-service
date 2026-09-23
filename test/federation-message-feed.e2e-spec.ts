@@ -40,12 +40,18 @@ describe('FederationMessageFeedService thread query', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
     service = new FederationMessageFeedService(database);
   });
 
   afterAll(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
     await mod.close();
   });
 
@@ -195,7 +201,23 @@ describe('FederationMessageFeedService thread query', () => {
             .update(message)
             .set({
               contentType: 'SYSTEM',
-              content: JSON.stringify({ type: 'FRIEND_ADDED' }),
+              content: JSON.stringify({
+                type: 'FRIEND_ADDED',
+                participants: [
+                  {
+                    account: alice.account,
+                    domain: 'local',
+                    namespaceId: 0,
+                    profileRev: 0,
+                  },
+                  {
+                    account: 'bob',
+                    domain: peerDomain,
+                    namespaceId,
+                    profileRev: 0,
+                  },
+                ],
+              }),
               creatorAccount: '$system',
               creatorDomain: 'local',
               creatorNamespaceId: 0,

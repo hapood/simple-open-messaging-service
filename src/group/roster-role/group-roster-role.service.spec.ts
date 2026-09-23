@@ -148,8 +148,18 @@ describe('GroupRosterRoleService', () => {
       10,
       {
         type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
-        previousOwner: { account: 'owner', domain: 'local', namespaceId: 0 },
-        newOwner: { account: 'member', domain: 'local', namespaceId: 0 },
+        previousOwner: {
+          account: 'owner',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 3,
+        },
+        newOwner: {
+          account: 'member',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 6,
+        },
       },
       { threadLock: { tx, threadId: 10 } },
     );

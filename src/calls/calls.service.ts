@@ -1354,7 +1354,12 @@ export class CallsService implements OnModuleDestroy {
     if (!call.historyIdentity) {
       const address = async (id: number | null) => {
         if (id === null)
-          return { account: call.peerAccount!, domain: call.peerDomain! };
+          return {
+            account: call.peerAccount!,
+            domain: call.peerDomain!,
+            namespaceId: call.peerNamespaceId!,
+            profileRev: 0,
+          };
         const local = await this.database.db.query.account.findFirst({
           where: eq(user.id, id),
           columns: { account: true },
@@ -1363,6 +1368,8 @@ export class CallsService implements OnModuleDestroy {
         return {
           account: local.account,
           domain: 'local',
+          namespaceId: 0,
+          profileRev: 0,
         };
       };
       call.historyIdentity = {

@@ -853,14 +853,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         msgId: m.seq,
         threadId: m.threadId,
         isSelf: false,
-        systemPeer:
-          this.conv.type === 'P2P'
-            ? {
-                account: this.conv.peerUser.account,
-                domain: this.conv.peerUser.domain,
-                name: this.conv.peerUser.name,
-              }
-            : undefined,
+        localSystemProfileRevs: m.localSystemProfileRevs,
         isGroupConversation: this.conv.type === 'GROUP',
         name: '',
         text: m.content,

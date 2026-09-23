@@ -15,6 +15,7 @@
       <app-user-avatar
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
+        [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
         [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
@@ -215,7 +216,9 @@
                     "
                   >
                     @if (c.status === MEDIA_STATUS.PENDING) {
-                      <mat-icon class="msg-media-overlay-icon">schedule</mat-icon>
+                      <mat-icon class="msg-media-overlay-icon"
+                        >schedule</mat-icon
+                      >
                     } @else if (c.status === MEDIA_STATUS.DOWNLOADING) {
                       <mat-progress-spinner
                         mode="indeterminate"
@@ -363,9 +366,7 @@
             </span>
             @if (mediaStatus() !== MEDIA_STATUS.READY) {
               <span
-                class="msg-media-status msg-media-status--{{
-                  mediaStatus()
-                }}"
+                class="msg-media-status msg-media-status--{{ mediaStatus() }}"
               >
                 @if (mediaStatus() === MEDIA_STATUS.PENDING) {
                   <mat-icon>schedule</mat-icon>

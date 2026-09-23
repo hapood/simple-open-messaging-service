@@ -221,7 +221,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     expect(query).not.toContain('AccountThreadState');
   });
 
-  it('settles the actual revision item and removes only the invoking method from the expected item', () => {
+  it('notifies only the invoking evidence and leaves other pending methods to complete independently', () => {
     const sse = { onProfileAvailable: vi.fn() };
     const subject = new ProfileResolutionCoordinatorService(
       {} as never,
@@ -245,6 +245,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         publisherNamespaceId: 7,
         publisherMessageSeq: 12,
       },
+      evidence: { type: 'MESSAGE_AUTHOR' as const, threadId: 9, messageSeq: 12, rev: 4 },
       users: new Set([1]),
     };
     const retained = {
@@ -254,6 +255,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         domain: 'peer.example',
         rev: 4,
       },
+      evidence: { type: 'EXACT' as const, account: 'alice', domain: 'peer.example', rev: 4 },
       users: new Set([3]),
     };
     const actual = {
@@ -263,6 +265,7 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         domain: 'peer.example',
         rev: 5,
       },
+      evidence: { type: 'EXACT' as const, account: 'alice', domain: 'peer.example', rev: 5 },
       users: new Set([2]),
     };
     const expectedKeyString = JSON.stringify([7, 'alice', 'peer.example', 4]);
@@ -290,26 +293,27 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       avatarBase64: null,
     });
 
-    expect(subject['pending'].has(actualKeyString)).toBe(false);
+    expect(subject['pending'].has(actualKeyString)).toBe(true);
     expect(subject['pending'].get(expectedKeyString)?.methods).toEqual(
       new Map([['exact-old', retained]]),
     );
-    expect(subject['pendingMethodCount']).toBe(1);
+    expect(subject['pendingMethodCount']).toBe(2);
     expect(subject['queue']).toContain(expectedKeyString);
-    expect(subject['queue']).not.toContain(actualKeyString);
+    expect(subject['queue']).toContain(actualKeyString);
     expect(sse.onProfileAvailable.mock.calls).toEqual([
-      [1, actualKey],
-      [2, actualKey],
+      [1, actualKey, invoking.evidence],
     ]);
 
-    // The removed actual-revision item may already have had an HTTP request in
-    // flight. Its late completion is stale and must not publish a second event.
+    // The actual revision's different evidence finishes under its own method.
     subject['complete'](actualKeyString, 'exact-new', actual, {
       ...actualKey,
       name: 'Alice',
       bio: '',
       avatarBase64: null,
     });
-    expect(sse.onProfileAvailable).toHaveBeenCalledTimes(2);
+    expect(sse.onProfileAvailable.mock.calls).toEqual([
+      [1, actualKey, invoking.evidence],
+      [2, actualKey, actual.evidence],
+    ]);
   });
 });

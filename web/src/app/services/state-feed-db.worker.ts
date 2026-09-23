@@ -4,9 +4,10 @@ import { WebdbStorage } from './webdb-storage';
 import type { ClientStateFeedItem } from './user.service';
 import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
 import type { GroupMetaProfileReference } from './group-meta-model';
-import type {
-  ProfileKey,
-  ProfileSelector,
+import {
+  isProfileSelector,
+  type ProfileKey,
+  type ProfileSelector,
 } from '../../../../shared/profile-selector';
 
 interface ApplyRequest {
@@ -237,7 +238,20 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     domain: key.domain,
                     rev: key.rev,
                   });
-                  // The committed snapshot is forwarded by storage.profileWake$.
+                  // An exact snapshot wake also reaches independent consumers of
+                  // this revision; the evidence wake settles its invoking method.
+                  const evidence =
+                    message.data && typeof message.data === 'object' &&
+                    'evidence' in message.data &&
+                    isProfileSelector(message.data.evidence)
+                      ? message.data.evidence : undefined;
+                  if (evidence) {
+                    await storage.applyGroupMetaProfileDrift(evidence, key);
+                    postMessage({
+                      type: 'profile-wake',
+                      wake: { event: 'PROFILE_AVAILABLE', key, evidence },
+                    });
+                  }
                   return;
                 }
                 const reason =

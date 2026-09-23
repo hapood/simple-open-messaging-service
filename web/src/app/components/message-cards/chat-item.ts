@@ -162,7 +162,8 @@ export interface AuthoredMessageItem extends ChatMessageBase {
 export interface SystemMessageItem extends ChatMessageBase {
   type: 'system';
   contentType: 'SYSTEM';
-  systemPeer?: { account: string; domain: string; name: string };
+  /** Local-only per-participant revision corrections from this cached message row. */
+  localSystemProfileRevs?: Record<string, number>;
   /** Presentation of a retained message coordinate whose body was erased. */
   deletionType?: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 }

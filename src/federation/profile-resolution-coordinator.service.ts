@@ -56,6 +56,7 @@ type ResolutionMethod =
 
 interface PendingMethod {
   method: ResolutionMethod;
+  evidence: Selector;
   users: Set<number>;
 }
 
@@ -123,6 +124,7 @@ export class ProfileResolutionCoordinatorService {
         this.assertMethodCapacity();
         existing.methods.set(methodKey, {
           method: normalized.method,
+          evidence: selector,
           users: new Set([userId]),
         });
         this.pendingMethodCount++;
@@ -135,7 +137,7 @@ export class ProfileResolutionCoordinatorService {
     this.pending.set(keyString, {
       key: normalized.key,
       methods: new Map([
-        [methodKey, { method: normalized.method, users: new Set([userId]) }],
+        [methodKey, { method: normalized.method, evidence: selector, users: new Set([userId]) }],
       ]),
       state: 'QUEUED',
     });
@@ -566,14 +568,8 @@ export class ProfileResolutionCoordinatorService {
     const actualKeyString = profileKeyString(actualKey);
     this.touch(actualKeyString, profile);
 
-    const recipients = new Set(pendingMethod.users);
-    const actualItem = this.pending.get(actualKeyString);
-    if (actualItem) {
-      for (const method of actualItem.methods.values())
-        for (const userId of method.users) recipients.add(userId);
-      this.removeItem(actualKeyString, actualItem);
-    }
-
+    // Each method owns its authorization evidence. A different method waiting
+    // for the actual key must finish (and notify) under its own evidence.
     const expectedItem = this.pending.get(expectedKeyString);
     if (expectedItem?.methods.get(methodKey) === pendingMethod) {
       expectedItem.methods.delete(methodKey);
@@ -586,8 +582,8 @@ export class ProfileResolutionCoordinatorService {
       }
     }
 
-    for (const userId of recipients)
-      this.sse.onProfileAvailable(userId, actualKey);
+    for (const userId of pendingMethod.users)
+      this.sse.onProfileAvailable(userId, actualKey, pendingMethod.evidence);
   }
 
   private fail(

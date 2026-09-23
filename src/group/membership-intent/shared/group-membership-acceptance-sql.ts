@@ -134,7 +134,10 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
         jsonb_build_object('type', 'GROUP_JOINED', 'member',
-          jsonb_build_object('account', ${input.memberAccount}::text, 'domain', ${input.memberDomain}::text)),
+          jsonb_build_object('account', ${input.memberAccount}::text,
+            'domain', ${input.memberDomain}::text,
+            'namespaceId', ${input.memberNamespaceId}::integer,
+            'profileRev', (SELECT "memberProfileRev" FROM join_source))),
         '$system', 'local', CURRENT_TIMESTAMP
       FROM seq_alloc s CROSS JOIN roster_plan p
       WHERE EXISTS (SELECT 1 FROM pair_change)

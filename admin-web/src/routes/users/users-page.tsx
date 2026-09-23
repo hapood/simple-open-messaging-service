@@ -36,6 +36,7 @@ import { TableBodyState } from '@/components/common/table-state';
 import { Timestamp } from '@/components/common/timestamp';
 import { SessionsDialog } from './sessions-dialog';
 import { CreateUserDialog } from './create-user-dialog';
+import { automationTestId } from '@/lib/automation-testing';
 import { IssueLoginCodeDialog } from './issue-login-code-dialog';
 import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
 
@@ -139,6 +140,7 @@ export function UsersPage() {
           <div className="relative w-72">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <Input
+              {...automationTestId('users-search')}
               placeholder={t('users.searchPlaceholder')}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}

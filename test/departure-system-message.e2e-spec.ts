@@ -703,13 +703,38 @@ describe('departure system message paths', () => {
         creatorNamespaceId: 0,
         profileRev: 0,
       });
-      expect(JSON.parse(rows[0].content)).toEqual({
+      const body = JSON.parse(rows[0].content);
+      expect(body).toMatchObject({
         type: 'FRIEND_REMOVED',
         initiator:
           path === 'local' || path === 'denied'
-            ? { account: local.account, domain: 'local' }
-            : { account: peer.account, domain: peerDomain },
+            ? {
+                account: local.account,
+                domain: 'local',
+                namespaceId: 0,
+                profileRev: expect.any(Number),
+              }
+            : {
+                account: peer.account,
+                domain: peerDomain,
+                namespaceId: 'namespaceId' in peer ? peer.namespaceId : 0,
+                profileRev: 0,
+              },
       });
+      expect(body.participants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            account: local.account,
+            domain: 'local',
+            namespaceId: 0,
+          }),
+          expect.objectContaining({
+            account: peer.account,
+            domain: peerIsLocal ? 'local' : peerDomain,
+            namespaceId: 'namespaceId' in peer ? peer.namespaceId : 0,
+          }),
+        ]),
+      );
       for (const id of typeof peerTarget === 'number'
         ? [local.id, peerTarget]
         : [local.id])

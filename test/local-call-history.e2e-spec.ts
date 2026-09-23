@@ -35,8 +35,18 @@ describe('local terminal call history transactions', () => {
       content: {
         type: 'CALL_ENDED',
         callId: `call-${thread.id}`,
-        caller: { account: 'alice', domain: 'a.test' },
-        callee: { account: 'bob', domain: 'b.test' },
+        caller: {
+          account: 'alice',
+          domain: 'a.test',
+          namespaceId: 1,
+          profileRev: 0,
+        },
+        callee: {
+          account: 'bob',
+          domain: 'b.test',
+          namespaceId: 2,
+          profileRev: 0,
+        },
         mediaType: 'AUDIO',
         outcome: 'missed',
         initiatedAt: 100,

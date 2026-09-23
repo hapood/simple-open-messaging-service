@@ -16,6 +16,7 @@ import { CopyButton } from '@/components/common/copy-button'
 import { Timestamp } from '@/components/common/timestamp'
 import { formatApiError } from '@/lib/format-error'
 import { useIssueLoginCode } from '@/hooks/use-user-mutations'
+import { automationTestId } from '@/lib/automation-testing'
 import type { IssuedLoginCode } from '@/types/api'
 
 /** Issue-login-code dialog. Two phases: a confirm step (the reveal-once warning — multiple codes may be
@@ -96,7 +97,12 @@ export function IssueLoginCodeDialog({
               <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>
                 {t('common.cancel')}
               </Button>
-              <Button type="button" onClick={onIssue} disabled={submitting}>
+              <Button
+                type="button"
+                {...automationTestId('issue-login-code-confirm')}
+                onClick={onIssue}
+                disabled={submitting}
+              >
                 {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
                 {t('issueLoginCode.confirm')}
               </Button>

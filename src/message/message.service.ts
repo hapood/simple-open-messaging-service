@@ -78,7 +78,6 @@ import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
   SystemMessageType,
-  resolveSystemMessageInTx,
   type SystemMessageInput,
 } from './system-message.js';
 import { enqueueThreadFanoutInTx } from './thread-fanout-task.js';
@@ -517,9 +516,7 @@ export class MessageService {
       threadId,
       options?.threadLock,
     );
-    const content = stringifySystemMessageContent(
-      await resolveSystemMessageInTx(tx, event),
-    );
+    const content = stringifySystemMessageContent(event);
     const [{ curSeq: seq, tombstoneEndSeq }] = await tx
       .update(messageThread)
       .set({ curSeq: sql`${messageThread.curSeq} + 1` })

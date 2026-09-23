@@ -1,4 +1,5 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { account } from '../../../database/schema.js';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
 import {
   requireThreadContentLockInTx,
@@ -19,9 +20,19 @@ export async function writeMirrorLocalGroupLeftInTx(
   },
 ): Promise<number> {
   await requireThreadContentLockInTx(tx, input.threadId, input.threadLock);
+  const member = await tx.query.account.findFirst({
+    where: eq(account.id, input.localMemberId),
+    columns: { defaultProfileRev: true },
+  });
+  if (!member) throw new Error('departing local member is unavailable');
   const content = JSON.stringify({
     type: 'GROUP_LEFT',
-    member: { account: input.memberAccount, domain: 'local' },
+    member: {
+      account: input.memberAccount,
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: member.defaultProfileRev,
+    },
   });
   const accountScope = JSON.stringify([
     'ACCOUNT_THREAD_FANOUT',

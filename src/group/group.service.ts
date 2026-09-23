@@ -17,6 +17,7 @@ import {
 } from '../database/database.service.js';
 import {
   groupAccount,
+  account as userAccount,
   accountThreadState,
   groupRequestProjection,
   messageThread,
@@ -421,9 +422,19 @@ export class GroupService {
           // The creation notice is authority-local history: federation message
           // feeds exclude SYSTEM rows. Write it before owner activation so the
           // new participant's read boundary initializes at this sequence.
+          const owner = await tx.query.account.findFirst({
+            where: eq(userAccount.id, params.owner),
+            columns: { account: true, defaultProfileRev: true },
+          });
+          if (!owner) throw new Error('group creator account is unavailable');
           await this.messages.writeSystemMessageInTx(tx, thread.id, {
             type: SystemMessageType.GROUP_CREATED,
-            creator: params.owner,
+            creator: {
+              account: owner.account,
+              domain: 'local',
+              namespaceId: 0,
+              profileRev: owner.defaultProfileRev,
+            },
           });
           await this.relationshipMutations.writeMemberRelationshipIntentInTx(
             tx,

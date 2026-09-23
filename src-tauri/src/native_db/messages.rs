@@ -96,6 +96,16 @@ fn write_message_slot(
                     .ok_or_else(|| "tomb has no deletion type".to_string())?;
                 message_tomb(&message, reason)?
             } else {
+                if message.get("contentType").and_then(Value::as_str) == Some("SYSTEM") {
+                    if let Some(existing) = current.as_ref().filter(|existing| {
+                        existing.get("contentType").and_then(Value::as_str) == Some("SYSTEM")
+                            && existing.get("content") == message.get("content")
+                    }) {
+                        if let Some(revisions) = existing.get("localSystemProfileRevs") {
+                            message["localSystemProfileRevs"] = revisions.clone();
+                        }
+                    }
+                }
                 message
             }
         }
@@ -154,6 +164,44 @@ mod tomb_tests {
             seq: 4,
             reason: reason.into(),
         }
+    }
+
+    #[test]
+    fn local_system_profile_correction_survives_refills_of_only_its_row() {
+        let mut conn = database();
+        let tx = conn.transaction().unwrap();
+        let system = json!({"threadId":42,"seq":4,"creator":{"account":"$system","domain":"local","namespaceId":0},
+            "profileRev":0,"createdAt":100,"updatedAt":101,"contentType":"SYSTEM","content":"group joined",
+            "isDeleted":false,"localState":"READY"});
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
+        let mut other = system.clone();
+        other["seq"] = json!(5);
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
+        tx.commit().unwrap();
+        assert!(
+            correct_system_message_profile(&mut conn, 1, 42, 4, "alice", "peer.test", 2).unwrap()
+        );
+        assert!(
+            !correct_system_message_profile(&mut conn, 1, 42, 4, "alice", "peer.test", 2).unwrap()
+        );
+        let tx = conn.transaction().unwrap();
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
+        tx.commit().unwrap();
+        let read = |seq| -> Value {
+            let payload: String = conn
+                .query_row(
+                    "SELECT payload_json FROM messages WHERE user_id=1 AND thread_id=42 AND seq=?1",
+                    [seq],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            parse_json(payload).unwrap()
+        };
+        assert_eq!(
+            read(4)["localSystemProfileRevs"]["[\"alice\",\"peer.test\"]"],
+            2
+        );
+        assert!(read(5).get("localSystemProfileRevs").is_none());
     }
 
     #[test]
@@ -1846,6 +1894,91 @@ pub(crate) async fn native_db_newest_messages(
     })
     .await
     .map_err(|e| format!("join newest-message query: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_correct_system_message_profile(
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+    account: String,
+    domain: String,
+    profile_rev: i64,
+) -> Result<bool, String> {
+    if user_id < 1
+        || thread_id < 1
+        || seq < 1
+        || account.is_empty()
+        || domain.is_empty()
+        || profile_rev < 1
+    {
+        return Err("invalid system profile correction".into());
+    }
+    super::lifetime::spawn(move || {
+        correct_system_message_profile(
+            &mut open()?,
+            user_id,
+            thread_id,
+            seq,
+            &account,
+            &domain,
+            profile_rev,
+        )
+    })
+    .await
+    .map_err(|e| format!("join system profile correction: {e}"))?
+}
+
+fn correct_system_message_profile(
+    conn: &mut Connection,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+    account: &str,
+    domain: &str,
+    profile_rev: i64,
+) -> Result<bool, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin system profile correction: {e}"))?;
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
+            params![user_id, thread_id, seq],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read system message: {e}"))?;
+    let Some(mut message) = existing.map(parse_json).transpose()? else {
+        return Ok(false);
+    };
+    if message.get("contentType").and_then(Value::as_str) != Some("SYSTEM")
+        || message.get("isDeleted").and_then(Value::as_bool) == Some(true)
+    {
+        return Ok(false);
+    }
+    let participant = serde_json::to_string(&(account, domain))
+        .map_err(|e| format!("encode system participant: {e}"))?;
+    let revisions = message
+        .as_object_mut()
+        .ok_or("invalid system message")?
+        .entry("localSystemProfileRevs")
+        .or_insert_with(|| serde_json::json!({}));
+    let map = revisions
+        .as_object_mut()
+        .ok_or("invalid system profile revisions")?;
+    if map.get(&participant).and_then(Value::as_i64) == Some(profile_rev) {
+        return Ok(false);
+    }
+    map.insert(participant, Value::from(profile_rev));
+    tx.execute(
+        "UPDATE messages SET payload_json=?4 WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
+        params![user_id, thread_id, seq, json_text(&message)?],
+    )
+    .map_err(|e| format!("write system profile correction: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("commit system profile correction: {e}"))?;
+    Ok(true)
 }
 
 #[tauri::command]

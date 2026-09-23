@@ -27,6 +27,7 @@
     "test:cov": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:browser": "playwright test --config test/browser-e2e/playwright.config.ts",
+    "pi:webtest": "pi --no-extensions --no-skills --extension ./tools/pi-web-testing/extension/index.ts --skill ./tools/pi-web-testing/skill --tools read,bash,edit,write,browser_driver",
     "test:cross-platform": "tsx test/cross-platform/run.ts",
     "federation:conformance": "tsx scripts/federation-conformance.ts",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",

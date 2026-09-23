@@ -13,6 +13,7 @@
       <app-user-avatar
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
+        [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
         [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"

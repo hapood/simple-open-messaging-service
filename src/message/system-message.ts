@@ -1,47 +1,12 @@
-import type { DatabaseTransaction } from '../database/database.service.js';
-import {
-  accountAddressInTx,
-  type AccountTarget,
-} from '../user/account-address.js';
-import type {
-  OrdinarySystemMessageContent,
-  SystemEventAddress,
-} from '../../shared/system-message-content.js';
+import type { ProfiledAddress } from '../../shared/profiled-address.js';
+import type { OrdinarySystemMessageContent } from '../../shared/system-message-content.js';
+
 export {
   SystemMessageType,
   parseSystemMessageContent,
   stringifySystemMessageContent,
 } from '../../shared/system-message-content.js';
 export type { OrdinarySystemMessageContent } from '../../shared/system-message-content.js';
-export type SystemMessageInput = OrdinarySystemMessageContent<AccountTarget>;
 
-export async function resolveSystemMessageInTx(
-  tx: DatabaseTransaction,
-  event: SystemMessageInput,
-): Promise<OrdinarySystemMessageContent> {
-  const resolve = async (
-    target: AccountTarget,
-  ): Promise<SystemEventAddress> => {
-    const { account, domain } = await accountAddressInTx(tx, target);
-    return { account, domain };
-  };
-  switch (event.type) {
-    case 'FRIEND_REMOVED':
-      return { ...event, initiator: await resolve(event.initiator) };
-    case 'GROUP_CREATED':
-      return { ...event, creator: await resolve(event.creator) };
-    case 'GROUP_JOINED':
-    case 'GROUP_LEFT':
-    case 'GROUP_ADMIN_GRANTED':
-    case 'GROUP_ADMIN_REVOKED':
-      return { ...event, member: await resolve(event.member) };
-    case 'GROUP_OWNER_TRANSFERRED':
-      return {
-        ...event,
-        previousOwner: await resolve(event.previousOwner),
-        newOwner: await resolve(event.newOwner),
-      };
-    default:
-      return event;
-  }
-}
+/** Writers must capture participant identities and revisions at the event boundary. */
+export type SystemMessageInput = OrdinarySystemMessageContent<ProfiledAddress>;

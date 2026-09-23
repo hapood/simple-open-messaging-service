@@ -13,6 +13,7 @@
       <app-user-avatar
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
+        [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
         [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
@@ -42,7 +43,8 @@
           <div class="forward-lines">
             @for (line of forward.summaryLines.slice(0, 2); track $index) {
               <div class="forward-line">
-                {{ line }}{{
+                {{ line
+                }}{{
                   $last && forward.messageCount > forward.summaryLines.length
                     ? '…'
                     : ''

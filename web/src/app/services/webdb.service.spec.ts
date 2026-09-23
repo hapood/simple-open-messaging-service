@@ -720,6 +720,27 @@ describe('WebdbService', () => {
       ).rejects.toThrow('Invalid unread');
     });
 
+    it('keeps a system profile correction local to its row across cache refills', async () => {
+      await webdb.openForUser('1');
+      const message: Message = {
+        threadId: 42, seq: 1,
+        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        profileRev: 0, createdAt: 100, updatedAt: 100,
+        contentType: 'SYSTEM', content: '{"type":"GROUP_JOINED"}',
+        isDeleted: false, localState: 'READY',
+      };
+      await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
+      expect(await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2)).toBe(true);
+      expect(await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2)).toBe(false);
+      await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
+      expect(await webdb.getMessage(42, 1)).toMatchObject({
+        localSystemProfileRevs: { '["alice","peer.test"]': 2 },
+      });
+      expect(await webdb.getMessage(42, 2)).not.toHaveProperty('localSystemProfileRevs');
+      await webdb.putCachedMessages([{ ...message, content: '{"type":"GROUP_LEFT"}' }]);
+      expect(await webdb.getMessage(42, 1)).not.toHaveProperty('localSystemProfileRevs');
+    });
+
     it('does not cap unread slot counts at 100', async () => {
       await webdb.openForUser('1');
       await webdb.putCachedMessages(
@@ -2107,6 +2128,16 @@ describe('WebdbService', () => {
         group: { memberCount: 2, groupMetaFeedId: '2' },
       });
 
+      const metaEvidence = {
+        type: 'GROUP_META' as const, threadId: 9, profileRev: 6,
+        subject: { type: 'MEMBER' as const, account: 'alice', domain: 'home.example' },
+      };
+      const actual = { namespaceId: 12, account: 'alice', domain: 'home.example', rev: 7 };
+      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(true);
+      expect(await webdb.getGroupMember(9, 'alice', 'home.example', 12))
+        .toMatchObject({ profileRev: 7, profileMessageSeq: null });
+      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(false);
+
       expect(
         await webdb.recordGroupMemberMessageProfile(
           9,
@@ -2164,6 +2195,35 @@ describe('WebdbService', () => {
             {
               feedId: '3',
               operation: 'UPSERT',
+              account: 'alice',
+              domain: 'home.example',
+              namespaceId: 12,
+              body: { role: 'MEMBER', profileRev: 6 },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: '3',
+          groupMetaFeedEndId: '3',
+        },
+      });
+      expect(
+        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
+      ).toMatchObject({ profileRev: 3, profileMessageSeq: 20, role: 'MEMBER' });
+      expect(await webdb.applyGroupMetaProfileDrift(
+        { ...metaEvidence, profileRev: 3 }, actual,
+      )).toBe(false);
+
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        sourceServer: 'local',
+        page: {
+          account: '!team',
+          mode: 'delta',
+          items: [
+            {
+              feedId: '4',
+              operation: 'UPSERT',
               account: 'self',
               domain: 'local',
               namespaceId: 0,
@@ -2174,8 +2234,8 @@ describe('WebdbService', () => {
             },
           ],
           hasMore: false,
-          scannedThrough: '3',
-          groupMetaFeedEndId: '3',
+          scannedThrough: '4',
+          groupMetaFeedEndId: '4',
         },
       });
       expect(
@@ -2191,7 +2251,7 @@ describe('WebdbService', () => {
           mode: 'delta',
           items: [
             {
-              feedId: '4',
+              feedId: '5',
               operation: 'DEPART',
               account: 'self',
               domain: 'local',
@@ -2200,8 +2260,8 @@ describe('WebdbService', () => {
             },
           ],
           hasMore: false,
-          scannedThrough: '4',
-          groupMetaFeedEndId: '4',
+          scannedThrough: '5',
+          groupMetaFeedEndId: '5',
         },
       });
       expect(
@@ -2217,7 +2277,7 @@ describe('WebdbService', () => {
           mode: 'delta',
           items: [
             {
-              feedId: '5',
+              feedId: '6',
               operation: 'DEPART',
               account: 'alice',
               domain: 'home.example',
@@ -2226,8 +2286,8 @@ describe('WebdbService', () => {
             },
           ],
           hasMore: false,
-          scannedThrough: '5',
-          groupMetaFeedEndId: '5',
+          scannedThrough: '6',
+          groupMetaFeedEndId: '6',
         },
       });
       expect(

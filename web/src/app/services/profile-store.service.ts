@@ -40,6 +40,7 @@ export class ProfileRepository {
   private readonly lru = new Map<string, ResolvedProfile>();
   private readonly evidenceKeys = new Map<string, string>();
   private readonly wakes = new Map<string, ProfileWake>();
+  private readonly evidenceWakes = new Map<string, ProfileWake>();
 
   constructor() {
     this.webdb.profileWake$
@@ -53,6 +54,7 @@ export class ProfileRepository {
         this.lru.clear();
         this.evidenceKeys.clear();
         this.wakes.clear();
+        this.evidenceWakes.clear();
       });
   }
 
@@ -120,11 +122,26 @@ export class ProfileRepository {
       .then(async (result) => {
         if (result.status === 'PENDING') {
           entry.state = { kind: 'PENDING', key: profileKey(result.key) };
-          const wake = this.wakes.get(entry.state.key);
+          const wake =
+            this.evidenceWakes.get(entry.evidenceKey) ??
+            this.wakes.get(entry.state.key);
           if (wake) this.consumeWake(entry, wake);
           return;
         }
-        const snapshot = result.profile;
+        await this.commitReady(entry, result.profile);
+      })
+      .catch((error) => {
+        entry.subject.error(error);
+        this.resolutions.delete(entry.evidenceKey);
+      })
+      .finally(() => {
+        entry.running = false;
+        if (entry.rerun && this.resolutions.get(entry.evidenceKey) === entry)
+          this.run(entry);
+      });
+  }
+
+  private async commitReady(entry: ResolutionEntry, snapshot: ProfileSnapshot): Promise<void> {
         const avatarBlob = snapshot.avatarDigest
           ? await this.webdb.getProfileAvatarBlob(snapshot.avatarDigest)
           : null;
@@ -158,19 +175,10 @@ export class ProfileRepository {
         }
         while (this.evidenceKeys.size > 1000)
           this.evidenceKeys.delete(this.evidenceKeys.keys().next().value!);
+        if (this.resolutions.get(entry.evidenceKey) !== entry) return;
         entry.subject.next(profile);
         entry.subject.complete();
         this.resolutions.delete(entry.evidenceKey);
-      })
-      .catch((error) => {
-        entry.subject.error(error);
-        this.resolutions.delete(entry.evidenceKey);
-      })
-      .finally(() => {
-        entry.running = false;
-        if (entry.rerun && this.resolutions.get(entry.evidenceKey) === entry)
-          this.run(entry);
-      });
   }
 
   private onWake(wake: ProfileWake): void {
@@ -179,17 +187,48 @@ export class ProfileRepository {
     this.wakes.set(key, wake);
     while (this.wakes.size > 1000)
       this.wakes.delete(this.wakes.keys().next().value!);
+    const evidenceKey = wake.event === 'PROFILE_AVAILABLE' && wake.evidence
+      ? JSON.stringify(normalizeEvidence(wake.evidence)) : undefined;
+    if (evidenceKey) {
+      this.evidenceWakes.set(evidenceKey, wake);
+      while (this.evidenceWakes.size > 1000)
+        this.evidenceWakes.delete(this.evidenceWakes.keys().next().value!);
+    }
     for (const entry of this.resolutions.values())
-      if (entry.state.kind === 'PENDING' && entry.state.key === key)
-        this.consumeWake(entry, wake);
+      if (
+        entry.state.kind === 'PENDING' &&
+        (entry.state.key === key || entry.evidenceKey === evidenceKey)
+      ) this.consumeWake(entry, wake);
   }
 
   private consumeWake(entry: ResolutionEntry, wake: ProfileWake): void {
     const key = profileKey(wake.key);
     this.wakes.delete(key);
+    this.evidenceWakes.delete(entry.evidenceKey);
     if (wake.event === 'PROFILE_UNAVAILABLE') {
       entry.subject.error(new Error(wake.reason));
       this.resolutions.delete(entry.evidenceKey);
+      return;
+    }
+    if (entry.state.kind === 'PENDING' && entry.state.key !== key) {
+      // Group Meta can publish a newer revision than the requested fact. The
+      // invoking evidence (not a different subscriber's key) owns this wake.
+      if (entry.selector.type !== 'GROUP_META' ||
+          !wake.evidence ||
+          JSON.stringify(normalizeEvidence(wake.evidence)) !== entry.evidenceKey)
+        return;
+      entry.state = { kind: 'REQUESTING' };
+      void this.webdb.getProfile({
+        account: wake.key.account, domain: wake.key.domain,
+        namespaceId: wake.key.namespaceId, profileRev: wake.key.rev,
+      }).then((snapshot) => {
+        if (!snapshot) throw new Error('resolved Group Meta revision is missing locally');
+        return this.commitReady(entry, snapshot);
+      }).catch((error) => {
+        if (this.resolutions.get(entry.evidenceKey) !== entry) return;
+        entry.subject.error(error);
+        this.resolutions.delete(entry.evidenceKey);
+      });
       return;
     }
     entry.state = { kind: 'REQUESTING' };

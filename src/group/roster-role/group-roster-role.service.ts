@@ -87,14 +87,29 @@ interface ValidatedRosterRole {
   readonly systemMessage:
     | {
         type: typeof SystemMessageType.GROUP_OWNER_TRANSFERRED;
-        previousOwner: { account: string; domain: string; namespaceId: number };
-        newOwner: { account: string; domain: string; namespaceId: number };
+        previousOwner: {
+          account: string;
+          domain: string;
+          namespaceId: number;
+          profileRev: number;
+        };
+        newOwner: {
+          account: string;
+          domain: string;
+          namespaceId: number;
+          profileRev: number;
+        };
       }
     | {
         type:
           | typeof SystemMessageType.GROUP_ADMIN_GRANTED
           | typeof SystemMessageType.GROUP_ADMIN_REVOKED;
-        member: { account: string; domain: string; namespaceId: number };
+        member: {
+          account: string;
+          domain: string;
+          namespaceId: number;
+          profileRev: number;
+        };
       };
 }
 
@@ -249,11 +264,13 @@ export class GroupRosterRoleService {
             account: operator.account,
             domain: 'local',
             namespaceId: 0,
+            profileRev: operator.profileRev,
           },
           newOwner: {
             account: newOwner.account,
             domain: newOwner.domain,
             namespaceId: newOwner.namespaceId,
+            profileRev: newOwner.profileRev,
           },
         },
       };
@@ -300,6 +317,7 @@ export class GroupRosterRoleService {
           account: change.account,
           domain: change.domain,
           namespaceId: change.namespaceId,
+          profileRev: change.profileRev,
         },
       },
     };

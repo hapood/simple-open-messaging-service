@@ -1,17 +1,15 @@
+import { isProfiledAddress, type ProfiledAddress } from './profiled-address.js';
 import {
   parseCallEndedContent,
   type CallEndedContent,
 } from './call-ended-content.js';
 
-export interface SystemEventAddress {
-  account: string;
-  domain: string;
-}
+export type SystemEventAddress = ProfiledAddress;
 
 /** Event participants are independent of the notification sender. */
 export type OrdinarySystemMessageContent<A = SystemEventAddress> =
-  | { type: 'FRIEND_ADDED' }
-  | { type: 'FRIEND_REMOVED'; initiator: A }
+  | { type: 'FRIEND_ADDED'; participants: [A, A] }
+  | { type: 'FRIEND_REMOVED'; initiator: A; participants: [A, A] }
   | { type: 'GROUP_CREATED'; creator: A }
   | {
       type:
@@ -56,26 +54,22 @@ export function parseSystemMessageContent(
     const address = (
       v: unknown,
       allowSystem = false,
-    ): v is SystemEventAddress => {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-      const a = v as Record<string, unknown>;
-      return (
-        Object.keys(a).length === 2 &&
-        typeof a['account'] === 'string' &&
-        !!a['account'].trim() &&
-        (a['account'] !== '$system' ||
-          (allowSystem && a['domain'] === 'local')) &&
-        typeof a['domain'] === 'string' &&
-        !!a['domain'].trim()
-      );
-    };
+    ): v is SystemEventAddress =>
+      isProfiledAddress(v) && (v.account !== '$system' || allowSystem);
+    const participants = (value: unknown) =>
+      Array.isArray(value) &&
+      value.length === 2 &&
+      value.every((entry) => address(entry));
     let valid = false;
     switch (body['type']) {
       case 'FRIEND_ADDED':
-        valid = keys();
+        valid = keys('participants') && participants(body['participants']);
         break;
       case 'FRIEND_REMOVED':
-        valid = keys('initiator') && address(body['initiator'], true);
+        valid =
+          keys('initiator', 'participants') &&
+          participants(body['participants']) &&
+          address(body['initiator'], true);
         break;
       case 'GROUP_CREATED':
         valid = keys('creator') && address(body['creator']);

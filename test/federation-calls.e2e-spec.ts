@@ -300,8 +300,18 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(JSON.parse(onB.content)).toMatchObject({
         outcome: 'declined',
         type: 'CALL_ENDED',
-        caller: { account: 'erin', domain: DOM_A },
-        callee: { account: 'frank', domain: 'local' },
+        caller: {
+          account: 'erin',
+          domain: DOM_A,
+          namespaceId: expect.any(Number),
+          profileRev: 0,
+        },
+        callee: {
+          account: 'frank',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 0,
+        },
       });
     } finally {
       await frankSse.cancel();

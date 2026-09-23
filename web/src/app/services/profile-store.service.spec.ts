@@ -15,11 +15,13 @@ describe('ProfileRepository resolution scheduler', () => {
   const sessionEnded = new Subject<void>();
   const resolveProfileEvidence = vi.fn();
   const getProfileAvatarBlob = vi.fn();
+  const getProfile = vi.fn();
   let repository: ProfileRepository;
 
   beforeEach(() => {
     resolveProfileEvidence.mockReset();
     getProfileAvatarBlob.mockReset();
+    getProfile.mockReset();
     getProfileAvatarBlob.mockResolvedValue(new Blob(['a'], { type: 'image/webp' }));
     TestBed.configureTestingModule({
       providers: [
@@ -31,6 +33,7 @@ describe('ProfileRepository resolution scheduler', () => {
             profileWake$: profileWake,
             resolveProfileEvidence,
             getProfileAvatarBlob,
+            getProfile,
           },
         },
         {
@@ -124,6 +127,25 @@ describe('ProfileRepository resolution scheduler', () => {
 
     await expect(result).resolves.toMatchObject({ name: 'Alice', rev: 7 });
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
+  });
+
+  it('settles a drifting Group Meta request under its own evidence', async () => {
+    const evidence = {
+      type: 'GROUP_META' as const, threadId: 9, profileRev: 4,
+      subject: { type: 'MEMBER' as const, account: 'alice', domain: 'peer.test' },
+    };
+    const expected = { namespaceId: 7, account: 'alice', domain: 'peer.test', rev: 4 };
+    const actual = { ...expected, rev: 5 };
+    resolveProfileEvidence.mockResolvedValue({ status: 'PENDING', key: expected });
+    getProfile.mockResolvedValue({ ...actual, profileRev: 5, name: 'Alice 5', bio: '', avatarDigest: null });
+    const result = firstValueFrom(repository.resolve(evidence));
+    await vi.waitFor(() => expect(resolveProfileEvidence).toHaveBeenCalledOnce());
+    profileWake.next({ event: 'PROFILE_AVAILABLE', key: actual, evidence });
+    await expect(result).resolves.toMatchObject({ name: 'Alice 5', rev: 5 });
+    expect(getProfile).toHaveBeenCalledWith({
+      account: 'alice', domain: 'peer.test', namespaceId: 7, profileRev: 5,
+    });
+    expect(resolveProfileEvidence).toHaveBeenCalledOnce();
   });
 
   it('retries only the evidence whose pending four-tuple was committed', async () => {

@@ -29,10 +29,16 @@ export class MemberProfileRepository {
 
   constructor() {
     this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
-      // A newly resolved name can also enter a previously empty search result.
-      // Invalidate queried rosters even if that identity was not in their page.
-      if (wake.event === 'PROFILE_AVAILABLE' && this.queriedThreads.size)
-        this.notifyChanged([...this.queriedThreads]);
+      // A newly resolved name can enter an empty search result, but only the
+      // roster named by the authorization evidence is affected.
+      if (wake.event !== 'PROFILE_AVAILABLE' || !wake.evidence) return;
+      const { evidence } = wake;
+      if (
+        (evidence.type === 'GROUP_META' ||
+          evidence.type === 'MESSAGE_AUTHOR') &&
+        this.queriedThreads.has(evidence.threadId)
+      )
+        this.notifyChanged([evidence.threadId]);
     });
     inject(SessionLifecycleService)
       .ended$.pipe(takeUntilDestroyed())
@@ -113,20 +119,6 @@ export class MemberProfileRepository {
       profileResolved: member.profileRev === member.resolvedProfileRev,
     };
     return resolved;
-  }
-
-  async findByAddress(
-    threadId: number,
-    account: string,
-    domain: string,
-  ): Promise<ResolvedMemberProfile | undefined> {
-    const members = await this.queryPage(threadId, {
-      take: 1000,
-      search: account,
-    });
-    return members.find(
-      (member) => member.account === account && member.domain === domain,
-    );
   }
 
   async recordMessageProfile(

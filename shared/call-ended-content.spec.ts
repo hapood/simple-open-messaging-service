@@ -4,8 +4,8 @@ import { deriveMessagePreview } from './message-preview.js';
 const base = {
   type: 'CALL_ENDED',
   callId: '550e8400-e29b-41d4-a716-446655440000',
-  caller: { account: 'alice', domain: 'a.test' },
-  callee: { account: 'bob', domain: 'b.test' },
+  caller: { account: 'alice', domain: 'a.test', namespaceId: 1, profileRev: 0 },
+  callee: { account: 'bob', domain: 'b.test', namespaceId: 2, profileRev: 0 },
   mediaType: 'AUDIO',
   initiatedAt: 100,
   endedAt: 500,
@@ -28,6 +28,8 @@ describe('terminal call system content', () => {
     { outcome: 'failed', startedAt: 200 },
     { outcome: 'failed', peerOccurredAt: 200 },
     { outcome: 'failed', type: 'CALL' },
+    { outcome: 'failed', caller: { account: 'alice', domain: 'a.test' } },
+    { outcome: 'failed', callee: { ...base.callee, profileRev: 1 } },
   ])('rejects invalid or retired fields: %j', (patch) => {
     expect(
       parseCallEndedContent(JSON.stringify({ ...base, ...patch })),

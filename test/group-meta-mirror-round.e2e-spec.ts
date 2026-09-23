@@ -384,7 +384,12 @@ describe('mirror Group Meta rounds', () => {
     expect(joined.length).toBe(1);
     expect(JSON.parse(joined[0]!.content as string)).toMatchObject({
       type: 'GROUP_JOINED',
-      member: { account: 'peer-one', domain: originDomain },
+      member: {
+        account: 'peer-one',
+        domain: originDomain,
+        namespaceId: originNamespaceId,
+        profileRev: 1,
+      },
     });
 
     // A rejoin boundary (DEPART after UPSERT) mints the leave message.
@@ -404,6 +409,12 @@ describe('mirror Group Meta rounds', () => {
     expect(
       transitions.map((row) => JSON.parse(row.content as string).type),
     ).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
+    expect(JSON.parse(transitions[1]!.content as string).member).toMatchObject({
+      account: 'peer-one',
+      domain: originDomain,
+      namespaceId: originNamespaceId,
+      profileRev: 1,
+    });
     expect(
       await database.db
         .select({ cursor: groupMeta.metaProcessedThroughId })

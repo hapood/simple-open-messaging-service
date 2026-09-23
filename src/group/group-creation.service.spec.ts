@@ -37,7 +37,18 @@ describe('GroupService creation', () => {
       };
     });
     const execute = vi.fn().mockResolvedValue({ rows: [] });
-    const tx = { insert, execute };
+    const tx = {
+      insert,
+      execute,
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue({
+            account: 'owner',
+            defaultProfileRev: 2,
+          }),
+        },
+      },
+    };
     const database = {
       db: {
         transaction: vi.fn((callback: (value: typeof tx) => Promise<unknown>) =>
@@ -93,7 +104,12 @@ describe('GroupService creation', () => {
     );
     expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(tx, 7, {
       type: 'GROUP_CREATED',
-      creator: 11,
+      creator: {
+        account: 'owner',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+      },
     });
     expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledTimes(2);
     expect(

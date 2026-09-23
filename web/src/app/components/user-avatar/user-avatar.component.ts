@@ -10,6 +10,7 @@ import {
 import { UserAvatarType } from './model';
 import { assetUrl } from '../../services/runtime';
 import { UserService } from '../../services/user.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import {
   ProfileRepository,
   type ResolvedProfile,
@@ -76,9 +77,27 @@ function firstGrapheme(value: string): string {
 export class UserAvatarComponent {
   private readonly userService = inject(UserService);
   private readonly profiles = inject(ProfileRepository);
+  private readonly conversations = inject(ConversationListService, {
+    optional: true,
+  });
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER);
   readonly name = input<string | undefined | null>('');
+  /** Only P2P message avatars receive this thread context; aliases never override group members. */
+  readonly p2pThreadId = input<number | undefined>(undefined);
+  private readonly p2pAlias = computed(() => {
+    if (this.type() !== UserAvatarType.OTHER) return '';
+    const threadId = this.p2pThreadId();
+    if (threadId === undefined) return '';
+    const conversation = this.conversations
+      ?.items()
+      .find((item) => item.threadId === threadId && item.type === 'P2P');
+    return conversation?.type === 'P2P' &&
+      conversation.peerUser.account === this.account() &&
+      conversation.peerUser.domain === this.federatedDomain()
+      ? (conversation.alias?.trim() ?? '')
+      : '';
+  });
   /** Stable account identifier used with the home domain for the generated fallback color. Display
    * names and database ids are deliberately excluded because both can change across time/localization. */
   readonly account = input<string | undefined | null>(undefined);
@@ -137,8 +156,9 @@ export class UserAvatarComponent {
     if (profile) return '';
     return this.src();
   });
-  private readonly effectiveName = computed(
+  readonly effectiveName = computed(
     () =>
+      this.p2pAlias() ||
       this.resolvedProfile()?.name ||
       this.name() ||
       (this.type() === UserAvatarType.SELF

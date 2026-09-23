@@ -54,7 +54,7 @@ export async function applyDeltaMirrorMetaItemInTx(
   );
   if (input.item.feedId <= mirror.metaProcessedThroughId)
     throw new Error('duplicate or stale group-meta delta coordinate');
-  const previousOperation = await readCurrentMirrorMemberOperationInTx(
+  const previousFact = await readCurrentMirrorMemberOperationInTx(
     tx,
     mirror.threadId,
     input.group.namespaceId,
@@ -72,7 +72,7 @@ export async function applyDeltaMirrorMetaItemInTx(
     mirror.threadId,
     input.group.namespaceId,
     input.item,
-    previousOperation,
+    previousFact,
     { threadLock, messages: input.messages },
   );
   if (!transitioned) {
@@ -157,19 +157,24 @@ async function readCurrentMirrorMemberOperationInTx(
   threadId: number,
   namespaceId: number,
   item: MirrorMetaReplicatedItem,
-): Promise<string | undefined> {
+): Promise<{ operation: string; profileRev: number | null } | undefined> {
   if (item.operation === 'GROUP_PROFILE') return undefined;
   const member = toClientIdentity(
     { account: item.account, domain: item.domain, namespaceId },
     loadFederationConfig().domain,
   );
-  const previous = await tx.execute<{ operation: string }>(sql`
-    SELECT operation FROM "GroupMetaMemberFeed"
+  const previous = await tx.execute<{
+    operation: string;
+    profileRev: number | null;
+  }>(sql`
+    SELECT operation, CASE WHEN operation = 'UPSERT'
+      THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
+    FROM "GroupMetaMemberFeed"
     WHERE "threadId" = ${threadId} AND "memberAccount" = ${member.account}
       AND "memberDomain" = ${member.domain}
     LIMIT 1
   `);
-  return previous.rows[0]?.operation;
+  return previous.rows[0];
 }
 
 /** Meta deltas announce third-party departures and member joins. A local
@@ -180,7 +185,7 @@ async function writeObservedMembershipTransitionInTx(
   threadId: number,
   namespaceId: number,
   item: MirrorMetaReplicatedItem,
-  previousOperation: string | undefined,
+  previousFact: { operation: string; profileRev: number | null } | undefined,
   deps: {
     threadLock: Awaited<
       ReturnType<typeof requireGroupThreadContentLockUnderGroupInTx>
@@ -193,10 +198,22 @@ async function writeObservedMembershipTransitionInTx(
     { account: item.account, domain: item.domain, namespaceId },
     loadFederationConfig().domain,
   );
-  const joined = item.operation === 'UPSERT' && previousOperation !== 'UPSERT';
-  const left = item.operation === 'DEPART' && previousOperation === 'UPSERT';
+  const joined =
+    item.operation === 'UPSERT' && previousFact?.operation !== 'UPSERT';
+  const left =
+    item.operation === 'DEPART' && previousFact?.operation === 'UPSERT';
   if (!joined && !left) return false;
   if (left && member.domain === 'local') return false;
+  const profileRev =
+    item.operation === 'UPSERT' ? item.profileRev : previousFact?.profileRev;
+  if (profileRev === null || profileRev === undefined)
+    throw new Error('departing member has no previous profile revision');
+  const identity = await tx.execute<{ namespaceId: number }>(sql`
+    SELECT group_meta_member_namespace(${threadId}, ${member.account},
+      ${member.domain}) AS "namespaceId"
+  `);
+  if (!identity.rows[0])
+    throw new Error('group member namespace is unavailable');
   if (member.domain === 'local') {
     const pair = await tx.execute<{ active: boolean }>(sql`
       SELECT active FROM "RelationshipPair"
@@ -220,7 +237,11 @@ async function writeObservedMembershipTransitionInTx(
       type: joined
         ? SystemMessageType.GROUP_JOINED
         : SystemMessageType.GROUP_LEFT,
-      member,
+      member: {
+        ...member,
+        namespaceId: identity.rows[0].namespaceId,
+        profileRev,
+      },
     },
     { threadLock: deps.threadLock },
   );

@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
+import { userIntentSystemParticipantsSql } from './user-intent-system-participants-sql.js';
 import {
   userIntentClientBodiesSql,
   userIntentPeerWriteSql,
@@ -35,10 +36,14 @@ export interface UserIntentRevocationInput extends UserIntentFeedInput {
 export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
   const remote = input.targetDomain !== 'local';
   const threadScope = threadFanoutScopeKey(input.threadId);
-  const content = JSON.stringify({
-    type: 'FRIEND_REMOVED',
-    initiator: { account: input.actorAccount, domain: input.actorDomain },
+  const participants = userIntentSystemParticipantsSql({
+    pairId: input.pairId,
+    actorSide: input.actorSide,
+    actorState: 'revocation',
   });
+  const content = sql`jsonb_build_object('type', 'FRIEND_REMOVED',
+    'participants', ${participants},
+    'initiator', ${participants}->${input.actorSide === 'A' ? 0 : 1}::integer)`;
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({

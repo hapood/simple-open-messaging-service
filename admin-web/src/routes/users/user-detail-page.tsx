@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/table';
 import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
+import { automationTestId } from '@/lib/automation-testing';
 import { IssueLoginCodeDialog } from './issue-login-code-dialog';
 import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
 import { LoginCodesSection } from './login-codes-section';
@@ -147,6 +148,7 @@ export function UserDetailPage() {
                   </Button>
                   {!u.isDeleted ? (
                     <Button
+                      {...automationTestId('issue-login-code')}
                       variant="outline"
                       size="sm"
                       onClick={() => setDlg({ kind: 'issue' })}
