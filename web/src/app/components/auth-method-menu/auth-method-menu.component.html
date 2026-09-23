@@ -1,6 +1,5 @@
 <button
   mat-button
-  [attr.data-testid]="methodMenuTestId"
   type="button"
   [matMenuTriggerFor]="methods"
 >
@@ -22,7 +21,6 @@
   @if (otp()) {
     <button
       mat-menu-item
-      [attr.data-testid]="otpMethodTestId"
       type="button"
       (click)="otpSelected.emit()"
     >

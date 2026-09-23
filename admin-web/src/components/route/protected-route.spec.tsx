@@ -8,7 +8,7 @@ const auth = vi.hoisted(() => ({ isAuthenticated: false, isChecking: true }))
 vi.mock('@/auth/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('@/components/layout/admin-layout', () => ({
   AdminLayout: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="admin-layout">{children}</div>
+    <main>{children}</main>
   ),
 }))
 
@@ -33,7 +33,7 @@ describe('ProtectedRoute', () => {
 
   it('does not mount the admin layout while the session is being checked', () => {
     renderRoute()
-    expect(screen.queryByTestId('admin-layout')).not.toBeInTheDocument()
+    expect(screen.queryByRole('main')).not.toBeInTheDocument()
     expect(screen.queryByText('private dashboard')).not.toBeInTheDocument()
   })
 
@@ -41,14 +41,14 @@ describe('ProtectedRoute', () => {
     auth.isChecking = false
     renderRoute()
     expect(screen.getByText('login page')).toBeInTheDocument()
-    expect(screen.queryByTestId('admin-layout')).not.toBeInTheDocument()
+    expect(screen.queryByRole('main')).not.toBeInTheDocument()
   })
 
   it('mounts the protected page only after authentication succeeds', () => {
     auth.isChecking = false
     auth.isAuthenticated = true
     renderRoute()
-    expect(screen.getByTestId('admin-layout')).toBeInTheDocument()
+    expect(screen.getByRole('main')).toBeInTheDocument()
     expect(screen.getByText('private dashboard')).toBeInTheDocument()
   })
 })
