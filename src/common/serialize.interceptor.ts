@@ -86,6 +86,7 @@ function envelopeFor(data: unknown): unknown {
       data: carrier.data,
       messageKey: carrier.messageKey,
       hasMore: carrier.hasMore,
+      totalCount: carrier.totalCount,
       truncated: carrier.truncated,
     };
   }

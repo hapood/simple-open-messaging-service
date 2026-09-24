@@ -59,6 +59,14 @@ export class ApiResult<T = unknown> {
   hasMore?: boolean;
 
   @ApiProperty({
+    type: 'number',
+    nullable: true,
+    description:
+      'Total visible matches for search-messages, independent of the page cursor.',
+  })
+  totalCount?: number;
+
+  @ApiProperty({
     type: 'boolean',
     nullable: true,
     description:
@@ -107,6 +115,7 @@ export interface ApiEnvelope<T = unknown> {
   message?: string;
   messageKey?: string;
   hasMore?: boolean;
+  totalCount?: number;
   truncated?: boolean;
 }
 
@@ -118,6 +127,7 @@ export function envelope<T>(
     message?: string;
     messageKey?: string;
     hasMore?: boolean;
+    totalCount?: number;
     truncated?: boolean;
   },
 ): ApiEnvelope<T> {

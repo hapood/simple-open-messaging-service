@@ -55,7 +55,6 @@ import {
   familyToFileSyncKind,
   type OutboundFilePayload,
 } from '../upload/file-content.js';
-import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -426,14 +425,13 @@ export class MessageService {
             'quoted message not found',
           );
         }
-        let storedContent =
+        const storedContent =
           textContent && quoteSeq !== undefined
             ? stringifyTextMessageContent({
                 text: textContent.text,
                 quote: { seq: quoteSeq, namespaceId: 0 },
               })
             : content;
-        storedContent = contextualizeCasUrls(storedContent, threadId, seq);
         const [msg] = await tx
           .insert(message)
           .values({
@@ -1059,11 +1057,7 @@ export class MessageService {
               'conversation is read-only',
             );
           }
-          const content = contextualizeCasUrls(
-            unboundContent,
-            stage.threadId,
-            seq,
-          );
+          const content = unboundContent;
           const [msg] = await tx
             .insert(message)
             .values({
@@ -1762,54 +1756,70 @@ export class MessageService {
     lastSeq?: number,
     clearedSeq?: number | null,
   ) {
-    if (
-      clearedSeq !== null &&
-      clearedSeq !== undefined &&
-      lastSeq !== undefined &&
-      lastSeq <= clearedSeq + 1
-    )
-      return [];
     const cursor =
       lastSeq === undefined ? sql.empty() : sql`AND seq < ${lastSeq}`;
-    const rows = await this.queryRaw<Array<{ seq: number; createdAt: string }>>`
-      SELECT seq, "createdAt"
-      FROM "Message"
-      WHERE "threadId" = ${threadId}
-        AND "isDeleted" = false
-        AND "localState" = 'READY'
-        ${cursor}
-        AND (
-          (
-            "contentType" = 'PURE_TEXT'
-            AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
-          )
-          OR (
-            "contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
-            AND (content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
-          )
-          OR (
-            "contentType" = 'GALLERY'
-            AND EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(content::jsonb -> 'items') AS item
-              WHERE (item ->> 'name') ILIKE ${`%${keyword}%`}
+    const visibility =
+      clearedSeq === null || clearedSeq === undefined
+        ? sql.empty()
+        : sql`AND seq > ${clearedSeq}`;
+    // Count and page share one statement snapshot. Count excludes cleared messages but not the cursor,
+    // so every page reports the total visible matches even if that page is empty.
+    const rows = await this.queryRaw<
+      Array<{
+        seq: number | null;
+        createdAt: string | null;
+        totalCount: string;
+      }>
+    >`
+      WITH matches AS NOT MATERIALIZED (
+        SELECT seq, "createdAt"
+        FROM "Message"
+        WHERE "threadId" = ${threadId}
+          AND "isDeleted" = false
+          AND "localState" = 'READY'
+          ${visibility}
+          AND (
+            (
+              "contentType" = 'PURE_TEXT'
+              AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+            )
+            OR (
+              "contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
+              AND (content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
+            )
+            OR (
+              "contentType" = 'GALLERY'
+              AND EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(content::jsonb -> 'items') AS item
+                WHERE (item ->> 'name') ILIKE ${`%${keyword}%`}
+              )
             )
           )
-        )
-      ORDER BY seq DESC
-      LIMIT ${take + 1}
-    `;
-    return rows
-      .filter(
-        (row) =>
-          clearedSeq === null ||
-          clearedSeq === undefined ||
-          row.seq > clearedSeq,
       )
-      .map((row) => ({
-        ...row,
-        createdAt: rawDate(row.createdAt, 'Message.createdAt'),
-      }));
+      SELECT page.seq, page."createdAt", count.total_count AS "totalCount"
+      FROM (SELECT COUNT(*) AS total_count FROM matches) count
+      LEFT JOIN LATERAL (
+        SELECT seq, "createdAt" FROM matches
+        WHERE true ${cursor}
+        ORDER BY seq DESC
+        LIMIT ${take + 1}
+      ) page ON true
+      ORDER BY page.seq DESC
+    `;
+    return {
+      totalCount: Number(rows[0].totalCount),
+      rows: rows.flatMap((row) =>
+        row.seq === null || row.createdAt === null
+          ? []
+          : [
+              {
+                seq: row.seq,
+                createdAt: rawDate(row.createdAt, 'Message.createdAt'),
+              },
+            ],
+      ),
+    };
   }
 
   /** Single message lookup by per-thread (threadId, seq) identity — seq is unique only within a thread,

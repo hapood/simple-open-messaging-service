@@ -6,7 +6,9 @@ import {
   output,
   signal,
   ChangeDetectionStrategy,
+  DestroyRef,
 } from '@angular/core';
+import { Subscription } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -16,14 +18,12 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
  * In-chat search field, rendered INSIDE the chat header when "Search" is picked from the action menu —
  * it replaces the title row in-place (same --msg-header-h height), so it adds no height and never
  * collides with the floating date pill. Debounced input drives a server-side substring search
- * (message text and uploaded filenames); the lightweight {seq} matches are stored ascending
- * (oldest-first) and the prev/next
- * arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
+ * (message text and uploaded filenames); the lightweight {seq} matches are stored newest-first.
+ * The prev/next arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
  * scrollToIndex(seq, 'center', true) — the kernel flashes the row.
  *
- * Loads the first page (50 newest matches). The counter shows `i / n+` when more pages exist (the `+`
- * marks an unbounded tail); paging deeper is deferred — search is a secondary surface and the common
- * case is a handful of matches.
+ * Loads 50 matches at a time. Older matches are fetched by cursor when Previous reaches the
+ * loaded boundary; the counter uses the server's total visible match count.
  */
 @Component({
   selector: 'app-message-search',
@@ -181,84 +181,102 @@ export class MessageSearchComponent {
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
 
   keyword = '';
-  /** Match seqs ascending (oldest-first) for natural prev/next navigation. */
+  /** Match seqs newest-first; index zero is the newest visible match. */
   private matches: number[] = [];
-  /** Current match index into `matches` (-1 = none). */
   private idx = -1;
-  readonly position = signal(0); // 1-based for display
-  readonly matchCount = signal(0); // matches loaded this page
+  readonly position = signal(0);
+  readonly totalCount = signal(0);
   readonly hasMore = signal(false);
   readonly loading = signal(false);
 
   private timer?: ReturnType<typeof setTimeout>;
+  private request?: Subscription;
+  private generation = 0;
+  private readonly destroyRef = inject(DestroyRef);
+
+  constructor() {
+    this.destroyRef.onDestroy(() => {
+      clearTimeout(this.timer);
+      this.request?.unsubscribe();
+    });
+  }
 
   readonly countLabel = computed(() => {
-    if (this.loading()) return '…';
-    const n = this.matchCount();
-    if (n === 0) return '';
-    const plus = this.hasMore() ? '+' : '';
-    return `${this.position()} / ${n}${plus}`;
+    if (this.loading() && this.idx < 0) return '…';
+    if (this.idx < 0) return '';
+    return `${this.position()} / ${this.totalCount()}`;
   });
 
   hasNoResult(): boolean {
-    return !this.loading() && this.matchCount() === 0 && !!this.keyword.trim();
+    return !this.loading() && this.idx < 0 && !!this.keyword.trim();
   }
 
   onInput(): void {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.runSearch(), 300);
+    this.request?.unsubscribe();
+    this.generation++;
+    this.matches = [];
+    this.idx = -1;
+    this.position.set(0);
+    this.totalCount.set(0);
+    this.hasMore.set(false);
+    this.loading.set(false);
+    if (this.keyword.trim())
+      this.timer = setTimeout(() => this.runSearch(), 300);
   }
 
-  private runSearch(): void {
+  private runSearch(lastSeq?: number): void {
     const kw = this.keyword.trim();
+    if (!kw) return;
     const tid = this.threadId();
-    if (!kw) {
-      this.matches = [];
-      this.idx = -1;
-      this.position.set(0);
-      this.matchCount.set(0);
-      this.hasMore.set(false);
-      return;
-    }
+    const generation = this.generation;
     this.loading.set(true);
-    this.threadAdapter
-      .searchMessages({ threadId: tid, keyword: kw, take: 50 })
-      .subscribe((res) => {
-        this.loading.set(false);
-        const data = res.code === 0 ? res.data : undefined;
-        if (!data || data.length === 0) {
-          this.matches = [];
-          this.idx = -1;
-          this.position.set(0);
-          this.matchCount.set(0);
-          this.hasMore.set(false);
-          return;
-        }
-        // Server returns newest-first (id desc); reverse to ascending for oldest-first navigation.
-        this.matches = data.map((d) => d.seq).reverse();
-        this.hasMore.set(!!res.hasMore);
-        this.matchCount.set(this.matches.length);
-        // Land on the NEWEST match first (the last ascending index), WhatsApp-style.
-        this.idx = this.matches.length - 1;
-        this.emitCurrent();
+    this.request = this.threadAdapter
+      .searchMessages({ threadId: tid, keyword: kw, take: 50, lastSeq })
+      .subscribe({
+        next: (res) => {
+          if (generation !== this.generation || tid !== this.threadId()) return;
+          this.loading.set(false);
+          if (res.code !== 0 || !res.data) return;
+          const seqs = res.data.map((d) => d.seq);
+          this.matches =
+            lastSeq === undefined ? seqs : [...this.matches, ...seqs];
+          this.hasMore.set(!!res.hasMore && seqs.length > 0);
+          this.totalCount.set(res.totalCount ?? this.matches.length);
+          if (lastSeq !== undefined && seqs.length === 0) return;
+          this.idx =
+            lastSeq === undefined ? (seqs.length ? 0 : -1) : this.idx + 1;
+          this.emitCurrent();
+        },
+        error: () => {
+          if (generation === this.generation) this.loading.set(false);
+        },
       });
   }
 
   canPrev(): boolean {
-    return this.idx > 0;
+    return (
+      this.idx >= 0 &&
+      !this.loading() &&
+      (this.idx < this.matches.length - 1 || this.hasMore())
+    );
   }
   canNext(): boolean {
-    return this.idx >= 0 && this.idx < this.matches.length - 1;
+    return this.idx > 0 && !this.loading();
   }
 
   prev(): void {
     if (!this.canPrev()) return;
-    this.idx--;
-    this.emitCurrent();
+    if (this.idx === this.matches.length - 1) {
+      this.runSearch(this.matches[this.idx]);
+    } else {
+      this.idx++;
+      this.emitCurrent();
+    }
   }
   next(): void {
     if (!this.canNext()) return;
-    this.idx++;
+    this.idx--;
     this.emitCurrent();
   }
 
@@ -267,7 +285,7 @@ export class MessageSearchComponent {
       this.position.set(0);
       return;
     }
-    this.position.set(this.idx + 1);
+    this.position.set(this.totalCount() - this.idx);
     this.jumpTo.emit(this.matches[this.idx]);
   }
 }

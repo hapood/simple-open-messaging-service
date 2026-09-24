@@ -973,11 +973,10 @@ export class MessageController {
   ) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
     // list excludes blocked/muted indirectly: blocked creators' messages are already hidden at the
-    // source by the send fan-out. The thread-wide clearedSeq is applied after the descending search
-    // page is read (without adding a clearedSeq SQL predicate); the client then jumps the kernel to a
-    // returned id and loads the bubble through query-messages. take+1 hasMore trick.
+    // source by the send fan-out. The thread-wide clearedSeq filters both count and page in SQL;
+    // the client jumps the kernel to returned seqs. take+1 determines hasMore.
     const lastSeq = dto.lastSeq !== undefined ? Number(dto.lastSeq) : undefined;
-    const rows = await this.messageService.searchMessages(
+    const { rows, totalCount } = await this.messageService.searchMessages(
       dto.threadId,
       dto.keyword,
       dto.take,
@@ -986,7 +985,7 @@ export class MessageController {
     );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
-    return envelope(data, { hasMore });
+    return envelope(data, { hasMore, totalCount });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
