@@ -308,7 +308,7 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Per-peer daily-quota overrides remain domain-scoped.
+- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Daily federation quota overrides belong to the active identity namespace, not the domain.
 - **IdentityNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
@@ -321,9 +321,9 @@ similarity is not an identity substitute.
   space per locally hosted group. Audience-specific state contains authorization
   and visibility boundaries only; it never duplicates roster items.
 
-### QuotaDailyUsage — Unified daily-quota counters
+### Quota and UserQuota — Daily-quota counters
 
-One row per (node, UTC day, category). A node is a domain — the local `SOMS_DOMAIN` (one aggregate bucket for all local users) or a federated peer. `category` ∈ messages/images/largeFiles/requests. `@@id([domain, date, category])`; incremented via DB-atomic `INSERT … ON CONFLICT … DO UPDATE … RETURNING count` (NOT an in-process Map or Redis). Resets at 00:00 UTC, no cron.
+Federation usage is keyed by (`namespaceId`, UTC day, category), with `QuotaFileByteUsage` holding the daily byte total and `QuotaDailyAllowance` holding additive admin grants. Overrides live on `IdentityNamespace`; a new peer identity does not inherit a retired identity's limits or usage. Local-account quota uses `UserQuotaPolicy`, `UserQuotaDailyUsage`, `UserQuotaFileByteUsage`, and `UserQuotaDailyAllowance`, keyed by local account ID. Both scopes use DB-atomic `INSERT … ON CONFLICT … DO UPDATE … RETURNING`; a new UTC date selects new effective usage without a cron. The in-memory breaker is only a restart-rebuilt cache over these persisted counters. See [Quota enforcement](../design/quota-enforcement.md) for admission, rollback, and administration semantics.
 
 ### SystemSetting / DiagnosticsReport
 

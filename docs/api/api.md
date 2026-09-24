@@ -190,8 +190,9 @@ selected revision from the referenced remote fact rather than accepting a revisi
   recognition, while `unavailable` does not. The profile is retrieved after the local readiness gate passes.
 - Emits one terminal `resolved` or `failed` event and closes. Closing the client connection cancels client
   interest; the server-to-peer request keeps its normal bounded timeout.
-- The result is an untrusted display card plus relationship status. It is never persisted and never creates
-  a stub; clients may close it and start another lookup at any time.
+- The result contains only an untrusted display card (`user`). It is never persisted and never creates
+  a stub; clients may close it and start another lookup at any time. Clients determine relationship
+  state from their synchronized local thread and request projections.
 
 ### POST `/message/quote-resolution` — Resolve a message quote
 
@@ -421,6 +422,21 @@ task coalescing, and optimistic client correction semantics.
   `40006` target not a member) · `transfer` (ownership) · `set-role`
   (ADMIN/MEMBER) execute synchronously and return business results. `update`
   (name/avatar/bio) is also synchronous.
+
+### POST `/group/announcement/set` · `/group/announcement/read`
+
+- `announcement/set`: OWNER or ADMIN only. Body `{ groupId, text }`, where
+  `text` is plain text with 1–4096 Unicode code points; use `null` to clear the
+  current announcement. The origin allocates a new Group Meta coordinate for
+  every effective publish, edit, or clear and returns `{ feedId }`.
+- `announcement/read`: any active member. Body
+  `{ groupId, announcementFeedId }`. The coordinate must be a known current
+  group announcement coordinate. The acknowledgement is idempotent and
+  monotone, advances only the announcement watermark, and does not mark chat
+  messages read. It returns `{ announcementReadFeedId }`.
+- Announcement text is rendered as plain text. The current projection is
+  delivered through Group Meta; it is not a message and does not create a
+  timeline or unread-message item.
 
 ### POST `/group/dissolve`
 

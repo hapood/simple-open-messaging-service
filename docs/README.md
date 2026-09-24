@@ -14,7 +14,8 @@ and client behavior.
 - [Cross-platform E2E test plan](./development/browser-e2e-test-plan.md)
 - [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
 - [Cross-platform E2E progress](./development/browser-e2e-progress.md)
-- [Browser E2E bug: stale profile update roster](./development/browser-e2e-bug-profile-update-stale-roster.md)
+- [Browser E2E handoff](./development/browser-e2e-handoff.md)
+- [Browser E2E reusable tools](./development/browser-e2e-tools.md)
 
 ## Design
 
@@ -22,10 +23,12 @@ and client behavior.
 
 - [Database concurrency and locking](./design/database-concurrency-and-locking.md)
 - [Local call history](./design/local-call-history.md)
+- [Quota enforcement](./design/quota-enforcement.md)
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
+- [Group announcement](./design/group-announcement.md)
 - [Durable task scheduling](./design/durable-task-scheduling.md)
 - [Task responsibilities and business locks](./design/durable-task-responsibilities-and-locks.md)
 - [Message deletion](./design/message-deletion.md)
