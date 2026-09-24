@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { ContentType } from '../database/enums.js';
-import { forwardBundle, forwardBundleAsset } from '../database/schema.js';
+import {
+  forwardBundle,
+  forwardBundleAsset,
+  forwardBundleDependency,
+} from '../database/schema.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
@@ -9,7 +13,7 @@ import {
   localizeForwardMediaContent,
 } from './forward-bundle.service.js';
 
-function sourceRow(childDepth: number) {
+function sourceRow() {
   return {
     id: 1n,
     seq: 7,
@@ -19,9 +23,10 @@ function sourceRow(childDepth: number) {
     profileRev: 1,
     contentType: ContentType.FORWARD,
     content: JSON.stringify({
-      bundleId: 'child',
+      bundleId: '01childbundle0000000000000',
       summaryLines: ['Alice：child'],
       messageCount: 1,
+      depth: 1,
     }),
     createdAt: new Date('2026-07-31T00:00:00Z'),
     updatedAt: new Date('2026-07-31T00:00:00Z'),
@@ -36,14 +41,14 @@ function sourceRow(childDepth: number) {
       avatar: '',
     },
     forwardMessage: {
-      bundleId: '01childbundle00000000000000',
-      bundle: { id: '01childbundle00000000000000', depth: childDepth },
+      bundleId: '01childbundle0000000000000',
+      bundle: { id: '01childbundle0000000000000' },
     },
   };
 }
 
-function sourceQueryRow(childDepth: number) {
-  const row = sourceRow(childDepth);
+function sourceQueryRow() {
+  const row = sourceRow();
   return {
     ...row,
     user: row.creatorItem,
@@ -55,7 +60,7 @@ function sourceQueryRow(childDepth: number) {
 
 function textSourceRow(seq: number, content: string, name: string) {
   return {
-    ...sourceRow(0),
+    ...sourceRow(),
     id: BigInt(seq),
     seq,
     contentType: ContentType.PURE_TEXT,
@@ -75,7 +80,7 @@ function textQueryRow(seq: number, content: string, name: string) {
   return { ...row, user: row.creatorItem, forwardMessages: [] };
 }
 
-function databaseFake(childDepth: number, tx?: unknown) {
+function databaseFake(tx?: unknown) {
   const findMemberships = vi.fn().mockResolvedValue([
     {
       threadId: 4,
@@ -108,7 +113,7 @@ function databaseFake(childDepth: number, tx?: unknown) {
           findMany: findMemberships,
         },
         message: {
-          findFirst: vi.fn().mockResolvedValue(sourceQueryRow(childDepth)),
+          findFirst: vi.fn().mockResolvedValue(sourceQueryRow()),
         },
         account: {
           findFirst: vi.fn().mockResolvedValue({
@@ -129,9 +134,14 @@ function databaseFake(childDepth: number, tx?: unknown) {
         messageAsset: {
           findMany: vi.fn().mockResolvedValue([]),
         },
+        forwardMessage: {
+          findFirst: vi.fn().mockResolvedValue({
+            bundleId: '01childbundle0000000000000',
+          }),
+        },
         forwardBundle: {
           findFirst: vi.fn().mockResolvedValue({
-            id: '01childbundle00000000000000',
+            id: '01childbundle0000000000000',
             messages: [
               {
                 id: 1,
@@ -147,7 +157,7 @@ function databaseFake(childDepth: number, tx?: unknown) {
           }),
           findMany: vi.fn().mockResolvedValue([
             {
-              id: '01childbundle00000000000000',
+              id: '01childbundle0000000000000',
               messages: [
                 {
                   id: 1,
@@ -229,7 +239,7 @@ describe('ForwardBundleService', () => {
   ])(
     'uses the shared %s message preview in forward-card summaries',
     (contentType, content, expected) => {
-      const service = forwardService(databaseFake(0));
+      const service = forwardService(databaseFake());
 
       expect(
         service['summaryLine']({
@@ -246,7 +256,7 @@ describe('ForwardBundleService', () => {
   );
 
   it('collects both LINK artwork digests for forward-bundle authorization', async () => {
-    const database = databaseFake(0);
+    const database = databaseFake();
     const service = forwardService(database);
     const first = 'a'.repeat(64);
     const second = 'b'.repeat(64);
@@ -390,7 +400,7 @@ describe('ForwardBundleService', () => {
   });
 
   it('builds a closure containing an imported minimal forward card', async () => {
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.forwardBundle.findFirst.mockResolvedValueOnce({
       id: '01BX5ZZKBKACTAV9WEVGEMMVRZ',
       messages: [
@@ -442,7 +452,7 @@ describe('ForwardBundleService', () => {
   });
 
   it('directly forwards text as the caller without retaining its quote', async () => {
-    const database = databaseFake(0);
+    const database = databaseFake();
     const service = new ForwardBundleService(
       database as never,
       messageServiceFake as never,
@@ -463,11 +473,45 @@ describe('ForwardBundleService', () => {
     });
   });
 
+  it('directly forwards a depth-3 card without creating another bundle layer', async () => {
+    const database = databaseFake();
+    const service = new ForwardBundleService(
+      database as never,
+      messageServiceFake as never,
+      {
+        findVisibleByThreadSeq: vi.fn().mockResolvedValue({
+          id: 7n,
+          contentType: ContentType.FORWARD,
+          content: JSON.stringify({
+            bundleId: '01childbundle0000000000000',
+            summaryLines: ['Alice：nested'],
+            messageCount: 3,
+            depth: 3,
+          }),
+        }),
+      } as never,
+    );
+
+    await expect(
+      service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
+    ).resolves.toEqual({
+      content: JSON.stringify({
+        bundleId: '01childbundle0000000000000',
+        summaryLines: ['Alice：nested'],
+        messageCount: 3,
+        depth: 3,
+      }),
+      contentType: ContentType.FORWARD,
+      forwardBundleId: '01childbundle0000000000000',
+    });
+    expect(database.db.query.forwardBundle.findFirst).not.toHaveBeenCalled();
+  });
+
   it.each([ContentType.SYSTEM])(
     'rejects direct forwarding of system message type %s',
     async (contentType) => {
       const service = new ForwardBundleService(
-        databaseFake(0) as never,
+        databaseFake() as never,
         messageServiceFake as never,
         {
           findVisibleByThreadSeq: vi.fn().mockResolvedValue({
@@ -488,7 +532,7 @@ describe('ForwardBundleService', () => {
 
   it('rejects direct media forwarding when its CAS digest is not bound to the visible source', async () => {
     const digest = 'a'.repeat(64);
-    const database = databaseFake(0);
+    const database = databaseFake();
     const service = new ForwardBundleService(
       database as never,
       messageServiceFake as never,
@@ -497,7 +541,7 @@ describe('ForwardBundleService', () => {
           id: 7n,
           contentType: ContentType.IMAGE,
           content: JSON.stringify({
-            url: `/uploads/msg-assets/aa/aa/${digest}?threadId=4&seq=7`,
+            url: `/uploads/msg-assets/aa/aa/${digest}`,
             w: 10,
             h: 10,
           }),
@@ -538,7 +582,7 @@ describe('ForwardBundleService', () => {
 
   it('snapshots attachment metadata without requiring the CAS blob to exist', async () => {
     const digest = 'a'.repeat(64);
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.mediaAsset.findFirst.mockResolvedValueOnce({
       digest,
       bytes: 10n,
@@ -561,32 +605,16 @@ describe('ForwardBundleService', () => {
   });
 
   it('rejects forwarding a depth-3 child bundle before preparing or persisting', async () => {
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
-    database.db.query.forwardBundle.findFirst
-      .mockResolvedValueOnce({
-        id: '01childbundle00000000000000',
-        messages: [
-          {
-            childBundleId: '01grandchildbundle0000000000',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        id: '01grandchildbundle0000000000',
-        messages: [
-          {
-            childBundleId: '01greatgrandbundle00000000',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        id: '01greatgrandbundle00000000',
-        messages: [
-          {
-            contentType: ContentType.PURE_TEXT,
-          },
-        ],
-      });
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
+    database.db.query.message.findFirst.mockResolvedValue({
+      ...sourceQueryRow(),
+      content: JSON.stringify({
+        bundleId: '01childbundle0000000000000',
+        summaryLines: [],
+        messageCount: 3,
+        depth: 3,
+      }),
+    });
     const service = forwardService(database);
     messageServiceFake.attachQuotePreviews.mockClear();
 
@@ -595,7 +623,26 @@ describe('ForwardBundleService', () => {
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
     });
-    expect(messageServiceFake.attachQuotePreviews).not.toHaveBeenCalled();
+    expect(database.db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a local forward whose aggregate message count exceeds 500', async () => {
+    const database = databaseFake();
+    database.db.query.message.findFirst.mockResolvedValue({
+      ...sourceQueryRow(),
+      content: JSON.stringify({
+        bundleId: '01childbundle0000000000000',
+        summaryLines: [],
+        messageCount: 500,
+        depth: 1,
+      }),
+    });
+    await expect(
+      forwardService(database).prepareFromMessages(9, [
+        { threadId: 4, seq: 7 },
+      ]),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FORWARD_INVALID_BUNDLE });
+    expect(database.db.query.forwardBundle.findFirst).not.toHaveBeenCalled();
   });
 
   it('assigns every message an ordered id and links the reply to its selected target', async () => {
@@ -609,7 +656,7 @@ describe('ForwardBundleService', () => {
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
       'Bob',
     );
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.message.findFirst
       .mockResolvedValueOnce(target)
       .mockResolvedValueOnce(reply);
@@ -632,7 +679,7 @@ describe('ForwardBundleService', () => {
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
       'Bob',
     );
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.message.findFirst.mockResolvedValueOnce(reply);
     const service = forwardService(database);
 
@@ -647,7 +694,7 @@ describe('ForwardBundleService', () => {
   });
 
   it('uses the creator account as display name when the exact revision is unavailable', async () => {
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.execute
       .mockResolvedValueOnce({ rows: [{ authorized: true }] })
       .mockResolvedValueOnce({ rows: [] });
@@ -665,7 +712,7 @@ describe('ForwardBundleService', () => {
   });
 
   it('keeps a known avatarless exact profile without inventing an avatar', async () => {
-    const database = databaseFake(0);
+    const database = databaseFake();
     const service = forwardService(database);
 
     const prepared = await service.prepareFromMessages(9, [
@@ -677,7 +724,7 @@ describe('ForwardBundleService', () => {
   });
 
   it('keeps the required display name when its avatar cannot be snapshotted', async () => {
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.execute.mockResolvedValue({
       rows: [
         {
@@ -705,7 +752,7 @@ describe('ForwardBundleService', () => {
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
       'Bob',
     );
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.accountThreadState.findMany.mockResolvedValueOnce([
       {
         threadId: 4,
@@ -732,7 +779,7 @@ describe('ForwardBundleService', () => {
   ])(
     'rejects a source message hidden by %s',
     async (_label, clearedSeq, blocked) => {
-      const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+      const database = databaseFake() as ReturnType<typeof databaseFake>;
       database.db.query.accountThreadState.findMany.mockResolvedValueOnce([
         {
           threadId: 4,
@@ -776,7 +823,7 @@ describe('ForwardBundleService', () => {
       ],
     ],
   ])('rejects %s before querying source rows', async (_label, sources) => {
-    const database = databaseFake(0);
+    const database = databaseFake();
     const service = forwardService(database);
 
     await expect(service.prepareFromMessages(9, sources)).rejects.toMatchObject(
@@ -842,7 +889,7 @@ describe('ForwardBundleService', () => {
     });
   });
 
-  it('imports cyclic child references and scopes message ids per bundle', async () => {
+  it('rejects cyclic child references before writing any bundles', async () => {
     const insertedBundles: Array<{
       id: string;
       sourceBundleId: string | null;
@@ -887,22 +934,154 @@ describe('ForwardBundleService', () => {
         },
         tx as never,
       ),
-    ).resolves.toHaveProperty('localRootBundleId');
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FEDERATION_MALFORMED });
 
+    expect(insertedBundles).toHaveLength(0);
+  });
+
+  it('imports a depth-three flat closure with localized references and a local depth', async () => {
+    const insertedBundles: Array<{
+      id: string;
+      messages: ForwardBundleMessage[];
+    }> = [];
+    const dependencies: Array<{
+      parentBundleId: string;
+      childBundleId: string;
+    }> = [];
+    const tx = {
+      query: {
+        forwardBundle: { findFirst: vi.fn().mockResolvedValue(undefined) },
+      },
+      insert: vi.fn((table: unknown) => ({
+        values: vi.fn(async (value: unknown) => {
+          if (table === forwardBundle)
+            insertedBundles.push(value as (typeof insertedBundles)[number]);
+          if (table === forwardBundleDependency)
+            dependencies.push(...(value as typeof dependencies));
+        }),
+      })),
+    };
+    const card = (bundleId: string) => ({
+      id: 1,
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.FORWARD,
+      content: JSON.stringify({ bundleId }),
+      childBundleId: bundleId,
+      sentAt: 1,
+    });
+    const text = {
+      id: 1,
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.PURE_TEXT,
+      content: JSON.stringify({ text: 'hello' }),
+      sentAt: 1,
+    };
+    const closure = {
+      id: 'root',
+      messages: [card('a')],
+      children: [
+        { id: 'a', messages: [card('b')] },
+        { id: 'b', messages: [text] },
+      ],
+      assets: [],
+    };
+    const service = forwardService({});
+    const imported = await service.importClosure(
+      'peer.test',
+      closure,
+      tx as never,
+    );
+    expect(imported.depth).toBe(3);
     expect(insertedBundles).toHaveLength(3);
-    expect(insertedBundles.map((bundle) => bundle.sourceBundleId)).toEqual([
-      'root',
-      null,
-      null,
-    ]);
-    const localIds = new Set(insertedBundles.map((bundle) => bundle.id));
-    for (const bundle of insertedBundles) {
-      expect(bundle.messages[0].id).toBe(1);
-      expect(localIds).toContain(bundle.messages[0].childBundleId);
-      expect(JSON.parse(bundle.messages[0].content).bundleId).toBe(
-        bundle.messages[0].childBundleId,
-      );
-    }
+    expect(dependencies).toHaveLength(2);
+    expect(
+      dependencies.every(
+        (edge) => edge.parentBundleId === imported.localRootBundleId,
+      ),
+    ).toBe(true);
+    expect(insertedBundles[0].messages[0].childBundleId).toBe(
+      insertedBundles[1].id,
+    );
+    expect(insertedBundles[1].messages[0].childBundleId).toBe(
+      insertedBundles[2].id,
+    );
+    expect(
+      service.localCardContent(
+        closure,
+        imported.localRootBundleId,
+        imported.depth,
+      ),
+    ).toContain('"depth":3');
+  });
+
+  it('rejects federated depth four before writing', async () => {
+    const insert = vi.fn();
+    const tx = {
+      query: { forwardBundle: { findFirst: vi.fn() } },
+      insert,
+    };
+    const card = (bundleId: string) => ({
+      id: 1,
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.FORWARD,
+      content: JSON.stringify({ bundleId }),
+      childBundleId: bundleId,
+      sentAt: 1,
+    });
+    const text = {
+      id: 1,
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.PURE_TEXT,
+      content: JSON.stringify({ text: 'hello' }),
+      sentAt: 1,
+    };
+    const children = [
+      { id: 'a', messages: [card('b')] },
+      { id: 'b', messages: [card('c')] },
+      { id: 'c', messages: [text] },
+    ];
+    await expect(
+      forwardService({}).importClosure(
+        'peer.test',
+        { id: 'root', messages: [card('a')], children, assets: [] },
+        tx as never,
+      ),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unreachable federated child before writing', async () => {
+    const tx = {
+      query: { forwardBundle: { findFirst: vi.fn() } },
+      insert: vi.fn(),
+    };
+    const text = {
+      id: 1,
+      author: { account: 'alice', domain: 'peer.test' },
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.PURE_TEXT,
+      content: JSON.stringify({ text: 'hello' }),
+      sentAt: 1,
+    };
+    await expect(
+      forwardService({}).importClosure(
+        'peer.test',
+        {
+          id: 'root',
+          messages: [text],
+          children: [{ id: 'orphan', messages: [text] }],
+          assets: [],
+        },
+        tx as never,
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FEDERATION_MALFORMED });
+    expect(tx.insert).not.toHaveBeenCalled();
   });
 
   it('accepts a required display name without an author address', async () => {

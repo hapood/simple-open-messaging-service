@@ -8,6 +8,7 @@ import { ContentType, MessageDeleteType } from '../database/enums.js';
 import {
   deletedMessage,
   federatedMessageTombstone,
+  federationMessageReceipt,
   fileSyncProgress,
   message,
   messageThread,
@@ -356,12 +357,67 @@ export class DeletedMessageService {
     remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
-    allowPending?: boolean;
     expectedFederationVersion: number;
+    authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
   }) {
     return this.database.db.transaction((tx) =>
       this.applyFederatedInTx(tx, params),
     );
+  }
+
+  async applyPendingReceiptInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      peerSeq: number;
+      peerDomain: string;
+      namespaceId: number;
+      authority: 'P2P_HOME' | 'GROUP_ORIGIN';
+      expectedFederationVersion: number;
+      threadLock?: ThreadContentLock;
+    },
+  ): Promise<void> {
+    const threadLock = await DeletedMessageService.lockFederatedIdentity(
+      tx,
+      params.threadId,
+      params.peerDomain,
+      params.namespaceId,
+      params.peerSeq,
+      params.threadLock,
+    );
+    const pending = await tx.query.federatedMessageTombstone.findFirst({
+      where: and(
+        eq(federatedMessageTombstone.threadId, params.threadId),
+        eq(federatedMessageTombstone.sourceNamespaceId, params.namespaceId),
+        eq(federatedMessageTombstone.messageSeq, params.peerSeq),
+      ),
+    });
+    if (!pending) return;
+    if (params.authority === 'P2P_HOME') {
+      // A P2P publisher cannot delete a message authored by this server.
+      await tx
+        .delete(federatedMessageTombstone)
+        .where(
+          and(
+            eq(federatedMessageTombstone.threadId, params.threadId),
+            eq(federatedMessageTombstone.sourceNamespaceId, params.namespaceId),
+            eq(federatedMessageTombstone.messageSeq, params.peerSeq),
+          ),
+        );
+      return;
+    }
+    await this.applyFederatedInTx(tx, {
+      threadId: params.threadId,
+      messageSeq: params.peerSeq,
+      sourceDomain: params.peerDomain,
+      sourceNamespaceId: params.namespaceId,
+      remoteDeletionSeq: pending.remoteDeletionSeq,
+      type: pending.type,
+      authorityDeletedAt: pending.authorityDeletedAt,
+      authority: params.authority,
+      expectedFederationVersion: params.expectedFederationVersion,
+      threadLock,
+    });
   }
 
   async applyFederatedInTx(
@@ -374,10 +430,7 @@ export class DeletedMessageService {
       remoteDeletionSeq: number;
       type: MessageDeleteType;
       authorityDeletedAt?: Date;
-      /** Group origins reject unmatched member submissions instead of treating them as facts. */
-      allowPending?: boolean;
-      /** An authenticated member-home tombstone becomes a locally published authority fact. */
-      publishAsAuthority?: boolean;
+      authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
       expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
     },
@@ -397,12 +450,13 @@ export class DeletedMessageService {
       params.messageSeq,
       params.threadLock,
     );
-    const target = await tx.query.message.findFirst({
-      where: and(
-        eq(message.threadId, params.threadId),
-        eq(message.sourceNamespaceId, params.sourceNamespaceId),
-        eq(message.originSeq, params.messageSeq),
-      ),
+    const peerCoordinate = and(
+      eq(message.threadId, params.threadId),
+      eq(message.sourceNamespaceId, params.sourceNamespaceId),
+      eq(message.originSeq, params.messageSeq),
+    );
+    let target = await tx.query.message.findFirst({
+      where: peerCoordinate,
       columns: {
         seq: true,
         creatorAccount: true,
@@ -413,6 +467,76 @@ export class DeletedMessageService {
         localState: true,
       },
     });
+    // The group origin can also address a locally authored submission by its
+    // accepted sequence. A receipt is the durable mapping when the local row
+    // has not yet been updated with the origin's coordinates.
+    if (!target && params.authority !== 'GROUP_MEMBER') {
+      const receipt = await tx.query.federationMessageReceipt.findFirst({
+        where: and(
+          eq(federationMessageReceipt.threadId, params.threadId),
+          eq(federationMessageReceipt.namespaceId, params.sourceNamespaceId),
+          eq(federationMessageReceipt.peerSeq, params.messageSeq),
+        ),
+        columns: { messageId: true },
+      });
+      if (receipt && params.authority === 'P2P_HOME') {
+        // A peer-assigned P2P sequence for our own submission is not a
+        // deletion authority, even when the matching peer copy is absent.
+        await tx
+          .delete(federatedMessageTombstone)
+          .where(
+            and(
+              eq(federatedMessageTombstone.threadId, params.threadId),
+              eq(
+                federatedMessageTombstone.sourceNamespaceId,
+                params.sourceNamespaceId,
+              ),
+              eq(federatedMessageTombstone.messageSeq, params.messageSeq),
+            ),
+          );
+        return null;
+      }
+      if (receipt) {
+        target = await tx.query.message.findFirst({
+          where: and(
+            eq(message.id, receipt.messageId),
+            eq(message.threadId, params.threadId),
+          ),
+          columns: {
+            seq: true,
+            creatorAccount: true,
+            creatorDomain: true,
+            sourceNamespaceId: true,
+            contentType: true,
+            isDeleted: true,
+            localState: true,
+          },
+        });
+      }
+    }
+    if (
+      target &&
+      params.authority === 'P2P_HOME' &&
+      target.creatorDomain !== params.sourceDomain
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'P2P tombstone is not from the message author home',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (
+      target &&
+      params.authority === 'GROUP_MEMBER' &&
+      target.creatorDomain !== params.sourceDomain
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'group member tombstone is not from the message author home',
+        HttpStatus.BAD_REQUEST,
+      );
+    const targetWhere = target
+      ? and(eq(message.threadId, params.threadId), eq(message.seq, target.seq))
+      : peerCoordinate;
     const pending = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
@@ -422,26 +546,17 @@ export class DeletedMessageService {
         ),
         eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
-      columns: {
-        type: true,
-        authorityDeletedAt: true,
-      },
+      columns: { type: true },
     });
-    if (
-      pending &&
-      (pending.type !== params.type ||
-        (params.authorityDeletedAt !== undefined &&
-          pending.authorityDeletedAt.getTime() !==
-            params.authorityDeletedAt.getTime()))
-    )
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'federated tombstone conflicts with an existing stable fact',
-        HttpStatus.BAD_REQUEST,
-      );
+    // An earlier pending fact wins over later, differently typed tombstones.
+    const effectiveType = pending?.type ?? params.type;
+    const ignored =
+      target?.creatorDomain === 'local' &&
+      params.authority === 'GROUP_ORIGIN' &&
+      effectiveType === MessageDeleteType.USER_RETRACTION;
 
     if (!target) {
-      if (!target && params.allowPending === false)
+      if (params.authority === 'GROUP_MEMBER')
         throw new BusinessException(
           BusinessCode.FEDERATION_BINDING_VIOLATION,
           'group origin cannot accept a deletion for an unknown message',
@@ -462,7 +577,7 @@ export class DeletedMessageService {
           .onConflictDoNothing();
     }
     let localDeletionSeq: number | null = null;
-    if (target) {
+    if (target && !ignored) {
       if (
         target.contentType === ContentType.SYSTEM ||
         target.creatorAccount === null ||
@@ -473,21 +588,14 @@ export class DeletedMessageService {
       await tx
         .update(message)
         .set({ isDeleted: true, updatedAt: now })
-        .where(
-          and(
-            eq(message.threadId, params.threadId),
-            eq(message.sourceNamespaceId, params.sourceNamespaceId),
-            eq(message.originSeq, params.messageSeq),
-          ),
-        );
+        .where(targetWhere);
       const localDeletion = await DeletedMessageService.ensureFactInTx(tx, {
         threadLock,
         threadId: params.threadId,
         messageSeq: target.seq,
-        type: params.type,
-        sourceNamespaceId: params.publishAsAuthority
-          ? 0
-          : params.sourceNamespaceId,
+        type: effectiveType,
+        sourceNamespaceId:
+          params.authority === 'GROUP_MEMBER' ? 0 : params.sourceNamespaceId,
         updatedAt: now,
       });
       localDeletionSeq = localDeletion.created
@@ -505,6 +613,8 @@ export class DeletedMessageService {
           tombstoneEndSeq: head.tombstoneEndSeq,
         });
       }
+    }
+    if (target) {
       await tx
         .delete(federatedMessageTombstone)
         .where(
@@ -524,14 +634,7 @@ export class DeletedMessageService {
       .select({ batchId: pendingMedia.batchId })
       .from(pendingMedia)
       .innerJoin(message, eq(message.id, pendingMedia.messageId))
-      .where(
-        and(
-          eq(pendingMedia.direction, 'INBOUND'),
-          eq(message.threadId, params.threadId),
-          eq(message.sourceNamespaceId, params.sourceNamespaceId),
-          eq(message.originSeq, params.messageSeq),
-        ),
-      )
+      .where(and(eq(pendingMedia.direction, 'INBOUND'), targetWhere))
       .limit(1);
     if (staged) {
       await tx
@@ -541,7 +644,7 @@ export class DeletedMessageService {
         .delete(pendingMedia)
         .where(eq(pendingMedia.batchId, staged.batchId));
     }
-    return target && localDeletionSeq !== null
+    return target && !ignored && localDeletionSeq !== null
       ? {
           deletionSeq: localDeletionSeq,
           messageSeq: target.seq,

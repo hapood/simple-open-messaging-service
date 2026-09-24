@@ -63,6 +63,7 @@ import type {
   MediaStatus,
 } from '../message-cards/chat-item';
 import {
+  contextualLinkContent,
   contextualMediaUrl,
   parseAudioContent,
   parseFileContent,
@@ -904,7 +905,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
-      text: textContent ? toDisplayText(textContent.text) : m.content,
+      text: textContent
+        ? toDisplayText(textContent.text)
+        : m.contentType === 'LINK'
+          ? contextualLinkContent(m.content, m.threadId, m.seq)
+          : m.content,
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),

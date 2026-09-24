@@ -117,11 +117,7 @@ describe('LINK message send (single instance)', () => {
       .limit(1);
     expect(storedMessage).toBeDefined();
     expect(storedMessage.contentType).toBe('LINK');
-    expect(JSON.parse(storedMessage.content)).toEqual({
-      ...CARD,
-      image: `${CARD.image}?threadId=${threadId}&seq=${storedMessage.seq}`,
-      favicon: `${CARD.favicon}?threadId=${threadId}&seq=${storedMessage.seq}`,
-    });
+    expect(JSON.parse(storedMessage.content)).toEqual(CARD);
     expect(await countMessageAssets(database, threadId)).toBe(2);
   });
 

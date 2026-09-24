@@ -16,7 +16,6 @@ import { enqueueMessageFanoutsInTx } from '../message/thread-fanout-task.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import type { Message } from '../message/message.service.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { contextualizeCasUrls } from '../upload/cas-url.js';
 import {
   extractDigestEntries,
   extractDigests,
@@ -193,11 +192,7 @@ export class FederationInboundMessageStoreService {
       const seq = sequencePolicy
         ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
         : await this.allocateMessageSeq(tx, threadId);
-      const storedContent = contextualizeCasUrls(
-        incoming.content,
-        threadId,
-        seq,
-      );
+      const storedContent = incoming.content;
       const [thread] = await tx
         .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
         .from(tables.messageThread)
@@ -274,12 +269,12 @@ export class FederationInboundMessageStoreService {
       storedContent = this.forwardBundles.localCardContent(
         validatedClosure,
         localForwardBundleId,
+        imported.depth,
       );
     }
     const seq = sequencePolicy
       ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
       : await this.allocateMessageSeq(tx, threadId);
-    storedContent = contextualizeCasUrls(storedContent, threadId, seq);
     if (incomingText && incoming.quoteTarget !== undefined) {
       storedContent = stringifyTextMessageContent({
         text: incomingText.text,
@@ -333,10 +328,10 @@ export class FederationInboundMessageStoreService {
         bundleId: localForwardBundleId,
       });
     }
-    await this.quota.tickLax(fetchedFromDomain, 'messages', tx, 1);
+    await this.quota.tickLax(namespaceId, 'messages', tx, 1);
     if (validatedClosure) {
       await this.quota.tickLax(
-        fetchedFromDomain,
+        namespaceId,
         'files',
         tx,
         validatedClosure.children.length + 1,

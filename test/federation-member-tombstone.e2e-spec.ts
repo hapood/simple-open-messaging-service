@@ -158,6 +158,175 @@ describe('member-home tombstone authority', () => {
     MessageDeleteType.USER_RETRACTION,
     MessageDeleteType.MODERATION_REMOVAL,
   ])(
+    'ignores a group-origin retraction of a local author but accepts origin moderation',
+    async (type) => {
+      await database.db
+        .update(tables.messageThread)
+        .set({
+          groupDomain: peerDomain,
+          authorityNamespaceId: namespaceId,
+          groupAccountId: null,
+        })
+        .where(eq(tables.messageThread.id, threadId));
+      const [local] = await database.db
+        .update(tables.message)
+        .set({
+          sourceNamespaceId: 0,
+          creatorDomain: 'local',
+          creatorNamespaceId: 0,
+          originSeq: null,
+        })
+        .where(eq(tables.message.threadId, threadId))
+        .returning({ id: tables.message.id });
+      await database.db.insert(tables.federationMessageReceipt).values({
+        threadId,
+        namespaceId,
+        peerSeq: 7,
+        messageId: local.id,
+      });
+      const first = await apply(type);
+      const row = await database.db.query.message.findFirst({
+        where: eq(tables.message.threadId, threadId),
+      });
+      const facts = await database.db.query.deletedMessage.findMany();
+      if (type === MessageDeleteType.USER_RETRACTION) {
+        expect(first.deletions).toEqual([]);
+        expect(row?.isDeleted).toBe(false);
+        expect(facts).toEqual([]);
+      } else {
+        expect(first.deletions).toEqual([{ messageSeq: 42, deletionSeq: 1 }]);
+        expect(row?.isDeleted).toBe(true);
+        expect(facts).toMatchObject([
+          { messageSeq: 42, type, sourceNamespaceId: namespaceId },
+        ]);
+        expect((await apply(type)).deletions).toEqual([]);
+      }
+      expect(
+        await database.db.query.federatedMessageTombstone.findMany(),
+      ).toEqual([]);
+    },
+  );
+
+  it('keeps the first local deletion type when origin moderation arrives later', async () => {
+    await database.db
+      .update(tables.messageThread)
+      .set({
+        groupDomain: peerDomain,
+        authorityNamespaceId: namespaceId,
+        groupAccountId: null,
+        tombstoneEndSeq: 1,
+      })
+      .where(eq(tables.messageThread.id, threadId));
+    const [local] = await database.db
+      .update(tables.message)
+      .set({
+        sourceNamespaceId: 0,
+        creatorDomain: 'local',
+        creatorNamespaceId: 0,
+        originSeq: null,
+        isDeleted: true,
+      })
+      .where(eq(tables.message.threadId, threadId))
+      .returning({ id: tables.message.id });
+    await database.db.insert(tables.federationMessageReceipt).values({
+      threadId,
+      namespaceId,
+      peerSeq: 7,
+      messageId: local.id,
+    });
+    await database.db.insert(tables.deletedMessage).values({
+      threadId,
+      messageSeq: 42,
+      deletionSeq: 1,
+      type: MessageDeleteType.USER_RETRACTION,
+      sourceNamespaceId: 0,
+      updatedAt: new Date(),
+    });
+    expect(
+      (await apply(MessageDeleteType.MODERATION_REMOVAL)).deletions,
+    ).toEqual([]);
+    expect(await database.db.query.deletedMessage.findMany()).toMatchObject([
+      {
+        messageSeq: 42,
+        type: MessageDeleteType.USER_RETRACTION,
+        sourceNamespaceId: 0,
+      },
+    ]);
+    expect(
+      await database.db.query.federatedMessageTombstone.findMany(),
+    ).toEqual([]);
+  });
+
+  it.each([
+    MessageDeleteType.USER_RETRACTION,
+    MessageDeleteType.MODERATION_REMOVAL,
+  ])(
+    'resolves pending origin %s when the local-author receipt arrives later',
+    async (type) => {
+      await database.db
+        .update(tables.messageThread)
+        .set({
+          groupDomain: peerDomain,
+          authorityNamespaceId: namespaceId,
+          groupAccountId: null,
+        })
+        .where(eq(tables.messageThread.id, threadId));
+      const [local] = await database.db
+        .update(tables.message)
+        .set({
+          sourceNamespaceId: 0,
+          creatorDomain: 'local',
+          creatorNamespaceId: 0,
+          originSeq: null,
+        })
+        .where(eq(tables.message.threadId, threadId))
+        .returning({ id: tables.message.id });
+      expect((await apply(type)).deletions).toEqual([]);
+      expect(
+        await database.db.query.federatedMessageTombstone.findMany(),
+      ).toHaveLength(1);
+      await database.db.transaction(async (tx) => {
+        await tx.insert(tables.federationMessageReceipt).values({
+          threadId,
+          namespaceId,
+          peerSeq: 7,
+          messageId: local.id,
+        });
+        await module.get(DeletedMessageService).applyPendingReceiptInTx(tx, {
+          threadId,
+          peerSeq: 7,
+          peerDomain,
+          namespaceId,
+          authority: 'GROUP_ORIGIN',
+          expectedFederationVersion: 0,
+        });
+      });
+      expect(
+        await database.db.query.message.findFirst({
+          where: eq(tables.message.threadId, threadId),
+        }),
+      ).toMatchObject({
+        isDeleted: type === MessageDeleteType.MODERATION_REMOVAL,
+        seq: 42,
+      });
+      expect(
+        await database.db.query.federatedMessageTombstone.findMany(),
+      ).toEqual([]);
+      const facts = await database.db.query.deletedMessage.findMany();
+      if (type === MessageDeleteType.USER_RETRACTION) {
+        expect(facts).toEqual([]);
+      } else {
+        expect(facts).toMatchObject([
+          { messageSeq: 42, type, sourceNamespaceId: namespaceId },
+        ]);
+      }
+    },
+  );
+
+  it.each([
+    MessageDeleteType.USER_RETRACTION,
+    MessageDeleteType.MODERATION_REMOVAL,
+  ])(
     'rejects %s for a foreign author even at a known source coordinate',
     async (type) => {
       await database.db

@@ -1,6 +1,7 @@
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { of } from 'rxjs';
 import { IDLE_CALL, type CallSnapshot } from './call-adapter';
+import { BusinessCode } from './biz-code';
 import {
   WebCallAdapter,
   callMediaErrorStep,
@@ -10,6 +11,47 @@ import {
 } from './web-call.adapter';
 
 describe('WebCallAdapter multi-device ownership', () => {
+  it('ends a server-rejected outgoing call as busy and releases the microphone', async () => {
+    const stop = vi.fn();
+    const track = { kind: 'audio', stop, onended: null };
+    const getUserMedia = vi.fn().mockResolvedValue({
+      active: true,
+      getTracks: () => [track],
+      getVideoTracks: () => [],
+    });
+    vi.stubGlobal('navigator', { ...navigator, mediaDevices: { getUserMedia } });
+    try {
+      const post = vi.fn().mockReturnValue(
+        of({ code: BusinessCode.CALL_BUSY, message: 'busy', data: null }),
+      );
+      const mediaError = vi.fn();
+      const adapter = new WebCallAdapter(
+        { post } as unknown as HttpClient,
+        IDLE_CALL,
+        mediaError,
+      );
+      const snapshots: CallSnapshot[] = [];
+      adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
+
+      adapter.initiate(12, 'busy-call', 'AUDIO', 'B', '');
+      await vi.waitFor(() =>
+        expect(snapshots.at(-1)?.terminalReason).toBe('busy'),
+      );
+
+      expect(snapshots).toContainEqual(
+        expect.objectContaining({ phase: 'starting', callSid: 'busy-call' }),
+      );
+      expect(snapshots.at(-1)).toEqual(
+        expect.objectContaining({ phase: 'ended', callSid: 'busy-call' }),
+      );
+      expect(adapter.snapshot()).toEqual(IDLE_CALL);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(mediaError).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('unwraps the backend RTC configuration before constructing a peer connection', () => {
     expect(
       iceServersFromResponse({

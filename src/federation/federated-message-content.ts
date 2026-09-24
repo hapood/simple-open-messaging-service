@@ -339,12 +339,20 @@ export function toFederatedMessageContent(
       if (Object.keys(value).length === 1) {
         assertKeys(value, ['bundleId']);
       } else {
-        assertKeys(value, ['bundleId', 'summaryLines', 'messageCount']);
+        assertKeys(value, [
+          'bundleId',
+          'summaryLines',
+          'messageCount',
+          'depth',
+        ]);
         if (
           !Array.isArray(value['summaryLines']) ||
           !value['summaryLines'].every((line) => typeof line === 'string') ||
           !Number.isSafeInteger(value['messageCount']) ||
-          Number(value['messageCount']) < 0
+          Number(value['messageCount']) < 0 ||
+          !Number.isSafeInteger(value['depth']) ||
+          Number(value['depth']) < 1 ||
+          Number(value['depth']) > 3
         ) {
           throw new Error('invalid forward card');
         }

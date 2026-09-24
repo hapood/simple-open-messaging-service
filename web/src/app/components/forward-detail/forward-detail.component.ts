@@ -443,7 +443,7 @@ function bindSnapshotCasUrls(
   seq: number,
 ): string {
   return content.replace(
-    /\/uploads\/(?:cas|msg-assets)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}(?:\?threadId=[0-9]+&seq=[0-9]+)?/g,
-    (url) => `${url.split('?')[0]}?threadId=${threadId}&seq=${seq}`,
+    /\/uploads\/(?:cas|msg-assets)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}/g,
+    (url) => `${url}?threadId=${threadId}&seq=${seq}`,
   );
 }

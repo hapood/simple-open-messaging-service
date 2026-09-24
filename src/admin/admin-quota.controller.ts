@@ -84,7 +84,8 @@ export class AdminQuotaController {
     @Param('domain') domain: string,
     @Body() dto: AdminSetQuotaDto,
   ): Promise<void> {
-    await this.quota.setLimits(domain, {
+    const namespaceId = await this.quota.activeNamespaceId(domain);
+    await this.quota.setLimits(namespaceId, {
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
       dailyFileLimit: dto.dailyFileLimit,
@@ -111,14 +112,15 @@ export class AdminQuotaController {
     @Param('domain') domain: string,
     @Body() dto: AdminContinueQuotaDto,
   ) {
-    const status = await this.quota.addQuota(domain, {
+    const namespaceId = await this.quota.activeNamespaceId(domain);
+    const status = await this.quota.addQuota(namespaceId, {
       addMsg: dto.addMsg,
       addFile: dto.addFile,
       addFileBytes:
         dto.addFileBytes != null ? BigInt(dto.addFileBytes) : undefined,
     });
     if (!status.tripped) {
-      await this.federationDownloads.wakeQuotaPaused(domain);
+      await this.federationDownloads.wakeQuotaPaused(namespaceId);
     }
     return status;
   }

@@ -11,7 +11,6 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
-import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { extractDigests } from '../upload/file-content.js';
 
 export interface PendingMediaMaterializationEffect {
@@ -130,11 +129,7 @@ export class FederationPendingMediaPromoter {
             batch.namespaceId,
             batch.dependsOnOriginSeq,
           );
-      let storedContent = contextualizeCasUrls(
-        stagedMessage.content,
-        stagedMessage.threadId,
-        stagedMessage.seq,
-      );
+      let storedContent = stagedMessage.content;
       if (batch.dependsOnOriginSeq !== null && !tombstone) {
         const text = parseTextMessageContent(stagedMessage.content);
         if (!text) throw new Error('pending quote has invalid text content');

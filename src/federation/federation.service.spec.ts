@@ -657,6 +657,7 @@ function makeStubs() {
     inboundMessageValidator,
     inboundMessageRoutes,
     inboundMessageStore,
+    deletedMessages as never,
   );
   const statePull = {
     pullStateFromPeer: vi.fn().mockResolvedValue(5n),

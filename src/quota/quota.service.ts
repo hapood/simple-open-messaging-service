@@ -6,6 +6,7 @@ import {
 } from '../database/database.service.js';
 import {
   federatedPeer,
+  identityNamespace,
   quotaDailyAllowance,
   quotaDailyUsage,
   quotaFileByteUsage,
@@ -17,22 +18,11 @@ import { BusinessCode } from '../common/business-code.js';
 import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
 
 /**
- * Daily-quota enforcement for federated peer servers. A peer's domain is the trust and accounting
- * boundary: all users from that server share its counters. Local accounts use a separate userId-based
- * quota model and never consume these domain buckets.
- *
- * Four categories, enforced at the point where the data crosses our boundary:
- *  - `requests` — inbound friend ops (federation S2S POST) + outbound friend requests (local). Anti-spam.
- *  - `messages` — text messages (local send + federation pull→store).
- *  - `images` — image media (local upload + federation media ingest).
- *  - `largeFiles` — video/large-file media (local upload + federation media ingest), with a byte cap.
- *
- * Counter store: a DB table, NOT KvStoreService (that is a non-atomic in-process Map). The atomic
- * increment is `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; thrown inside a transaction so an
- * over-limit increment rolls back → exact count (not the doc's ±1 slop) on the federation path.
- *
- * Federation callers return quota/capability outcomes as HTTP 200 business codes; these capacity
- * responses never degrade the peer.
+ * Daily federation quota is scoped to an immutable verified identity namespace, not the peer's
+ * domain. A new identity epoch starts with default limits and fresh counters. Local accounts have
+ * separate userId-based quota tables. Count increments use DB-atomic upserts; synchronous over-limit
+ * increments roll back inside their source transaction. Federation quota failures are HTTP 200
+ * business outcomes and do not degrade transport health.
  */
 @Injectable()
 export class QuotaService implements OnModuleInit {
@@ -40,11 +30,7 @@ export class QuotaService implements OnModuleInit {
   private readonly breaker = new BreakerFlags();
   constructor(private readonly database: DatabaseService) {}
 
-  /**
-   * Startup self-heal: re-derive the in-memory breaker flags for every federated peer from today's persisted
-   * counters. Without this, a restart would clear the flags and let one more pull/send through before the next
-   * overshooting tick re-set them. Idempotent + cheap (one domain per reconcile).
-   */
+  /** Rebuild today's breaker cache for every identity namespace on startup. */
   async onModuleInit(): Promise<void> {
     const row = await this.database.db.query.systemSetting.findFirst({
       where: eq(systemSetting.key, FEDERATION_QUOTA_DEFAULTS_KEY),
@@ -62,39 +48,41 @@ export class QuotaService implements OnModuleInit {
     const value = JSON.stringify(cfg);
     await this.database.db
       .insert(systemSetting)
-      .values({
-        key: FEDERATION_QUOTA_DEFAULTS_KEY,
-        value,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value, updatedAt: new Date() },
-      });
+      .values({ key: FEDERATION_QUOTA_DEFAULTS_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: systemSetting.key, set: { value, updatedAt: new Date() } });
     this.cfg = cfg;
     await this.refreshAll();
     return this.getDefaultLimits();
   }
 
-  /** Recompute every peer's breaker flags from persisted counters (startup + admin tooling). */
   async refreshAll(): Promise<void> {
-    const peers = await this.database.db.query.federatedPeer.findMany({
-      columns: { domain: true },
+    const namespaces = await this.database.db.query.identityNamespace.findMany({
+      columns: { id: true },
     });
-    for (const { domain } of peers) {
-      await this.recomputeBreaker(domain);
+    for (const { id } of namespaces) await this.recomputeBreaker(id);
+  }
+
+  /** Resolve a domain-facing admin request to its current, verified identity epoch. */
+  async activeNamespaceId(domain: string): Promise<number> {
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, domain),
+      columns: { activeNamespaceId: true },
+    });
+    if (peer?.activeNamespaceId == null) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'active quota namespace not found');
     }
+    return peer.activeNamespaceId;
   }
 
   // ── limit / cap resolution ───────────────────────────────────────────────
 
-  /** Per-node override set (null/absent = use the global default for that field). */
+  /** Per-namespace override set (null/absent = use the global default). */
   async getOverrides(
-    domain: string,
+    namespaceId: number,
     tx?: DatabaseTransaction,
   ): Promise<QuotaOverrides> {
-    const peer = await (tx ?? this.database.db).query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, domain),
+    const peer = await (tx ?? this.database.db).query.identityNamespace.findFirst({
+      where: eq(identityNamespace.id, namespaceId),
       columns: {
         dailyMsgLimit: true,
         dailyRequestLimit: true,
@@ -124,19 +112,19 @@ export class QuotaService implements OnModuleInit {
   // ── federation path: peek (read-only) + tick (atomic count+check, throws 429) ─────────
 
   /**
-   * Read-only pre-check: reject fast if `domain` is already at/over its daily limit, WITHOUT writing.
+   * Read-only pre-check: reject fast if the namespace is at/over its daily limit, WITHOUT writing.
    * Used on the synchronous S2S POST legs (invite / invite-accept) so an exhausted peer's retry does not
    * burn a dedup slot (peek runs before isOpSeen). Returns FEDERATION_QUOTA_EXCEEDED as an HTTP 200
    * business outcome if exhausted.
    * The subsequent {@link tick} is still the authoritative atomic check (peek-then-tick race is benign).
    */
-  async peek(domain: string, category: QuotaCategory): Promise<void> {
-    const overrides = await this.getOverrides(domain);
+  async peek(namespaceId: number, category: QuotaCategory): Promise<void> {
+    const overrides = await this.getOverrides(namespaceId);
     const limit = this.effectiveLimit(overrides, category);
     this.assertCapabilityEnabled(category, limit);
     const row = await this.database.db.query.quotaDailyUsage.findFirst({
       where: and(
-        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.namespaceId, namespaceId),
         eq(quotaDailyUsage.date, this.utcToday()),
         eq(quotaDailyUsage.category, category),
       ),
@@ -161,7 +149,7 @@ export class QuotaService implements OnModuleInit {
    * (no count burn, no seq gap); otherwise it opens its own transaction. Exact — never ±1 over.
    */
   async tick(
-    domain: string,
+    namespaceId: number,
     category: QuotaCategory,
     tx?: DatabaseTransaction,
     amount = 1,
@@ -171,13 +159,13 @@ export class QuotaService implements OnModuleInit {
     }
     const today = this.utcToday();
     const run = async (runner: DatabaseTransaction): Promise<void> => {
-      const overrides = await this.getOverrides(domain, runner);
+      const overrides = await this.getOverrides(namespaceId, runner);
       const limit = this.effectiveLimit(overrides, category);
       this.assertCapabilityEnabled(category, limit);
       const { rows } = await runner.execute<{ count: number }>(sql`
-        INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
-        VALUES (${domain}, ${today}, ${category}, ${amount})
-        ON CONFLICT ("domain", "date", "category")
+        INSERT INTO "QuotaDailyUsage" ("namespaceId", "date", "category", "count")
+        VALUES (${namespaceId}, ${today}, ${category}, ${amount})
+        ON CONFLICT ("namespaceId", "date", "category")
         DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount}
         RETURNING "count"
       `);
@@ -217,16 +205,16 @@ export class QuotaService implements OnModuleInit {
   // flag; {@link isTripped} gates new pull loops and downloads. Counters persist across restart; the flag is
   // re-derived in {@link onModuleInit} and after {@link addQuota}.
 
-  /** Today's additive admin allowance for `domain` (zeros if none granted today). */
+  /** Today's additive admin allowance for `namespaceId` (zeros if none granted today). */
   private async getAllowance(
-    domain: string,
+    namespaceId: number,
     tx?: DatabaseTransaction,
   ): Promise<{ extraMsg: number; extraFile: number; extraFileBytes: bigint }> {
     const row = await (
       tx ?? this.database.db
     ).query.quotaDailyAllowance.findFirst({
       where: and(
-        eq(quotaDailyAllowance.domain, domain),
+        eq(quotaDailyAllowance.namespaceId, namespaceId),
         eq(quotaDailyAllowance.date, this.utcToday()),
       ),
     });
@@ -263,7 +251,7 @@ export class QuotaService implements OnModuleInit {
    * which throws + rolls back and is used on synchronous legs (invite).
    */
   async tickLax(
-    domain: string,
+    namespaceId: number,
     category: 'messages' | 'files',
     tx?: DatabaseTransaction,
     amount = 1,
@@ -272,18 +260,18 @@ export class QuotaService implements OnModuleInit {
       throw new Error('quota amount must be a positive safe integer');
     }
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain, tx),
-      await this.getAllowance(domain, tx),
+      await this.getOverrides(namespaceId, tx),
+      await this.getAllowance(namespaceId, tx),
     );
     const limit = category === 'messages' ? limits.msg : limits.file;
     const today = this.utcToday();
     const runner = tx ?? this.database.db;
     const rows = await runner
       .insert(quotaDailyUsage)
-      .values({ domain, date: today, category, count: amount })
+      .values({ namespaceId, date: today, category, count: amount })
       .onConflictDoUpdate({
         target: [
-          quotaDailyUsage.domain,
+          quotaDailyUsage.namespaceId,
           quotaDailyUsage.date,
           quotaDailyUsage.category,
         ],
@@ -294,7 +282,7 @@ export class QuotaService implements OnModuleInit {
     const over = count > limit;
     if (over)
       this.breaker.mark(
-        domain,
+        String(namespaceId),
         category === 'messages' ? 'msg' : 'file',
         today,
       );
@@ -308,28 +296,28 @@ export class QuotaService implements OnModuleInit {
    * `FileSyncProgress.quotaCounted` so a retry does not re-charge the same file.
    */
   async tickFileBytes(
-    domain: string,
+    namespaceId: number,
     declaredBytes: bigint,
     tx?: DatabaseTransaction,
   ): Promise<{ bytes: bigint; limit: number; over: boolean }> {
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain, tx),
-      await this.getAllowance(domain, tx),
+      await this.getOverrides(namespaceId, tx),
+      await this.getAllowance(namespaceId, tx),
     );
     const limit = BigInt(limits.fileBytes);
     const today = this.utcToday();
     const runner = tx ?? this.database.db;
     const rows = await runner
       .insert(quotaFileByteUsage)
-      .values({ domain, date: today, bytes: declaredBytes })
+      .values({ namespaceId, date: today, bytes: declaredBytes })
       .onConflictDoUpdate({
-        target: [quotaFileByteUsage.domain, quotaFileByteUsage.date],
+        target: [quotaFileByteUsage.namespaceId, quotaFileByteUsage.date],
         set: { bytes: sql`${quotaFileByteUsage.bytes} + ${declaredBytes}` },
       })
       .returning({ bytes: quotaFileByteUsage.bytes });
     const bytes = rows[0]?.bytes ?? declaredBytes;
     const over = bytes > limit;
-    if (over) this.breaker.mark(domain, 'fileBytes', today);
+    if (over) this.breaker.mark(String(namespaceId), 'fileBytes', today);
     return { bytes, limit: limits.fileBytes, over };
   }
 
@@ -339,7 +327,7 @@ export class QuotaService implements OnModuleInit {
    * file is then abandoned (FAILED). Conservative: never subtracts on undersize. Non-throwing; marks the breaker.
    */
   async addFileBytesDelta(
-    domain: string,
+    namespaceId: number,
     extraBytes: bigint,
     tx?: DatabaseTransaction,
   ): Promise<void> {
@@ -348,12 +336,12 @@ export class QuotaService implements OnModuleInit {
     const runner = tx ?? this.database.db;
     await runner
       .insert(quotaFileByteUsage)
-      .values({ domain, date: today, bytes: extraBytes })
+      .values({ namespaceId, date: today, bytes: extraBytes })
       .onConflictDoUpdate({
-        target: [quotaFileByteUsage.domain, quotaFileByteUsage.date],
+        target: [quotaFileByteUsage.namespaceId, quotaFileByteUsage.date],
         set: { bytes: sql`${quotaFileByteUsage.bytes} + ${extraBytes}` },
       });
-    this.breaker.mark(domain, 'fileBytes', today);
+    this.breaker.mark(String(namespaceId), 'fileBytes', today);
   }
 
   /**
@@ -364,18 +352,18 @@ export class QuotaService implements OnModuleInit {
    * re-marks on the increment, so the worst case under concurrency is one extra claim before the breaker trips.
    */
   async preCheckFile(
-    domain: string,
+    namespaceId: number,
     addCnt: number,
     addBytes: bigint,
   ): Promise<void> {
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain),
-      await this.getAllowance(domain),
+      await this.getOverrides(namespaceId),
+      await this.getAllowance(namespaceId),
     );
     const today = this.utcToday();
     const cntRow = await this.database.db.query.quotaDailyUsage.findFirst({
       where: and(
-        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.namespaceId, namespaceId),
         eq(quotaDailyUsage.date, today),
         eq(quotaDailyUsage.category, 'files'),
       ),
@@ -383,7 +371,7 @@ export class QuotaService implements OnModuleInit {
     });
     const bytesRow = await this.database.db.query.quotaFileByteUsage.findFirst({
       where: and(
-        eq(quotaFileByteUsage.domain, domain),
+        eq(quotaFileByteUsage.namespaceId, namespaceId),
         eq(quotaFileByteUsage.date, today),
       ),
       columns: { bytes: true },
@@ -393,8 +381,8 @@ export class QuotaService implements OnModuleInit {
     const overCnt = curCnt + addCnt > limits.file;
     const overBytes = curBytes + addBytes > BigInt(limits.fileBytes);
     if (overCnt || overBytes) {
-      if (overCnt) this.breaker.mark(domain, 'file', today);
-      if (overBytes) this.breaker.mark(domain, 'fileBytes', today);
+      if (overCnt) this.breaker.mark(String(namespaceId), 'file', today);
+      if (overBytes) this.breaker.mark(String(namespaceId), 'fileBytes', today);
       const retryAfter = this.retryAfterSeconds();
       throw new BusinessException(
         BusinessCode.FEDERATION_QUOTA_EXCEEDED,
@@ -407,21 +395,21 @@ export class QuotaService implements OnModuleInit {
     }
   }
 
-  /** Is this peer's breaker currently tripped (any dimension)? Gate for async pull loops + new downloads. */
-  isTripped(domain: string): boolean {
-    return this.breaker.isTripped(domain, this.utcToday());
+  /** Is this namespace's breaker currently tripped (any dimension)? Gate new downloads. */
+  isTripped(namespaceId: number): boolean {
+    return this.breaker.isTripped(String(namespaceId), this.utcToday());
   }
 
-  /** Re-derive `domain`'s breaker dims from persisted counters (startup self-heal + after {@link addQuota}). */
-  async recomputeBreaker(domain: string): Promise<void> {
+  /** Re-derive a namespace's breaker dims from persisted counters. */
+  async recomputeBreaker(namespaceId: number): Promise<void> {
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain),
-      await this.getAllowance(domain),
+      await this.getOverrides(namespaceId),
+      await this.getAllowance(namespaceId),
     );
     const today = this.utcToday();
     const msgRow = await this.database.db.query.quotaDailyUsage.findFirst({
       where: and(
-        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.namespaceId, namespaceId),
         eq(quotaDailyUsage.date, today),
         eq(quotaDailyUsage.category, 'messages'),
       ),
@@ -429,7 +417,7 @@ export class QuotaService implements OnModuleInit {
     });
     const fileRow = await this.database.db.query.quotaDailyUsage.findFirst({
       where: and(
-        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.namespaceId, namespaceId),
         eq(quotaDailyUsage.date, today),
         eq(quotaDailyUsage.category, 'files'),
       ),
@@ -437,7 +425,7 @@ export class QuotaService implements OnModuleInit {
     });
     const bytesRow = await this.database.db.query.quotaFileByteUsage.findFirst({
       where: and(
-        eq(quotaFileByteUsage.domain, domain),
+        eq(quotaFileByteUsage.namespaceId, namespaceId),
         eq(quotaFileByteUsage.date, today),
       ),
       columns: { bytes: true },
@@ -447,7 +435,7 @@ export class QuotaService implements OnModuleInit {
     if ((fileRow?.count ?? 0) > limits.file) over.push('file');
     if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes))
       over.push('fileBytes');
-    this.breaker.reconcile(domain, over, today);
+    this.breaker.reconcile(String(namespaceId), over, today);
   }
 
   /**
@@ -456,7 +444,7 @@ export class QuotaService implements OnModuleInit {
    * tripped. Returns the new status.
    */
   async addQuota(
-    domain: string,
+    namespaceId: number,
     input: { addMsg?: number; addFile?: number; addFileBytes?: bigint },
   ): Promise<BreakerStatus> {
     const addMsg = Math.max(0, Math.trunc(input.addMsg ?? 0));
@@ -467,35 +455,35 @@ export class QuotaService implements OnModuleInit {
     await this.database.db
       .insert(quotaDailyAllowance)
       .values({
-        domain,
+        namespaceId,
         date: today,
         extraMsg: addMsg,
         extraFile: addFile,
         extraFileBytes: addFileBytes,
       })
       .onConflictDoUpdate({
-        target: [quotaDailyAllowance.domain, quotaDailyAllowance.date],
+        target: [quotaDailyAllowance.namespaceId, quotaDailyAllowance.date],
         set: {
           extraMsg: sql`${quotaDailyAllowance.extraMsg} + ${addMsg}`,
           extraFile: sql`${quotaDailyAllowance.extraFile} + ${addFile}`,
           extraFileBytes: sql`${quotaDailyAllowance.extraFileBytes} + ${addFileBytes}`,
         },
       });
-    await this.recomputeBreaker(domain);
-    return this.breakerStatus(domain);
+    await this.recomputeBreaker(namespaceId);
+    return this.breakerStatus(namespaceId);
   }
 
   /** Full breaker + usage snapshot for one peer (admin surfaces + client hint). */
-  async breakerStatus(domain: string): Promise<BreakerStatus> {
+  async breakerStatus(namespaceId: number): Promise<BreakerStatus> {
     const limits = await this.effectiveBreakerLimits(
-      await this.getOverrides(domain),
-      await this.getAllowance(domain),
+      await this.getOverrides(namespaceId),
+      await this.getAllowance(namespaceId),
     );
     const today = this.utcToday();
     const [msgRow, fileRow, bytesRow] = await Promise.all([
       this.database.db.query.quotaDailyUsage.findFirst({
         where: and(
-          eq(quotaDailyUsage.domain, domain),
+          eq(quotaDailyUsage.namespaceId, namespaceId),
           eq(quotaDailyUsage.date, today),
           eq(quotaDailyUsage.category, 'messages'),
         ),
@@ -503,7 +491,7 @@ export class QuotaService implements OnModuleInit {
       }),
       this.database.db.query.quotaDailyUsage.findFirst({
         where: and(
-          eq(quotaDailyUsage.domain, domain),
+          eq(quotaDailyUsage.namespaceId, namespaceId),
           eq(quotaDailyUsage.date, today),
           eq(quotaDailyUsage.category, 'files'),
         ),
@@ -511,15 +499,15 @@ export class QuotaService implements OnModuleInit {
       }),
       this.database.db.query.quotaFileByteUsage.findFirst({
         where: and(
-          eq(quotaFileByteUsage.domain, domain),
+          eq(quotaFileByteUsage.namespaceId, namespaceId),
           eq(quotaFileByteUsage.date, today),
         ),
         columns: { bytes: true },
       }),
     ]);
-    const dims = this.breaker.trippedDims(domain, today);
+    const dims = this.breaker.trippedDims(String(namespaceId), today);
     return {
-      entity: domain,
+      entity: String(namespaceId),
       scope: 'peer',
       tripped: dims.length > 0,
       trippedDims: dims,
@@ -536,8 +524,16 @@ export class QuotaService implements OnModuleInit {
   /** All currently-tripped peer breakers (admin dashboard banner). */
   async trippedBreakers(): Promise<BreakerStatus[]> {
     const today = this.utcToday();
-    const domains = this.breaker.trippedEntities(today);
-    return Promise.all(domains.map((d) => this.breakerStatus(d)));
+    const ids = this.breaker.trippedEntities(today).map(Number);
+    if (ids.length === 0) return [];
+    const peers = await this.database.db
+      .select({ namespaceId: federatedPeer.activeNamespaceId, domain: federatedPeer.domain })
+      .from(federatedPeer)
+      .where(inArray(federatedPeer.activeNamespaceId, ids));
+    return Promise.all(peers.map(async ({ namespaceId, domain }) => ({
+      ...(await this.breakerStatus(namespaceId!)),
+      entity: domain,
+    })));
   }
 
   // ── time helpers ─────────────────────────────────────────────────────────
@@ -565,33 +561,30 @@ export class QuotaService implements OnModuleInit {
 
   // ── admin surface ────────────────────────────────────────────────────────
 
-  /** Today's per-category counts for `domains` in ONE query (no N+1 over peers). Returns a
-   *  domain→{category→count} map; a domain absent from the result has all-zero counts. */
+  /** Today's counters keyed by immutable namespace ID. */
   private async countsToday(
-    domains: string[],
-  ): Promise<Map<string, Record<QuotaCategory, number>>> {
-    const map = new Map<string, Record<QuotaCategory, number>>();
-    if (domains.length === 0) return map;
+    namespaceIds: number[],
+  ): Promise<Map<number, Record<QuotaCategory, number>>> {
+    const map = new Map<number, Record<QuotaCategory, number>>();
+    if (namespaceIds.length === 0) return map;
     const rows = await this.database.db
       .select({
-        domain: quotaDailyUsage.domain,
+        namespaceId: quotaDailyUsage.namespaceId,
         category: quotaDailyUsage.category,
         count: quotaDailyUsage.count,
       })
       .from(quotaDailyUsage)
-      .where(
-        and(
-          eq(quotaDailyUsage.date, this.utcToday()),
-          inArray(quotaDailyUsage.domain, domains),
-        ),
-      );
-    for (const r of rows) {
-      let dc = map.get(r.domain);
-      if (!dc) {
-        dc = zeroCounts();
-        map.set(r.domain, dc);
+      .where(and(
+        eq(quotaDailyUsage.date, this.utcToday()),
+        inArray(quotaDailyUsage.namespaceId, namespaceIds),
+      ));
+    for (const row of rows) {
+      let counts = map.get(row.namespaceId);
+      if (!counts) {
+        counts = zeroCounts();
+        map.set(row.namespaceId, counts);
       }
-      if (r.category in dc) dc[r.category as QuotaCategory] = r.count;
+      if (row.category in counts) counts[row.category as QuotaCategory] = row.count;
     }
     return map;
   }
@@ -611,68 +604,60 @@ export class QuotaService implements OnModuleInit {
     );
   }
 
-  /** Today's {count, limit} per category for one node (admin single-node read). */
-  async usageToday(
-    domain: string,
-  ): Promise<Record<QuotaCategory, { count: number; limit: number }>> {
-    const overrides = await this.getOverrides(domain);
-    const counts =
-      (await this.countsToday([domain])).get(domain) ?? zeroCounts();
+  async usageToday(namespaceId: number): Promise<Record<QuotaCategory, { count: number; limit: number }>> {
+    const overrides = await this.getOverrides(namespaceId);
+    const counts = (await this.countsToday([namespaceId])).get(namespaceId) ?? zeroCounts();
     return this.buildUsage(counts, overrides);
   }
 
-  /** All federated peer quota nodes with overrides + today's usage. */
+  /** Domain remains a display/routing address; quota belongs to the active namespace. */
   async listNodes(): Promise<QuotaNode[]> {
     const peers = await this.database.db.query.federatedPeer.findMany({
       orderBy: asc(federatedPeer.domain),
-      columns: {
-        domain: true,
-        trustLevel: true,
-        dailyMsgLimit: true,
-        dailyRequestLimit: true,
-        dailyFileLimit: true,
-        dailyFileBytesLimit: true,
-      },
+      columns: { domain: true, trustLevel: true, activeNamespaceId: true },
     });
-    const domains = peers.map((p) => p.domain);
-    const counts = await this.countsToday(domains);
-    const peerNodes: QuotaNode[] = peers.map((p) => {
-      const overrides: QuotaOverrides = {
-        dailyMsgLimit: p.dailyMsgLimit,
-        dailyRequestLimit: p.dailyRequestLimit,
-        dailyFileLimit: p.dailyFileLimit,
-        dailyFileBytesLimit: p.dailyFileBytesLimit ?? null,
-      };
+    const activePeers = peers.filter(
+      (peer): peer is typeof peer & { activeNamespaceId: number } =>
+        peer.activeNamespaceId !== null,
+    );
+    const namespaceIds = activePeers.map((peer) => peer.activeNamespaceId);
+    const counts = await this.countsToday(namespaceIds);
+    const overrides = await Promise.all(
+      namespaceIds.map((id) => this.getOverrides(id)),
+    );
+    const overridesById = new Map(
+      namespaceIds.map((id, i) => [id, overrides[i]]),
+    );
+    return activePeers.map((peer) => {
+      const namespaceId = peer.activeNamespaceId;
+      const settings = overridesById.get(namespaceId) ?? {};
       return {
-        domain: p.domain,
-        trustLevel: p.trustLevel,
-        overrides,
-        usage: this.buildUsage(counts.get(p.domain) ?? zeroCounts(), overrides),
+        domain: peer.domain,
+        namespaceId,
+        trustLevel: peer.trustLevel,
+        overrides: settings,
+        usage: this.buildUsage(
+          counts.get(namespaceId) ?? zeroCounts(),
+          settings,
+        ),
       };
     });
-    return peerNodes;
   }
 
-  /** Set a node's override fields. Local → SystemSetting KV; peer → FederatedPeer columns (P2025 if the
-   *  peer is unknown → the controller surfaces NOT_FOUND). A null/absent field means "use the default". */
-  async setLimits(domain: string, overrides: QuotaOverrides): Promise<void> {
+  async setLimits(namespaceId: number, overrides: QuotaOverrides): Promise<void> {
     const normalized = normalizeOverrides(overrides);
     const rows = await this.database.db
-      .update(federatedPeer)
+      .update(identityNamespace)
       .set({
         dailyMsgLimit: normalized.dailyMsgLimit ?? null,
         dailyRequestLimit: normalized.dailyRequestLimit ?? null,
         dailyFileLimit: normalized.dailyFileLimit ?? null,
         dailyFileBytesLimit: normalized.dailyFileBytesLimit ?? null,
       })
-      .where(eq(federatedPeer.domain, domain))
-      .returning({ domain: federatedPeer.domain });
-    if (rows.length === 0) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'quota node not found',
-      );
-    }
+      .where(eq(identityNamespace.id, namespaceId))
+      .returning({ id: identityNamespace.id });
+    if (rows.length === 0) throw new BusinessException(BusinessCode.NOT_FOUND, 'quota namespace not found');
+    await this.recomputeBreaker(namespaceId);
   }
 }
 
@@ -727,9 +712,10 @@ export interface QuotaOverrides {
 /** One federated peer's quota state for the admin peer-detail surface. */
 export interface QuotaNode {
   domain: string;
+  namespaceId: number;
   trustLevel: string;
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, { count: number; limit: number }> | undefined;
+  usage: Record<QuotaCategory, { count: number; limit: number }>;
 }
 
 /** Snapshot of one entity's circuit breaker + usage (admin surfaces + client hint). `bytes` is a decimal

@@ -82,6 +82,7 @@ export class FederationInboundMessagePageService {
     private readonly validator: FederationInboundMessageValidatorService,
     private readonly routes: FederationInboundMessageRouteService,
     private readonly inboundMessageStore: FederationInboundMessageStoreService,
+    private readonly deletedMessages: DeletedMessageService,
   ) {}
 
   /** Apply one bounded message-query page inside the caller's cursor transaction. No network-visible
@@ -316,6 +317,16 @@ export class FederationInboundMessagePageService {
                 messageId: localSourceMessage.id,
               });
             }
+            await this.deletedMessages.applyPendingReceiptInTx(tx, {
+              threadId: route.threadId,
+              peerSeq: item.seq,
+              peerDomain: domain,
+              namespaceId: token.namespaceId,
+              authority:
+                'peerAccount' in item.thread ? 'P2P_HOME' : 'GROUP_ORIGIN',
+              expectedFederationVersion: route.federationVersion,
+              threadLock: options.threadLock,
+            });
             // Only the group's authoritative server can confirm a local submission.
             // Other receipts retain peer-coordinate aliases for reference resolution;
             // they cannot overwrite the original message's authority coordinate.

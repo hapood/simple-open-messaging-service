@@ -82,7 +82,8 @@ export class FederationInboundFileSync {
         ),
       });
       const originDomain = rows[0]?.originDomain;
-      if (originDomain && this.quota.isTripped(originDomain)) return;
+      const namespaceId = rows[0]?.namespaceId;
+      if (namespaceId && this.quota.isTripped(namespaceId)) return;
       if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
         rows.map((row) => {
@@ -130,6 +131,7 @@ export class FederationInboundFileSync {
       columns: {
         bytesTotal: true,
         originDomain: true,
+        namespaceId: true,
         quotaCounted: true,
       },
     });
@@ -144,7 +146,7 @@ export class FederationInboundFileSync {
         columns: { digest: true },
       });
       if (!have) {
-        await this.chargeQuota(progressId, originDomain, declaredBytes, row);
+        await this.chargeQuota(progressId, row?.namespaceId, declaredBytes, row);
         await this.claim(progressId, declaredBytes);
         let lastWrite = 0;
         await this.upload.saveCasFromStream(
@@ -177,22 +179,22 @@ export class FederationInboundFileSync {
         .returning({ id: tables.fileSyncProgress.id });
       if (completed.length === 0) throw new FederationDownloadTerminatedError();
     } catch (error) {
-      await this.handleFailure(progressId, originDomain, error);
+      await this.handleFailure(progressId, row?.namespaceId, error);
       throw error;
     }
   }
 
   private async chargeQuota(
     progressId: bigint,
-    originDomain: string | null | undefined,
+    namespaceId: number | undefined,
     declaredBytes: bigint,
     row: { quotaCounted: boolean } | undefined,
   ): Promise<void> {
-    if (!originDomain || row?.quotaCounted) return;
-    await this.quota.preCheckFile(originDomain, 1, declaredBytes);
-    await this.quota.tickLax(originDomain, 'files');
+    if (!namespaceId || row?.quotaCounted) return;
+    await this.quota.preCheckFile(namespaceId, 1, declaredBytes);
+    await this.quota.tickLax(namespaceId, 'files');
     if (declaredBytes > 0n) {
-      await this.quota.tickFileBytes(originDomain, declaredBytes);
+      await this.quota.tickFileBytes(namespaceId, declaredBytes);
     }
     await this.database.db
       .update(tables.fileSyncProgress)
@@ -249,11 +251,11 @@ export class FederationInboundFileSync {
 
   private async handleFailure(
     progressId: bigint,
-    originDomain: string | null | undefined,
+    namespaceId: number | undefined,
     error: unknown,
   ): Promise<void> {
-    if (error instanceof CasOversizeError && originDomain) {
-      await this.quota.addFileBytesDelta(originDomain, error.extraBytes);
+    if (error instanceof CasOversizeError && namespaceId) {
+      await this.quota.addFileBytesDelta(namespaceId, error.extraBytes);
     }
     const quotaPaused =
       error instanceof BusinessException &&

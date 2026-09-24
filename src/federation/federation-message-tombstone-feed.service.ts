@@ -128,7 +128,8 @@ export class FederationMessageTombstoneFeedService {
             and(
               eq(deletedMessage.threadId, threadId),
               eq(deletedMessage.sourceNamespaceId, 0),
-              groupQueryDirection === 'MIRROR_TO_ORIGIN'
+              groupQueryDirection === 'MIRROR_TO_ORIGIN' ||
+                selector.type === 'P2P'
                 ? eq(message.creatorDomain, 'local')
                 : undefined,
               includeSelf ? undefined : ne(message.creatorDomain, peerDomain),

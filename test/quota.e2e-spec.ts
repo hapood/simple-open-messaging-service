@@ -12,6 +12,7 @@ const PEER = 'quota-peer.local';
 
 describe('Federated peer QuotaService (DB-backed)', () => {
   let quota: QuotaService;
+  let namespaceId: number;
   let database: DatabaseService;
   let mod: TestingModule;
 
@@ -25,18 +26,26 @@ describe('Federated peer QuotaService (DB-backed)', () => {
       'INSERT INTO "FederatedPeer" (domain, "trustLevel") VALUES ($1, $2) ON CONFLICT (domain) DO NOTHING',
       [PEER, 'available'],
     );
+    const created = await database.pool.query<{ id: number }>(
+      'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
+      [PEER, 'sha256:quota-test', Buffer.alloc(32, 1).toString('base64')],
+    );
+    namespaceId = created.rows[0].id;
+    await database.pool.query('UPDATE "FederatedPeer" SET "activeNamespaceId" = $1 WHERE domain = $2', [namespaceId, PEER]);
   });
 
   beforeEach(async () => {
     await database.pool.query('DELETE FROM "QuotaDailyUsage"');
     await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
     await database.pool.query(
-      'UPDATE "FederatedPeer" SET "dailyMsgLimit" = NULL, "dailyRequestLimit" = NULL, "dailyFileLimit" = NULL, "dailyFileBytesLimit" = NULL WHERE domain = $1',
-      [PEER],
+      'UPDATE "IdentityNamespace" SET "dailyMsgLimit" = NULL, "dailyRequestLimit" = NULL, "dailyFileLimit" = NULL, "dailyFileBytesLimit" = NULL WHERE id = $1',
+      [namespaceId],
     );
   });
 
   afterAll(async () => {
+    await database.pool.query('UPDATE "FederatedPeer" SET "activeNamespaceId" = NULL WHERE domain = $1', [PEER]);
+    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [namespaceId]);
     await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
       PEER,
     ]);
@@ -46,48 +55,48 @@ describe('Federated peer QuotaService (DB-backed)', () => {
   });
 
   it('increments atomically and rolls the rejected over-limit increment back', async () => {
-    await quota.setLimits(PEER, { dailyMsgLimit: 2 });
-    await quota.tick(PEER, 'messages');
-    await quota.tick(PEER, 'messages');
-    await expect(quota.tick(PEER, 'messages')).rejects.toMatchObject({
+    await quota.setLimits(namespaceId, { dailyMsgLimit: 2 });
+    await quota.tick(namespaceId, 'messages');
+    await quota.tick(namespaceId, 'messages');
+    await expect(quota.tick(namespaceId, 'messages')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
     });
-    expect((await quota.usageToday(PEER)).messages.count).toBe(2);
+    expect((await quota.usageToday(namespaceId)).messages.count).toBe(2);
   });
 
   it('peek rejects at the limit without consuming another unit', async () => {
-    await quota.setLimits(PEER, { dailyRequestLimit: 1 });
-    await quota.tick(PEER, 'requests');
-    await expect(quota.peek(PEER, 'requests')).rejects.toMatchObject({
+    await quota.setLimits(namespaceId, { dailyRequestLimit: 1 });
+    await quota.tick(namespaceId, 'requests');
+    await expect(quota.peek(namespaceId, 'requests')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
     });
-    expect((await quota.usageToday(PEER)).requests.count).toBe(1);
+    expect((await quota.usageToday(namespaceId)).requests.count).toBe(1);
   });
 
   it('treats a zero limit as a disabled capability, not an exhausted budget', async () => {
-    await quota.setLimits(PEER, { dailyRequestLimit: 0 });
-    await expect(quota.peek(PEER, 'requests')).rejects.toMatchObject({
+    await quota.setLimits(namespaceId, { dailyRequestLimit: 0 });
+    await expect(quota.peek(namespaceId, 'requests')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
       status: 200,
       data: { category: 'requests' },
     });
-    await expect(quota.tick(PEER, 'requests')).rejects.toMatchObject({
+    await expect(quota.tick(namespaceId, 'requests')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
     });
-    expect((await quota.usageToday(PEER)).requests.count).toBe(0);
+    expect((await quota.usageToday(namespaceId)).requests.count).toBe(0);
   });
 
   it('enforces the consolidated peer file-byte cap', async () => {
-    await quota.setLimits(PEER, { dailyFileBytesLimit: 100n });
-    await expect(quota.preCheckFile(PEER, 0, 101n)).rejects.toMatchObject({
+    await quota.setLimits(namespaceId, { dailyFileBytesLimit: 100n });
+    await expect(quota.preCheckFile(namespaceId, 0, 101n)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
     });
-    await expect(quota.preCheckFile(PEER, 0, 100n)).resolves.toBeUndefined();
+    await expect(quota.preCheckFile(namespaceId, 0, 100n)).resolves.toBeUndefined();
   });
 
   it('treats a zero media cap as a disabled capability', async () => {
-    await quota.setLimits(PEER, { dailyFileLimit: 0 });
-    await expect(quota.peek(PEER, 'files')).rejects.toMatchObject({
+    await quota.setLimits(namespaceId, { dailyFileLimit: 0 });
+    await expect(quota.peek(namespaceId, 'files')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
       status: 200,
       data: { category: 'files' },
@@ -95,17 +104,37 @@ describe('Federated peer QuotaService (DB-backed)', () => {
   });
 
   it('falls back to the global peer default when an override is null', async () => {
-    await quota.setLimits(PEER, { dailyMsgLimit: null });
-    expect((await quota.usageToday(PEER)).messages.limit).toBeGreaterThan(0);
+    await quota.setLimits(namespaceId, { dailyMsgLimit: null });
+    expect((await quota.usageToday(namespaceId)).messages.limit).toBeGreaterThan(0);
   });
 
-  it('lists only federated peer quota nodes with today usage', async () => {
-    await quota.tick(PEER, 'messages');
+  it('lists only peers with active namespaces and shows their usage', async () => {
+    await quota.tick(namespaceId, 'messages');
     const nodes = await quota.listNodes();
     expect(nodes).toHaveLength(1);
-    expect(nodes[0]).toMatchObject({ domain: PEER, trustLevel: 'available' });
-    expect(nodes[0].usage?.messages.count).toBe(1);
-    expect(nodes[0].usage?.files.limit).toBeGreaterThan(0);
+    expect(nodes[0]).toMatchObject({
+      domain: PEER,
+      namespaceId,
+      trustLevel: 'available',
+    });
+    expect(nodes[0].usage.messages.count).toBe(1);
+    expect(nodes[0].usage.files.limit).toBeGreaterThan(0);
+
+    await database.pool.query(
+      'UPDATE "FederatedPeer" SET "activeNamespaceId" = NULL WHERE domain = $1',
+      [PEER],
+    );
+    try {
+      expect(await quota.listNodes()).toEqual([]);
+      await expect(quota.activeNamespaceId(PEER)).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+    } finally {
+      await database.pool.query(
+        'UPDATE "FederatedPeer" SET "activeNamespaceId" = $1 WHERE domain = $2',
+        [namespaceId, PEER],
+      );
+    }
   });
 });
 

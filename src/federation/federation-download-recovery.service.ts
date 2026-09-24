@@ -71,7 +71,7 @@ export class FederationDownloadRecoveryService
   }
 
   /** Re-drive only batches paused by the peer's daily file quota after an administrator raises it. */
-  async wakeQuotaPaused(domain: string): Promise<number> {
+  async wakeQuotaPaused(namespaceId: number): Promise<number> {
     const batches = await this.database.db
       .selectDistinct({ batchId: pendingMedia.batchId })
       .from(pendingMedia)
@@ -82,7 +82,7 @@ export class FederationDownloadRecoveryService
       .where(
         and(
           eq(pendingMedia.direction, 'INBOUND'),
-          eq(fileSyncProgress.originDomain, domain),
+          eq(fileSyncProgress.namespaceId, namespaceId),
           eq(fileSyncProgress.status, 'PENDING'),
           eq(fileSyncProgress.errorKind, 'QUOTA_PAUSED'),
         ),

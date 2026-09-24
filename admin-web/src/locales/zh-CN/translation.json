@@ -78,7 +78,7 @@
     "peer": "对端",
     "edit": "编辑",
     "peerTitle": "流量配额",
-    "peerDesc": "该对端服务器及其所有联邦用户共享以下额度。",
+    "peerDesc": "该对端当前身份命名空间下的联邦用户共享以下额度。",
     "disabled": "已禁用",
     "noTrafficAccepted": "不接受此类流量",
     "remaining": "剩余 {{count}}",

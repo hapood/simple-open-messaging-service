@@ -66,13 +66,37 @@ fn open_preferences() -> Result<Connection, String> {
 /// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
 /// database file and never repairs missing tables during a read/write command.
 fn open_cache() -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
+    let mut conn = Connection::open_with_flags(
         db_path()?,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("open existing native cache: {e}"))?;
     configure(&conn)?;
     validate_cache_schema(&conn)?;
+    // Message rows and coverage are rebuildable; drop the old contextual URLs once, then
+    // refetch canonical content without touching account metadata or device preferences.
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| format!("read media content cache version: {e}"))?;
+    if version == 0 {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin media content cache cleanup: {e}"))?;
+        let current: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| format!("recheck media content cache version: {e}"))?;
+        if current == 0 {
+            tx.execute_batch(
+                "DELETE FROM messages;
+                 DELETE FROM message_ranges;
+                 DELETE FROM sync_state WHERE key LIKE 'messageHead:%';
+                 PRAGMA user_version = 1;",
+            )
+            .map_err(|e| format!("clean contextual media cache: {e}"))?;
+        }
+        tx.commit()
+            .map_err(|e| format!("commit media content cache cleanup: {e}"))?;
+    }
     Ok(conn)
 }
 

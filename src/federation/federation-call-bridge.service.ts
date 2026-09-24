@@ -155,7 +155,7 @@ export class FederationCallBridgeService {
       );
     }
 
-    await this.quota.peek(peerDomain, 'requests');
+    await this.quota.peek(namespaceId, 'requests');
     const peerAddress = {
       account: frame.payload.fromAccount,
       domain: peerDomain,

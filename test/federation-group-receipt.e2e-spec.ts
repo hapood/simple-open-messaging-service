@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
+import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { FederationInboundMessagePageService } from '../src/federation/federation-inbound-message-page.service.js';
 import { FederationInboundMessageRouteService } from '../src/federation/federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
@@ -39,6 +40,7 @@ describe('third-party group message processing receipts', () => {
       new FederationInboundMessageValidatorService(),
       new FederationInboundMessageRouteService(),
       undefined as never,
+      new DeletedMessageService(database),
     );
   });
   afterAll(async () => module.close());

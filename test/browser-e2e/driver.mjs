@@ -4,6 +4,9 @@
 // Protocol: JSON lines on stdin; results as JSON lines on stdout.
 //   {"id":1,"action":"adminLogin","node":"alpha"}
 //   {"id":2,"action":"issueOtp","node":"alpha","account":"alice"}
+// Both accept an optional "user" field naming the admin profile to use, so
+// parallel sessions can hold their own admin console instead of contending
+// for the shared "admin-<node>" profile (e.g. "user":"admin-parallel-1").
 //   {"id":3,"action":"userLogin","user":"alice","node":"alpha","account":"alice"}
 //   {"id":4,"action":"eval","user":"alice","script":"/abs/step.mjs"}
 //   {"id":5,"action":"shot","user":"alice","name":"after-send"}
@@ -137,12 +140,23 @@ async function newSession(name, viewport) {
       args: [
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        // Auto-grant media prompts with fake devices so call flows are
+        // deterministic in headless profiles (localhost is already secure).
+        '--use-fake-ui-for-media-stream',
+        '--use-fake-device-for-media-stream',
       ],
     },
   );
   const page = context.pages()[0] || (await context.newPage());
   page.setDefaultTimeout(15000);
   page.setDefaultNavigationTimeout(30000);
+  // Stored profile content settings may carry a persisted media-permission
+  // block from an earlier auto-dismissed prompt; re-grant for every lab origin.
+  for (const node of Object.values(NODES)) {
+    await context
+      .grantPermissions(['microphone', 'camera'], { origin: node.edge })
+      .catch(() => {});
+  }
   const rec = {
     context,
     page,
@@ -168,29 +182,51 @@ async function newSession(name, viewport) {
   return rec;
 }
 
-async function adminLogin(node) {
-  const name = `admin-${node}`;
+async function adminLogin(node, profile) {
+  const name = validName(profile || `admin-${node}`);
   const { page } = await newSession(name);
   const base = NODES[node].admin;
-  await page.goto(base, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(800);
-  if (page.url().includes('/login')) {
-    await page.locator('#account').fill('admin');
-    await page.locator('#password').fill(requireAdminPassword());
-    await page.locator('form button[type="submit"]').click();
+  try {
+    await page.goto(base, { waitUntil: 'domcontentloaded' });
+    // The SPA may still be redirecting to /login; settle before checking.
+    await page
+      .waitForURL(/\/admin\/login/, { timeout: 5000 })
+      .catch(() => {});
+    if (page.url().includes('/login')) {
+      await page.locator('#account').fill('admin');
+      await page.locator('#password').fill(requireAdminPassword());
+      await page.locator('form button[type="submit"]').click();
+    }
     // Users page renders a search input; this is the reliable logged-in signal.
     await page.getByRole('searchbox').waitFor({
       state: 'visible',
       timeout: 20000,
     });
+    // The login page can also expose a searchbox, so confirm the URL.
+    if (page.url().includes('/login')) throw new Error('admin login failed');
+  } catch (error) {
+    // Drop the half-open session so the next attempt retries login instead of
+    // silently reusing a logged-out page.
+    const rec = contexts.get(name);
+    if (rec) {
+      await rec.context.close().catch(() => {});
+      contexts.delete(name);
+    }
+    throw error;
   }
-  if (page.url().includes('/login')) throw new Error('admin login failed');
   return { node, url: page.url() };
 }
 
-async function issueOtp(node, account) {
-  const name = `admin-${node}`;
-  if (!contexts.has(name)) await adminLogin(node);
+async function issueOtp(node, account, profile) {
+  const name = validName(profile || `admin-${node}`);
+  const existing = contexts.get(name);
+  // Retry login when a cached session sits on the login page (e.g. after a
+  // password rotation) instead of issuing an unauthenticated lookup.
+  if (existing && existing.page.url().includes('/login')) {
+    await existing.context.close().catch(() => {});
+    contexts.delete(name);
+  }
+  if (!contexts.has(name)) await adminLogin(node, profile);
   const { page } = contexts.get(name);
   const base = NODES[node].admin;
   const matches = [];
@@ -332,8 +368,8 @@ const actions = {
       snapshot: await page.locator('body').ariaSnapshot(),
     };
   },
-  adminLogin: (c) => adminLogin(c.node),
-  issueOtp: (c) => issueOtp(c.node, c.account),
+  adminLogin: (c) => adminLogin(c.node, c.user),
+  issueOtp: (c) => issueOtp(c.node, c.account, c.user),
   userLogin: (c) => userLogin(c.user, c.node, c.account),
   shot: (c) => shot(c.user, c.name),
   errors: (c) => {

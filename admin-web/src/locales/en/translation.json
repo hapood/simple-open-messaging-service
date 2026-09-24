@@ -78,7 +78,7 @@
     "peer": "Peer",
     "edit": "Edit",
     "peerTitle": "Traffic quotas",
-    "peerDesc": "This peer server and all of its federated users share these budgets.",
+    "peerDesc": "Federated users share the active identity namespace's budgets.",
     "disabled": "Disabled",
     "noTrafficAccepted": "No traffic of this type is accepted",
     "remaining": "{{count}} remaining",

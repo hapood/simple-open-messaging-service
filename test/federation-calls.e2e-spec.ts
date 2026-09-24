@@ -260,6 +260,82 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     }
   }, 30_000);
 
+  it('returns CALL_BUSY to a second caller when the remote callee is already ringing', async () => {
+    const { id: carolId, token: tokenCarol } = await registerAndLogin(
+      appA,
+      'call-carol',
+      'Carol',
+    );
+    const friendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: carolId,
+      remoteUserId: frankId,
+      localToken: tokenCarol,
+      remoteToken: tokenFrank,
+      localAccount: 'call-carol',
+      remoteAccount: 'frank',
+      localDomain: DOM_A,
+      remoteDomain: DOM_B,
+      note: 'hi',
+    });
+    const firstSid = randomUUID();
+    const busySid = randomUUID();
+    const frankSse = await openSse(appB.baseUrl, tokenFrank);
+    try {
+      const incomingP = waitCallEvent(frankSse, 'incoming', firstSid);
+      const first = await request(appA.baseUrl)
+        .post('/api/v1/calls/initiate')
+        .set('Authorization', `Bearer ${tokenErin}`)
+        .send({ callSid: firstSid, threadId: erinThreadId, callType: 'AUDIO' });
+      expect(first.body.code).toBe(BusinessCode.OK);
+      await incomingP;
+      const localBusy = await request(appB.baseUrl)
+        .post('/api/v1/calls/initiate')
+        .set('Authorization', `Bearer ${tokenFrank}`)
+        .send({ callSid: randomUUID(), threadId: frankThreadId, callType: 'AUDIO' });
+      expect(localBusy.body.code).toBe(BusinessCode.CALL_BUSY);
+
+      const busy = await request(appA.baseUrl)
+        .post('/api/v1/calls/initiate')
+        .set('Authorization', `Bearer ${tokenCarol}`)
+        .send({
+          callSid: busySid,
+          threadId: friendship.localThreadId,
+          callType: 'AUDIO',
+        });
+      expect(busy.status).toBe(200);
+      expect(busy.body.code).toBe(BusinessCode.CALL_BUSY);
+      const notice = await pollFor(() =>
+        appA.database.query.message.findFirst({
+          where: sql`${message.content}->>'callId' = ${busySid}`,
+        }),
+      );
+      expect(JSON.parse(notice.content).outcome).toBe('unreachable');
+      // The callee's existing ring must remain active, and a failed admission creates no remote call.
+      const rejectedCall = await request(appB.baseUrl)
+        .get(`/api/v1/calls/${busySid}/signaling`)
+        .set('Authorization', `Bearer ${tokenFrank}`);
+      expect(rejectedCall.body.code).toBe(BusinessCode.CALL_NOT_FOUND);
+      expect(
+        await appB.database.query.message.findFirst({
+          where: sql`${message.content}->>'callId' = ${busySid}`,
+        }),
+      ).toBeUndefined();
+    } finally {
+      await request(appA.baseUrl)
+        .post('/api/v1/calls/cancel')
+        .set('Authorization', `Bearer ${tokenErin}`)
+        .send({ callSid: firstSid });
+      await frankSse.cancel();
+      await pollFor(() =>
+        appB.database.query.message.findFirst({
+          where: sql`${message.content}->>'callId' = ${firstSid}`,
+        }),
+      );
+    }
+  }, 30_000);
+
   it('callee declines cross-server → each server commits its own local system notice', async () => {
     const callSid = randomUUID();
     const frankSse = await openSse(appB.baseUrl, tokenFrank);

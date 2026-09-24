@@ -267,8 +267,8 @@ export type OutboundFileFamily = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
 
 /** Per-file payload produced by the type-agnostic upload and stored on the batch's
  *  FileSyncProgress(OUTBOUND, SUCCEEDED) row. The barrier-promote assembles message content from these
- *  payloads without re-deriving display metadata from CAS. `url` is the uncontextualized CAS shard URL
- *  (/uploads/msg-assets/<shard>); contextualizeCasUrls rewrites every URL at promote time. */
+ *  payloads without re-deriving display metadata from CAS. `url` is the canonical CAS shard URL
+ *  (/uploads/msg-assets/<shard>); message coordinates are not stored in attachment content. */
 export interface OutboundFilePayload {
   digest: string;
   url: string;
@@ -313,8 +313,7 @@ interface GalleryItem {
  * Single-file (IMAGE/FILE/VIDEO/AUDIO): the payload carries every display field captured at stage time.
  *
  * GALLERY: `{ items: [...] }`, digest-sorted so the same batch always assembles the same message
- * regardless of which parallel upload request landed last. Returns the JSON string; the caller runs
- * contextualizeCasUrls on it (which rewrites every CAS URL in one pass).
+ * regardless of which parallel upload request landed last. Returns the canonical JSON string.
  */
 export function assembleOutboundContent(
   contentType: ContentType,

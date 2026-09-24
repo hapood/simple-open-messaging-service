@@ -40,11 +40,10 @@ const COUNT_OVERRIDE_BY_CATEGORY: Record<QuotaCategory, CountKey> = {
 const MB = 1024 * 1024;
 
 export function quotaRisk(node: QuotaNode | undefined): number | undefined {
-  if (!node?.usage) return undefined;
+  if (!node) return undefined;
   return Math.max(
     ...CATEGORIES.map((category) => {
-      const usage = node.usage?.[category];
-      if (!usage) return 0;
+      const usage = node.usage[category];
       if (usage.limit === 0) return 1;
       return usage.count / usage.limit;
     }),
@@ -78,9 +77,9 @@ export function PeerQuotaPanel({ node }: { node: QuotaNode }) {
         <CardContent className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {CATEGORIES.map((category) => {
-              const usage = node.usage?.[category];
-              const count = usage?.count ?? 0;
-              const limit = usage?.limit ?? 0;
+              const usage = node.usage[category];
+              const count = usage.count;
+              const limit = usage.limit;
               const ratio = limit > 0 ? count / limit : 1;
               const percent = Math.min(100, Math.round(ratio * 100));
               const override =

@@ -333,6 +333,14 @@ export class CallsService implements OnModuleDestroy {
             this.sendFrame(call, 'cancelled', {});
         }
         await this.completeTerminal(call, 'unreachable');
+        // A signed peer's explicit busy admission result is safe to surface to the caller.
+        // Keep the local unreachable history outcome: the remote call was never admitted or rung.
+        if (
+          error instanceof S2sResponseError &&
+          error.status === 200 &&
+          error.code === BusinessCode.CALL_BUSY
+        )
+          throw new BusinessException(BusinessCode.CALL_BUSY, 'peer is busy');
         throw new BusinessException(
           BusinessCode.CALL_PEER_UNREACHABLE,
           'could not reach the peer server',
@@ -729,7 +737,7 @@ export class CallsService implements OnModuleDestroy {
    *  'call.frame.inbound' event (FederationService.handleCallFrame resolved the wire identities first).
    *  Throws on a federated callee-busy (`incoming`) so emitAsync rejects → the caller's server gets a
    *  HTTP 200 business rejection → writes an `unreachable` bubble. */
-  @OnEvent('call.frame.inbound')
+  @OnEvent('call.frame.inbound', { suppressErrors: false })
   async onInboundCallFrame(payload: InboundCallFramePayload): Promise<void> {
     const { peerDomain, namespaceId, frame } = payload;
     if (frame.op !== 'incoming') {
@@ -786,7 +794,7 @@ export class CallsService implements OnModuleDestroy {
   }
 
   /** Resolve an inbound `incoming` retry/collision before FederationService parses either account. */
-  @OnEvent('call.frame.incoming.preflight')
+  @OnEvent('call.frame.incoming.preflight', { suppressErrors: false })
   onInboundIncomingPreflight(payload: {
     peerDomain: string;
     namespaceId: number;
@@ -934,7 +942,7 @@ export class CallsService implements OnModuleDestroy {
     // A race-loss here (the budget consumed between peek and tick) must NOT unwind the ring — the caller
     // is already being processed and the callee is ringing. Logged, never thrown.
     await this.quota
-      .tick(peerDomain, 'requests')
+      .tick(namespaceId, 'requests')
       .catch((e) =>
         this.logger.warn(
           `quota tick lost for inbound call (callSid=${frame.callSid}): ${(e as Error).message}`,
@@ -1060,7 +1068,7 @@ export class CallsService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
-    await this.quota.tick(call.peerDomain!, 'signals');
+    await this.quota.tick(call.peerNamespaceId!, 'signals');
     call.seenSignalIds.add(frame.payload.signalId);
     const localUserId = this.localUserId(call);
     const peerLocalId =

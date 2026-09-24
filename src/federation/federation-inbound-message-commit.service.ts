@@ -195,19 +195,6 @@ export class FederationInboundMessageCommitService {
           'tombstone query returned an item for a different thread',
           HttpStatus.BAD_REQUEST,
         );
-      const authorityDomain =
-        route.groupOriginDomain ?? params.response.peerDomain;
-      // Routing verifies that a member-home publisher owns the target author.
-      // Both retraction and home-server moderation are authoritative in that scope.
-      if (
-        !route.memberSubmission &&
-        authorityDomain !== params.response.peerDomain
-      )
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'group tombstone is not from the group origin',
-          HttpStatus.BAD_REQUEST,
-        );
       const deletion = await this.deletedMessages.applyFederatedInTx(tx, {
         threadLock,
         threadId: route.threadId,
@@ -217,8 +204,7 @@ export class FederationInboundMessageCommitService {
         remoteDeletionSeq: item.deletionSeq,
         type: item.type,
         authorityDeletedAt: new Date(item.deletedAt),
-        allowPending: !route.memberSubmission,
-        publishAsAuthority: route.memberSubmission,
+        authority: route.authority,
         expectedFederationVersion: route.federationVersion,
       });
       if (deletion) deletions.push(deletion);

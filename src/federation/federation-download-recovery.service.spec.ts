@@ -43,7 +43,7 @@ describe('FederationDownloadRecoveryService', () => {
   it('wakes every quota-paused batch for one peer', async () => {
     const { service, recoverInboundBatch } = setup(['paused-a', 'paused-b']);
 
-    await expect(service.wakeQuotaPaused('peer.example')).resolves.toBe(2);
+    await expect(service.wakeQuotaPaused(42)).resolves.toBe(2);
 
     expect(recoverInboundBatch).toHaveBeenNthCalledWith(1, 'paused-a');
     expect(recoverInboundBatch).toHaveBeenNthCalledWith(2, 'paused-b');

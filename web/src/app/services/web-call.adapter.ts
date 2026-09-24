@@ -3,11 +3,13 @@ import { firstValueFrom } from 'rxjs';
 import { REPLAY_SAFE } from '../request-context';
 import { apiPrefix } from './constants';
 import type { StandardResponse } from './model';
+import { BusinessCode } from './biz-code';
 import type {
   CallAdapter,
   CallSnapshot,
   CallSnapshotListener,
   CallSignalPayload,
+  CallTerminalReason,
 } from './call-adapter';
 import { uuid } from '../lib/uuid';
 
@@ -149,17 +151,33 @@ export class WebCallAdapter implements CallAdapter {
       // Request the mic directly from the click chain. Waiting for the HTTP round-trip first loses browser
       // user activation, which makes Tauri WebView/browser permission prompts reject getUserMedia.
       await this.acquireLocalMedia(callType === 'VIDEO');
-      const response = await this.post<{ threadId: number }>('calls/initiate', {
+      // Own the pending call before the response arrives so a rejection has a callSid to display.
+      this.update({
+        ...this.idle,
+        phase: 'starting',
         callSid,
         threadId,
         callType,
+        isCaller: true,
+        peerName,
+        peerAvatar,
       });
+      const response = await this.postResponse<{ threadId: number }>(
+        'calls/initiate',
+        { callSid, threadId, callType },
+      );
+      if (response.code === BusinessCode.CALL_BUSY) {
+        this.finish('busy');
+        return;
+      }
+      if (response.code !== BusinessCode.OK)
+        throw new Error(`calls/initiate rejected: ${response.code}`);
       registered = true;
       this.update({
         ...this.idle,
         phase: 'calling',
         callSid,
-        threadId: response?.threadId ?? 0,
+        threadId: response.data?.threadId ?? 0,
         peerUserId: 0,
         callType,
         isCaller: true,
@@ -176,7 +194,7 @@ export class WebCallAdapter implements CallAdapter {
       console.error('[call:web] outgoing setup failed', error);
       if (registered) await this.bestEffortPost('calls/cancel', { callSid });
       else this.notifyMediaError?.(callMediaErrorStep(error));
-      this.finish();
+      this.finish('failed');
     }
   }
 
@@ -795,8 +813,8 @@ export class WebCallAdapter implements CallAdapter {
     this.listener?.({ ...this.state });
   }
 
-  private finish(): void {
-    this.update({ phase: 'ended' });
+  private finish(reason?: CallTerminalReason): void {
+    this.update({ phase: 'ended', terminalReason: reason ?? null });
     this.releaseMedia();
     this.seenSignalIds.clear();
     this.state = { ...this.idle };
@@ -838,7 +856,14 @@ export class WebCallAdapter implements CallAdapter {
     path: string,
     body: object,
   ): Promise<T | undefined> {
-    const response = await firstValueFrom(
+    return (await this.postResponse<T>(path, body)).data;
+  }
+
+  private async postResponse<T>(
+    path: string,
+    body: object,
+  ): Promise<StandardResponse<T>> {
+    return firstValueFrom(
       this.http.post<StandardResponse<T>>(`${apiPrefix()}/${path}`, body, {
         context:
           'callSid' in body
@@ -846,7 +871,6 @@ export class WebCallAdapter implements CallAdapter {
             : undefined,
       }),
     );
-    return response.data;
   }
 
   private async get<T>(path: string): Promise<T | undefined> {

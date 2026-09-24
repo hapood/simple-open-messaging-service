@@ -2057,11 +2057,9 @@ class MainActivity : TauriActivity() {
                                     peer?.avatarDataUrl() ?: "",
                                 )) {
                                 a.startCallService()
-                            } else {
-                                SomsBridge.eval(
-                                    "window.__SOMS_CALL_REJECTED__ && window.__SOMS_CALL_REJECTED__('busy');",
-                                )
                             }
+                            // A false return means this device already owns a different call. Do not emit
+                            // a rejection for that attempt: the existing call must keep its UI and media.
                         }
                     }.start()
                 }

@@ -57,7 +57,10 @@ describe('federated message deletion transaction ordering', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE',
+    );
     const now = new Date();
     const [existingNamespace] = await database.db
       .select({ id: identityNamespace.id })
@@ -107,6 +110,7 @@ describe('federated message deletion transaction ordering', () => {
       remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
       expectedFederationVersion: 0,
+      authority: 'P2P_HOME',
     });
   }
 
@@ -224,6 +228,145 @@ describe('federated message deletion transaction ordering', () => {
         });
     },
   );
+
+  it('applies group-origin moderation to a local author by receipt without touching another peer copy', async () => {
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 14 })
+      .where(eq(messageThread.id, threadId));
+    await database.db.insert(message).values([
+      {
+        threadId,
+        seq: 14,
+        originSeq: 14,
+        sourceNamespaceId: 0,
+        creatorAccount: 'alice',
+        creatorDomain: 'local',
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'home original' }),
+        updatedAt: new Date(),
+      },
+      {
+        threadId,
+        seq: 13,
+        originSeq: 13,
+        sourceNamespaceId: namespaceId,
+        creatorAccount: 'bob',
+        creatorDomain: peerDomain,
+        creatorNamespaceId: namespaceId,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'peer copy' }),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const [home] = await database.db.query.message.findMany({
+      where: eq(message.threadId, threadId),
+      orderBy: (row, { desc }) => [desc(row.seq)],
+      limit: 1,
+    });
+    await database.db.insert(federationMessageReceipt).values({
+      threadId,
+      namespaceId,
+      peerSeq: 14,
+      messageId: home.id,
+    });
+    const params = {
+      threadId,
+      messageSeq: 14,
+      sourceDomain: peerDomain,
+      sourceNamespaceId: namespaceId,
+      remoteDeletionSeq: 2,
+      type: MessageDeleteType.MODERATION_REMOVAL,
+      expectedFederationVersion: 0,
+      authority: 'GROUP_ORIGIN' as const,
+    };
+    expect(await deletions.applyFederated(params)).toEqual({
+      messageSeq: 14,
+      deletionSeq: 1,
+    });
+    expect(await deletions.applyFederated(params)).toBeNull();
+    const rows = await database.db.query.message.findMany({
+      where: eq(message.threadId, threadId),
+    });
+    expect(rows.find((row) => row.seq === 14)?.isDeleted).toBe(true);
+    expect(rows.find((row) => row.seq === 13)?.isDeleted).toBe(false);
+    expect(await database.db.query.deletedMessage.findMany()).toMatchObject([
+      {
+        messageSeq: 14,
+        sourceNamespaceId: namespaceId,
+        type: MessageDeleteType.MODERATION_REMOVAL,
+      },
+    ]);
+    expect(
+      await database.db.query.federatedMessageTombstone.findMany(),
+    ).toEqual([]);
+    expect(
+      (await database.db.query.durableTask.findMany())
+        .map((task) => task.taskType)
+        .sort(),
+    ).toEqual(['FAN_OUT_FEDERATION_THREAD_CONTENT', 'FAN_OUT_THREAD_CONTENT']);
+  });
+
+  it('rejects a member-home submission when the matching copy has a local author', async () => {
+    await insertIncoming();
+    await database.db
+      .update(message)
+      .set({ creatorDomain: 'local', creatorNamespaceId: 0 })
+      .where(eq(message.threadId, threadId));
+    await expect(
+      deletions.applyFederated({
+        threadId,
+        messageSeq: 7,
+        sourceDomain: peerDomain,
+        sourceNamespaceId: namespaceId,
+        remoteDeletionSeq: 2,
+        type: MessageDeleteType.MODERATION_REMOVAL,
+        expectedFederationVersion: 0,
+        authority: 'GROUP_MEMBER',
+      }),
+    ).rejects.toThrow(
+      'group member tombstone is not from the message author home',
+    );
+    expect((await database.db.query.message.findFirst())?.isDeleted).toBe(
+      false,
+    );
+    expect(await database.db.query.deletedMessage.findMany()).toEqual([]);
+  });
+
+  it('ignores a P2P peer tombstone for a retained local author receipt', async () => {
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 1 })
+      .where(eq(messageThread.id, threadId));
+    const [home] = await database.db
+      .insert(message)
+      .values({
+        threadId,
+        seq: 1,
+        sourceNamespaceId: 0,
+        creatorAccount: 'alice',
+        creatorDomain: 'local',
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'home' }),
+        updatedAt: new Date(),
+      })
+      .returning();
+    await database.db.insert(federationMessageReceipt).values({
+      threadId,
+      namespaceId,
+      peerSeq: 7,
+      messageId: home.id,
+    });
+    expect(await apply(9)).toBeNull();
+    expect(await database.db.query.message.findFirst()).toMatchObject({
+      isDeleted: false,
+    });
+    expect(await database.db.query.deletedMessage.findMany()).toEqual([]);
+    expect(
+      await database.db.query.federatedMessageTombstone.findMany(),
+    ).toEqual([]);
+  });
 
   it('applies a federated tomb using local message coordinates and persists fanout', async () => {
     await insertIncoming();

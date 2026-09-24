@@ -157,6 +157,30 @@ describe('CallEventService web call routing', () => {
     vi.useRealTimers();
   });
 
+  it('shows a web busy snapshot without a later completed terminal', () => {
+    vi.useFakeTimers();
+    try {
+      const service = TestBed.inject(CallEventService);
+      const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
+      listener({ ...IDLE_CALL, phase: 'starting', callSid: 'web-busy' });
+      listener({
+        ...IDLE_CALL,
+        phase: 'ended',
+        callSid: 'web-busy',
+        terminalReason: 'busy',
+      });
+      // Cleanup or a late idle snapshot must not replace the busy terminal.
+      listener({ ...IDLE_CALL });
+
+      expect(service.callState().phase).toBe('ended');
+      expect(service.callState().terminalReason).toBe('busy');
+      vi.advanceTimersByTime(1800);
+      expect(service.callState()).toEqual(IDLE_CALL);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows native busy rejection as a terminal call state', () => {
     vi.useFakeTimers();
     const service = TestBed.inject(CallEventService);

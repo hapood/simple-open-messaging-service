@@ -9,7 +9,7 @@ const defaultUrlResolver: MediaUrlResolver = (item) =>
 const BARE_CAS_URL_RE =
   /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/;
 
-/** Repair media URLs cached while an inbound federated message was still a STUB. */
+/** Bind a canonical CAS URL to the message that authorizes its download. */
 export function contextualMediaUrl(
   item: Record<string, unknown>,
   threadId: number,
@@ -19,6 +19,25 @@ export function contextualMediaUrl(
   return BARE_CAS_URL_RE.test(url)
     ? `${url}?threadId=${threadId}&seq=${seq}`
     : url;
+}
+
+/** LINK artwork shares the same carrier authorization as ordinary attachments. */
+export function contextualLinkContent(
+  content: string,
+  threadId: number,
+  seq: number,
+): string {
+  const item = parseRecord(content);
+  if (!item) return content;
+  return JSON.stringify({
+    ...item,
+    ...(typeof item['image'] === 'string'
+      ? { image: contextualMediaUrl({ url: item['image'] }, threadId, seq) }
+      : {}),
+    ...(typeof item['favicon'] === 'string'
+      ? { favicon: contextualMediaUrl({ url: item['favicon'] }, threadId, seq) }
+      : {}),
+  });
 }
 
 export function parseImageContent(

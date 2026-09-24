@@ -263,7 +263,7 @@
             "feedId": 7,
             "account": "alice",
             "domain": "a.example",
-            "operation": "UPSERT",
+            "operation": "MEMBER_UPSERT",
             "body": {
               "role": "OWNER",
               "profileRev": 2
@@ -273,7 +273,7 @@
             "feedId": 8,
             "account": "bob",
             "domain": "b.example",
-            "operation": "UPSERT",
+            "operation": "MEMBER_UPSERT",
             "body": {
               "role": "MEMBER",
               "profileRev": 1
@@ -303,7 +303,7 @@
             "feedId": 10,
             "account": "bob",
             "domain": "b.example",
-            "operation": "DEPART"
+            "operation": "MEMBER_DEPART"
           }
         ],
         "scannedThrough": 10,

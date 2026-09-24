@@ -35,12 +35,18 @@ describe('FederationMessageTombstoneFeedService query', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
     service = new FederationMessageTombstoneFeedService(database);
   });
 
   afterAll(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
     await mod.close();
   });
 
@@ -160,6 +166,28 @@ describe('FederationMessageTombstoneFeedService query', () => {
         },
       ],
     });
+  });
+
+  it('never publishes local P2P moderation of the remote author', async () => {
+    const { deletion, namespaceId, thread } = await seedDeletion();
+    await database.db
+      .update(message)
+      .set({
+        creatorAccount: 'bob',
+        creatorDomain: peerDomain,
+        creatorNamespaceId: namespaceId,
+      })
+      .where(eq(message.threadId, thread.id));
+    const page = await service.query(
+      peerDomain,
+      namespaceId,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      0,
+      undefined,
+      deletion.deletionSeq,
+      true,
+    );
+    expect(page).toMatchObject({ tombstones: [], scannedThrough: 1 });
   });
 
   it('omits requester-authored tombstones when includeSelf is false', async () => {

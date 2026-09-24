@@ -269,9 +269,10 @@ interface QuotaCategoryUsage {
 /** One federated peer's quota state. */
 export interface QuotaNode {
   domain: string;
+  namespaceId: number;
   trustLevel: FederationTrustLevel;
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, QuotaCategoryUsage> | undefined;
+  usage: Record<QuotaCategory, QuotaCategoryUsage>;
 }
 
 /** One entity's circuit-breaker snapshot (msg cnt / file cnt / file total size). `fileBytes.bytes` is a

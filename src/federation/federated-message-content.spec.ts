@@ -15,7 +15,7 @@ describe('federated message content projection', () => {
   it.each([
     [
       ContentType.IMAGE,
-      { url: `${cas(digestA)}?threadId=4&seq=7`, w: 10, h: 20, size: 30 },
+      { url: cas(digestA), w: 10, h: 20, size: 30 },
       { digest: digestA, width: 10, height: 20 },
     ],
     [
@@ -310,6 +310,29 @@ describe('federated message content projection', () => {
         'local.test',
       ),
     ).toThrow('invalid media digest');
+  });
+
+  it('projects local FORWARD metadata to the unchanged wire reference', () => {
+    const bundleId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    expect(
+      toFederatedMessageContent(
+        ContentType.FORWARD,
+        JSON.stringify({
+          bundleId,
+          summaryLines: ['hello'],
+          messageCount: 3,
+          depth: 2,
+        }),
+        'local.test',
+      ),
+    ).toBe(JSON.stringify({ bundleId }));
+    expect(() =>
+      toFederatedMessageContent(
+        ContentType.FORWARD,
+        JSON.stringify({ bundleId, summaryLines: [], messageCount: 3 }),
+        'local.test',
+      ),
+    ).toThrow('invalid fields');
   });
 
   it('publishes an imported minimal FORWARD card idempotently', () => {

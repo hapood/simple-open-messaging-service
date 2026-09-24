@@ -832,7 +832,14 @@ object CallController {
                     JSONObject().put("callSid", sid).put("threadId", targetThreadId).put("callType", type))
                 if (!r.ok) {
                     SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }
-                    if (callSid == sid && phase == "starting") teardown()
+                    if (callSid == sid && phase == "starting") {
+                        teardown()
+                        if (r.code == 70004) {
+                            // The server's busy-line is authoritative. The renderer already owns the
+                            // starting snapshot; teardown first, then show its existing busy terminal.
+                            SomsBridge.eval("window.__SOMS_CALL_REJECTED__ && window.__SOMS_CALL_REJECTED__('busy');")
+                        }
+                    }
                     return@execute
                 }
                 registeredOnServer = true
@@ -1385,9 +1392,9 @@ object CallController {
         return exec(req)
     }
 
-    /** The result of one API call: `ok` (HTTP 2xx + biz code 0) + the parsed `data` (null when the endpoint
-     *  returns no data — distinct from a failure, which is `ok=false`). */
-    private class CallResp(val ok: Boolean, val data: JSONObject?)
+    /** The result of one API call: `ok` (HTTP 2xx + biz code 0), parsed `data`, and the business code
+     *  (-1 for transport/parse failures). Keep the code so initiate can distinguish a busy rejection. */
+    private class CallResp(val ok: Boolean, val data: JSONObject?, val code: Int = -1)
 
     private fun exec(req: Request): CallResp = try {
         http.newCall(req).execute().use { resp ->
@@ -1396,9 +1403,10 @@ object CallController {
                 return CallResp(false, null)
             }
             val envelope = JSONObject(resp.body?.string().orEmpty())
-            if (envelope.optInt("code", -1) != 0) {
-                SomsLog.w(TAG) { "${req.url.encodedPath} biz code=${envelope.optInt("code")} msg=${envelope.optString("message")}" }
-                return CallResp(false, null)
+            val code = envelope.optInt("code", -1)
+            if (code != 0) {
+                SomsLog.w(TAG) { "${req.url.encodedPath} biz code=$code msg=${envelope.optString("message")}" }
+                return CallResp(false, null, code)
             }
             CallResp(true, envelope.optJSONObject("data"))
         }

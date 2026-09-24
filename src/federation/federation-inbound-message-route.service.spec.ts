@@ -39,6 +39,31 @@ function groupReceipt(): FederationMessageFeedMessage {
 }
 
 describe('FederationInboundMessageRouteService', () => {
+  it('classifies P2P tombstones as author-home facts, not local submissions', async () => {
+    const routes = service();
+    const resolveMessage = vi
+      .spyOn(routes, 'resolveMessage')
+      .mockResolvedValue({
+        threadId: 11,
+        federationVersion: 4,
+        toAccount: 'alice',
+        creatorAccount: 'bob',
+        creatorDomain: 'peer.test',
+        authority: 'PEER',
+        recipients: [],
+      });
+    await expect(
+      routes.resolveTombstone(
+        {} as DatabaseTransaction,
+        { account: 'bob', peerAccount: 'alice' },
+        'peer.test',
+        9,
+        7,
+      ),
+    ).resolves.toMatchObject({ authority: 'P2P_HOME' });
+    expect(resolveMessage).toHaveBeenCalledOnce();
+  });
+
   it('binds member retractions to a retained source-authored message and active member route', async () => {
     const routes = service();
     const memberRoute = vi.spyOn(routes, 'resolveMessage').mockResolvedValue({
@@ -64,8 +89,7 @@ describe('FederationInboundMessageRouteService', () => {
       ),
     ).resolves.toMatchObject({
       threadId: 11,
-      memberSubmission: true,
-      groupOriginDomain: 'local.test',
+      authority: 'GROUP_MEMBER',
     });
     expect(memberRoute).toHaveBeenCalledWith(
       expect.anything(),

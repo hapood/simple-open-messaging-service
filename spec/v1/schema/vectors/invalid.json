@@ -1107,7 +1107,7 @@
             "feedId": 2,
             "account": "alice",
             "domain": "a.example",
-            "operation": "DEPART",
+            "operation": "MEMBER_DEPART",
             "body": {}
           }
         ],

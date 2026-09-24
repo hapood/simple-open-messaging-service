@@ -229,7 +229,7 @@ function semanticValid(schema: string, value: unknown): boolean {
         feedId <= previousFeedId ||
         feedId > BigInt(page.scannedThrough) ||
         (page.mode === 'full' &&
-          member.operation !== 'UPSERT' &&
+          member.operation !== 'MEMBER_UPSERT' &&
           member.operation !== 'GROUP_PROFILE' &&
           member.operation !== 'GROUP_ANNOUNCEMENT')
       )

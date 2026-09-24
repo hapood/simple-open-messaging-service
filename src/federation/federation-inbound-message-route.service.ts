@@ -28,8 +28,7 @@ export interface FederationInboundTombstoneRoute {
   threadId: number;
   federationVersion: number;
   recipients: number[];
-  groupOriginDomain?: string;
-  memberSubmission?: boolean;
+  authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
 }
 
 /** Resolves authenticated wire thread coordinates to retained local federation threads. */
@@ -300,12 +299,13 @@ export class FederationInboundMessageRouteService {
     messageSeq?: number,
   ): Promise<FederationInboundTombstoneRoute> {
     if ('peerAccount' in thread) {
-      return this.resolveMessage(
+      const route = await this.resolveMessage(
         tx,
         { thread, authorRef: 'THREAD_ACCOUNT' } as FederationMessageFeedMessage,
         sourceDomain,
         namespaceId,
       );
+      return { ...route, authority: 'P2P_HOME' };
     }
 
     const rows = await tx.execute<{
@@ -355,8 +355,7 @@ export class FederationInboundMessageRouteService {
         );
         return {
           ...memberRoute,
-          groupOriginDomain: this.config.domain,
-          memberSubmission: true,
+          authority: 'GROUP_MEMBER',
         };
       }
     }
@@ -379,8 +378,7 @@ export class FederationInboundMessageRouteService {
     }
     return {
       ...route,
-      groupOriginDomain:
-        route.groupDomain === 'local' ? this.config.domain : route.groupDomain,
+      authority: 'GROUP_ORIGIN',
       recipients: recipientRows.rows
         .filter((_, index) => recipientAuthorization[index])
         .map((row) => row.userId),

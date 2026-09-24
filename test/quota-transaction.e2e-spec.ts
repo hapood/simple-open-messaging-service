@@ -68,30 +68,31 @@ describe('quota operations reuse the source transaction', () => {
       const domain = 'quota-transaction.test';
       await expect(
         database.db.transaction(async (tx) => {
-          await tx.execute(sql`
-            INSERT INTO "FederatedPeer"
-              (domain, "trustLevel", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
-            VALUES (${domain}, 'available', 2, 2, 10, 2)
+          const namespace = await tx.execute<{ id: number }>(sql`
+            INSERT INTO "IdentityNamespace"
+              (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
+            VALUES (${domain}, 'sha256:quota-transaction', ${Buffer.alloc(32, 1).toString('base64')}, NOW(), 2, 2, 10, 2) RETURNING id
           `);
+          const namespaceId = namespace.rows[0].id;
           await tx.execute(sql`
             INSERT INTO "QuotaDailyAllowance"
-              (domain, date, "extraMsg", "extraFile", "extraFileBytes")
-            VALUES (${domain}, CURRENT_DATE, 3, 3, 20)
+              ("namespaceId", date, "extraMsg", "extraFile", "extraFileBytes")
+            VALUES (${namespaceId}, CURRENT_DATE, 3, 3, 20)
           `);
           if (operation === 'bytes') {
-            expect(await peers.tickFileBytes(domain, 25n, tx)).toEqual({
+            expect(await peers.tickFileBytes(namespaceId, 25n, tx)).toEqual({
               bytes: 25n,
               limit: 30,
               over: false,
             });
           } else if (operation === 'strict') {
-            await peers.tick(domain, 'requests', tx, 2);
+            await peers.tick(namespaceId, 'requests', tx, 2);
             const usage = await tx.execute<{ count: number }>(sql`
-              SELECT count FROM "QuotaDailyUsage" WHERE domain = ${domain}
+              SELECT count FROM "QuotaDailyUsage" WHERE "namespaceId" = ${namespaceId}
             `);
             expect(usage.rows).toEqual([{ count: 2 }]);
           } else {
-            expect(await peers.tickLax(domain, operation, tx, 4)).toEqual({
+            expect(await peers.tickLax(namespaceId, operation, tx, 4)).toEqual({
               count: 4,
               limit: 5,
               over: false,
@@ -101,7 +102,7 @@ describe('quota operations reuse the source transaction', () => {
         }),
       ).rejects.toBe(rollback);
       const result = await database.pool.query(
-        'SELECT count FROM "QuotaDailyUsage" WHERE domain = $1 UNION ALL SELECT "bytes" FROM "QuotaFileByteUsage" WHERE domain = $1',
+        'SELECT count FROM "QuotaDailyUsage" WHERE "namespaceId" IN (SELECT id FROM "IdentityNamespace" WHERE domain = $1) UNION ALL SELECT "bytes" FROM "QuotaFileByteUsage" WHERE "namespaceId" IN (SELECT id FROM "IdentityNamespace" WHERE domain = $1)',
         [domain],
       );
       expect(result.rows).toEqual([]);

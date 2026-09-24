@@ -300,13 +300,32 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .limit(1);
     expect(msg).toBeDefined();
     const content = JSON.parse(msg!.content);
-    expect(content.url).toBe(
-      `${up.body.data.url}?threadId=${thread.id}&seq=${msg!.seq}`,
-    );
+    expect(content.url).toBe(up.body.data.url);
     expect(content.w).toBe(1);
     expect(content.h).toBe(1);
     // The regression: size was omitted from the promote payload, so the persisted content lacked it.
     expect(content.size).toBe(PNG_1X1.length);
+
+    // A HISTORY snapshot must read the declared size from the canonical stored URL.
+    const forwarded = await request(app.getHttpServer())
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        threadId: thread.id,
+        mode: 'HISTORY',
+        sourceMessages: [{ threadId: thread.id, seq: msg!.seq }],
+        clientMessageId: randomUUID(),
+      });
+    expect(forwarded.status).toBe(200);
+    expect(forwarded.body.code).toBe(0);
+    const card = JSON.parse(forwarded.body.data.content);
+    const closure = await request(app.getHttpServer())
+      .get(`/api/v1/forward-bundles/${card.bundleId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(closure.body.code).toBe(0);
+    expect(closure.body.data.assets).toEqual([
+      expect.objectContaining({ bytes: PNG_1X1.length }),
+    ]);
   });
 
   it('promotes an unsupported chat image as FILE without failing the upload', async () => {
@@ -356,11 +375,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       name: up.body.data.name,
       mimeType: up.body.data.mimeType,
       size: up.body.data.size,
-      url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
+      url: up.body.data.url,
     });
 
     const download = await request(app.getHttpServer())
-      .get(JSON.parse(msg!.content).url)
+      .get(`${JSON.parse(msg!.content).url}?threadId=${thread.id}&seq=${msg!.seq}`)
       .set('Authorization', `Bearer ${token}`);
     expect(download.status).toBe(200);
     // The CAS response is presentation-neutral; the FILE message name is applied by the frontend's
@@ -408,7 +427,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       name: up.body.data.name,
       mimeType: up.body.data.mimeType,
       size: up.body.data.size,
-      url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
+      url: up.body.data.url,
     });
   });
 

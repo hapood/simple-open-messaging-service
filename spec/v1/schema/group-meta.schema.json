@@ -55,7 +55,7 @@
           "$ref": "#/$defs/memberItemBase",
           "required": ["body"],
           "properties": {
-            "operation": { "const": "UPSERT" },
+            "operation": { "const": "MEMBER_UPSERT" },
             "body": { "$ref": "#/$defs/upsertBody" }
           },
           "unevaluatedProperties": false
@@ -63,7 +63,7 @@
         {
           "$ref": "#/$defs/memberItemBase",
           "properties": {
-            "operation": { "const": "DEPART" }
+            "operation": { "const": "MEMBER_DEPART" }
           },
           "unevaluatedProperties": false
         },

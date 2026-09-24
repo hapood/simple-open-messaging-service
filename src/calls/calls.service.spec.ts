@@ -7,6 +7,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { CallsService } from './calls.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
+import { S2sResponseError } from '../federation/federation-errors.js';
 import { parseCallEndedContent } from '../../shared/call-ended-content.js';
 import type { CallOutcome } from '../../shared/call-ended-content.js';
 import type {
@@ -957,6 +958,31 @@ describe('CallsService federated initiate (outbound)', () => {
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
+  it('surfaces a remote busy admission result without cancelling the unadmitted peer call', async () => {
+    const { svc, m } = mkService();
+    m.participants.findP2PPeers.mockResolvedValue([
+      {
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+      },
+    ]);
+    m.federation.sendCallFrame.mockRejectedValueOnce(
+      new S2sResponseError('busy', 200, BusinessCode.CALL_BUSY),
+    );
+    await expect(
+      svc.initiate(1, { callSid: 'busy-remote', threadId: 10, callType: 'AUDIO' }),
+    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
+    expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
+    expect(m.federation.sendCallFrame).toHaveBeenCalledOnce();
+    m.federation.sendCallFrame.mockResolvedValue(undefined);
+    await expect(
+      svc.initiate(1, { callSid: 'retry', threadId: 10, callType: 'AUDIO' }),
+    ).resolves.toBeDefined();
+  });
+
   it('a ring failure writes an `unreachable` bubble + throws CALL_PEER_UNREACHABLE + releases slots', async () => {
     const { svc, m } = mkService();
     m.participants.findP2PPeers.mockResolvedValue([
@@ -1116,7 +1142,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       2,
       expect.objectContaining({ callSid: 'cs1' }),
     );
-    expect(m.quota.tick).toHaveBeenCalledWith('bbb.local', 'requests');
+    expect(m.quota.tick).toHaveBeenCalledWith(3, 'requests');
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
     // The callee server never authors the terminal bubble.
     expect(m.history.finish).not.toHaveBeenCalled();

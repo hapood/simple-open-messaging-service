@@ -264,9 +264,8 @@ describe('federation durable missed transport (two nodes)', () => {
           where: eq(message.id, pending!.messageId!),
         });
         expect(stagedMessage?.localState).toBe('STUB');
-        expect(stagedMessage?.content).toContain(
-          `?threadId=${stagedMessage!.threadId}&seq=${stagedMessage!.seq}`,
-        );
+        expect(stagedMessage?.content).toContain('/uploads/msg-assets/');
+        expect(stagedMessage?.content).not.toContain('?threadId=');
         const syncState =
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(
@@ -355,11 +354,15 @@ describe('federation durable missed transport (two nodes)', () => {
     const quotaDate = new Date(
       Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
     );
+    const peer = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, FED_DOMAIN_A),
+    });
+    expect(peer?.activeNamespaceId).toBeTruthy();
     const usedFiles =
       (
         await appB.database.query.quotaDailyUsage.findFirst({
           where: and(
-            eq(quotaDailyUsage.domain, FED_DOMAIN_A),
+            eq(quotaDailyUsage.namespaceId, peer!.activeNamespaceId!),
             eq(quotaDailyUsage.date, quotaDate),
             eq(quotaDailyUsage.category, 'files'),
           ),
