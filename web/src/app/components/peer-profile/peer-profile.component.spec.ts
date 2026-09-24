@@ -127,7 +127,7 @@ describe('PeerProfileComponent', () => {
   afterEach(() => TestBed.resetTestingModule());
 
   it('resolves the peer from the open thread', () => {
-    expect(comp.peer()?.id).toBe(42);
+    expect(comp.peer()?.account).toBe('alice');
     expect(comp.peerDisplayName()).toBe('Alice');
   });
 

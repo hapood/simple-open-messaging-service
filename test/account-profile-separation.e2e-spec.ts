@@ -6,16 +6,15 @@ import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
+  accountThreadState,
   groupAccount,
   groupMeta,
   messageThread,
   profileTable,
 } from '../src/database/schema.js';
 import { GroupService } from '../src/group/group.service.js';
-import {
-  groupState,
-  readGroupState,
-} from '../src/group/shared/group-state.js';
+import { ContactCardProfileService } from '../src/message/contact-card/contact-card-profile.service.js';
+import { groupState, readGroupState } from '../src/group/shared/group-state.js';
 import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
@@ -31,6 +30,47 @@ describe('account controls and exact profiles', () => {
     owner = await seedUser(app as unknown as INestApplication, 'profile-owner');
   });
   afterAll(async () => app.close());
+
+  it('resolves contact-card groups only by a member-visible address', async () => {
+    const created = await groups.createNewGroup({
+      owner: owner.id,
+      name: 'Visible group',
+    });
+    const state = await readGroupState(
+      database.db,
+      eq(groupState.id, created.threadId),
+    );
+    const address = {
+      account: state!.account,
+      domain: state!.domain,
+      namespaceId: state!.namespaceId,
+    };
+    expect(
+      await groups.findVisibleGroupByAddress(owner.id, address),
+    ).toMatchObject({
+      id: created.threadId,
+      account: state!.account,
+    });
+    const outsider = await seedUser(
+      app as unknown as INestApplication,
+      'profile-outsider',
+    );
+    expect(
+      await groups.findVisibleGroupByAddress(outsider.id, address),
+    ).toBeNull();
+    await database.db
+      .update(accountThreadState)
+      .set({ messageVisibleThroughSeq: 0 })
+      .where(
+        and(
+          eq(accountThreadState.accountId, owner.id),
+          eq(accountThreadState.threadId, created.threadId),
+        ),
+      );
+    expect(
+      await groups.findVisibleGroupByAddress(owner.id, address),
+    ).toBeNull();
+  });
 
   it('has no User or Group table and keeps local credentials separate from display', async () => {
     const result = await database.db.execute(
@@ -92,6 +132,14 @@ describe('account controls and exact profiles', () => {
       .orderBy(profileTable.profileRev);
     expect(versions.map((row) => row.profileRev)).toEqual([1, 2, 3]);
     expect(versions[0]).toMatchObject({ displayName: 'Original', bio: '' });
+    expect(
+      await app.get(ContactCardProfileService).findProfile({
+        account: state!.account,
+        domain: state!.domain,
+        namespaceId: 0,
+        profileRev: 1,
+      }),
+    ).toMatchObject({ displayName: 'Original' });
     expect(
       await database.db.query.groupAccount.findFirst({
         where: eq(groupAccount.account, state!.account),
@@ -162,6 +210,23 @@ describe('account controls and exact profiles', () => {
     expect(
       await readGroupState(database.db, eq(groupState.id, thread.id)),
     ).toMatchObject({ name: 'Received name', profileRev: 2, namespaceId });
+    const contactProfiles = app.get(ContactCardProfileService);
+    expect(
+      await contactProfiles.findProfile({
+        account: address,
+        domain: 'profile-origin.test',
+        namespaceId,
+        profileRev: 2,
+      }),
+    ).toMatchObject({ displayName: 'Received name' });
+    expect(
+      await contactProfiles.findProfile({
+        account: address,
+        domain: 'profile-origin.test',
+        namespaceId,
+        profileRev: 0,
+      }),
+    ).toBeNull();
     expect(
       await database.db.query.groupAccount.findFirst({
         where: eq(groupAccount.account, address),

@@ -63,7 +63,6 @@ describe('resolved thread profile identity', () => {
   it('hydrates local peers while preserving their selected profile revision', async () => {
     await storage.putThread(
       createP2PConversation(92, {
-        id: 17,
         account: 'bob',
         domain: 'local',
         namespaceId: 0,

@@ -1,6 +1,5 @@
 import {
   conversationAvatarType,
-  conversationAvatarIdentityId,
   conversationAvatarAccount,
   conversationAvatarDomain,
   conversationAvatarSrc,
@@ -18,7 +17,6 @@ describe('conversation-avatar util', () => {
   const p2p = {
     type: 'P2P',
     peerUser: {
-      id: 7,
       account: 'alice',
       domain: 'local',
       avatar: '/uploads/u7.png',
@@ -27,18 +25,13 @@ describe('conversation-avatar util', () => {
   } as unknown as ConversationItem;
   const group = {
     type: 'GROUP',
-    peerUser: { id: 0, avatar: '' },
+    peerUser: { avatar: '' },
     group: { id: 12, account: '!group-12', avatar: '/uploads/g12.png' },
   } as unknown as ConversationItem;
 
   it('maps P2P → OTHER and GROUP → GROUP', () => {
     expect(conversationAvatarType(p2p)).toBe(UserAvatarType.OTHER);
     expect(conversationAvatarType(group)).toBe(UserAvatarType.GROUP);
-  });
-
-  it('derives the identity id from the active party (P2P peer / group)', () => {
-    expect(conversationAvatarIdentityId(p2p)).toBe(7);
-    expect(conversationAvatarIdentityId(group)).toBe(12);
   });
 
   it('derives the avatar src from the active party', () => {

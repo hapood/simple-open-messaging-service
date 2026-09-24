@@ -28,7 +28,6 @@ export function applyThreadStateSnapshot(
   if (current && current.type !== snapshot.type)
     throw new Error('thread type changed');
   const identity = {
-    id: 0,
     ...snapshot.profile,
     name: '',
   };

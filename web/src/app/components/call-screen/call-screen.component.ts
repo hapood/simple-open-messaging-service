@@ -87,7 +87,6 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 <app-user-avatar
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
-                  [identityId]="snap().peerUserId"
                   [account]="peer()?.account"
                   [federatedDomain]="
                     peer()?.domain !== 'local' ? peer()?.domain : null
@@ -127,7 +126,6 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 <app-user-avatar
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
-                  [identityId]="snap().peerUserId"
                   [account]="peer()?.account"
                   [federatedDomain]="
                     peer()?.domain !== 'local' ? peer()?.domain : null
@@ -183,7 +181,6 @@ import { ConversationListService } from '../../services/conversation-list.servic
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="snap().peerName || '?'"
-                [identityId]="snap().peerUserId"
                 [account]="peer()?.account"
                 [federatedDomain]="peer()?.domain !== 'local' ? peer()?.domain : null"
                 [src]="snap().peerAvatar"
@@ -766,10 +763,10 @@ export class CallScreenComponent implements OnDestroy {
 
   readonly snap = computed(() => this.events.callState());
   readonly peer = computed(() => {
-    const id = this.snap().peerUserId;
+    const threadId = this.snap().threadId;
     const thread = this.conversations
       .items()
-      .find((item) => item.type === 'P2P' && item.peerUser.id === id);
+      .find((item) => item.type === 'P2P' && item.threadId === threadId);
     return thread?.type === 'P2P' ? thread.peerUser : undefined;
   });
 

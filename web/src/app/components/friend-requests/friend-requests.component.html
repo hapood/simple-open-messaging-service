@@ -168,7 +168,6 @@
                             : UserAvatarType.OTHER
                         "
                         [name]="u.name"
-                        [identityId]="userIdentity(u)"
                         [account]="u.account"
                         [src]="u.avatar"
                         [federatedDomain]="
@@ -343,7 +342,6 @@
               req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
             "
             [name]="req.name ?? ''"
-            [identityId]="req.peerId"
             [account]="req.account"
             [federatedDomain]="
               req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null

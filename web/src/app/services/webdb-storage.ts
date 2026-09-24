@@ -1415,9 +1415,16 @@ export class WebdbStorage {
 
   private async getThreadsInternal(): Promise<ConversationItem[]> {
     if (isTauri() && this.currentUserId != null) {
-      return tauriInvoke<ConversationItem[]>('native_db_threads', {
-        userId: Number(this.currentUserId),
-      });
+      const threads = await tauriInvoke<ConversationItem[]>(
+        'native_db_threads',
+        {
+          userId: Number(this.currentUserId),
+        },
+      );
+      return threads.map((thread) => ({
+        ...this.normalizeThreadSubject(thread),
+        alias: thread.alias,
+      }));
     }
     const tx = (await this.db()).transaction(
       ['threads', 'threadStates'],
@@ -1436,27 +1443,29 @@ export class WebdbStorage {
         (thread): thread is ConversationItem =>
           thread.type !== 'PENDING' && thread.visible !== false,
       )
-      .map((thread) => ({
-        ...thread,
-        alias: aliases.get(thread.threadId) ?? null,
-      }));
+      .map((thread) => {
+        const normalized = this.normalizeThreadSubject(thread);
+        return { ...normalized, alias: aliases.get(thread.threadId) ?? null };
+      });
   }
 
   private normalizeThreadSubject(item: ConversationItem): ConversationItem {
     // Private aliases are derived from threadStates; structural writes never own them.
     item = { ...item };
     delete item.alias;
-    return item.type === 'P2P'
-      ? {
-          ...item,
-          peerUser: localSubjectIdentity(item.peerUser),
-          authorityNamespaceId: localSubjectIdentity(item.peerUser).namespaceId,
-        }
-      : {
-          ...item,
-          group: localSubjectIdentity(item.group),
-          authorityNamespaceId: localSubjectIdentity(item.group).namespaceId,
-        };
+    if (item.type === 'P2P') {
+      const peer = localSubjectIdentity(item.peerUser);
+      // Ignore the numeric user id in caches written by older clients; conversation peers are addresses.
+      const { id: _legacyId, ...peerUser } = peer as typeof peer & {
+        id?: number;
+      };
+      return { ...item, peerUser, authorityNamespaceId: peer.namespaceId };
+    }
+    return {
+      ...item,
+      group: localSubjectIdentity(item.group),
+      authorityNamespaceId: localSubjectIdentity(item.group).namespaceId,
+    };
   }
 
   async replaceThreads(items: ConversationItem[]): Promise<void> {
@@ -1840,6 +1849,28 @@ export class WebdbStorage {
           const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
           const direction =
             body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING');
+          const group = {
+            ...body.group,
+            namespaceId: body.group.domain === 'local' ? 0 : op.namespaceId,
+          };
+          if (groupAuthored && body.status === 'ACCEPTED') {
+            // The group may have accepted a member's outgoing application or
+            // completed its own incoming invitation. Both projections belong to
+            // this group address; settle any existing pending row, but do not
+            // manufacture request history from a compacted terminal fact.
+            for (const side of ['INCOMING', 'OUTGOING'] as const) {
+              const key = groupRequestKey(
+                op.namespaceId,
+                groupDomain,
+                groupAccount,
+                side,
+              );
+              const current = await store.get(key);
+              if (current?.status === 'REQUESTED')
+                await store.put(markProjectionAccepted(current));
+            }
+            return;
+          }
           const targetDirection =
             body.requestDirection ??
             projectionDirectionForFact({
@@ -1847,10 +1878,6 @@ export class WebdbStorage {
               direction,
             });
           if (targetDirection === null) return;
-          const group = {
-            ...body.group,
-            namespaceId: body.group.domain === 'local' ? 0 : op.namespaceId,
-          };
           const key = groupRequestKey(
             op.namespaceId,
             groupDomain,

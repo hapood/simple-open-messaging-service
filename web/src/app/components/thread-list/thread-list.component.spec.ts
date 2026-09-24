@@ -99,7 +99,6 @@ describe('ThreadListComponent', () => {
     name = `User ${peerId}`,
   ): P2PConversationItem {
     return createP2PConversation(threadId, {
-      id: peerId,
       account: `u${peerId}`,
       name,
     });

@@ -83,7 +83,6 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
             <app-user-avatar
               [type]="UserAvatarType.OTHER"
               [name]="peer()?.name ?? ''"
-              [identityId]="$safeNavigationMigration(peer()?.id)"
               [account]="$safeNavigationMigration(peer()?.account)"
               [profileEvidence]="peerProfileEvidence()"
               [federatedDomain]="peerDomain()"

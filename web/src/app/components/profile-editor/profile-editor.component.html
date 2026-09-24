@@ -40,7 +40,6 @@
             [type]="UserAvatarType.SELF"
             [loading]="!sessionProfile()"
             [name]="name() || sessionProfile()?.account"
-            [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
             [src]="
               avatarPreviewUrl() ||
               $safeNavigationMigration(sessionProfile()?.avatar)

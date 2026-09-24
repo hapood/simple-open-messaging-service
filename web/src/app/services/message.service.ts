@@ -16,7 +16,12 @@ import {
   tap,
   type Observable,
 } from 'rxjs';
-import { Message, MessageQueryRow, StandardResponse } from './model';
+import {
+  Message,
+  MessageQueryRow,
+  StandardResponse,
+  type ContactCardTarget,
+} from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
@@ -124,8 +129,7 @@ export class MsgService {
 
   sendContactCard(params: {
     threadId: number;
-    targetUserId?: number;
-    targetGroupId?: number;
+    target: ContactCardTarget;
     clientMessageId: string;
   }) {
     return this.http.post<StandardResponse<Message>>(
@@ -454,14 +458,6 @@ export class MsgService {
     );
   }
 
-  /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */
-  getThreadByUserId(params: { userId: number }) {
-    return this.http.post<StandardResponse<{ threadId: number }>>(
-      `${apiPrefix()}/thread/by-user-id`,
-      params,
-    );
-  }
-
   /** Mute / unmute a conversation (suppresses notifications, not delivery). */
   setMuted(params: { threadId: number; muted: boolean }) {
     return this.http.post<StandardResponse>(
@@ -509,8 +505,7 @@ export class MsgService {
         });
       this.aliasWrites.set(key, pending);
       const release = () => {
-        if (this.aliasWrites.get(key) === pending)
-          this.aliasWrites.delete(key);
+        if (this.aliasWrites.get(key) === pending) this.aliasWrites.delete(key);
       };
       void pending.then(release, release);
       return pending;

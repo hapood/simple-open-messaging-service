@@ -105,8 +105,6 @@ export class UserAvatarComponent {
   readonly src = input<string | undefined | null>(undefined);
   /** Identity home domain. `local` means local; a foreign domain renders the shared top-right globe marker. */
   readonly federatedDomain = input<string | undefined | null>(undefined);
-  /** Stable identity supplied by callers for avatar context. */
-  readonly identityId = input<number | string | undefined | null>(undefined);
   /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
@@ -140,17 +138,6 @@ export class UserAvatarComponent {
     return domain && domain.toLowerCase() !== 'local' ? domain : null;
   });
 
-  /** Message cards deliberately carry only render-ready message data, so their SELF avatar call sites do
-   *  not repeat the session profile on every row. Resolve omitted SELF inputs from the cached session
-   *  profile here; explicit inputs still win for profile editors/previews. This also gives every message
-   *  card the same source reset when the session identity changes. */
-  private readonly effectiveIdentityId = computed(
-    () =>
-      this.identityId() ??
-      (this.type() === UserAvatarType.SELF
-        ? this.userService.sessionProfile()?.id
-        : undefined),
-  );
   private readonly effectiveSrc = computed(() => {
     const profile = this.resolvedProfile();
     if (profile) return '';
@@ -203,10 +190,12 @@ export class UserAvatarComponent {
       });
       onCleanup(() => subscription.unsubscribe());
     });
-    // Reset the failure flag whenever the avatar source changes (retry the new image).
+    // A failed image must be retried when its source or selected identity changes.
     effect(() => {
-      this.effectiveSrc();
-      this.effectiveIdentityId();
+      this.imgSrc();
+      this.account();
+      this.federatedDomain();
+      this.effectiveProfileEvidence();
       this.imgFailed.set(false);
     });
   }

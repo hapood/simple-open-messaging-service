@@ -16,7 +16,6 @@
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
         [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [profileEvidence]="data().profileEvidence"
@@ -406,7 +405,6 @@
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [name]="data().name"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [src]="data().snapshotAvatarUrl"

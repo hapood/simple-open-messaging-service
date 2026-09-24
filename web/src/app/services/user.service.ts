@@ -856,9 +856,8 @@ export class UserService {
       (item) =>
         item.type === 'P2P' &&
         item.friendshipActive !== false &&
-        ((user.id > 0 && item.peerUser.id === user.id) ||
-          (item.peerUser.account === user.account &&
-            item.peerUser.domain === (user.domain || 'local'))),
+        item.peerUser.account === user.account &&
+        item.peerUser.domain === (user.domain || 'local'),
     );
     if (friendship) return 'FRIEND' as const;
     const matches = (item: FriendRequestProjection) =>

@@ -90,7 +90,6 @@ export async function syncPushThreads(
     const item =
       rows.find((row) => row.threadId === state.threadId) ??
       createP2PConversation(state.threadId, {
-        id: 0,
         account: sender?.account ?? '',
         domain: sender?.domain ?? '',
         name: sender ? `${sender.account}@${sender.domain}` : 'SOMS',

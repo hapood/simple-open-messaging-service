@@ -14,7 +14,6 @@ import { PlaygroundConversationList } from './playground-conversation-list.mock'
 const DEMO_CONVERSATION = createP2PConversation(
   1,
   {
-    id: 2,
     account: 'alice',
     bio: 'Product designer · Shanghai',
     name: 'Alice',
@@ -28,7 +27,6 @@ const DEMO_CONVERSATION = createP2PConversation(
 );
 
 const DEMO_INVITABLE_FRIEND = createP2PConversation(6, {
-  id: 6,
   account: 'liam',
   bio: 'Android engineer · Hangzhou',
   name: 'Liam',

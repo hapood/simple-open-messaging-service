@@ -11,7 +11,6 @@
         requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
       "
       [name]="requestItem().name ?? ''"
-      [identityId]="requestItem().peerId"
       [account]="requestItem().account"
       [federatedDomain]="
         requestItem().kind === 'GROUP' || requestItem().domain !== 'local'

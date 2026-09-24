@@ -5,7 +5,6 @@
         <app-user-avatar
           [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
           [name]="user().name"
-          [identityId]="avatarIdentity()"
           [account]="user().account"
           [src]="user().avatar"
           [federatedDomain]="user().domain !== 'local' ? user().domain : null"

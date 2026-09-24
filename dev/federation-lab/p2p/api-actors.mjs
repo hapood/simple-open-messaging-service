@@ -246,14 +246,6 @@ export class LabUserActor {
     );
   }
 
-  async threadWithUser(userId) {
-    return this.post(
-      '/thread/by-user-id',
-      { userId },
-      `look up P2P thread with user ${userId}`,
-    );
-  }
-
   async createGroup({ name, description = '', avatar }) {
     return this.post(
       '/group/create',

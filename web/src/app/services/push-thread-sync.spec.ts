@@ -67,7 +67,7 @@ describe('Push thread-feed synchronization', () => {
     await storage.openForUser(String(userId));
     await storage.putMeta('selfProfile', { id: userId, account: 'me' });
     await storage.putThread(
-      createP2PConversation(7, { id: 2, account: 'peer', name: 'Peer' }),
+      createP2PConversation(7, { account: 'peer', name: 'Peer' }),
     );
   });
   afterEach(async () => {

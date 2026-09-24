@@ -70,7 +70,12 @@ describe('ThreadMessageSendController', () => {
       host,
     ).contact({
       kind: 'contact',
-      targetUserId: 7,
+      target: {
+        account: 'maya',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+      },
       account: 'maya',
       domain: 'local',
       name: 'Maya',
@@ -82,7 +87,12 @@ describe('ThreadMessageSendController', () => {
     expect(host.dispatch).toHaveBeenCalledWith(item);
     expect(sendContact).toHaveBeenCalledWith({
       threadId: 3,
-      targetUserId: 7,
+      target: {
+        account: 'maya',
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 2,
+      },
       clientMessageId: 'contact-cid',
       optimistic: item,
       source,

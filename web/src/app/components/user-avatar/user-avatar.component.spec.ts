@@ -108,6 +108,22 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.initial()).toBe('PN');
   });
 
+  it('retries a failed image when the account changes with the same image source', async () => {
+    fixture.componentRef.setInput('type', UserAvatarType.OTHER);
+    fixture.componentRef.setInput('account', 'alice');
+    fixture.componentRef.setInput('src', '/uploads/avatars/shared.webp');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.imgFailed.set(true);
+    expect(fixture.componentInstance.showImage()).toBe(false);
+
+    fixture.componentRef.setInput('account', 'bob');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.imgFailed()).toBe(false);
+    expect(fixture.componentInstance.showImage()).toBe(true);
+  });
+
   it('falls back to the first two characters when there is no src', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     fixture.componentRef.setInput('name', 'Bob');
@@ -174,14 +190,13 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.groupFill().from).toBe(color);
   });
 
-  it('uses account and domain rather than a numeric identity for fallback color', () => {
+  it('uses account and domain for fallback color', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
-    fixture.componentRef.setInput('identityId', 12);
     fixture.componentRef.setInput('account', '!group-account');
     fixture.componentRef.setInput('federatedDomain', 'remote.example');
     const color = fixture.componentInstance.groupFill().from;
 
-    fixture.componentRef.setInput('identityId', 99);
+    fixture.componentRef.setInput('name', 'Renamed group');
 
     expect(fixture.componentInstance.groupFill().from).toBe(color);
   });
@@ -239,7 +254,6 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   });
 
   it('passes a local-preview src straight through', () => {
-    fixture.componentRef.setInput('identityId', 9);
     fixture.componentRef.setInput('src', 'blob:http://localhost/abc');
     expect(fixture.componentInstance.imgSrc()).toBe(
       'blob:http://localhost/abc',
@@ -247,7 +261,6 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   });
 
   it('uses a supplied server path when there is no profile evidence', () => {
-    fixture.componentRef.setInput('identityId', 5);
     fixture.componentRef.setInput('src', '/uploads/avatars/g-512.webp');
     expect(fixture.componentInstance.imgSrc()).toContain(
       '/uploads/avatars/g-512.webp',

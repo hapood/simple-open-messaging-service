@@ -174,7 +174,6 @@
               <app-user-avatar
                 [type]="emptyAvatarType()"
                 [name]="emptyTitle()"
-                [identityId]="emptyAvatarIdentityId()"
                 [account]="emptyAvatarAccount()"
                 [federatedDomain]="emptyAvatarDomain()"
                 [profileEvidence]="emptyAvatarEvidence()"
@@ -565,7 +564,6 @@
                   class="msg-compose-quote-avatar"
                   [type]="quoteAvatarType(quote.imageIdentity)"
                   [name]="quote.imageLabel"
-                  [identityId]="quote.imageIdentity"
                   [account]="quote.imageIdentity"
                   [src]="quote.image"
                 />

@@ -40,6 +40,7 @@ import {
 import { PopupType, RouteService } from '../../services/route.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { assetUrl } from '../../services/runtime';
+import type { ContactCardTarget } from '../../services/model';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -55,8 +56,7 @@ export type ChatSendIntent =
   | { kind: 'link'; generationId: string; content: LinkCardContent }
   | {
       kind: 'contact';
-      targetUserId?: number;
-      targetGroupId?: number;
+      target: ContactCardTarget;
       account: string;
       domain: string;
       name: string;

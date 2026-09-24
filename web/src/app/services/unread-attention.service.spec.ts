@@ -28,7 +28,7 @@ describe('UnreadAttentionService committed thread notifications', () => {
   const update = (feed = 1, count = 3): ThreadNotificationUpdate => ({
     item: createP2PConversation(
       7,
-      { id: 2, account: 'peer', name: 'Peer' },
+      { account: 'peer', name: 'Peer' },
       { unreadCount: count, lastReadSeq: 2 },
     ),
     state: {

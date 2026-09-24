@@ -9,7 +9,6 @@
     <app-user-avatar
       [type]="avatarType()"
       [name]="identity().name"
-      [identityId]="identity().userId ?? identity().account"
       [account]="identity().account"
       [federatedDomain]="federatedDomain()"
       [src]="identity().avatar"

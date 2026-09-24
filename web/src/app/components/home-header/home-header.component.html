@@ -9,7 +9,6 @@
         [type]="UserAvatarType.SELF"
         [loading]="!sessionProfile()"
         [name]="$safeNavigationMigration(sessionProfile()?.name)"
-        [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
       />
     </span>
   </button>

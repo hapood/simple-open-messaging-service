@@ -325,7 +325,6 @@ function mockConversation(
   return createP2PConversation(
     threadId,
     {
-      id: threadId + 10,
       account: peerName.toLocaleLowerCase(),
       name: peerName,
     },

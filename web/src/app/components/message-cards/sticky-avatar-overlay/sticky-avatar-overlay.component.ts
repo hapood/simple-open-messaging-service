@@ -25,7 +25,6 @@ import {
       <app-user-avatar
         [type]="UserAvatarType.OTHER"
         [name]="other().name"
-        [identityId]="other().identityId"
         [account]="other().account"
         [federatedDomain]="other().domain"
         [profileEvidence]="other().profileEvidence"
@@ -40,7 +39,6 @@ import {
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [name]="self().name"
-        [identityId]="self().identityId"
         [federatedDomain]="self().domain"
         [profileEvidence]="self().profileEvidence"
         [src]="self().snapshotAvatarUrl"

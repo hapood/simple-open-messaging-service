@@ -10,6 +10,7 @@ import { MessageReportService } from './message-report.service.js';
 import { ThreadHistoryService } from './thread-history.service.js';
 import { ThreadPreviewModule } from './thread-preview.module.js';
 import { ThreadReadPositionService } from './thread-read-position.service.js';
+import { ContactCardProfileService } from './contact-card/contact-card-profile.service.js';
 
 @Module({
   // LinkPreviewModule: MessageService inlines a LINK card's og:image (digest → base64) on the wire.
@@ -21,6 +22,7 @@ import { ThreadReadPositionService } from './thread-read-position.service.js';
     MessageReportService,
     ThreadHistoryService,
     ThreadReadPositionService,
+    ContactCardProfileService,
   ],
   imports: [
     LinkPreviewModule,
@@ -36,6 +38,7 @@ import { ThreadReadPositionService } from './thread-read-position.service.js';
     MessageReportService,
     ThreadHistoryService,
     ThreadReadPositionService,
+    ContactCardProfileService,
   ],
 })
 export class MessageModule {}

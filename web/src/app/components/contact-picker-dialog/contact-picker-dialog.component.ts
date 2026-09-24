@@ -1,14 +1,13 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { displayThreadName } from '../../services/model';
+import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarAccount,
   conversationAvatarDomain,
   conversationAvatarEvidence,
-  conversationAvatarIdentityId,
   conversationAvatarSrc,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
@@ -27,17 +26,20 @@ export class ContactPickerDialogComponent {
   readonly items = this.conversations.items;
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
-  readonly avatarId = conversationAvatarIdentityId;
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarDomain = conversationAvatarDomain;
   readonly avatarEvidence = conversationAvatarEvidence;
   readonly avatarSrc = conversationAvatarSrc;
 
-  choose(item: ReturnType<typeof this.items>[number]): void {
+  choose(item: ConversationItem): void {
+    const target = item.type === 'GROUP' ? item.group : item.peerUser;
     this.route.closeDlg({
-      ...(item.type === 'GROUP'
-        ? { targetGroupId: item.group.id }
-        : { targetUserId: item.peerUser.id }),
+      target: {
+        account: target.account,
+        domain: target.domain,
+        namespaceId: target.namespaceId,
+        profileRev: target.profileRev,
+      },
       account:
         item.type === 'GROUP' ? item.group.account : item.peerUser.account,
       domain: item.type === 'GROUP' ? item.group.domain : item.peerUser.domain,

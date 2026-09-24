@@ -35,7 +35,7 @@ function p2p(
 ): P2PConversationItem {
   return createP2PConversation(
     threadId,
-    { id: peerId, account: `u${peerId}`, name: `User ${peerId}` },
+    { account: `u${peerId}`, name: `User ${peerId}` },
     { threadFeedId: threadId, ...opts },
   );
 }

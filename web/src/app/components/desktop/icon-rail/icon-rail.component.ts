@@ -40,7 +40,6 @@ import { LanguageService } from '../../../services/language.service';
             [type]="UserAvatarType.SELF"
             [loading]="!sessionProfile()"
             [name]="$safeNavigationMigration(sessionProfile()?.name)"
-            [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
           />
         </button>
         <button

@@ -86,9 +86,7 @@ export class ThreadMessageSendController {
     void this.adapter
       .sendContact({
         threadId,
-        ...(contact.targetGroupId !== undefined
-          ? { targetGroupId: contact.targetGroupId }
-          : { targetUserId: contact.targetUserId }),
+        target: contact.target,
         clientMessageId: cid,
         optimistic: item,
         source,

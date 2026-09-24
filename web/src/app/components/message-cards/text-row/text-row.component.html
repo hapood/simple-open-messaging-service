@@ -14,7 +14,6 @@
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
         [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [profileEvidence]="data().profileEvidence"
@@ -79,7 +78,6 @@
                 class="msg-quote-visual msg-quote-avatar"
                 [type]="quoteAvatarType(quote.imageIdentity)"
                 [name]="quote.imageLabel"
-                [identityId]="quote.imageIdentity"
                 [account]="quote.imageIdentity"
                 [src]="quote.image"
               />
@@ -124,7 +122,6 @@
                 class="msg-quote-visual msg-quote-avatar"
                 [type]="quoteAvatarType(quote.imageIdentity)"
                 [name]="quote.imageLabel"
-                [identityId]="quote.imageIdentity"
                 [account]="quote.imageIdentity"
                 [src]="quote.image"
               />
@@ -208,7 +205,6 @@
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [name]="data().name"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [src]="data().snapshotAvatarUrl"

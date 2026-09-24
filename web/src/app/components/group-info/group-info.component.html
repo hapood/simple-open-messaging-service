@@ -26,7 +26,6 @@
           <app-user-avatar
             [type]="UserAvatarType.GROUP"
             [name]="group()?.name ?? ''"
-            [identityId]="$safeNavigationMigration(group()?.id)"
             [account]="$safeNavigationMigration(group()?.account)"
             [federatedDomain]="displayDomain()"
             [profileEvidence]="groupProfileEvidence()"
@@ -196,7 +195,6 @@
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
-                [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [profileEvidence]="memberProfileEvidence(m)"
@@ -338,7 +336,6 @@
           <app-user-avatar
             [type]="UserAvatarType.GROUP"
             [name]="nameEdit()"
-            [identityId]="$safeNavigationMigration(group()?.id)"
             [account]="$safeNavigationMigration(group()?.account)"
             [src]="avatarUrl()"
             [federatedDomain]="group()?.domain"
@@ -402,7 +399,6 @@
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
-                [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [profileEvidence]="memberProfileEvidence(m)"

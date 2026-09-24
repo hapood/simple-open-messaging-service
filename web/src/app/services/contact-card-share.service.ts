@@ -76,15 +76,19 @@ export class ContactCardShareService {
     result: ForwardDialogResult,
     chat: ConversationItem,
   ): Promise<void> {
+    const target = chat.type === 'GROUP' ? chat.group : chat.peerUser;
     const outcomes = await Promise.all(
       result.threadIds.map(async (threadId) => {
         try {
           const response = await firstValueFrom(
             this.messages.sendContactCard({
               threadId,
-              ...(chat.type === 'GROUP'
-                ? { targetGroupId: chat.group.id }
-                : { targetUserId: chat.peerUser.id }),
+              target: {
+                account: target.account,
+                domain: target.domain,
+                namespaceId: target.namespaceId,
+                profileRev: target.profileRev,
+              },
               clientMessageId: uuid(),
             }),
           );

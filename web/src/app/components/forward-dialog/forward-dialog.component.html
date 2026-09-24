@@ -119,7 +119,6 @@
                 <app-user-avatar
                   [type]="UserAvatarType.SELF"
                   [name]="selfProfile()?.name || selfProfile()?.account || ''"
-                  [identityId]="selfProfile()?.id"
                   [account]="selfProfile()?.account"
                   [federatedDomain]="selfProfile()?.domain"
                 />
@@ -187,7 +186,6 @@
                     <app-user-avatar
                       [type]="avatarType(item)"
                       [name]="displayName(item)"
-                      [identityId]="avatarIdentityId(item)"
                       [account]="avatarAccount(item)"
                       [federatedDomain]="avatarDomain(item)"
                       [profileEvidence]="avatarEvidence(item)"
@@ -230,7 +228,6 @@
                 <app-user-avatar
                   [type]="avatarType(item)"
                   [name]="displayName(item)"
-                  [identityId]="avatarIdentityId(item)"
                   [account]="avatarAccount(item)"
                   [federatedDomain]="avatarDomain(item)"
                   [profileEvidence]="avatarEvidence(item)"

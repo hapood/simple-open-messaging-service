@@ -28,7 +28,6 @@ import {
 } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarType,
-  conversationAvatarIdentityId,
   conversationAvatarAccount,
   conversationAvatarEvidence,
 } from '../user-avatar/conversation-avatar.util';
@@ -207,10 +206,6 @@ export class ThreadListComponent implements OnInit {
   // shared with the empty-thread hero). These delegate to it so the logic is not duplicated across surfaces.
   avatarType(t: ConversationItem): UserAvatarType {
     return conversationAvatarType(t);
-  }
-
-  avatarIdentityId(t: ConversationItem): number {
-    return conversationAvatarIdentityId(t);
   }
 
   avatarAccount(t: ConversationItem): string {

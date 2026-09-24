@@ -122,7 +122,6 @@ export class ContactCardRowComponent {
             : conversation?.type === 'P2P'
               ? {
                   friendThreadId: conversation.threadId,
-                  userId: conversation.peerUser.id,
                 }
               : {}),
         },

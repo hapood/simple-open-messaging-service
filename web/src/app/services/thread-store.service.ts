@@ -555,7 +555,8 @@ export class ThreadRepository {
         user.namespaceId !== found.peerUser.namespaceId
       )
         return list;
-      changed = { ...found, peerUser: user };
+      const { id: _localId, ...peerUser } = user;
+      changed = { ...found, peerUser };
       return list.map((t) =>
         t.threadId === threadId && t.type === 'P2P' ? changed! : t,
       );

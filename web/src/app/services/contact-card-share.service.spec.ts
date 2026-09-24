@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
 import { of } from 'rxjs';
 import { InlineTranslocoLoader } from '../i18n/transloco.loader';
-import { createP2PConversation } from './model';
+import { createGroupConversation, createP2PConversation } from './model';
 import { MsgService } from './message.service';
 import { PopupType, RouteService } from './route.service';
 import { ToastService } from './toast.service';
@@ -35,7 +35,6 @@ describe('ContactCardShareService', () => {
     });
     const service = TestBed.inject(ContactCardShareService);
     const chat = createP2PConversation(5, {
-      id: 42,
       account: 'alice',
       name: 'Alice',
     });
@@ -50,8 +49,40 @@ describe('ContactCardShareService', () => {
     complete?.({ threadIds: [7, 8] });
     await vi.waitFor(() => expect(sendContactCard).toHaveBeenCalledTimes(2));
     expect(sendContactCard).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 7, targetUserId: 42 }),
+      expect.objectContaining({
+        threadId: 7,
+        target: {
+          account: 'alice',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 0,
+        },
+      }),
     );
     await vi.waitFor(() => expect(info).toHaveBeenCalled());
+
+    const group = createGroupConversation(11, {
+      id: 11,
+      account: '!group12',
+      domain: 'bravo.test',
+      namespaceId: 4,
+      profileRev: 6,
+      name: 'Group',
+      ownerId: 1,
+    });
+    service.open(group);
+    complete?.({ threadIds: [9] });
+    await vi.waitFor(() => expect(sendContactCard).toHaveBeenCalledTimes(3));
+    expect(sendContactCard).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threadId: 9,
+        target: {
+          account: '!group12',
+          domain: 'bravo.test',
+          namespaceId: 4,
+          profileRev: 6,
+        },
+      }),
+    );
   });
 });

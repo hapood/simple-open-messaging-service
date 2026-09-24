@@ -20,14 +20,6 @@ import { IsDisplayName } from '../common/validators.js';
  * to number (database ids are numeric).
  */
 
-export class UserIdDto {
-  @ApiProperty({ example: 1, description: 'User id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId!: number;
-}
-
 /** Exact account lookup input. POST /user/resolve accepts local/our-domain lookup; the temporary
  * federated SSE endpoint requires both account and a foreign domain. The client splits a typed
  * `alice@bbb.com`; the API never carries an @-joined string. */

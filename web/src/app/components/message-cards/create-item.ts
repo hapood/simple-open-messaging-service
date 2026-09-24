@@ -242,7 +242,6 @@ export function createMsgCbElement(
       message.isSelf ? UserAvatarType.SELF : UserAvatarType.OTHER,
     );
     tailAvatarRef.setInput('name', message.name);
-    tailAvatarRef.setInput('identityId', message.avatarIdentityId);
     tailAvatarRef.setInput('account', message.avatarAccount);
     tailAvatarRef.setInput('federatedDomain', message.avatarDomain);
     tailAvatarRef.setInput('src', message.snapshotAvatarUrl);

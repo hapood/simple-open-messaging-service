@@ -7,7 +7,6 @@ describe('MessageThreadComponent initial failure presentation', () => {
     const error = new Error('history unavailable');
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const thread = createP2PConversation(42, {
-      id: 2,
       account: 'peer',
       name: 'Peer',
     });

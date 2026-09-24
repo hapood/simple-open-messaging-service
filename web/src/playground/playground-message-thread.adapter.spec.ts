@@ -41,7 +41,12 @@ describe('PlaygroundMessageThreadAdapter', () => {
       (
         await adapter.sendContact({
           threadId: 1,
-          targetUserId: 3,
+          target: {
+            account: 'alice',
+            domain: 'local',
+            namespaceId: 0,
+            profileRev: 1,
+          },
           clientMessageId: 'contact-1',
           optimistic,
           source,

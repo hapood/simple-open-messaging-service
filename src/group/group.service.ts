@@ -335,6 +335,28 @@ export class GroupService {
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
 
+  /** Resolve a group address visible to a member without trusting a client-supplied thread id. */
+  async findVisibleGroupByAddress(
+    userId: number,
+    address: { account: string; domain: string; namespaceId: number },
+  ) {
+    const [row] = await this.database.db
+      .select(groupStateFields)
+      .from(group)
+      .innerJoin(accountThreadState, eq(accountThreadState.threadId, group.id))
+      .where(
+        and(
+          eq(accountThreadState.accountId, userId),
+          isNull(accountThreadState.messageVisibleThroughSeq),
+          eq(groupStateFields.account, address.account),
+          eq(groupStateFields.domain, address.domain),
+          eq(groupStateFields.namespaceId, address.namespaceId),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   /** Load a group thread with its independent profile. */
   async findGroupByThreadId(threadId: number) {
     return this.database.db.transaction(async (tx) => {

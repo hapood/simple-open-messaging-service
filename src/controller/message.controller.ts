@@ -12,6 +12,8 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
+import { ContactCardProfileService } from '../message/contact-card/contact-card-profile.service.js';
+import { assertContactCardTargetVisible } from '../message/contact-card/contact-card-target.js';
 import { ContentType, GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import {
@@ -29,7 +31,6 @@ import {
   ThreadAliasResultDto,
   ThreadReadPositionResultDto,
 } from '../dto/response.dto.js';
-import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadFeedService } from '../message/thread-feed.service.js';
@@ -95,6 +96,7 @@ export class MessageController {
     private readonly messageReports: MessageReportService,
     private readonly users: UserService,
     private readonly groups: GroupService,
+    private readonly contactProfiles: ContactCardProfileService,
     private readonly readPositions: ThreadReadPositionService,
   ) {}
 
@@ -406,55 +408,25 @@ export class MessageController {
     } else {
       await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
     }
-    if (
-      (dto.targetUserId === undefined) ===
-      (dto.targetGroupId === undefined)
-    ) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'exactly one contact-card target is required',
-      );
-    }
-    const groupVisibility =
-      dto.targetGroupId === undefined
-        ? null
-        : await this.participantService.findActiveParticipantWithThread(
-            req.user.userId,
-            dto.targetGroupId,
-          );
-    const groupTarget =
-      dto.targetGroupId === undefined ||
-      groupVisibility?.thread.type !== 'GROUP' ||
-      groupVisibility.messageVisibleThroughSeq !== null
-        ? null
-        : await this.groups.findGroupByThreadId(dto.targetGroupId);
-    const target =
-      dto.targetUserId === undefined
-        ? groupTarget?.group
-          ? { ...groupTarget.group, bio: groupTarget.group.description }
-          : undefined
-        : await this.users.findUniqueUser({
-            id: dto.targetUserId,
-            availability: 'AVAILABLE',
-          });
-    if (!target) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'contact user not found',
-      );
-    }
-    const avatar = target.avatar
-      ? await this.forwardBundles.snapshotAvatarForMessage(target.avatar)
+    const reference = dto.target;
+    await assertContactCardTargetVisible(req.user.userId, reference, {
+      users: this.users,
+      groups: this.groups,
+      participants: this.participantService,
+    });
+    const profile = await this.contactProfiles.findProfile(reference);
+    const avatar = profile?.avatar
+      ? await this.forwardBundles.snapshotAvatarForMessage(profile.avatar)
       : null;
     await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
       JSON.stringify({
-        account: target.account,
-        domain: target.domain,
-        displayName: target.name,
-        bio: target.bio ?? '',
+        account: reference.account,
+        domain: reference.domain,
+        displayName: profile?.displayName || reference.account,
+        bio: profile?.bio ?? '',
         ...(avatar
           ? {
               avatar: `/uploads/msg-assets/${avatar.digest.slice(0, 2)}/${avatar.digest.slice(2, 4)}/${avatar.digest}`,
@@ -810,32 +782,6 @@ export class MessageController {
       through,
       take: dto.take ?? 20,
     });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('thread/by-user-id')
-  @ApiOperation({
-    summary: 'Look up the P2P thread by peer userId (friends only)',
-  })
-  async getThreadByUserId(
-    @Request() req: FastifyRequest,
-    @Body() dto: UserIdDto,
-  ) {
-    // A friend relationship == an active P2P thread shared by both. No thread → THREAD_NOT_FOUND,
-    // deliberately non-leaking (a caller cannot probe a pending invite or prior relationship), the
-    // same policy ThreadAccessGuard enforces.
-    const threadId = await this.participantService.findP2PThreadBetween(
-      req.user.userId,
-      dto.userId,
-    );
-    if (threadId === null) {
-      throw new BusinessException(
-        BusinessCode.THREAD_NOT_FOUND,
-        `no relationship with user [${dto.userId}]`,
-      );
-    }
-    return { threadId };
   }
 
   @UseGuards(ThrottleGuard)

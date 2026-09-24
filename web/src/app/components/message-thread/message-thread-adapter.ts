@@ -9,6 +9,7 @@ import type { CbSource } from '../../lib/chat-box/cb-source';
 import type { ChatItemData, MediaStatus } from '../message-cards/chat-item';
 import type {
   ConversationItem,
+  ContactCardTarget,
   Message,
   StandardResponse,
 } from '../../services/model';
@@ -56,8 +57,7 @@ export interface SendTextRequest {
 
 export interface SendContactRequest {
   threadId: number;
-  targetUserId?: number;
-  targetGroupId?: number;
+  target: ContactCardTarget;
   clientMessageId: string;
   optimistic: CbItem<ChatItemData>;
   source: MessageThreadSource;
@@ -231,9 +231,7 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     return firstValueFrom(
       this.messages.sendContactCard({
         threadId: request.threadId,
-        ...(request.targetGroupId !== undefined
-          ? { targetGroupId: request.targetGroupId }
-          : { targetUserId: request.targetUserId }),
+        target: request.target,
         clientMessageId: request.clientMessageId,
       }),
     );

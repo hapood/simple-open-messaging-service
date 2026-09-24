@@ -35,7 +35,7 @@ import {
   type LinkCardGenerationDialogResult,
   type LinkCardGenerationMode,
 } from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
-import type { User } from './model';
+import type { ContactCardTarget, User } from './model';
 import {
   ContactIdentityDialogComponent,
   type ContactIdentityDialogData,
@@ -200,13 +200,14 @@ export interface PopupResult {
   [PopupType.CONTACT_IDENTITY]: undefined;
   [PopupType.GROUP_ANNOUNCEMENT]: undefined;
   [PopupType.CONTACT_PICKER]:
-    | (({ targetUserId: number } | { targetGroupId: number }) & {
+    | {
+        target: ContactCardTarget;
         account: string;
         domain: string;
         name: string;
         avatar: string;
         bio: string;
-      })
+      }
     | undefined;
 }
 

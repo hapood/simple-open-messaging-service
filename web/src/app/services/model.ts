@@ -26,6 +26,7 @@ export const MEDIA_STATUS = {
 export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
+export type ContactCardTarget = ThreadStateSnapshot['profile'];
 export type Message = Omit<
   S['MessageResponseDto'],
   'contentType' | 'mediaStatus'
@@ -166,7 +167,7 @@ export type ConversationItem = ConversationItemBase &
   (
     | {
         type: 'P2P';
-        peerUser: S['UserResponseDto'];
+        peerUser: Omit<S['UserResponseDto'], 'id'>;
         /** Greatest peer-authored message coordinate selecting this thread's display profile. */
         peerProfileMessageSeq?: number;
         group?: never;
@@ -193,8 +194,7 @@ export type GroupConversationItem = Extract<
   { type: 'GROUP' }
 >;
 
-type P2PPeerInput = Pick<S['UserResponseDto'], 'id' | 'account' | 'name'> &
-  Partial<S['UserResponseDto']>;
+type P2PPeerInput = Pick<User, 'account' | 'name'> & Partial<Omit<User, 'id'>>;
 
 /** Construct the canonical local projection for a newly activated, empty P2P thread. */
 export function createP2PConversation(

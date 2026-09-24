@@ -18,7 +18,6 @@ import {
 import { RouteService } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import {
-  conversationAvatarIdentityId,
   conversationAvatarAccount,
   conversationAvatarDomain,
   conversationAvatarEvidence,
@@ -163,7 +162,6 @@ export class ForwardDialogComponent {
   });
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
-  readonly avatarIdentityId = conversationAvatarIdentityId;
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarDomain = conversationAvatarDomain;
   readonly avatarEvidence = conversationAvatarEvidence;

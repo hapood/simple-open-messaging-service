@@ -4,6 +4,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsDefined,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -73,6 +74,28 @@ export class SendMessageDto {
   retainLinkGeneration?: boolean;
 }
 
+export class ContactCardTargetDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  domain!: string;
+
+  @ApiProperty()
+  @IsInt()
+  @Min(0)
+  namespaceId!: number;
+
+  @ApiProperty()
+  @IsInt()
+  @Min(0)
+  profileRev!: number;
+}
+
 export class SendContactCardDto {
   @ApiProperty({ example: 12, description: 'Destination conversation id' })
   @Type(() => Number)
@@ -80,26 +103,11 @@ export class SendContactCardDto {
   @Min(1)
   threadId!: number;
 
-  @ApiPropertyOptional({
-    example: 34,
-    description: 'Visible user whose current identity snapshot is shared',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  targetUserId?: number;
-
-  @ApiPropertyOptional({
-    example: 56,
-    description:
-      'Visible group thread whose current identity snapshot is shared',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  targetGroupId?: number;
+  @ApiProperty({ type: ContactCardTargetDto })
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => ContactCardTargetDto)
+  target!: ContactCardTargetDto;
 
   @ApiProperty({ description: 'Client send-idempotency UUID' })
   @IsUUID()
@@ -294,7 +302,9 @@ export class QueryMediaStagesDto {
 
 /** Abandon one uncommitted local media send in a conversation. */
 export class AbandonMediaStageDto extends QueryMediaStagesDto {
-  @ApiProperty({ description: 'Client-generated UUID identifying the staged send.' })
+  @ApiProperty({
+    description: 'Client-generated UUID identifying the staged send.',
+  })
   @IsUUID()
   clientMessageId!: string;
 }

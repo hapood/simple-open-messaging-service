@@ -174,23 +174,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/thread/by-user-id": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Look up the P2P thread by peer userId (friends only) */
-        post: operations["MessageController_getThreadByUserId"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/thread/mark-read": {
         parameters: {
             query?: never;
@@ -3678,22 +3661,19 @@ export interface components {
             /** @description Keep a completed LINK generation available for another selected destination. The final send must omit this flag. */
             retainLinkGeneration?: boolean;
         };
+        ContactCardTargetDto: {
+            account: string;
+            domain: string;
+            namespaceId: number;
+            profileRev: number;
+        };
         SendContactCardDto: {
             /**
              * @description Destination conversation id
              * @example 12
              */
             threadId: number;
-            /**
-             * @description Visible user whose current identity snapshot is shared
-             * @example 34
-             */
-            targetUserId?: number;
-            /**
-             * @description Visible group thread whose current identity snapshot is shared
-             * @example 56
-             */
-            targetGroupId?: number;
+            target: components["schemas"]["ContactCardTargetDto"];
             /** @description Client send-idempotency UUID */
             clientMessageId: string;
         };
@@ -3842,13 +3822,6 @@ export interface components {
              * @example 20
              */
             take: number;
-        };
-        UserIdDto: {
-            /**
-             * @description User id
-             * @example 1
-             */
-            userId: number;
         };
         ThreadReadPositionResultDto: {
             /**
@@ -5403,27 +5376,6 @@ export interface operations {
                         data?: components["schemas"]["MessageQueryPageDto"];
                     };
                 };
-            };
-        };
-    };
-    MessageController_getThreadByUserId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserIdDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

@@ -13,7 +13,6 @@
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
         [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [profileEvidence]="data().profileEvidence"
@@ -36,7 +35,6 @@
           <app-user-avatar
             [type]="cardAvatarType()"
             [name]="contact.displayName"
-            [identityId]="contact.account"
             [account]="contact.account"
             [federatedDomain]="cardFederatedDomain()"
             [src]="contact.avatar"
@@ -73,7 +71,6 @@
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [name]="data().name"
-        [identityId]="data().avatarIdentityId"
         [account]="data().avatarAccount"
         [federatedDomain]="data().avatarDomain"
         [src]="data().snapshotAvatarUrl"

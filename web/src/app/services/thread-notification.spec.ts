@@ -15,7 +15,7 @@ describe('thread notification presentation', () => {
     return {
       item: createP2PConversation(
         7,
-        { id: 2, account: 'peer', name: 'Peer' },
+        { account: 'peer', name: 'Peer' },
         { unreadCount: 101, lastReadSeq: 3 },
       ),
       state: {

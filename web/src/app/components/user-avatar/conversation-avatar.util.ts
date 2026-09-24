@@ -14,10 +14,6 @@ export function conversationAvatarType(t: ConversationItem): UserAvatarType {
   return t.type === 'P2P' ? UserAvatarType.OTHER : UserAvatarType.GROUP;
 }
 
-export function conversationAvatarIdentityId(t: ConversationItem): number {
-  return t.type === 'P2P' ? t.peerUser.id : t.group.id;
-}
-
 export function conversationAvatarAccount(t: ConversationItem): string {
   return t.type === 'P2P' ? t.peerUser.account : t.group.account;
 }

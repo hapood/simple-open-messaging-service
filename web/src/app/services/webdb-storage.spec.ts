@@ -67,6 +67,26 @@ describe('shared background storage', () => {
     }
   });
 
+  it('drops obsolete peer numeric ids from cached conversation rows', async () => {
+    await storage.openForUser(userId);
+    const thread = createP2PConversation(7, { account: 'peer', name: 'Peer' });
+    await (
+      await storage.db()
+    ).put('threads', {
+      ...thread,
+      peerUser: { ...thread.peerUser, id: 99 },
+    } as typeof thread);
+    const restored = (await storage.getThreads())[0];
+    expect(restored.type).toBe('P2P');
+    if (restored.type === 'P2P')
+      expect(restored.peerUser).not.toHaveProperty('id');
+    await storage.putThread(restored);
+    const persisted = await (await storage.db()).get('threads', 7);
+    expect(persisted?.type).toBe('P2P');
+    if (persisted?.type === 'P2P')
+      expect(persisted.peerUser).not.toHaveProperty('id');
+  });
+
   it('restores aliases from feed state after structural writes, stale replay and reopening', async () => {
     await storage.openForUser(userId);
     const state = {
@@ -88,7 +108,7 @@ describe('shared background storage', () => {
     await storage.putThread(
       createP2PConversation(
         7,
-        { id: 2, account: 'peer', name: 'Profile' },
+        { account: 'peer', name: 'Profile' },
         { alias: 'Stale structure' },
       ),
     );

@@ -31,7 +31,6 @@ import { ConversationListService } from '../../services/conversation-list.servic
             ><app-user-avatar
               [type]="UserAvatarType.OTHER"
               [name]="state().peerName || '?'"
-              [identityId]="state().peerUserId"
               [account]="peer()?.account"
               [federatedDomain]="peer()?.domain !== 'local' ? peer()?.domain : null"
               [src]="state().peerAvatar"
@@ -163,10 +162,10 @@ export class CallBannerComponent {
   private readonly transloco = inject(TranslocoService);
   readonly state = computed(() => this.events.callState());
   readonly peer = computed(() => {
-    const id = this.state().peerUserId;
+    const threadId = this.state().threadId;
     const thread = this.conversations
       .items()
-      .find((item) => item.type === 'P2P' && item.peerUser.id === id);
+      .find((item) => item.type === 'P2P' && item.threadId === threadId);
     return thread?.type === 'P2P' ? thread.peerUser : undefined;
   });
   readonly visible = computed(
