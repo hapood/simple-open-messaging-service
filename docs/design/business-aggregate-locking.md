@@ -172,7 +172,7 @@ A committed member-authored `REQUESTED` selects the immutable `profileRev` and
 may offer that exact revision to the global profile coordinator only after the
 request transaction commits. The coordinator performs no work inside the
 relationship transaction or group lock. A later activation transaction folds
-the current intents and appends the member `UPSERT` with the revision already
+the current intents and appends the member `MEMBER_UPSERT` with the revision already
 selected by the effective request; it never waits for profile retrieval or
 revalidates profile availability.
 

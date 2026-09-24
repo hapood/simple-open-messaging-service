@@ -57,7 +57,7 @@ boundary.
 
 The visibility floor applies differently to the two modes. A delta request
 MUST have `after` at or above the floor. A full drain's fixed `through` MUST be
-at or above the floor, but the current `UPSERT` selected for a member MAY have
+at or above the floor, but the current `MEMBER_UPSERT` selected for a member MAY have
 an older `feedId`; exposing that current item is necessary to construct the
 roster and does not expose an intervening historical mutation. A full request
 with an upper bound below the floor is unavailable. These rules prevent a new
@@ -83,12 +83,12 @@ interface GroupMetaMemberItemBase {
 }
 
 interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
-  operation: 'UPSERT';
+  operation: 'MEMBER_UPSERT';
   body: GroupMetaMemberBody;
 }
 
 interface GroupMetaDepartItem extends GroupMetaMemberItemBase {
-  operation: 'DEPART';
+  operation: 'MEMBER_DEPART';
 }
 
 interface GroupMetaProfileItem {
@@ -137,7 +137,7 @@ returns the origin's current member reference, which may have changed since
 this feed item was read. A member profile update by
 itself MUST NOT republish a member item or advance this feed.
 
-The `UPSERT` that first makes a membership current MUST carry the exact
+The `MEMBER_UPSERT` that first makes a membership current MUST carry the exact
 `profileRev` selected by the effective member-authored join intent. The origin
 MUST NOT replace it with the member's default revision observed later while
 asynchronous work is pending. Later profile changes and messages do not mutate
@@ -176,7 +176,7 @@ asset reference. No profile lookup or additional resource fetch is required.
 The origin MUST establish an initial `text: null` projection before serving a
 new group's feed. Publishing, editing, and clearing replace this same stable
 key with a newly allocated `feedId` from the existing group allocator. Clearing
-MUST publish `text: null`; it MUST NOT delete the projection or emit `DEPART`.
+MUST publish `text: null`; it MUST NOT delete the projection or emit `MEMBER_DEPART`.
 The latest projection, including a clear, MUST be retained for full recovery.
 An existing group adopting this contract MUST establish its current announcement
 (or `null`) before serving the extended feed.
@@ -228,10 +228,10 @@ relationship, not by Group Meta rows. Non-member-derived settings
 other than the explicitly specified group profile and announcement projections
 are local policy and are not federated facts.
 
-Only `UPSERT` carries role and profile reference state. `DEPART` is a distinct
+Only `MEMBER_UPSERT` carries role and profile reference state. `MEMBER_DEPART` is a distinct
 closed item with only `feedId`, member Address, and `operation`; `body`, `role`,
 and `profileRev` MUST be absent. A mirror deletes its current member projection
-when it commits `DEPART`. A later `UPSERT` for the same stable key creates a new
+when it commits `MEMBER_DEPART`. A later `MEMBER_UPSERT` for the same stable key creates a new
 current member projection with the newly selected role and exact profile
 reference. A role mutation MAY preserve the preceding `profileRev`; it does not
 need to discover the member's default revision.
@@ -243,9 +243,9 @@ used as a profile revision or message coordinate.
 ## 3. Full mode
 
 Full mode scans Group Meta with a fixed upper coordinate `through`. It returns
-at most one `UPSERT` per member at or below that boundary.
-It MUST NOT return `DEPART` items or members whose current operation is
-`DEPART`. It returns the current `GROUP_PROFILE` item when its coordinate is
+at most one `MEMBER_UPSERT` per member at or below that boundary.
+It MUST NOT return `MEMBER_DEPART` items or members whose current operation is
+`MEMBER_DEPART`. It returns the current `GROUP_PROFILE` item when its coordinate is
 at or below `through`. It also returns at most one current
 `GROUP_ANNOUNCEMENT` item, including `text: null`, when its coordinate is at or
 below `through`; it MUST NOT substitute an older announcement if the current
@@ -274,12 +274,12 @@ Meta has no historical-message-author obligation.
 
 ## 4. Delta mode
 
-Delta mode returns retained `UPSERT`, `DEPART`, `GROUP_PROFILE`, and
+Delta mode returns retained `MEMBER_UPSERT`, `MEMBER_DEPART`, `GROUP_PROFILE`, and
 `GROUP_ANNOUNCEMENT` changes in feed order. A consumer applies member items by
 stable member key and group profile and announcement items by their respective
 group-wide stable keys, and adopts its page cursor atomically. Announcement
 bodies replace the previous value completely, including an explicit clear.
-An absent announcement in a delta page leaves its committed value unchanged. `DEPART` deletes the mirror's current member projection.
+An absent announcement in a delta page leaves its committed value unchanged. `MEMBER_DEPART` deletes the mirror's current member projection.
 Items at or below the committed feed cursor are already applied and MUST NOT be
 replayed.
 

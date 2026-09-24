@@ -325,7 +325,7 @@ export class ProfileResolutionCoordinatorService {
                     AND viewer_pair."endpointBAccount" = viewer_identity.account
                     AND viewer_pair."endpointBDomain" = viewer_identity.domain))
           )
-          AND latest.operation = 'UPSERT'
+          AND latest.operation = 'MEMBER_UPSERT'
           AND jsonb_typeof(latest.body -> 'profileRev') = 'number'
         LIMIT 1
       `);
@@ -443,7 +443,7 @@ export class ProfileResolutionCoordinatorService {
                   AND intent."expiresAt" > CURRENT_TIMESTAMP))
               AND local_group.domain = 'local'
               AND local_group."namespaceId" = 0
-              AND manager.operation = 'UPSERT'
+              AND manager.operation = 'MEMBER_UPSERT'
               AND manager.body ->> 'role' IN ('OWNER', 'ADMIN')
           )
           OR EXISTS (
@@ -453,7 +453,7 @@ export class ProfileResolutionCoordinatorService {
             WHERE member_thread.type = 'GROUP'
               AND member_fact."memberAccount" = ${account}
               AND member_fact."memberDomain" = ${storageDomain}
-              AND member_fact.operation = 'UPSERT'
+              AND member_fact.operation = 'MEMBER_UPSERT'
               AND (member_fact.body ->> 'profileRev')::integer = ${selector.rev}
               AND group_meta_member_namespace(member_thread.id,
                 member_fact."memberAccount", member_fact."memberDomain") = ${namespaceId}

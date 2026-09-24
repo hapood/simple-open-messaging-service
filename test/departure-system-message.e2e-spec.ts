@@ -210,7 +210,7 @@ describe('departure system message paths', () => {
         feedId: index + 2,
         memberAccount: row.account,
         memberDomain: row.domain,
-        operation: 'UPSERT' as const,
+        operation: 'MEMBER_UPSERT' as const,
         body: { role: index === 0 ? 'OWNER' : 'MEMBER', profileRev: 1 },
       })),
     );
@@ -525,7 +525,7 @@ describe('departure system message paths', () => {
           },
           item: {
             feedId: 6,
-            operation: 'DEPART',
+            operation: 'MEMBER_DEPART',
             account: h.member.account,
             domain: 'local',
           },

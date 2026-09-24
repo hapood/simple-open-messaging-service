@@ -205,12 +205,12 @@ and failure semantics.
 A locally hosted group has one Group Meta allocator and append log. Canonical
 member and group-profile rows are keyed by `groupId`, never by a target peer.
 The latest operation for a stable member is the authoritative local roster:
-`UPSERT` is current and `DEPART` is absent. `ThreadAudience` supplies current
+`MEMBER_UPSERT` is current and `MEMBER_DEPART` is absent. `ThreadAudience` supplies current
 peer authorization and its delta visibility floor; it does not own a roster
 copy.
 
-`GroupMetaMemberFeed` stores `UPSERT { role, profileRev }` and internally stores
-an empty body for `DEPART`; federation serialization omits the body entirely.
+`GroupMetaMemberFeed` stores `MEMBER_UPSERT { role, profileRev }` and internally stores
+an empty body for `MEMBER_DEPART`; federation serialization omits the body entirely.
 `GroupMetaProfileFeed` is the compacted group-profile reference in the same
 group coordinate space.
 
@@ -364,7 +364,7 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
    independent thread-feed cursor. `HELLO` advertises both heads; subsequent
    `STATE_FEED_UPDATED` and `THREAD_FEED_UPDATED` wakes drain their respective feeds.
 6. **Lifecycle is model-specific**: the origin appends bodyless Group Meta
-   `DEPART`; mirrors and clients physically delete current member projections.
+   `MEMBER_DEPART`; mirrors and clients physically delete current member projections.
    Historical messages retain their own author Address and profile reference.
    Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: internal BigInt identifiers are uniformly serialized to strings by the global `SerializeInterceptor`. Client thread-feed IDs and message/tombstone sequences are int32 coordinates.

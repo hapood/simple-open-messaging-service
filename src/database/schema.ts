@@ -83,8 +83,8 @@ export const peerStateEventType = pgEnum('PeerStateEventType', [
   'THREAD_CONTENT_HEAD',
 ]);
 export const groupMetaMemberOperation = pgEnum('GroupMetaMemberOperation', [
-  'UPSERT',
-  'DEPART',
+  'MEMBER_UPSERT',
+  'MEMBER_DEPART',
   'GROUP_PROFILE',
 ]);
 export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
@@ -1913,8 +1913,8 @@ export const groupMetaMemberFeed = pgTable(
     check(
       'GroupMetaMemberFeed_body_check',
       sql`jsonb_typeof(${table.body}) = 'object'
-        AND ((${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb)
-          OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb)
+        AND ((${table.operation} = 'MEMBER_UPSERT' AND ${table.body} <> '{}'::jsonb)
+          OR (${table.operation} = 'MEMBER_DEPART' AND ${table.body} = '{}'::jsonb)
           OR (${table.operation} = 'GROUP_PROFILE'
             AND ${table.body} <> '{}'::jsonb))`,
     ),

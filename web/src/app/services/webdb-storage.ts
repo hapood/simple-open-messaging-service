@@ -2008,7 +2008,7 @@ export class WebdbStorage {
               item.domain,
               item.namespaceId,
             ]);
-          if (item.operation === 'DEPART') {
+          if (item.operation === 'MEMBER_DEPART') {
             if (previous) await members.put({ ...previous, left: true });
             continue;
           }

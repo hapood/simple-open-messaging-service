@@ -89,9 +89,9 @@ function validatePage(
       (entry) =>
         (entry.operation !== 'GROUP_PROFILE' &&
           entry.operation !== 'GROUP_ANNOUNCEMENT' &&
-          entry.operation !== 'UPSERT' &&
-          entry.operation !== 'DEPART') ||
-        ((entry.operation === 'UPSERT' || entry.operation === 'DEPART') &&
+          entry.operation !== 'MEMBER_UPSERT' &&
+          entry.operation !== 'MEMBER_DEPART') ||
+        ((entry.operation === 'MEMBER_UPSERT' || entry.operation === 'MEMBER_DEPART') &&
           (!entry.account ||
             !entry.domain ||
             !Number.isSafeInteger(entry.namespaceId) ||

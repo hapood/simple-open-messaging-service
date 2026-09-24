@@ -69,7 +69,7 @@ describe('current Group Meta roster', () => {
         feedId: 1,
         memberAccount: `owner-${suffix}`,
         memberDomain: 'local',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },
       {
@@ -77,7 +77,7 @@ describe('current Group Meta roster', () => {
         feedId: 3,
         memberAccount: `departed-${suffix}`,
         memberDomain: 'local',
-        operation: 'DEPART',
+        operation: 'MEMBER_DEPART',
         body: {},
       },
     ]);

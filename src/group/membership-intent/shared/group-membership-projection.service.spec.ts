@@ -101,7 +101,7 @@ describe('GroupMembershipProjectionService', () => {
       {
         account: 'alice',
         domain: 'local',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: 'MEMBER', profileRev: 3 },
       },
     );
@@ -134,7 +134,7 @@ describe('GroupMembershipProjectionService', () => {
       target.tx,
       5,
       expect.objectContaining({
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: 'OWNER', profileRev: 3 },
       }),
     );
@@ -201,7 +201,7 @@ describe('GroupMembershipProjectionService', () => {
     expect(member.appendMemberTransitionInTx).toHaveBeenCalledWith(
       member.tx,
       5,
-      expect.objectContaining({ operation: 'DEPART', body: {} }),
+      expect.objectContaining({ operation: 'MEMBER_DEPART', body: {} }),
     );
     expect(member.insert).not.toHaveBeenCalled();
 

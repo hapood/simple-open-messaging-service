@@ -127,7 +127,7 @@ The selector samples a three-user/three-group window, weights active groups more
 a stateful group when possible. Group candidates are weighted by attraction, pending management work,
 and whether the user previously left that active group. Active owners and administrators favor
 accepting applications. Active members rarely leave; a pending applicant usually waits instead of
-immediately revoking the request. A retained roster UPSERT alone never grants membership: the user's
+immediately revoking the request. A retained roster MEMBER_UPSERT alone never grants membership: the user's
 relationship must also be active, with only the local owner's missing-pair fallback allowed.
 
 Group messages include text, quotes, direct forwards, history forwards, files, and galleries.

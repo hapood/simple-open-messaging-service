@@ -62,7 +62,7 @@ export class UserManageService {
               AND member_fact."memberDomain" = 'local'
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
-          ) latest ON latest.operation = 'UPSERT'
+          ) latest ON latest.operation = 'MEMBER_UPSERT'
           JOIN "AccountThreadState" account_state
             ON account_state."accountId" = ${id}
            AND account_state."threadId" = thread.id

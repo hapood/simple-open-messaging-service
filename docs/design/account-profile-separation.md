@@ -85,7 +85,7 @@ local version. Profile resolution reads the stored subject namespace directly;
 it does not independently infer a namespace from the subject domain. Federation
 serialization expands the local domain sentinel back to the public domain.
 
-UPSERT, DEPART, message-author serialization, profile-cache keys, and self/member
+MEMBER_UPSERT, MEMBER_DEPART, message-author serialization, profile-cache keys, and self/member
 matching must use the same mapping. IndexedDB and native SQLite must agree. The
 source group namespace remains attached to the enclosing group synchronization
 coordinate even when a roster subject maps to namespace `0`.
@@ -109,7 +109,7 @@ Verification must cover:
 - local user and group creation, profile update atomicity, and exact old-version reads;
 - unresolved P2P endpoints and roster members without any profile/account row;
 - separate cached versions for the same foreign subject through different publishers;
-- local subjects in mirror rosters and messages, including UPSERT/DEPART identity matching;
+- local subjects in mirror rosters and messages, including MEMBER_UPSERT/MEMBER_DEPART identity matching;
 - namespace retirement without retargeting retained messages or profiles;
 - friendship activation/removal, group leave/kick/dissolution, rollback, and replay;
 - system-message recipients when multiple local accounts share one mirrored group;

@@ -278,13 +278,13 @@ function validateItem(
     !isValidSomfpDomain(item.domain)
   )
     throw new Error('invalid group-meta member address');
-  if (item.operation === 'DEPART') {
+  if (item.operation === 'MEMBER_DEPART') {
     requireKeys(item, ['feedId', 'account', 'domain', 'operation']);
     if (mode === 'full')
-      throw new Error('full group-meta cannot contain DEPART');
+      throw new Error('full group-meta cannot contain MEMBER_DEPART');
     return {
       feedId,
-      operation: 'DEPART',
+      operation: 'MEMBER_DEPART',
       account: item.account,
       domain: item.domain,
     };
@@ -298,7 +298,7 @@ function validateItem(
     throw new Error('invalid group-meta member body');
   return {
     feedId,
-    operation: 'UPSERT',
+    operation: 'MEMBER_UPSERT',
     account: item.account,
     domain: item.domain,
     role: item.body.role as GroupRole,

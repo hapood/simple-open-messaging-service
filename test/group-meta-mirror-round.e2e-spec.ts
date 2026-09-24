@@ -149,23 +149,23 @@ describe('mirror Group Meta rounds', () => {
     await module.close();
   });
 
-  const upsert = (
+  const memberUpsert = (
     feedId: number,
     memberAccount: string,
     role = 'MEMBER',
   ): MirrorMetaReplicatedItem => ({
     feedId,
-    operation: 'UPSERT',
+    operation: 'MEMBER_UPSERT',
     account: memberAccount,
     domain: originDomain,
     role: role as 'MEMBER',
     profileRev: 1,
   });
 
-  const depart = (feedId: number, memberAccount: string) =>
+  const memberDepart = (feedId: number, memberAccount: string) =>
     ({
       feedId,
-      operation: 'DEPART',
+      operation: 'MEMBER_DEPART',
       account: memberAccount,
       domain: originDomain,
     }) as MirrorMetaReplicatedItem;
@@ -230,13 +230,13 @@ describe('mirror Group Meta rounds', () => {
       feedId: 1,
       memberAccount: 'stale-member',
       memberDomain: originDomain,
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
     const items: MirrorMetaReplicatedItem[] = [
-      upsert(2, 'peer-one', 'OWNER'),
-      upsert(3, 'peer-two'),
-      upsert(5, 'peer-three'),
+      memberUpsert(2, 'peer-one', 'OWNER'),
+      memberUpsert(3, 'peer-two'),
+      memberUpsert(5, 'peer-three'),
       { feedId: 9, operation: 'GROUP_PROFILE', profileRev: 4 },
     ];
     await expect(
@@ -293,7 +293,7 @@ describe('mirror Group Meta rounds', () => {
     expect(
       rows.find((row) => row.memberAccount === 'stale-member'),
     ).toBeUndefined();
-    expect(rows.filter((row) => row.operation === 'UPSERT')).toHaveLength(3);
+    expect(rows.filter((row) => row.operation === 'MEMBER_UPSERT')).toHaveLength(3);
     // A mirror must expose the same active roster cardinality as the
     // authority after the complete Group Meta drain, including the remote
     // owner. This is the server-side contract consumed by the client mirror.
@@ -365,7 +365,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: upsert(2, 'peer-one'),
+        item: memberUpsert(2, 'peer-one'),
         through: 8,
         reachedBoundary: false,
         messages,
@@ -392,11 +392,11 @@ describe('mirror Group Meta rounds', () => {
       },
     });
 
-    // A rejoin boundary (DEPART after UPSERT) mints the leave message.
+    // A rejoin boundary (MEMBER_DEPART after MEMBER_UPSERT) mints the leave message.
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: depart(4, 'peer-one'),
+        item: memberDepart(4, 'peer-one'),
         through: 8,
         reachedBoundary: false,
         messages,
@@ -450,7 +450,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: upsert(8, 'peer-two', 'OWNER'),
+        item: memberUpsert(8, 'peer-two', 'OWNER'),
         through: 8,
         reachedBoundary: true,
         messages,
@@ -473,11 +473,11 @@ describe('mirror Group Meta rounds', () => {
       .where(eq(groupMeta.threadId, threadId));
 
     // Live delta observation: the member joins and later departs, leaving a
-    // DEPART tombstone in the replica and both boundary messages.
+    // MEMBER_DEPART tombstone in the replica and both boundary messages.
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: upsert(2, 'peer-one'),
+        item: memberUpsert(2, 'peer-one'),
         through: 8,
         reachedBoundary: false,
         messages,
@@ -486,7 +486,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: depart(4, 'peer-one'),
+        item: memberDepart(4, 'peer-one'),
         through: 8,
         reachedBoundary: false,
         messages,
@@ -501,7 +501,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyFullMirrorMetaBatchInTx(tx, {
         group,
-        items: [upsert(5, 'peer-one')],
+        items: [memberUpsert(5, 'peer-one')],
         through: 8,
         scannedThrough: 8,
         reachedBoundary: true,
@@ -518,7 +518,7 @@ describe('mirror Group Meta rounds', () => {
     expect(await roster()).toEqual([
       expect.objectContaining({
         memberAccount: 'peer-one',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
       }),
     ]);
   });
@@ -555,7 +555,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: upsert(1, 'peer-one'),
+        item: memberUpsert(1, 'peer-one'),
         through: 2,
         reachedBoundary: false,
         messages,
@@ -564,7 +564,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: depart(2, 'peer-one'),
+        item: memberDepart(2, 'peer-one'),
         through: 2,
         reachedBoundary: true,
         messages,
@@ -730,7 +730,7 @@ describe('mirror Group Meta rounds', () => {
           tx,
           threadId,
           group,
-          upsert(3, 'peer-one'),
+          memberUpsert(3, 'peer-one'),
           'delta',
         ),
       ),
@@ -747,7 +747,7 @@ describe('mirror Group Meta rounds', () => {
       .where(eq(groupMeta.threadId, threadId));
     const input = {
       group,
-      item: upsert(1, 'peer-replay'),
+      item: memberUpsert(1, 'peer-replay'),
       through: 1,
       reachedBoundary: false,
       messages,
@@ -794,7 +794,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 1,
-          operation: 'UPSERT',
+          operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           domain: 'local',
           role: 'MEMBER',
@@ -815,8 +815,8 @@ describe('mirror Group Meta rounds', () => {
       member: { account: localMemberAccount, domain: 'local' },
     });
     for (const [feedId, operation] of [
-      [2, 'UPSERT'],
-      [3, 'DEPART'],
+      [2, 'MEMBER_UPSERT'],
+      [3, 'MEMBER_DEPART'],
     ] as const) {
       await database.db.transaction((tx) =>
         applyDeltaMirrorMetaItemInTx(tx, {
@@ -826,7 +826,7 @@ describe('mirror Group Meta rounds', () => {
             operation,
             account: localMemberAccount,
             domain: 'local',
-            ...(operation === 'UPSERT'
+            ...(operation === 'MEMBER_UPSERT'
               ? { role: 'MEMBER' as const, profileRev: 1 }
               : {}),
           },
@@ -853,14 +853,14 @@ describe('mirror Group Meta rounds', () => {
       .from(groupMetaMemberFeed)
       .where(eq(groupMetaMemberFeed.threadId, threadId));
     expect(retainedFacts).toEqual([
-      expect.objectContaining({ operation: 'DEPART' }),
+      expect.objectContaining({ operation: 'MEMBER_DEPART' }),
     ]);
     await database.db
       .update(relationshipPair)
       .set({ active: false, established: true })
       .where(eq(relationshipPair.threadId, threadId));
-    // A stale DEPART while the pair remained active was ignored. A later
-    // activated pair permits the next UPSERT to announce re-entry.
+    // A stale MEMBER_DEPART while the pair remained active was ignored. A later
+    // activated pair permits the next MEMBER_UPSERT to announce re-entry.
     await database.db
       .update(relationshipPair)
       .set({ active: true })
@@ -870,7 +870,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 4,
-          operation: 'UPSERT',
+          operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           domain: 'local',
           role: 'MEMBER',
@@ -896,7 +896,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 5,
-          operation: 'DEPART',
+          operation: 'MEMBER_DEPART',
           account: localMemberAccount,
           domain: 'local',
         },
@@ -909,14 +909,14 @@ describe('mirror Group Meta rounds', () => {
       .select({ content: message.content })
       .from(message)
       .where(eq(message.threadId, threadId));
-    // The local REVOKED intent owns GROUP_LEFT; a later Meta DEPART only
+    // The local REVOKED intent owns GROUP_LEFT; a later Meta MEMBER_DEPART only
     // removes its replicated fact and must not announce it twice.
     expect(
       notices.map((row) => JSON.parse(row.content as string).type),
     ).toEqual(['GROUP_JOINED', 'GROUP_JOINED']);
   });
 
-  it('retains a DEPART tombstone so later delta pages carry the departure', async () => {
+  it('retains a MEMBER_DEPART tombstone so later delta pages carry the departure', async () => {
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 41 }),
     );
@@ -927,7 +927,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: upsert(40, 'peer-tombstone'),
+        item: memberUpsert(40, 'peer-tombstone'),
         through: 40,
         reachedBoundary: false,
         messages,
@@ -936,7 +936,7 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: depart(41, 'peer-tombstone'),
+        item: memberDepart(41, 'peer-tombstone'),
         through: 41,
         reachedBoundary: false,
         messages,
@@ -954,7 +954,7 @@ describe('mirror Group Meta rounds', () => {
           eq(groupMetaMemberFeed.memberAccount, 'peer-tombstone'),
         ),
       );
-    expect(facts).toEqual([{ feedId: 41, operation: 'DEPART' }]);
+    expect(facts).toEqual([{ feedId: 41, operation: 'MEMBER_DEPART' }]);
     await database.db.transaction((tx) =>
       finalizeDeltaMirrorMetaRoundInTx(tx, {
         group,
@@ -979,7 +979,7 @@ describe('mirror Group Meta rounds', () => {
     expect(page.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          operation: 'DEPART',
+          operation: 'MEMBER_DEPART',
           account: 'peer-tombstone',
         }),
       ]),

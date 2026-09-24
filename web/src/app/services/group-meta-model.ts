@@ -7,7 +7,7 @@ export interface ClientGroupMetaFeedPage {
         account: string;
         domain: string;
         namespaceId: number;
-        operation: 'UPSERT';
+        operation: 'MEMBER_UPSERT';
         body: {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
@@ -18,7 +18,7 @@ export interface ClientGroupMetaFeedPage {
         account: string;
         domain: string;
         namespaceId: number;
-        operation: 'DEPART';
+        operation: 'MEMBER_DEPART';
         body?: Record<string, never>;
       }
     | {

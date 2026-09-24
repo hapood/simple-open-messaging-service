@@ -148,7 +148,7 @@ describe('group membership re-entry and ownership transfer', () => {
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, member.id)).toBeUndefined();
     const departed = await latestMemberFact(groupId, member.id);
-    expect(departed).toMatchObject({ operation: 'DEPART', body: {} });
+    expect(departed).toMatchObject({ operation: 'MEMBER_DEPART', body: {} });
     expect(
       await database.db.query.accountThreadState.findFirst({
         where: and(
@@ -168,7 +168,7 @@ describe('group membership re-entry and ownership transfer', () => {
     expect(participant?.messageVisibleThroughSeq).toBeNull();
     expect(participant!.lastReadSeq).toBeGreaterThanOrEqual(oldSeq);
     expect(participant!.previewSeqs).toEqual([]);
-    expect(rejoined).toMatchObject({ operation: 'UPSERT' });
+    expect(rejoined).toMatchObject({ operation: 'MEMBER_UPSERT' });
     expect(rejoined!.feedId).toBeGreaterThan(departed!.feedId);
 
     const sent = await request(app.getHttpServer())
@@ -234,7 +234,7 @@ describe('group membership re-entry and ownership transfer', () => {
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, oldOwner.id)).toBeUndefined();
     expect(await latestMemberFact(groupId, oldOwner.id)).toMatchObject({
-      operation: 'DEPART',
+      operation: 'MEMBER_DEPART',
       body: {},
     });
     expect(

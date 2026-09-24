@@ -51,7 +51,7 @@ async function readNodeGroupRows(client) {
           fact."body" ->> 'role' AS "role",
           (fact."body" ->> 'profileRev')::integer AS "profileRev"
         FROM "GroupMetaMemberFeed" fact
-        WHERE fact."operation" = 'UPSERT'
+        WHERE fact."operation" = 'MEMBER_UPSERT'
       `);
   const relationships = await client.query(`
         SELECT pair."id"::text, pair."active", pair."threadId",
@@ -241,8 +241,8 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
   const roster = group?.roster ?? [];
   const me = roster.find(({ address }) => address === user.address);
   const relationship = group?.relationships.get(user.address);
-  // A mirror can retain its last Group Meta UPSERT after the member's audience
-  // is revoked, because that peer can no longer pull the subsequent DEPART.
+  // A mirror can retain its last Group Meta MEMBER_UPSERT after the member's audience
+  // is revoked, because that peer can no longer pull the subsequent MEMBER_DEPART.
   // Runtime authorization is the materialized pair fact, so never offer member
   // operations from the historical roster row alone. The OWNER fallback keeps
   // the observation usable for a locally-created group before its pair is read.

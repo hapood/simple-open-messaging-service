@@ -26,8 +26,8 @@ beforeAll(async () => {
              ('remote', 'bravo.test', 92, 1, 'Relayed profile', '');
     INSERT INTO "GroupMeta" ("threadId", "metaEndId", "profileRev") VALUES (301, 1, 1), (302, 1, 2);
     INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
-      VALUES (301, 1, 'owner', 'local', 'UPSERT', '{"role":"OWNER","profileRev":1}'),
-             (302, 1, 'remote', 'bravo.test', 'UPSERT', '{"role":"MEMBER","profileRev":1}');
+      VALUES (301, 1, 'owner', 'local', 'MEMBER_UPSERT', '{"role":"OWNER","profileRev":1}'),
+             (302, 1, 'remote', 'bravo.test', 'MEMBER_UPSERT', '{"role":"MEMBER","profileRev":1}');
     INSERT INTO "RelationshipPair" (id, kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
       "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", "threadId", active)
       VALUES (401, 'P2P', 'USER', 'owner', 'local', 0, 'USER', 'remote', 'bravo.test', 91, 303, true);

@@ -24,7 +24,7 @@ export interface MirrorGroupAddress {
 export type MirrorMetaReplicatedItem =
   | {
       feedId: number;
-      operation: 'UPSERT';
+      operation: 'MEMBER_UPSERT';
       account: string;
       domain: string;
       role: GroupRole;
@@ -32,7 +32,7 @@ export type MirrorMetaReplicatedItem =
     }
   | {
       feedId: number;
-      operation: 'DEPART';
+      operation: 'MEMBER_DEPART';
       account: string;
       domain: string;
     }
@@ -114,10 +114,10 @@ export async function requireMirrorMetaInTx(
 }
 
 /** Full and delta pages upsert each stable key and its coordinate. A mirror
- * DEPART retains a tombstone at the item's coordinate: the feed is a shared
+ * MEMBER_DEPART retains a tombstone at the item's coordinate: the feed is a shared
  * coordinate space, and deleting the row would leave a hole that delta
  * readers skip past without ever learning the departure. Current-roster and
- * full-page readers filter to UPSERT rows, so the tombstone stays invisible
+ * full-page readers filter to MEMBER_UPSERT rows, so the tombstone stays invisible
  * to them. */
 export async function applyMirrorMetaFactInTx(
   tx: DatabaseTransaction,
@@ -126,8 +126,8 @@ export async function applyMirrorMetaFactInTx(
   item: MirrorMetaReplicatedItem,
   mode: 'full' | 'delta',
 ): Promise<void> {
-  if (mode === 'full' && item.operation === 'DEPART')
-    throw new Error('a full group-meta snapshot cannot contain DEPART');
+  if (mode === 'full' && item.operation === 'MEMBER_DEPART')
+    throw new Error('a full group-meta snapshot cannot contain MEMBER_DEPART');
   if (item.operation === 'GROUP_ANNOUNCEMENT') {
     await tx
       .update(groupMeta)
@@ -139,7 +139,7 @@ export async function applyMirrorMetaFactInTx(
       .where(eq(groupMeta.threadId, threadId));
     return;
   }
-  if (item.operation === 'DEPART') {
+  if (item.operation === 'MEMBER_DEPART') {
     const subject = toClientIdentity(
       {
         account: item.account,
@@ -154,7 +154,7 @@ export async function applyMirrorMetaFactInTx(
         feedId: item.feedId,
         memberAccount: subject.account,
         memberDomain: subject.domain,
-        operation: 'DEPART',
+        operation: 'MEMBER_DEPART',
         body: {},
       },
     ]);
@@ -176,11 +176,11 @@ export function currentMirrorMetaFact(
   group: MirrorGroupAddress,
   item: Extract<
     MirrorMetaReplicatedItem,
-    { operation: 'UPSERT' | 'GROUP_PROFILE' }
+    { operation: 'MEMBER_UPSERT' | 'GROUP_PROFILE' }
   >,
 ): typeof groupMetaMemberFeed.$inferInsert {
   const body =
-    item.operation === 'UPSERT'
+    item.operation === 'MEMBER_UPSERT'
       ? { role: item.role, profileRev: item.profileRev }
       : { profileRev: item.profileRev };
   const subject =
@@ -243,7 +243,7 @@ async function assertMirrorRosterOwnersInTx(
   const roster = await tx.execute<{ role: string }>(sql`
     SELECT fact.body ->> 'role' AS role
     FROM "GroupMetaMemberFeed" fact
-    WHERE fact."threadId" = ${threadId} AND fact.operation = 'UPSERT'
+    WHERE fact."threadId" = ${threadId} AND fact.operation = 'MEMBER_UPSERT'
   `);
   const owners = roster.rows.filter(
     (member) => member.role === GroupRole.OWNER,

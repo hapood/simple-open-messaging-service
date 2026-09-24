@@ -614,8 +614,8 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     conn.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(1,90,?1)", [serde_json::json!({"threadId":90,"type":"GROUP","authorityNamespaceId":7,"group":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":1}}).to_string()]).unwrap();
     let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"operation":"UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
-        {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
+        {"operation":"MEMBER_UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
+        {"operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
         {"operation":"GROUP_PROFILE","body":{"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
@@ -673,7 +673,7 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     .unwrap();
     let delta = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
         "mode":"delta","scannedThrough":"4","items":[
-            {"operation":"UPSERT","account":"other","domain":"third.test","namespaceId":7,
+            {"operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,
              "body":{"role":"ADMIN","profileRev":2}}
         ]}}]);
     super::client_state::apply_state_feed_page(

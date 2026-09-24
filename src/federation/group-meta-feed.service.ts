@@ -20,10 +20,10 @@ interface GroupMetaFeedItemBase {
 
 export type GroupMetaFeedItem =
   | (GroupMetaFeedItemBase & {
-      operation: 'UPSERT';
+      operation: 'MEMBER_UPSERT';
       body: Record<string, unknown>;
     })
-  | (GroupMetaFeedItemBase & { operation: 'DEPART' })
+  | (GroupMetaFeedItemBase & { operation: 'MEMBER_DEPART' })
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
@@ -114,7 +114,7 @@ export class FederationGroupMetaFeedService {
             WHERE member_fact."threadId" = ${source.groupId}
               AND member_fact."memberAccount" = ${subject.account}
               AND member_fact."memberDomain" = ${storedMemberDomain}
-              AND member_fact.operation = 'UPSERT'
+              AND member_fact.operation = 'MEMBER_UPSERT'
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           `);

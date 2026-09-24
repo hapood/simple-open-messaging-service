@@ -133,12 +133,12 @@ describe('GroupRosterRoleService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           account: 'owner',
-          operation: 'UPSERT',
+          operation: 'MEMBER_UPSERT',
           body: { role: GroupRole.ADMIN, profileRev: 3 },
         }),
         expect.objectContaining({
           account: 'member',
-          operation: 'UPSERT',
+          operation: 'MEMBER_UPSERT',
           body: { role: GroupRole.OWNER, profileRev: 6 },
         }),
       ]),

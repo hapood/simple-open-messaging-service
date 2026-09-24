@@ -14,10 +14,10 @@ interface GroupMetaFeedItemBase {
 
 type GroupMetaFeedItem =
   | (GroupMetaFeedItemBase & {
-      operation: 'UPSERT';
+      operation: 'MEMBER_UPSERT';
       body: Record<string, unknown>;
     })
-  | (GroupMetaFeedItemBase & { operation: 'DEPART' })
+  | (GroupMetaFeedItemBase & { operation: 'MEMBER_DEPART' })
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
@@ -111,7 +111,7 @@ export async function readGroupMetaPageInTx(
       feedId: number;
       memberAccount: string | null;
       memberDomain: string | null;
-      operation: 'UPSERT' | 'DEPART' | 'GROUP_PROFILE' | 'GROUP_ANNOUNCEMENT';
+      operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART' | 'GROUP_PROFILE' | 'GROUP_ANNOUNCEMENT';
       body: Record<string, unknown>;
     }>(sql`
     SELECT fact."feedId", fact."memberAccount" AS "memberAccount",
@@ -120,7 +120,7 @@ export async function readGroupMetaPageInTx(
     FROM "GroupMetaMemberFeed" fact
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
-      ${params.mode === 'full' ? sql`AND fact.operation IN ('UPSERT', 'GROUP_PROFILE')` : sql.empty()}
+      ${params.mode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
     UNION ALL
     SELECT meta."announcementFeedId", NULL::varchar, NULL::varchar,
       'GROUP_ANNOUNCEMENT'::text, jsonb_build_object('text', meta."announcementText")
@@ -134,7 +134,7 @@ export async function readGroupMetaPageInTx(
   if (
     params.client &&
     memberRows.some(
-      (row) => row.operation === 'UPSERT' || row.operation === 'DEPART',
+      (row) => row.operation === 'MEMBER_UPSERT' || row.operation === 'MEMBER_DEPART',
     )
   ) {
     const identities = await tx.execute<{
@@ -186,9 +186,9 @@ export async function readGroupMetaPageInTx(
           ? toClientIdentity(identity, params.client.localDomain)
           : { account: identity.account, domain: identity.domain }),
       };
-      return row.operation === 'UPSERT'
-        ? { ...base, operation: 'UPSERT', body: row.body }
-        : { ...base, operation: 'DEPART' };
+      return row.operation === 'MEMBER_UPSERT'
+        ? { ...base, operation: 'MEMBER_UPSERT', body: row.body }
+        : { ...base, operation: 'MEMBER_DEPART' };
     })
     .sort((left, right) => left.feedId - right.feedId);
   const hasMore = items.length > params.take;

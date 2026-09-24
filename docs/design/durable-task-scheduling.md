@@ -436,8 +436,8 @@ feed cursors, not only handler return values.
 
 ### 8.5 Canonical mutation and head behavior
 
-- Entry appends one canonical `UPSERT` using the effective member-authored
-  intent revision; departure appends one bodyless `DEPART`.
+- Entry appends one canonical `MEMBER_UPSERT` using the effective member-authored
+  intent revision; departure appends one bodyless `MEMBER_DEPART`.
 - Role and ownership changes append only the required canonical member items;
   group-profile changes append one canonical `GROUP_PROFILE`.
 - These items commit before task admission and are never rewritten or
@@ -461,18 +461,18 @@ feed cursors, not only handler return values.
 
 ### 8.6 Profile behavior
 
-- The first membership UPSERT uses the member-authored join intent revision,
+- The first membership MEMBER_UPSERT uses the member-authored join intent revision,
   never a later default revision read by asynchronous work.
 - A committed member-authored positive `REQUESTED` may start independent
   best-effort warm-up of its exact revision before membership becomes active.
-- A positive UPSERT commits without waiting for the exact profile snapshot to
+- A positive MEMBER_UPSERT commits without waiting for the exact profile snapshot to
   be present or retrievable.
 - Default user-profile changes and messages append no Group Meta item, create no
   head task, and do not update canonical or replica member `profileRev`.
 - Multiple canonical membership or group-profile changes before fan-out publish
   only the latest canonical end to each audience.
 - Group Meta Profile is served only by the group origin to a currently
-  authorized mirror for a current matching UPSERT.
+  authorized mirror for a current matching MEMBER_UPSERT.
 
 ### 8.7 Crash, retry, and notification boundaries
 

@@ -18,7 +18,7 @@ export async function propagateLocalMemberProfileInTx(
     FROM "MessageThread" t
     JOIN "GroupMetaMemberFeed" f ON f."threadId" = t.id
     WHERE f."memberAccount" = ${account} AND f."memberDomain" = 'local'
-      AND f.operation = 'UPSERT' AND t.type = 'GROUP'
+      AND f.operation = 'MEMBER_UPSERT' AND t.type = 'GROUP'
       AND t."groupDomain" = 'local' AND t."groupAccountId" IS NOT NULL
     ORDER BY t.id
   `);
@@ -44,7 +44,7 @@ export async function propagateLocalMemberProfileInTx(
       {
         account,
         domain: 'local',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: member.role, profileRev },
       },
     ]);

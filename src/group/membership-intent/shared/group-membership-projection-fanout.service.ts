@@ -89,7 +89,7 @@ export class GroupMembershipProjectionFanoutService {
         JOIN "AccountThreadState" participant
           ON participant."accountId" = owner.id AND participant."threadId" = ${threadId}
         WHERE fact."threadId" = ${threadId}
-          AND fact.operation = 'UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')
+          AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')
           AND owner.id > ${afterManagerId}
         ORDER BY owner.id
         LIMIT 1

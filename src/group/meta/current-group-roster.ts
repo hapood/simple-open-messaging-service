@@ -64,7 +64,7 @@ export async function readCurrentGroupMemberByAddressInTx(
     WHERE fact."threadId" = ${groupId}
       AND fact."memberAccount" = ${identity.account}
       AND fact."memberDomain" = ${identity.domain}
-      AND fact.operation = 'UPSERT'
+      AND fact.operation = 'MEMBER_UPSERT'
       ${identity.namespaceId === undefined ? sql.empty() : sql`AND group_meta_member_namespace(fact."threadId", fact."memberAccount", fact."memberDomain") = ${identity.namespaceId}`}
   `);
   return result.rows[0] ? member(result.rows[0]) : undefined;
@@ -81,7 +81,7 @@ export async function readCurrentGroupRosterInTx(
         fact."memberDomain") AS "namespaceId", fact.body ->> 'role' AS role,
       (fact.body ->> 'profileRev')::integer AS "profileRev"
     FROM "GroupMetaMemberFeed" fact
-    WHERE fact."threadId" = ${groupId} AND fact.operation = 'UPSERT'
+    WHERE fact."threadId" = ${groupId} AND fact.operation = 'MEMBER_UPSERT'
   `);
   return result.rows.map(member);
 }
@@ -102,7 +102,7 @@ export async function readCurrentGroupOwnersInTx(
         fact."memberDomain") AS "namespaceId"
     FROM "GroupMetaMemberFeed" fact
     WHERE fact."threadId" = ANY(${sql.param(ids)}::integer[])
-      AND fact.operation = 'UPSERT' AND fact.body ->> 'role' = 'OWNER'
+      AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' = 'OWNER'
   `);
   const seen = new Set<number>();
   return result.rows.map(({ groupId, ...identity }) => {
@@ -130,7 +130,7 @@ export async function readCurrentLocalGroupManagersInTx(
       AND owner.account = fact."memberAccount"
     JOIN "AccountThreadState" participant ON participant."accountId" = owner.id AND participant."threadId" = ${params.threadId}
     WHERE fact."threadId" = ${params.groupId}
-      AND fact.operation = 'UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')
+      AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')
       ${params.managerUserId === undefined ? sql.empty() : sql`AND owner.id = ${params.managerUserId}`}
     ORDER BY owner.id
   `);

@@ -449,14 +449,14 @@ describe('canonical Group Meta feed', () => {
     }[],
   ): Promise<number> {
     await feed.reconcileMembersInTx(tx, groupId, [
-      { ...owner(), operation: 'UPSERT' },
+      { ...owner(), operation: 'MEMBER_UPSERT' },
       members.some((item) => item.account === memberAccount)
-        ? { ...member(), operation: 'UPSERT' }
+        ? { ...member(), operation: 'MEMBER_UPSERT' }
         : {
             account: memberAccount,
             domain: peerDomain,
             body: {},
-            operation: 'DEPART',
+            operation: 'MEMBER_DEPART',
           },
     ]);
     return feed.reconcileProfileInTx(tx, groupId, 1);
@@ -587,14 +587,14 @@ describe('canonical Group Meta feed', () => {
             account: ownerAccount,
             domain: 'local',
             namespaceId: 0,
-            operation: 'UPSERT',
+            operation: 'MEMBER_UPSERT',
             body: { role: 'OWNER', profileRev: 1 },
           }),
           expect.objectContaining({
             account: memberAccount,
             domain: peerDomain,
             namespaceId: peerNamespaceId,
-            operation: 'UPSERT',
+            operation: 'MEMBER_UPSERT',
           }),
           expect.objectContaining({
             operation: 'GROUP_PROFILE',
@@ -610,7 +610,7 @@ describe('canonical Group Meta feed', () => {
     },
   );
 
-  it('returns only the current roster in full and a bodyless DEPART in delta', async () => {
+  it('returns only the current roster in full and a bodyless MEMBER_DEPART in delta', async () => {
     await database.db.transaction((tx) =>
       reconcileDesired(tx, [owner(), member()]),
     );
@@ -633,7 +633,7 @@ describe('canonical Group Meta feed', () => {
         feedId: 2,
         account: ownerAccount,
         domain: localDomain,
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },
       {
@@ -655,7 +655,7 @@ describe('canonical Group Meta feed', () => {
         feedId: 4,
         account: memberAccount,
         domain: peerDomain,
-        operation: 'DEPART',
+        operation: 'MEMBER_DEPART',
       },
     ]);
   });
@@ -739,7 +739,7 @@ describe('canonical Group Meta feed', () => {
     await database.db.transaction((tx) =>
       feed.appendMemberTransitionInTx(tx, groupId, {
         ...member(),
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.ADMIN, profileRev: 1 },
       }),
     );
@@ -778,13 +778,13 @@ describe('canonical Group Meta feed', () => {
       expect.objectContaining({
         feedId: 4,
         account: memberAccount,
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.ADMIN, profileRev: 1 },
       }),
     ]);
   });
 
-  it('appends a new UPSERT when a departed member rejoins', async () => {
+  it('appends a new MEMBER_UPSERT when a departed member rejoins', async () => {
     await database.db.transaction((tx) =>
       reconcileDesired(tx, [owner(), member()]),
     );
@@ -805,7 +805,7 @@ describe('canonical Group Meta feed', () => {
         feedId: 5,
         account: memberAccount,
         domain: peerDomain,
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.MEMBER, profileRev: 1 },
       },
     ]);

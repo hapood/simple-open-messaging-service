@@ -14,7 +14,7 @@ export interface GroupMetaMemberChange {
   account: string;
   domain: string;
   body: Record<string, unknown>;
-  operation: 'UPSERT' | 'DEPART';
+  operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART';
 }
 
 function memberKey(member: { domain: string; account: string }): string {
@@ -62,7 +62,7 @@ export class GroupMetaFeedService {
       .map((member) => ({
         ...member,
         body:
-          member.operation === 'DEPART'
+          member.operation === 'MEMBER_DEPART'
             ? {}
             : (serializeBody(member.body) as Record<string, unknown>),
       }))
@@ -100,7 +100,7 @@ export class GroupMetaFeedService {
     member: GroupMetaMemberChange,
   ): Promise<number> {
     const body =
-      member.operation === 'DEPART'
+      member.operation === 'MEMBER_DEPART'
         ? {}
         : (serializeBody(member.body) as Record<string, unknown>);
     const allocation = await tx.execute<{ metaEndId: number }>(sql`

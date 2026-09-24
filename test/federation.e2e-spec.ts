@@ -2055,7 +2055,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // The origin commits the join notice with the acceptance. Depending on
     // whether the mirror's initial full snapshot lands before or after this
-    // UPSERT, it either establishes a silent baseline or later observes one
+    // MEMBER_UPSERT, it either establishes a silent baseline or later observes one
     // delta join notice. Neither path may replay the notice twice.
     await vi.waitFor(
       async () => {
@@ -2434,7 +2434,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       feedId: 2_000_000_000,
       memberAccount: 'stale-roster-member',
       memberDomain: 'stale.test',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: GroupRole.MEMBER, profileRev: 1 },
     });
     await appB.database
@@ -2826,7 +2826,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             account: 'dave',
             domain: 'local',
           }),
-          'group-meta DEPART must remove the member from the current roster',
+          'group-meta MEMBER_DEPART must remove the member from the current roster',
         ).toBeUndefined();
       },
       { timeout: 5000, interval: 100 },
@@ -3026,7 +3026,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(originAudience).toBeUndefined();
           // The departed account is no longer authorized, but its mirror does not need a terminal
           // Group Meta notification. The retained replica may therefore still contain its last
-          // UPSERT; current access is determined by the relationship state, not this projection.
+          // MEMBER_UPSERT; current access is determined by the relationship state, not this projection.
           expect(bobOnMirror).toBeDefined();
         },
         { timeout: 5000, interval: 100 },

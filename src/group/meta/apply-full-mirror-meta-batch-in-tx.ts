@@ -59,8 +59,8 @@ export async function applyFullMirrorMetaBatchInTx(
     .delete(groupMetaMemberFeed)
     .where(eq(groupMetaMemberFeed.threadId, mirror.threadId));
   const facts = input.items.flatMap((item) => {
-    if (item.operation === 'DEPART')
-      throw new Error('a full group-meta snapshot cannot contain DEPART');
+    if (item.operation === 'MEMBER_DEPART')
+      throw new Error('a full group-meta snapshot cannot contain MEMBER_DEPART');
     return item.operation === 'GROUP_ANNOUNCEMENT'
       ? []
       : [currentMirrorMetaFact(mirror.threadId, input.group, item)];

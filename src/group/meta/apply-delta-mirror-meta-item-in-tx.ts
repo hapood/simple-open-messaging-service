@@ -171,7 +171,7 @@ async function readCurrentMirrorMemberOperationInTx(
     operation: string;
     profileRev: number | null;
   }>(sql`
-    SELECT operation, CASE WHEN operation = 'UPSERT'
+    SELECT operation, CASE WHEN operation = 'MEMBER_UPSERT'
       THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
     FROM "GroupMetaMemberFeed"
     WHERE "threadId" = ${threadId} AND "memberAccount" = ${member.account}
@@ -183,7 +183,7 @@ async function readCurrentMirrorMemberOperationInTx(
 
 /** Meta deltas announce third-party departures and member joins. A local
  * departure is announced by the mirror's relationship-intent transition;
- * replaying its later DEPART here would write a second GROUP_LEFT. */
+ * replaying its later MEMBER_DEPART here would write a second GROUP_LEFT. */
 async function writeObservedMembershipTransitionInTx(
   tx: DatabaseTransaction,
   threadId: number,
@@ -207,13 +207,13 @@ async function writeObservedMembershipTransitionInTx(
     loadFederationConfig().domain,
   );
   const joined =
-    item.operation === 'UPSERT' && previousFact?.operation !== 'UPSERT';
+    item.operation === 'MEMBER_UPSERT' && previousFact?.operation !== 'MEMBER_UPSERT';
   const left =
-    item.operation === 'DEPART' && previousFact?.operation === 'UPSERT';
+    item.operation === 'MEMBER_DEPART' && previousFact?.operation === 'MEMBER_UPSERT';
   if (!joined && !left) return false;
   if (left && member.domain === 'local') return false;
   const profileRev =
-    item.operation === 'UPSERT' ? item.profileRev : previousFact?.profileRev;
+    item.operation === 'MEMBER_UPSERT' ? item.profileRev : previousFact?.profileRev;
   if (profileRev === null || profileRev === undefined)
     throw new Error('departing member has no previous profile revision');
   const identity = await tx.execute<{ namespaceId: number }>(sql`

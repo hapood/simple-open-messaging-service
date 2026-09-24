@@ -608,7 +608,7 @@ pub(super) fn apply_state_feed_page(
                 &item.domain
             };
             super::contacts::register_namespace(&tx, user_id, item.namespace_id, source)?;
-            if item.operation == "DEPART" {
+            if item.operation == "MEMBER_DEPART" {
                 tx.execute(
                     "UPDATE members SET left_state=1
                          WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
@@ -624,14 +624,14 @@ pub(super) fn apply_state_feed_page(
                 .map_err(|e| format!("depart group member: {e}"))?;
                 continue;
             }
-            if item.operation != "UPSERT" {
-                return Err("group-meta operation must be UPSERT or DEPART".into());
+            if item.operation != "MEMBER_UPSERT" {
+                return Err("group-meta operation must be MEMBER_UPSERT or MEMBER_DEPART".into());
             }
             let profile_rev = item
                 .body
                 .get("profileRev")
                 .and_then(Value::as_i64)
-                .ok_or_else(|| "group-meta UPSERT has no profileRev".to_string())?;
+                .ok_or_else(|| "group-meta MEMBER_UPSERT has no profileRev".to_string())?;
             tx.execute(
                     "INSERT INTO members(
                        user_id,thread_id,member_account,member_domain,namespace_id,role,left_state,

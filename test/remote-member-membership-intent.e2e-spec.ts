@@ -151,7 +151,7 @@ describe('remote member membership intents on the authoritative group', () => {
         feedId: 1,
         memberAccount,
         memberDomain: PEER_DOMAIN,
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: 'MEMBER', profileRev: 3 },
       });
     await database.db.insert(tables.accountThreadState).values({

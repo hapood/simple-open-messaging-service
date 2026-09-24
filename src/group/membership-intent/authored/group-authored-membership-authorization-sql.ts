@@ -144,7 +144,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
         AND a.domain = 'local' AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
       WHERE r."memberDomain" = 'local'
-        AND r.operation = 'UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
+        AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
     ), capacity_scope AS MATERIALIZED (
       -- Same authorization growth gate as the request-keyed variant; the
       -- target names its own pair here, so the exemption keys on the address.

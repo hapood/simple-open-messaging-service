@@ -274,7 +274,7 @@ describe('group join decision', () => {
       feedId: nextFeedId,
       memberAccount: f.applicant.account,
       memberDomain: 'local',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
     expect((await state(f)).roster).toMatchObject({ role: 'MEMBER' });
@@ -308,7 +308,7 @@ describe('group join decision', () => {
       feedId: nextFeedId,
       memberAccount: f.applicant.account,
       memberDomain: 'local',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
     const before = (
@@ -1408,7 +1408,7 @@ describe('group join decision', () => {
         [f.group.threadId, f.applicant.account],
       )
     ).rows;
-    expect(lastFact.operation).toBe('DEPART');
+    expect(lastFact.operation).toBe('MEMBER_DEPART');
     // The departure admits both thread fan-out channels.
     const fanoutTasks = (
       await database.pool.query(
@@ -1573,7 +1573,7 @@ describe('group join decision', () => {
         [group.threadId, member.account],
       )
     ).rows;
-    expect(lastFact.operation).toBe('DEPART');
+    expect(lastFact.operation).toBe('MEMBER_DEPART');
   });
 
   it('unified revocation only removes members strictly below the operator role', async () => {
@@ -2543,7 +2543,7 @@ describe('group join decision', () => {
       // No departure facts: the applicant was never rostered.
       const departures = await database.pool.query(
         `SELECT count(*)::int AS n FROM "GroupMetaMemberFeed"
-         WHERE "threadId" = $1 AND operation = 'DEPART'`,
+         WHERE "threadId" = $1 AND operation = 'MEMBER_DEPART'`,
         [f.group.threadId],
       );
       expect(departures.rows[0].n).toBe(0);
@@ -2633,7 +2633,7 @@ describe('group join decision', () => {
       expect(roster).toBeUndefined();
       const departed = await database.pool.query(
         `SELECT count(*)::int AS n FROM "GroupMetaMemberFeed"
-         WHERE "threadId" = $1 AND operation = 'DEPART'`,
+         WHERE "threadId" = $1 AND operation = 'MEMBER_DEPART'`,
         [f.group.threadId],
       );
       expect(departed.rows[0].n).toBe(1);

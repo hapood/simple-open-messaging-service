@@ -105,7 +105,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       threadId,
       memberAccount: account,
       memberDomain: 'local',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       feedId: 1,
       body: { role: 'MEMBER', profileRev: 1 },
     });

@@ -32,7 +32,7 @@ NOT carry member fields.
 
 `account` identifies a group owned by the responding origin. The origin derives
 the selected revision from its current canonical `GROUP_PROFILE` fact for
-`GROUP`, or the current canonical member `UPSERT` for `MEMBER`. The requester
+`GROUP`, or the current canonical member `MEMBER_UPSERT` for `MEMBER`. The requester
 does not state or guess that revision.
 
 ## 2. Successful response

@@ -41,7 +41,7 @@ describe('FederationGroupMetaClient', () => {
           feedId: 5,
           account: 'alice',
           domain: 'peer.test',
-          operation: 'UPSERT',
+          operation: 'MEMBER_UPSERT',
           body: { role: 'MEMBER', profileRev: 1 },
         },
       ],
@@ -87,7 +87,7 @@ describe('FederationGroupMetaClient', () => {
           feedId: 5,
           account: 'alice',
           domain: 'peer.test',
-          operation: 'DEPART',
+          operation: 'MEMBER_DEPART',
         },
         {
           feedId: 4,

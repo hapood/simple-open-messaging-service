@@ -283,7 +283,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'me',
               domain: 'local',
               namespaceId: 7,
@@ -291,7 +291,7 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'other',
               domain: 'third.test',
               namespaceId: 7,
@@ -465,7 +465,7 @@ describe('WebdbService', () => {
             items: [
               {
                 feedId: '1',
-                operation: 'UPSERT',
+                operation: 'MEMBER_UPSERT',
                 account: 'bob',
                 domain: 'local',
                 namespaceId: 0,
@@ -473,7 +473,7 @@ describe('WebdbService', () => {
               },
               {
                 feedId: '2',
-                operation: 'UPSERT',
+                operation: 'MEMBER_UPSERT',
                 account: 'alice',
                 domain: 'local',
                 namespaceId: 0,
@@ -2028,7 +2028,7 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'alice',
               domain: 'local',
               namespaceId: 0,
@@ -2036,7 +2036,7 @@ describe('WebdbService', () => {
             },
             {
               feedId: '3',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'bob',
               domain: 'peer.test',
               namespaceId: 12,
@@ -2224,7 +2224,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'self',
               domain: 'local',
               namespaceId: 0,
@@ -2235,7 +2235,7 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'alice',
               domain: 'home.example',
               namespaceId: 12,
@@ -2362,7 +2362,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '3',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'alice',
               domain: 'home.example',
               namespaceId: 12,
@@ -2394,7 +2394,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '4',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'self',
               domain: 'local',
               namespaceId: 0,
@@ -2423,7 +2423,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '5',
-              operation: 'DEPART',
+              operation: 'MEMBER_DEPART',
               account: 'self',
               domain: 'local',
               namespaceId: 0,
@@ -2449,7 +2449,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '6',
-              operation: 'DEPART',
+              operation: 'MEMBER_DEPART',
               account: 'alice',
               domain: 'home.example',
               namespaceId: 12,
@@ -2560,7 +2560,7 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'alice',
               domain: 'local.test',
               namespaceId: 0,
@@ -2571,7 +2571,7 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
-              operation: 'UPSERT',
+              operation: 'MEMBER_UPSERT',
               account: 'bob',
               domain: 'remote.test',
               namespaceId: 12,

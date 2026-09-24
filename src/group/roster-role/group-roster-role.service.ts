@@ -335,7 +335,7 @@ export class GroupRosterRoleService {
       context.changes.map((change) => ({
         account: change.account,
         domain: change.domain,
-        operation: 'UPSERT' as const,
+        operation: 'MEMBER_UPSERT' as const,
         body: { role: change.role, profileRev: change.profileRev },
       })),
     );

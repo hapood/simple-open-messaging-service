@@ -143,8 +143,8 @@ CREATE TYPE public."FileSyncStatus" AS ENUM (
 --
 
 CREATE TYPE public."GroupMetaMemberOperation" AS ENUM (
-    'UPSERT',
-    'DEPART',
+    'MEMBER_UPSERT',
+    'MEMBER_DEPART',
     'GROUP_PROFILE'
 );
 
@@ -313,7 +313,9 @@ CREATE TABLE public."AccountThreadState" (
     "joinRequestReadFeedId" integer DEFAULT '-1'::integer NOT NULL,
     "groupInviteEndFeedId" integer DEFAULT 0 NOT NULL,
     "groupMetaFeedEndId" integer,
+    "announcementReadFeedId" integer DEFAULT 0 NOT NULL,
     "threadProfileRev" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "AccountThreadState_announcementReadFeedId_check" CHECK (("announcementReadFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupInviteEndFeedId_check" CHECK (("groupInviteEndFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupMetaFeedEndId_check" CHECK ((("groupMetaFeedEndId" IS NULL) OR ("groupMetaFeedEndId" >= 0))),
     CONSTRAINT "AccountThreadState_joinRequestEndFeedId_check" CHECK (("joinRequestEndFeedId" >= 0)),
@@ -548,9 +550,11 @@ BEGIN
         AND seq <= COALESCE(NEW."messageVisibleThroughSeq", NEW."messageEndSeq") ORDER BY seq DESC);
   END IF;
   IF TG_OP = 'INSERT' OR NEW."threadFeedId" = 0
+    OR NEW.alias IS DISTINCT FROM OLD.alias
     OR NEW."previewSeqs" IS DISTINCT FROM OLD."previewSeqs"
     OR NEW."unreadCount" IS DISTINCT FROM OLD."unreadCount"
     OR NEW."lastReadSeq" IS DISTINCT FROM OLD."lastReadSeq"
+    OR NEW."announcementReadFeedId" IS DISTINCT FROM OLD."announcementReadFeedId"
     OR NEW."lastMentionSeq" IS DISTINCT FROM OLD."lastMentionSeq"
     OR NEW."messageEndSeq" IS DISTINCT FROM OLD."messageEndSeq"
     OR NEW."tombstoneEndSeq" IS DISTINCT FROM OLD."tombstoneEndSeq"
@@ -991,10 +995,6 @@ CREATE TABLE public."FederatedPeer" (
     "haltedAt" timestamp(3) with time zone,
     "haltCode" integer,
     "haltReason" character varying(255),
-    "dailyMsgLimit" integer,
-    "dailyRequestLimit" integer,
-    "dailyFileLimit" integer,
-    "dailyFileBytesLimit" bigint,
     "recognizesPeer" boolean DEFAULT false NOT NULL,
     "localServiceAvailable" boolean DEFAULT false NOT NULL,
     "remoteServiceReachable" boolean DEFAULT false NOT NULL,
@@ -1259,6 +1259,10 @@ CREATE TABLE public."GroupMeta" (
     "metaTargetId" integer DEFAULT 0 NOT NULL,
     "metaProcessedThroughId" integer DEFAULT 0 NOT NULL,
     "metaRecoveryThroughId" integer,
+    "announcementFeedId" integer,
+    "announcementText" text,
+    CONSTRAINT "GroupMeta_announcementFeedId_check" CHECK ((("announcementFeedId" IS NULL) OR ("announcementFeedId" > 0))),
+    CONSTRAINT "GroupMeta_announcementText_check" CHECK ((("announcementText" IS NULL) OR (("announcementFeedId" IS NOT NULL) AND (char_length("announcementText") >= 1) AND (char_length("announcementText") <= 4096)))),
     CONSTRAINT "GroupMeta_applicationEndId_check" CHECK (("applicationEndId" >= 0)),
     CONSTRAINT "GroupMeta_invitationEndId_check" CHECK (("invitationEndId" >= 0)),
     CONSTRAINT "GroupMeta_metaEndId_check" CHECK (("metaEndId" >= 0)),
@@ -1282,7 +1286,7 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "threadId" integer NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "memberDomain" character varying(63) NOT NULL,
-    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
+    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'MEMBER_UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'MEMBER_DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
 );
 
@@ -1323,6 +1327,10 @@ CREATE TABLE public."IdentityNamespace" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
     "stateFeedEndId" bigint DEFAULT 0 NOT NULL,
+    "dailyMsgLimit" integer,
+    "dailyRequestLimit" integer,
+    "dailyFileLimit" integer,
+    "dailyFileBytesLimit" bigint,
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
     CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("retiredAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL)))),
     CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0))))
@@ -1601,7 +1609,7 @@ CREATE TABLE public."Profile" (
     domain character varying(63) NOT NULL,
     "namespaceId" integer NOT NULL,
     "profileRev" integer NOT NULL,
-    "displayName" character varying(30) NOT NULL,
+    "displayName" character varying(31) NOT NULL,
     avatar text DEFAULT ''::text NOT NULL,
     bio character varying(255) DEFAULT ''::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1610,50 +1618,11 @@ CREATE TABLE public."Profile" (
 
 
 --
--- Name: PushToken; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."PushToken" (
-    id integer NOT NULL,
-    "userId" integer NOT NULL,
-    token character varying(500) NOT NULL,
-    "deviceId" character varying(127),
-    platform public."PushPlatform" NOT NULL,
-    "webP256dh" character varying(255),
-    "webAuth" character varying(255),
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
-    "lastSeenAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "sessionId" integer NOT NULL
-);
-
-
---
--- Name: PushToken_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."PushToken_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: PushToken_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."PushToken_id_seq" OWNED BY public."PushToken".id;
-
-
---
 -- Name: QuotaDailyAllowance; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public."QuotaDailyAllowance" (
-    domain character varying(63) NOT NULL,
+    "namespaceId" integer NOT NULL,
     date date NOT NULL,
     "extraMsg" integer DEFAULT 0 NOT NULL,
     "extraFile" integer DEFAULT 0 NOT NULL,
@@ -1666,7 +1635,7 @@ CREATE TABLE public."QuotaDailyAllowance" (
 --
 
 CREATE TABLE public."QuotaDailyUsage" (
-    domain character varying(63) NOT NULL,
+    "namespaceId" integer NOT NULL,
     date date NOT NULL,
     category character varying(15) NOT NULL,
     count integer DEFAULT 0 NOT NULL
@@ -1678,7 +1647,7 @@ CREATE TABLE public."QuotaDailyUsage" (
 --
 
 CREATE TABLE public."QuotaFileByteUsage" (
-    domain character varying(63) NOT NULL,
+    "namespaceId" integer NOT NULL,
     date date NOT NULL,
     bytes bigint DEFAULT 0 NOT NULL
 );
@@ -1805,7 +1774,16 @@ CREATE TABLE public."SessionToken" (
     client character varying(16) NOT NULL,
     "lastSeenIp" character varying(64),
     "autoTerminateDays" integer DEFAULT 30 NOT NULL,
-    CONSTRAINT "SessionToken_auto_terminate_days_check" CHECK (("autoTerminateDays" = ANY (ARRAY[7, 30, 90, 180, 365])))
+    "pushSubscriptionRev" integer DEFAULT 1 NOT NULL,
+    "pushToken" character varying(512),
+    "pushPlatform" public."PushPlatform",
+    "pushDeviceId" character varying(127),
+    "pushP256dh" character varying(255),
+    "pushAuth" character varying(255),
+    "pushRegisteredAt" timestamp(3) with time zone,
+    CONSTRAINT "SessionToken_auto_terminate_days_check" CHECK (("autoTerminateDays" = ANY (ARRAY[7, 30, 90, 180, 365]))),
+    CONSTRAINT "SessionToken_pushSubscriptionRev_check" CHECK (("pushSubscriptionRev" > 0)),
+    CONSTRAINT "SessionToken_push_shape_check" CHECK (((("pushToken" IS NULL) AND ("pushPlatform" IS NULL) AND ("pushP256dh" IS NULL) AND ("pushAuth" IS NULL) AND ("pushRegisteredAt" IS NULL)) OR (("pushToken" IS NOT NULL) AND ("pushPlatform" IS NOT NULL) AND ("pushRegisteredAt" IS NOT NULL) AND ((("pushPlatform" = 'WEB'::public."PushPlatform") AND ("pushP256dh" IS NOT NULL) AND ("pushAuth" IS NOT NULL)) OR (("pushPlatform" <> 'WEB'::public."PushPlatform") AND ("pushP256dh" IS NULL) AND ("pushAuth" IS NULL))))))
 );
 
 
@@ -2212,13 +2190,6 @@ ALTER TABLE ONLY public."PendingMedia" ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- Name: PushToken id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PushToken" ALTER COLUMN id SET DEFAULT nextval('public."PushToken_id_seq"'::regclass);
-
-
---
 -- Name: RelationshipIntent id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2620,19 +2591,11 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: PushToken PushToken_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PushToken"
-    ADD CONSTRAINT "PushToken_pkey" PRIMARY KEY (id);
-
-
---
 -- Name: QuotaDailyAllowance QuotaDailyAllowance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."QuotaDailyAllowance"
-    ADD CONSTRAINT "QuotaDailyAllowance_pkey" PRIMARY KEY (domain, date);
+    ADD CONSTRAINT "QuotaDailyAllowance_pkey" PRIMARY KEY ("namespaceId", date);
 
 
 --
@@ -2640,7 +2603,7 @@ ALTER TABLE ONLY public."QuotaDailyAllowance"
 --
 
 ALTER TABLE ONLY public."QuotaDailyUsage"
-    ADD CONSTRAINT "QuotaDailyUsage_pkey" PRIMARY KEY (domain, date, category);
+    ADD CONSTRAINT "QuotaDailyUsage_pkey" PRIMARY KEY ("namespaceId", date, category);
 
 
 --
@@ -2648,7 +2611,7 @@ ALTER TABLE ONLY public."QuotaDailyUsage"
 --
 
 ALTER TABLE ONLY public."QuotaFileByteUsage"
-    ADD CONSTRAINT "QuotaFileByteUsage_pkey" PRIMARY KEY (domain, date);
+    ADD CONSTRAINT "QuotaFileByteUsage_pkey" PRIMARY KEY ("namespaceId", date);
 
 
 --
@@ -3269,27 +3232,6 @@ CREATE INDEX "PendingMedia_threadId_idx" ON public."PendingMedia" USING btree ("
 
 
 --
--- Name: PushToken_sessionId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "PushToken_sessionId_idx" ON public."PushToken" USING btree ("sessionId");
-
-
---
--- Name: PushToken_token_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "PushToken_token_key" ON public."PushToken" USING btree (token);
-
-
---
--- Name: PushToken_userId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "PushToken_userId_idx" ON public."PushToken" USING btree ("userId");
-
-
---
 -- Name: QuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3301,6 +3243,13 @@ CREATE INDEX "QuotaDailyUsage_date_idx" ON public."QuotaDailyUsage" USING btree 
 --
 
 CREATE INDEX "QuotaFileByteUsage_date_idx" ON public."QuotaFileByteUsage" USING btree (date);
+
+
+--
+-- Name: SessionToken_pushToken_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "SessionToken_pushToken_key" ON public."SessionToken" USING btree ("pushToken") WHERE ("pushToken" IS NOT NULL);
 
 
 --
@@ -3928,19 +3877,27 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: PushToken PushToken_sessionId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: QuotaDailyAllowance QuotaDailyAllowance_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."PushToken"
-    ADD CONSTRAINT "PushToken_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES public."SessionToken"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE ONLY public."QuotaDailyAllowance"
+    ADD CONSTRAINT "QuotaDailyAllowance_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
 
 
 --
--- Name: PushToken PushToken_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: QuotaDailyUsage QuotaDailyUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."PushToken"
-    ADD CONSTRAINT "PushToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+ALTER TABLE ONLY public."QuotaDailyUsage"
+    ADD CONSTRAINT "QuotaDailyUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: QuotaFileByteUsage QuotaFileByteUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."QuotaFileByteUsage"
+    ADD CONSTRAINT "QuotaFileByteUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
 
 
 --

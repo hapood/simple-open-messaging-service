@@ -69,7 +69,7 @@ describe('exact profile completion for a federated group member', () => {
       feedId: 1,
       memberAccount: account,
       memberDomain: domain,
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'OWNER', profileRev: 2 },
     });
     await database.db.insert(tables.profileTable).values(
@@ -145,7 +145,7 @@ describe('exact profile completion for a federated group member', () => {
     );
     await database.db
       .update(tables.groupMetaMemberFeed)
-      .set({ operation: 'DEPART', body: {} })
+      .set({ operation: 'MEMBER_DEPART', body: {} })
       .where(member);
     try {
       await expect(subject.start(viewerId, selector)).rejects.toMatchObject({
@@ -154,7 +154,7 @@ describe('exact profile completion for a federated group member', () => {
     } finally {
       await database.db
         .update(tables.groupMetaMemberFeed)
-        .set({ operation: 'UPSERT', body: { role: 'OWNER', profileRev: 2 } })
+        .set({ operation: 'MEMBER_UPSERT', body: { role: 'OWNER', profileRev: 2 } })
         .where(member);
     }
   });

@@ -112,7 +112,7 @@ test('midpoint dissolution follows current ownership and captures the audience b
   );
 });
 
-test('fixed scenarios exclude a revoked member even if its mirrored roster retains UPSERT', () => {
+test('fixed scenarios exclude a revoked member even if its mirrored roster retains MEMBER_UPSERT', () => {
   const { log, snapshot } = fixture();
   snapshot.groups.bravo.groups.get(address).relationships.get(bob).active =
     false;

@@ -466,7 +466,7 @@ describe('mirror group intent application', () => {
     expect(routed).toBe('dangling-conclusion');
     const after = await findPair(bob.account);
     // Side A revoked, side B concluded by the reverse task's contract, pair
-    // never activated, and — critically — no GROUP_LEFT or roster DEPART was
+    // never activated, and — critically — no GROUP_LEFT or roster MEMBER_DEPART was
     // written by the applier.
     expect(after.pair!.active).toBe(false);
     expect(after.sideA!.status).toBe('REVOKED');
@@ -579,7 +579,7 @@ describe('mirror group intent application', () => {
       feedId: 1,
       memberAccount: bob.account,
       memberDomain: 'local',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
     const authored = app.get(MemberAuthoredGroupMembershipIntentService);
@@ -623,7 +623,7 @@ describe('mirror group intent application', () => {
       feedId: 1,
       memberAccount: bob.account,
       memberDomain: 'local',
-      operation: 'UPSERT',
+      operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
     await authored.execute({
@@ -737,7 +737,7 @@ describe('mirror group intent application', () => {
         feedId: rosterFeedId++,
         memberAccount: m.account,
         memberDomain: 'local',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: 'MEMBER', profileRev: 1 },
       });
       await database.db.insert(tables.accountThreadState).values({

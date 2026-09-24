@@ -56,7 +56,7 @@ function localRecipientKey(
 }
 
 /** One composed statement for a REVOKED decision. The pair's active-to-inactive
- * transition gates the DEPART fact, GROUP_LEFT message, and departure fan-out;
+ * transition gates the MEMBER_DEPART fact, GROUP_LEFT message, and departure fan-out;
  * an inactive application rejection has none of these effects. Sibling CTEs
  * share the pre-statement snapshot, so federated audience closure excludes this
  * pair explicitly. */
@@ -77,7 +77,7 @@ export function groupMembershipRevocationSql(
     input.localMemberId === null
       ? ''
       : accountFanoutScopeKey(input.threadId, input.localMemberId);
-  // The compacted DEPART fact no longer contains a profile revision. Capture
+  // The compacted MEMBER_DEPART fact no longer contains a profile revision. Capture
   // the member's authored direction in the same transaction as the notice.
   const memberProfileRev =
     input.authorSide === 'B'
@@ -121,7 +121,7 @@ export function groupMembershipRevocationSql(
       INSERT INTO "GroupMetaMemberFeed"
         ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
       SELECT ${input.threadId}, a."metaEndId", ${input.memberAccount}, ${input.memberDomain},
-        'DEPART'::"GroupMetaMemberOperation", '{}'::jsonb
+        'MEMBER_DEPART'::"GroupMetaMemberOperation", '{}'::jsonb
       FROM depart_alloc a
       ON CONFLICT ("threadId", "memberAccount", "memberDomain")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",

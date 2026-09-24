@@ -62,7 +62,7 @@ export function groupRosterRoleAuthorizationSql(input: {
           AND "memberAccount" = (SELECT account FROM operator_account)
           AND "memberDomain" = 'local'
         ORDER BY "feedId" DESC LIMIT 1
-      ) latest WHERE latest.operation = 'UPSERT'
+      ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     ), target_roster AS MATERIALIZED (
       SELECT latest."memberAccount" AS account, latest."memberDomain" AS domain,
         group_meta_member_namespace(latest."threadId", latest."memberAccount",
@@ -75,7 +75,7 @@ export function groupRosterRoleAuthorizationSql(input: {
           AND "memberAccount" = ${input.targetAccount}
           AND "memberDomain" = ${input.targetDomain}
         ORDER BY "feedId" DESC LIMIT 1
-      ) latest WHERE latest.operation = 'UPSERT'
+      ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     )
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
       g."namespaceId", g."dissolvedAt",

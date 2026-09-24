@@ -147,7 +147,7 @@ export class GroupService {
         COALESCE(peer_intent."profileRev", 0) AS "profileRev",
         COALESCE(snapshot."displayName", friend.account) AS name,
         COALESCE(snapshot.avatar, '') AS avatar, COALESCE(snapshot.bio, '') AS bio,
-        CASE WHEN member.operation = 'UPSERT' THEN 'MEMBER'
+        CASE WHEN member.operation = 'MEMBER_UPSERT' THEN 'MEMBER'
           WHEN invitation.status = 'REQUESTED' AND invitation."expiresAt" > CURRENT_TIMESTAMP THEN 'INVITED'
           ELSE 'AVAILABLE' END AS state
       FROM "RelationshipPair" friendship

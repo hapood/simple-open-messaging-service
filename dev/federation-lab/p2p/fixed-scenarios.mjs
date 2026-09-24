@@ -38,7 +38,7 @@ export function selectScenarioMembers(log, groups) {
   for (const planned of log.groups.filter((group) => group.active)) {
     const canonical = groups[planned.nodeName]?.groups.get(planned.address);
     if (!canonical || canonical.dissolved) continue;
-    // A retained roster UPSERT is not proof of current access on a former member's node.
+    // A retained roster MEMBER_UPSERT is not proof of current access on a former member's node.
     const members = canonical.roster
       .map(({ address }) => userRef(address))
       .filter(

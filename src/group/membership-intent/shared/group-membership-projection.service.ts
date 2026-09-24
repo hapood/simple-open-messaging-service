@@ -69,7 +69,7 @@ export class GroupMembershipProjectionService {
       await this.groupMeta.appendMemberTransitionInTx(tx, params.groupId, {
         account: identity.account,
         domain: identity.domain,
-        operation: 'DEPART',
+        operation: 'MEMBER_DEPART',
         body: {},
       });
       return { canonicalRosterChanged: true };
@@ -103,7 +103,7 @@ export class GroupMembershipProjectionService {
       await this.groupMeta.appendMemberTransitionInTx(tx, params.groupId, {
         account: identity.account,
         domain: identity.domain,
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role, profileRev },
       });
       canonicalRosterChanged = true;

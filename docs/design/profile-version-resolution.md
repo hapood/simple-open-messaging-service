@@ -90,7 +90,7 @@ GET /s2s/v1/group-meta-profile
 ```
 
 The Group Meta endpoint serves both the group's `GROUP_PROFILE` fact and a
-member's current `UPSERT` fact. It verifies that the requesting peer has a
+member's current `MEMBER_UPSERT` fact. It verifies that the requesting peer has a
 current audience for the group, resolves the selected revision and namespace
 from canonical Group Meta, and returns the retained snapshot. A mirror never
 serves another peer as authority for a remote group.

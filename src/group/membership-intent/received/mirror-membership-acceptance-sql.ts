@@ -104,7 +104,7 @@ export function mirrorMembershipActivationSql(
           WHERE "threadId" = ${input.threadId} AND "memberAccount" = ${input.memberAccount}
             AND "memberDomain" = 'local'
           ORDER BY "feedId" DESC LIMIT 1
-        ) latest WHERE operation = 'UPSERT'), 'MEMBER') AS role
+        ) latest WHERE operation = 'MEMBER_UPSERT'), 'MEMBER') AS role
     ), member_state AS (
       INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq",
         "groupMetaFeedEndId", "updatedAt")

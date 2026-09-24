@@ -217,7 +217,7 @@ describe('group creation', () => {
       expect.objectContaining({
         account: owner.account,
         domain: 'local',
-        operation: 'UPSERT',
+        operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       }),
     ]);

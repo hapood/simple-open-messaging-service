@@ -31,7 +31,7 @@ export class GroupManageService {
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const memberCount = sql<number>`(
       SELECT count(*)::int FROM "GroupMetaMemberFeed" fact
-      WHERE fact."threadId" = ${group.id} AND fact.operation = 'UPSERT'
+      WHERE fact."threadId" = ${group.id} AND fact.operation = 'MEMBER_UPSERT'
     )`;
     const base = this.database.db
       .select({

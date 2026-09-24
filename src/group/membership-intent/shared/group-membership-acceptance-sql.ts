@@ -102,7 +102,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
     ), member_fact AS (
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
       SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer, ${input.memberAccount}, ${input.memberDomain},
-        'UPSERT', jsonb_build_object('role', p.role, 'profileRev', s."memberProfileRev")
+        'MEMBER_UPSERT', jsonb_build_object('role', p.role, 'profileRev', s."memberProfileRev")
       FROM meta_head h CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN meta_allocation
       WHERE p."memberChanged"
