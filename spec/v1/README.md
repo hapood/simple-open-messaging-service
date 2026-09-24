@@ -8,9 +8,6 @@ This directory contains the Simple Open Messaging Federation Protocol v1.0.0-rc.
 
 This English text is the authoritative working text for v1.0.0-rc.0.
 
-See [candidate corrections](./CHANGES.md) for the reviewable record of changes
-made before the wire contract is frozen.
-
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174. Wire fields, enum values, HTTP headers, standard names, and stable error codes retain their original spelling and appear in code formatting. Examples, diagrams, TypeScript notation, and artifacts under `schema/` explain or validate the normative text but do not independently create protocol requirements.
 
 ## Reading order
@@ -21,9 +18,9 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
 3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Health availability queries, degraded state, timing, and failure handling.
 4. [State Feed](./state-feed.md): compacted relationship/profile-reference, Group Meta feed-head, and thread-content snapshots.
-5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role and compacted group-profile-reference feed.
+5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role, compacted group-profile-reference, and current-announcement feed.
 6. [Authorized Profile](./authorized-profile.md): policy-controlled exact account/revision lookup for established user and group threads.
-7. [Group Meta Profile](./group-meta-profile.md): asymmetric exact member-profile lookup served by the group origin and authorized by its canonical Group Meta state.
+7. [Group Meta Profile](./group-meta-profile.md): current group or member profile lookup served by the origin under Group Meta audience authorization.
 8. [Message Author Profile](./message-author-profile.md): lazy complete-profile lookup authorized by an exact message.
 9. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
 10. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.

@@ -18,8 +18,8 @@ In the outer message shape, `content` is always a string containing an encoded J
 | `AUDIO`        | [Media](./message/media.md)               | Audio and display metadata                      | One asset                        |
 | `FILE`         | [Media](./message/media.md)               | General file                                    | One asset                        |
 | `GALLERY`      | [Media](./message/media.md#4-gallery)     | Ordered mixed-media collection                  | Deduplicated set of item digests |
-| `LINK`         | [Link](./message/link.md)                 | Page metadata                                   | None                             |
-| `CONTACT_CARD` | [Contact Card](./message/contact-card.md) | User-address and display snapshot               | Optional avatar asset            |
+| `LINK`         | [Link](./message/link.md)                 | Page metadata                                   | Optional artwork assets          |
+| `CONTACT_CARD` | [Contact Card](./message/contact-card.md) | User or group address and display snapshot      | Optional avatar asset            |
 | `FORWARD`      | [Forward](./message/forward.md)           | Bundle root card                                | No direct card asset             |
 
 A consumer processes an item of a known type in this order:
@@ -41,7 +41,9 @@ The sole specification for `seq`, `createdAt`, `originSeq`, and `originCreatedAt
 
 ## 3. Outer message
 
-The sole definitions of `FederatedMessage`, `Address`, `ThreadAddress`, `QuoteTarget`, and `BlobDescriptor` are in [Message Envelope, Section 1](./message/envelope.md#1-wire-types).
+[Message Envelope, Section 1](./message/envelope.md#1-wire-types) defines
+`FederatedMessage`, `ThreadAddress`, `QuoteTarget`, and `BlobDescriptor` using
+the shared `Address` type from the [Core Protocol](./protocol.md#62-shared-federation-types).
 
 ### 3.1 Protocol identity and coordinate derivation
 

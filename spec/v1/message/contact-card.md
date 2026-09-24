@@ -34,7 +34,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   contain an unpaired surrogate.
 - `displayName`, `bio`, and `avatarDigest` are an immutable display snapshot selected by
   the publisher when it created its copy of the message. They are not a live
-  profile and do not change when the referenced user's profile changes.
+  profile and do not change when the referenced account's profile changes.
 - All card fields are untrusted assertions by the publisher. Receipt of a card
   MUST NOT establish account existence, account control, a relationship, profile
   authority, or permission to disclose any additional profile field.
@@ -45,19 +45,18 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   NOT treat the snapshot as a substitute for a current profile or relationship
   result.
 - A consumer MAY retain and display the immutable snapshot when the referenced
-  account is unavailable, removed, renamed, or cannot currently be resolved.
+  account is unavailable, removed, or cannot currently be resolved.
 
 ## 3. Avatar resource
 
 - `avatarDigest`, when present, identifies optional card artwork. It does not
-  identify the referenced user's current profile avatar.
+  identify the referenced account's current profile avatar.
 - A present `avatarDigest` MUST have exactly one matching descriptor in the
   outer `assets`; no other digest may appear there. When `avatarDigest` is
   absent, `assets` MUST be empty.
 - The avatar uses the same encoded-size, non-empty-image, and decoded-pixel
   constraints as the public profile avatar in [Resources, Section
-  2.2](../resources.md#22-successful-response). Because a card transports the
-  decoded resource instead of padded Base64, its `BlobDescriptor.bytes` MUST be
+  2.2](../resources.md#22-successful-response). Because the avatar is fetched as image bytes rather than embedded as Base64, its `BlobDescriptor.bytes` MUST be
   in the inclusive range 1–786,432. A consumer MUST verify the actual byte
   count, digest, image decoding, real dimensions, and the 512-pixel maximum
   for each dimension

@@ -89,7 +89,7 @@ not evidence that the thread relationship has ended.
 |  code | Name                                               | HTTP | Caller action                                                                                                                                                                                                                                                |
 | ----: | -------------------------------------------------- | ---: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 10000 | `VALIDATION_FAILED`                                |  200 | Correct the application request; MUST NOT retry unchanged.                                                                                                                                                                                                   |
-| 10001 | `NOT_FOUND`                                        |  200 | The current resource does not exist; retry only after application state changes.                                                                                                                                                                             |
+| 10001 | `NOT_FOUND`                                        |  200 | The resource is absent or not disclosed under this operation's privacy rules; retry only after application state changes.                                                                                                                                                                             |
 | 10004 | `FORBIDDEN`                                        |  200 | The current application identity may not access the resource; MUST NOT retry unchanged. For thread queries, apply the authorization-convergence exception above; other resource denials do not revoke relationships.                                         |
 | 10005 | `RATE_LIMITED`                                     |  503 | The peer is temporarily rate-limiting; retry using locally bounded, jittered backoff.                                                                                                                                                                        |
 | 10999 | `INTERNAL`                                         |  503 | Retain pins and cursors; retry with backoff.                                                                                                                                                                                                                 |
@@ -162,10 +162,9 @@ move its lower boundary because of cleanup.
 
 For a Group Meta delta below either the canonical feed's retention floor or the
 authenticated audience's visibility floor, the consumer starts a full replacement
-drain with `after=resumeAfter` and fixed `through=resumeBefore-1`. Full mode
-contains only the current roster at that boundary and does not disclose
-pre-authorization departures. The consumer discards
-no committed roster until replacement succeeds atomically and MUST NOT skip
+drain with `after=resumeAfter` and fixed `through=resumeBefore-1`. Full mode returns current Group Meta projections within the fixed boundary,
+not a historical roster or pre-authorization departures. The consumer replaces
+its committed projection only after the full drain succeeds atomically and MUST NOT skip
 full merely because its local cursor is numerically equal to or greater than
 one of the returned boundaries.
 

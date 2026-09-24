@@ -4,7 +4,8 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is normative. It defines `GET /s2s/v1/group-meta-profile`, the
 group-origin profile lookup for either the group itself or one current member.
-The request carries Group Meta evidence and does not carry a profile revision.
+The request identifies the group or member, not a profile revision. The origin
+selects the revision from its current Group Meta state.
 
 ## 1. Request
 

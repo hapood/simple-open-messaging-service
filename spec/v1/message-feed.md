@@ -6,7 +6,7 @@ Normative scope: this entire document is normative.
 This document defines the per-thread message-content query
 `GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#6-thread_content_head). Authorization, message
+[State Feed](./state-feed.md#5-thread_content_head). Authorization, message
 return, and content-retention policy are applied by the query operation. See
 [Message](./message.md) for message schemas and [Protocol](./protocol.md) for
 common rules.
@@ -38,8 +38,8 @@ is sent:
 For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
 `UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
 
-After normalization, the requested thread MUST exactly equal the authorized
-stable Thread Address. When a committed `THREAD_CONTENT_HEAD` exists, its
+The canonical thread selector MUST exactly identify the authorized stable
+Thread Address. When a committed `THREAD_CONTENT_HEAD` exists, its
 Thread Address MUST match; the absence of a head MUST NOT prevent a passive
 query authorized by an effective intent. The source does not accept any
 domain parameter declared by the
@@ -136,7 +136,7 @@ candidates = messages authorized for the current peer whose content is retained 
 
 The source returns a candidate prefix no larger than its local item/page-byte limits and valid `take`, without skipping a queryable message in that prefix. The source MAY return fewer but MUST NOT exceed the requested `take`. The source MUST be able to return an individually allocated message in full and MUST NOT skip it with a permanently empty page.
 
-`take` is only an item-count suggestion. The source MUST accept any `PositiveSafeInteger` value and MAY return fewer items under finite local item/page-byte limits. It MUST NOT return `FEDERATION_MALFORMED` merely because `take` exceeds the local page size. One item MUST NOT be split across pages. Publishers and consumers MAY set separate finite local byte limits for JSON objects, pages, and durable JSON/JSONB; v1 defines no common numeric value. A publisher or consumer MUST NOT accept truncated JSON or a partial object as a valid application fact.
+`take` is only an item-count suggestion. The source MUST accept any `PositiveSafeInteger` value and MAY return fewer items under finite local item/page-byte limits. It MUST NOT return `FEDERATION_MALFORMED` merely because `take` exceeds the local page size. One item MUST NOT be split across pages. Publishers and consumers MAY set separate finite local byte limits for messages and pages; v1 defines no common numeric value. A publisher or consumer MUST NOT accept truncated JSON or a partial object as a valid application fact.
 
 For a forward query, if candidates remain after the response,
 `scannedThrough` equals the last returned message `seq` and `hasMore: true`;
@@ -148,9 +148,9 @@ lie in `(after, scannedThrough]`. The next page uses
 For a reverse query, `scannedThrough` is direction-relative despite its name.
 If candidates remain below the response, it equals the last and therefore
 smallest returned message `seq` and `hasMore: true`; otherwise, it equals the
-inclusive lower `through` bound and `hasMore: false`. Returned messages are
+inclusive lower `queryStart` bound and `hasMore: false`. Returned messages are
 strictly decreasing and lie in `[scannedThrough, before)`. The next page uses
-`before=scannedThrough`. An empty page may scan directly down to `through`.
+`before=scannedThrough`. An empty page may scan directly down to `queryStart`.
 
 Unallocated sequences, positions omitted by the source's local history policy,
 and positions with an authoritative tombstone are scannable holes in either
@@ -249,7 +249,7 @@ messages from before or during an authorization absence, or leave those
 positions as holes, according to its local history policy. That choice MUST be
 stable for a repeated query snapshot and MUST NOT bypass current authorization.
 Content-retention policy may still skip a purged prefix through `resumeAfter`
-under Section 2.2.
+under Section 2.
 
 After receiving relationship-termination state from State Feed, the consumer MUST invalidate the current message target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, message-query `FORBIDDEN` is the fast-convergence fallback signal. Before authoring a transition, the consumer MUST atomically revalidate the current relationship state. If that state has changed since the denied request began, the denial MUST NOT author a transition and the consumer MUST resume from current durable state.
 

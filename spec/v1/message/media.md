@@ -2,7 +2,7 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`. See [Message Envelope](./envelope.md) for the shared outer message shape, asset status, coordinates, and receive rules, and [Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
+This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`. See [Message Envelope](./envelope.md) for the shared outer message shape, asset descriptors, coordinates, and receive rules, and [Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
 
 ## 1. Common rules
 
@@ -208,7 +208,7 @@ A consumer MUST reject at least the following cases:
 - The content-digest set differs from the `assets` digest set.
 - A digest, descriptor `bytes`, `width`, `height`, or `duration` violates its required type.
 - Media content repeats the resource length instead of using only the outer descriptor.
-- `name/mimeType` is absent or empty.
+- A required `name` or `mimeType` is absent or empty.
 - GALLERY `items` is empty.
 - An item lacks a field required by its kind.
 - An item carries a field allowed only for another kind, such as `duration` on IMAGE.

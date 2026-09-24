@@ -220,20 +220,27 @@ function semanticValid(schema: string, value: unknown): boolean {
       return false;
     let previousFeedId = 0n;
     let fullProfileItems = 0;
+    let fullAnnouncementItems = 0;
     for (const member of page.items ?? []) {
       const feedId = BigInt(member.feedId!);
       if (member.operation === 'GROUP_PROFILE') fullProfileItems += 1;
+      if (member.operation === 'GROUP_ANNOUNCEMENT') fullAnnouncementItems += 1;
       if (
         feedId <= previousFeedId ||
         feedId > BigInt(page.scannedThrough) ||
         (page.mode === 'full' &&
           member.operation !== 'UPSERT' &&
-          member.operation !== 'GROUP_PROFILE')
+          member.operation !== 'GROUP_PROFILE' &&
+          member.operation !== 'GROUP_ANNOUNCEMENT')
       )
         return false;
       previousFeedId = feedId;
     }
-    return page.mode !== 'full' || fullProfileItems === 1;
+    // A bounded page can omit projections compacted above its upper bound.
+    return (
+      page.mode !== 'full' ||
+      (fullProfileItems <= 1 && fullAnnouncementItems <= 1)
+    );
   }
   if (schema === 'urn:somfp:v1:error') {
     const error = value as {

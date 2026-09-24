@@ -2,7 +2,9 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-This document is entirely normative.
+This document defines normative requirements. Examples and the explicitly
+non-normative operational defaults illustrate those requirements without
+adding to them.
 
 This document defines the mandatory end-to-end interoperability profile for
 one-to-one calls. It covers both the signed `POST /s2s/v1/call`
@@ -70,8 +72,9 @@ being inferred from SDP, ICE, or WebRTC transport state.
   signal. A sending server MUST use a distinct value for each logical signal
   in a call and preserve it across retries of that signal.
 
-Both UUID fields follow `common.schema.json#/$defs/canonicalUuid`: RFC 9562,
-version field 1–8, RFC variant, lowercase hyphenated `8-4-4-4-12` form. v1 does
+Both UUID fields use the shared `CanonicalUuid` type defined by the
+[Core Protocol](./protocol.md#62-shared-federation-types): version field 1–8,
+RFC variant, lowercase hyphenated `8-4-4-4-12` form. v1 does
 not vary behavior by UUID version. The sending server is responsible for every
 wire ID regardless of whether an endpoint or server generated it.
 
@@ -253,8 +256,8 @@ confirmation, not an additional lifecycle stage.
 | ----------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `none`      | No accepted `incoming`                                        | No active binding; another op cannot create one.                        |
 | `ringing`   | Accepted `incoming`                                           | Binding exists and awaits acceptance; endpoint alerting is not implied. |
-| `accepted`  | Accepted `accepted`                                           | The callee accepted; SDP/ICE negotiation may continue.                  |
-| `connected` | Accepted callee `connected`                        | The authoritative media connection was established.                     |
+| `accepted`  | Successfully applied `accepted` frame                                           | The callee accepted; SDP/ICE negotiation may continue.                  |
+| `connected` | Successfully applied callee `connected` frame                        | The authoritative media connection was established.                     |
 | `terminal`  | First valid terminal frame or authoritative local termination | Irreversible; late-frame handling follows Section 10.                  |
 
 The `ringing` operation is an advisory acknowledgement that the callee
@@ -386,10 +389,10 @@ Caller endpoint    Caller server          Callee server     Callee endpoint
       |<-- local answer -|-------- 200 ------->|                  |
       |                  |                     |<-- media up -----|
       |                  |                     | [connect pending]|
-      |                  |<-- connected ----|                  |
+      |                  |<-- connected -------|                  |
       |                  | [connected]         |                  |
       |                  |-------- 200 ------->| [connected]      |
-      |<-- connected -|                     |                  |
+      |<-- connected ----|                     |                  |
 ```
 
 An initial offer MAY be sent after `incoming` succeeds and before acceptance.
@@ -432,7 +435,7 @@ Callee server                         Caller server (authority)
                                          | other terminal: CALL_TERMINATED
 
 Caller server                         Callee server
-  cancel before accepting accepted ----->|
+  cancel before processing accepted ----->|
                                          | ringing / acceptance pending /
                                          | accepted: enter terminal
 ```
@@ -486,6 +489,21 @@ or `missed` after acceptance.
   business result described in Sections 10 and 11.
 
 ## 8. Signal payloads, phases, and retries
+
+The caller endpoint subsystem MUST be the offerer and the callee endpoint
+subsystem MUST be the answerer for the initial negotiation, media
+renegotiation, ICE restart, and AUDIO-to-VIDEO upgrade. A callee-side
+`negotiationneeded` event MUST NOT directly produce an offer. This SOMFP
+application rule avoids offer glare; WebRTC 1.0, JSEP, and RFC 3264 do not
+require one fixed side to remain the offerer.
+
+Offer ownership is distinct from requesting a media change. Section 9 defines
+how a callee's video request triggers a caller-generated offer. v1 defines no
+callee-to-caller request for ICE restart or general renegotiation. The caller
+initiates those negotiations based on its own endpoint observations and local
+policy; a callee-local need does not by itself notify the caller. Recovery
+triggers, retry counts, and waiting periods are local policy. An unrecoverable
+media failure follows the existing `ended(failed)` rules in Sections 5 and 10.
 
 Endpoint subsystems MUST perform offer/answer processing with the
 `RTCPeerConnection` signaling state machine defined by
@@ -550,14 +568,6 @@ converge through a later lifecycle frame or the applicable finite deadline; it
 MUST NOT cause reuse of the accepted `signalId`.
 
 ## 9. AUDIO-to-VIDEO upgrade
-
-The caller endpoint subsystem MUST be the offerer and the callee endpoint
-subsystem MUST be the answerer for the initial negotiation, media
-renegotiation, ICE restart, and AUDIO-to-VIDEO upgrade. A callee-side
-`negotiationneeded` event MUST NOT directly produce an offer; the callee first
-expresses the applicable protocol request and the caller produces the offer.
-This SOMFP application rule avoids offer glare; WebRTC 1.0, JSEP, and RFC 3264
-do not require one fixed side to remain the offerer.
 
 When the callee requests an upgrade, it first sends
 `video-state {"enabled":true}` and the caller creates the new offer. A caller
@@ -760,8 +770,8 @@ termination and convergence unless the federation peer enters the hard gate.
 | Late non-retry frame for another terminal call                     | `200 CALL_TERMINATED`              | Converge to terminal and stop dependent work.    |
 | Callee is already in another active call                           | `200 CALL_BUSY`                    | End this attempt or later create a new `callId`. |
 
-Network failure and HTTP `503` MAY retry the identical frame with bounded
-backoff. An HTTP `200` response still requires envelope parsing: only `code=0`
+After a network failure or HTTP `503`, the sender MAY retry the identical frame
+with bounded backoff. An HTTP `200` response still requires envelope parsing: only `code=0`
 is success. Implementations MUST NOT branch on human-readable `message` text.
 
 ## 12. Examples
@@ -776,8 +786,8 @@ is success. Implementations MUST NOT branch on human-readable `message` text.
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ended","payload":{"endReason":"completed"}}
 ```
 
-The common `callId` illustrates alternative frames; it does not imply that
-one call traverses mutually exclusive terminal paths.
+These frames illustrate one successful lifecycle using a common `callId`.
+Their senders and delivery prerequisites are defined in Sections 5 and 6.
 
 ### 12.2 Signal frames
 

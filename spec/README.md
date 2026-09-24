@@ -20,7 +20,7 @@ spec/
     state-feed.md             Relationship/profile references and feed heads
     group-meta.md             Group roster, roles, and profile-reference sync
     authorized-profile.md     Authorized account and profile-revision lookup
-    group-meta-profile.md   Group-projection-authorized member profile lookup
+    group-meta-profile.md     Current group/member profile lookup
     message-author-profile.md Exact-message-authorized display profile query
     message-feed.md           Per-thread message query and skip-mode rules
     message-tombstone-feed.md Authoritative per-thread deletion query

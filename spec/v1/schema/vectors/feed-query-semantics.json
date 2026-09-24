@@ -3,6 +3,45 @@
   "description": "Non-wire state-machine vectors. Cursor values are exclusive committed positions.",
   "cases": [
     {
+      "name": "full scan without announcement removes the previous projection before delta",
+      "initialCursors": { "groupMeta": 4 },
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 0,
+          "through": 10,
+          "currentAnnouncement": { "feedId": 11, "text": null },
+          "responseItems": [],
+          "responseScannedThrough": 10,
+          "hasMore": false,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": 10,
+          "through": 11,
+          "responseItems": [
+            {
+              "feedId": 11,
+              "operation": "GROUP_ANNOUNCEMENT",
+              "body": { "text": null }
+            }
+          ],
+          "responseScannedThrough": 11,
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "full completion with no returned announcement removes the previous projection without inventing a clear",
+        "the source never falls back to a historical announcement below through",
+        "delta commits the explicit clear and cursor atomically",
+        "replaying an older publish cannot restore the cleared announcement"
+      ]
+    },
+    {
       "name": "state dependencies precede the combined thread head",
       "initialCursors": { "state": "4" },
       "hint": { "state": "6" },

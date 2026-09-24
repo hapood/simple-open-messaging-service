@@ -24,6 +24,19 @@
       },
       "additionalProperties": false
     },
+    "announcementBody": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 4096 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "memberItemBase": {
       "type": "object",
       "required": ["feedId", "account", "domain", "operation"],
@@ -65,6 +78,18 @@
             "body": { "$ref": "#/$defs/profileBody" }
           },
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["feedId", "operation", "body"],
+          "properties": {
+            "feedId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            },
+            "operation": { "const": "GROUP_ANNOUNCEMENT" },
+            "body": { "$ref": "#/$defs/announcementBody" }
+          },
+          "additionalProperties": false
         }
       ]
     }
@@ -82,7 +107,9 @@
     "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
     "mode": { "enum": ["full", "delta"] },
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
+    "scannedThrough": {
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+    },
     "groupMetaFeedEndId": {
       "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },

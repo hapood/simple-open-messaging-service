@@ -16,9 +16,9 @@ normative text prevails and the release package must be corrected.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
-- `group-meta.schema.json`: full and delta group-member role/profile-reference and compacted group-profile-reference projections.
+- `group-meta.schema.json`: full and delta group-member role/profile-reference, compacted group-profile-reference, and current-announcement projections.
 - `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
-- `group-meta-profile.schema.json`: complete profile snapshot served by the group origin and selected by an exact current canonical Group Meta member reference.
+- `group-meta-profile.schema.json`: complete profile snapshot selected by the origin's current group or member reference.
 - `message-author-profile.schema.json`: complete profile snapshot selected by an exact authorized message and profile revision.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
@@ -42,7 +42,7 @@ operation.
 - `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.
 - `vectors/http-message-signature.json`: a general fixed Ed25519 HTTP Message Signature vector.
 - `vectors/call-http-message-signature.json`: a completely signed `/s2s/v1/call` vector.
-- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, exact Group Meta member-profile authorization, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
+- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, current Group Meta group/member profile authorization, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
 
 ## Validation
 

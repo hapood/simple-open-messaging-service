@@ -1,6 +1,40 @@
 {
   "vectors": [
     {
+      "name": "group announcement publish and explicit clear",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": "Welcome to the group.\nPlease read the rules." }
+        },
+        {
+          "feedId": 12,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": null }
+        }
+      ]
+    },
+    {
+      "name": "group announcement clear survives full recovery",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "full",
+        "items": [
+          {
+            "feedId": 12,
+            "operation": "GROUP_ANNOUNCEMENT",
+            "body": { "text": null }
+          }
+        ],
+        "scannedThrough": 12,
+        "groupMetaFeedEndId": 12,
+        "hasMore": false
+      }
+    },
+    {
       "name": "forward quotes retain absent or bundle-local targets",
       "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
       "values": [

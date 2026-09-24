@@ -88,8 +88,8 @@ type FederatedMessage = FederatedMessageBase &
   means that this message has no author-profile snapshot and MUST NOT trigger a
   profile request.
 - A locally authored new message carries the revision selected for its
-  audience, normally the author's `defaultProfileRev` observed by the message
-  commit. A non-authoritative copy, accepted group submission, authoritative
+  audience, normally the author's local default revision when the message is
+  committed. A non-authoritative copy, accepted group submission, authoritative
   group distribution, mirror copy, and processing receipt MUST preserve the
   direct incoming message's `profileRev`; an intermediary MUST NOT substitute
   its own default revision or another retained version.
@@ -190,7 +190,7 @@ The corresponding content document defines type-specific conditional fields.
 | `GALLERY`                         | The complete deduplicated set of item digests       |
 
 - Each digest appears at most once.
-- The deduplicated set of digests referenced by content MUST exactly equal `assets`.
+- The deduplicated set of digests referenced by content MUST exactly equal the digest set in `assets`.
 - `BlobDescriptor.bytes` is the resource's sole declared length. A consumer may use it for local size and quota checks before download; after a complete download, it MUST still validate both the actual byte count and digest.
 - Resource operations alone express whether a resource currently exists; a message descriptor carries no availability state.
 

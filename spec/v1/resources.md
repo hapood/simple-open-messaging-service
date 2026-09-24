@@ -91,7 +91,7 @@ Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 | Field         | Requirement                                                  |
 | ------------- | ------------------------------------------------------------ |
 | `account`     | Equal to the normalized path `account`                       |
-| `domain`      | Equal to the responding server's canonical logical authority |
+| `domain`      | Equal to the responding server's canonical server domain |
 | `displayName` | 1–31 code points, without unpaired surrogates                |
 | `bio`         | 0–120 code points, without unpaired surrogates               |
 | `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
@@ -109,10 +109,11 @@ requires no profile request.
 This is the public user-or-group profile for exact-account lookup. It MUST NOT contain
 relationship directions, group membership, presence, contact information,
 deletion reasons, or another peer's visibility state.
-State Feed and Group Meta do not publish display profiles. Established user and
-group threads use [Authorized Profile](./authorized-profile.md); exact current
-Group Meta member references use [Group Meta Profile](./group-meta-profile.md)
-served by the group origin. A mirror requests that snapshot from the group
+State Feed and Group Meta do not publish display profiles.
+[Authorized Profile](./authorized-profile.md) returns a requested account revision
+under its disclosure rules. [Group Meta Profile](./group-meta-profile.md) returns
+the origin's currently referenced group or member snapshot under Group Meta
+audience authorization. A mirror requests that snapshot from the group
 origin, caches it for local use, and never redirects another mirror to the
 member's account home. A peer that
 needs the version selected by a message uses the exact-message-authorized
@@ -136,9 +137,10 @@ coordinates differ; the returned snapshot shape does not.
 - Shared signature, recognition, identity, policy, and service failures follow
   the error registry.
 
-Reads have no side effects. The consumer MUST validate the complete envelope,
-field constraints, account/domain binding, and avatar before atomically
-applying `profileRev`. An error response MUST NOT modify a saved profile.
+Profile reads do not mutate business state on the publisher. The consumer MUST
+validate the complete envelope, field constraints, account/domain binding, and
+avatar before atomically applying the returned profile snapshot. An error
+response MUST NOT modify a saved profile.
 
 ### 2.4 Example
 
@@ -331,7 +333,7 @@ reference, or current recognition is insufficient.
 ### 4.2 Successful response and invariants
 
 Success `data` is the closed `ForwardWireBundle` defined by
-[Message Section 11](./message.md#11-forward), with these additional invariants:
+[FORWARD Message and Bundle, Section 3](./message/forward.md#3-bundle-schema), with these additional invariants:
 
 - `id` equals the path `bundleId`. A `children[].id` is not an independent query
   target.
@@ -378,8 +380,9 @@ publisher re-establishes the outer FORWARD binding, durable audience, and the
 digest's membership in that root's complete closure before returning bytes.
 
 A consumer MAY download the same digest only once and asset ordering has no
-protocol meaning. A range retry preserves every query parameter and changes
-only `Range`. An asset becomes available only after its complete length equals
+protocol meaning. A range retry preserves the resource path and every query
+parameter; only the requested byte range may change. Retry time fields and
+signatures follow the shared transport rules. An asset becomes available only after its complete length equals
 `BlobDescriptor.bytes` and its complete digest verifies. A failed asset does
 not change the validity of the already verified closure and does not authorize
 digest-based retrieval from another publisher.

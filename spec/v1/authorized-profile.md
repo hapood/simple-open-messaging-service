@@ -14,7 +14,8 @@ GET /s2s/v1/profiles/:account?rev=:rev
 ```
 
 `account` MAY be a `UserAccount` or `GroupAccount` owned by the responding
-domain. `rev` is required and is a canonical positive decimal `SafeInteger`.
+domain. `rev` is required and uses canonical positive decimal text with a value
+no greater than `SafeInteger`.
 The value `0` is the no-profile sentinel and MUST NOT be requested. Omitting
 `rev`, sending `0`, or including any other query parameter returns
 `400 FEDERATION_MALFORMED`.
@@ -42,11 +43,9 @@ interface AuthorizedProfile {
 Name, biography, and avatar are updated together in one profile operation and
 produce one new revision. Within one `(account, domain)`, a `profileRev` is
 permanently bound to one immutable snapshot and MUST NOT be reused, even after
-that snapshot is no longer referenced or retained. A publisher may keep a local
-`defaultProfileRev` for authoring new references, but that pointer is not a
-federated fact, does not make other revisions inactive, and is not remotely
-queryable. A future publisher may select different revisions for different
-peers. The response `profileRev` MUST equal the requested `rev`.
+that snapshot is no longer referenced or retained. A publisher's local default revision for new references is not a federated
+fact, does not make other revisions inactive, and is not remotely queryable.
+A publisher may select different revisions for different peers. The response `profileRev` MUST equal the requested `rev`.
 
 Revision allocation begins at `1`. The response object and every field shown
 above are required; `profileRev` is never absent or `null`. The value `0` is not
@@ -69,16 +68,14 @@ An effective `REQUESTED` or `ACCEPTED` Relationship Intent with a positive
 read exactly the author's referenced `(account, profileRev)`. The other endpoint
 MAY be a user or a group. The publisher MUST verify that the requested account
 is the intent author, the requested revision equals the intent's `profileRev`,
-and the authenticated signer hosts the opposite endpoint in the same identity
-namespace. An expired `REQUESTED` direction and a `REVOKED` direction grant no
+and the authenticated signer is the peer identity hosting the opposite endpoint. An expired `REQUESTED` direction and a `REVOKED` direction grant no
 access. No intent authorizes a different account or revision.
 
 The publisher MUST evaluate its current disclosure policy for every request.
 Outside the mandatory Relationship Intent grant above, knowledge of `account`
 and `rev`, recognition of the peer, friendship, group audience, or access to a
 different revision does not by itself require the publisher to disclose this
-revision. Any additional policy and its local authorization index are
-implementation-defined.
+revision. Additional disclosure is local policy.
 
 Message-bound profile access uses [Message Author Profile](./message-author-profile.md)
 so the publisher can validate the exact thread and message allocation. This

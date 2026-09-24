@@ -7,7 +7,7 @@ This document is entirely normative.
 This document defines the per-thread authoritative deletion query
 `GET /s2s/v1/message-tombstones`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#6-thread_content_head).
+[State Feed](./state-feed.md#5-thread_content_head).
 
 ## 1. Authoritative deletion facts
 
@@ -15,9 +15,9 @@ tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
 type MessageTombstoneType = 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 
 interface MessageTombstone {
-  deletionSeq: PositiveThreadSequence;
+  deletionSeq: ThreadSequence;
   thread: ThreadAddress;
-  messageSeq: PositiveThreadSequence;
+  messageSeq: ThreadSequence;
   type: MessageTombstoneType;
   deletedAt: EpochMilliseconds;
 }
@@ -37,8 +37,12 @@ It is neither a copy of the target message's nullable outer `originSeq` nor a
 globally stable coordinate across arbitrary publishers.
 
 For P2P, the target message author's home is the publishing authority for both
-types. For GROUP, the group origin MAY publish either type for any message in
-its accepted group timeline. A member home MAY publish either type only for
+types. Local moderation of a peer-authored P2P replica is local-only and MUST
+NOT be published. For GROUP, the group origin MAY publish either type for any
+message in its accepted group timeline. Its `MODERATION_REMOVAL` also applies
+to a local author's retained home message on a member mirror, but its
+`USER_RETRACTION` for that local author is ignored there: the origin cannot
+retract on behalf of a local author. A member home MAY publish either type only for
 messages authored by accounts it manages, and only to the group's origin.
 It MUST NOT publish a tombstone for another home's author or send group
 tombstones directly to other mirrors.
@@ -61,8 +65,9 @@ neither contiguous values nor a separate allocator for every thread. It is
 independent of message `seq`, `messageSeq`, and feed IDs. A publisher MUST NOT
 allocate `deletionSeq` greater than `SafeInteger - 1`; `messageSeq` has the
 same limit because it references a message `seq`. `tombstoneEndSeq` is a JSON
-`ThreadSequence`: it is `0` when no deletion exists and otherwise identifies
-the inclusive positive deletion end. Tombstone-query response boundaries are
+`0 | ThreadSequence`: it is `0` when no deletion has yet been allocated in
+this coordinate space and otherwise identifies the inclusive positive deletion
+end. Tombstone-query response boundaries are
 JSON `SafeInteger` values. A publisher MUST retain authoritative tombstones
 permanently and MUST NOT discard them or
 reset their sequence because of capacity, age, peer acknowledgement, renewed
@@ -85,9 +90,9 @@ inclusive upper bound. Both belong to the thread-local `deletionSeq` space,
 not the State Feed ID or message-sequence space. The selected window is
 `(after, through]` in increasing order. `before` is not a valid parameter.
 Invalid combinations or bounds return `400 FEDERATION_MALFORMED`.
-`after` and `through` are canonical decimal HTTP query strings whose parsed
-values MUST be at most `SafeInteger`; they are not JSON string representations
-of the response coordinates.
+`after` and `through` use canonical non-negative decimal text in the HTTP
+query, with values no greater than `SafeInteger`. Response coordinates are
+JSON integers.
 
 A query MAY also carry `maxMessageSeq`, a non-negative canonical decimal string
 no greater than `SafeInteger - 1`. It is an inclusive upper bound in the
@@ -147,7 +152,7 @@ that this peer may learn and, when `maxMessageSeq` is present, whose exposed
 `messageSeq` is at most that bound.
 Increasing ordering, `scannedThrough`, `hasMore`, gaps, next-page cursor, and
 fixed-`through` calculations are identical to the forward rules in Message
-Query Section 2.2. An empty page may advance to the selected bound but MUST NOT
+Query Section 2. An empty page may advance to the selected bound but MUST NOT
 skip an authoritative fact in the interval that this peer may learn.
 
 A tombstone excluded only by `maxMessageSeq` is a scannable gap. The source
@@ -162,8 +167,7 @@ drain.
 
 A consumer initializing a thread for which it has no previous replica in the
 publisher's message-coordinate space MUST NOT query the tombstone history that
-precedes its retained remote authorization snapshot. The relationship activation
-transaction initializes its deletion cursor directly to that authorization's
+precedes its retained remote authorization snapshot. The consumer initializes its deletion cursor to that authorization's
 `tombstoneEndSeq`, including zero. This is safe because the
 source message query does not return messages already terminated by an
 authoritative tombstone, and the consumer has no older local replica to remove.
@@ -212,9 +216,9 @@ After receiving relationship termination through the state feed, a consumer
 MUST invalidate that peer/thread's current deletion target. If a tombstone
 query first returns `FORBIDDEN` because the current relationship is invalid,
 the consumer MUST apply the current-state-guarded P2P or GROUP convergence rules in
-[Message Feed](./message-feed.md), stop every query direction covered by a
-matching epoch, invalidate its pending ends, and prioritize draining the State
-Feed again. A denial invalidated by newer relationship state authors no
+[Message Query, Section 4](./message-feed.md#4-authorization-and-state-reconciliation),
+stop the query directions covered by the revalidated relationship state,
+invalidate their pending bounds, and prioritize draining State Feed again. A denial invalidated by newer relationship state authors no
 transition and resumes from current durable state. This handling MUST NOT
 decrease the State Feed cursor or undo an applied authoritative tombstone.
 
@@ -231,7 +235,11 @@ The consumer MUST validate the authority binding separately for each direction:
 
 - For P2P, the source MUST be the target message author's domain.
 - A group mirror MUST accept group tombstones only from the known group origin.
-  That origin has authority over every author in its accepted group timeline.
+  The origin may moderate any author in its accepted timeline, including an
+  author hosted by the mirror. When the target is known to be locally authored,
+  the mirror ignores origin `USER_RETRACTION` (including echoes of its own
+  retraction), without creating a pending deletion. A mirror's own moderation of another home's
+  author remains local-only and MUST NOT be published to the origin.
 - A group origin receiving a member-home tombstone MUST verify that the target
   was authored by an account managed by that authenticated source, and bind the
   source's `messageSeq` to the accepted submission. Both tombstone types have
@@ -241,8 +249,15 @@ The consumer MUST validate the authority binding separately for each direction:
 If an authoritative origin tombstone arrives before its target message, or a
 P2P tombstone arrives before its target, the accepted
 fact remains effective for `(source domain, thread, messageSeq)` and the
-consumer completes author-binding validation when the message arrives. A
-mismatch rejects the target message and has no other protocol effect. A
+consumer completes author-binding validation when the message or its validated
+processing receipt establishes the target binding. Until then, a retained
+origin `USER_RETRACTION` is provisional because the tombstone alone contains
+no author identity. If that binding identifies a locally authored
+message, the mirror MUST discard the provisional origin `USER_RETRACTION`
+without deleting the local message or changing any already applied local
+deletion. The local-author exception takes precedence over the deletion
+application and convergence rules below. Any other authority-binding mismatch
+rejects the target message and has no other protocol effect. A
 member-home tombstone is authoritative within that home's author scope, but a
 different mirror MUST receive the group's translated fact directly from the
 group origin rather than apply the member home's publication.

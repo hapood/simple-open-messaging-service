@@ -1,6 +1,65 @@
 {
   "vectors": [
     {
+      "name": "full group meta rejects duplicate announcement projections",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "full",
+        "items": [
+          {
+            "feedId": 11,
+            "operation": "GROUP_ANNOUNCEMENT",
+            "body": { "text": "Old" }
+          },
+          {
+            "feedId": 12,
+            "operation": "GROUP_ANNOUNCEMENT",
+            "body": { "text": null }
+          }
+        ],
+        "scannedThrough": 12,
+        "groupMetaFeedEndId": 12,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group announcement rejects empty or malformed bodies and foreign fields",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT" },
+        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT", "body": null },
+        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT", "body": {} },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": "" }
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": 1 }
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": "Notice", "profileRev": 1 }
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "account": "alice",
+          "domain": "a.example",
+          "body": { "text": "Notice" }
+        },
+        {
+          "feedId": 0,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": { "text": null }
+        }
+      ]
+    },
+    {
       "name": "forward bundle rejects removed CALL entry",
       "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
       "value": {

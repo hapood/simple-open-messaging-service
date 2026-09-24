@@ -110,13 +110,13 @@ type RelationshipIntentBody = RelationshipIntentFields &
   (
     | {
         status: 'REQUESTED' | 'ACCEPTED';
-        messageEndSeq: ThreadSequence;
-        tombstoneEndSeq: ThreadSequence;
+        messageEndSeq: 0 | ThreadSequence;
+        tombstoneEndSeq: 0 | ThreadSequence;
       }
     | {
         status: 'REVOKED';
-        messageEndSeq?: ThreadSequence;
-        tombstoneEndSeq?: ThreadSequence;
+        messageEndSeq?: 0 | ThreadSequence;
+        tombstoneEndSeq?: 0 | ThreadSequence;
       }
   );
 ```
@@ -165,8 +165,8 @@ expires or becomes `REVOKED`.
 
 A profile update by itself MUST NOT mutate or republish a
 `RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its
-`profileRev`. Consequently, a peer with no later peer-authored message keeps
-displaying the revision referenced by the relationship flow. P2P profile
+`profileRev`. Consequently, a receiver that observes no later message from the
+profile's user keeps displaying the revision referenced by the relationship flow. P2P profile
 changes become visible through a later message carrying a different
 `profileRev`, not through relationship-state churn.
 
@@ -266,8 +266,8 @@ deletion.
 
 ```ts
 interface ThreadContentHeadBody {
-  messageEndSeq: ThreadSequence;
-  tombstoneEndSeq: ThreadSequence;
+  messageEndSeq: 0 | ThreadSequence;
+  tombstoneEndSeq: 0 | ThreadSequence;
   groupMetaFeedEndId?: SafeInteger;
 }
 ```

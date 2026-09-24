@@ -12,7 +12,7 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | State Feed              | Core, Recognition             | Mandatory                                                 |
 | Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                   |
 | Authorized Profile      | Core, Group Meta, Message     | Mandatory account/revision profile lookup                 |
-| Group Meta Profile    | Core, Group Meta              | Mandatory asymmetric exact-member lookup                  |
+| Group Meta Profile    | Core, Group Meta              | Mandatory current group/member profile lookup                  |
 | Message Author Profile  | Core, Group Meta, Message     | Mandatory exact-message profile lookup                    |
 | Message Query           | Core, Recognition             | Mandatory                                                 |
 | Message Tombstone Query | Core, Message                 | Mandatory                                                 |
@@ -85,6 +85,32 @@ observable requirements:
   timeline message or further receipt.
 - A P2P forward asset derives its outer author from `authorRef`; it does not
   require the GROUP-only `author` field.
+
+## Group announcement checks
+
+- A new or upgraded group establishes its current `GROUP_ANNOUNCEMENT`
+  projection before serving the feed. Publishing, editing, and clearing are
+  origin-authorized owner/admin mutations, serialized with authorization at
+  commit time; mirrors cannot author canonical replacements.
+- A publish followed by an edit and clear uses strictly increasing coordinates
+  under one group-wide stable key. A delta may skip the compacted edits but
+  applies the retained `text: null` clear atomically with its cursor. Replays
+  cannot restore an older announcement.
+- A full drain returns the current announcement, including a clear, even when
+  its coordinate predates the audience floor. It never serves an older value
+  merely because that value fits a requested upper boundary.
+- Successful full recovery replaces the announcement projection with the one
+  returned by the complete scan. If the scan returns none, it removes the
+  previous projection without inventing a `text: null` clear. An announcement
+  returned by an earlier page is applied even if the origin later replaces it
+  above the fixed boundary; subsequent delta synchronization applies that
+  update. A failed full drain changes neither committed state nor cursor.
+- An announcement-only mutation durably schedules the existing thread-head
+  publication path with a newer Group Meta bound and unchanged message and
+  deletion bounds. A lost hint is recoverable through normal reconciliation.
+- Revocation denies further announcement reads; reauthorization uses full
+  recovery at the new visibility floor. Neither revocation nor dissolution
+  requires a terminal announcement clear.
 
 ## Independent validation
 

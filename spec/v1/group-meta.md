@@ -6,7 +6,8 @@ This document is entirely normative. `GET /s2s/v1/group-meta` exposes the one
 canonical Group Meta Feed owned by a group's origin. The feed is the origin's
 authoritative member roster and role state; it is not copied once per target
 peer. Mirrors derive group membership and the owner from this feed. It also carries the
-group's exact profile revision as a compacted `GROUP_PROFILE` item. Member
+group's exact profile revision as a compacted `GROUP_PROFILE` item and its
+current announcement as a compacted `GROUP_ANNOUNCEMENT` item. Member
 items carry an exact immutable profile reference but no member name, avatar, or
 biography. No group settings,
 owner field, active flag, dissolution flag, or complete roster is carried by
@@ -98,10 +99,19 @@ interface GroupMetaProfileItem {
   };
 }
 
+interface GroupMetaAnnouncementItem {
+  feedId: PositiveSafeInteger;
+  operation: 'GROUP_ANNOUNCEMENT';
+  body: {
+    text: string | null;
+  };
+}
+
 type GroupMetaItem =
   | GroupMetaUpsertItem
   | GroupMetaDepartItem
-  | GroupMetaProfileItem;
+  | GroupMetaProfileItem
+  | GroupMetaAnnouncementItem;
 
 interface GroupMetaMemberBody {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
@@ -121,9 +131,10 @@ Member items have stable key `(member account, member domain)`. Their required,
 non-null `profileRev` selects an immutable complete profile snapshot retained by the
 group origin when positive. The value `0` means that the projection has no
 profile; the consumer MUST NOT issue a Group Meta Profile request for it. A
-positive reference is resolved through
-[Group Meta Profile](./group-meta-profile.md) and is not an assertion about
-the member's default or numerically newest profile. A member profile update by
+positive reference identifies the selected snapshot, not the member's default
+or numerically newest profile. [Group Meta Profile](./group-meta-profile.md)
+returns the origin's current member reference, which may have changed since
+this feed item was read. A member profile update by
 itself MUST NOT republish a member item or advance this feed.
 
 The `UPSERT` that first makes a membership current MUST carry the exact
@@ -138,7 +149,7 @@ The single
 `GROUP_PROFILE` projection has a separate group-wide stable key and carries no
 member identity. Its `profileRev` applies to the page's group `account`. Group
 Meta does not carry the group name, biography, or avatar bytes. A zero value
-means that the group has no profile and MUST NOT trigger Authorized Profile.
+means that the group has no profile and MUST NOT trigger a profile query.
 
 When the group profile changes, the origin allocates one new `GROUP_PROFILE`
 item in the canonical group feed and advances the group's
@@ -146,8 +157,54 @@ item in the canonical group feed and advances the group's
 for the same stable key; compaction preserves the new item's allocated `feedId`
 rather than retaining or reusing the older item's coordinate. The consumer
 selects the committed `GROUP_PROFILE` item with the greatest `feedId`; it does
-not compare `profileRev` values. It resolves that exact `(group account,
-profileRev)` through [Authorized Profile](./authorized-profile.md).
+not compare `profileRev` values. To request that exact revision, it uses
+[Authorized Profile](./authorized-profile.md), subject to that operation's
+disclosure rules. To resolve the origin's current group reference, it uses
+[Group Meta Profile](./group-meta-profile.md) with `subject=GROUP`, subject to
+Group Meta audience authorization. The latter may return a different revision;
+it does not resolve an earlier feed item.
+
+### 2.1. Current group announcement
+
+`GROUP_ANNOUNCEMENT` has one group-wide stable key, distinct from
+`GROUP_PROFILE` and every member key. It carries no member identity. Its closed
+body contains only `text`: either plain text of 1–4096 Unicode code points or
+`null`, meaning explicitly no announcement. Empty strings are invalid. Text
+MUST NOT be interpreted as HTML, executable markup, message content, or an
+asset reference. No profile lookup or additional resource fetch is required.
+
+The origin MUST establish an initial `text: null` projection before serving a
+new group's feed. Publishing, editing, and clearing replace this same stable
+key with a newly allocated `feedId` from the existing group allocator. Clearing
+MUST publish `text: null`; it MUST NOT delete the projection or emit `DEPART`.
+The latest projection, including a clear, MUST be retained for full recovery.
+An existing group adopting this contract MUST establish its current announcement
+(or `null`) before serving the extended feed.
+
+Only the group origin authors this fact. It MUST authorize the initiating user
+as a current `OWNER` or `ADMIN` at commit time; origin policy MAY further
+restrict editing. The local command API is outside this protocol. Mirrors MUST
+NOT author or forward announcement mutations as canonical facts. The origin
+commits the replacement and durable thread-head fan-out work atomically.
+Announcement changes advance `groupMetaFeedEndId` and publish through the same
+confirmed-audience head path even when message and tombstone bounds are
+unchanged. They MUST NOT allocate a message sequence or mutate membership,
+Relationship Intent, or a profile revision.
+
+Consumers select the committed announcement with the greatest `feedId`, not a
+wall-clock timestamp. This is a current-state register, not an announcement
+history, a list of pinned messages, or a read-receipt channel. Intermediate
+edits may be compacted. A displayed announcement has no implied author or
+publication time; implementations MUST NOT infer either from `feedId`.
+
+The existing Group Meta audience and visibility-floor rules apply unchanged.
+A new or reauthorized peer obtains only the current announcement in full mode,
+including a projection older than its visibility floor, never a historical
+announcement selected as of `through`. Loss of authorization forbids further
+reads; retained replica data is not an access grant, and no terminal clear is
+sent to a departing peer. Dissolution does not require an announcement item.
+
+### 2.2. Page application and coordinate semantics
 
 For one consistent source snapshot:
 
@@ -168,6 +225,7 @@ A clipped full drain may temporarily omit that owner's newer coordinate; the
 receiver derives the displayed owner when its current projection has that
 role. Its local authorization remains governed by the confirmed local
 relationship, not by Group Meta rows. Non-member-derived settings
+other than the explicitly specified group profile and announcement projections
 are local policy and are not federated facts.
 
 Only `UPSERT` carries role and profile reference state. `DEPART` is a distinct
@@ -188,12 +246,22 @@ Full mode scans Group Meta with a fixed upper coordinate `through`. It returns
 at most one `UPSERT` per member at or below that boundary.
 It MUST NOT return `DEPART` items or members whose current operation is
 `DEPART`. It returns the current `GROUP_PROFILE` item when its coordinate is
-at or below `through`.
+at or below `through`. It also returns at most one current
+`GROUP_ANNOUNCEMENT` item, including `text: null`, when its coordinate is at or
+below `through`; it MUST NOT substitute an older announcement if the current
+one has moved above the boundary.
 
 The consumer accumulates the bounded full drain and applies it atomically. On
 successful completion it deletes every mirror member absent from the scan.
-A failed or incomplete full drain MUST NOT alter the committed roster or
-cursor.
+The consumer MUST replace its announcement projection with the one returned
+by the complete full scan, committing it and the full cursor atomically with
+the roster. If the scan returns no announcement, the consumer MUST remove its
+previous announcement projection; absence is not an explicit `text: null`
+clear. An announcement already returned by an earlier page remains part of the
+scan even if the origin subsequently replaces it above `through`. Subsequent
+delta synchronization from `through` applies later updates under the ordinary
+feed rules. A failed or incomplete full drain MUST NOT alter the committed
+roster, announcement, or cursor.
 
 Compaction during a drain MAY remove an item formerly visible at or below
 `through`, but MUST NOT introduce a new item at or below that fixed boundary.
@@ -206,10 +274,12 @@ Meta has no historical-message-author obligation.
 
 ## 4. Delta mode
 
-Delta mode returns retained `UPSERT`, `DEPART`, and `GROUP_PROFILE` changes in
-feed order. A consumer applies member items by stable member key, applies
-`GROUP_PROFILE` by its separate group-wide stable key, and adopts its page
-cursor atomically. `DEPART` deletes the mirror's current member projection.
+Delta mode returns retained `UPSERT`, `DEPART`, `GROUP_PROFILE`, and
+`GROUP_ANNOUNCEMENT` changes in feed order. A consumer applies member items by
+stable member key and group profile and announcement items by their respective
+group-wide stable keys, and adopts its page cursor atomically. Announcement
+bodies replace the previous value completely, including an explicit clear.
+An absent announcement in a delta page leaves its committed value unchanged. `DEPART` deletes the mirror's current member projection.
 Items at or below the committed feed cursor are already applied and MUST NOT be
 replayed.
 
@@ -223,7 +293,7 @@ audience visibility floor or the feed's delta retention floor, the source MUST r
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with
 `mode=full`, `after=resumeAfter`, and fixed
-`through=resumeBefore-1`. It MUST discard no committed roster until that
+`through=resumeBefore-1`. It MUST discard no committed roster or announcement until that
 replacement full drain succeeds atomically.
 
 ## 5. State-feed dependency

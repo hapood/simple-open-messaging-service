@@ -2,7 +2,7 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-Operations：
+Operations:
 
 - `POST /s2s/v1/recognize`
 - `GET /s2s/v1/health`
@@ -101,7 +101,7 @@ A node MUST retain outside the lifecycle the original evidence and reason causin
 
 Health's `available | degraded | unavailable` is a privacy projection of the
 responder's acceptance and receive readiness for the requester, not a copy of
-the requester's lifecycle. A valid `available` or `degraded` response supplies
+either server's bilateral peer lifecycle. A valid `available` or `degraded` response supplies
 peer-acceptance evidence equivalent to Recognize `OK` and current reachability
 evidence. It MUST NOT cause the requester to enter `halted`. An ordinary
 operation MUST NOT authorize solely from a lifecycle label. Admission also
@@ -149,7 +149,7 @@ indivisible; an intermediate state cannot authorize traffic.
 | Network failure, timeout, or HTTP `503`               | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark reachability absent                       | `establishing` if acceptance is unknown, otherwise `degraded`      |
 | Verifiable hard-security or policy failure            | Any non-`halted`                          | Retain the original security evidence and stop automatic communication              | `halted`                                                           |
 
-Only an HTTP `409` carrying a fatal code registered here from the target peer of this request, over the same hostname-verified TLS connection and authority, or a locally validated hard pinned-root, version, or policy conflict MAY trigger `halted`. An unauthenticated proxy response, TLS or connection failure, timeout, HTTP `503`, malformed response, or Health `unavailable` MUST NOT trigger `halted`; those failures preserve acceptance evidence and affect only reachability.
+Only an HTTP `409` carrying a fatal code in the Stable Error Registry from the target peer of this request, over the same hostname-verified TLS connection and authority, or a locally validated hard pinned-root, version, or policy conflict MAY trigger `halted`. An unauthenticated proxy response, TLS or connection failure, timeout, HTTP `503`, malformed response, or Health `unavailable` MUST NOT trigger `halted`; those failures preserve acceptance evidence and affect only reachability.
 
 After entering `halted`, the protocol defines no automatic recovery path or administration, approval, reset, or recovery interface. When and how to leave `halted` is local administration. Before explicit administrator action, an implementation MUST NOT automatically retry Recognize or Health, resume the data plane, or replace the root pin. Health projects `halted` and every cause of it uniformly as `unavailable`.
 
@@ -193,7 +193,7 @@ the responder's receive path is prepared.
 
 Before sending Recognize to peer domain `B`, A MUST:
 
-1. Locate B using the SRV, TLS, and authority rules in protocol.md.
+1. Locate B using the SRV, TLS, and authority rules in [Transport and Security, Section 2](./transport-security.md#2-network-discovery-transport-and-signature-security).
 2. Fetch B's `/.well-known/somfp` over HTTPS with successful hostname verification.
 3. Select the highest common major version and require the selected version to be `1`, matching the request path.
 4. Strictly decode `rootKey.ed25519` to exactly 32 bytes.
@@ -211,16 +211,19 @@ network uncertainty as rejection or identity loss.
 
 ### 4.2 The recipient validates the recognition claim
 
-After receiving A's Recognize request, B MUST:
+After receiving A's Recognize request, B MUST satisfy the following checks.
+These are recognition-specific requirements, not an alternative validation
+order; [Transport and Security, Section 3.5](./transport-security.md#35-validation-order-and-failure-boundaries)
+governs request validation:
 
-1. Extract canonical signer domain A from the HTTP Message Signature `keyid`.
-2. Require the body to be the closed empty JSON object `{}`.
-3. Use A's hostname-verified HTTPS well-known document to validate A's root, certificate, and request signature.
-4. If a root pin or prior authenticated record exists for A, require the newly obtained root to match it byte for byte.
-5. Apply local admission policy and verify that B currently permits establishing this peer.
+- Extract canonical signer domain A from the HTTP Message Signature `keyid`.
+- Require the body to be the closed empty JSON object `{}`.
+- Use A's hostname-verified HTTPS well-known document to validate A's root, certificate, and request signature.
+- If a root pin or prior authenticated record exists for A, require the newly obtained root to match it byte for byte.
+- Apply local admission policy and verify that B currently permits establishing this peer.
 
-Fetching and validating A's well-known document proves only that the request was
-made with A's current Federation signing key. B's subsequent atomic pinning,
+Validating A's well-known document and the request's HTTP signature proves
+that the request was signed with A's currently authorized Federation signing key. B's subsequent atomic pinning,
 policy decision, and receive-path preparation establish B's local recognition
 of A. A learns that B accepts A from B's valid `OK`, B's Recognize, or B's
 valid `available` or `degraded` Health result.
@@ -245,7 +248,10 @@ The body is a closed empty object. The signer domain is established by the
 validated `keyid`, the recipient domain by the signed `@authority`, and the
 protocol version by `/s2s/v1`; the body repeats none of them.
 
-The request MUST be constructed in the common order defined in protocol.md: final compact JSON UTF-8 bytes, `Content-Digest`, `Date` and signature parameters, RFC 9421 signature base, then Ed25519 `Signature`. The protocol does not generally require compact serialization for JSON objects, but the digest and signature MUST cover the exact bytes sent. The body MUST NOT be serialized again after signing.
+The request MUST be constructed in the common order defined in
+[Transport and Security, Section 3](./transport-security.md#3-request-construction-overview):
+final JSON UTF-8 bytes, `Content-Digest`, `Date` and signature parameters,
+RFC 9421 signature base, then Ed25519 `Signature`. The protocol does not generally require compact serialization for JSON objects, but the digest and signature MUST cover the exact bytes sent. The body MUST NOT be serialized again after signing.
 
 ### 5.2 Recipient commit boundary and `OK`
 
@@ -274,7 +280,7 @@ Content-Type: application/json
 }
 ```
 
-The recipient MUST first parse the body as `application/json`, then require an object containing exactly one member, `ok`, whose JSON Boolean value is `true`. Thus `{"ok":true}` and the formatted representation above are valid; `{"ok":1}`, `{"ok":true,"extra":null}`, `[true]`, an empty body, and trailing non-whitespace data are invalid. An implementation MUST NOT determine success from the raw UTF-8 bytes, whitespace, or object-member layout.
+Requester A MUST parse B's response body as `application/json`, then require an object containing exactly one member, `ok`, whose JSON Boolean value is `true`. Thus `{"ok":true}` and the formatted representation above are valid; `{"ok":1}`, `{"ok":true,"extra":null}`, `[true]`, an empty body, and trailing non-whitespace data are invalid. An implementation MUST NOT determine success from the raw UTF-8 bytes, whitespace, or object-member layout.
 
 B MUST NOT return `OK` before making all required effects durably recoverable as
 one externally indivisible commit. A may adopt B's acceptance evidence only
@@ -365,7 +371,7 @@ B validates A's Recognize under Section 4.2. When all validation and policy chec
 | Malformed JSON, header, or type                                          |  400 | `FEDERATION_MALFORMED`                    | Do not commit new recognition effects                                                                     |
 | Path version disabled or no common version                               |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact                                    |
 | Invalid certificate or HTTP signature                                    |  401 | `FEDERATION_BAD_SIGNATURE`                | Do not commit recognition effects; do not replace a root pin merely because signature verification failed |
-| Recognize body is not the closed empty object                            |  400 | `FEDERATION_MALFORMED`                    | Correct the request shape                                                                                 |
+| Recognize body is not the closed empty object                            |  400 | `FEDERATION_MALFORMED`                    | Reject the malformed request without committing recognition effects                                       |
 | Local policy blocks A                                                    |  409 | `FEDERATION_PEER_BLOCKED`                 | Record the policy reason and enter `halted`; do not commit a new fact                                     |
 | A root obtained through hostname-verified HTTPS differs from its old pin |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the old pin, record an identity contradiction, and enter `halted`                                  |
 | A is already halted for an identity contradiction                        |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                           |
@@ -399,7 +405,7 @@ A has committed local recognition and is `establishing` if B's acceptance is not
 | HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; retain old pin                                                              | Fail closed and stop automatic communication                                    |
 | A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence                                        | Do not treat the contradiction as a network error                               |
 
-An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the three fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST take the safer action defined in protocol.md, but MUST NOT replace or delete a root pin without an identity contradiction.
+An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the three fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
 
 ### 8.3 Lost responses and recognition convergence
 
@@ -439,9 +445,7 @@ Content-Type: application/json
 
 Health queries the reachability and privacy-safe status of a known peer; it is not an application keepalive. Trigger timing, initial delay, cadence, and stopping conditions are local concerns. Automatic queries SHOULD use bounded, jittered backoff and MUST NOT create tight polling or traffic amplification.
 
-A sends the following when querying B:
-
-The request has no query and exactly zero body bytes. It MUST NOT send
+When A queries B, its Health request has no query and exactly zero body bytes. It MUST NOT send
 `Content-Type`; `Content-Digest` is the fixed digest of the empty byte string.
 The authenticated `keyid` identifies signer A directly. A successful response
 MUST include `Cache-Control: no-store`.
@@ -546,7 +550,7 @@ The following vectors use the public test signing private key `ICEiIyQlJicoKSorL
 }
 ```
 
-The exact certificate statement covered by `authorizationSignature` is defined in Section 1.3 of [Transport and security](./transport-security.md). The root, certificate, and signature above jointly validate the root-to-signing-key authorization chain.
+The exact certificate statement covered by `authorizationSignature` is defined in Section 1.3 of [Transport and Security](./transport-security.md). The root, certificate, and signature above jointly validate the root-to-signing-key authorization chain.
 
 ### 10.1 Recognize
 
