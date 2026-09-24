@@ -1310,7 +1310,7 @@ CREATE TABLE public."GroupRequestProjection" (
     CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY (ARRAY[('APPLICATION'::character varying)::text, ('INVITATION'::character varying)::text]))),
     CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval)))),
-    CONSTRAINT "GroupRequestProjection_status_check" CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('ACCEPTED'::character varying)::text, ('REVOKED'::character varying)::text])))
+    CONSTRAINT "GroupRequestProjection_status_check" CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('ACCEPTED'::character varying)::text, ('REVOKED'::character varying)::text, ('WITHDRAWN'::character varying)::text, ('REJECTED'::character varying)::text, ('EXPIRED'::character varying)::text])))
 );
 
 

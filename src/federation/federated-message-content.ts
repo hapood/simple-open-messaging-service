@@ -1,5 +1,5 @@
 import { ContentType } from '../database/enums.js';
-import { extractDigests } from '../upload/file-content.js';
+import { extractDigests, MAX_FILE_NAME_LEN } from '../upload/file-content.js';
 import {
   isValidAccount,
   isValidSomfpDomain,
@@ -122,6 +122,16 @@ function validateSingleFields(value: JsonObject, extra: string[]): void {
   if (extra.includes('duration')) assertPositiveFinite(value['duration']);
 }
 
+function validateOptionalImageName(value: JsonObject): void {
+  if (value['name'] === undefined) return;
+  assertNonEmptyString(value['name']);
+  if (
+    value['name'].length > MAX_FILE_NAME_LEN ||
+    hasUnpairedSurrogate(value['name'])
+  )
+    throw new Error('invalid image filename');
+}
+
 function validateForwardCard(value: JsonObject): void {
   assertKeys(value, ['bundleId']);
   if (
@@ -194,10 +204,17 @@ function localCasUrl(digest: string): string {
   return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
 }
 
-function projectSingleToWire(value: JsonObject, extra: string[]): JsonObject {
-  assertKeys(value, ['url', 'size', ...extra]);
+function projectSingleToWire(
+  value: JsonObject,
+  extra: string[],
+  optional: string[] = [],
+): JsonObject {
+  assertKeys(value, ['url', 'size', ...extra], optional);
   assertSafeInteger(value['size']);
-  validateSingleFields(value, extra);
+  validateSingleFields(value, [
+    ...extra,
+    ...optional.filter((key) => value[key] !== undefined),
+  ]);
   return {
     ...value,
     digest: digestFromUrl(value['url']),
@@ -229,8 +246,9 @@ export function toFederatedMessageContent(
         projectTextContent(value, false, { from: 'local', to: localDomain }),
       );
     case ContentType.IMAGE:
+      validateOptionalImageName(value);
       return JSON.stringify(
-        withoutUndefined(projectSingleToWire(value, ['w', 'h'])),
+        withoutUndefined(projectSingleToWire(value, ['w', 'h'], ['name'])),
       );
     case ContentType.FILE:
       return JSON.stringify(
@@ -276,9 +294,14 @@ export function toFederatedMessageContent(
                   ? ['name', 'mimeType']
                   : null;
         if (!fields) throw new Error('invalid gallery kind');
+        if (kind === 'IMAGE') validateOptionalImageName(record);
         return withoutUndefined({
           kind,
-          ...projectSingleToWire(record, ['kind', ...fields]),
+          ...projectSingleToWire(
+            record,
+            ['kind', ...fields],
+            kind === 'IMAGE' ? ['name'] : [],
+          ),
         });
       });
       return JSON.stringify({ items });
@@ -378,10 +401,13 @@ export function fromFederatedMessageContent(
   if (!Object.values(ContentType).includes(contentType))
     throw new Error('unknown federated content type');
   const value = parseObject(content);
-  const single = (extra: string[]): string => {
-    assertKeys(value, ['digest', ...extra]);
+  const single = (extra: string[], optional: string[] = []): string => {
+    assertKeys(value, ['digest', ...extra], optional);
     assertDigest(value['digest']);
-    validateSingleFields(value, extra);
+    validateSingleFields(value, [
+      ...extra,
+      ...optional.filter((key) => value[key] !== undefined),
+    ]);
     const size = assetBytes.get(value['digest']);
     assertSafeInteger(size);
     return JSON.stringify(
@@ -405,7 +431,8 @@ export function fromFederatedMessageContent(
         projectTextContent(value, true, { from: localDomain, to: 'local' }),
       );
     case ContentType.IMAGE:
-      return single(['width', 'height']);
+      validateOptionalImageName(value);
+      return single(['width', 'height'], ['name']);
     case ContentType.FILE:
       return single(['name', 'mimeType']);
     case ContentType.VIDEO:
@@ -434,9 +461,17 @@ export function fromFederatedMessageContent(
                   ? ['name', 'mimeType']
                   : null;
         if (!fields) throw new Error('invalid gallery kind');
-        assertKeys(record, ['kind', 'digest', ...fields]);
+        assertKeys(
+          record,
+          ['kind', 'digest', ...fields],
+          kind === 'IMAGE' ? ['name'] : [],
+        );
+        if (kind === 'IMAGE') validateOptionalImageName(record);
         assertDigest(record['digest']);
-        validateSingleFields(record, fields);
+        validateSingleFields(record, [
+          ...fields,
+          ...(kind === 'IMAGE' && record['name'] !== undefined ? ['name'] : []),
+        ]);
         const size = assetBytes.get(record['digest']);
         assertSafeInteger(size);
         return withoutUndefined({

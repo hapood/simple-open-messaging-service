@@ -81,10 +81,58 @@ describe('federated message content projection', () => {
     ).toEqual({ ...local, url: cas(digestA) });
   });
 
+  it('preserves optional image filenames across peers while accepting older images', () => {
+    const local = {
+      url: cas(digestA),
+      w: 10,
+      h: 20,
+      size: 30,
+      name: 'photo.png',
+    };
+    const wire = JSON.parse(
+      toFederatedMessageContent(
+        ContentType.IMAGE,
+        JSON.stringify(local),
+        'local.test',
+      ),
+    );
+    expect(wire).toEqual({
+      digest: digestA,
+      width: 10,
+      height: 20,
+      name: 'photo.png',
+    });
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(
+          ContentType.IMAGE,
+          JSON.stringify(wire),
+          'local.test',
+          new Map([[digestA, 30]]),
+        ),
+      ),
+    ).toEqual(local);
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.IMAGE,
+        JSON.stringify({ ...wire, name: 'x'.repeat(101) }),
+        'local.test',
+        new Map([[digestA, 30]]),
+      ),
+    ).toThrow('invalid image filename');
+  });
+
   it('projects every gallery item and preserves its order', () => {
     const local = {
       items: [
-        { kind: 'IMAGE', url: cas(digestA), size: 1, w: 2, h: 3 },
+        {
+          kind: 'IMAGE',
+          url: cas(digestA),
+          size: 1,
+          w: 2,
+          h: 3,
+          name: 'album.png',
+        },
         {
           kind: 'FILE',
           url: cas(digestB),

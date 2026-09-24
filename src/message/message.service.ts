@@ -1747,7 +1747,7 @@ export class MessageService {
    * {seq, createdAt} matches (no full bodies) — the client jumps the kernel to each seq and the server
    * renders the bubble via the normal query-messages path on demand. Keyset-paginated by message seq
    * (descending): the client's lastSeq cursor asks for the next older page. Only the text envelope and
-   * uploaded-media `name` field are searched, so author names and quote previews never create false hits.
+   * uploaded-media `name` field and visible quoted-source text are searched; author names are excluded.
    */
   async searchMessages(
     threadId: number,
@@ -1758,10 +1758,6 @@ export class MessageService {
   ) {
     const cursor =
       lastSeq === undefined ? sql.empty() : sql`AND seq < ${lastSeq}`;
-    const visibility =
-      clearedSeq === null || clearedSeq === undefined
-        ? sql.empty()
-        : sql`AND seq > ${clearedSeq}`;
     // Count and page share one statement snapshot. Count excludes cleared messages but not the cursor,
     // so every page reports the total visible matches even if that page is empty.
     const rows = await this.queryRaw<
@@ -1772,26 +1768,59 @@ export class MessageService {
       }>
     >`
       WITH matches AS NOT MATERIALIZED (
-        SELECT seq, "createdAt"
-        FROM "Message"
-        WHERE "threadId" = ${threadId}
-          AND "isDeleted" = false
-          AND "localState" = 'READY'
-          ${visibility}
+        SELECT m.seq, m."createdAt"
+        FROM "Message" m
+        WHERE m."threadId" = ${threadId}
+          AND m."isDeleted" = false
+          AND m."localState" = 'READY'
+          ${clearedSeq == null ? sql.empty() : sql`AND m.seq > ${clearedSeq}`}
           AND (
             (
-              "contentType" = 'PURE_TEXT'
-              AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+              m."contentType" = 'PURE_TEXT'
+              AND (m.content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
             )
             OR (
-              "contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
-              AND (content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
+              m."contentType" = 'PURE_TEXT'
+              AND EXISTS (
+                SELECT 1 FROM "Message" source
+                LEFT JOIN "FederationMessageReceipt" receipt
+                  ON receipt."messageId" = source.id AND receipt."threadId" = m."threadId"
+                WHERE source."threadId" = m."threadId"
+                  AND source."isDeleted" = false AND source."localState" = 'READY'
+                  AND source."contentType" = 'PURE_TEXT'
+                  ${clearedSeq == null ? sql.empty() : sql`AND source.seq > ${clearedSeq}`}
+                  AND (source.content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+                  AND (
+                    (COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,
+                        CASE WHEN m.content::jsonb -> 'quote' ? 'sourceSeq'
+                          THEN m."sourceNamespaceId" ELSE 0 END) = 0
+                      AND source.seq = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
+                        (m.content::jsonb -> 'quote' ->> 'seq')::integer))
+                    OR (
+                      COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,
+                        CASE WHEN m.content::jsonb -> 'quote' ? 'sourceSeq'
+                          THEN m."sourceNamespaceId" ELSE 0 END) > 0
+                      AND (
+                        (source."sourceNamespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."sourceNamespaceId")
+                          AND source."originSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
+                            (m.content::jsonb -> 'quote' ->> 'seq')::integer))
+                        OR (receipt."namespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."sourceNamespaceId")
+                          AND receipt."peerSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
+                            (m.content::jsonb -> 'quote' ->> 'seq')::integer))
+                      )
+                    )
+                  )
+              )
             )
             OR (
-              "contentType" = 'GALLERY'
+              m."contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
+              AND (m.content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
+            )
+            OR (
+              m."contentType" = 'GALLERY'
               AND EXISTS (
                 SELECT 1
-                FROM jsonb_array_elements(content::jsonb -> 'items') AS item
+                FROM jsonb_array_elements(m.content::jsonb -> 'items') AS item
                 WHERE (item ->> 'name') ILIKE ${`%${keyword}%`}
               )
             )

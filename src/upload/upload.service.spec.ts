@@ -247,7 +247,7 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     expect(payload.w).toBe(10);
     expect(payload.h).toBe(20);
     expect(payload.mimeType).toBeUndefined();
-    expect(payload.name).toBeUndefined();
+    expect(payload.name).toBe('photo.png');
     expect(overrideContentType).toBeUndefined();
     expect(mediaAsset.publishReady).toHaveBeenCalledOnce();
   });

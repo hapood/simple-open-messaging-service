@@ -274,7 +274,7 @@ export interface OutboundFilePayload {
   url: string;
   size: number;
   family: OutboundFileFamily;
-  /** Sanitized display filename (FILE/VIDEO/AUDIO). Omitted for IMAGE. */
+  /** Sanitized display filename; optional for images created before filename capture. */
   name?: string;
   /** Display MIME (FILE/VIDEO/AUDIO). Omitted for IMAGE. */
   mimeType?: string;
@@ -340,6 +340,7 @@ export function assembleOutboundContent(
         w: p.w ?? 0,
         h: p.h ?? 0,
         size: p.size,
+        ...(p.name !== undefined ? { name: p.name } : {}),
       });
     case ContentType.FILE:
       return JSON.stringify({

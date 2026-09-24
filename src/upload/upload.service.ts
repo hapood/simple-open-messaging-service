@@ -619,7 +619,10 @@ export class UploadService {
     }
     let mime: string | undefined;
     let name: string | undefined;
-    if (family === 'FILE') {
+    if (family === 'IMAGE') {
+      // Preserve the original display name as searchable metadata, independent of the CAS digest.
+      if (filename) name = this.sanitizeName(filename, '');
+    } else if (family === 'FILE') {
       const ft = resolveFileType(filename, declaredMime);
       mime = ft.mime;
       if (ext === 'bin' && ft.ext) ext = ft.ext;

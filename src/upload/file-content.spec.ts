@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { ContentType } from '../database/enums.js';
 import {
+  assembleOutboundContent,
   extractDigestEntries,
   parseFileContent,
   parseFileExt,
@@ -25,6 +27,35 @@ function ok(
     ...over,
   });
 }
+
+describe('assembleOutboundContent image filenames', () => {
+  const image = {
+    digest: 'a'.repeat(64),
+    url: '/uploads/msg-assets/aa/aa/' + 'a'.repeat(64),
+    size: 1,
+    family: 'IMAGE' as const,
+    w: 10,
+    h: 20,
+    name: 'searchable.png',
+  };
+
+  it('stores the filename in single-image and gallery-image message content', () => {
+    expect(
+      JSON.parse(assembleOutboundContent(ContentType.IMAGE, [image])).name,
+    ).toBe('searchable.png');
+    expect(
+      JSON.parse(assembleOutboundContent(ContentType.GALLERY, [image])).items[0]
+        .name,
+    ).toBe('searchable.png');
+  });
+
+  it('keeps images without an original filename compatible', () => {
+    const { name: _name, ...legacy } = image;
+    expect(
+      JSON.parse(assembleOutboundContent(ContentType.IMAGE, [legacy])),
+    ).not.toHaveProperty('name');
+  });
+});
 
 describe('parseFileExt', () => {
   it('lowercases the extension and strips any directory component', () => {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import { message, messageThread } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
@@ -83,6 +83,134 @@ describe('message search pagination', () => {
     expect(empty.totalCount).toBe(55);
     expect(empty.data).toEqual([]);
     expect(empty.hasMore).toBe(false);
+  });
+
+  it('matches stored media filenames, mention labels and visible quoted-source text', async () => {
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 60 })
+      .where(eq(messageThread.id, threadId));
+    await database.db.insert(message).values([
+      {
+        threadId,
+        seq: 56,
+        originSeq: 56,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({ text: 'quote-origin-needle' }),
+        creatorAccount: 'search-peer',
+        creatorDomain: 'local',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        threadId,
+        seq: 57,
+        originSeq: 57,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({
+          text: 'reply-body',
+          quote: { seq: 56, namespaceId: 0 },
+        }),
+        creatorAccount: 'search-peer',
+        creatorDomain: 'local',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        threadId,
+        seq: 58,
+        originSeq: 58,
+        contentType: ContentType.IMAGE,
+        content: JSON.stringify({
+          url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
+          w: 10,
+          h: 10,
+          size: 1,
+          name: 'image-needle.png',
+        }),
+        creatorAccount: 'search-peer',
+        creatorDomain: 'local',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        threadId,
+        seq: 59,
+        originSeq: 59,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({
+          text: '[@Mention Needle](somfp://user/search-peer%40local) hello',
+        }),
+        creatorAccount: 'search-peer',
+        creatorDomain: 'local',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        threadId,
+        seq: 60,
+        originSeq: 60,
+        contentType: ContentType.GALLERY,
+        content: JSON.stringify({
+          items: [
+            {
+              kind: 'IMAGE',
+              url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
+              size: 1,
+              w: 10,
+              h: 10,
+              name: 'gallery-needle.png',
+            },
+          ],
+        }),
+        creatorAccount: 'search-peer',
+        creatorDomain: 'local',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    const find = async (keyword: string) =>
+      (
+        await request(app.getHttpServer())
+          .post('/api/v1/search-messages')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ threadId, keyword, take: 50 })
+      ).body;
+    expect(
+      (await find('quote-origin-needle')).data.map(
+        (row: { seq: number }) => row.seq,
+      ),
+    ).toEqual([57, 56]);
+    expect(
+      (await find('reply-body')).data.map((row: { seq: number }) => row.seq),
+    ).toEqual([57]);
+    expect(
+      (await find('image-needle')).data.map((row: { seq: number }) => row.seq),
+    ).toEqual([58]);
+    expect(
+      (await find('gallery-needle')).data.map(
+        (row: { seq: number }) => row.seq,
+      ),
+    ).toEqual([60]);
+    expect(
+      (await find('Mention Needle')).data.map(
+        (row: { seq: number }) => row.seq,
+      ),
+    ).toEqual([59]);
+    await database.db
+      .update(messageThread)
+      .set({ clearedSeq: 56 })
+      .where(eq(messageThread.id, threadId));
+    expect((await find('quote-origin-needle')).data).toEqual([]);
+    await database.db
+      .update(messageThread)
+      .set({ clearedSeq: null })
+      .where(eq(messageThread.id, threadId));
+    await database.db
+      .update(message)
+      .set({ isDeleted: true })
+      .where(and(eq(message.threadId, threadId), eq(message.seq, 56)));
+    expect((await find('quote-origin-needle')).data).toEqual([]);
   });
 
   it('excludes cleared history from both the total and paginated results', async () => {

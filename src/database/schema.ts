@@ -21,10 +21,7 @@ import {
   unique,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import {
-  RequestProjectionStatus,
-  type RequestProjectionStatusValue,
-} from '../../shared/request-projection-status.js';
+import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 
 const bytea = customType<{ data: Buffer }>({
   dataType: () => 'bytea',
@@ -92,10 +89,6 @@ export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'ACCEPTED',
   'REVOKED',
 ]);
-export const requestProjectionStatus = pgEnum(
-  'RequestProjectionStatus',
-  RequestProjectionStatus,
-);
 export const durableTaskKind = pgEnum('DurableTaskKind', [
   'MUTATION',
   'PROJECTION',
@@ -1631,7 +1624,7 @@ export const groupRequestProjection = pgTable(
     memberProfileRev: integer().notNull(),
     direction: varchar({ length: 15 }).notNull(),
     feedId: integer().notNull(),
-    status: requestProjectionStatus()
+    status: varchar({ length: 15 })
       .$type<RequestProjectionStatusValue>()
       .notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
@@ -1680,6 +1673,10 @@ export const groupRequestProjection = pgTable(
     check(
       'GroupRequestProjection_direction_check',
       sql`${table.direction} IN ('APPLICATION', 'INVITATION')`,
+    ),
+    check(
+      'GroupRequestProjection_status_check',
+      sql`${table.status} IN ('REQUESTED', 'ACCEPTED', 'REVOKED', 'WITHDRAWN', 'REJECTED', 'EXPIRED')`,
     ),
     check(
       'GroupRequestProjection_retention_check',
