@@ -8,8 +8,9 @@ reverse-history gaps. It does not change the federation wire protocol. Wire
 messages, message and tombstone cursors, State Feed items, and lazy exact-
 message profile references retain their protocol meanings.
 
-The design makes one bounded scheduler batch the atomic commit unit. A logical
-round ends once every message inspected by that batch has a durable Message row
+The design makes one bounded scheduler batch the atomic commit unit. This local
+logical round is distinct from a protocol reconciliation round, which may span
+multiple pages. A local round ends once every message inspected by that batch has a durable Message row
 at its final timeline position and the matching synchronization progress is
 committed. A Message may still be a STUB at that point; downloading and other
 local content materialization are not synchronization-round dependencies.
@@ -72,9 +73,9 @@ synchronization state.
 
 `FederationThreadSyncState` also stores the authorization epoch for which its
 current targets and committed progress were initialized. A process scheduler
-must not run a state row whose epoch differs from MessageThread. A later valid
-The relationship activation transaction reconciles the old segment and reinitializes that row for
-the active thread epoch.
+must not run a state row whose epoch differs from MessageThread. The next valid
+relationship activation reconciles the old segment and reinitializes that row
+for the active thread epoch.
 
 The process-local State Feed single-flight and the pull worker's peer-level
 single-flight prevent concurrent drains for one peer. They do not replace the
@@ -113,7 +114,6 @@ For an ordinary remote item, a STUB stores:
 | `originSeq`              | Direct publisher's `item.seq`                               |
 | `originServerTime`       | Wire `createdAt`                                            |
 | `federationSourceDomain` | Authenticated direct publisher                              |
-| `clientMessageId`        | Wire value when present                                     |
 | `isDeleted`              | False unless a durable tombstone already proves deletion    |
 | `localState`             | `STUB`                                                      |
 
@@ -135,12 +135,13 @@ newest item left to the forward path starts at
 `forwardStartSeq = E + messageSeqOffset`. Local relationship system messages
 are therefore never overwritten by a later reverse reconstruction.
 
-A returned item with non-null `originSeq` whose reconstructed author domain is
-the consumer's real domain is a processing receipt. It creates no STUB. The
-consumer looks up `(threadId, Message.seq = item.originSeq)` and backfills that
-row with `originSeq = item.seq` and
-`federationSourceDomain = authenticatedPeerDomain`. A missing row is warned and
-skipped.
+A returned item with non-null `originSeq` is a processing receipt, regardless
+of its author's domain. It creates no STUB. The consumer validates its author
+and origin coordinates against a previously published message and retains the
+peer-copy association. An authoritative group receipt may also establish the
+local submission's group-authoritative coordinate; a mirror receipt must not
+replace an authoritative message's direct-source association. An unmatched or
+conflicting receipt is rejected without creating a message.
 
 Normal client history returns STUB, FAILED, and READY messages together with
 their local state. Search, unread calculation, previews, federation publication,
@@ -170,15 +171,15 @@ progress or wakes a content round.
 
 `FederationThreadHistoryGap` records an inclusive publisher-sequence interval
 that has not completed its local logical commit. Its coordinates do not depend
-on Message rows already existing. A thread has only one reverse authority in
-the current topology, so `threadId` identifies the source context and the table
-does not repeat `peerDomain`.
+on Message rows already existing. The source is identified by
+`(threadId, namespaceId)`, independently of the thread's authority namespace.
 
 The row contains:
 
 ```text
 id
 threadId
+namespaceId
 startSeq
 endSeq
 messageSeqOffset
@@ -207,9 +208,10 @@ An effective inactive transition only increments
 MessageThread.authorizationEpoch inside the canonical relationship transaction.
 It does not depend on scheduler memory and does not construct a gap.
 
-A later valid THREAD_CONTENT_HEAD compares MessageThread.authorizationEpoch
-with the epoch retained by FederationThreadSyncState. For an origin capable of
-reverse history, the newest advertised message always remains forward work. If
+A later relationship activation compares MessageThread.authorizationEpoch
+with the epoch retained by FederationThreadSyncState. For a source supporting
+reverse history, the newest message in its authorization snapshot remains
+forward work. If
 `C` is the old committed forward coordinate and `E` is the new advertised tail,
 the new reverse interval is `[C + 1, E - 1]`. An empty interval creates no gap.
 Recoverable gaps that overlap or touch this interval are merged only when they
@@ -259,12 +261,10 @@ client heads; only after that commit are their hints published.
 RELATIONSHIP_INTENT application invokes the canonical relationship transaction
 and advances the item cursor only when that transaction succeeds.
 
-Migration 0021 requires both stored coordinates to be non-null and non-negative,
-without a default for missing positive grants. Local snapshots are read from
-local content in one statement. A remote positive grant missing its source
-snapshot is rejected before storage. Migration refuses unknown remote positive
-snapshots rather than inventing `0/0`; existing valid synchronization coordinates
-remain unchanged. Revocation retains the previous grant coordinates when present.
+Positive grants require both stored coordinates to be non-null and non-negative.
+Local snapshots are read in one statement. A remote positive grant missing its
+source snapshot is rejected before storage rather than assigned an invented
+`0/0`. Revocation retains the previous grant coordinates when present.
 
 Our implementation initializes shared state for `(threadId, namespaceId)` from
 the first effective authorization used to activate that source. Additional local
@@ -298,9 +298,10 @@ content lock and updates only an existing state with the current epoch.
 The transaction then advances the State Feed cursor through the current item.
 
 The synchronization-state key is `(threadId, namespaceId)`, where the namespace
-identifies the authenticated source, not necessarily the thread authority. A missing row is
-created idempotently. Each item commit marks durable dirty work and its
-after-commit handler is the scheduler-notification boundary.
+identifies the authenticated source, not necessarily the thread authority.
+Relationship activation creates a missing row idempotently; later heads only
+merge targets. Each item commit marks durable dirty work and its after-commit
+handler is the scheduler-notification boundary.
 
 A locally authoritative group consumes mirror submissions with reverse reconstruction disabled.
 Its new per-source message and deletion cursors start at zero, including when rebuilding formerly
@@ -312,14 +313,15 @@ selection, still advances the State Feed cursor through that item, and emits no
 thread notification. A transient database or network failure does not advance
 the item cursor.
 
-For a missing synchronization row with advertised tail `E`:
+At relationship activation, a missing synchronization row with snapshot tail `E`
+is initialized as follows:
 
 - `E=0` creates no message work;
 - `E=1` creates only forward `(0, 1]` work;
 - `E>1` creates forward `(E-1, E]` work and reverse `[1, E-1]` work.
 
-For a retained row whose epoch is older than MessageThread, the head starts a
-new authorization segment:
+For a retained row whose epoch is older than MessageThread, relationship
+activation starts a new authorization segment:
 
 - forward message work starts at the newly advertised tail only;
 - forward tombstone recovery starts after the prior durably committed deletion
@@ -355,7 +357,7 @@ The in-memory context contains at least:
 threadId and direction
 authorizationEpoch
 frozen message target, tombstone target and message cutoff, or reverse boundaries
-fetched message, tombstone, or departed-profile facts
+fetched message or tombstone facts
 dirty flag
 ```
 
@@ -393,7 +395,7 @@ A reverse logical round becomes committable when:
 
 The final transaction first atomically compare-and-sets MessageThread against
 the round's captured epoch. It then inserts the fetched messages at least as
-STUBs, applies the profiles and tombstones, and shrinks the active gap through
+STUBs, applies matching retained tombstones, and shrinks the active gap through
 the response's `scannedThrough` boundary. If the current interval closes, the
 same transaction removes that completed gap and selects the next recoverable
 gap. It derives `before=endSeq+1` and `through=startSeq` directly from the next

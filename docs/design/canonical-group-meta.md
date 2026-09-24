@@ -22,26 +22,29 @@ one validated replica of that feed and never authors items in it. No
 | -------------------------------- | -------------------------------------- | ------------------------------------------ | ---------------------------------------------------- |
 | Relationship authorization       | Authoritative local intents and pair   | Authenticated mirror of authored intents   | Device projection only                               |
 | Current group roster             | Canonical Group Meta latest operations | Replica Group Meta latest operations       | Local current-member rows                            |
-| Group Meta current facts         | One operation per stable member key    | One group-scoped replica and remote cursor | None                                                 |
-| Member role                      | Current canonical `UPSERT`             | Current replica `UPSERT`                   | Current member role                                  |
-| Initial member profile reference | Current canonical `UPSERT.profileRev`  | Current replica `UPSERT.profileRev`        | Current member `profileRev`                          |
+| Group Meta current facts         | Member, group-profile, and announcement projections | One group-scoped replica and remote cursor | Current display projections |
+| Member role                      | Current canonical `MEMBER_UPSERT`             | Current replica `MEMBER_UPSERT`                   | Current member role                                  |
+| Initial member profile reference | Current canonical `MEMBER_UPSERT.profileRev`  | Current replica `MEMBER_UPSERT.profileRev`        | Current member `profileRev`                          |
 | Later message-selected profile   | Immutable `Message.profileRev`         | Immutable `Message.profileRev`             | May replace that member's displayed revision locally |
 | Group-member profile authority   | Retained group-scoped snapshot         | Requests and caches from origin            | Requests through its local backend                   |
 
 The mirror's latest replicated operation is its replaceable current-state
 projection, but is not local authorization proof. A client member row has a
-current-only lifecycle and is physically removed by `DEPART`. Historical
+current-only lifecycle and is physically removed by `MEMBER_DEPART`. Historical
 message rendering uses the immutable message author Address and
 `Message.profileRev`, not a retained roster row.
 
 An origin serves local clients from the canonical current facts. A mirror retains one
-current fact per member key and one group-profile fact in its group-scoped
-replica, sharing those rows and remote coordinates among all local accounts.
+current fact per member key, one group-profile fact, and one announcement
+projection in its group-scoped replica, sharing those rows and remote coordinates among all local accounts.
 Per-account state contains only a
 compacted head and device cursor; it never copies member-feed rows. The replica
 can be rebuilt by a full Group Meta synchronization.
-Origin and mirror facts share one table and one global unique stable-member
-key. Each new operation replaces the previous operation and feed coordinate.
+Origin and mirror member/profile facts share one table and one global unique
+stable-member key. The group-wide announcement instead occupies nullable
+columns on `GroupMeta`, with the same coordinate allocator and a distinct
+stable key. Each new operation replaces its previous projection and feed
+coordinate.
 
 ## 3. Canonical Group Meta storage
 
@@ -52,15 +55,25 @@ authors it; a mirror stores the received coordinates:
 GroupMeta(groupId)
   metaEndId                             origin allocation end | mirror applied cursor
   profileRev                            the newest GROUP_PROFILE row's revision
+  announcementFeedId                    current announcement id; NULL means unknown
+  announcementText                      plain text or explicit NULL clear when id exists
   metaTargetId                          greatest target merged from State Feed heads
   metaProcessedThroughId                greatest source feed id durably scanned
   metaRecoveryThroughId                 open recovery drain's fixed through; NULL selects delta
 
 GroupMetaMemberFeed(groupId, feedId)
   fact subject = account + domain (a member, or the group itself for GROUP_PROFILE)
-  operation = UPSERT | DEPART | GROUP_PROFILE
+  operation = MEMBER_UPSERT | MEMBER_DEPART | GROUP_PROFILE
   body = { role, profileRev } | {} | { profileRev }
 ```
+
+`GroupMetaMemberFeed` stores member and profile facts. The announcement
+projection resides on `GroupMeta` rather than borrowing a member identity.
+A positive `announcementFeedId` with null `announcementText` means a known
+clear; a null coordinate means unknown. Full/delta page readers merge its
+current coordinate with the compacted member/profile rows in feed order.
+Client presentation and its per-account acknowledgement are described in
+[Group announcement](./group-announcement.md).
 
 Member namespace is not stored in Group Meta. Local identity queries derive it
 from the member's relationship pair, or from the mirror group's source
@@ -89,13 +102,13 @@ allocator is not retained.
 Current membership is the latest member operation by stable source identity:
 
 ```text
-latest operation is UPSERT -> current member
-latest operation is DEPART -> not a current member
+latest operation is MEMBER_UPSERT -> current member
+latest operation is MEMBER_DEPART -> not a current member
 ```
 
 Point membership and role checks use the stable-member/feed index and newest
 row. Full roster reads select the newest operation for every stable member and
-retain only `UPSERT`. Normal group mutations already serialize on the canonical
+retain only `MEMBER_UPSERT`. Normal group mutations already serialize on the canonical
 group lock, so ownership checks and feed allocation observe one roster state.
 
 The current facts are both the origin's roster projection and its federation feed.
@@ -114,7 +127,8 @@ create the local Group, MessageThread, and immutable group ProfileVersion rev 1
 write the group-authored REQUESTED relationship intent
 write the member-authored ACCEPTED intent with the owner's current profileRev
 append GROUP_PROFILE { profileRev: 1 }
-append the first member UPSERT { role: OWNER, profileRev: member intent rev }
+establish GROUP_ANNOUNCEMENT { text: null }
+append the first member MEMBER_UPSERT { role: OWNER, profileRev: member intent rev }
 materialize the local AccountThreadState and ThreadAudience
 enqueue local and federation thread fan-out
 write the final group-authored ACCEPTED intent
@@ -134,7 +148,7 @@ lock the group aggregate
 fold the two relationship-intent directions
 if membership did not become active: stop without Group Meta work
 read profileRev from the effective MEMBER-authored join intent
-append canonical UPSERT { role, profileRev }
+append canonical MEMBER_UPSERT { role, profileRev }
 materialize pair.active
 update AccountThreadState and ThreadAudience
 if this creates an audience, set its deltaVisibleAfter to the canonical end
@@ -158,7 +172,7 @@ Warm-up may start earlier than membership. A committed member-authored
 query that exact account revision from the member's authority. The request
 transaction commits first, then offers the immutable key to the global
 coordinator. It does not wait for the opposite intent or active membership. If
-the pair later becomes active, canonical `UPSERT` reuses that intent revision
+the pair later becomes active, canonical `MEMBER_UPSERT` reuses that intent revision
 whether the warm-up succeeded or is still pending.
 
 ### 4.2 Role and ownership change
@@ -166,7 +180,7 @@ whether the warm-up succeeded or is still pending.
 ```text
 lock the group aggregate
 validate the current canonical roster
-append one UPSERT for each changed member
+append one MEMBER_UPSERT for each changed member
 preserve the member's current profileRev unless a new membership interval began
 enqueue/coalesce local and federation thread fan-out
 commit
@@ -180,7 +194,7 @@ transaction. Exactly one latest current member must remain `OWNER` at commit.
 ```text
 lock the group aggregate
 fold the relationship state to inactive
-append canonical DEPART with an empty stored body
+append canonical MEMBER_DEPART with an empty stored body
 update AccountThreadState and ThreadAudience
 apply the thread authorization-interval transition
 enqueue/coalesce local and federation thread fan-out after the final audience write
@@ -190,14 +204,15 @@ commit
 The departing target does not need a terminal Group Meta notification. If its
 last effective member left, its audience is removed before fan-out observes the
 page. Other still-authorized audiences receive a head covering the canonical
-`DEPART`.
+`MEMBER_DEPART`.
 
 ### 4.4 Re-entry and coalescing
 
-A re-entry appends a new `UPSERT` with the new member-authored intent revision.
-Canonical Group Meta records both committed transitions even if head fan-out
-has not executed yet. Pending head tasks collapse to the newest canonical end;
-they never collapse or rewrite the canonical mutations themselves.
+A re-entry appends a new `MEMBER_UPSERT` with the new member-authored intent revision.
+Each committed transition receives a new Group Meta coordinate even if head
+fan-out has not executed yet. Compaction may replace the earlier fact for the
+same stable key. Pending head tasks collapse to the newest canonical end
+without changing the allocated coordinates.
 
 ### 4.5 Group profile change and dissolution
 
@@ -221,10 +236,10 @@ Serving rules are:
 - reject delta when `after` is below the audience visibility floor;
 - reject a full drain whose fixed `through` is below the audience visibility
   floor;
-- allow full mode to return an older current `UPSERT` whose feed ID is below
+- allow full mode to return an older current `MEMBER_UPSERT` whose feed ID is below
   the floor, because it reveals current state rather than historical changes;
-- never return `DEPART` in full mode;
-- return bodyless `DEPART` in delta mode.
+- never return `MEMBER_DEPART` in full mode;
+- return bodyless `MEMBER_DEPART` in delta mode.
 
 This prevents a new peer from enumerating former members while allowing it to
 construct the current roster.
@@ -236,8 +251,8 @@ construct the current roster.
 The mirror applies Group Meta into its group-scoped replica:
 
 ```text
-UPSERT -> upsert one current member by stable key at its remote canonical feedId
-DEPART -> delete that member's current fact
+MEMBER_UPSERT -> upsert one current member by stable key at its remote canonical feedId
+MEMBER_DEPART -> delete that member's current fact
 GROUP_PROFILE -> upsert one current row with the group itself as the subject
   and update the mirrored group profile reference
 ```
@@ -251,7 +266,7 @@ instead of re-deriving it. The mode is read from the mirror's
 
 A delta round consumes one feed item per transaction. Each commit rejects a
 coordinate at or below the committed cursor, replaces the stable-key fact or
-retains a tombstone for DEPART, and writes GROUP_JOINED for an observed join or
+removes it for `MEMBER_DEPART`, and writes GROUP_JOINED for an observed join or
 GROUP_LEFT for a third-party departure. A local join requires a matching
 active relationship pair, while a local departure notice comes from the
 REVOKED relationship-intent transaction. Active local pairs determine the
@@ -259,13 +274,13 @@ audience, and the system writer
 admits the local thread fan-out — or admits the same fan-out directly when the
 item carries no transition (a meta-only advance is legitimate member-visible
 progress), and advances `metaProcessedThroughId` to that item's feed id. Delta
-needs no absence cleanup because every removal arrives as an explicit DEPART.
-A crash resumes from the durable cursor. The round's last item — the page without `hasMore` — additionally
-advances `metaEndId` to `through` and refreshes the group-shell projection in
-the same transaction.
+needs no absence cleanup because every removal arrives as an explicit MEMBER_DEPART.
+A crash resumes from the durable cursor. Completing the final page
+(`hasMore=false`) also advances `metaEndId` to `through` and refreshes the
+group-shell projection, including when that page contains no items.
 
 A full round fetches all pages at one fixed boundary, then clears and replaces
-the mirror roster, writes the profile revision, advances both cursors, and
+the mirror roster, group-profile reference, and announcement, advances both cursors, and
 admits fan-out in one transaction. It writes no system messages. An incomplete
 scan changes no mirror facts. If the origin replaces a compacted fact above
 the fixed boundary during the scan, that fact disappears from remaining full
@@ -296,44 +311,42 @@ the GROUP_PROFILE feed item carries the revision only; a failed pull degrades
 display until the next head re-admits it. Group Meta item and batch
 transactions publish nothing beyond the fan-out admissions described above.
 
-An unknown `DEPART` is a valid current-state removal. Full recovery clears the
-replica before its first page, and both page modes continue above the committed
-cursor. Full items upsert by stable key in one batch; a duplicate coordinate
-aborts the transaction. Delta items upsert by stable key, changing their coordinate, or
-delete that key on DEPART. The current fact per stable member determines
+An unknown `MEMBER_DEPART` is a valid current-state removal. Full recovery accumulates
+pages above its scan cursor and replaces the committed replica only after the
+complete bounded scan succeeds. Full items apply by stable key in that final
+transaction; a duplicate coordinate aborts it. Delta items upsert by stable key, changing their coordinate, or
+delete that key on MEMBER_DEPART. The current fact per stable member determines
 membership, role, and initial
 `profileRev`. Receiving or sending a later message does not mutate it. The
 message row keeps its own revision.
 
-A mirror is not promised a terminal `DEPART` after its last local account loses
+A mirror is not promised a terminal `MEMBER_DEPART` after its last local account loses
 authorization: the origin removes that peer audience before subsequent head
-fan-out. The mirror may consequently retain the last validated `UPSERT` as
+fan-out. The mirror may consequently retain the last validated `MEMBER_UPSERT` as
 historical replica state. It must not treat that row as authorization or expose
 it as current membership after the local relationship has ended.
 
 #### Mirror authorization denial
 
 An origin may close the mirror's audience without appending a synthetic empty
-roster or a final `DEPART`. A later Group Meta or content query can therefore
-return HTTP 200 `FORBIDDEN`. The mirror stops that round without advancing its
-cursor, records the event at debug level, and waits for the next State Feed
-push. It does not translate the denial into a local dissolution, revoke local
-members, synthesize `GROUP_LEFT`, or disable future federation rounds.
+roster or a final `MEMBER_DEPART`. A later query can therefore return HTTP `200`
+`FORBIDDEN`. A denial never advances the failed query's cursor or proves group
+dissolution.
 
-The protocol permits a receiving peer to end relationship directions it
-authors locally after an authenticated denial, but this is optional (`MAY`),
-not required convergence. A mirror that retains the relationship must still
-treat current authorization checks—not retained Group Meta rows—as the access
-gate. A later push retries from the last committed cursor and can carry the
-facts that converge or restore authorization.
+For message and tombstone queries, the mirror revalidates the captured
+relationship state and applies the locally authored revocation rules in
+[Message Query, Section 4](../../spec/v1/message-feed.md#4-authorization-and-state-reconciliation).
+This convergence is required when the denial remains applicable, not optional
+cleanup. A Group Meta denial alone does not trigger that thread-query exception;
+relationship termination still converges through State Feed.
 
 ### 6.2 Local client
 
 The local client uses the same current-only semantics:
 
 ```text
-UPSERT -> upsert member and initial role/profileRev
-DEPART -> physically delete member
+MEMBER_UPSERT -> upsert member and initial role/profileRev
+MEMBER_DEPART -> physically delete member
 successful full replacement -> delete members absent from the snapshot
 ```
 
@@ -388,8 +401,9 @@ Authorization for Group Meta Profile requires all of:
 
 - the responding server owns the group;
 - the signer has a current audience;
-- the latest canonical member operation is `UPSERT`;
-- that `UPSERT` carries the requested positive revision.
+- the latest canonical member operation is `MEMBER_UPSERT`;
+- that `MEMBER_UPSERT` carries a positive revision selected by the origin, not supplied
+  by the requester.
 
 These checks run before any upstream request. A successful response additionally
 requires the exact immutable snapshot. If it is not yet retained, the request
@@ -398,7 +412,12 @@ transaction and lock. Temporary failure returns a retryable availability result;
 permanent absence or disclosure denial returns the privacy-safe profile result.
 Neither path mutates the group.
 
-After `DEPART`, Group Meta Profile no longer resolves that member. A
+For `subject=GROUP`, the origin instead selects its current `GROUP_PROFILE`
+reference under the same audience check. The response revision may differ from
+the requester's earlier projection; an exact account/revision request uses
+Authorized Profile and its separate disclosure rules.
+
+After `MEMBER_DEPART`, Group Meta Profile no longer resolves that member. A
 historical message uses Message Author Profile with its exact message
 coordinate instead.
 
@@ -436,15 +455,11 @@ Each executor revalidates current membership or routing under the thread lock
 before writing. Wake hints are best effort, while every serving path continues
 to enforce current authorization.
 
-A mirror instead discovers a remote end from an already ordered State Feed
-item. Applying that item atomically merges the target into `GroupMeta.metaTargetId`,
-wakes the mirror's `meta` round lane, and advances the State Feed cursor. Its
-delta page transactions write only shared replica facts and the durable
-processed cursor. The final transaction advances the mirror end, derives local
-client state from the completed replica, and admits a local thread fan-out when
-needed. The round executor then publishes the client hint post-commit. The
-mirror therefore neither retries the consumed State Feed item nor needs a
-second audience-fan-out task.
+A mirror discovers a remote end from an ordered State Feed item. Applying that
+item atomically merges the target into `GroupMeta.metaTargetId` and advances
+the State Feed cursor, then wakes the mirror's `meta` lane after commit.
+Replica commits and local fan-out follow Section 6.1. Their completion never
+requires replaying the consumed State Feed item.
 
 An executing round keeps its frozen target. A later greater head is either
 absorbed by the dirty mark after the round completes or starts a successor
@@ -454,12 +469,12 @@ round; a running round is never rewritten.
 
 ### 9.1 Authority
 
-- The first active membership appends exactly one canonical `UPSERT` carrying
+- The first active membership appends exactly one canonical `MEMBER_UPSERT` carrying
   the effective member intent revision.
 - A later default-profile update and later messages do not mutate that item or
   append another member item.
 - Role changes preserve profileRev unless a new membership interval begins.
-- Departure appends one bodyless `DEPART`; re-entry appends a new `UPSERT`.
+- Departure appends one bodyless `MEMBER_DEPART`; re-entry appends a new `MEMBER_UPSERT`.
 - Point membership, owner checks, and full roster reads agree on latest
   canonical operations.
 - Concurrent ownership and membership changes serialize and never commit zero
@@ -470,7 +485,7 @@ round; a running round is never rewritten.
 - First authorization and reauthorization set a new visibility floor.
 - Delta below the visibility floor fails with full recovery.
 - Full below the visibility floor fails.
-- Full at or above the floor returns current UPSERT items still at or below its
+- Full at or above the floor returns current MEMBER_UPSERT items still at or below its
   fixed boundary, including older feed IDs, and no departed members. Items
   compacted above that boundary are restored by the following delta round.
 - Removing the last member from one peer removes its audience while other peers
@@ -478,10 +493,10 @@ round; a running round is never rewritten.
 
 ### 9.3 Mirror and client
 
-- A mirror retains one current UPSERT per stable member key and no DEPART row.
-- A client UPSERT creates or updates one current member, while DEPART physically
+- A mirror retains one current MEMBER_UPSERT per stable member key and no MEMBER_DEPART row.
+- A client MEMBER_UPSERT creates or updates one current member, while MEMBER_DEPART physically
   deletes that client member row.
-- Unknown and replayed DEPART operations are idempotent current-state removals.
+- Unknown and replayed MEMBER_DEPART operations are idempotent current-state removals.
 - Full replacement deletes absent members only after the complete bounded drain
   commits.
 - A partial delta drain resumes from its durable cursor. A failed full scan
@@ -489,9 +504,9 @@ round; a running round is never rewritten.
 - Full and delta application for one mirrored group never overlap.
 - The complete full scan replaces the roster and commits its cursor in one
   transaction; a delta round needs no absence cleanup.
-- No delta/full data page or full cleanup page creates a Client State Feed item
-  or client wake hint. Finalization wakes the blocked State Feed drain locally;
-  only the subsequently committed State Feed item publishes client state.
+- State Feed commits the Group Meta dependency and its own cursor together,
+  without waiting for retrieval. Group Meta commits publish their local hints
+  after commit and never replay the already consumed State Feed item.
 - One inbound page is retained once per mirrored group, while any number of
   local accounts receive only compacted heads and read the shared rows.
 - Message profile resolution may update client display state but never server
@@ -499,19 +514,20 @@ round; a running round is never rewritten.
 
 ### 9.4 Profile authority
 
-- A positive membership UPSERT commits even when the exact snapshot is not yet
+- A positive membership MEMBER_UPSERT commits even when the exact snapshot is not yet
   local; profile availability never delays or rolls back membership.
 - A committed positive member REQUESTED can enqueue warm-up before membership
   becomes active, using that exact intent revision as authorization.
 - Profile HTTP runs without a database transaction or group lock and performs
   no group mutation when it finishes.
 - Revocation while profile resolution is in flight makes the eventual Group
-  Member Profile authorization recheck fail without resurrecting membership.
+  Meta Profile authorization recheck fail without resurrecting membership.
 - Every mirror requests Group Meta Profile from the group origin, including
   when the member belongs to a third domain.
 - A mirror cannot serve another peer as authority for a remote group.
-- Departure, audience revocation, wrong revision, and non-origin requests fail
-  closed.
+- Departure, audience revocation, and non-origin requests fail closed. A
+  changed current reference returns its actual revision, never the requester's
+  previously observed revision with different content.
 - Concurrent equal resolutions share one in-flight request and one HTTP pool
   slot; completed results alone affect LRU capacity.
 

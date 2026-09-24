@@ -2,7 +2,12 @@
 
 ## Purpose
 
-This test system validates that a cluster of independent SOMS nodes converges
+This document defines the target mixed-workload test system. The initial
+[P2P final-friend oracle](./federation-p2p-consistency-state-machine.md) is a
+narrower executable milestone; it does not yet claim the reference-model,
+client-replay, or full quiescence checks described here.
+
+The target system validates that a cluster of independent SOMS nodes converges
 to the correct durable state after a large, concurrent, cross-domain workload.
 It covers business state, projections, client-visible state, federation feeds,
 message and deletion streams, profile media, and durable background work.
@@ -271,13 +276,14 @@ to these identifiers rather than only printing an assertion expression.
 
 ### Message and deletion invariants
 
-- **MSG-001:** A logical message exists once on every entitled node and nowhere
-  else, identified across servers by its stable origin coordinate rather than a
-  local `seq`.
+- **MSG-001:** A logical message exists once on every expected recipient under
+  the workload's history policy. Cross-node comparisons follow direct-source
+  associations; retained history on a former recipient is not new disclosure.
 - **MSG-002:** Duplicate delivery or pull does not create another message,
   receipt, asset binding, or client-visible event.
-- **MSG-003:** Message origin identity, content, content type, origin sequence,
-  and origin server time are immutable across replicas.
+- **MSG-003:** Authored content and identity are preserved across replicas.
+  Coordinates and persistence times are immutable within each publisher's
+  projection, not numerically equal across nodes.
 - **MSG-004:** Every entitled thread's message target and processed-through
   coordinates reach the captured source target without an unexplained gap.
 - **DEL-001:** Every authorized deletion produces one effective tombstone per
@@ -293,10 +299,10 @@ to these identifiers rather than only printing an assertion expression.
 
 - **PRO-001:** The current user or group profile revision selects exactly one
   immutable `ProfileVersion` with the expected display fields and avatar.
-- **PRO-002:** Every live remote profile projection resolves to the source-owned
-  revision selected by the corresponding relationship or Group Meta fact.
-- **PRO-003:** A late older profile or avatar cannot overwrite a newer selected
-  revision.
+- **PRO-002:** Every resolved remote profile matches the immutable revision
+  selected by its relationship, Group Meta, or message reference.
+- **PRO-003:** A late fetch cannot overwrite the currently selected profile
+  reference. Selection follows the referencing fact, not revision magnitude.
 - **MED-001:** Every live message/profile asset reference resolves to verified
   CAS bytes whose digest and stored byte count match.
 - **MED-002:** Workload media has no unexplained `PendingMedia` or
@@ -310,12 +316,14 @@ to these identifiers rather than only printing an assertion expression.
   each compacted key contains the newest required fact for that target peer.
 - **FED-002:** Feed items are addressed only to authorized peer namespaces and
   source-owned facts are never republished as locally authored facts.
-- **FED-003:** Pull cursors never advance past data durably applied by the
-  receiving node.
+- **FED-003:** Pull cursors advance only with committed page effects or an
+  explicitly recorded protocol-permitted skip; skipped data is not reported
+  as replicated.
 - **FED-004:** Replaying a previously consumed page changes neither final
   business state nor externally visible feed coordinates.
-- **FED-005:** Group Meta, message, deletion, and profile dependencies are
-  complete at the committed outer feed boundary.
+- **FED-005:** Committing a State Feed head durably retains its content targets.
+  Group Meta dependencies complete before dependent content is exposed;
+  message-author display profiles remain lazy and do not block feed progress.
 
 ### Client replica invariants
 
@@ -437,8 +445,9 @@ prove each auditor fails with a useful diagnostic.
 ### Gate 5: Scale and performance reporting
 
 Establish environment-specific latency, resource, backlog, and convergence
-objectives from repeated 20-user-per-node baselines. Correctness remains the
-final active-friend oracle and is reported independently from performance.
+objectives from repeated 20-user-per-node baselines. The P2P gate retains its final active-friend oracle; expanded workloads add
+their applicable invariant audits. Correctness is reported independently from
+performance.
 
 ### Gate 6: Recovery and soak testing
 
@@ -447,8 +456,9 @@ and longer repeated workloads. Each fault schedule is seeded and recorded.
 
 ## Initial acceptance criteria
 
-The first complete baseline is accepted when the three-node,
-20-user-per-node P2P profile:
+The initial P2P milestone uses the acceptance criteria in its
+[final-friend oracle](./federation-p2p-consistency-state-machine.md).
+The expanded three-node, 20-user-per-node baseline is accepted when it:
 
 - executes the entire lifecycle across three nodes through public mutation
   APIs;
@@ -457,6 +467,6 @@ The first complete baseline is accepted when the three-node,
 - produces a replayable operation journal and complete redacted report; and
 - succeeds repeatedly with the same seed before any fault injection is enabled.
 
-Passing this profile validates the P2P test system and its reviewed workload;
+Passing this baseline validates the test system and its reviewed workload;
 it does not by itself establish production capacity. Capacity claims require
 environment-owned performance thresholds and repeated runs.

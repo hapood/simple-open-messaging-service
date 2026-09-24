@@ -2,13 +2,14 @@
 
 ## Purpose
 
-A federation domain is a stable network address, but its verified holder can change. A destructive
+A federation domain is a stable public identity name, not a connection target, but its verified holder can change. A destructive
 reset must not delete history or let a newly verified holder inherit the previous holder's users,
 relationships, authorization, synchronization cursors, or pending work.
 
 The database therefore separates the public domain from a local integer namespace. One namespace is
-created for each successful identity verification. Namespace IDs are storage-only and never appear
-on the federation wire.
+created when a remote identity is first verified, or when an identity is verified after a reset.
+Revalidating the current identity does not create another namespace. Namespace IDs are storage-only
+and never appear on the federation wire.
 
 ## Domain and namespace ownership
 
@@ -25,7 +26,7 @@ The database enforces:
 - an active namespace referenced by a peer belongs to that peer's domain;
 - namespace rows are retained indefinitely and cannot be deleted through the reset workflow.
 
-Administrative blocking, quota accounting, routing, and lifecycle audit remain domain-scoped.
+Administrative peer blocking, routing, and lifecycle audit remain domain-scoped. Federation quota overrides, usage, allowances, and breaker flags belong to the identity namespace; a newly verified identity starts with default limits and fresh counters.
 Identity-derived data and authorization are namespace-scoped. A thread owns one immutable authority
 namespace. Incoming synchronization states and history gaps additionally carry their source
 namespace: one locally authoritative group receives independent streams from multiple peers.
@@ -47,9 +48,10 @@ Nested methods never resolve the current namespace again. A synchronization roun
 namespace captured by its wake or durable state, which need not equal the thread authority namespace.
 
 An in-flight operation may finish after its namespace is retired. It keeps its captured namespace
-and may commit there. Retirement does not cancel or retarget federation work. Active-namespace
-validation is performed only when a local user sends a new message to a remotely authoritative
-thread; federation processing continues against the thread's bound coordinate space.
+and may commit there. Retirement does not cancel or retarget an already-running operation.
+Inbound federation processing keeps the captured namespace and the thread's bound coordinate
+space; it is not redirected to a replacement identity. Local sends, startup recovery, and retries
+have separate admission checks described below.
 
 ## Reset lifecycle
 
@@ -109,11 +111,14 @@ when it equals the active namespace of its owning federation domain. A remote au
 which is archived, or a domain whose active namespace is null, disables local sending without
 changing the thread lifecycle; the server rejects such sends with `FEDERATION_NAMESPACE_INACTIVE`.
 
-This check is not applied to inbound federation writes, an already-running synchronization round,
-history-gap recovery, or system-message insertion. Those operations remain bound to the existing
-thread and may finish gracefully after a namespace transition. On process startup the scheduler
-restores only work whose thread authority namespace is active. After a network failure it checks
-the namespace before scheduling and immediately before executing a retry; inactive work is removed.
+The local-send check is not applied to inbound federation writes, an already-running
+synchronization round, history-gap recovery, or system-message insertion. Those operations remain
+bound to the existing thread and may finish after a namespace transition.
+
+Permission to finish does not imply permission to restore or retry work indefinitely. On process
+startup the scheduler restores only work whose thread authority namespace is active. After a
+network failure it checks that namespace before scheduling and immediately before executing a
+retry; work with an inactive thread authority namespace is removed.
 A locally authoritative group remains writable when one of its remote members belongs to an
 archived namespace because the group thread itself is owned by namespace `0`.
 

@@ -44,7 +44,7 @@ the retry and notification mechanism.
 
 Forward bundles use the read-projected target for bundle-local `quoteTargetId`
 links. The source `content.quote`, including its namespace, is removed from
-snapshot text. A selected target maps to its new bundle ID; an unselected or
+snapshot text. A selected target maps to its new bundle-local message ID; an unselected or
 absent target maps to zero, following the protocol SHOULD. Import also accepts
 positive bundle references without a matching entry. Ordinary text omits `quoteTargetId`. Bundle snapshots
 use the same representation before and after federation.
@@ -53,6 +53,7 @@ across nodes, and reads the reference namespace independently from message origi
 
 ## Rollout
 
-This changes the v1 quote wire shape from `targetSeq` to `seq` / `originSeq`.
-Upgrade communicating peers together before restarting the randomized lab.
+The release-candidate correction replaced `targetSeq` with `seq` / `originSeq`.
+`targetSeq` is not an alternative v1 wire form. Upgrade communicating peers
+together before restarting the randomized lab.
 The existing source-scoped thread-sync migration is independent of this change.

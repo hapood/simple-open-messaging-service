@@ -24,14 +24,24 @@ arbitration; local history does not introduce a second lifecycle authority.
 
 Extend the system-message parser with a closed discriminated CALL_ENDED branch,
 rather than adding call-only optional fields to every system-message subtype.
-The proposed local content is:
+The local content is:
 
 ```ts
 interface CallEndedContent {
   type: 'CALL_ENDED';
   callId: string;
-  caller: { account: string; domain: string };
-  callee: { account: string; domain: string };
+  caller: {
+    account: string;
+    domain: string;
+    namespaceId: number;
+    profileRev: 0;
+  };
+  callee: {
+    account: string;
+    domain: string;
+    namespaceId: number;
+    profileRev: 0;
+  };
   mediaType: 'AUDIO' | 'VIDEO';
   outcome:
     | 'completed'
@@ -46,20 +56,22 @@ interface CallEndedContent {
 }
 ```
 
-All timestamps are integer epoch milliseconds. Direction comes from the caller
+Call notices carry identity namespaces but always use revision zero: they do
+not authorize participant-profile requests. All timestamps are integer epoch
+milliseconds. Direction comes from the caller
 address and viewing account, not the system message's creator. Media type is the
 local server's confirmed business type at termination; a video upgrade does
 not restart timing. The existing protocol can leave different confirmed types
 on the two servers when upgrade confirmation crosses termination.
 
-| Outcome | Terminal evidence | Connected time |
-| --- | --- | --- |
-| `completed` | Normal end after confirmed media connection | Required |
-| `cancelled` | Caller cancels before connection | Absent |
-| `declined` | Explicit callee refusal | Absent |
-| `missed` | Local ringing deadline or accepted missed fact | Absent |
-| `failed` | Connection failure/timeout or abnormal termination | Present only if connected |
-| `unreachable` | Call admission or delivery could not establish the remote call | Absent |
+| Outcome       | Terminal evidence                                              | Connected time            |
+| ------------- | -------------------------------------------------------------- | ------------------------- |
+| `completed`   | Normal end after confirmed media connection                    | Required                  |
+| `cancelled`   | Caller cancels before connection                               | Absent                    |
+| `declined`    | Explicit callee refusal                                        | Absent                    |
+| `missed`      | Local ringing deadline or accepted missed fact                 | Absent                    |
+| `failed`      | Connection failure/timeout or abnormal termination             | Present only if connected |
+| `unreachable` | Call admission or delivery could not establish the remote call | Absent                    |
 
 An explicit busy response is an admission failure, not `declined`. Admission
 rejection is not evidence that the remote user rang or refused. A malformed or

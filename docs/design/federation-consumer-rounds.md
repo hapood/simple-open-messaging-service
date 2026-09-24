@@ -3,8 +3,9 @@
 ## 1. Purpose
 
 This document describes the local implementation of bounded federation content
-rounds. Wire-level query semantics remain in the protocol specification. The
-local design has three independent concerns:
+rounds. A local content round is one scheduler batch, not the protocol's
+multi-page reconciliation round. Wire-level query semantics remain in the
+protocol specification. The local design has three independent concerns:
 
 - State Feed application discovers durable per-thread targets.
 - Forward and reverse content rounds commit ordered message facts.
@@ -92,9 +93,9 @@ until forward work commits, even if the first head advertises multiple messages.
 
 When a reverse gap is created, the same transaction has already locked
 MessageThread. With publisher gap `[S,E-1]` and locked local tail `L`, it stores
-`messageSeqOffset=L+1-S`, reserves the allocator through
+`messageSeqOffset=max(0,L+1-S)`, reserves the allocator through
 `E-1+messageSeqOffset`, and leaves the newest publisher item for the ordinary
-forward path at `E-S+L+1`. Reverse insertion uses
+forward path at `E+messageSeqOffset`. Reverse insertion uses
 `localSeq=sourceSeq+messageSeqOffset`, so local system messages written between
 authorization epochs cannot collide with reconstructed history.
 
@@ -126,17 +127,13 @@ waiting. A delta round freezes its `through` at the current `metaTargetId` in
 scheduler memory and consumes one feed item per transaction, each committing
 the replica fact, its transition system message or a direct local fan-out
 admission, and the durable cursor to that item's feed id. An open
-`metaRecoveryThroughId` selects a full-snapshot recovery drain of page
-batches: the batch starting at a zero cursor clears the roster first and
-never clears again inside the drain, and each batch commits its facts plus
-the durable cursor. The drain's final transaction advances `metaEndId`,
-closes the drain (`metaRecoveryThroughId` to null), applies derived local
-projections, and writes their compacted client State Feed heads. Round
-completion publishes only the corresponding post-commit hints; it does not
-wake or replay the already consumed State Feed item. While the drain is open
-a partially applied roster is observable; a resume with a positive cursor
-continues without clearing, since the resumed fetch never re-delivers a
-deleted prefix.
+`metaRecoveryThroughId` selects a full-snapshot recovery drain. Full pages
+are accumulated without replacing committed state. After the complete bounded
+scan succeeds, one transaction replaces the roster, group-profile reference,
+and announcement, advances the committed cursor and `metaEndId`, closes the
+drain, and writes the derived client heads. An incomplete full drain leaves
+committed state unchanged. Round completion publishes post-commit hints;
+it does not wake or replay the already consumed State Feed item.
 
 ## 4. Forward rounds
 
@@ -148,10 +145,10 @@ run concurrently, and commit independently. The scheduler does not retain a
 second authoritative copy of either target or of the recovery cutoff.
 
 An ordinary tombstone drain carries no message-coordinate filter. On the first
-head after an authorization-epoch change, State Feed reconciliation creates a
-durable recovery drain with two frozen values:
+authorization snapshot after an authorization-epoch change, the relationship
+activation transaction creates a durable recovery drain with two frozen values:
 
-- `deletionRecoveryThroughSeq`, copied from that head's deletion target;
+- `deletionRecoveryThroughSeq`, copied from that snapshot's deletion target;
 - `deletionRecoveryMaxMessageSeq`, copied from the message coordinate committed
   before the epoch change.
 
@@ -199,7 +196,7 @@ final transaction:
 
 1. compare-and-sets MessageThread authorization epoch;
 2. locks and revalidates the active gap;
-3. inserts the fetched historical messages at `Message.seq = publisher seq`;
+3. inserts historical messages at `Message.seq = publisher seq + messageSeqOffset`;
 4. applies matching previously discovered tombstones;
 5. shrinks the active gap using the response `scannedThrough` boundary.
 
@@ -282,24 +279,16 @@ query results are retried from durable state. A valid `retryAfter` is honored as
 a minimum delay. Permanent protocol or business failures stop the affected
 task instead of entering an unbounded retry loop.
 
-An authenticated `FORBIDDEN` MUST stop the affected round without advancing its
-cursor or interpreting the denial as an empty page. The receiving peer MAY end
-the corresponding relationship directions that it authors locally, but the
-denial alone does not require that cleanup and MUST NOT be interpreted as an
-authoritative remote-group dissolution.
+An authenticated thread-query `FORBIDDEN` stops the affected round without
+advancing its cursor or treating the denial as an empty page. Relationship
+reconciliation follows [Message Query, Section 4](../../spec/v1/message-feed.md#4-authorization-and-state-reconciliation).
 
-When the receiving peer does not perform optional local cleanup, it leaves the
-durable relationship and synchronization state unchanged and waits for a later
-State Feed push. A new thread-head wake may then enable the thread-source key
-and retry from the last committed cursor. This is the mirror-group policy: log
-the denial at debug level, stop the current round, and wait for the next push.
-
-When optional cleanup is performed, it is checked against the authorization
-epoch frozen before the denied request. A changed epoch makes the response
-stale and writes nothing. Cleanup may revoke only directions authored locally;
-peer-authored directions are never rewritten. This implementation performs
-that optional cleanup for P2P and for members hosted by a denied peer of a
-locally authoritative group, but not for a remotely authoritative mirror.
+The handler revalidates the authorization state captured before the request.
+A stale denial writes no revocation. Otherwise it invalidates the covered work
+and revokes the still-active locally authored directions covered by the denied
+peer authority. This applies to P2P, local groups, and mirrors; it is not
+optional cleanup. Peer-authored directions are never rewritten, and a denial
+is not authoritative group dissolution.
 
 ## 8. Publication invariants
 
@@ -315,7 +304,7 @@ locally authoritative group, but not for a remotely authoritative mirror.
 - Forward message and tombstone pages commit independently with their own
   processed-through coordinates.
 - A reverse gap shrinks only in the transaction that inserts the corresponding
-  historical batch and applies its departed profiles.
+  historical batch and applies matching retained tombstones.
 - STUB, READY, and FAILED are visible client history states; only READY is used
   by search, unread, preview, forwarding, and federation publication.
 - Federation inbound processing and materialization do not emit SSE. Only the
@@ -337,14 +326,13 @@ locally authoritative group, but not for a remotely authoritative mirror.
   its greatest `feedId` hint. Its in-process high watermark remains monotonic
   after the window expires, while a different client's feed owns a separate
   timer and cannot be delayed by that window.
-- The first attempt at a thread head with Group Meta progress atomically admits its dependency but
-  advances no State Feed cursor and publishes no item effect. The resumed item
-  commits only after `feedEndId` reaches its target, and no network request
-  occurs inside either item transaction.
-- Group Meta delta and full rounds each commit multiple fact pages without a
-  local head. Full recovery also removes absent facts in bounded pages. The
-  final transaction advances the mirror end and completes the durable task;
-  only the subsequently committed State Feed item publishes local effects.
+- A thread head with Group Meta progress atomically retains its dependency and
+  advances the State Feed cursor without waiting for Group Meta. Failed Group
+  Meta retrieval leaves the dependency pending and dependent content unexposed.
+  No network request occurs inside the State Feed item transaction.
+- Group Meta delta commits each item with its cursor. A full drain replaces
+  committed state only after the entire scan succeeds. Both resume independently
+  of the already consumed State Feed item and publish hints only after commit.
 
 ## 10. Source map
 
