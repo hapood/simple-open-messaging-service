@@ -17,6 +17,7 @@ import {
 } from '../database/database.service.js';
 import {
   groupAccount,
+  groupMeta,
   account as userAccount,
   accountThreadState,
   groupRequestProjection,
@@ -411,6 +412,14 @@ export class GroupService {
           // Entry-scope advisory for the freshly minted group: uncontended, but
           // taken here so the seeding writers keep the entry-lock contract.
           await lockBusinessAccountsInTx(tx, [{ account, domain: 'local' }]);
+          // Establish an explicit cleared announcement before any origin feed
+          // can be served; subsequent membership/profile facts use later ids.
+          await tx.insert(groupMeta).values({
+            threadId: thread.id,
+            metaEndId: 1,
+            announcementFeedId: 1,
+            announcementText: null,
+          });
           await this.relationshipMutations.writeGroupRelationshipIntentInTx(
             tx,
             thread.id,
@@ -631,6 +640,107 @@ export class GroupService {
    * Kick a member by deactivating membership. The operator must strictly outrank the target; the owner
    * cannot be kicked. Throws GROUP_TARGET_NOT_MEMBER / GROUP_FORBIDDEN on invariant violation.
    */
+  /** Acknowledge only a coordinate that could have been displayed from the
+   * committed current group projection. A newer announcement never gets
+   * acknowledged by a stale device; the account-local watermark is monotone. */
+  async markAnnouncementRead(params: {
+    threadId: number;
+    accountId: number;
+    feedId: number;
+  }): Promise<{ announcementReadFeedId: number }> {
+    let pending: PendingClientStateFeedUpdate | undefined;
+    const result = await this.database.db.transaction(async (tx) => {
+      await lockAccountFeedAllocatorsInTx(tx, [params.accountId]);
+      const updated = await tx.execute<{ announcementReadFeedId: number }>(sql`
+        UPDATE "AccountThreadState" state
+        SET "announcementReadFeedId" = GREATEST(state."announcementReadFeedId", ${params.feedId}),
+          "updatedAt" = CURRENT_TIMESTAMP
+        FROM "GroupMeta" meta
+        WHERE state."threadId" = ${params.threadId}
+          AND state."accountId" = ${params.accountId}
+          AND meta."threadId" = state."threadId"
+          AND meta."announcementFeedId" >= ${params.feedId}
+          AND state."announcementReadFeedId" < ${params.feedId}
+        RETURNING state."announcementReadFeedId"
+      `);
+      if (updated.rows[0]) {
+        [pending] = await captureThreadStateUpdatesInTx(tx, [params.accountId]);
+        return updated.rows[0];
+      }
+      const [current] = await tx
+        .select({
+          announcementReadFeedId: accountThreadState.announcementReadFeedId,
+        })
+        .from(accountThreadState)
+        .where(
+          and(
+            eq(accountThreadState.threadId, params.threadId),
+            eq(accountThreadState.accountId, params.accountId),
+          ),
+        )
+        .limit(1);
+      if (current && current.announcementReadFeedId >= params.feedId)
+        return current;
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'announcement coordinate is not available',
+      );
+    });
+    if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
+    return result;
+  }
+
+  async setAnnouncement(params: {
+    threadId: number;
+    operatorUserId: number;
+    text: string | null;
+  }): Promise<{ feedId: number }> {
+    return this.database.db.transaction(async (tx) => {
+      const [located] = await tx
+        .select({
+          account: groupStateFields.account,
+          domain: groupStateFields.domain,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.id))
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (located)
+        await lockBusinessAccountsInTx(tx, [
+          { account: located.account, domain: located.domain },
+        ]);
+      const locked = await this.relationshipMutations.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.operatorUserId,
+      );
+      const current = await readGroupState(tx, eq(group.id, params.threadId));
+      if (
+        !current ||
+        current.domain !== 'local' ||
+        current.namespaceId !== 0 ||
+        current.dissolvedAt !== null
+      )
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'group announcement authority is unavailable',
+        );
+      await this.assertGroupManagerInTx(
+        tx,
+        params.threadId,
+        params.operatorUserId,
+      );
+      const result = await this.groupMeta.reconcileAnnouncementInTx(
+        tx,
+        params.threadId,
+        params.text,
+      );
+      if (result.changed)
+        await enqueueCurrentThreadFanoutsInTx(tx, locked.threadLock);
+      return { feedId: result.feedId };
+    });
+  }
+
   @MeasureBusinessOperation('group.update')
   async updateGroup(params: {
     threadId: number;

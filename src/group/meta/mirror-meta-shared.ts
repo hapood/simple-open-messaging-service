@@ -40,6 +40,11 @@ export type MirrorMetaReplicatedItem =
       feedId: number;
       operation: 'GROUP_PROFILE';
       profileRev: number;
+    }
+  | {
+      feedId: number;
+      operation: 'GROUP_ANNOUNCEMENT';
+      text: string | null;
     };
 
 export interface MirrorMetaCursor {
@@ -123,6 +128,17 @@ export async function applyMirrorMetaFactInTx(
 ): Promise<void> {
   if (mode === 'full' && item.operation === 'DEPART')
     throw new Error('a full group-meta snapshot cannot contain DEPART');
+  if (item.operation === 'GROUP_ANNOUNCEMENT') {
+    await tx
+      .update(groupMeta)
+      .set({
+        announcementFeedId: item.feedId,
+        announcementText: item.text,
+        updatedAt: new Date(),
+      })
+      .where(eq(groupMeta.threadId, threadId));
+    return;
+  }
   if (item.operation === 'DEPART') {
     const subject = toClientIdentity(
       {
@@ -158,7 +174,10 @@ export async function applyMirrorMetaFactInTx(
 export function currentMirrorMetaFact(
   threadId: number,
   group: MirrorGroupAddress,
-  item: Exclude<MirrorMetaReplicatedItem, { operation: 'DEPART' }>,
+  item: Extract<
+    MirrorMetaReplicatedItem,
+    { operation: 'UPSERT' | 'GROUP_PROFILE' }
+  >,
 ): typeof groupMetaMemberFeed.$inferInsert {
   const body =
     item.operation === 'UPSERT'

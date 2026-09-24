@@ -1023,6 +1023,10 @@ export class ThreadRepository {
         const changed = {
           ...item,
           lastReadSeq: projection.lastReadSeq,
+          announcementReadFeedId: Math.max(
+            item.announcementReadFeedId ?? 0,
+            server.announcementReadFeedId ?? 0,
+          ),
           unreadCount: projection.unreadCount,
           mentionUnread: projection.hasUnreadMention ? ['me' as const] : [],
           joinRequestEndFeedId: server.joinRequestEndFeedId,
@@ -1078,7 +1082,11 @@ export class ThreadRepository {
           item.threadId !== snapshot.threadId ||
           (item.joinRequestEndFeedId === snapshot.joinRequestEndFeedId &&
             item.joinRequestReadFeedId === snapshot.joinRequestReadFeedId &&
-            item.groupInviteEndFeedId === snapshot.groupInviteEndFeedId)
+            item.groupInviteEndFeedId === snapshot.groupInviteEndFeedId &&
+            (item.announcementReadFeedId ?? 0) >=
+              (snapshot.announcementReadFeedId ?? 0) &&
+            (item.type !== 'GROUP' ||
+              item.groupMetaTargetFeedId === snapshot.groupMetaFeedEndId))
         )
           return item;
         changed = {
@@ -1086,7 +1094,34 @@ export class ThreadRepository {
           joinRequestEndFeedId: snapshot.joinRequestEndFeedId,
           joinRequestReadFeedId: snapshot.joinRequestReadFeedId,
           groupInviteEndFeedId: snapshot.groupInviteEndFeedId,
+          announcementReadFeedId: Math.max(
+            item.announcementReadFeedId ?? 0,
+            snapshot.announcementReadFeedId ?? 0,
+          ),
+          ...(item.type === 'GROUP'
+            ? { groupMetaTargetFeedId: snapshot.groupMetaFeedEndId }
+            : {}),
         };
+        return changed;
+      }),
+    );
+    if (changed) void this.persistThread(changed);
+  }
+
+  /** A successful display acknowledgement is monotone even before the next
+   * server thread-feed snapshot arrives on this device. */
+  markAnnouncementReadLocally(threadId: number, feedId: number): void {
+    if (!Number.isSafeInteger(feedId) || feedId < 1) return;
+    let changed: ConversationItem | undefined;
+    this._items.update((items) =>
+      items.map((item) => {
+        if (
+          item.threadId !== threadId ||
+          item.type !== 'GROUP' ||
+          (item.announcementReadFeedId ?? 0) >= feedId
+        )
+          return item;
+        changed = { ...item, announcementReadFeedId: feedId };
         return changed;
       }),
     );

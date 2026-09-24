@@ -119,7 +119,7 @@ export class ThreadFeedStateDto {
   @ApiProperty({ minimum: 0 }) messageEndSeq!: number;
   @ApiProperty({ minimum: 0 }) tombstoneEndSeq!: number;
   @ApiProperty({ type: String, nullable: true, example: '42' })
-  groupMetaFeedEndId!: number | null;
+  groupMetaFeedEndId!: string | null;
 
   @ApiProperty({ minimum: 0 })
   joinRequestEndFeedId!: number;
@@ -136,6 +136,12 @@ export class ThreadFeedStateDto {
       'Server-confirmed read position; explicit force may move it backwards',
   })
   lastReadSeq!: number;
+
+  @ApiProperty({
+    minimum: 0,
+    description: 'Highest displayed group announcement feed coordinate',
+  })
+  announcementReadFeedId!: number;
 
   @ApiProperty({
     example: 3,

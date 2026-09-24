@@ -41,6 +41,7 @@ import {
   type ContactIdentityDialogData,
 } from '../components/contact-identity-dialog/contact-identity-dialog.component';
 import { ContactPickerDialogComponent } from '../components/contact-picker-dialog/contact-picker-dialog.component';
+import { GroupAnnouncementComponent } from '../components/group-announcement/group-announcement.component';
 
 export enum RoutePage {
   HOME,
@@ -73,6 +74,7 @@ export enum PopupType {
   LINK_CARD_GENERATION,
   CONTACT_IDENTITY,
   CONTACT_PICKER,
+  GROUP_ANNOUNCEMENT,
 }
 
 // Resolve components when a dialog is opened, after the ES module graph has finished
@@ -94,6 +96,7 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.LINK_CARD_GENERATION]: () => LinkCardGenerationDialogComponent,
   [PopupType.CONTACT_IDENTITY]: () => ContactIdentityDialogComponent,
   [PopupType.CONTACT_PICKER]: () => ContactPickerDialogComponent,
+  [PopupType.GROUP_ANNOUNCEMENT]: () => GroupAnnouncementComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -111,6 +114,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.LINK_CARD_GENERATION]: 'chatbox',
   [PopupType.CONTACT_IDENTITY]: 'chatbox',
   [PopupType.CONTACT_PICKER]: 'modal',
+  [PopupType.GROUP_ANNOUNCEMENT]: 'chatbox',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -154,6 +158,11 @@ export interface PopupInput {
   };
   [PopupType.CONTACT_IDENTITY]: { identity: ContactIdentityDialogData };
   [PopupType.CONTACT_PICKER]: undefined;
+  [PopupType.GROUP_ANNOUNCEMENT]: {
+    threadId: number;
+    feedId: string;
+    text: string;
+  };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -189,6 +198,7 @@ export interface PopupResult {
   [PopupType.LINK_ORIGINAL]: undefined;
   [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
   [PopupType.CONTACT_IDENTITY]: undefined;
+  [PopupType.GROUP_ANNOUNCEMENT]: undefined;
   [PopupType.CONTACT_PICKER]:
     | (({ targetUserId: number } | { targetGroupId: number }) & {
         account: string;

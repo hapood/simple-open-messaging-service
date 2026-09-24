@@ -96,6 +96,29 @@
   align-self: center;
 }
 
+.announcement-button {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--app-brand);
+  cursor: pointer;
+  align-self: center;
+  &.unread {
+    background: var(--app-hover);
+    border-radius: 12px;
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+  }
+}
+
 .group-member-count {
   flex: 0 0 auto;
   color: var(--app-text-faint);

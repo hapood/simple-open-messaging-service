@@ -28,6 +28,7 @@ import { FederationMessageFeedService } from '../src/federation/federation-messa
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { S2sController } from '../src/federation/s2s.controller.js';
 import { readGroupMetaPageInTx } from '../src/group/meta/group-meta-page.js';
+import { ClientGroupMetaFeedService } from '../src/client-state-feed/client-group-meta-feed.service.js';
 
 describe('canonical Group Meta feed', () => {
   const suffix = Date.now().toString(36);
@@ -42,6 +43,7 @@ describe('canonical Group Meta feed', () => {
   let database: DatabaseService;
   let feed: GroupMetaFeedService;
   let publisher: FederationGroupMetaFeedService;
+  let clientFeed: ClientGroupMetaFeedService;
   let groupId: number;
   let threadId: number;
   let ownerUserId: number;
@@ -51,11 +53,16 @@ describe('canonical Group Meta feed', () => {
   beforeAll(async () => {
     module = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [GroupMetaFeedService, FederationGroupMetaFeedService],
+      providers: [
+        GroupMetaFeedService,
+        FederationGroupMetaFeedService,
+        ClientGroupMetaFeedService,
+      ],
     }).compile();
     database = module.get(DatabaseService);
     feed = module.get(GroupMetaFeedService);
     publisher = module.get(FederationGroupMetaFeedService);
+    clientFeed = module.get(ClientGroupMetaFeedService);
     peerNamespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
     otherPeerNamespaceId = await seedFederatedPeerNamespace(
       database.db,
@@ -454,6 +461,103 @@ describe('canonical Group Meta feed', () => {
     ]);
     return feed.reconcileProfileInTx(tx, groupId, 1);
   }
+
+  it('serializes client announcement coordinates as decimal strings', async () => {
+    await database.db.insert(groupMeta).values({
+      threadId: groupId,
+      metaEndId: 1,
+      announcementFeedId: 1,
+      announcementText: 'Welcome',
+    });
+    const page = await clientFeed.serve(
+      ownerUserId,
+      groupId,
+      groupAccount,
+      'full',
+      0,
+      100,
+      1,
+    );
+    expect(page).toMatchObject({
+      scannedThrough: '1',
+      groupMetaFeedEndId: '1',
+      items: [
+        {
+          feedId: '1',
+          operation: 'GROUP_ANNOUNCEMENT',
+          body: { text: 'Welcome' },
+        },
+      ],
+    });
+  });
+
+  it('retains only the newest announcement, including clears and clipped full boundaries', async () => {
+    await database.db.insert(groupMeta).values({
+      threadId: groupId,
+      metaEndId: 1,
+      announcementFeedId: 1,
+      announcementText: null,
+    });
+    const read = async (
+      mode: 'full' | 'delta',
+      after: number,
+      through?: number,
+    ) => {
+      const [meta] = await database.db
+        .select({ end: groupMeta.metaEndId })
+        .from(groupMeta)
+        .where(eq(groupMeta.threadId, groupId));
+      return database.db.transaction((tx) =>
+        readGroupMetaPageInTx(tx, {
+          groupId,
+          account: groupAccount,
+          mode,
+          after,
+          through,
+          take: 100,
+          end: meta.end,
+          visibleAfter: 0,
+        }),
+      );
+    };
+    expect((await read('full', 0)).items).toEqual([
+      {
+        feedId: 1,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: null },
+      },
+    ]);
+    const published = await database.db.transaction((tx) =>
+      feed.reconcileAnnouncementInTx(tx, groupId, 'Welcome'),
+    );
+    expect(published).toEqual({ feedId: 2, changed: true });
+    expect(
+      await database.db.transaction((tx) =>
+        feed.reconcileAnnouncementInTx(tx, groupId, 'Welcome'),
+      ),
+    ).toEqual({ feedId: 2, changed: false });
+    expect((await read('full', 0, 1)).items).toEqual([]);
+    expect((await read('delta', 1)).items).toEqual([
+      {
+        feedId: 2,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: 'Welcome' },
+      },
+    ]);
+    expect(
+      await database.db.transaction((tx) =>
+        feed.reconcileAnnouncementInTx(tx, groupId, null),
+      ),
+    ).toEqual({ feedId: 3, changed: true });
+    expect((await read('full', 0)).items).toEqual([
+      {
+        feedId: 3,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: null },
+      },
+    ]);
+    expect((await read('delta', 1)).items).toHaveLength(1);
+  });
 
   it.each(['full', 'delta'] as const)(
     'includes client member namespaces and compact profile references in %s pages',

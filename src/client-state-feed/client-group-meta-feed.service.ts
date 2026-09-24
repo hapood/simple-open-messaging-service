@@ -82,7 +82,7 @@ export class ClientGroupMetaFeedService {
         .from(groupMeta)
         .where(eq(groupMeta.threadId, groupId))
         .limit(1);
-      return readGroupMetaPageInTx(tx, {
+      const page = await readGroupMetaPageInTx(tx, {
         groupId,
         account,
         mode,
@@ -93,6 +93,15 @@ export class ClientGroupMetaFeedService {
         visibleAfter: 0,
         client: { localDomain: loadFederationConfig().domain },
       });
+      return {
+        ...page,
+        scannedThrough: String(page.scannedThrough),
+        groupMetaFeedEndId: String(page.groupMetaFeedEndId),
+        items: page.items.map((item) => ({
+          ...item,
+          feedId: String(item.feedId),
+        })),
+      };
     });
   }
 

@@ -3913,6 +3913,8 @@ export interface components {
              * @example 42
              */
             lastReadSeq: number;
+            /** @description Highest displayed group announcement feed coordinate */
+            announcementReadFeedId: number;
             /**
              * @description Exact persisted unread count
              * @example 3

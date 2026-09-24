@@ -43,6 +43,8 @@ import {
   QueryGroupInviteCandidatesDto,
   HandleGroupJoinRequestDto,
   ReadGroupJoinRequestsDto,
+  SetGroupAnnouncementDto,
+  ReadGroupAnnouncementDto,
 } from '../dto/group.dto.js';
 import { CreateGroupResponseDto } from '../dto/response.dto.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
@@ -333,6 +335,45 @@ export class GroupController {
         decision: 'ACCEPTED',
       }),
     );
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @Throttle('group.update')
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<SetGroupAnnouncementDto>('groupId')
+  @Post('group/announcement/set')
+  @ApiOperation({ summary: 'Publish or clear the origin group announcement' })
+  async setAnnouncement(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetGroupAnnouncementDto,
+  ) {
+    return this.groupService.setAnnouncement({
+      threadId: req.threadAccess!.threadId,
+      operatorUserId: req.user.userId,
+      text: dto.text,
+    });
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @Throttle('thread.mark-read')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<ReadGroupAnnouncementDto>('groupId')
+  @Post('group/announcement/read')
+  @ApiOperation({
+    summary: 'Acknowledge a displayed group announcement coordinate',
+  })
+  async markAnnouncementRead(
+    @Request() req: FastifyRequest,
+    @Body() dto: ReadGroupAnnouncementDto,
+  ) {
+    return this.groupService.markAnnouncementRead({
+      threadId: req.threadAccess!.threadId,
+      accountId: req.user.userId,
+      feedId: dto.announcementFeedId,
+    });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

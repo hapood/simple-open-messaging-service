@@ -134,6 +134,39 @@ export class GroupMetaFeedService {
     return metaEndId;
   }
 
+  /** Replace the one canonical group-wide announcement without allocating a
+   * message sequence. Callers hold the group mutation and thread-content locks
+   * and publish the resulting head in the same transaction. */
+  async reconcileAnnouncementInTx(
+    tx: DatabaseTransaction,
+    groupId: number,
+    text: string | null,
+  ): Promise<{ feedId: number; changed: boolean }> {
+    const feed = await this.lockFeedInTx(tx, groupId);
+    const [current] = await tx
+      .select({
+        feedId: groupMeta.announcementFeedId,
+        text: groupMeta.announcementText,
+      })
+      .from(groupMeta)
+      .where(eq(groupMeta.threadId, groupId))
+      .limit(1);
+    if (!current) throw new Error('group meta feed is missing');
+    if (current.feedId !== null && current.text === text)
+      return { feedId: current.feedId, changed: false };
+    const feedId = feed.metaEndId + 1;
+    await tx
+      .update(groupMeta)
+      .set({
+        metaEndId: feedId,
+        announcementFeedId: feedId,
+        announcementText: text,
+        updatedAt: new Date(),
+      })
+      .where(eq(groupMeta.threadId, groupId));
+    return { feedId, changed: true };
+  }
+
   async reconcileProfileInTx(
     tx: DatabaseTransaction,
     groupId: number,

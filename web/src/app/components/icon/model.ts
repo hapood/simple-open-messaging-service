@@ -42,6 +42,7 @@ export enum AppIconType {
   MIC,
   MIC_OFF,
   SPEAKER,
+  MEGAPHONE,
   VIDEO,
   VIDEO_OFF,
   CAMERA_SWITCH,

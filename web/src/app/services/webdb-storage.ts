@@ -189,7 +189,10 @@ function mergeCachedMessage(
     current.content === merged.content &&
     current.localSystemProfileRevs
   )
-    return { ...merged, localSystemProfileRevs: current.localSystemProfileRevs };
+    return {
+      ...merged,
+      localSystemProfileRevs: current.localSystemProfileRevs,
+    };
   return merged;
 }
 
@@ -278,7 +281,8 @@ export interface MessageDbSchema extends DBSchema {
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
 export const CACHE_SCHEMA_VERSION = 24;
-export const MESSAGE_CACHE_SCHEMA_VERSION = 5;
+// Message content now stores canonical CAS paths; discard cached contextual URLs.
+export const MESSAGE_CACHE_SCHEMA_VERSION = 6;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -364,8 +368,12 @@ export class WebdbStorage {
     // notify through the worker instead of emitting again at the request layer.
     if (isTauri() && result.status === 'READY') {
       const evidence =
-        data && typeof data === 'object' && 'evidence' in data &&
-        isProfileSelector(data.evidence) ? data.evidence : undefined;
+        data &&
+        typeof data === 'object' &&
+        'evidence' in data &&
+        isProfileSelector(data.evidence)
+          ? data.evidence
+          : undefined;
       if (evidence) await this.applyGroupMetaProfileDrift(evidence, key);
       this.profileWake.next({ event, key, ...(evidence ? { evidence } : {}) });
     }
@@ -1955,9 +1963,27 @@ export class WebdbStorage {
           continue;
         for (const entry of update.page.items) {
           const item =
-            entry.operation === 'GROUP_PROFILE'
+            entry.operation === 'GROUP_PROFILE' ||
+            entry.operation === 'GROUP_ANNOUNCEMENT'
               ? entry
               : localSubjectIdentity(entry);
+          if (item.operation === 'GROUP_ANNOUNCEMENT') {
+            const thread = await tx.objectStore('threads').get(update.threadId);
+            if (thread?.type === 'GROUP') {
+              const announcement = {
+                feedId: item.feedId,
+                text: item.body.text,
+              };
+              await tx
+                .objectStore('threads')
+                .put(
+                  update.page.mode === 'full'
+                    ? { ...thread, groupMetaRecoveryAnnouncement: announcement }
+                    : { ...thread, group: { ...thread.group, announcement } },
+                );
+            }
+            continue;
+          }
           if (item.operation === 'GROUP_PROFILE') {
             const thread = await tx.objectStore('threads').get(update.threadId);
             if (thread?.type === 'GROUP')
@@ -2025,10 +2051,17 @@ export class WebdbStorage {
             groupMetaRecoveryThrough: update.page.hasMore
               ? thread.groupMetaRecoveryThrough
               : null,
+            groupMetaRecoveryAnnouncement:
+              update.page.mode === 'full' && update.page.hasMore
+                ? (thread.groupMetaRecoveryAnnouncement ?? null)
+                : null,
             group: {
               ...thread.group,
               memberCount: activeMembers.length,
               groupMetaFeedId: update.page.scannedThrough,
+              ...(update.page.mode === 'full' && !update.page.hasMore
+                ? { announcement: thread.groupMetaRecoveryAnnouncement ?? null }
+                : {}),
             },
           });
         }
@@ -2284,6 +2317,7 @@ export class WebdbStorage {
         await tx.objectStore('threads').put({
           ...thread,
           groupMetaRecoveryThrough: through,
+          groupMetaRecoveryAnnouncement: null,
           group: { ...thread.group, memberCount: 0, groupMetaFeedId: '0' },
         });
       await tx.done;
@@ -2454,26 +2488,38 @@ export class WebdbStorage {
     key: ProfileKey,
   ): Promise<boolean> {
     if (
-      evidence.type !== 'GROUP_META' || evidence.subject.type !== 'MEMBER' ||
+      evidence.type !== 'GROUP_META' ||
+      evidence.subject.type !== 'MEMBER' ||
       evidence.profileRev === key.rev ||
       evidence.subject.account !== key.account ||
       evidence.subject.domain !== key.domain
-    ) return false;
+    )
+      return false;
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>('native_db_apply_group_member_profile_drift', {
-          userId: Number(this.currentUserId),
-          threadId: evidence.threadId,
-          account: key.account, domain: key.domain,
-          namespaceId: key.namespaceId,
-          expectedRev: evidence.profileRev, actualRev: key.rev,
-        });
+        return tauriInvoke<boolean>(
+          'native_db_apply_group_member_profile_drift',
+          {
+            userId: Number(this.currentUserId),
+            threadId: evidence.threadId,
+            account: key.account,
+            domain: key.domain,
+            namespaceId: key.namespaceId,
+            expectedRev: evidence.profileRev,
+            actualRev: key.rev,
+          },
+        );
       const tx = (await this.db()).transaction('members', 'readwrite');
       const address: [number, string, string, number] = [
-        evidence.threadId, key.account, key.domain, key.namespaceId,
+        evidence.threadId,
+        key.account,
+        key.domain,
+        key.namespaceId,
       ];
       const member = await tx.store.get(address);
-      const changed = !!member && !member.left &&
+      const changed =
+        !!member &&
+        !member.left &&
         member.profileMessageSeq == null &&
         member.profileRev === evidence.profileRev;
       if (changed) await tx.store.put({ ...member, profileRev: key.rev });
@@ -2557,7 +2603,10 @@ export class WebdbStorage {
         identity.domain,
         identity.namespaceId,
       ];
-      const tx = db.transaction(['members', 'profiles', 'profileAvatarBlobs'], 'readwrite');
+      const tx = db.transaction(
+        ['members', 'profiles', 'profileAvatarBlobs'],
+        'readwrite',
+      );
       let previous = await tx.objectStore('members').get(key);
 
       if (!previous || previous.left || previous.profileRev !== profile.rev) {
@@ -2688,8 +2737,7 @@ export class WebdbStorage {
         ['namespaces', 'profiles', 'profileAvatarBlobs', 'threads'],
         'readwrite',
       );
-      if (avatar)
-        await tx.objectStore('profileAvatarBlobs').put(avatar);
+      if (avatar) await tx.objectStore('profileAvatarBlobs').put(avatar);
       await this.registerNamespace(
         tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
         snapshot.domain,
@@ -2754,11 +2802,16 @@ export class WebdbStorage {
     if (!/^[a-f0-9]{64}$/.test(digest)) return undefined;
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        const bytes = await tauriInvoke<number[] | null>('native_db_get_profile_avatar', {
-          userId: Number(this.currentUserId),
-          digest,
-        });
-        return bytes ? new Blob([new Uint8Array(bytes)], { type: 'image/webp' }) : undefined;
+        const bytes = await tauriInvoke<number[] | null>(
+          'native_db_get_profile_avatar',
+          {
+            userId: Number(this.currentUserId),
+            digest,
+          },
+        );
+        return bytes
+          ? new Blob([new Uint8Array(bytes)], { type: 'image/webp' })
+          : undefined;
       }
       return (await (await this.db()).get('profileAvatarBlobs', digest))?.blob;
     });
@@ -2825,20 +2878,36 @@ export class WebdbStorage {
     profileRev: number,
   ): Promise<boolean> {
     if (
-      !Number.isSafeInteger(threadId) || threadId < 1 ||
-      !Number.isSafeInteger(seq) || seq < 1 ||
-      !account || !domain ||
-      !Number.isSafeInteger(profileRev) || profileRev < 1
-    ) throw new Error('invalid system profile correction');
+      !Number.isSafeInteger(threadId) ||
+      threadId < 1 ||
+      !Number.isSafeInteger(seq) ||
+      seq < 1 ||
+      !account ||
+      !domain ||
+      !Number.isSafeInteger(profileRev) ||
+      profileRev < 1
+    )
+      throw new Error('invalid system profile correction');
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>('native_db_correct_system_message_profile', {
-          userId: Number(this.currentUserId), threadId, seq,
-          account, domain, profileRev,
-        });
+        return tauriInvoke<boolean>(
+          'native_db_correct_system_message_profile',
+          {
+            userId: Number(this.currentUserId),
+            threadId,
+            seq,
+            account,
+            domain,
+            profileRev,
+          },
+        );
       const tx = (await this.messageDb()).transaction('messages', 'readwrite');
       const message = await tx.store.get([threadId, seq]);
-      if (!message || !isCachedMessageBody(message) || message.contentType !== 'SYSTEM') {
+      if (
+        !message ||
+        !isCachedMessageBody(message) ||
+        message.contentType !== 'SYSTEM'
+      ) {
         await tx.done;
         return false;
       }

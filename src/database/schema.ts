@@ -153,6 +153,10 @@ export const identityNamespace = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
+    dailyMsgLimit: integer(),
+    dailyRequestLimit: integer(),
+    dailyFileLimit: integer(),
+    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     /** Unified outbound State Feed end for this federation identity epoch.
      * Namespace 0 is local and never allocates from this coordinate. */
     stateFeedEndId: bigint({ mode: 'bigint' })
@@ -535,6 +539,8 @@ export const accountThreadState = pgTable(
     /** Local role fact. Null for P2P conversations. */
     role: groupRole(),
     lastReadSeq: integer().default(0).notNull(),
+    /** Highest group-meta announcement coordinate actually displayed to this local account. */
+    announcementReadFeedId: integer().default(0).notNull(),
     threadFeedId: integer().notNull().default(0),
     messageEndSeq: integer().notNull().default(0),
     tombstoneEndSeq: integer().notNull().default(0),
@@ -615,6 +621,10 @@ export const accountThreadState = pgTable(
     check(
       'AccountThreadState_lastReadSeq_check',
       sql`${table.lastReadSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_announcementReadFeedId_check',
+      sql`${table.announcementReadFeedId} >= 0`,
     ),
     check(
       'AccountThreadState_threadProfileRev_check',
@@ -1719,12 +1729,6 @@ export const federatedPeer = pgTable(
     haltedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     haltCode: integer(),
     haltReason: varchar({ length: 255 }),
-    dailyMsgLimit: integer(),
-    dailyRequestLimit: integer(),
-    // Quota circuit-breaker file dimensions (daily). All file types (image/video/audio/file) consolidate into a
-    // single file cnt + file total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
-    dailyFileLimit: integer(),
-    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     recognizesPeer: boolean().default(false).notNull(),
     peerAcceptanceConfirmed: boolean().default(false).notNull(),
     localServiceAvailable: boolean().default(false).notNull(),
@@ -1808,12 +1812,15 @@ export const groupMeta = pgTable(
   'GroupMeta',
   {
     threadId: integer().primaryKey().notNull(),
-    /** Origin allocation end or mirror's last completely applied round cursor.
-     * The compacted GROUP_PROFILE item always occupies this end coordinate. */
+    /** Origin allocation end or mirror's last completely applied round cursor. */
     metaEndId: integer().default(0).notNull(),
     /** Profile revision carried by the GROUP_PROFILE item at the end coordinate.
      * Zero while the group has no profile revision yet. */
     profileRev: integer().default(0).notNull(),
+    /** Null feed id means the current announcement is unknown, not an explicit clear.
+     * A positive feed id with null text means the announcement was cleared. */
+    announcementFeedId: integer(),
+    announcementText: text(),
     /** Greatest meta feed end merged from committed State Feed items. */
     metaTargetId: integer().default(0).notNull(),
     /** Greatest source meta feed id durably scanned by meta rounds. */
@@ -1839,6 +1846,14 @@ export const groupMeta = pgTable(
     }).onDelete('cascade'),
     check('GroupMeta_metaEndId_check', sql`${table.metaEndId} >= 0`),
     check('GroupMeta_profileRev_check', sql`${table.profileRev} >= 0`),
+    check(
+      'GroupMeta_announcementFeedId_check',
+      sql`${table.announcementFeedId} IS NULL OR ${table.announcementFeedId} > 0`,
+    ),
+    check(
+      'GroupMeta_announcementText_check',
+      sql`${table.announcementText} IS NULL OR (${table.announcementFeedId} IS NOT NULL AND char_length(${table.announcementText}) BETWEEN 1 AND 4096)`,
+    ),
     check('GroupMeta_metaTargetId_check', sql`${table.metaTargetId} >= 0`),
     check(
       'GroupMeta_metaProcessedThroughId_check',
@@ -2529,7 +2544,7 @@ export const s2SKeyCache = pgTable(
 export const quotaDailyUsage = pgTable(
   'QuotaDailyUsage',
   {
-    domain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     date: date({ mode: 'date' }).notNull(),
     category: varchar({ length: 15 }).notNull(),
     count: integer().default(0).notNull(),
@@ -2539,8 +2554,13 @@ export const quotaDailyUsage = pgTable(
       'btree',
       table.date.asc().nullsLast().op('date_ops'),
     ),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'QuotaDailyUsage_namespaceId_fkey',
+    }).onDelete('cascade'),
     primaryKey({
-      columns: [table.domain, table.date, table.category],
+      columns: [table.namespaceId, table.date, table.category],
       name: 'QuotaDailyUsage_pkey',
     }),
   ],
@@ -2596,13 +2616,13 @@ export const userQuotaDailyUsage = pgTable(
 
 /**
  * Daily file-total-size accumulator for a federated peer (bigint — count tables above are integer). One row per
- * (domain, UTC day). The file-cnt dimension reuses QuotaDailyUsage with category 'files'; the byte dimension lives
- * here because byte totals exceed integer range. Drives the per-peer circuit breaker. See src/quota/quota.service.ts.
+ * (namespaceId, UTC day). The file-cnt dimension reuses QuotaDailyUsage with category 'files'; the byte
+ * dimension lives here because byte totals exceed integer range. Drives the per-namespace circuit breaker.
  */
 export const quotaFileByteUsage = pgTable(
   'QuotaFileByteUsage',
   {
-    domain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     date: date({ mode: 'date' }).notNull(),
     bytes: bigint({ mode: 'bigint' })
       .default(sql`0`)
@@ -2613,8 +2633,13 @@ export const quotaFileByteUsage = pgTable(
       'btree',
       table.date.asc().nullsLast().op('date_ops'),
     ),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'QuotaFileByteUsage_namespaceId_fkey',
+    }).onDelete('cascade'),
     primaryKey({
-      columns: [table.domain, table.date],
+      columns: [table.namespaceId, table.date],
       name: 'QuotaFileByteUsage_pkey',
     }),
   ],
@@ -2651,14 +2676,14 @@ export const userQuotaFileByteUsage = pgTable(
 );
 
 /**
- * Admin "continue / add quota": a per-(domain, UTC-day) ADDITIVE allowance on top of the base limit. The
- * effective breaker limit for today = base (override ?? default) + extra*. Persisted (survives restart);
- * auto-resets via the date key. See QuotaService.addQuota.
+ * Admin "continue / add quota": a per-(namespaceId, UTC-day) ADDITIVE allowance on top of the base limit.
+ * The effective breaker limit for today = base (override ?? default) + extra*. Persisted across restarts;
+ * auto-resets via the date key.
  */
 export const quotaDailyAllowance = pgTable(
   'QuotaDailyAllowance',
   {
-    domain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     date: date({ mode: 'date' }).notNull(),
     extraMsg: integer().default(0).notNull(),
     extraFile: integer().default(0).notNull(),
@@ -2667,8 +2692,13 @@ export const quotaDailyAllowance = pgTable(
       .notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'QuotaDailyAllowance_namespaceId_fkey',
+    }).onDelete('cascade'),
     primaryKey({
-      columns: [table.domain, table.date],
+      columns: [table.namespaceId, table.date],
       name: 'QuotaDailyAllowance_pkey',
     }),
   ],

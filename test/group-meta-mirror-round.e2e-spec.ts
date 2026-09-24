@@ -622,6 +622,57 @@ describe('mirror Group Meta rounds', () => {
     });
   });
 
+  it('applies announcement full, delta clear and clipped-full unknown atomically', async () => {
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 2 }),
+    );
+    await database.db.transaction((tx) =>
+      applyFullMirrorMetaBatchInTx(tx, {
+        group,
+        through: 2,
+        scannedThrough: 2,
+        reachedBoundary: true,
+        items: [{ feedId: 2, operation: 'GROUP_ANNOUNCEMENT', text: 'Hello' }],
+      }),
+    );
+    expect(await readMirrorMeta()).toMatchObject({
+      announcementFeedId: 2,
+      announcementText: 'Hello',
+    });
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 3 }),
+    );
+    await database.db.transaction((tx) =>
+      applyDeltaMirrorMetaItemInTx(tx, {
+        group,
+        through: 3,
+        reachedBoundary: true,
+        messages,
+        item: { feedId: 3, operation: 'GROUP_ANNOUNCEMENT', text: null },
+      }),
+    );
+    expect(await readMirrorMeta()).toMatchObject({
+      announcementFeedId: 3,
+      announcementText: null,
+    });
+    await database.db.transaction((tx) =>
+      reopenMirrorMetaRecoveryInTx(tx, group, 4),
+    );
+    await database.db.transaction((tx) =>
+      applyFullMirrorMetaBatchInTx(tx, {
+        group,
+        through: 4,
+        scannedThrough: 4,
+        reachedBoundary: true,
+        items: [],
+      }),
+    );
+    expect(await readMirrorMeta()).toMatchObject({
+      announcementFeedId: null,
+      announcementText: null,
+    });
+  });
+
   it('upserts the same stable profile key in full and delta modes', async () => {
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 2 }),

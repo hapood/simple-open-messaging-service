@@ -22,12 +22,13 @@ interface ThreadFeedState {
   threadFeedId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  groupMetaFeedEndId: number | null;
+  groupMetaFeedEndId: string | null;
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number;
   groupInviteEndFeedId: number;
   threadProfileRev: number;
   lastReadSeq: number;
+  announcementReadFeedId: number;
   unreadCount: number;
   lastMentionSeq: number | null;
   previews?: ThreadFeedPreview[];
@@ -77,17 +78,28 @@ export class ThreadFeedService {
         }
         const take = request.take ?? 100;
         const resultRows = await tx.execute<
-          ThreadFeedState & Record<string, unknown>
+          Omit<ThreadFeedState, 'groupMetaFeedEndId'> & {
+            groupMetaFeedEndId: number | null;
+          }
         >(sql`
         SELECT "threadId", "threadFeedId", alias, "messageEndSeq", "tombstoneEndSeq",
                "groupMetaFeedEndId", "joinRequestEndFeedId",
                "joinRequestReadFeedId", "groupInviteEndFeedId",
-               "threadProfileRev", "lastReadSeq", "unreadCount", "lastMentionSeq"
+               "threadProfileRev", "lastReadSeq", "announcementReadFeedId",
+               "unreadCount", "lastMentionSeq"
         FROM "AccountThreadState" WHERE "accountId" = ${accountId}
           AND "threadFeedId" > ${request.after} AND "threadFeedId" <= ${through}
         ORDER BY "threadFeedId" LIMIT ${take + 1}`);
         const hasMore = resultRows.rows.length > take;
-        const items = resultRows.rows.slice(0, take);
+        const items: ThreadFeedState[] = resultRows.rows
+          .slice(0, take)
+          .map((item) => ({
+            ...item,
+            groupMetaFeedEndId:
+              item.groupMetaFeedEndId === null
+                ? null
+                : String(item.groupMetaFeedEndId),
+          }));
         if (previewCount > 0) {
           for (const item of items) {
             item.previews = (

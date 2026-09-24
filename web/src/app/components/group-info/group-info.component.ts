@@ -51,6 +51,10 @@ import { ContactCardShareService } from '../../services/contact-card-share.servi
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 import type { ProfileSelector } from '../../../../../shared/profile-selector';
+import {
+  currentGroupAnnouncement,
+  isGroupMetaCurrent,
+} from '../../services/group-announcement';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -204,6 +208,86 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly filteredRoster = this.roster.asReadonly();
   readonly canLeave = computed(() => !this.isOwner());
   readonly confirmDissolve = signal(false);
+  readonly announcementEditing = signal(false);
+  readonly announcementDraft = signal('');
+  readonly announcementLength = computed(() =>
+    unicodeCodePointLength(this.announcementDraft()),
+  );
+  readonly hasAnnouncement = computed(
+    () => currentGroupAnnouncement(this.userMsgTrd()) !== null,
+  );
+  readonly canEditAnnouncement = computed(
+    () =>
+      this.isAdmin() &&
+      isGroupMetaCurrent(this.userMsgTrd()) &&
+      this.group()?.domain === 'local' &&
+      this.group()?.namespaceId === 0,
+  );
+
+  openAnnouncement(): void {
+    const thread = this.userMsgTrd();
+    const announcement = currentGroupAnnouncement(thread);
+    if (!thread || !announcement) return;
+    this.routeService.popupDlg(
+      PopupType.GROUP_ANNOUNCEMENT,
+      {
+        threadId: thread.threadId,
+        feedId: announcement.feedId,
+        text: announcement.text,
+      },
+      undefined,
+      { scopeThreadId: thread.threadId },
+    );
+  }
+
+  beginAnnouncementEdit(): void {
+    if (!this.canEditAnnouncement()) return;
+    this.announcementDraft.set(this.group()?.announcement?.text ?? '');
+    this.announcementEditing.set(true);
+  }
+
+  confirmAnnouncementClear(): void {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        messageKey: 'group.announcementClearConfirm',
+        danger: true,
+      },
+      (confirmed) => {
+        if (
+          confirmed === true ||
+          (typeof confirmed === 'object' && confirmed?.confirmed)
+        )
+          void this.saveAnnouncement(true);
+      },
+    );
+  }
+
+  async saveAnnouncement(clear = false): Promise<void> {
+    const threadId = this.threadId();
+    const text = clear ? null : this.announcementDraft();
+    if (
+      threadId === undefined ||
+      !this.canEditAnnouncement() ||
+      this.busy() ||
+      (text !== null &&
+        (unicodeCodePointLength(text) < 1 ||
+          unicodeCodePointLength(text) > 4096))
+    )
+      return;
+    this.busy.set(true);
+    try {
+      const response = await firstValueFrom(
+        this.groupService.setAnnouncement(threadId, text),
+      );
+      if (response.code !== 0) throw new Error(response.message);
+      this.announcementEditing.set(false);
+    } catch {
+      this.toast.warn(this.transloco.translate('group.announcementSaveFailed'));
+    } finally {
+      this.busy.set(false);
+    }
+  }
 
   readonly group = computed(() => this.userMsgTrd()?.group);
   readonly displayDomain = computed(() => {

@@ -356,15 +356,23 @@ describe('WebdbService', () => {
     it('rejects a different avatar for an immutable profile revision', async () => {
       await webdb.openForUser('1');
       const profile = {
-        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
-        name: 'Alice', bio: '',
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+        rev: 1,
+        name: 'Alice',
+        bio: '',
       };
       await webdb.commitResolvedProfile({ ...profile, avatarBase64: 'YQ==' });
       await expect(
         webdb.commitResolvedProfile({ ...profile, avatarBase64: null }),
       ).rejects.toThrow('conflicting cached profile revision');
       const snapshot = await webdb.getProfile({ ...profile, profileRev: 1 });
-      expect(await (await webdb.getProfileAvatarBlob(snapshot!.avatarDigest!))?.text()).toBe('a');
+      expect(
+        await (
+          await webdb.getProfileAvatarBlob(snapshot!.avatarDigest!)
+        )?.text(),
+      ).toBe('a');
     });
 
     it('caches exact profile versions independently and normalizes namespace-zero subjects', async () => {
@@ -723,22 +731,37 @@ describe('WebdbService', () => {
     it('keeps a system profile correction local to its row across cache refills', async () => {
       await webdb.openForUser('1');
       const message: Message = {
-        threadId: 42, seq: 1,
+        threadId: 42,
+        seq: 1,
         creator: { account: '$system', domain: 'local', namespaceId: 0 },
-        profileRev: 0, createdAt: 100, updatedAt: 100,
-        contentType: 'SYSTEM', content: '{"type":"GROUP_JOINED"}',
-        isDeleted: false, localState: 'READY',
+        profileRev: 0,
+        createdAt: 100,
+        updatedAt: 100,
+        contentType: 'SYSTEM',
+        content: '{"type":"GROUP_JOINED"}',
+        isDeleted: false,
+        localState: 'READY',
       };
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
-      expect(await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2)).toBe(true);
-      expect(await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2)).toBe(false);
+      expect(
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2),
+      ).toBe(true);
+      expect(
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2),
+      ).toBe(false);
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
       expect(await webdb.getMessage(42, 1)).toMatchObject({
         localSystemProfileRevs: { '["alice","peer.test"]': 2 },
       });
-      expect(await webdb.getMessage(42, 2)).not.toHaveProperty('localSystemProfileRevs');
-      await webdb.putCachedMessages([{ ...message, content: '{"type":"GROUP_LEFT"}' }]);
-      expect(await webdb.getMessage(42, 1)).not.toHaveProperty('localSystemProfileRevs');
+      expect(await webdb.getMessage(42, 2)).not.toHaveProperty(
+        'localSystemProfileRevs',
+      );
+      await webdb.putCachedMessages([
+        { ...message, content: '{"type":"GROUP_LEFT"}' },
+      ]);
+      expect(await webdb.getMessage(42, 1)).not.toHaveProperty(
+        'localSystemProfileRevs',
+      );
     });
 
     it('does not cap unread slot counts at 100', async () => {
@@ -980,15 +1003,22 @@ describe('WebdbService', () => {
     it('closeAndDelete physically removes the database (per-user wipe)', async () => {
       await webdb.openForUser('1');
       const snapshot = await webdb.commitResolvedProfile({
-        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
-        name: 'Alice', bio: '', avatarBase64: 'eA==',
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+        rev: 1,
+        name: 'Alice',
+        bio: '',
+        avatarBase64: 'eA==',
       });
       await webdb.closeAndDelete('1');
       expect(webdb.ready()).toBe(false);
       // Reopen → empty: the DB was deleted, not just closed. (Combined with the name-embeds-user
       // assertion above, this is the per-user isolation guarantee.)
       await webdb.openForUser('1');
-      expect(await webdb.getProfileAvatarBlob(snapshot.avatarDigest!)).toBeUndefined();
+      expect(
+        await webdb.getProfileAvatarBlob(snapshot.avatarDigest!),
+      ).toBeUndefined();
     });
 
     // Regression guard for the stale-currentUserId bug: closeAndDelete must null currentUserId, so a
@@ -2036,6 +2066,119 @@ describe('WebdbService', () => {
       ).toBe(true);
     });
 
+    it('commits announcement publish, clear and clipped full recovery as distinct states', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread(
+        createGroupConversation(9, {
+          id: 9,
+          ownerId: 0,
+          account: '!team',
+          domain: 'local',
+          name: 'Team',
+        }),
+      );
+      const page = (
+        mode: 'full' | 'delta',
+        scannedThrough: string,
+        items: Array<{
+          feedId: string;
+          operation: 'GROUP_ANNOUNCEMENT';
+          body: { text: string | null };
+        }>,
+      ) => ({
+        threadId: 9,
+        namespaceId: 0,
+        sourceServer: 'local',
+        page: {
+          account: '!team',
+          mode,
+          items,
+          scannedThrough,
+          groupMetaFeedEndId: scannedThrough,
+          hasMore: false,
+        },
+      });
+      await webdb.applyGroupMetaPage(
+        page('full', '2', [
+          {
+            feedId: '2',
+            operation: 'GROUP_ANNOUNCEMENT',
+            body: { text: 'Hello' },
+          },
+        ]),
+      );
+      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
+        feedId: '2',
+        text: 'Hello',
+      });
+      await webdb.applyGroupMetaPage(
+        page('delta', '4', [
+          {
+            feedId: '4',
+            operation: 'GROUP_ANNOUNCEMENT',
+            body: { text: null },
+          },
+        ]),
+      );
+      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
+        feedId: '4',
+        text: null,
+      });
+      await webdb.applyGroupMetaPage(page('full', '5', []));
+      expect((await webdb.getThreads())[0].group?.announcement).toBeNull();
+    });
+
+    it('stages an announcement across full pages until the fixed recovery boundary', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread(
+        createGroupConversation(9, {
+          id: 9,
+          ownerId: 0,
+          account: '!team',
+          domain: 'local',
+          name: 'Team',
+        }),
+      );
+      await webdb.beginGroupMetaRecovery(9, '3');
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        sourceServer: 'local',
+        page: {
+          account: '!team',
+          mode: 'full',
+          scannedThrough: '1',
+          groupMetaFeedEndId: '3',
+          hasMore: true,
+          items: [
+            {
+              feedId: '1',
+              operation: 'GROUP_ANNOUNCEMENT',
+              body: { text: 'Notice' },
+            },
+          ],
+        },
+      });
+      expect((await webdb.getThreads())[0].group?.announcement).toBeUndefined();
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        sourceServer: 'local',
+        page: {
+          account: '!team',
+          mode: 'full',
+          scannedThrough: '3',
+          groupMetaFeedEndId: '3',
+          hasMore: false,
+          items: [],
+        },
+      });
+      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
+        feedId: '1',
+        text: 'Notice',
+      });
+    });
+
     it('materializes full group metadata and pages/searches the local roster', async () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread({
@@ -2129,14 +2272,30 @@ describe('WebdbService', () => {
       });
 
       const metaEvidence = {
-        type: 'GROUP_META' as const, threadId: 9, profileRev: 6,
-        subject: { type: 'MEMBER' as const, account: 'alice', domain: 'home.example' },
+        type: 'GROUP_META' as const,
+        threadId: 9,
+        profileRev: 6,
+        subject: {
+          type: 'MEMBER' as const,
+          account: 'alice',
+          domain: 'home.example',
+        },
       };
-      const actual = { namespaceId: 12, account: 'alice', domain: 'home.example', rev: 7 };
-      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(true);
-      expect(await webdb.getGroupMember(9, 'alice', 'home.example', 12))
-        .toMatchObject({ profileRev: 7, profileMessageSeq: null });
-      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(false);
+      const actual = {
+        namespaceId: 12,
+        account: 'alice',
+        domain: 'home.example',
+        rev: 7,
+      };
+      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(
+        true,
+      );
+      expect(
+        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
+      ).toMatchObject({ profileRev: 7, profileMessageSeq: null });
+      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(
+        false,
+      );
 
       expect(
         await webdb.recordGroupMemberMessageProfile(
@@ -2165,13 +2324,22 @@ describe('WebdbService', () => {
       expect(
         await webdb.commitResolvedGroupMetaProfile(
           {
-            type: 'GROUP_MEMBER', threadId: 9, rev: 3,
+            type: 'GROUP_MEMBER',
+            threadId: 9,
+            rev: 3,
             account: 'alice',
             domain: 'home.example',
             namespaceId: 12,
           },
-          { rev: 3, name: 'Alice in team', avatarBase64: 'YWJj', bio: 'Team',
-            account: 'alice', domain: 'home.example', namespaceId: 12 },
+          {
+            rev: 3,
+            name: 'Alice in team',
+            avatarBase64: 'YWJj',
+            bio: 'Team',
+            account: 'alice',
+            domain: 'home.example',
+            namespaceId: 12,
+          },
         ),
       ).toBe(true);
       expect(
@@ -2209,9 +2377,12 @@ describe('WebdbService', () => {
       expect(
         await webdb.getGroupMember(9, 'alice', 'home.example', 12),
       ).toMatchObject({ profileRev: 3, profileMessageSeq: 20, role: 'MEMBER' });
-      expect(await webdb.applyGroupMetaProfileDrift(
-        { ...metaEvidence, profileRev: 3 }, actual,
-      )).toBe(false);
+      expect(
+        await webdb.applyGroupMetaProfileDrift(
+          { ...metaEvidence, profileRev: 3 },
+          actual,
+        ),
+      ).toBe(false);
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2594,8 +2765,13 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       await webdb.putMeta('sentinel', 'core');
       const profile = await webdb.commitResolvedProfile({
-        account: 'alice', domain: 'local', namespaceId: 0, rev: 1,
-        name: 'Alice', bio: '', avatarBase64: 'eA==',
+        account: 'alice',
+        domain: 'local',
+        namespaceId: 0,
+        rev: 1,
+        name: 'Alice',
+        bio: '',
+        avatarBase64: 'eA==',
       });
       await webdb.commitBrowserMessagePage({
         threadId: 7,
@@ -2608,7 +2784,9 @@ describe('WebdbService', () => {
       await webdb.recreateMessageCache();
 
       expect(await webdb.getMeta('sentinel')).toBe('core');
-      expect(await (await webdb.getProfileAvatarBlob(profile.avatarDigest!))?.text()).toBe('x');
+      expect(
+        await (await webdb.getProfileAvatarBlob(profile.avatarDigest!))?.text(),
+      ).toBe('x');
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
       expect(await webdb.getMessageRanges(7)).toEqual([]);
       expect(await webdb.getMessageHead(7)).toBeUndefined();

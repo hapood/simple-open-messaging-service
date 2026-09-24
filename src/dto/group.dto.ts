@@ -13,6 +13,7 @@ import {
   MaxLength,
   Min,
   ValidateNested,
+  ValidateBy,
 } from 'class-validator';
 import { GroupRole } from '../database/enums.js';
 import { IsValidAvatarPath } from '../upload/avatar-path.js';
@@ -94,6 +95,32 @@ export class GroupIdDto {
   @IsInt()
   @Min(1)
   groupId!: number;
+}
+
+export class SetGroupAnnouncementDto extends GroupIdDto {
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Plain text (1–4096 Unicode code points), or null to clear',
+  })
+  @ValidateBy({
+    name: 'groupAnnouncementText',
+    validator: {
+      validate: (value: unknown) =>
+        value === null ||
+        (typeof value === 'string' &&
+          [...value].length >= 1 &&
+          [...value].length <= 4096),
+    },
+  })
+  text!: string | null;
+}
+
+export class ReadGroupAnnouncementDto extends GroupIdDto {
+  @ApiProperty({ minimum: 1 })
+  @IsInt()
+  @Min(1)
+  announcementFeedId!: number;
 }
 
 /** Server-authoritative friend page for the group invitation picker. */

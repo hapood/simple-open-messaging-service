@@ -58,12 +58,28 @@ export async function applyFullMirrorMetaBatchInTx(
   await tx
     .delete(groupMetaMemberFeed)
     .where(eq(groupMetaMemberFeed.threadId, mirror.threadId));
-  const facts = input.items.map((item) => {
+  const facts = input.items.flatMap((item) => {
     if (item.operation === 'DEPART')
       throw new Error('a full group-meta snapshot cannot contain DEPART');
-    return currentMirrorMetaFact(mirror.threadId, input.group, item);
+    return item.operation === 'GROUP_ANNOUNCEMENT'
+      ? []
+      : [currentMirrorMetaFact(mirror.threadId, input.group, item)];
   });
   await upsertCurrentGroupMetaFactsInTx(tx, facts);
+  const announcement = input.items.find(
+    (item) => item.operation === 'GROUP_ANNOUNCEMENT',
+  );
+  await tx
+    .update(groupMeta)
+    .set({
+      announcementFeedId: announcement?.feedId ?? null,
+      announcementText:
+        announcement?.operation === 'GROUP_ANNOUNCEMENT'
+          ? announcement.text
+          : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(groupMeta.threadId, mirror.threadId));
   const profile = input.items.find(
     (item) => item.operation === 'GROUP_PROFILE',
   );

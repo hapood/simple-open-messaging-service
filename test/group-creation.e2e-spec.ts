@@ -70,6 +70,73 @@ describe('group creation', () => {
     },
   );
 
+  it('publishes and acknowledges announcement coordinates independently of message reads', async () => {
+    const owner = await seedUser(
+      app as unknown as INestApplication,
+      'announcement-owner',
+    );
+    const created = await groups.createNewGroup({
+      owner: owner.id,
+      name: 'Notice room',
+    });
+    const initial = await database.db.query.groupMeta.findFirst({
+      where: eq(groupMeta.threadId, created.threadId),
+    });
+    expect(initial?.announcementFeedId).toBe(1);
+    expect(initial?.announcementText).toBeNull();
+    const published = await groups.setAnnouncement({
+      threadId: created.threadId,
+      operatorUserId: owner.id,
+      text: 'Welcome',
+    });
+    const before = await database.db.query.accountThreadState.findFirst({
+      where: and(
+        eq(accountThreadState.threadId, created.threadId),
+        eq(accountThreadState.accountId, owner.id),
+      ),
+    });
+    const read = await groups.markAnnouncementRead({
+      threadId: created.threadId,
+      accountId: owner.id,
+      feedId: published.feedId,
+    });
+    expect(read.announcementReadFeedId).toBe(published.feedId);
+    const after = await database.db.query.accountThreadState.findFirst({
+      where: and(
+        eq(accountThreadState.threadId, created.threadId),
+        eq(accountThreadState.accountId, owner.id),
+      ),
+    });
+    expect(after?.lastReadSeq).toBe(before?.lastReadSeq);
+    expect(after?.unreadCount).toBe(before?.unreadCount);
+    expect(after!.threadFeedId).toBeGreaterThan(before!.threadFeedId);
+    const edited = await groups.setAnnouncement({
+      threadId: created.threadId,
+      operatorUserId: owner.id,
+      text: 'Updated',
+    });
+    expect(edited.feedId).toBeGreaterThan(read.announcementReadFeedId);
+    await groups.markAnnouncementRead({
+      threadId: created.threadId,
+      accountId: owner.id,
+      feedId: published.feedId,
+    });
+    const stale = await database.db.query.accountThreadState.findFirst({
+      where: and(
+        eq(accountThreadState.threadId, created.threadId),
+        eq(accountThreadState.accountId, owner.id),
+      ),
+    });
+    expect(stale?.announcementReadFeedId).toBe(published.feedId);
+    await expect(
+      groups.markAnnouncementRead({
+        threadId: created.threadId,
+        accountId: owner.id,
+        feedId: edited.feedId + 1,
+      }),
+    ).rejects.toMatchObject({ bizCode: 10000 });
+  });
+
   it('rejects an over-limit creation before accessing the database', async () => {
     await expect(
       groups.createNewGroup({ owner: -1, name: 'a'.repeat(32) }),

@@ -672,6 +672,17 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(queryThreadFeedSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps a successful announcement read monotone before the server wake', async () => {
+    await populate([
+      createGroupConversation(12,
+        { id: 12, account: '!team', name: 'Team', ownerId: 1 },
+        { threadFeedId: 1, announcementReadFeedId: 0 }),
+    ]);
+    repo.markAnnouncementReadLocally(12, 8);
+    repo.markAnnouncementReadLocally(12, 4);
+    expect(repo.items()[0].announcementReadFeedId).toBe(8);
+  });
+
   it('ignores a local completion for another account', async () => {
     await populate([p2p(1, 11)]);
     emitHello({ userId: 1, stateFeedEndId: 0 });

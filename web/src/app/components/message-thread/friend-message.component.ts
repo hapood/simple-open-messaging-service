@@ -125,6 +125,8 @@ import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { PopupType, RouteService } from '../../services/route.service';
+import { currentGroupAnnouncement } from '../../services/group-announcement';
+import { GroupAnnouncementComponent } from '../group-announcement/group-announcement.component';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import {
   MemberProfileRepository,
@@ -469,12 +471,12 @@ export class MessageThreadComponent implements OnDestroy {
           !isSelfMentionMember(this.userService.sessionProfile(), member),
       )
       .map((member) => ({
-      // Mention entity ids are serialized as full SOMFP user addresses. Keeping only the account works
-      // for display but the server rejects the resulting entity because the domain is missing.
-      id: `${member.account}@${member.domain || 'local'}`,
-      label: member.name,
-      avatarUrl: assetUrl(avatarUrl(member.avatar)),
-    }));
+        // Mention entity ids are serialized as full SOMFP user addresses. Keeping only the account works
+        // for display but the server rejects the resulting entity because the domain is missing.
+        id: `${member.account}@${member.domain || 'local'}`,
+        label: member.name,
+        avatarUrl: assetUrl(avatarUrl(member.avatar)),
+      }));
     if (
       this.chatContext.canAdministerGroup() &&
       this.transloco
@@ -667,7 +669,53 @@ export class MessageThreadComponent implements OnDestroy {
    * first upload starts, so the aggregate send box is the only pending UI and keeps the full batch in
    * selection order. Voice notes deliberately bypass this lane. */
 
+  private openedAnnouncementKey: string | null = null;
+
   constructor() {
+    effect(() => {
+      const thread = this.userMsgTrd();
+      const active = this.nativeComposerActive();
+      const openId = this.convList.openThreadId();
+      const dialogOpen = this.chatboxDialogOpen();
+      if (!active || !thread || openId !== thread.threadId) {
+        this.openedAnnouncementKey = null;
+        return;
+      }
+      if (thread.type !== 'GROUP') return;
+      if (dialogOpen) {
+        const displayed = this.route
+          .dlgList()
+          .find(
+            (dialog) =>
+              dialog.scopeThreadId === thread.threadId &&
+              dialog.component === GroupAnnouncementComponent,
+          );
+        const feedId = displayed?.inputs?.['feedId'];
+        if (typeof feedId === 'string')
+          this.openedAnnouncementKey = `${thread.threadId}:${feedId}`;
+        return;
+      }
+      const announcement = currentGroupAnnouncement(thread);
+      if (
+        !announcement ||
+        BigInt(announcement.feedId) <=
+          BigInt(thread.announcementReadFeedId ?? 0)
+      )
+        return;
+      const key = `${thread.threadId}:${announcement.feedId}`;
+      if (this.openedAnnouncementKey === key) return;
+      this.openedAnnouncementKey = key;
+      this.route.popupDlg(
+        PopupType.GROUP_ANNOUNCEMENT,
+        {
+          threadId: thread.threadId,
+          feedId: announcement.feedId,
+          text: announcement.text,
+        },
+        undefined,
+        { scopeThreadId: thread.threadId },
+      );
+    });
     this.deletedSub = this.msgRepo.deletedLive$.subscribe(
       ({ threadId, deletions }) => {
         if (threadId !== this.currentTrdId || !this.scroller) return;

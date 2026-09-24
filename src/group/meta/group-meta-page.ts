@@ -1,10 +1,9 @@
-import { and, asc, eq, lte, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { HttpStatus } from '@nestjs/common';
 import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
 import { toClientIdentity } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
-import { groupMetaMemberFeed } from '../../database/schema.js';
 
 interface GroupMetaFeedItemBase {
   feedId: number;
@@ -23,6 +22,11 @@ type GroupMetaFeedItem =
       feedId: number;
       operation: 'GROUP_PROFILE';
       body: { profileRev: number };
+    }
+  | {
+      feedId: number;
+      operation: 'GROUP_ANNOUNCEMENT';
+      body: { text: string | null };
     };
 
 export interface GroupMetaFeedPage {
@@ -49,8 +53,8 @@ export interface GroupMetaPageRead {
 const MAX_TAKE = 200;
 
 /** Read one page from the shared group-scoped Group Meta coordinate space.
- * Every coordinate — member facts and the GROUP_PROFILE fact alike — is a
- * stored row, so pages carry strictly increasing feed ids. */
+ * Member and profile facts share a coordinate space with the current
+ * group-wide announcement projection. */
 export async function readGroupMetaPageInTx(
   tx: DatabaseTransaction,
   params: GroupMetaPageRead,
@@ -102,51 +106,36 @@ export async function readGroupMetaPageInTx(
       cursorData,
     );
   const queryLimit = params.take + 1;
-  const memberRows =
-    params.mode === 'delta'
-      ? await tx
-          .select({
-            feedId: groupMetaMemberFeed.feedId,
-            memberAccount: groupMetaMemberFeed.memberAccount,
-            memberDomain: groupMetaMemberFeed.memberDomain,
-            operation: groupMetaMemberFeed.operation,
-            body: groupMetaMemberFeed.body,
-          })
-          .from(groupMetaMemberFeed)
-          .where(
-            and(
-              eq(groupMetaMemberFeed.threadId, params.groupId),
-              sql`${groupMetaMemberFeed.feedId} > ${params.after}`,
-              lte(groupMetaMemberFeed.feedId, scanEnd),
-            ),
-          )
-          .orderBy(asc(groupMetaMemberFeed.feedId))
-          .limit(queryLimit)
-      : (
-          await tx.execute<{
-            feedId: number;
-            memberAccount: string;
-            memberDomain: string;
-            operation: 'UPSERT' | 'GROUP_PROFILE';
-            body: Record<string, unknown>;
-          }>(sql`
-            SELECT fact."feedId",
-              fact."memberAccount" AS "memberAccount",
-              fact."memberDomain" AS "memberDomain",
-              fact.operation, fact.body
-            FROM "GroupMetaMemberFeed" fact
-            WHERE fact."threadId" = ${params.groupId}
-              AND fact."feedId" <= ${scanEnd}
-              AND fact."feedId" > ${params.after}
-              AND fact.operation IN ('UPSERT', 'GROUP_PROFILE')
-            ORDER BY fact."feedId"
-            LIMIT ${queryLimit}
-          `)
-        ).rows;
+  const memberRows = (
+    await tx.execute<{
+      feedId: number;
+      memberAccount: string | null;
+      memberDomain: string | null;
+      operation: 'UPSERT' | 'DEPART' | 'GROUP_PROFILE' | 'GROUP_ANNOUNCEMENT';
+      body: Record<string, unknown>;
+    }>(sql`
+    SELECT fact."feedId", fact."memberAccount" AS "memberAccount",
+      fact."memberDomain" AS "memberDomain", fact.operation::text AS operation,
+      fact.body
+    FROM "GroupMetaMemberFeed" fact
+    WHERE fact."threadId" = ${params.groupId}
+      AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
+      ${params.mode === 'full' ? sql`AND fact.operation IN ('UPSERT', 'GROUP_PROFILE')` : sql.empty()}
+    UNION ALL
+    SELECT meta."announcementFeedId", NULL::varchar, NULL::varchar,
+      'GROUP_ANNOUNCEMENT'::text, jsonb_build_object('text', meta."announcementText")
+    FROM "GroupMeta" meta WHERE meta."threadId" = ${params.groupId}
+      AND meta."announcementFeedId" > ${params.after}
+      AND meta."announcementFeedId" <= ${scanEnd}
+    ORDER BY "feedId" LIMIT ${queryLimit}
+  `)
+  ).rows;
   const namespaceByAddress = new Map<string, number>();
   if (
     params.client &&
-    memberRows.some((row) => row.operation !== 'GROUP_PROFILE')
+    memberRows.some(
+      (row) => row.operation === 'UPSERT' || row.operation === 'DEPART',
+    )
   ) {
     const identities = await tx.execute<{
       memberAccount: string;
@@ -167,6 +156,12 @@ export async function readGroupMetaPageInTx(
   }
   const items: GroupMetaFeedItem[] = memberRows
     .map((row): GroupMetaFeedItem => {
+      if (row.operation === 'GROUP_ANNOUNCEMENT')
+        return {
+          feedId: row.feedId,
+          operation: 'GROUP_ANNOUNCEMENT',
+          body: { text: row.body.text as string | null },
+        };
       if (row.operation === 'GROUP_PROFILE')
         return {
           feedId: row.feedId,
@@ -176,6 +171,8 @@ export async function readGroupMetaPageInTx(
       const namespaceId = namespaceByAddress.get(
         JSON.stringify([row.memberDomain, row.memberAccount]),
       );
+      if (row.memberDomain === null || row.memberAccount === null)
+        throw new Error('group-meta member identity is missing');
       if (params.client && namespaceId === undefined)
         throw new Error('group-meta client identity namespace is missing');
       const identity = {

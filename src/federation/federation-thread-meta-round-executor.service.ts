@@ -248,6 +248,19 @@ function validateItem(
   mode: 'full' | 'delta',
 ): MirrorMetaReplicatedItem {
   const feedId = item.feedId;
+  if (item.operation === 'GROUP_ANNOUNCEMENT') {
+    requireKeys(item, ['feedId', 'operation', 'body']);
+    requireKeys(item.body, ['text']);
+    const text = item.body.text;
+    if (
+      text !== null &&
+      (typeof text !== 'string' ||
+        [...text].length < 1 ||
+        [...text].length > 4096)
+    )
+      throw new Error('invalid group-meta announcement item');
+    return { feedId, operation: 'GROUP_ANNOUNCEMENT', text };
+  }
   if (item.operation === 'GROUP_PROFILE') {
     requireKeys(item, ['feedId', 'operation', 'body']);
     requireKeys(item.body, ['profileRev']);

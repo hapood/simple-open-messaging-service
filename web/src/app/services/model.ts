@@ -123,6 +123,8 @@ interface Group {
   dissolvedAt?: number | null;
   memberCount: number;
   groupMetaFeedId: string;
+  /** Absent or null means the current announcement is unknown; text:null is a known clear. */
+  announcement?: { feedId: string; text: string | null } | null;
 }
 
 type ConversationItemBase = {
@@ -146,6 +148,7 @@ type ConversationItemBase = {
   friendshipActive?: boolean;
   conversationState?: 'ACTIVE' | 'READ_ONLY';
   lastReadSeq?: number | null;
+  announcementReadFeedId?: number;
   unreadCount: number;
   // Latest-message preview state is derived from message catch-up and the local message cache.
   lastMessagePreview?: string | null;
@@ -174,6 +177,13 @@ export type ConversationItem = ConversationItemBase &
         group: Group;
         /** Fixed full-recovery boundary. Null outside a resumable Group Meta rebuild. */
         groupMetaRecoveryThrough: string | null;
+        /** Last advertised server head; the current announcement is not trusted before catching up. */
+        groupMetaTargetFeedId?: string | null;
+        /** Candidate accumulated during a bounded full drain; not displayable until completion. */
+        groupMetaRecoveryAnnouncement?: {
+          feedId: string;
+          text: string | null;
+        } | null;
       }
   );
 
@@ -331,8 +341,10 @@ export interface StandardResponse<T = unknown> {
    */
   messageKey?: string;
   data?: T;
-  /** Only paginated endpoints (query-messages) return this: whether an earlier page exists. */
+  /** Paginated endpoints return this when another page exists in the requested direction. */
   hasMore?: boolean;
+  /** Total visible search matches, independent of the current page cursor. */
+  totalCount?: number;
   /** True when this page actually reached the requested truncateSeq boundary. */
   truncated?: boolean;
 }

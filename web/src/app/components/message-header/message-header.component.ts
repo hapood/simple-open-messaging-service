@@ -18,6 +18,8 @@ import { CallEventService } from '../../services/call-event.service';
 import { uuid } from '../../lib/uuid';
 import { ChatContextService } from '../message-thread/chat-context.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
+import { RouteService, PopupType } from '../../services/route.service';
+import { currentGroupAnnouncement } from '../../services/group-announcement';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -51,6 +53,33 @@ export class MessageHeaderComponent {
     () => this.callEvents.callState().phase !== 'idle',
   );
   private readonly chatContext = inject(ChatContextService);
+  private readonly route = inject(RouteService);
+  readonly announcement = computed(() =>
+    currentGroupAnnouncement(this.userMsgTrd()),
+  );
+  readonly announcementUnread = computed(() => {
+    const announcement = this.announcement();
+    return (
+      announcement !== null &&
+      BigInt(announcement.feedId) >
+        BigInt(this.userMsgTrd()?.announcementReadFeedId ?? 0)
+    );
+  });
+  openAnnouncement(): void {
+    const announcement = this.announcement();
+    const thread = this.userMsgTrd();
+    if (thread?.type !== 'GROUP' || !announcement?.text) return;
+    this.route.popupDlg(
+      PopupType.GROUP_ANNOUNCEMENT,
+      {
+        threadId: thread.threadId,
+        feedId: announcement.feedId,
+        text: announcement.text,
+      },
+      undefined,
+      { scopeThreadId: thread.threadId },
+    );
+  }
 
   /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
    *  deferred) AND this is a P2P thread (groups can't be called 1:1). */

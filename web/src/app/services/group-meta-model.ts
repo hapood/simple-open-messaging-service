@@ -26,6 +26,11 @@ export interface ClientGroupMetaFeedPage {
         operation: 'GROUP_PROFILE';
         body: { profileRev: number };
       }
+    | {
+        feedId: string;
+        operation: 'GROUP_ANNOUNCEMENT';
+        body: { text: string | null };
+      }
   >;
   scannedThrough: string;
   groupMetaFeedEndId: string;

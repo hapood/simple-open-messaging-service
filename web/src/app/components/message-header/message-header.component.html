@@ -39,6 +39,26 @@
             >({{ count }})</span
           >
         }
+        @if (announcement()?.text) {
+          <button
+            type="button"
+            class="announcement-button"
+            [class.unread]="announcementUnread()"
+            (click)="openAnnouncement()"
+            [attr.aria-label]="
+              (announcementUnread()
+                ? 'group.announcementUnread'
+                : 'group.announcement'
+              ) | transloco
+            "
+            [title]="'group.announcement' | transloco"
+          >
+            <app-icon
+              [type]="AppIconType.MEGAPHONE"
+              [style]="{ width: '18px', height: '18px' }"
+            />
+          </button>
+        }
         <span class="thread-indicators">
           @if (userMsgTrd()?.blocked) {
             <app-icon

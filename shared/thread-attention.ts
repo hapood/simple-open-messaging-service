@@ -16,6 +16,8 @@ export interface ThreadFeedSnapshot {
   /** Latest group-invitation projection coordinate for this manager. */
   groupInviteEndFeedId: number;
   lastReadSeq: number;
+  /** Account-local acknowledgement in the group-meta coordinate space. */
+  announcementReadFeedId?: number;
   unreadCount: number;
   lastMentionSeq: number | null;
   previews?: Array<{
@@ -71,6 +73,8 @@ export function mergeThreadAttention(
   )
     throw new Error('Invalid attention Group Meta end');
   coordinate(incoming.lastReadSeq, 'server read position');
+  if (incoming.announcementReadFeedId !== undefined)
+    coordinate(incoming.announcementReadFeedId, 'announcement read position');
   coordinate(incoming.unreadCount, 'unread count');
   if (incoming.lastMentionSeq !== null)
     coordinate(incoming.lastMentionSeq, 'mention position', 1);

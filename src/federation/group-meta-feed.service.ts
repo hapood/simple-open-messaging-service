@@ -28,6 +28,11 @@ export type GroupMetaFeedItem =
       feedId: number;
       operation: 'GROUP_PROFILE';
       body: { profileRev: number };
+    }
+  | {
+      feedId: number;
+      operation: 'GROUP_ANNOUNCEMENT';
+      body: { text: string | null };
     };
 
 export interface GroupMetaFeedPage {

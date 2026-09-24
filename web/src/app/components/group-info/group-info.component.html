@@ -67,6 +67,70 @@
     }
 
     <mat-card appearance="outlined" class="conversation-actions">
+      @if (canEditAnnouncement() || hasAnnouncement()) {
+        <button
+          type="button"
+          class="action-row"
+          (click)="
+            canEditAnnouncement() ? beginAnnouncementEdit() : openAnnouncement()
+          "
+        >
+          <span class="action-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.MEGAPHONE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="action-label">{{
+            'group.announcement' | transloco
+          }}</span>
+          <app-icon
+            class="action-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+        </button>
+        @if (announcementEditing()) {
+          <div class="announcement-editor">
+            <textarea
+              [ngModel]="announcementDraft()"
+              (ngModelChange)="announcementDraft.set($event)"
+              [attr.aria-label]="'group.announcement' | transloco"
+              rows="5"
+            ></textarea>
+            <span>{{ announcementLength() }}/4096</span>
+            <div class="announcement-editor-actions">
+              <button
+                type="button"
+                [disabled]="busy()"
+                (click)="announcementEditing.set(false)"
+              >
+                {{ 'common.cancel' | transloco }}
+              </button>
+              @if (group()?.announcement?.text) {
+                <button
+                  type="button"
+                  [disabled]="busy()"
+                  (click)="confirmAnnouncementClear()"
+                >
+                  {{ 'group.announcementClear' | transloco }}
+                </button>
+              }
+              <button
+                type="button"
+                [disabled]="
+                  busy() ||
+                  announcementLength() < 1 ||
+                  announcementLength() > 4096
+                "
+                (click)="saveAnnouncement()"
+              >
+                {{ 'common.save' | transloco }}
+              </button>
+            </div>
+          </div>
+        }
+      }
       <button type="button" class="action-row" (click)="openSearch()">
         <span class="action-icon" aria-hidden="true">
           <app-icon
@@ -181,10 +245,7 @@
           </span>
           <strong>{{ 'group.invitesAndRequests' | transloco }}</strong>
           @if (hasUnreadJoinRequests()) {
-            <span
-              class="invite-unread-dot"
-              aria-hidden="true"
-            ></span>
+            <span class="invite-unread-dot" aria-hidden="true"></span>
           }
           <app-icon
             class="invite-chevron"
@@ -309,9 +370,7 @@
             [ngModel]="descEdit()"
             (ngModelChange)="onDescEditInput($event)"
           ></textarea>
-          <mat-hint align="end"
-            >{{ descEditLength() }}/{{ DESC_MAX }}</mat-hint
-          >
+          <mat-hint align="end">{{ descEditLength() }}/{{ DESC_MAX }}</mat-hint>
         </mat-form-field>
       </div>
     </div>

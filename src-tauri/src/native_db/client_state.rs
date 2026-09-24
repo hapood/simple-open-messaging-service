@@ -46,6 +46,7 @@ pub(crate) struct ClientGroupMetaPage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaItem {
+    pub(super) feed_id: String,
     #[serde(default)]
     pub(super) account: String,
     #[serde(default)]
@@ -53,6 +54,7 @@ pub(crate) struct ClientGroupMetaItem {
     #[serde(default)]
     pub(super) namespace_id: i64,
     pub(super) operation: String,
+    #[serde(default)]
     pub(super) body: Value,
 }
 
@@ -373,7 +375,7 @@ pub(super) fn begin_group_meta_recovery(
         params![user_id, thread_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 0, '$.group.groupMetaFeedId', '0', '$.groupMetaRecoveryThrough', ?3)
+    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 0, '$.group.groupMetaFeedId', '0', '$.groupMetaRecoveryThrough', ?3, '$.groupMetaRecoveryAnnouncement', null)
       WHERE user_id=?1 AND thread_id=?2 AND json_extract(payload_json, '$.type')='GROUP'", params![user_id, thread_id, through]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
@@ -555,6 +557,25 @@ pub(super) fn apply_state_feed_page(
             continue;
         }
         for mut item in update.page.items {
+            if item.operation == "GROUP_ANNOUNCEMENT" {
+                let text = item.body.get("text").ok_or("GROUP_ANNOUNCEMENT has no text")?;
+                if !text.is_null() && !text.as_str().is_some_and(|value| {
+                    let count = value.chars().count();
+                    (1..=4096).contains(&count)
+                }) {
+                    return Err("invalid GROUP_ANNOUNCEMENT text".into());
+                }
+                let announcement = serde_json::json!({ "feedId": item.feed_id, "text": text });
+                if update.page.mode == "full" {
+                    if let Some(object) = thread.as_mut().and_then(Value::as_object_mut) {
+                        object.insert("groupMetaRecoveryAnnouncement".into(), announcement);
+                    }
+                } else if let Some(group) = thread.as_mut().and_then(|value| value.get_mut("group"))
+                    .and_then(Value::as_object_mut) {
+                    group.insert("announcement".into(), announcement);
+                }
+                continue;
+            }
             if item.operation == "GROUP_PROFILE" {
                 if let Some(group) = thread
                     .as_mut()
@@ -631,6 +652,9 @@ pub(super) fn apply_state_feed_page(
                 ).map_err(|e| format!("upsert group member: {e}"))?;
         }
         if let Some(mut thread) = thread.take() {
+            let recovered_announcement = if update.page.mode == "full" && !update.page.has_more {
+                Some(thread.get("groupMetaRecoveryAnnouncement").cloned().unwrap_or(Value::Null))
+            } else { None };
             let self_role: Option<String> = tx.query_row(
                     "SELECT member.role FROM members member
                      JOIN sync_state self_user ON self_user.user_id=member.user_id AND self_user.key='selfIdentity'
@@ -653,10 +677,14 @@ pub(super) fn apply_state_feed_page(
                 );
                 if !update.page.has_more {
                     object.insert("groupMetaRecoveryThrough".into(), Value::Null);
+                    object.remove("groupMetaRecoveryAnnouncement");
                 }
             }
             if let Some(group) = thread.get_mut("group").and_then(Value::as_object_mut) {
                 group.remove("members");
+                if let Some(announcement) = recovered_announcement {
+                    group.insert("announcement".into(), announcement);
+                }
                 group.insert("memberCount".into(), Value::from(member_count.max(0)));
                 group.insert(
                     "groupMetaFeedId".into(),

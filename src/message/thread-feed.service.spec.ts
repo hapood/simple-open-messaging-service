@@ -31,6 +31,8 @@ describe('thread feed database previews', () => {
                 threadFeedId: 10,
                 messageEndSeq: 4,
                 tombstoneEndSeq: 2,
+                groupMetaFeedEndId: 4,
+                announcementReadFeedId: 2,
                 unreadCount: 1,
                 lastReadSeq: 0,
                 lastMentionSeq: null,
@@ -50,6 +52,10 @@ describe('thread feed database previews', () => {
     const { service, read } = setup();
     const result = await service.queryThreadFeedDelta(1, { after: 0 });
     expect(result.items[0]).not.toHaveProperty('previews');
+    expect(result.items[0]).toMatchObject({
+      groupMetaFeedEndId: '4',
+      announcementReadFeedId: 2,
+    });
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -147,7 +153,10 @@ describe('thread mention semantics', () => {
     // The composer serializes chips as full SOMFP addresses: local members as
     // account@local, federated members as account@home-domain.
     expect(
-      mentionsAccount(content('[@Reader](somfp://user/reader%40local)'), 'reader'),
+      mentionsAccount(
+        content('[@Reader](somfp://user/reader%40local)'),
+        'reader',
+      ),
     ).toBe(true);
     expect(
       mentionsAccount(

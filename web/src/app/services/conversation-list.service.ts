@@ -108,6 +108,10 @@ export class ConversationListService {
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
 
+  markAnnouncementReadLocally(threadId: number, feedId: number): void {
+    this.repo.markAnnouncementReadLocally(threadId, feedId);
+  }
+
   markJoinRequestsReadLocally(
     threadId: number,
     joinRequestReadFeedId: number,

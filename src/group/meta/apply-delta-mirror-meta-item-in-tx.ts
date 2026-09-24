@@ -158,7 +158,11 @@ async function readCurrentMirrorMemberOperationInTx(
   namespaceId: number,
   item: MirrorMetaReplicatedItem,
 ): Promise<{ operation: string; profileRev: number | null } | undefined> {
-  if (item.operation === 'GROUP_PROFILE') return undefined;
+  if (
+    item.operation === 'GROUP_PROFILE' ||
+    item.operation === 'GROUP_ANNOUNCEMENT'
+  )
+    return undefined;
   const member = toClientIdentity(
     { account: item.account, domain: item.domain, namespaceId },
     loadFederationConfig().domain,
@@ -193,7 +197,11 @@ async function writeObservedMembershipTransitionInTx(
     messages: Pick<MessageService, 'writeSystemMessageInTx'>;
   },
 ): Promise<boolean> {
-  if (item.operation === 'GROUP_PROFILE') return false;
+  if (
+    item.operation === 'GROUP_PROFILE' ||
+    item.operation === 'GROUP_ANNOUNCEMENT'
+  )
+    return false;
   const member = toClientIdentity(
     { account: item.account, domain: item.domain, namespaceId },
     loadFederationConfig().domain,

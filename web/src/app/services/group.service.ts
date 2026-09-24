@@ -61,6 +61,20 @@ export class GroupService {
     );
   }
 
+  setAnnouncement(groupId: number, text: string | null) {
+    return this.http.post<StandardResponse<{ feedId: number }>>(
+      `${apiPrefix()}/group/announcement/set`,
+      { groupId, text },
+    );
+  }
+
+  markAnnouncementRead(groupId: number, announcementFeedId: number) {
+    return this.http.post<StandardResponse<{ announcementReadFeedId: number }>>(
+      `${apiPrefix()}/group/announcement/read`,
+      { groupId, announcementFeedId },
+    );
+  }
+
   /** Invite each target through the manager-authored membership transaction. */
   inviteUsers(params: {
     users: { account: string; domain: string }[];

@@ -87,16 +87,35 @@ function validatePage(
     (!page.hasMore && page.scannedThrough !== expected.through) ||
     page.items.some(
       (entry) =>
-        entry.operation !== 'GROUP_PROFILE' &&
-        (!entry.account ||
-          !entry.domain ||
-          !Number.isSafeInteger(entry.namespaceId) ||
-          entry.namespaceId < 0),
+        (entry.operation !== 'GROUP_PROFILE' &&
+          entry.operation !== 'GROUP_ANNOUNCEMENT' &&
+          entry.operation !== 'UPSERT' &&
+          entry.operation !== 'DEPART') ||
+        ((entry.operation === 'UPSERT' || entry.operation === 'DEPART') &&
+          (!entry.account ||
+            !entry.domain ||
+            !Number.isSafeInteger(entry.namespaceId) ||
+            entry.namespaceId < 0)),
     )
   )
     throw new Error('invalid group-meta page');
   if (page.hasMore && page.scannedThrough === expected.after)
     throw new Error('group-meta pagination made no progress');
+  if (
+    page.items.some(
+      (entry) =>
+        entry.operation === 'GROUP_ANNOUNCEMENT' &&
+        (!/^[1-9]\d*$/.test(entry.feedId) ||
+          typeof entry.body !== 'object' ||
+          entry.body === null ||
+          Object.keys(entry.body).length !== 1 ||
+          (entry.body.text !== null &&
+            (typeof entry.body.text !== 'string' ||
+              [...entry.body.text].length < 1 ||
+              [...entry.body.text].length > 4096))),
+    )
+  )
+    throw new Error('invalid group announcement');
 }
 
 /** Catch every stored group projection up to its durable thread-head target. */
