@@ -11,21 +11,24 @@
 
 export interface CropRect {
   /** top-left + size of the visible source region, in source px */
-  sx: number
-  sy: number
-  sw: number
-  sh: number
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
   /** square output side in px (<= maxOut, never upscaled above sw) */
-  out: number
+  out: number;
 }
 
+/** Maximum avatar edge accepted by the profile upload endpoint. */
+export const AVATAR_MAX_OUTPUT_EDGE = 512;
+
 export function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v))
+  return Math.max(lo, Math.min(hi, v));
 }
 
 /** Smallest scale at which the image still fully covers the F×F frame. */
 export function minCoverScale(iw: number, ih: number, F: number): number {
-  return F / Math.min(iw, ih)
+  return F / Math.min(iw, ih);
 }
 
 /**
@@ -33,7 +36,7 @@ export function minCoverScale(iw: number, ih: number, F: number): number {
  * Beyond this the preview is just a handful of blown-up pixels.
  */
 export function maxZoomScale(iw: number, ih: number, F: number): number {
-  return F / 48
+  return F / 48;
 }
 
 /**
@@ -41,12 +44,17 @@ export function maxZoomScale(iw: number, ih: number, F: number): number {
  * ox ∈ [F - iw*scale, 0], oy ∈ [F - ih*scale, 0].
  */
 export function clampOffset(
-  ox: number, oy: number, iw: number, ih: number, F: number, scale: number,
+  ox: number,
+  oy: number,
+  iw: number,
+  ih: number,
+  F: number,
+  scale: number,
 ): { ox: number; oy: number } {
   return {
     ox: clamp(ox, F - iw * scale, 0),
     oy: clamp(oy, F - ih * scale, 0),
-  }
+  };
 }
 
 /**
@@ -54,15 +62,19 @@ export function clampOffset(
  * the frame, plus the square output size (capped at maxOut, never upscaled).
  */
 export function computeCropRect(
-  iw: number, ih: number, F: number,
-  scale: number, ox: number, oy: number,
-  maxOut = 1024,
+  iw: number,
+  ih: number,
+  F: number,
+  scale: number,
+  ox: number,
+  oy: number,
+  maxOut = AVATAR_MAX_OUTPUT_EDGE,
 ): CropRect {
-  const sw = F / scale
-  const sh = F / scale
+  const sw = F / scale;
+  const sh = F / scale;
   // visible-region top-left in source px; clamp defensively into image bounds
-  const sx = clamp(-ox / scale, 0, Math.max(0, iw - sw))
-  const sy = clamp(-oy / scale, 0, Math.max(0, ih - sh))
-  const out = clamp(Math.round(sw), 1, maxOut)
-  return { sx, sy, sw, sh, out }
+  const sx = clamp(-ox / scale, 0, Math.max(0, iw - sw));
+  const sy = clamp(-oy / scale, 0, Math.max(0, ih - sh));
+  const out = clamp(Math.round(sw), 1, maxOut);
+  return { sx, sy, sw, sh, out };
 }

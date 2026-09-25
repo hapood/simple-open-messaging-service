@@ -23,6 +23,7 @@ import {
   minCoverScale,
   maxZoomScale,
   clamp,
+  AVATAR_MAX_OUTPUT_EDGE,
 } from './crop-rect';
 
 /**
@@ -67,9 +68,8 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   /** Backing-store side of the square frame. Output quality comes from the source
    *  bitmap, not the preview, so this only needs to be comfortable on screen. */
   readonly FRAME = 288;
-  /** Never emit wider than this: 2× the largest backend size (512) → crisp
-   *  downscale headroom, well under the 10 MB multipart / 16 MP pixel-bomb guards. */
-  private readonly MAX_OUT = 1024;
+  /** Keep the cropped output within the backend's 512px avatar edge limit. */
+  private readonly MAX_OUT = AVATAR_MAX_OUTPUT_EDGE;
   /** Mirror the backend avatar whitelist (upload.service.ts). */
   private readonly ACCEPTED = [
     'image/png',

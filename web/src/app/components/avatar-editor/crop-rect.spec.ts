@@ -3,6 +3,7 @@ import {
   clampOffset,
   minCoverScale,
   clamp,
+  AVATAR_MAX_OUTPUT_EDGE,
 } from './crop-rect';
 
 /**
@@ -67,14 +68,17 @@ describe('avatar-editor crop-rect', () => {
       expect(rIn.sw).toBeCloseTo(rOut.sw / 2, 6);
     });
     it('caps the output side at maxOut and never upscales beyond the source region', () => {
-      // huge source: visible region ~4000px → capped to 1024
+      // huge source: visible region ~4000px → capped to the server's 512px limit
       const s = minCoverScale(4000, 4000, F);
-      const r = computeCropRect(4000, 4000, F, s, 0, 0, 1024);
-      expect(r.out).toBe(1024);
+      const r = computeCropRect(4000, 4000, F, s, 0, 0);
+      expect(r.out).toBe(AVATAR_MAX_OUTPUT_EDGE);
+      expect(
+        computeCropRect(513, 513, F, minCoverScale(513, 513, F), 0, 0).out,
+      ).toBe(512);
     });
     it('keeps a small image at native resolution (no upscale of output)', () => {
       const s = minCoverScale(80, 80, F); // upscaled in preview, but output stays native
-      const r = computeCropRect(80, 80, F, s, 0, 0, 1024);
+      const r = computeCropRect(80, 80, F, s, 0, 0);
       expect(r.out).toBe(80);
     });
     it('clamp helper pins values inside the bounds', () => {
