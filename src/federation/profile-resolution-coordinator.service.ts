@@ -330,12 +330,19 @@ export class ProfileResolutionCoordinatorService {
         LIMIT 1
       `);
       const allocated = rows.rows[0];
-      if (!allocated || allocated.profileRev !== selector.profileRev) {
+      if (
+        !allocated ||
+        !Number.isSafeInteger(allocated.profileRev) ||
+        allocated.profileRev < 1
+      ) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'group member profile is unavailable',
         );
       }
+      // The current roster fact may have advanced since the client's evidence was captured.
+      // Group Meta resolves the current profile, so return its actual revision to let the
+      // client rebase the member reference; message-author evidence remains revision-exact.
       const publisherDomain =
         allocated.publisherDomain === 'local'
           ? this.config.domain
@@ -346,7 +353,7 @@ export class ProfileResolutionCoordinatorService {
           namespaceId: allocated.memberNamespaceId,
           account,
           domain: memberDomain,
-          rev: selector.profileRev,
+          rev: allocated.profileRev,
         },
         method: {
           kind: 'groupMeta' as const,

@@ -221,6 +221,31 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     expect(query).not.toContain('AccountThreadState');
   });
 
+  it('rebases a stale group member revision to the current authorized roster fact', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [{
+      groupAccount: '!group', publisherDomain: 'host.test',
+      publisherNamespaceId: 7, memberNamespaceId: 9, profileRev: 5,
+    }] });
+    const subject = new ProfileResolutionCoordinatorService(
+      { db: { execute } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(subject['normalizeAndAuthorize'](3, {
+      type: 'GROUP_META', threadId: 41, profileRev: 4,
+      subject: { type: 'MEMBER', account: 'alice', domain: 'member.test' },
+    })).resolves.toMatchObject({
+      key: { account: 'alice', rev: 5, namespaceId: 9 },
+      method: { kind: 'groupMeta', groupAccount: '!group' },
+    });
+    const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL).sql;
+    expect(query).toContain("latest.operation = 'MEMBER_UPSERT'");
+    expect(query).toContain('viewer_pair.active = true');
+  });
+
   it('notifies only the invoking evidence and leaves other pending methods to complete independently', () => {
     const sse = { onProfileAvailable: vi.fn() };
     const subject = new ProfileResolutionCoordinatorService(
