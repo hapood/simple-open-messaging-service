@@ -12,13 +12,12 @@ import {
 import { CallStateRegistry } from './call-state.registry.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
-/** One held SSE connection: the raw response, heartbeat/expiry timers, establishment time, and
- *  session-token row id. A single revoked session can be targeted for FORCE_LOGOUT without kicking the
- *  user's other devices. */
+/** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
+ *  session-token row id — so a single revoked session can be targeted for FORCE_LOGOUT without kicking the
+ *  user's other devices (see onSessionRevoked). */
 interface SseClient {
   res: ServerResponse;
   ping: NodeJS.Timeout;
-  expiry: NodeJS.Timeout;
   since: number;
   sessionId: number;
 }
@@ -66,12 +65,6 @@ export class SseService implements OnModuleDestroy {
    * (SessionAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
    * response carries its CORS header.
    */
-  // An intermediary may keep an upstream response alive after the device disappears.
-  // Rotate streams so a half-open connection cannot suppress FCM indefinitely.
-  // Jitter avoids a reconnect burst when many clients connect after a server restart.
-  private readonly maxStreamAgeMs = 120_000;
-  private readonly streamAgeJitterMs = 30_000;
-
   register(
     userId: number,
     sessionId: number,
@@ -80,36 +73,21 @@ export class SseService implements OnModuleDestroy {
   ): void {
     const ping = initSseResponse(res, origin);
 
-    const entry: SseClient = {
-      res,
-      ping,
-      since: Date.now(),
-      sessionId,
-      expiry: setTimeout(() => {
-        this.removeClient(userId, entry);
-        try {
-          res.end();
-        } catch {
-          // A broken intermediary must not crash the server while retiring an SSE lease.
-        }
-      }, this.maxStreamAgeMs + Math.floor(Math.random() * this.streamAgeJitterMs)),
-    };
+    const entry: SseClient = { res, ping, since: Date.now(), sessionId };
     (this.clients[userId] ??= []).push(entry);
-    res.on('close', () => this.removeClient(userId, entry));
+
+    res.on('close', () => {
+      clearInterval(ping);
+      const list = this.clients[userId];
+      if (!list) return;
+      const idx = list.indexOf(entry);
+      if (idx !== -1) list.splice(idx, 1);
+      if (list.length === 0) delete this.clients[userId];
+    });
 
     // The connect handshake carries account revision snapshots. Durable message gaps are recovered from the
     // per-user feed, so HELLO does not carry a message cursor.
     void this.sendHello(userId, entry);
-  }
-
-  private removeClient(userId: number, entry: SseClient): void {
-    clearInterval(entry.ping);
-    clearTimeout(entry.expiry);
-    const list = this.clients[userId];
-    if (!list) return;
-    const idx = list.indexOf(entry);
-    if (idx !== -1) list.splice(idx, 1);
-    if (list.length === 0) delete this.clients[userId];
   }
 
   /** Whether this exact authenticated device session currently owns a live SSE connection. */
@@ -234,7 +212,8 @@ export class SseService implements OnModuleDestroy {
         }
       } catch {
         // Connection is broken: clean up this entry so a later forEach doesn't throw and abort the fan-out.
-        this.removeClient(userId, list[i]);
+        clearInterval(list[i].ping);
+        list.splice(i, 1);
       }
     }
     if (list.length === 0) delete this.clients[userId];
@@ -328,9 +307,8 @@ export class SseService implements OnModuleDestroy {
       status: 0,
       message: reason,
     });
-    for (const { res, ping, expiry } of entries) {
+    for (const { res, ping } of entries) {
       clearInterval(ping);
-      clearTimeout(expiry);
       try {
         res.write(frame);
         res.end();
@@ -376,9 +354,8 @@ export class SseService implements OnModuleDestroy {
       const clients = this.clients[id];
       // Detach before closing: close callbacks must not mutate the iteration.
       delete this.clients[id];
-      for (const { res, ping, expiry } of clients) {
+      for (const { res, ping } of clients) {
         clearInterval(ping);
-        clearTimeout(expiry);
         try {
           res.end();
         } catch {
