@@ -1,4 +1,5 @@
 import { ContentType } from '../database/enums.js';
+import { isAbsoluteLinkTarget } from '../message/link-target.js';
 import { extractDigests, MAX_FILE_NAME_LEN } from '../upload/file-content.js';
 import {
   isValidAccount,
@@ -312,14 +313,8 @@ export function toFederatedMessageContent(
         ['url', 'title', 'description'],
         ['siteName', 'image', 'favicon'],
       );
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(String(value['url']));
-      } catch {
-        throw new Error('invalid link URL');
-      }
       if (
-        (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') ||
+        !isAbsoluteLinkTarget(value['url']) ||
         typeof value['title'] !== 'string' ||
         typeof value['description'] !== 'string' ||
         (value['siteName'] !== undefined &&
@@ -497,14 +492,8 @@ export function fromFederatedMessageContent(
       );
       if (value['icon'] !== undefined) assertDigest(value['icon']);
       if (value['favicon'] !== undefined) assertDigest(value['favicon']);
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(String(value['url']));
-      } catch {
-        throw new Error('invalid link URL');
-      }
       if (
-        (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') ||
+        !isAbsoluteLinkTarget(value['url']) ||
         typeof value['title'] !== 'string' ||
         typeof value['description'] !== 'string' ||
         (value['siteName'] !== undefined &&

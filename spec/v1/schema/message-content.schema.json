@@ -156,7 +156,11 @@
       "type": "object",
       "required": ["url", "title", "description", "siteName"],
       "properties": {
-        "url": { "type": "string", "pattern": "^https?://" },
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "siteName": { "type": "string" }

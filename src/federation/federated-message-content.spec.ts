@@ -220,6 +220,40 @@ describe('federated message content projection', () => {
     });
   });
 
+  it('preserves non-HTTP LINK targets in both wire directions', () => {
+    const target = 'example-chat://thread/123?message=4';
+    const local = JSON.stringify({
+      url: target,
+      title: 'Open chat',
+      description: '',
+    });
+    const wire = toFederatedMessageContent(
+      ContentType.LINK,
+      local,
+      'local.test',
+    );
+    expect(JSON.parse(wire)).toEqual(JSON.parse(local));
+    expect(
+      fromFederatedMessageContent(ContentType.LINK, wire, 'local.test'),
+    ).toBe(local);
+  });
+
+  it('rejects relative and malformed LINK targets', () => {
+    for (const target of [
+      '/thread/123',
+      'example-chat:',
+      'example-chat://a\nignored',
+    ]) {
+      expect(() =>
+        fromFederatedMessageContent(
+          ContentType.LINK,
+          JSON.stringify({ url: target, title: '', description: '' }),
+          'local.test',
+        ),
+      ).toThrow();
+    }
+  });
+
   it('allows empty LINK text fields and omitted artwork', () => {
     const wire = JSON.stringify({
       url: 'https://example.test/article',
