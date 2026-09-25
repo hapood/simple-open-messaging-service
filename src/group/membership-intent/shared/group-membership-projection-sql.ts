@@ -39,7 +39,7 @@ export function requestProjectionFlipSql(
               OR (${authorSide} = 'B' AND r.direction = 'APPLICATION'))
               THEN 'WITHDRAWN' ELSE 'REJECTED' END
           ELSE ${params.status}
-        END)::varchar(15)
+        END)::"RequestProjectionStatus"
       FROM manager_requests p
       WHERE r."threadId" = p."threadId" AND r."memberAccount" = p."memberAccount"
         AND r."memberDomain" = p."memberDomain" AND r."memberNamespaceId" = p."memberNamespaceId" AND r.direction = p.direction
