@@ -6,8 +6,8 @@ This document is entirely normative. `GET /s2s/v1/state-feed` is the
 per-peer compacted feed for relationship facts and per-thread message,
 deletion, and Group Meta query heads. It carries no user or group
 profile display data; Relationship Intent carries an authorization snapshot and an exact revision
-reference. Message-author display data is resolved only through the exact-message
-[Message Author Profile](./message-author-profile.md) operation.
+reference. Profile display data is resolved only through the operations defined
+by [Profiles](./profiles.md).
 
 ## 1. Request and bootstrap
 
@@ -159,9 +159,9 @@ revision, normally its local default, or zero when it has none.
 
 While `REQUESTED` remains unexpired or the direction is `ACCEPTED`, the source
 MUST allow the receiver to resolve that positive exact reference through
-[Authorized Profile](./authorized-profile.md). This grant applies equally when
-the receiver-hosted endpoint is a user or a group and ends when the direction
-expires or becomes `REVOKED`.
+[Intent Profile](./profiles.md#6-intent-profile). This grant applies equally
+when the receiver-hosted endpoint is a user or a group and ends when the
+direction expires or becomes `REVOKED`.
 
 A profile update by itself MUST NOT mutate or republish a
 `RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its

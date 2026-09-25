@@ -61,33 +61,33 @@
       "responseEnvelope": true
     },
     {
-      "id": "authorizedProfile",
+      "id": "accountEvidenceProfile",
       "method": "GET",
-      "path": "/s2s/v1/profiles/:account",
+      "path": "/s2s/v1/account-profiles/:account/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
-      "responseSchema": "urn:somfp:v1:authorized-profile",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
+      "responseSchema": "urn:somfp:v1:evidence-profile",
       "responseEnvelope": true
     },
     {
-      "id": "groupMetaProfileQuery",
+      "id": "groupMemberProfile",
       "method": "GET",
-      "path": "/s2s/v1/group-meta-profile",
+      "path": "/s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
-      "responseSchema": "urn:somfp:v1:group-meta-profile",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
+      "responseSchema": "urn:somfp:v1:evidence-profile",
       "responseEnvelope": true
     },
     {
-      "id": "messageAuthorProfileQuery",
+      "id": "intentProfile",
       "method": "GET",
-      "path": "/s2s/v1/message-author-profile",
+      "path": "/s2s/v1/intent-profiles/:account/:peerAccount/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
-      "responseSchema": "urn:somfp:v1:message-author-profile",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
+      "responseSchema": "urn:somfp:v1:evidence-profile",
       "responseEnvelope": true
     },
     {

@@ -224,7 +224,7 @@
       ]
     },
     {
-      "name": "profile lookup is lazy and bound to one authorized message version",
+      "name": "profile lookup is lazy and bound to current readable message evidence",
       "steps": [
         {
           "request": "messages",
@@ -233,26 +233,27 @@
           "commit": true
         },
         {
-          "request": "message-author-profile",
+          "request": "account-profile",
           "thread": "!team",
-          "messageSeq": 41,
-          "responseProfileRev": 3,
+          "account": "alice@a.example",
+          "profileRev": 3,
           "messageServiceableToSigner": true,
           "commit": true
         },
         {
-          "request": "message-author-profile",
+          "request": "account-profile",
           "thread": "!team",
-          "messageSeq": 42,
+          "account": "alice@a.example",
+          "profileRev": 4,
           "messageServiceableToSigner": false,
-          "responseCode": 10004,
+          "responseCode": 10001,
           "commit": false
         }
       ],
       "assertions": [
-        "profile revision 3 is revealed by the exact message query only when the consumer needs it",
-        "the exact message serviceability and current thread authorization are both verified",
-        "a message coordinate excluded by local history policy is denied",
+        "profile revision 3 is revealed only when the consumer needs it",
+        "current readable message evidence and current thread authorization are both verified",
+        "a profile revision outside the current readable message interval is unavailable",
         "no current-profile fallback is returned"
       ]
     },
@@ -316,10 +317,10 @@
           "commit": true
         },
         {
-          "request": "group-meta-profile",
+          "request": "group-member-profile",
           "thread": "!team",
-          "subject": "MEMBER",
           "member": "alice@a.example",
+          "profileRev": 3,
           "authorizedGroupAudience": true,
           "canonicalCurrentGroupMetaReference": true,
           "commit": true
@@ -329,7 +330,7 @@
         "a rejoined current member may temporarily use an account-domain placeholder in either direction",
         "group meta supplies role and an exact profile reference but no display bytes",
         "group-member profile resolution uses the exact revision selected by committed group meta",
-        "message-author profiles are requested lazily with exact thread and seq",
+        "message evidence profiles are requested lazily with exact account and revision",
         "group-meta departures carry no body, role, or profile revision"
       ]
     }

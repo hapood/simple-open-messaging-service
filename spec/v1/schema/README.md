@@ -17,13 +17,12 @@ normative text prevails and the release package must be corrected.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
 - `group-meta.schema.json`: full and delta group-member role/profile-reference, compacted group-profile-reference, and current-announcement projections.
-- `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
-- `group-meta-profile.schema.json`: complete profile snapshot selected by the origin's current group or member reference.
-- `message-author-profile.schema.json`: complete profile snapshot selected by an exact authorized message and profile revision.
+- `profile.schema.json`: current public account profile response.
+- `evidence-profile.schema.json`: exact profile response selected by account, group-member, or intent evidence.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
-- `profile.schema.json`, `forward-bundle.schema.json`, and `error.schema.json`: the remaining JSON operations.
+- `forward-bundle.schema.json` and `error.schema.json`: the remaining JSON operations.
 - `http-parameters.schema.json`: normalized query and path parameter objects,
   including the reauthorization tombstone drain's `maxMessageSeq` fast-forward bound.
 

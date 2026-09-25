@@ -1,22 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:somfp:v1:group-meta-profile",
-  "title": "GET /s2s/v1/group-meta-profile response data",
+  "$id": "urn:somfp:v1:evidence-profile",
+  "title": "Federation v1 exact evidence profile response data",
   "type": "object",
-  "required": [
-    "account",
-    "domain",
-    "profileRev",
-    "displayName",
-    "bio",
-    "avatar"
-  ],
+  "required": ["account", "domain", "displayName", "bio", "avatar"],
   "properties": {
     "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
     "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
-    "profileRev": {
-      "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
-    },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
     "bio": { "type": "string", "maxLength": 120 },
     "avatar": {

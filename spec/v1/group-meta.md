@@ -130,9 +130,9 @@ audience's delta visibility floor instead.
 Member items have stable key `(member account, member domain)`. Their required,
 non-null `profileRev` selects an immutable complete profile snapshot retained by the
 group origin when positive. The value `0` means that the projection has no
-profile; the consumer MUST NOT issue a Group Meta Profile request for it. A
+profile; the consumer MUST NOT issue a Group Member Profile request for it. A
 positive reference identifies the selected snapshot, not the member's default
-or numerically newest profile. [Group Meta Profile](./group-meta-profile.md)
+or numerically newest profile. [Group Member Profile](./profiles.md#5-group-member-profile)
 returns the origin's current member reference, which may have changed since
 this feed item was read. A member profile update by
 itself MUST NOT republish a member item or advance this feed.
@@ -158,11 +158,10 @@ for the same stable key; compaction preserves the new item's allocated `feedId`
 rather than retaining or reusing the older item's coordinate. The consumer
 selects the committed `GROUP_PROFILE` item with the greatest `feedId`; it does
 not compare `profileRev` values. To request that exact revision, it uses
-[Authorized Profile](./authorized-profile.md), subject to that operation's
-disclosure rules. To resolve the origin's current group reference, it uses
-[Group Meta Profile](./group-meta-profile.md) with `subject=GROUP`, subject to
-Group Meta audience authorization. The latter may return a different revision;
-it does not resolve an earlier feed item.
+[Account Profile](./profiles.md#4-account-profile-by-current-account-evidence),
+subject to Group Meta audience authorization and the current group-profile
+reference. The operation resolves the current group reference; it does not
+resolve an earlier feed item after the current reference changes.
 
 ### 2.1. Current group announcement
 
@@ -269,7 +268,7 @@ Repeating a page after a failure may therefore return fewer items, never an
 additional item. The subsequent delta drain from `through` observes the
 newest replacement above that boundary and restores eventual roster
 convergence. The group origin retains
-the exact complete member profile snapshots separately for Group Meta Profile; Group
+the exact complete member profile snapshots separately for Group Member Profile; Group
 Meta has no historical-message-author obligation.
 
 ## 4. Delta mode
@@ -288,7 +287,7 @@ allocates a new coordinate. Consequently, a delta page may omit compacted
 intermediate operations but MUST carry the newest operation after the cursor.
 Message-author profile
 retention is independent of Group Meta and is defined by
-[Message Author Profile](./message-author-profile.md). If `after` is below the
+[Profiles](./profiles.md#8-retention-and-degradation). If `after` is below the
 audience visibility floor or the feed's delta retention floor, the source MUST return
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with

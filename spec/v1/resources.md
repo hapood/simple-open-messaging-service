@@ -4,8 +4,9 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative.
 
-This document defines three Federation v1 read operations: public account profiles,
-media resources, and forward bundles. Implementations MUST also follow the
+This document defines two Federation v1 read operations: media resources and
+forward bundles. [Profiles](./profiles.md) defines public and exact profile
+reads. Implementations MUST also follow the
 shared types and JSON rules in [Core Protocol Section 6](./protocol.md#6-common-protocol-rules),
 the response and error envelopes in [Core Protocol Section 7](./protocol.md#7-responses-errors-and-caller-actions),
 the request construction and signature rules in
@@ -50,118 +51,12 @@ An HTTP `200` business error still uses the JSON error envelope. Consumers
 MUST classify it by `Content-Type` and envelope before interpreting it as a
 resource response.
 
-## 2. Account profiles
+## 2. Profile reads
 
-### 2.1 Operation
-
-```http
-GET /s2s/v1/accounts/:account
-```
-
-| Property       | Requirement                                                    |
-| -------------- | -------------------------------------------------------------- |
-| Path variable  | `account: Account`                                             |
-| Query          | None                                                           |
-| Success        | HTTP `200` success envelope with Section 2.2 data              |
-| Business error | HTTP `200 NOT_FOUND` or `200 FEDERATION_PROFILE_NOT_DISCLOSED` |
-
-`account` MAY be a `UserAccount` or `GroupAccount`. The operation resolves only
-an account local to the publisher's own domain; a path, query, or header MUST NOT
-select another domain. Any `recognized signed` peer MAY query this public profile,
-but the query grants no P2P, group, message, or media permission. A dissolved group
-is unavailable and returns `NOT_FOUND`.
-
-### 2.2 Successful response
-
-The success `data` is this closed object:
-
-```ts
-interface PublicAccountProfile {
-  account: Account;
-  domain: Domain;
-  displayName: string;
-  bio: string;
-  avatar: InlineProfileAvatar | null;
-  profileRev: PositiveSafeInteger;
-}
-```
-
-Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
-
-| Field         | Requirement                                                  |
-| ------------- | ------------------------------------------------------------ |
-| `account`     | Equal to the normalized path `account`                       |
-| `domain`      | Equal to the responding server's canonical server domain |
-| `displayName` | 1–31 code points, without unpaired surrogates                |
-| `bio`         | 0–120 code points, without unpaired surrogates               |
-| `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
-| `profileRev`  | Required, non-null, positive immutable account revision      |
-
-The shared inline-avatar validation rules apply. `avatar: null` explicitly
-means no avatar. Consumers store versions by `(account, domain, profileRev)`;
-they MUST NOT replace one version merely because another revision is
-numerically greater or smaller. Unknown data fields MUST be rejected.
-
-Real profile revision allocation begins at `1`. The no-profile sentinel `0`
-cannot appear in a successful account-profile response. A reference carrying zero
-requires no profile request.
-
-This is the public user-or-group profile for exact-account lookup. It MUST NOT contain
-relationship directions, group membership, presence, contact information,
-deletion reasons, or another peer's visibility state.
-State Feed and Group Meta do not publish display profiles.
-[Authorized Profile](./authorized-profile.md) returns a requested account revision
-under its disclosure rules. [Group Meta Profile](./group-meta-profile.md) returns
-the origin's currently referenced group or member snapshot under Group Meta
-audience authorization. A mirror requests that snapshot from the group
-origin, caches it for local use, and never redirects another mirror to the
-member's account home. A peer that
-needs the version selected by a message uses the exact-message-authorized
-[Message Author Profile](./message-author-profile.md). v1 defines no fuzzy user
-search or account-enumeration operation.
-
-All four Federation v1 profile retrieval operations—Public Account Profile,
-Authorized Profile, Group Meta Profile, and Message Author Profile—return the
-same complete profile fields: `account`, `domain`, `displayName`, required
-`bio`, nullable `avatar`, and positive `profileRev`. Their authorization
-coordinates differ; the returned snapshot shape does not.
-
-### 2.3 Errors and application
-
-- A malformed path account returns HTTP `400 FEDERATION_MALFORMED`.
-- An account that is not an existing local user or live group returns HTTP `200 NOT_FOUND`.
-- If the account does not disclose the public profile to this peer, the publisher
-  MAY return HTTP `200 FEDERATION_PROFILE_NOT_DISCLOSED` or privacy-collapse it
-  to HTTP `200 NOT_FOUND`. A consumer MUST accept either and MUST NOT infer
-  account existence from the distinction.
-- Shared signature, recognition, identity, policy, and service failures follow
-  the error registry.
-
-Profile reads do not mutate business state on the publisher. The consumer MUST
-validate the complete envelope, field constraints, account/domain binding, and
-avatar before atomically applying the returned profile snapshot. An error
-response MUST NOT modify a saved profile.
-
-### 2.4 Example
-
-```http
-GET /s2s/v1/accounts/alice HTTP/1.1
-Host: b.example
-Date: Tue, 14 Nov 2023 22:13:20 GMT
-Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
-Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:7Sw4YpBdQ16AZg4H90xMjZc3FhFbBfIBmo9L1kEzvIbnUfI5hLNhF2U6bPdFx+V4YLOqadmO3HxFapgJm+T9Dg==:
-```
-
-The request has no body. With no query parameters, the signed `@query` value
-is `?`.
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"code":0,"message":"successful","data":{"account":"alice","domain":"b.example","displayName":"Alice","bio":"","avatar":null,"profileRev":7}}
-```
+[Profiles](./profiles.md) defines current public profile lookup and exact
+profile lookup authorized by messages, Group Meta, or Relationship Intent.
+State Feed and Group Meta carry profile references but do not publish display
+profile bytes. v1 defines no fuzzy user search or account-enumeration operation.
 
 ## 3. Media resources
 

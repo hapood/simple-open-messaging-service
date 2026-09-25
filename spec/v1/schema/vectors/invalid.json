@@ -768,201 +768,29 @@
       }
     },
     {
-      "name": "authorized profile rejects omitted revision",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
+      "name": "account evidence profile parameters require revision",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
       "value": {
         "account": "alice"
       }
     },
     {
-      "name": "message author profile rejects invalid parameter shapes",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
-      "values": [
-        {
-          "account": "alice",
-          "after": "0"
-        },
-        {
-          "account": "!group",
-          "after": "0"
-        },
-        {
-          "account": "!group",
-          "after": "0",
-          "before": "2"
-        },
-        {
-          "account": "!group",
-          "take": "10"
-        },
-        {
-          "account": "!group",
-          "through": "10"
-        },
-        {
-          "account": "!group",
-          "after": "01"
-        },
-        {
-          "account": "!group",
-          "after": "0",
-          "unknown": "1"
-        },
-        {
-          "account": "!group",
-          "seq": "1"
-        }
-      ]
+      "name": "group member profile parameters require member account",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
+      "value": {
+        "groupAccount": "!group",
+        "memberDomain": "a.example",
+        "profileRev": "3"
+      }
     },
     {
-      "name": "group meta profile rejects incomplete or ambiguous selectors",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
-      "values": [
-        {
-          "account": "!group",
-          "memberAccount": "alice",
-          "memberDomain": "a.example"
-        },
-        {
-          "account": "!group",
-          "subject": "GROUP",
-          "memberAccount": "alice",
-          "memberDomain": "a.example"
-        },
-        {
-          "account": "!group",
-          "subject": "MEMBER",
-          "memberAccount": "bob",
-          "memberDomain": "b.example",
-          "rev": "3"
-        },
-        {
-          "account": "!group",
-          "subject": "MEMBER",
-          "memberAccount": "bob"
-        },
-        {
-          "account": "!group",
-          "subject": "OTHER"
-        }
-      ]
-    },
-    {
-      "name": "message author profile rejects non-profile response shapes",
-      "schema": "urn:somfp:v1:message-author-profile",
-      "values": [
-        {
-          "members": [
-            {
-              "account": "!group",
-              "domain": "a.example",
-              "lastSentSeq": 1,
-              "profileRev": 1,
-              "displayName": "Group",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 1,
-          "hasMore": false
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "A.example",
-              "lastSentSeq": 1,
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 1,
-          "hasMore": false
-        },
-        {
-          "members": [],
-          "scannedThrough": 1,
-          "hasMore": false,
-          "unknown": true
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 1,
-          "hasMore": false
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "lastSentSeq": 0,
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 0,
-          "hasMore": false
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "lastSentSeq": 9007199254740991,
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 1,
-          "hasMore": false
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "lastSentSeq": 39,
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 40,
-          "hasMore": true
-        },
-        {
-          "members": [
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "lastSentSeq": 39,
-              "profileRev": 1,
-              "displayName": "Alice",
-              "avatar": null
-            },
-            {
-              "account": "bob",
-              "domain": "a.example",
-              "lastSentSeq": 40,
-              "profileRev": 1,
-              "displayName": "Bob",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 39,
-          "hasMore": true
-        }
-      ]
+      "name": "intent profile parameters reject no-profile sentinel",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "profileRev": "0"
+      }
     },
     {
       "name": "thread address rejects legacy type and domain fields",
@@ -1293,14 +1121,6 @@
       ]
     },
     {
-      "name": "authorized profile parameters reject no-profile sentinel",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
-      "value": {
-        "account": "alice",
-        "rev": "0"
-      }
-    },
-    {
       "name": "public user profile rejects zero revision",
       "schema": "urn:somfp:v1:profile",
       "value": {
@@ -1313,58 +1133,11 @@
       }
     },
     {
-      "name": "authorized profile rejects null revision",
-      "schema": "urn:somfp:v1:authorized-profile",
+      "name": "evidence profile requires bio",
+      "schema": "urn:somfp:v1:evidence-profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null,
-        "profileRev": null
-      }
-    },
-    {
-      "name": "group member profile rejects zero revision",
-      "schema": "urn:somfp:v1:group-meta-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null,
-        "profileRev": 0
-      }
-    },
-    {
-      "name": "group member profile rejects missing revision",
-      "schema": "urn:somfp:v1:group-meta-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null
-      }
-    },
-    {
-      "name": "message author profile rejects missing bio",
-      "schema": "urn:somfp:v1:message-author-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "profileRev": 3,
-        "displayName": "Alice",
-        "avatar": null
-      }
-    },
-    {
-      "name": "group member profile rejects missing bio",
-      "schema": "urn:somfp:v1:group-meta-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "profileRev": 3,
         "displayName": "Alice",
         "avatar": null
       }

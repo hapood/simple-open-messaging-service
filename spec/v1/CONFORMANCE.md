@@ -11,9 +11,7 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | Peer Recognition        | Core, Transport               | Mandatory                                                 |
 | State Feed              | Core, Recognition             | Mandatory                                                 |
 | Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                   |
-| Authorized Profile      | Core, Group Meta, Message     | Mandatory account/revision profile lookup                 |
-| Group Meta Profile    | Core, Group Meta              | Mandatory current group/member profile lookup                  |
-| Message Author Profile  | Core, Group Meta, Message     | Mandatory exact-message profile lookup                    |
+| Profiles                | Core, Group Meta, Message     | Mandatory public and exact profile lookup                 |
 | Message Query           | Core, Recognition             | Mandatory                                                 |
 | Message Tombstone Query | Core, Message                 | Mandatory                                                 |
 | Message                 | Core                          | Mandatory, including every v1 content type                |

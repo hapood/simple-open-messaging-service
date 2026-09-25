@@ -19,16 +19,14 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Health availability queries, degraded state, timing, and failure handling.
 4. [State Feed](./state-feed.md): compacted relationship/profile-reference, Group Meta feed-head, and thread-content snapshots.
 5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role, compacted group-profile-reference, and current-announcement feed.
-6. [Authorized Profile](./authorized-profile.md): policy-controlled exact account/revision lookup for established user and group threads.
-7. [Group Meta Profile](./group-meta-profile.md): current group or member profile lookup served by the origin under Group Meta audience authorization.
-8. [Message Author Profile](./message-author-profile.md): lazy complete-profile lookup authorized by an exact message.
-9. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
-10. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.
-11. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.
-12. [Resources](./resources.md): parameters, responses, authorization, and errors for profiles, media bytes, and forward closure.
-13. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
-14. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
-15. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
+6. [Profiles](./profiles.md): public current profile lookup and exact profile lookup authorized by messages, Group Meta, or Relationship Intent.
+7. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
+8. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.
+9. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.
+10. [Resources](./resources.md): parameters, responses, authorization, and errors for media bytes and forward closure.
+11. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
+12. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
+13. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
 
 The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 

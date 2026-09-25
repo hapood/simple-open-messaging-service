@@ -267,7 +267,7 @@ both results have been applied. For a GROUP interval, it SHOULD first commit
 the required role-and-profile-reference Group Meta coordinate. If Group Meta has not converged, the
 stable author Address remains valid, the consumer MUST continue Group Meta
 drain, and it MUST NOT infer a role or current-membership state. The consumer
-MAY fetch display data using [Message Author Profile](./message-author-profile.md)
+MAY fetch display data using [Account Profile](./profiles.md#4-account-profile-by-current-account-evidence)
 after accepting the message coordinate. For P2P thread display, the greatest
 committed `seq` authored by the peer selects its carried `profileRev`; the
 consumer MUST NOT compare revision numbers or let a self-authored message

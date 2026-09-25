@@ -568,93 +568,64 @@
       ]
     },
     {
-      "name": "authorized user and group profile responses",
-      "schema": "urn:somfp:v1:authorized-profile",
+      "name": "exact evidence profile responses",
+      "schema": "urn:somfp:v1:evidence-profile",
       "values": [
         {
           "account": "alice",
           "domain": "a.example",
           "displayName": "Alice",
           "bio": "",
-          "avatar": null,
-          "profileRev": 3
+          "avatar": null
         },
         {
           "account": "!group",
           "domain": "a.example",
           "displayName": "Example Group",
           "bio": "",
-          "avatar": null,
-          "profileRev": 4
+          "avatar": null
         }
       ]
     },
     {
-      "name": "authorized profile parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
+      "name": "account evidence profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
       "values": [
         {
           "account": "alice",
-          "rev": "3"
+          "profileRev": "3"
         },
         {
           "account": "!group",
-          "rev": "4"
+          "profileRev": "4"
         }
       ]
     },
     {
-      "name": "message author profile response",
-      "schema": "urn:somfp:v1:message-author-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "profileRev": 3,
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null
-      }
-    },
-    {
-      "name": "group member profile response",
-      "schema": "urn:somfp:v1:group-meta-profile",
-      "value": {
-        "account": "alice",
-        "domain": "a.example",
-        "profileRev": 3,
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null
-      }
-    },
-    {
-      "name": "group meta profile query parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMetaProfileQuery",
+      "name": "group member profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
       "values": [
         {
-          "account": "!group",
-          "subject": "GROUP"
-        },
-        {
-          "account": "!group",
-          "subject": "MEMBER",
+          "groupAccount": "!group",
+          "memberDomain": "a.example",
           "memberAccount": "alice",
-          "memberDomain": "a.example"
+          "profileRev": "7"
         }
       ]
     },
     {
-      "name": "message author profile query parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
+      "name": "intent profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
       "values": [
-        {
-          "account": "!group",
-          "messageSeq": "41"
-        },
         {
           "account": "alice",
           "peerAccount": "bob",
-          "messageSeq": "12"
+          "profileRev": "3"
+        },
+        {
+          "account": "!group",
+          "peerAccount": "alice",
+          "profileRev": "4"
         }
       ]
     },

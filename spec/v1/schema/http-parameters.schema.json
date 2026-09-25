@@ -13,12 +13,12 @@
       },
       "additionalProperties": false
     },
-    "authorizedProfileParameters": {
+    "accountEvidenceProfileParameters": {
       "type": "object",
-      "required": ["account", "rev"],
+      "required": ["account", "profileRev"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-        "rev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+        "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false
     },
@@ -161,58 +161,26 @@
       },
       "additionalProperties": false
     },
-    "messageAuthorProfileQuery": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["account", "peerAccount", "messageSeq"],
-          "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
-            "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
-            "messageSeq": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,15}$"
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["account", "messageSeq"],
-          "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-            "messageSeq": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,15}$"
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
+    "groupMemberProfileParameters": {
+      "type": "object",
+      "required": ["groupAccount", "memberDomain", "memberAccount", "profileRev"],
+      "properties": {
+        "groupAccount": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+        "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+        "memberAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+        "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+      },
+      "additionalProperties": false
     },
-    "groupMetaProfileQuery": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["account", "subject"],
-          "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-            "subject": { "const": "GROUP" }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["account", "subject", "memberAccount", "memberDomain"],
-          "properties": {
-            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-            "subject": { "const": "MEMBER" },
-            "memberAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
-            "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
-          },
-          "additionalProperties": false
-        }
-      ]
+    "intentProfileParameters": {
+      "type": "object",
+      "required": ["account", "peerAccount", "profileRev"],
+      "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+        "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+        "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+      },
+      "additionalProperties": false
     },
     "mediaParameters": {
       "type": "object",
