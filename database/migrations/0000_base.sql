@@ -224,6 +224,19 @@ CREATE TYPE public."RelationshipIntentStatus" AS ENUM (
 
 
 --
+-- Name: RequestProjectionStatus; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public."RequestProjectionStatus" AS ENUM (
+    'REQUESTED',
+    'ACCEPTED',
+    'WITHDRAWN',
+    'REJECTED',
+    'EXPIRED'
+);
+
+
+--
 -- Name: UploadSessionStatus; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -1303,14 +1316,13 @@ CREATE TABLE public."GroupRequestProjection" (
     "memberProfileRev" integer NOT NULL,
     direction character varying(15) NOT NULL,
     "feedId" integer NOT NULL,
-    status character varying(15) NOT NULL,
+    status public."RequestProjectionStatus" NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
     "requestedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone NOT NULL,
     CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY (ARRAY[('APPLICATION'::character varying)::text, ('INVITATION'::character varying)::text]))),
     CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval)))),
-    CONSTRAINT "GroupRequestProjection_status_check" CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('ACCEPTED'::character varying)::text, ('REVOKED'::character varying)::text, ('WITHDRAWN'::character varying)::text, ('REJECTED'::character varying)::text, ('EXPIRED'::character varying)::text])))
+    CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))))
 );
 
 

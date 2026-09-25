@@ -86,7 +86,7 @@ export function groupAuthoredMembershipRequestSql(
           "memberProfileRev", direction, status, note, "requestedAt", "expiresAt", "feedId")
       SELECT ${input.threadId}, ${input.targetAccount}, ${input.targetDomain},
         ${input.targetNamespaceId}, (SELECT rev FROM member_rev), 'INVITATION',
-        v.status::text, v.note, v."requestedAt", v."expiresAt",
+        'REQUESTED'::"RequestProjectionStatus", v.note, v."requestedAt", v."expiresAt",
         (SELECT "feedId" FROM projection_alloc)
       FROM request_state v
       WHERE EXISTS (SELECT 1 FROM projection_alloc)
