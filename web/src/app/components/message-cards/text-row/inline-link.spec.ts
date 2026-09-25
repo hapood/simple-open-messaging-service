@@ -15,6 +15,7 @@ import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { LinkCardService } from '../../../services/link-card.service';
+import { ExternalLinkService } from '../../../services/external-link.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { ChatMsgData } from '../chat-item';
@@ -60,6 +61,13 @@ describe('TextRowComponent — inline link', () => {
                     end: start + url.length,
                   };
             },
+          },
+        },
+        {
+          provide: ExternalLinkService,
+          useValue: {
+            open: (url: string) =>
+              window.open(url, '_blank', 'noopener,noreferrer'),
           },
         },
         {

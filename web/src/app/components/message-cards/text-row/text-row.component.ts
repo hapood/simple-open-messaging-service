@@ -19,7 +19,7 @@ import {
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { LinkCardService } from '../../../services/link-card.service';
-import { openExternalUrl } from '../../../services/runtime';
+import { ExternalLinkService } from '../../../services/external-link.service';
 import { QuoteResolutionService } from '../../../services/quote-resolution.service';
 
 /**
@@ -77,6 +77,7 @@ export class TextRowComponent {
   private readonly downloads = inject(ImageDownloadService);
   private readonly mediaThreshold = inject(MediaSizeThresholdService);
   private readonly linkCards = inject(LinkCardService);
+  private readonly externalLinks = inject(ExternalLinkService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   /** Group head (shows avatar + other party's name) / mid-group. */
@@ -135,12 +136,12 @@ export class TextRowComponent {
   });
 
   /** Keep the URL as a real anchor for accessibility/copying, but route activation through the
-   * shared runtime helper so Tauri opens the system browser and web opens a noopener tab. */
+   * shared navigation policy so non-web schemes require explicit confirmation. */
   async openLink(event: MouseEvent): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
     const card = this.linkCard();
-    if (card) await openExternalUrl(card.url);
+    if (card) await this.externalLinks.open(card.url);
   }
 
   replyImageSrc(quote: NonNullable<ChatMsgData['quote']>): string {

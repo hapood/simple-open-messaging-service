@@ -1,6 +1,7 @@
 import {
   Component,
   computed,
+  inject,
   input,
   output,
   ChangeDetectionStrategy,
@@ -12,7 +13,8 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
-import { assetUrl, openExternalUrl } from '../../../services/runtime';
+import { assetUrl } from '../../../services/runtime';
+import { ExternalLinkService } from '../../../services/external-link.service';
 import { linkCardHost, linkCardSource } from '../../../lib/link-card-display';
 import { LinkCardContentComponent } from '../link-card-content/link-card-content.component';
 
@@ -27,16 +29,14 @@ interface LinkCard {
 }
 
 /**
- * LINK message row — a tappable web-page preview card: optional og:image thumbnail strip, the page
- * title, a description, and the page host (+ favicon). Tapping opens the page in the system
- * browser (Tauri) / a new tab (web).
+ * LINK message row — a tappable target card with optional artwork, title, description and source.
+ * Tapping asks the operating system (Tauri) or browser to open the target.
  *
  * `data.text` is the raw JSON written server-side by LinkPreviewService. Shape:
  * `{ url, title, description, image?, favicon? }`. The card renders entirely from this stored
  * metadata — no page fetch on open. Optional artwork is served through the authenticated local CAS.
  *
- * The page host is always surfaced (meta bar) as a credibility cue so a reader can spot a misleading
- * title. All text renders via `{{ }}` interpolation — auto-escaped, so a hostile page title/description
+ * The host (or scheme for non-web targets) is surfaced in the meta bar. All text renders via `{{ }}` interpolation — auto-escaped, so a hostile page title/description
  * is inert (no [innerHTML]).
  */
 @Component({
@@ -53,6 +53,7 @@ interface LinkCard {
   styleUrl: './link-row.component.scss',
 })
 export class LinkRowComponent {
+  private readonly externalLinks = inject(ExternalLinkService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
@@ -94,7 +95,7 @@ export class LinkRowComponent {
     }
   });
   readonly faviconSrc = computed(() => assetUrl(this.link().favicon));
-  /** The page host — the credibility cue shown in the meta bar so a reader can spot a phishing card. */
+  /** The host or non-web scheme shown as the card source. */
   readonly host = computed(() => {
     return linkCardHost(this.link().url);
   });
@@ -102,12 +103,12 @@ export class LinkRowComponent {
     linkCardSource(this.link().url, this.link().siteName),
   );
 
-  /** Open the shared page in the system browser (Tauri) / a new tab (web). */
+  /** Attempt to open the shared target via the OS handler (Tauri) or browser. */
   async openUrl(): Promise<void> {
     const url = this.link().url;
     if (!url) return;
     try {
-      await openExternalUrl(url);
+      await this.externalLinks.open(url);
     } catch (error) {
       console.error('[link-row] Failed to open external URL', error);
     }

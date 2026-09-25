@@ -519,6 +519,8 @@
   },
   "linkCard": {
     "open": "Open link",
+    "externalSchemeTitle": "Open external app?",
+    "externalSchemePrompt": "This {{scheme}} link may open another app or invoke an external handler: {{url}}. Continue?",
     "original": "Original text",
     "copy": "Copy all",
     "generateTitle": "Send link card",

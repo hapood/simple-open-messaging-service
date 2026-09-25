@@ -519,6 +519,8 @@
   },
   "linkCard": {
     "open": "打开链接",
+    "externalSchemeTitle": "打开外部应用？",
+    "externalSchemePrompt": "这个 {{scheme}} 链接可能打开其他应用或调用外部处理程序：{{url}}。是否继续？",
     "original": "查看原文",
     "copy": "复制全文",
     "generateTitle": "发送链接卡片",

@@ -6,7 +6,7 @@ import {
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
-import { openExternalUrl } from '../../services/runtime';
+import { ExternalLinkService } from '../../services/external-link.service';
 
 @Component({
   selector: 'app-link-original-dialog',
@@ -88,6 +88,7 @@ import { openExternalUrl } from '../../services/runtime';
 })
 export class LinkOriginalDialogComponent {
   private readonly route = inject(RouteService);
+  private readonly externalLinks = inject(ExternalLinkService);
   readonly text = input.required<string>();
   readonly url = input.required<string>();
 
@@ -95,7 +96,7 @@ export class LinkOriginalDialogComponent {
     await navigator.clipboard.writeText(this.text());
   }
   async open(): Promise<void> {
-    await openExternalUrl(this.url());
+    await this.externalLinks.open(this.url());
   }
   close(): void {
     this.route.closeDlg();
