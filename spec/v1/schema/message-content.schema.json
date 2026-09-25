@@ -154,7 +154,7 @@
     },
     "link": {
       "type": "object",
-      "required": ["url", "title", "description", "siteName"],
+      "required": ["url", "title", "description"],
       "properties": {
         "url": {
           "type": "string",
@@ -163,7 +163,9 @@
         },
         "title": { "type": "string" },
         "description": { "type": "string" },
-        "siteName": { "type": "string" }
+        "siteName": { "type": "string" },
+        "icon": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "favicon": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" }
       },
       "additionalProperties": false
     },

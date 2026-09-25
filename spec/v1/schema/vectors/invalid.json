@@ -538,6 +538,19 @@
       }
     },
     {
+      "name": "link content rejects malformed artwork digest",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "LINK",
+        "content": {
+          "url": "https://example.com",
+          "title": "Example",
+          "description": "",
+          "icon": "not-a-sha256-digest"
+        }
+      }
+    },
+    {
       "name": "contact card bio exceeds 120 code points",
       "schema": "urn:somfp:v1:message-content",
       "value": {
