@@ -7,7 +7,10 @@ export function linkCardSource(url: string, siteName?: string): string {
 /** Extract the normalized hostname used as the card title/source fallback. */
 export function linkCardHost(url: string): string {
   try {
-    return new URL(url).hostname.replace(/^www\./i, '');
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.replace(/^www\./i, '') || parsed.protocol.slice(0, -1)
+    );
   } catch {
     return url;
   }
