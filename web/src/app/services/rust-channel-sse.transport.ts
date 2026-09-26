@@ -35,8 +35,12 @@ export class RustChannelSseTransport extends RealtimeTransport {
   /** Unlisten handles for the four Rust→JS events, detached on stop(). */
   private readonly unlisteners: Array<() => void> = [];
   /** navigator online/offline → `sse_net` so Rust detects a dropped network before the 60s watchdog. */
-  private readonly onOnline = (): void => { void tauriInvoke('sse_net', { online: true }); };
-  private readonly onOffline = (): void => { void tauriInvoke('sse_net', { online: false }); };
+  private readonly onOnline = (): void => {
+    void tauriInvoke('sse_net', { online: true });
+  };
+  private readonly onOffline = (): void => {
+    void tauriInvoke('sse_net', { online: false });
+  };
 
   start(): void {
     if (this.installed) return;
@@ -52,11 +56,19 @@ export class RustChannelSseTransport extends RealtimeTransport {
     // scheduled-backoff deadline for the countdown chip. (Rust emits `soms-sse-reconnect` itself on
     // reconnect opens — no `openedOnce` inference here.)
     const subs: Array<Promise<(() => void) | undefined>> = [
-      listenEvent<ConnectionState>('soms-sse-state', (e) => this.sink.onState(e.payload)),
-      listenEvent<StandardMessage>('soms-sse-event', (e) => this.sink.onEvent(e.payload)),
+      listenEvent<ConnectionState>('soms-sse-state', (e) =>
+        this.sink.onState(e.payload),
+      ),
+      listenEvent<StandardMessage>('soms-sse-event', (e) =>
+        this.sink.onEvent(e.payload),
+      ),
       listenEvent('soms-sse-reconnect', () => this.sink.onReconnect()),
-      listenEvent<{ reason?: string }>('soms-sse-force-logout', (e) => this.sink.onForceLogout(e.payload?.reason)),
-      listenEvent<number>('soms-sse-reconnect-in', (e) => this.sink.onReconnectIn(e.payload)),
+      listenEvent<{ reason?: string }>('soms-sse-force-logout', (e) =>
+        this.sink.onForceLogout(e.payload?.reason),
+      ),
+      listenEvent<number>('soms-sse-reconnect-in', (e) =>
+        this.sink.onReconnectIn(e.payload),
+      ),
     ];
     for (const sub of subs) {
       const un = await sub;
@@ -97,7 +109,11 @@ export class RustChannelSseTransport extends RealtimeTransport {
     if (!this.installed) return;
     this.installed = false;
     for (const un of this.unlisteners) {
-      try { un(); } catch { /* listener already gone — best-effort */ }
+      try {
+        un();
+      } catch {
+        /* listener already gone — best-effort */
+      }
     }
     this.unlisteners.length = 0;
     if (typeof window !== 'undefined') {
@@ -114,6 +130,16 @@ export class RustChannelSseTransport extends RealtimeTransport {
    *  next failure, and success clears it via the state event. */
   override retryNow(): void {
     this.sink.onReconnectIn(null);
-    void tauriInvoke('sse_net', { online: true });
+    void (async () => {
+      const state = await tauriInvoke<string>('sse_get_state');
+      if (state === 'closed') {
+        // An SSE_REPLACED shutdown exits the supervisor, rather than entering
+        // backoff. An explicit retry must replace its completed task.
+        await tauriInvoke('sse_stop');
+        await tauriInvoke('sse_start');
+      } else {
+        await tauriInvoke('sse_net', { online: true });
+      }
+    })();
   }
 }

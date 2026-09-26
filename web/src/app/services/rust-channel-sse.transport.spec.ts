@@ -235,8 +235,8 @@ describe('RustChannelSseTransport', () => {
     });
   });
 
-  it('retryNow() invokes sse_net(online:true) so the supervisor resets backoff + retries at once', async () => {
-    const t = installFakeTauri();
+  it('retryNow() invokes sse_net(online:true) while reconnecting to reset backoff', async () => {
+    const t = installFakeTauri('reconnecting');
     const rec = recordingSink();
     const transport = make(rec.sink);
     transport.start();
@@ -255,6 +255,23 @@ describe('RustChannelSseTransport', () => {
         ),
       ).toBe(true),
     );
+  });
+
+  it('retryNow() restarts a closed supervisor instead of waking an exited task', async () => {
+    const t = installFakeTauri('closed');
+    const rec = recordingSink();
+    const transport = make(rec.sink);
+    transport.start();
+    await started(t);
+    await vi.waitFor(() => expect(rec.states).toContain('closed'));
+    transport.retryNow();
+    await vi.waitFor(() =>
+      expect(t.invokes().filter((i) => i.cmd === 'sse_start')).toHaveLength(2),
+    );
+    expect(t.invokes().map((i) => i.cmd)).toEqual([
+      'sse_start', 'sse_get_state', 'sse_get_state', 'sse_stop', 'sse_start',
+    ]);
+    expect(t.invokes().some((i) => i.cmd === 'sse_net')).toBe(false);
   });
 
   it('retryNow() drops the scheduled countdown (the manual retry voids the backoff deadline)', async () => {
