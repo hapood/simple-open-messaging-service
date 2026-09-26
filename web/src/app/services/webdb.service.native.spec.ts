@@ -51,14 +51,9 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
-  it('delegates the complete thread feed sync to Rust in one invocation', async () => {
-    const result = { cursor: 12, states: [] };
-    responses.set('native_thread_feed_sync', result);
-    expect(await service.syncThreadFeed(12, 3)).toEqual(result);
-    expect(calls.at(-1)).toEqual({
-      cmd: 'native_thread_feed_sync',
-      args: { userId: 42, target: 12, after: 3 },
-    });
+  it('does not allow a renderer to start native thread-feed synchronization', async () => {
+    await expect(service.syncThreadFeed(12, 3)).rejects.toThrow('Rust SSE executor');
+    expect(calls).not.toContainEqual(expect.objectContaining({ cmd: 'native_thread_feed_sync' }));
   });
 
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
@@ -105,30 +100,9 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('sends a state-feed page through the native background command', async () => {
-    const items = [
-      {
-        feedId: 81,
-        account: '' as const,
-        domain: 'local' as const,
-        namespaceId: 0 as const,
-        eventType: 'INCOMING_INVITE_HEAD' as const,
-        subjectAccount: '' as const,
-        subjectDomain: 'local' as const,
-        body: { readThroughFeedId: 0 },
-      },
-    ];
-    await service.applyStateFeedPage(items, 81, true);
-
-    expect(calls.at(-1)).toEqual({
-      cmd: 'native_db_apply_state_feed_page',
-      args: {
-        userId: 42,
-        feedId: 81,
-        items,
-        resetProjection: true,
-      },
-    });
+  it('does not allow a renderer to submit native state-feed pages', async () => {
+    await expect(service.applyStateFeedPage([], 81, true)).rejects.toThrow('Rust SSE executor');
+    expect(calls).not.toContainEqual(expect.objectContaining({ cmd: 'native_db_apply_state_feed_page' }));
   });
 
   it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {

@@ -1,8 +1,10 @@
 /// <reference lib="webworker" />
 
 import { WebdbStorage } from './webdb-storage';
+import { attentionSnapshot } from '../../../../shared/thread-attention';
 import type { ClientStateFeedItem } from './user.service';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
+import { synchronizeStateFeed } from './worker-state-feed-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
 import en from '../i18n/en.json';
@@ -61,8 +63,8 @@ async function synchronizeNotifications(
   if (result.notifications.length && openedUserId === userId) {
     const feedIds = new Map(
       result.states.flatMap((state) =>
-        state.server
-          ? [[state.threadId, state.server.threadFeedId] as const]
+        state.threadFeedId !== null
+          ? [[state.threadId, state.threadFeedId] as const]
           : [],
       ),
     );
@@ -118,6 +120,17 @@ const requestProfile = (url: string) => async (selector: ProfileSelector) => {
     status: 'READY',
     profile: await storage.commitResolvedProfile(envelope.data.profile),
   } as const;
+};
+
+const requestStateFeed = (url: string) => async (query: {
+  mode: 'full' | 'delta'; after: number; through: number; take: number;
+}) => {
+  const params = new URLSearchParams({
+    mode: query.mode, after: String(query.after), through: String(query.through), take: String(query.take),
+  });
+  const response = await fetch(`${url}?${params}`, { credentials: 'same-origin' });
+  if (!response.ok) throw new Error(`state feed HTTP ${response.status}`);
+  return response.json();
 };
 
 const requestThreadFeed = (url: string) => async (body: unknown) => {
@@ -185,6 +198,7 @@ type Request =
       userId: string;
       url: string;
       groupMetaUrl: string;
+      stateFeedUrl: string;
       profileResolutionUrl: string;
       port: MessagePort;
     }
@@ -246,15 +260,11 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     ...(result.groupThreadIds.length ? ['GROUP_META'] : []),
                   ],
                   groupThreadIds: result.groupThreadIds,
-                  aliases: result.states.flatMap(({ server }) =>
-                    server
-                      ? [
-                          {
-                            threadId: server.threadId,
-                            threadFeedId: server.threadFeedId,
-                            alias: server.alias,
-                          },
-                        ]
+                  aliases: result.states.flatMap((state) =>
+                    state.threadFeedId !== null
+                      ? [{ threadId: state.threadId,
+                          threadFeedId: state.threadFeedId,
+                          alias: state.alias }]
                       : [],
                   ),
                 });
@@ -266,9 +276,24 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             }
           },
         );
+        const wakeState = coalesceThreadFeedWakes(
+          (task) => { queue = queue.then(task); },
+          async (target) => {
+            if (feedPort !== port) return;
+            try {
+              const cursor = await synchronizeStateFeed(storage, target, requestStateFeed(data.stateFeedUrl));
+              if (feedPort === port) port.postMessage({
+                stateCommit: { userId: Number(data.userId), cursor },
+              });
+            } catch (error) {
+              console.warn('[state-feed] wake failed; next wake retries', error);
+            }
+          },
+        );
         port.onmessage = (event) => {
           if (feedPort !== port) return;
           const message = event.data as {
+            stateTarget?: unknown;
             target?: unknown;
             event?: unknown;
             data?: unknown;
@@ -291,10 +316,12 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                   // An exact snapshot wake also reaches independent consumers of
                   // this revision; the evidence wake settles its invoking method.
                   const evidence =
-                    message.data && typeof message.data === 'object' &&
+                    message.data &&
+                    typeof message.data === 'object' &&
                     'evidence' in message.data &&
                     isProfileSelector(message.data.evidence)
-                      ? message.data.evidence : undefined;
+                      ? message.data.evidence
+                      : undefined;
                   if (evidence) {
                     await storage.applyGroupMetaProfileDrift(evidence, key);
                     postMessage({
@@ -321,6 +348,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             });
             return;
           }
+          if (typeof message.stateTarget === 'number') wakeState(message.stateTarget);
           if (typeof message.target === 'number') wake(message.target);
         };
         port.start();
@@ -354,16 +382,9 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             groupThreadIds: result.groupThreadIds,
             states: changes.states.map((state) => {
               const transient = notificationStates.get(state.threadId);
-              return transient?.server &&
-                state.server &&
-                transient.server.threadFeedId === state.server.threadFeedId
-                ? {
-                    ...state,
-                    server: {
-                      ...state.server,
-                      previews: transient.server.previews,
-                    },
-                  }
+              const previewSource = attentionSnapshot(transient);
+              return previewSource && state.threadFeedId === previewSource.threadFeedId
+                ? { ...state, previews: previewSource.previews }
                 : state;
             }),
             ...(result.error ? { error: result.error } : {}),

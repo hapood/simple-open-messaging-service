@@ -68,7 +68,6 @@ describe('ContactCardShareService', () => {
       namespaceId: 4,
       profileRev: 6,
       name: 'Group',
-      ownerId: 1,
     });
     service.open(group);
     complete?.({ threadIds: [9] });

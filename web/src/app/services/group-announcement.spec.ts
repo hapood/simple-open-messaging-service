@@ -9,7 +9,6 @@ describe('group announcement visibility', () => {
   const thread = () =>
     createGroupConversation(7, {
       id: 7,
-      ownerId: 1,
       account: '!room',
       name: 'Room',
       domain: 'local',

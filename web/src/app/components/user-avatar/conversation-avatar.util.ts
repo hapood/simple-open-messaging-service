@@ -35,21 +35,20 @@ export function conversationAvatarSrc(
 export function conversationAvatarEvidence(
   t: ConversationItem,
 ): ProfileSelector | undefined {
-  if (t.type === 'P2P')
-    return t.peerUser.profileRev > 0
-      ? {
-          type: 'EXACT',
-          account: t.peerUser.account,
-          domain: t.peerUser.domain,
-          rev: t.peerUser.profileRev,
-        }
-      : undefined;
-  return t.group.profileRev > 0
+  if (t.profileRev < 1) return undefined;
+  // Thread type comes from the authenticated state feed. The profile-resolution
+  // endpoint independently checks that the selector belongs to this thread.
+  return t.type === 'P2P'
     ? {
+        type: 'EXACT',
+        account: t.peerUser.account,
+        domain: t.peerUser.domain,
+        rev: t.profileRev,
+      }
+    : {
         type: 'GROUP_META',
         threadId: t.threadId,
-        profileRev: t.group.profileRev,
+        profileRev: t.profileRev,
         subject: { type: 'GROUP' },
-      }
-    : undefined;
+      };
 }

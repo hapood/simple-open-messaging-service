@@ -191,7 +191,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/thread/feed-delta": {
+    "/api/v1/thread-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -201,7 +201,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Fetch unified thread snapshots in a bounded feed range */
-        post: operations["MessageController_threadFeedDelta"];
+        post: operations["MessageController_threadFeed"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1058,23 +1058,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Public liveness probe (unauthenticated): status, DB reachability, version, server time. */
-        get: operations["HealthController_health"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/config": {
         parameters: {
             query?: never;
@@ -1177,49 +1160,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/shell/compat": {
+    "/api/v1/client/compat": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config). */
-        get: operations["ShellController_compat"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/shell/web-manifest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch. */
-        get: operations["ShellController_manifest"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/shell/web-bundle": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Streamed application/gzip tarball of the web SPA browser build. NOT enveloped in ApiResult (raw bytes). */
-        get: operations["ShellController_bundle"];
+        /** Client API version, server version and public client configuration. */
+        get: operations["ClientCompatController_compat"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3855,15 +3804,32 @@ export interface components {
             seq: number;
             /** Format: date-time */
             createdAt: string;
-            sender?: {
+            sender: {
                 account: string;
                 domain: string;
+                namespaceId: number;
+                profileRev: number;
             };
             /** @enum {string} */
             status: "LIVE" | "USER_RETRACTION" | "MODERATION_REMOVAL";
             text?: string;
         };
+        ThreadFeedProfileDto: {
+            account: string;
+            domain: string;
+            namespaceId: number;
+            profileRev: number;
+        };
         ThreadFeedStateDto: {
+            /** @enum {string} */
+            type: "P2P" | "GROUP";
+            authorityNamespaceId: number;
+            /** @enum {string} */
+            conversationState: "ACTIVE" | "READ_ONLY";
+            blocked: boolean;
+            /** @enum {string} */
+            role: "OWNER" | "ADMIN" | "MEMBER" | null;
+            profile: components["schemas"]["ThreadFeedProfileDto"];
             threadProfileRev: number;
             alias: string | null;
             previews?: components["schemas"]["ThreadFeedPreviewDto"][];
@@ -3896,14 +3862,14 @@ export interface components {
             /** @description Latest projected surviving mention seq; clients decide whether to display attention */
             lastMentionSeq: number | null;
         };
-        ThreadFeedDeltaPageDto: {
+        ThreadFeedPageDto: {
             threadFeedEndId: number;
             through: number;
             scannedThrough: number;
             hasMore: boolean;
             items: components["schemas"]["ThreadFeedStateDto"][];
         };
-        ThreadFeedDeltaDto: {
+        ThreadFeedQueryDto: {
             /**
              * @description Number of memory previews, up to 3.
              * @default 0
@@ -5404,7 +5370,7 @@ export interface operations {
             };
         };
     };
-    MessageController_threadFeedDelta: {
+    MessageController_threadFeed: {
         parameters: {
             query?: never;
             header?: never;
@@ -5413,7 +5379,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ThreadFeedDeltaDto"];
+                "application/json": components["schemas"]["ThreadFeedQueryDto"];
             };
         };
         responses: {
@@ -5423,7 +5389,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["ThreadFeedDeltaPageDto"];
+                        data?: components["schemas"]["ThreadFeedPageDto"];
                     };
                 };
             };
@@ -6520,23 +6486,6 @@ export interface operations {
             };
         };
     };
-    HealthController_health: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     ConfigController_config: {
         parameters: {
             query?: never;
@@ -6663,7 +6612,7 @@ export interface operations {
             };
         };
     };
-    ShellController_compat: {
+    ClientCompatController_compat: {
         parameters: {
             query?: never;
             header?: never;
@@ -6680,40 +6629,7 @@ export interface operations {
             };
         };
     };
-    ShellController_manifest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ShellController_bundle: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
+
     CallsController_initiate: {
         parameters: {
             query?: never;

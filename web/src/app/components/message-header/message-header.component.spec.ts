@@ -168,7 +168,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      ownerId: 1,
     });
     fixture.componentRef.setInput('userMsgTrd', chat);
 
@@ -180,7 +179,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   it('reports group More as expanded while the group panel is open', () => {
     const chat = createGroupConversation(
       8,
-      { id: 80, account: 'group-80', name: 'Group 80', ownerId: 1 },
+      { id: 80, account: 'group-80', name: 'Group 80' },
       { role: 'ADMIN' },
     );
     canAdministerGroup.set(true);
@@ -195,7 +194,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      ownerId: 1,
     });
     const chat = {
       ...active,
@@ -216,7 +214,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      ownerId: 1,
     });
     const chat = {
       ...active,

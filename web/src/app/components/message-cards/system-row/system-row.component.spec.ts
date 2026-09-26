@@ -5,7 +5,7 @@ import {
   provideTranslocoTranspiler,
 } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
-import type { ConversationItem } from '../../../services/model';
+import { createP2PConversation, type ConversationItem } from '../../../services/model';
 import { vi } from 'vitest';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
@@ -245,11 +245,13 @@ describe('SystemRowComponent', () => {
   it("tracks the caller's P2P remark for a cached group participant", async () => {
     getProfile.mockResolvedValue({ name: 'Alice cached' });
     const participant = { ...alice, namespaceId: 12, profileRev: 3 };
-    const thread = {
-      type: 'P2P',
-      peerUser: participant,
-      alias: 'My remark',
-    } as ConversationItem;
+    const thread = createP2PConversation(7, {
+      account: participant.account,
+      name: 'Alice',
+      domain: participant.domain,
+      namespaceId: participant.namespaceId,
+      profileRev: participant.profileRev,
+    }, { alias: 'My remark' });
     conversations.set([thread]);
     const fixture = render(
       { type: 'GROUP_LEFT', member: participant },

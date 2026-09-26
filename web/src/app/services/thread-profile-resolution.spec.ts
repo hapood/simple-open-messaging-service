@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
-import { createGroupConversation, createP2PConversation } from './model';
+import { createGroupConversation, createP2PConversation, type ConversationItem } from './model';
+import { threadFeedSnapshot } from './thread-feed.test-helper';
 
 describe('resolved thread profile identity', () => {
   const userId = '919201';
@@ -11,14 +12,13 @@ describe('resolved thread profile identity', () => {
   });
   afterEach(async () => storage.closeAndDelete(userId));
 
-  function group(domain = 'local', namespaceId = 0, profileRev = 1) {
+  function group(domain = 'local', namespaceId = 0, profileRev = 1, threadId = 91) {
     return createGroupConversation(
-      91,
+      threadId,
       {
-        id: 91,
+        id: threadId,
         account: '!group',
         name: '',
-        ownerId: 16,
         domain,
         namespaceId,
         profileRev,
@@ -27,8 +27,25 @@ describe('resolved thread profile identity', () => {
     );
   }
 
+  async function seedThread(item: ConversationItem) {
+    const subject = item.type === 'GROUP' ? item.group : item.peerUser;
+    const feedId = item.threadFeedId ?? 1;
+    await storage.mergeThreadStates([threadFeedSnapshot(item.threadId, {
+      threadFeedId: feedId,
+      type: item.type,
+      role: item.role,
+      authorityNamespaceId: item.authorityNamespaceId,
+      profile: {
+        account: subject.account, domain: subject.domain,
+        namespaceId: subject.namespaceId, profileRev: item.profileRev,
+      },
+      threadProfileRev: item.profileRev,
+    })]);
+    await storage.putThread({ ...item, threadFeedId: feedId });
+  }
+
   it('normalizes a local canonical-domain response before matching and notifying', async () => {
-    await storage.putThread(group());
+    await seedThread(group());
     const wake = vi.fn();
     storage.profileWake$.subscribe(wake);
     const profile = await storage.commitResolvedProfile({
@@ -61,7 +78,7 @@ describe('resolved thread profile identity', () => {
   });
 
   it('hydrates local peers while preserving their selected profile revision', async () => {
-    await storage.putThread(
+    await seedThread(
       createP2PConversation(92, {
         account: 'bob',
         domain: 'local',
@@ -90,14 +107,15 @@ describe('resolved thread profile identity', () => {
     });
     expect(await storage.getThreads()).toEqual([
       expect.objectContaining({
-        peerUser: expect.objectContaining({ name: 'Bob', profileRev: 1 }),
+        peerUser: expect.objectContaining({ name: 'Bob' }),
+        profileRev: 1,
       }),
     ]);
   });
 
   it('does not let an in-flight attention write erase a newly resolved title', async () => {
     const stale = group();
-    await storage.putThread(stale);
+    await seedThread(stale);
     await storage.commitResolvedProfile({
       account: '!group',
       domain: 'alpha.test',
@@ -107,6 +125,7 @@ describe('resolved thread profile identity', () => {
       bio: 'Description',
       avatarBase64: null,
     });
+    await storage.advanceThreadRead(91, 1);
     await storage.putThread({ ...stale, lastReadSeq: 1 });
     expect((await storage.getThreads())[0]).toMatchObject({
       lastReadSeq: 1,
@@ -127,15 +146,15 @@ describe('resolved thread profile identity', () => {
       bio: '',
       avatarBase64: null,
     };
-    await storage.putThread(group('bravo.test', 4));
+    await seedThread(group('bravo.test', 4));
     await storage.commitResolvedProfile(profile);
     expect((await storage.getThreads())[0]).toMatchObject({
       group: { name: '', domain: 'bravo.test' },
     });
-    await storage.putThread(group('local', 0, 2));
+    await seedThread(group('local', 0, 2, 92));
     await storage.commitResolvedProfile(profile);
-    expect((await storage.getThreads())[0]).toMatchObject({
-      group: { name: '', profileRev: 2 },
+    expect((await storage.getThreads()).find((item) => item.threadId === 92)).toMatchObject({
+      group: { name: '' }, profileRev: 2,
     });
   });
 });

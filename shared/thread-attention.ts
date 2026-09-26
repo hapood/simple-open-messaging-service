@@ -1,6 +1,7 @@
-/** One atomic server snapshot. Its account-scoped feed ID also orders visible thread-list items. */
-export interface ThreadFeedSnapshot {
-  threadId: number;
+import { isThreadStateSnapshot, type ThreadStateSnapshot } from './thread-state';
+
+/** One complete conversation snapshot. Its account-scoped ID orders visible thread-list items. */
+export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
   threadFeedId: number;
   /** Private label owned by this account. Null restores the canonical name. */
   alias: string | null;
@@ -17,23 +18,33 @@ export interface ThreadFeedSnapshot {
   groupInviteEndFeedId: number;
   lastReadSeq: number;
   /** Account-local acknowledgement in the group-meta coordinate space. */
-  announcementReadFeedId?: number;
+  announcementReadFeedId: number;
   unreadCount: number;
   lastMentionSeq: number | null;
   previews?: Array<{
     seq: number;
     createdAt: string;
-    sender: { account: string; domain: string } | null;
+    sender: {
+      account: string;
+      domain: string;
+      namespaceId: number;
+      profileRev: number;
+    };
     status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
     text?: string;
   }>;
 }
 
-/** Display reconciliation state; read submissions have their own lifecycle. */
-export interface LocalThreadAttention {
-  threadId: number;
-  server: ThreadFeedSnapshot | null;
-  localReadSeq: number | null;
+/** A committed feed snapshot plus the independent local read position. */
+export type LocalThreadAttention = ThreadFeedSnapshot & { localReadSeq: number };
+
+/** Extract the wire snapshot only when needed for notification comparison. */
+export function attentionSnapshot(
+  state: LocalThreadAttention | undefined,
+): ThreadFeedSnapshot | null {
+  if (!state) return null;
+  const { localReadSeq: _localReadSeq, ...snapshot } = state;
+  return snapshot;
 }
 
 const INT32_MAX = 2_147_483_647;
@@ -43,23 +54,20 @@ function coordinate(value: number, name: string, minimum = 0): void {
     throw new Error(`Invalid attention ${name}`);
 }
 
-export function createLocalThreadAttention(
-  threadId: number,
-): LocalThreadAttention {
-  coordinate(threadId, 'threadId', 1);
-  return { threadId, server: null, localReadSeq: null };
-}
-
 /** Never replace an established display position with a remote read position. */
 export function mergeThreadAttention(
-  current: LocalThreadAttention,
+  current: LocalThreadAttention | undefined,
   incoming: ThreadFeedSnapshot,
 ): LocalThreadAttention {
+  if (!isThreadStateSnapshot(incoming))
+    throw new Error('Invalid thread structure');
   if (incoming.alias !== null && typeof incoming.alias !== 'string')
     throw new Error('Invalid thread alias');
   coordinate(incoming.threadId, 'threadId', 1);
-  coordinate(incoming.threadFeedId, 'feed ID');
+  coordinate(incoming.threadFeedId, 'feed ID', 1);
   coordinate(incoming.threadProfileRev, 'profile revision');
+  if (incoming.profile.profileRev !== incoming.threadProfileRev)
+    throw new Error('Inconsistent thread profile revision');
   coordinate(incoming.messageEndSeq, 'message end');
   coordinate(incoming.tombstoneEndSeq, 'tombstone end');
   coordinate(incoming.joinRequestEndFeedId, 'join request end');
@@ -73,19 +81,17 @@ export function mergeThreadAttention(
   )
     throw new Error('Invalid attention Group Meta end');
   coordinate(incoming.lastReadSeq, 'server read position');
-  if (incoming.announcementReadFeedId !== undefined)
-    coordinate(incoming.announcementReadFeedId, 'announcement read position');
+  coordinate(incoming.announcementReadFeedId, 'announcement read position');
   coordinate(incoming.unreadCount, 'unread count');
   if (incoming.lastMentionSeq !== null)
     coordinate(incoming.lastMentionSeq, 'mention position', 1);
-  if (current.threadId !== incoming.threadId)
+  if (current && current.threadId !== incoming.threadId)
     throw new Error('Attention snapshot belongs to another thread');
-  if (current.server && incoming.threadFeedId <= current.server.threadFeedId)
+  if (current && incoming.threadFeedId <= current.threadFeedId)
     return current;
   return {
-    threadId: current.threadId,
-    server: { ...incoming },
-    localReadSeq: current.localReadSeq ?? incoming.lastReadSeq,
+    ...incoming,
+    localReadSeq: current?.localReadSeq ?? incoming.lastReadSeq,
   };
 }
 
@@ -95,7 +101,7 @@ export function advanceLocalAttentionRead(
   seq: number,
 ): LocalThreadAttention {
   coordinate(seq, 'local read position');
-  if (current.localReadSeq !== null && seq <= current.localReadSeq)
+  if (seq <= current.localReadSeq)
     return current;
   return {
     ...current,
@@ -105,17 +111,16 @@ export function advanceLocalAttentionRead(
 
 /** Count known eligible message slots, including tombs, in (afterSeq, throughSeq]. */
 export function attentionCountRange(current: LocalThreadAttention) {
-  if (!current.server || current.localReadSeq === null) return null;
   return {
     threadId: current.threadId,
     afterSeq: Math.min(
-      current.server.messageEndSeq,
-      current.server.lastReadSeq,
+      current.messageEndSeq,
+      current.lastReadSeq,
       current.localReadSeq,
     ),
     throughSeq: Math.min(
-      current.server.messageEndSeq,
-      Math.max(current.server.lastReadSeq, current.localReadSeq),
+      current.messageEndSeq,
+      Math.max(current.lastReadSeq, current.localReadSeq),
     ),
   };
 }
@@ -126,27 +131,21 @@ export function projectThreadAttention(
   intervalCount: number,
 ) {
   const range = attentionCountRange(current);
-  if (!range || !current.server || current.localReadSeq === null) return null;
   if (
     !Number.isInteger(intervalCount) ||
     intervalCount < 0 ||
     intervalCount > range.throughSeq - range.afterSeq
   )
     throw new Error('Invalid attention interval count');
-  const direction = Math.sign(
-    current.server.lastReadSeq - current.localReadSeq,
-  );
+  const direction = Math.sign(current.lastReadSeq - current.localReadSeq);
   return {
     threadId: current.threadId,
-    threadFeedId: current.server.threadFeedId,
+    threadFeedId: current.threadFeedId,
     lastReadSeq: current.localReadSeq,
-    unreadCount: Math.max(
-      0,
-      current.server.unreadCount + direction * intervalCount,
-    ),
+    unreadCount: Math.max(0, current.unreadCount + direction * intervalCount),
     hasUnreadMention:
-      current.server.lastMentionSeq !== null &&
-      current.server.lastMentionSeq > current.localReadSeq,
+      current.lastMentionSeq !== null &&
+      current.lastMentionSeq > current.localReadSeq,
   };
 }
 

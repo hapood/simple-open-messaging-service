@@ -2,12 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceLocalAttentionRead,
   attentionCountRange,
-  createLocalThreadAttention,
   mergeThreadAttention,
   projectThreadAttention,
+  type ThreadFeedSnapshot,
 } from './thread-attention.js';
 
-const snapshot = {
+const snapshot: ThreadFeedSnapshot = {
+  type: 'P2P',
+  authorityNamespaceId: 0,
+  conversationState: 'ACTIVE',
+  blocked: false,
+  role: null,
+  profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
   threadId: 7,
   threadFeedId: 1,
   messageEndSeq: 200,
@@ -18,14 +24,25 @@ const snapshot = {
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,
   groupInviteEndFeedId: 0,
+  announcementReadFeedId: 0,
   lastReadSeq: 100,
   unreadCount: 8,
   lastMentionSeq: 104,
 };
 const initial = () =>
-  mergeThreadAttention(createLocalThreadAttention(7), snapshot);
+  mergeThreadAttention(undefined, snapshot);
 
 describe('shared attention reconciliation', () => {
+  it('rejects inconsistent avatar revisions and missing announcement coordinates', () => {
+    expect(() => mergeThreadAttention(undefined, {
+      ...snapshot,
+      profile: { ...snapshot.profile, profileRev: 2 },
+    })).toThrow('Inconsistent thread profile revision');
+    const missing = { ...snapshot } as Record<string, unknown>;
+    delete missing['announcementReadFeedId'];
+    expect(() => mergeThreadAttention(undefined, missing as unknown as ThreadFeedSnapshot))
+      .toThrow('announcement read position');
+  });
   it('bounds corrections by the published message head, even when local history is newer', () => {
     const state = advanceLocalAttentionRead(initial(), 250);
     expect(attentionCountRange(state)).toEqual({
@@ -48,8 +65,7 @@ describe('shared attention reconciliation', () => {
   it('initializes the local position only once', () => {
     const state = initial();
     expect(state).toEqual({
-      threadId: 7,
-      server: snapshot,
+      ...snapshot,
       localReadSeq: 100,
     });
     expect(projectThreadAttention(state, 0)).toMatchObject({
@@ -123,7 +139,7 @@ describe('shared attention reconciliation', () => {
   });
   it('ignores duplicate and older snapshots even with a greater read position', () => {
     const state = advanceLocalAttentionRead(initial(), 105);
-    for (const threadFeedId of [0, 1])
+    for (const threadFeedId of [1])
       expect(
         mergeThreadAttention(state, {
           ...snapshot,
@@ -133,12 +149,9 @@ describe('shared attention reconciliation', () => {
       ).toBe(state);
     expect(state.localReadSeq).toBe(105);
   });
-  it('preserves viewport progress established before the first server snapshot', () => {
-    const state = mergeThreadAttention(
-      advanceLocalAttentionRead(createLocalThreadAttention(7), 105),
-      snapshot,
-    );
-    expect(state.localReadSeq).toBe(105);
+  it('requires a positive server feed ID before creating local state', () => {
+    expect(() => mergeThreadAttention(undefined, { ...snapshot, threadFeedId: 0 }))
+      .toThrow('feed ID');
   });
   it('advances local progress independently of the server position and never regresses it', () => {
     const state = mergeThreadAttention(initial(), {
@@ -153,8 +166,7 @@ describe('shared attention reconciliation', () => {
     });
     const next = advanceLocalAttentionRead(state, 105);
     expect(next).toEqual({
-      threadId: 7,
-      server: state.server,
+      ...state,
       localReadSeq: 105,
     });
     expect(advanceLocalAttentionRead(next, 105)).toBe(next);
@@ -176,11 +188,6 @@ describe('shared attention reconciliation', () => {
     const state = advanceLocalAttentionRead(initial(), 105);
     expect(projectThreadAttention(state, 3)?.unreadCount).toBe(5);
     expect(projectThreadAttention(state, 2)?.unreadCount).toBe(6);
-  });
-  it('has no projection before the first snapshot', () => {
-    const state = createLocalThreadAttention(7);
-    expect(attentionCountRange(state)).toBeNull();
-    expect(projectThreadAttention(state, 0)).toBeNull();
   });
   it('rejects cross-thread snapshots and invalid interval counts', () => {
     expect(() =>

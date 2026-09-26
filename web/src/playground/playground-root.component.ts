@@ -38,7 +38,6 @@ const DEMO_GROUP_CONVERSATION = createGroupConversation(
     id: 2,
     account: '!playground',
     name: 'Playground Team',
-    ownerId: 1,
     description: 'Alice · Maya · Noah · You',
     memberCount: 5,
   },

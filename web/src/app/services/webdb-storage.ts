@@ -1,7 +1,12 @@
 import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
-import type { ThreadListRecord } from './model';
-import { isThreadStateSnapshot } from '../../../../shared/thread-state';
 import { applyThreadStateSnapshot } from './thread-state-projection';
+import { preserveThreadProfile } from './thread-profile-projection';
+import {
+  restoreThread,
+  storeThreadPresentation,
+  type StoredThread,
+  type StoredThreadAttention,
+} from './thread-record';
 import { signal } from '@angular/core';
 import type { SessionLifecycleService } from './session-lifecycle.service';
 import { Subject, type Subscription } from 'rxjs';
@@ -50,7 +55,6 @@ import {
   projectionIsExpired,
   projectionRequestExpiresAt,
   type FriendRequestProjection,
-  type RelationshipIntentFact,
 } from './friend-request-state';
 import {
   reduceMessageRanges,
@@ -60,8 +64,8 @@ import {
 } from './message-range';
 import {
   advanceLocalAttentionRead,
-  createLocalThreadAttention,
   mergeThreadAttention,
+  attentionSnapshot,
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
@@ -233,6 +237,106 @@ export interface CommittedMessagePage {
 }
 
 /** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
+type ThreadPreview = NonNullable<ThreadFeedSnapshot['previews']>[number];
+
+type StoredThreadPreview = {
+  threadId: number;
+  seq: number;
+  createdAt: string;
+  senderAccount: string;
+  senderDomain: string;
+  senderNamespaceId: number;
+  senderProfileRev: number;
+  status: ThreadPreview['status'];
+  text: string | null;
+};
+
+function storeThreadPreview(threadId: number, preview: ThreadPreview): StoredThreadPreview {
+  return {
+    threadId,
+    seq: preview.seq,
+    createdAt: preview.createdAt,
+    senderAccount: preview.sender.account,
+    senderDomain: preview.sender.domain,
+    senderNamespaceId: preview.sender.namespaceId,
+    senderProfileRev: preview.sender.profileRev,
+    status: preview.status,
+    text: preview.text ?? null,
+  };
+}
+
+function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
+  return {
+    seq: row.seq,
+    createdAt: row.createdAt,
+    sender: {
+      account: row.senderAccount,
+      domain: row.senderDomain,
+      namespaceId: row.senderNamespaceId,
+      profileRev: row.senderProfileRev,
+    },
+    status: row.status,
+    ...(row.text === null ? {} : { text: row.text }),
+  };
+}
+
+function storeThreadAttention(state: LocalThreadAttention): StoredThreadAttention {
+  const { previews: _previews, profile, ...fields } = state;
+  return {
+    ...fields,
+    profileAccount: profile.account,
+    profileDomain: profile.domain,
+    profileNamespaceId: profile.namespaceId,
+  };
+}
+
+function withStoredPreview(
+  state: StoredThreadAttention,
+  row: StoredThreadPreview | undefined,
+): LocalThreadAttention {
+  const {
+    threadId, threadFeedId, type, authorityNamespaceId,
+    conversationState, blocked, role,
+    profileAccount, profileDomain, profileNamespaceId,
+    alias, threadProfileRev, messageEndSeq, tombstoneEndSeq,
+    groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId,
+    groupInviteEndFeedId, lastReadSeq, announcementReadFeedId,
+    unreadCount, lastMentionSeq, localReadSeq,
+  } = state;
+  return {
+    threadId, threadFeedId, type, authorityNamespaceId,
+    conversationState, blocked, role,
+    alias, threadProfileRev, messageEndSeq, tombstoneEndSeq,
+    groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId,
+    groupInviteEndFeedId, lastReadSeq, announcementReadFeedId,
+    unreadCount, lastMentionSeq, localReadSeq,
+    profile: {
+      account: profileAccount,
+      domain: profileDomain,
+      namespaceId: profileNamespaceId,
+      profileRev: threadProfileRev,
+    },
+    previews: row ? [restoreThreadPreview(row)] : [],
+  };
+}
+
+function requireThreadIdentity(
+  item: ConversationItem,
+  state: StoredThreadAttention | undefined,
+): asserts state is StoredThreadAttention {
+  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
+  if (
+    !state ||
+    state.threadId !== item.threadId ||
+    state.type !== item.type ||
+    state.authorityNamespaceId !== item.authorityNamespaceId ||
+    state.profileAccount !== subject.account ||
+    state.profileDomain !== subject.domain ||
+    state.profileNamespaceId !== subject.namespaceId
+  )
+    throw new Error('thread presentation has no matching feed state');
+}
+
 export interface WebdbSchema extends DBSchema {
   namespaces: {
     key: [string, number];
@@ -253,14 +357,13 @@ export interface WebdbSchema extends DBSchema {
     };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
-  threads: { key: number; value: ThreadListRecord };
-  threadStates: { key: number; value: LocalThreadAttention };
+  threads: { key: number; value: StoredThread };
+  threadPreviews: { key: number; value: StoredThreadPreview };
   relationshipRequests: {
     key: string;
     value: FriendRequestProjection;
     indexes: { bucketStatus: [string, string, number, string] };
   };
-  relationshipIntents: { key: string; value: RelationshipIntentFact };
   settings: { key: string; value: MetaRecord };
 }
 
@@ -281,7 +384,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 24;
+export const CACHE_SCHEMA_VERSION = 34;
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
 export const MESSAGE_CACHE_SCHEMA_VERSION = 6;
 const IDB_FORMAT_VERSION = 1;
@@ -669,9 +772,8 @@ export class WebdbStorage {
       'profileAvatarBlobs',
       'members',
       'threads',
-      'threadStates',
+      'threadPreviews',
       'relationshipRequests',
-      'relationshipIntents',
       'settings',
     ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
@@ -720,7 +822,7 @@ export class WebdbStorage {
           'namespaceId',
         ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
-        db.createObjectStore('threadStates', { keyPath: 'threadId' });
+        db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
         const relationshipRequests = db.createObjectStore(
           'relationshipRequests',
           {
@@ -733,7 +835,6 @@ export class WebdbStorage {
           'requestedSort',
           'key',
         ]);
-        db.createObjectStore('relationshipIntents', { keyPath: 'key' });
         db.createObjectStore('settings', { keyPath: 'key' });
         transaction.objectStore('settings').put({
           key: 'schemaVersion',
@@ -1077,7 +1178,17 @@ export class WebdbStorage {
         return tauriInvoke<LocalThreadAttention[]>('native_db_thread_states', {
           userId: Number(this.currentUserId),
         });
-      return (await this.db()).getAll('threadStates');
+      const tx = (await this.db()).transaction(
+        ['threads', 'threadPreviews'],
+        'readonly',
+      );
+      const [states, previews] = await Promise.all([
+        tx.objectStore('threads').getAll(),
+        tx.objectStore('threadPreviews').getAll(),
+      ]);
+      await tx.done;
+      const byThread = new Map(previews.map((row) => [row.threadId, row]));
+      return states.map((state) => withStoredPreview(state, byThread.get(state.threadId)));
     });
   }
 
@@ -1092,26 +1203,25 @@ export class WebdbStorage {
           after,
         });
       const tx = (await this.db()).transaction(
-        ['threadStates', 'settings'],
+        ['threads', 'threadPreviews', 'settings'],
         'readonly',
       );
-      const [rows, stored] = await Promise.all([
-        tx.objectStore('threadStates').getAll(),
+      const [rows, previews, stored] = await Promise.all([
+        tx.objectStore('threads').getAll(),
+        tx.objectStore('threadPreviews').getAll(),
         tx.objectStore('settings').get('threadFeedCursor'),
       ]);
       await tx.done;
       const cursor = Number(stored?.value ?? 0);
       if (!Number.isInteger(cursor) || cursor < 0 || cursor > 2147483647)
         throw new Error('invalid local thread feed cursor');
+      const byThread = new Map(previews.map((row) => [row.threadId, row]));
       return {
         cursor,
         groupThreadIds: [],
-        states: rows.filter(
-          (row) =>
-            row.server !== null &&
-            row.server.threadFeedId > after &&
-            row.server.threadFeedId <= cursor,
-        ),
+        states: rows
+          .filter((row) => row.threadFeedId > after && row.threadFeedId <= cursor)
+          .map((row) => withStoredPreview(row, byThread.get(row.threadId))),
       };
     });
   }
@@ -1151,13 +1261,21 @@ export class WebdbStorage {
   ): Promise<LocalThreadAttention[]> {
     return this.runAccountOperation(async () => {
       // Validate and copy before opening the transaction or yielding to other callers.
-      const snapshots = states.map(
-        (state) =>
-          mergeThreadAttention(
-            createLocalThreadAttention(state.threadId),
-            state,
-          ).server!,
-      );
+      const incoming = states.map((state) => {
+        const snapshot = attentionSnapshot(mergeThreadAttention(undefined, state))!;
+        // Computing the single durable preview before opening IDB keeps malformed
+        // pages from committing a partial structural row.
+        const latest = snapshot.previews!.reduce<ThreadPreview | undefined>(
+          (value, preview) =>
+            !value || preview.seq > value.seq ? preview : value,
+          undefined,
+        );
+        return {
+          snapshot,
+          latest: latest ? storeThreadPreview(snapshot.threadId, latest) : undefined,
+        };
+      });
+      const snapshots = incoming.map(({ snapshot }) => snapshot);
       if (
         scannedThrough !== undefined &&
         (!Number.isInteger(scannedThrough) ||
@@ -1175,65 +1293,67 @@ export class WebdbStorage {
           },
         );
       const tx = (await this.db()).transaction(
-        ['threadStates', 'threads', 'settings'],
+        ['threadPreviews', 'threads', 'namespaces', 'settings'],
         'readwrite',
       );
-      const store = tx.objectStore('threadStates');
+      const store = tx.objectStore('threads');
+      const previewStore = tx.objectStore('threadPreviews');
       const merged = new Map<number, LocalThreadAttention>();
-      for (const snapshot of snapshots) {
-        const threads = tx.objectStore('threads');
-        const thread = await threads.get(snapshot.threadId);
-        if (!thread)
-          await threads.put({
-            threadId: snapshot.threadId,
-            threadFeedId: snapshot.threadFeedId,
-            type: 'PENDING',
-            visible: false,
-          });
-        const current =
-          (await store.get(snapshot.threadId)) ??
-          createLocalThreadAttention(snapshot.threadId);
-        const next = mergeThreadAttention(current, snapshot);
-        if (next !== current) {
-          const previews = next.server?.previews;
-          const latest = previews?.reduce<
-            (typeof previews)[number] | undefined
-          >(
-            (value, preview) =>
-              !value || preview.seq > value.seq ? preview : value,
-            undefined,
-          );
-          await store.put({
-            ...next,
-            server:
-              next.server && previews !== undefined
-                ? { ...next.server, previews: latest ? [latest] : [] }
-                : next.server,
+      const commit = async (): Promise<LocalThreadAttention[]> => {
+        for (const { snapshot, latest } of incoming) {
+          const stored = await store.get(snapshot.threadId);
+          if (
+            stored &&
+            (stored.type !== snapshot.type ||
+              stored.authorityNamespaceId !== snapshot.authorityNamespaceId ||
+              stored.profileAccount !== snapshot.profile.account ||
+              stored.profileDomain !== snapshot.profile.domain ||
+              stored.profileNamespaceId !== snapshot.profile.namespaceId)
+          )
+            throw new Error('thread feed changed a conversation identity');
+          const current = stored
+            ? withStoredPreview(stored, await previewStore.get(snapshot.threadId))
+            : undefined;
+          const next = mergeThreadAttention(current, snapshot);
+          if (next !== current) {
+            if (snapshot.profile.namespaceId !== 0)
+              await this.registerNamespace(
+                tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
+                snapshot.profile.domain,
+                snapshot.profile.namespaceId,
+              );
+            const structure = applyThreadStateSnapshot(
+              stored ? restoreThread(stored) : undefined,
+              snapshot,
+              snapshot.threadFeedId,
+            );
+            await store.put({
+              ...storeThreadPresentation(structure),
+              ...storeThreadAttention(next),
+            });
+            if (latest) await previewStore.put(latest);
+            else await previewStore.delete(next.threadId);
+          }
+          merged.set(next.threadId, next);
+        }
+        if (scannedThrough !== undefined) {
+          const settings = tx.objectStore('settings');
+          const cursor = await settings.get('threadFeedCursor');
+          await settings.put({
+            key: 'threadFeedCursor',
+            value: Math.max(Number(cursor?.value ?? 0), scannedThrough),
           });
         }
-        if (thread && next.server) {
-          await threads.put(
-            thread.type === 'PENDING'
-              ? { ...thread, threadFeedId: next.server.threadFeedId }
-              : {
-                  ...thread,
-                  threadFeedId: next.server.threadFeedId,
-                  visible: true,
-                },
-          );
-        }
-        merged.set(next.threadId, next);
+        await tx.done;
+        return [...merged.values()];
+      };
+      try {
+        return await commit();
+      } catch (error) {
+        try { tx.abort(); } catch { /* Transaction may already have aborted. */ }
+        await tx.done.catch(() => undefined);
+        throw error;
       }
-      if (scannedThrough !== undefined) {
-        const settings = tx.objectStore('settings');
-        const cursor = await settings.get('threadFeedCursor');
-        await settings.put({
-          key: 'threadFeedCursor',
-          value: Math.max(Number(cursor?.value ?? 0), scannedThrough),
-        });
-      }
-      await tx.done;
-      return [...merged.values()];
     });
   }
 
@@ -1242,8 +1362,9 @@ export class WebdbStorage {
     seq: number,
   ): Promise<LocalThreadAttention> {
     return this.runAccountOperation(async () => {
-      const initial = createLocalThreadAttention(threadId);
-      advanceLocalAttentionRead(initial, seq);
+      if (!Number.isSafeInteger(threadId) || threadId < 1 ||
+          !Number.isSafeInteger(seq) || seq < 0)
+        throw new Error('invalid local read position');
       if (isTauri() && this.currentUserId != null)
         return tauriInvoke<LocalThreadAttention>(
           'native_db_advance_thread_read',
@@ -1253,10 +1374,25 @@ export class WebdbStorage {
             seq,
           },
         );
-      const tx = (await this.db()).transaction('threadStates', 'readwrite');
-      const current = (await tx.store.get(threadId)) ?? initial;
+      const tx = (await this.db()).transaction(
+        ['threads', 'threadPreviews'],
+        'readwrite',
+      );
+      const stored = await tx.objectStore('threads').get(threadId);
+      if (!stored) {
+        await tx.done;
+        throw new Error('cannot mark a thread read before its feed snapshot');
+      }
+      const current = withStoredPreview(
+        stored,
+        await tx.objectStore('threadPreviews').get(threadId),
+      );
       const next = advanceLocalAttentionRead(current, seq);
-      if (next !== current) await tx.store.put(next);
+      if (next !== current)
+        await tx.objectStore('threads').put({
+          ...stored,
+          ...storeThreadAttention(next),
+        });
       await tx.done;
       return next;
     });
@@ -1430,45 +1566,43 @@ export class WebdbStorage {
         alias: thread.alias,
       }));
     }
-    const tx = (await this.db()).transaction(
-      ['threads', 'threadStates'],
-      'readonly',
-    );
-    const [threads, states] = await Promise.all([
-      tx.objectStore('threads').getAll(),
-      tx.objectStore('threadStates').getAll(),
-    ]);
-    const aliases = new Map(
-      states.map((state) => [state.threadId, state.server?.alias ?? null]),
-    );
+    const tx = (await this.db()).transaction('threads', 'readonly');
+    const threads = await tx.store.getAll();
     await tx.done;
     return threads
-      .filter(
-        (thread): thread is ConversationItem =>
-          thread.type !== 'PENDING' && thread.visible !== false,
-      )
-      .map((thread) => {
-        const normalized = this.normalizeThreadSubject(thread);
-        return { ...normalized, alias: aliases.get(thread.threadId) ?? null };
-      });
+      .map((thread) => restoreThread(thread))
+      .map((thread) => ({
+        ...this.normalizeThreadSubject(thread),
+        alias: thread.alias,
+      }));
   }
 
   private normalizeThreadSubject(item: ConversationItem): ConversationItem {
-    // Private aliases are derived from threadStates; structural writes never own them.
+    // The feed-state columns own private aliases; presentation writes never replace them.
     item = { ...item };
     delete item.alias;
     if (item.type === 'P2P') {
       const peer = localSubjectIdentity(item.peerUser);
       // Ignore the numeric user id in caches written by older clients; conversation peers are addresses.
-      const { id: _legacyId, ...peerUser } = peer as typeof peer & {
+      const {
+        id: _legacyId,
+        profileRev: _nestedRev,
+        ...peerUser
+      } = peer as typeof peer & {
         id?: number;
+        profileRev?: number;
       };
       return { ...item, peerUser, authorityNamespaceId: peer.namespaceId };
     }
+    const group = localSubjectIdentity(item.group);
+    const { profileRev: _nestedRev, ...groupProfile } =
+      group as typeof group & {
+        profileRev?: number;
+      };
     return {
       ...item,
-      group: localSubjectIdentity(item.group),
-      authorityNamespaceId: localSubjectIdentity(item.group).namespaceId,
+      group: groupProfile,
+      authorityNamespaceId: group.namespaceId,
     };
   }
 
@@ -1494,10 +1628,32 @@ export class WebdbStorage {
       ['threads', 'namespaces', 'settings'],
       'readwrite',
     );
-    await tx.objectStore('threads').clear();
+    // Presentation-only batch: omitted entries retain their authoritative
+    // feed state; clearing the table here would silently lose valid threads.
+    const previous = new Map(
+      (await tx.objectStore('threads').getAll()).map((item) => [item.threadId, item]),
+    );
+    const selected: ConversationItem[] = [];
     for (const item of items) {
+      const state = previous.get(item.threadId);
+      try {
+        requireThreadIdentity(item, state);
+      } catch (error) {
+        tx.abort();
+        await tx.done.catch(() => undefined);
+        throw error;
+      }
+      selected.push(preserveThreadProfile(
+        { ...item, profileRev: state.threadProfileRev },
+        restoreThread(state),
+      ));
+    }
+    for (const item of selected) {
       await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
-      await tx.objectStore('threads').put(item);
+      await tx.objectStore('threads').put({
+        ...previous.get(item.threadId)!,
+        ...storeThreadPresentation(item),
+      });
     }
     await tx.done;
   }
@@ -1521,22 +1677,33 @@ export class WebdbStorage {
       ['threads', 'namespaces', 'settings', 'profiles'],
       'readwrite',
     );
-    const current = await tx.objectStore('threads').get(item.threadId);
-    if ((current?.threadStateFeedId ?? 0) <= (item.threadStateFeedId ?? 0)) {
+    const state = await tx.objectStore('threads').get(item.threadId);
+    try {
+      requireThreadIdentity(item, state);
+    } catch (error) {
+      await tx.done;
+      throw error;
+    }
+    const current = restoreThread(state);
+    item = preserveThreadProfile(
+      { ...item, profileRev: state.threadProfileRev },
+      current,
+    );
+    if ((current?.threadFeedId ?? 0) <= (item.threadFeedId ?? 0)) {
       await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
       // Attention writes can carry presentation captured before resolution.
       // The selected immutable profile owns these fields, not the caller's
       // copy of the conversation. Read it in this same write transaction.
       const identity = item.type === 'GROUP' ? item.group : item.peerUser;
       const profile =
-        identity.profileRev > 0
+        item.profileRev > 0
           ? await tx
               .objectStore('profiles')
               .get([
                 identity.account,
                 identity.domain,
                 identity.namespaceId,
-                identity.profileRev,
+                item.profileRev,
               ])
           : undefined;
       if (profile)
@@ -1560,7 +1727,10 @@ export class WebdbStorage {
                   bio: profile.bio,
                 },
               };
-      await tx.objectStore('threads').put(item);
+      await tx.objectStore('threads').put({
+        ...state,
+        ...storeThreadPresentation(item),
+      });
     }
     await tx.done;
   }
@@ -1577,7 +1747,17 @@ export class WebdbStorage {
       });
       return;
     }
-    await (await this.db()).delete('threads', threadId);
+    const tx = (await this.db()).transaction(
+      ['threads', 'threadPreviews', 'members'], 'readwrite',
+    );
+    await tx.objectStore('threads').delete(threadId);
+    await tx.objectStore('threadPreviews').delete(threadId);
+    let member = await tx.objectStore('members').index('thread').openCursor(threadId);
+    while (member) {
+      await member.delete();
+      member = await member.continue();
+    }
+    await tx.done;
   }
 
   /** Apply one compacted state-feed page and its cursor atomically. */
@@ -1585,9 +1765,10 @@ export class WebdbStorage {
     items: ClientStateFeedItem[],
     feedId: number,
     resetProjection = false,
+    fullThrough?: number | null,
   ): Promise<void> {
     await this.runAccountOperation(async () => {
-      if (!isTauri() && this.currentUserId !== null) {
+      if (!isTauri() && this.currentUserId !== null && fullThrough === undefined) {
         const workerApply = this.applyStateFeedPageInWorker(
           this.currentUserId,
           items,
@@ -1599,7 +1780,7 @@ export class WebdbStorage {
           return;
         }
       }
-      await this.applyStateFeedPageInternal(items, feedId, resetProjection, []);
+      await this.applyStateFeedPageInternal(items, feedId, resetProjection, [], fullThrough);
     });
   }
 
@@ -1634,21 +1815,17 @@ export class WebdbStorage {
       throw new Error('account cache lifetime expired');
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
-    const pending = isTauri()
-      ? tauriInvoke<ThreadFeedSyncResult>('native_thread_feed_sync', {
-          userId: Number(userId),
-          target,
-          after,
-        })
-      : this.requestDbWorker<ThreadFeedSyncResult>({
-          type: 'thread-sync',
-          userId,
-          target,
-          after,
-          url: `${apiPrefix()}/thread/feed-delta`,
-          groupMetaUrl: `${apiPrefix()}/user/group-meta`,
-          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
-        });
+    if (isTauri())
+      throw new Error('native feed synchronization belongs to the Rust SSE executor');
+    const pending = this.requestDbWorker<ThreadFeedSyncResult>({
+      type: 'thread-sync',
+      userId,
+      target,
+      after,
+      url: `${apiPrefix()}/thread-feed`,
+      groupMetaUrl: `${apiPrefix()}/user/group-meta`,
+      profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
+    });
     if (!pending) throw new Error('database worker unavailable');
     const result = await pending;
     if (epoch !== this.cacheEpoch)
@@ -1679,6 +1856,19 @@ export class WebdbStorage {
     if (!result) throw new Error('database worker unavailable');
     if (epoch !== this.cacheEpoch)
       throw new Error('account cache lifetime expired');
+    if (
+      result.status === 'READY' &&
+      selector.type === 'GROUP_META' &&
+      selector.subject.type === 'MEMBER' &&
+      result.profile.profileRev !== selector.profileRev
+    ) {
+      await this.applyGroupMetaProfileDrift(selector, {
+        account: result.profile.account,
+        domain: result.profile.domain,
+        namespaceId: result.profile.namespaceId,
+        rev: result.profile.profileRev,
+      });
+    }
     return result;
   }
 
@@ -1776,8 +1966,9 @@ export class WebdbStorage {
           type: 'bind-thread-feed',
           userId: this.currentUserId,
           port: channel.port1,
-          url: `${apiPrefix()}/thread/feed-delta`,
+          url: `${apiPrefix()}/thread-feed`,
           groupMetaUrl: `${apiPrefix()}/user/group-meta`,
+          stateFeedUrl: `${apiPrefix()}/user/state-feed`,
           profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
         },
         [channel.port1],
@@ -1803,18 +1994,10 @@ export class WebdbStorage {
     feedId: number | null,
     resetProjection: boolean,
     groupMeta: readonly ClientGroupMetaApply[],
+    fullThrough?: number | null,
   ): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      if (feedId === null)
-        throw new Error('Group Meta commits are owned by the native executor');
-      await tauriInvoke('native_db_apply_state_feed_page', {
-        userId: Number(this.currentUserId),
-        feedId,
-        items,
-        resetProjection,
-      });
-      return;
-    }
+    if (isTauri())
+      throw new Error('native state-feed commits belong to the Rust SSE executor');
     const db = await this.db();
     const tx = db.transaction(
       [
@@ -1823,7 +2006,6 @@ export class WebdbStorage {
         'profiles',
         'members',
         'relationshipRequests',
-        'relationshipIntents',
         'settings',
       ],
       'readwrite',
@@ -1831,21 +2013,7 @@ export class WebdbStorage {
     try {
       if (resetProjection) {
         await tx.objectStore('relationshipRequests').clear();
-        await tx.objectStore('relationshipIntents').clear();
-        const threads = tx.objectStore('threads');
-        for (const thread of await threads.getAll()) {
-          await threads.put({
-            ...thread,
-            visible: false,
-            threadStateFeedId: undefined,
-            ...(thread.type === 'P2P'
-              ? {
-                  friendshipActive: false,
-                  conversationState: 'READ_ONLY' as const,
-                }
-              : {}),
-          });
-        }
+        await tx.objectStore('settings').delete('relationshipIntentStateRevision');
       }
       const applyRequestProjectionEffect = async (
         op: ClientRelationshipIntentItem,
@@ -1964,25 +2132,6 @@ export class WebdbStorage {
       for (const op of items) {
         if (op.eventType === 'RELATIONSHIP_INTENT')
           await applyRequestProjectionEffect(op);
-        if (op.eventType !== 'THREAD_STATE') continue;
-        if (!isThreadStateSnapshot(op.body))
-          throw new Error('invalid thread state snapshot');
-        const profile = op.body.profile;
-        if (profile.namespaceId !== 0) {
-          await this.registerNamespace(
-            tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-            profile.domain,
-            profile.namespaceId,
-          );
-        }
-        const threads = tx.objectStore('threads');
-        await threads.put(
-          applyThreadStateSnapshot(
-            await threads.get(op.body.threadId),
-            op.body,
-            op.feedId,
-          ),
-        );
       }
 
       for (const update of groupMeta) {
@@ -2018,23 +2167,20 @@ export class WebdbStorage {
                 feedId: item.feedId,
                 text: item.body.text,
               };
-              await tx
-                .objectStore('threads')
-                .put(
-                  update.page.mode === 'full'
-                    ? { ...thread, groupMetaRecoveryAnnouncement: announcement }
-                    : { ...thread, group: { ...thread.group, announcement } },
-                );
+              const presentation = restoreThread(thread);
+              if (presentation.type !== 'GROUP') throw new Error('invalid group structure');
+              const next = update.page.mode === 'full'
+                ? { ...presentation, groupMetaRecoveryAnnouncement: announcement }
+                : { ...presentation, group: { ...presentation.group, announcement } };
+              await tx.objectStore('threads').put({
+                ...thread, ...storeThreadPresentation(next),
+              });
             }
             continue;
           }
           if (item.operation === 'GROUP_PROFILE') {
-            const thread = await tx.objectStore('threads').get(update.threadId);
-            if (thread?.type === 'GROUP')
-              await tx.objectStore('threads').put({
-                ...thread,
-                group: { ...thread.group, profileRev: item.body.profileRev },
-              });
+            // The complete thread feed selects the avatar revision. Meta pages
+            // can arrive first and must not create a competing revision in threads.
             continue;
           }
           await this.registerNamespace(
@@ -2080,33 +2226,28 @@ export class WebdbStorage {
         const activeMembers = currentMembers.filter((member) => !member.left);
         const thread = await tx.objectStore('threads').get(update.threadId);
         if (thread?.type === 'GROUP') {
-          const selfUser = (
-            await tx.objectStore('settings').get('selfIdentity')
-          )?.value as { account: string; domain: string } | undefined;
-          const self = activeMembers.find(
-            (member) =>
-              selfUser !== undefined &&
-              member.account === selfUser.account &&
-              member.domain === selfUser.domain,
-          );
+          const presentation = restoreThread(thread);
+          if (presentation.type !== 'GROUP') throw new Error('invalid group structure');
           await tx.objectStore('threads').put({
             ...thread,
-            role: self?.role ?? null,
-            groupMetaRecoveryThrough: update.page.hasMore
-              ? thread.groupMetaRecoveryThrough
-              : null,
-            groupMetaRecoveryAnnouncement:
-              update.page.mode === 'full' && update.page.hasMore
-                ? (thread.groupMetaRecoveryAnnouncement ?? null)
+            ...storeThreadPresentation({
+              ...presentation,
+              groupMetaRecoveryThrough: update.page.hasMore
+                ? presentation.groupMetaRecoveryThrough
                 : null,
-            group: {
-              ...thread.group,
-              memberCount: activeMembers.length,
-              groupMetaFeedId: update.page.scannedThrough,
-              ...(update.page.mode === 'full' && !update.page.hasMore
-                ? { announcement: thread.groupMetaRecoveryAnnouncement ?? null }
-                : {}),
-            },
+              groupMetaRecoveryAnnouncement:
+                update.page.mode === 'full' && update.page.hasMore
+                  ? (presentation.groupMetaRecoveryAnnouncement ?? null)
+                  : null,
+              group: {
+                ...presentation.group,
+                memberCount: activeMembers.length,
+                groupMetaFeedId: update.page.scannedThrough,
+                ...(update.page.mode === 'full' && !update.page.hasMore
+                  ? { announcement: presentation.groupMetaRecoveryAnnouncement ?? null }
+                  : {}),
+              },
+            }),
           });
         }
       }
@@ -2120,10 +2261,23 @@ export class WebdbStorage {
           continue;
         }
       }
+      const intentRevision = items.filter((item) => item.eventType === 'RELATIONSHIP_INTENT')
+        .reduce((highest, item) => Math.max(highest, item.feedId), 0);
+      if (intentRevision > 0) {
+        const settings = tx.objectStore('settings');
+        const previous = await settings.get('relationshipIntentStateRevision');
+        await settings.put({ key: 'relationshipIntentStateRevision',
+          value: Math.max(intentRevision, typeof previous?.value === 'number' ? previous.value : 0) });
+      }
+      if (fullThrough !== undefined) {
+        const settings = tx.objectStore('settings');
+        if (fullThrough === null) await settings.delete('stateFeedFullThrough');
+        else if (feedId !== null && fullThrough > feedId)
+          await settings.put({ key: 'stateFeedFullThrough', value: fullThrough });
+        else throw new Error('invalid state-feed full boundary');
+      }
       if (feedId !== null)
-        await tx
-          .objectStore('settings')
-          .put({ key: 'stateFeedId', value: feedId });
+        await tx.objectStore('settings').put({ key: 'stateFeedId', value: feedId });
       await tx.done;
     } catch (error) {
       // Application errors do not automatically abort an IndexedDB transaction.
@@ -2268,17 +2422,15 @@ export class WebdbStorage {
           evidence.rev,
         ]);
       }
-      const thread = await db.get('threads', evidence.threadId);
       if (evidence.subject.type === 'GROUP') {
-        if (
-          thread?.type !== 'GROUP' ||
-          thread.group.profileRev !== evidence.profileRev
-        )
+        const state = await db.get('threads', evidence.threadId);
+        if (state?.type !== 'GROUP' ||
+            state.threadProfileRev !== evidence.profileRev)
           return undefined;
         return db.get('profiles', [
-          thread.group.account,
-          thread.group.domain,
-          thread.group.namespaceId,
+          state.profileAccount,
+          state.profileDomain,
+          state.profileNamespaceId,
           evidence.profileRev,
         ]);
       }
@@ -2361,8 +2513,10 @@ export class WebdbStorage {
         await tx.objectStore('threads').put({
           ...thread,
           groupMetaRecoveryThrough: through,
-          groupMetaRecoveryAnnouncement: null,
-          group: { ...thread.group, memberCount: 0, groupMetaFeedId: '0' },
+          recoveryAnnouncementFeedId: null,
+          recoveryAnnouncementText: null,
+          groupMemberCount: 0,
+          groupMetaFeedId: '0',
         });
       await tx.done;
     });
@@ -2475,24 +2629,23 @@ export class WebdbStorage {
       );
       const references: import('./group-meta-sync').GroupMetaProfileReference[] =
         [];
-      for (const thread of await tx.objectStore('threads').getAll()) {
-        if (thread.type !== 'GROUP' || thread.group.profileRev < 1) continue;
-        const cached = await tx
-          .objectStore('profiles')
-          .get([
-            thread.group.account,
-            thread.group.domain,
-            thread.group.namespaceId,
-            thread.group.profileRev,
-          ]);
+      for (const state of await tx.objectStore('threads').getAll()) {
+        if (state.type !== 'GROUP' || state.conversationState === 'READ_ONLY' ||
+            state.threadProfileRev < 1) continue;
+        const cached = await tx.objectStore('profiles').get([
+          state.profileAccount,
+          state.profileDomain,
+          state.profileNamespaceId,
+          state.threadProfileRev,
+        ]);
         if (!cached)
           references.push({
             type: 'GROUP',
-            threadId: thread.threadId,
-            account: thread.group.account,
-            domain: thread.group.domain,
-            namespaceId: thread.group.namespaceId,
-            rev: thread.group.profileRev,
+            threadId: state.threadId,
+            account: state.profileAccount,
+            domain: state.profileDomain,
+            namespaceId: state.profileNamespaceId,
+            rev: state.threadProfileRev,
           });
       }
       for (const member of await tx.objectStore('members').getAll()) {
@@ -2718,10 +2871,10 @@ export class WebdbStorage {
       const thread = await tx.objectStore('threads').get(reference.threadId);
       if (
         thread?.type !== 'GROUP' ||
-        thread.group.account !== reference.account ||
-        thread.group.domain !== reference.domain ||
-        thread.group.namespaceId !== reference.namespaceId ||
-        thread.group.profileRev !== reference.rev
+        thread.profileAccount !== reference.account ||
+        thread.profileDomain !== reference.domain ||
+        thread.profileNamespaceId !== reference.namespaceId ||
+        thread.threadProfileRev !== reference.rev
       ) {
         await tx.done;
         return false;
@@ -2744,12 +2897,9 @@ export class WebdbStorage {
         await tx.objectStore('profileAvatarBlobs').put(decodedAvatar);
       await tx.objectStore('threads').put({
         ...thread,
-        group: {
-          ...thread.group,
-          name: profile.name,
-          avatar: '',
-          description: profile.bio,
-        },
+        subjectName: profile.name,
+        subjectAvatar: '',
+        subjectBio: profile.bio,
       });
       await tx.done;
       return true;
@@ -2793,36 +2943,16 @@ export class WebdbStorage {
       );
       for (const thread of await tx.objectStore('threads').getAll()) {
         if (
-          thread.type === 'GROUP' &&
-          thread.group.account === snapshot.account &&
-          thread.group.domain === snapshot.domain &&
-          thread.group.namespaceId === snapshot.namespaceId &&
-          thread.group.profileRev === snapshot.profileRev
+          thread.profileAccount === snapshot.account &&
+          thread.profileDomain === snapshot.domain &&
+          thread.profileNamespaceId === snapshot.namespaceId &&
+          thread.threadProfileRev === snapshot.profileRev
         )
           await tx.objectStore('threads').put({
             ...thread,
-            group: {
-              ...thread.group,
-              name: snapshot.name,
-              avatar: '',
-              description: snapshot.bio,
-            },
-          });
-        else if (
-          thread.type === 'P2P' &&
-          thread.peerUser.account === snapshot.account &&
-          thread.peerUser.domain === snapshot.domain &&
-          thread.peerUser.namespaceId === snapshot.namespaceId &&
-          thread.peerUser.profileRev === snapshot.profileRev
-        )
-          await tx.objectStore('threads').put({
-            ...thread,
-            peerUser: {
-              ...thread.peerUser,
-              name: snapshot.name,
-              avatar: '',
-              bio: snapshot.bio,
-            },
+            subjectName: snapshot.name,
+            subjectAvatar: '',
+            subjectBio: snapshot.bio,
           });
       }
       await tx.done;

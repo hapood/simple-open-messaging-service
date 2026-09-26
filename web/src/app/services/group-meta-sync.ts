@@ -152,7 +152,7 @@ async function syncGroupMetaUnchecked(
   ]);
   const byThread = new Map(threads.map((thread) => [thread.threadId, thread]));
   for (const state of states) {
-    const target = state.server?.groupMetaFeedEndId;
+    const target = state.threadFeedId === null ? null : state.groupMetaFeedEndId;
     const thread = byThread.get(state.threadId);
     if (
       target === null ||

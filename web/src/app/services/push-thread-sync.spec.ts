@@ -2,8 +2,12 @@ import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { syncThreadFeed } from './thread-feed-sync';
 import { syncPushThreads } from './push-thread-sync';
-import { createP2PConversation, type Message } from './model';
-import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
+import type { Message } from './model';
+import {
+  attentionSnapshot,
+  type ThreadFeedSnapshot,
+} from '../../../../shared/thread-attention';
+import { threadStructure } from './thread-feed.test-helper';
 
 describe('Push thread-feed synchronization', () => {
   let storage: WebdbStorage;
@@ -21,6 +25,9 @@ describe('Push thread-feed synchronization', () => {
   const profileResolver = vi.fn(async () => false);
   function snapshot(feed = 1): ThreadFeedSnapshot {
     return {
+      ...threadStructure(7, {
+        profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+      }),
       threadId: 7,
       threadFeedId: feed,
       messageEndSeq: 7,
@@ -31,13 +38,14 @@ describe('Push thread-feed synchronization', () => {
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,
       groupInviteEndFeedId: 0,
+      announcementReadFeedId: 0,
       lastReadSeq: 0,
       unreadCount: 7,
       lastMentionSeq: 7,
       previews: [5, 6, 7].map((seq) => ({
         seq,
         createdAt: '2026-09-09T00:00:00Z',
-        sender: { account: 'peer', domain: 'test' },
+        sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
         text: String(seq),
         status:
           seq === 7
@@ -66,12 +74,25 @@ describe('Push thread-feed synchronization', () => {
     storage = new WebdbStorage();
     await storage.openForUser(String(userId));
     await storage.putMeta('selfProfile', { id: userId, account: 'me' });
-    await storage.putThread(
-      createP2PConversation(7, { account: 'peer', name: 'Peer' }),
-    );
   });
   afterEach(async () => {
     await storage.closeAndDelete(String(userId));
+  });
+
+  it('does not invent a counterpart when the local conversation was removed', async () => {
+    vi.spyOn(storage, 'getThreads').mockResolvedValue([]);
+    const result = await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => page(),
+      preferences,
+      copy,
+      groupMetaRequest,
+      profileResolver,
+    );
+    expect(result.cursor).toBe(1);
+    expect(result.notifications).toEqual([]);
   });
 
   it('requests three previews, keeps one in the database, and never repeats a consumed target', async () => {
@@ -92,13 +113,15 @@ describe('Push thread-feed synchronization', () => {
       take: 100,
       previewCount: 3,
     });
-    expect(result.states[0].server?.threadFeedId).toBe(1);
+    expect(result.states[0].threadFeedId).toBe(1);
     expect(result.notifications[0]).toMatchObject({
       count: 7,
       body: '5\n[Retracted]\n[Removed]',
     });
     expect(
-      (await storage.getThreadStates())[0].server?.previews?.map((p) => p.seq),
+      attentionSnapshot((await storage.getThreadStates())[0])?.previews?.map(
+        (p) => p.seq,
+      ),
     ).toEqual([7]);
     request.mockClear();
     expect(
@@ -114,6 +137,71 @@ describe('Push thread-feed synchronization', () => {
       ),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it('continues after a service-worker push when the page worker starts', async () => {
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => page(),
+      preferences,
+      copy,
+      groupMetaRequest,
+      profileResolver,
+    );
+    await storage.close();
+    storage = new WebdbStorage();
+    await storage.openExistingForUser(String(userId));
+    const next = {
+      ...snapshot(2),
+      messageEndSeq: 8,
+      unreadCount: 8,
+      previews: [
+        {
+          seq: 8,
+          createdAt: '2026-09-09T00:00:00Z',
+          sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+          status: 'LIVE' as const,
+          text: 'next',
+        },
+      ],
+    };
+    const request = vi.fn().mockResolvedValue(page(next));
+    const result = await syncPushThreads(
+      storage,
+      userId,
+      2,
+      request,
+      preferences,
+      copy,
+      groupMetaRequest,
+      profileResolver,
+    );
+    expect(request).toHaveBeenCalledWith({
+      after: 1,
+      through: 2,
+      take: 100,
+      previewCount: 3,
+    });
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].body).toBe('next');
+    const repeated = vi.fn();
+    expect(
+      (
+        await syncPushThreads(
+          storage,
+          userId,
+          2,
+          repeated,
+          preferences,
+          copy,
+          groupMetaRequest,
+          profileResolver,
+        )
+      ).notifications,
+    ).toEqual([]);
+    expect(repeated).not.toHaveBeenCalled();
   });
 
   it('uses the delivered alias for offline notifications and does not notify for alias-only changes', async () => {
@@ -182,24 +270,30 @@ describe('Push thread-feed synchronization', () => {
       ],
       1,
     );
+    await storage.mergeThreadStates([{
+      ...snapshot(1), messageEndSeq: 2, unreadCount: 2, lastMentionSeq: null,
+    }]);
     await storage.advanceThreadRead(7, 2);
     const result = await syncPushThreads(
       storage,
       userId,
-      1,
-      async () => page(),
+      2,
+      async () => page(snapshot(2)),
       preferences,
       copy,
       groupMetaRequest,
       profileResolver,
     );
+    expect(result.error).toBeUndefined();
+    expect(result.states).toHaveLength(1);
     expect(result.notifications[0]).toMatchObject({
       count: 6,
       attention: 'mention',
     });
     expect((await storage.getThreadStates())[0]).toMatchObject({
       localReadSeq: 2,
-      server: { unreadCount: 7, lastReadSeq: 0 },
+      unreadCount: 7,
+      lastReadSeq: 0,
     });
   });
 

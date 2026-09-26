@@ -1,41 +1,40 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
-import { createGroupConversation } from './model';
+import { threadStructure } from './thread-feed.test-helper';
 
 it('reports Group Meta changes from an explicit drain even when the thread cursor is already consumed', async () => {
   const storage = new WebdbStorage();
   await storage.openForUser('9517');
-  await (
-    await storage.db()
-  ).put(
-    'threads',
-    createGroupConversation(9, {
-      id: 9,
-      account: '!team',
-      name: '',
-      ownerId: 1,
-    }),
-  );
   await storage.mergeThreadStates(
     [
       {
+        ...threadStructure(9, {
+          type: 'GROUP',
+          profile: { account: '!team', domain: 'local', namespaceId: 0, profileRev: 1 },
+        }),
         threadId: 9,
         threadFeedId: 1,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
         alias: null,
-        threadProfileRev: 0,
+        threadProfileRev: 1,
         groupMetaFeedEndId: '3',
         joinRequestEndFeedId: 0,
         joinRequestReadFeedId: -1,
         groupInviteEndFeedId: 0,
+        announcementReadFeedId: 0,
         lastReadSeq: 0,
         unreadCount: 0,
         lastMentionSeq: null,
+        previews: [],
       },
     ],
     1,
   );
+  await storage.commitResolvedProfile({
+    account: '!team', domain: 'local', namespaceId: 0, rev: 1,
+    name: 'Team', bio: '', avatarBase64: null,
+  });
   let handler!: (event: { data: unknown }) => void;
   const post = vi.fn();
   vi.stubGlobal('postMessage', post);
@@ -69,7 +68,7 @@ it('reports Group Meta changes from an explicit drain even when the thread curso
         userId: '9517',
         target: 1,
         after: 1,
-        url: '/thread/feed-delta',
+        url: '/thread-feed',
         groupMetaUrl: '/user/group-meta',
         profileResolutionUrl: '/user/profile-resolution',
       },

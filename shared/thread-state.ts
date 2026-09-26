@@ -4,7 +4,6 @@ export interface ThreadStateSnapshot {
   type: 'P2P' | 'GROUP';
   authorityNamespaceId: number;
   conversationState: 'ACTIVE' | 'READ_ONLY';
-  establishedAt: number;
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   profile: {
@@ -33,7 +32,6 @@ export function isThreadStateSnapshot(
     (v['type'] === 'P2P' || v['type'] === 'GROUP') &&
     (v['conversationState'] === 'ACTIVE' ||
       v['conversationState'] === 'READ_ONLY') &&
-    integer(v['establishedAt']) &&
     typeof v['blocked'] === 'boolean' &&
     (v['role'] === null ||
       (v['type'] === 'GROUP' &&

@@ -1,4 +1,3 @@
-import { threadStateEvent } from './thread-state.test-helper';
 import { firstValueFrom } from 'rxjs';
 import { syncThreadFeed } from './thread-feed-sync';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -25,6 +24,7 @@ import {
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
+import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
 import { MemberProfileRepository } from './member-profile-store.service';
 
 /** Build a minimal P2P ConversationItem (only the fields the repo reads + sorts on). */
@@ -40,7 +40,7 @@ function p2p(
   );
 }
 
-describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
+describe('ThreadRepository (eager cache-paint + committed-feed refresh)', () => {
   let repo: ThreadRepository;
   let webdb: WebdbService;
   let eventSubject: Subject<{
@@ -133,6 +133,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
                 sessionUserId.set(userId);
               })),
             stateFeedCursor: () => cursorSignal(),
+            refreshCommittedStateFeed: vi.fn(async () => {
+              const persisted = await webdb.getMeta('stateFeedId');
+              const cursor = typeof persisted === 'number' ? persisted : 0;
+              cursorSignal.set(cursor);
+              const intent = await webdb.getMeta('relationshipIntentStateRevision');
+              if (typeof intent === 'number') applyRelationshipIntentStateRevisionSpy(intent);
+              return cursor;
+            }),
             seedStateFeedCursor: (rev: number) => cursorSignal.set(rev),
             advanceStateFeedCursor: (advanceCursorSpy = vi
               .fn()
@@ -141,19 +149,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             queryStateFeed: (queryStateFeedSpy = vi
               .fn()
               .mockName('queryStateFeed')
-              .mockImplementation(
-                (params: { mode: 'full' | 'delta'; through: number }) =>
-                  of({
-                    code: 0,
-                    data: {
-                      mode: params.mode,
-                      items: [],
-                      hasMore: false,
-                      scannedThrough: params.through,
-                      stateFeedEndId: params.through,
-                    },
-                  }),
-              )),
+              .mockImplementation(() => {
+                throw new Error('renderer must not fetch state-feed pages');
+              })),
             queryUserInfo: (queryUserInfoSpy = vi
               .fn()
               .mockName('queryUserInfo')
@@ -219,9 +217,24 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     }
   });
 
-  /** Seed a thread record directly into the IDB `threads` store — the cache the eager paint reads. */
+  /** Seed a previously committed thread-feed state and its local list presentation. */
   async function seedCachedThread(t: ConversationItem): Promise<void> {
-    await (await webdb.db()).put('threads', t);
+    const subject = t.type === 'GROUP' ? t.group : t.peerUser;
+    await webdb.mergeThreadStates([threadFeedSnapshot(t.threadId, {
+      threadFeedId: t.threadFeedId ?? t.threadId,
+      type: t.type,
+      authorityNamespaceId: t.authorityNamespaceId,
+      profile: { account: subject.account, domain: subject.domain,
+        namespaceId: subject.namespaceId, profileRev: t.profileRev },
+      threadProfileRev: t.profileRev,
+      role: t.role,
+      conversationState: t.conversationState ?? 'ACTIVE',
+      blocked: t.blocked ?? false,
+      messageEndSeq: t.lastMessageSeq ?? 0,
+      lastReadSeq: t.lastReadSeq ?? 0,
+      unreadCount: t.unreadCount,
+    })]);
+    await webdb.putThread({ ...t, threadFeedId: t.threadFeedId ?? t.threadId });
   }
 
   /** Seed a local message body directly into the IDB `messages` store — the local-first preview source.
@@ -264,12 +277,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
   }
 
-  /** Wait until the HELLO handshake has drained to its last step. onHello funnels establishSession →
-   *  cache reads → state delta → the trailing thread-feed sync into the thread-feed HTTP seam, so a
-   *  recorded query means the handshake reached its final step; one task turn then settles the
-   *  mock-resolution tail (the chain is pure microtasks — the fakes schedule no timers). */
+  /** HELLO initializes the in-memory projection; worker commits arrive separately. */
   async function helloSettled(): Promise<void> {
-    await vi.waitFor(() => expect(webdb.syncThreadFeed).toHaveBeenCalled());
+    await vi.waitFor(() => expect(repo.status()).toBe('READY'));
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
@@ -286,17 +296,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       }),
     );
-    if (hello)
-      emitHello({
-        userId: 1,
-        stateFeedEndId: 0,
-        threadFeedEndId: state.threadFeedId,
-      });
-    else
-      eventSubject.next({
-        event: 'THREAD_FEED_UPDATED',
-        data: { threadFeedEndId: state.threadFeedId },
-      });
+    if (hello) {
+      emitHello({ userId: 1, stateFeedEndId: 0, threadFeedEndId: state.threadFeedId });
+      await helloSettled();
+    }
+    const after = (await webdb.getMeta('threadFeedCursor') as number | undefined) ?? 0;
+    const result = await webdb.syncThreadFeed(state.threadFeedId, after);
+    eventSubject.next({ event: 'LOCAL_THREAD_FEED_COMMITTED', data: {
+      userId: 1, cursor: result.cursor, changes: ['THREADS'], groupThreadIds: result.groupThreadIds ?? [],
+    } });
     await vi.waitFor(async () => {
       expect(
         Number(await webdb.getMeta('threadFeedCursor')),
@@ -307,9 +315,28 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         threadFeedId: state.threadFeedId,
       });
     });
+    // The structural row is published before the asynchronous unread/preview projection.
+    // Wait for that projection before asserting the result of a committed feed page.
+    const preview = state.previews?.reduce<NonNullable<ThreadFeedSnapshot['previews']>[number] | undefined>(
+      (latest, candidate) => !latest || candidate.seq > latest.seq ? candidate : latest,
+      undefined,
+    );
+    if (preview) {
+      const text = preview.status === 'LIVE'
+        ? preview.text ?? ''
+        : preview.status === 'USER_RETRACTION'
+          ? '[Message retracted]'
+          : '[Message removed by administrator]';
+      await vi.waitFor(() => expect(
+        repo.items().find((item) => item.threadId === state.threadId)?.lastMessagePreview,
+      ).toBe(text));
+    }
   }
 
   const threadSnapshot = (): ThreadFeedSnapshot => ({
+    ...threadStructure(1, {
+      profile: { account: 'u11', domain: 'local', namespaceId: 0, profileRev: 0 },
+    }),
     threadId: 1,
     threadFeedId: 1,
     messageEndSeq: 8,
@@ -320,6 +347,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     joinRequestEndFeedId: 0,
     joinRequestReadFeedId: -1,
     groupInviteEndFeedId: 0,
+    announcementReadFeedId: 0,
     lastReadSeq: 0,
     unreadCount: 3,
     lastMentionSeq: 5,
@@ -327,7 +355,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       {
         seq: 5,
         createdAt: '2026-01-01T00:00:00.000Z',
-        sender: { account: 'u11', domain: 'local' },
+        sender: { account: 'u11', domain: 'local', namespaceId: 0, profileRev: 1 },
         status: 'LIVE',
         text: 'latest preview',
       },
@@ -337,7 +365,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('consumes unified snapshots and rebases optimistic counts without replacing the local read position', async () => {
     const notified = vi.fn();
     const subscription = repo.threadNotifications$.subscribe(notified);
-    await populate([p2p(1, 11)]);
     for (const seq of [1, 3, 5]) await seedMessage(1, seq);
     await seedMessage(1, 7, 'own', {
       account: 'me',
@@ -378,12 +405,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
     expect((await webdb.getThreadStates())[0]).toMatchObject({
       localReadSeq: 3,
-      server: { threadFeedId: 3, lastReadSeq: 0 },
+      threadFeedId: 3,
+      lastReadSeq: 0,
     });
   });
 
   it('applies alias-only feed snapshots without alerting again for unread messages', async () => {
-    await populate([p2p(1, 11)]);
     await publishThreadState(threadSnapshot(), true);
     const notified = vi.fn();
     const subscription = repo.threadNotifications$.subscribe(notified);
@@ -405,7 +432,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('keeps server previews while optimistic reads clear unread and mentions', async () => {
-    await populate([p2p(1, 11)]);
     for (const seq of [1, 3, 5]) await seedMessage(1, seq);
     await publishThreadState(threadSnapshot(), true);
     const previewFields = {
@@ -448,7 +474,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('handles message and tomb heads together and masks deleted preview content without decrementing count', async () => {
-    await populate([p2p(1, 11)]);
     await publishThreadState(threadSnapshot(), true);
     const tomb = {
       ...threadSnapshot(),
@@ -480,7 +505,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('reprojects when a missing local message slot becomes available, including tombs', async () => {
-    await populate([p2p(1, 11)]);
     await publishThreadState(threadSnapshot(), true);
     repo.commitLocalRead(1, 3);
     // Negative-in-time: with the local message slot still missing, the read position must NOT
@@ -513,14 +537,13 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('renders snapshots already committed by a background executor without another HTTP request', async () => {
-    await populate([p2p(1, 11)]);
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await helloSettled();
     await webdb.mergeThreadStates([{ ...threadSnapshot(), unreadCount: 7 }], 1);
     queryThreadFeedSpy.mockClear();
     eventSubject.next({
-      event: 'THREAD_FEED_UPDATED',
-      data: { threadFeedEndId: 1 },
+      event: 'LOCAL_THREAD_FEED_COMMITTED',
+      data: { userId: 1, cursor: 1, changes: ['THREADS'], groupThreadIds: [] },
     });
     await vi.waitFor(() =>
       expect(repo.items()[0]).toMatchObject({
@@ -532,7 +555,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('refreshes committed worker state without starting a network drain', async () => {
-    await populate([p2p(1, 11)]);
     const read = vi.spyOn(webdb, 'readThreadFeedChanges');
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await vi.waitFor(() => expect(read).toHaveBeenCalledWith(0));
@@ -568,7 +590,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populate([
       createGroupConversation(
         12,
-        { id: 12, ownerId: 1, ...profile, name: '' },
+        { id: 12, ...profile, name: '' },
         { threadFeedId: 1 },
       ),
     ]);
@@ -614,7 +636,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       await populate([
         createGroupConversation(
           12,
-          { id: 12, ownerId: 1, ...profile, name: '' },
+          { id: 12, ...profile, name: '' },
           { threadFeedId: 1 },
         ),
       ]);
@@ -648,7 +670,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populate([
       createGroupConversation(
         12,
-        { id: 12, account: '!team', name: 'Team', ownerId: 1 },
+        { id: 12, account: '!team', name: 'Team' },
         { threadFeedId: 1 },
       ),
     ]);
@@ -675,7 +697,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('keeps a successful announcement read monotone before the server wake', async () => {
     await populate([
       createGroupConversation(12,
-        { id: 12, account: '!team', name: 'Team', ownerId: 1 },
+        { id: 12, account: '!team', name: 'Team' },
         { threadFeedId: 1, announcementReadFeedId: 0 }),
     ]);
     repo.markAnnouncementReadLocally(12, 8);
@@ -686,8 +708,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('ignores a local completion for another account', async () => {
     await populate([p2p(1, 11)]);
     emitHello({ userId: 1, stateFeedEndId: 0 });
-    await helloSettled();
     const read = vi.spyOn(webdb, 'readThreadFeedChanges');
+    await helloSettled();
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    read.mockClear();
     eventSubject.next({
       event: 'LOCAL_THREAD_FEED_COMMITTED',
       data: { userId: 2, cursor: 1 },
@@ -712,13 +736,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       }),
     );
-    eventSubject.next({
-      event: 'THREAD_FEED_UPDATED',
-      data: { threadFeedEndId: 4 },
-    });
-    await vi.waitFor(async () =>
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(4),
-    );
+    const result = await webdb.syncThreadFeed(4, 0);
+    eventSubject.next({ event: 'LOCAL_THREAD_FEED_COMMITTED', data: {
+      userId: 1, cursor: result.cursor, changes: [], groupThreadIds: [],
+    } });
+    expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
     const calls = queryThreadFeedSpy.mock.calls.length;
     eventSubject.next({
       event: 'THREAD_FEED_UPDATED',
@@ -731,7 +753,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('does not commit an invalid feed page and retries on the next wake', async () => {
-    await populate([p2p(1, 11)]);
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await helloSettled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -748,62 +769,19 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       }),
     );
     const callsBefore = queryThreadFeedSpy.mock.calls.length;
-    eventSubject.next({
-      event: 'THREAD_FEED_UPDATED',
-      data: { threadFeedEndId: 1 },
-    });
-    // Convergence: the wake's fetch attempt ran (its page was rejected, so the cursor stays put).
-    await vi.waitFor(() =>
-      expect(queryThreadFeedSpy.mock.calls.length).toBeGreaterThan(callsBefore),
-    );
+    // The worker rejects the invalid page without advancing the durable cursor.
+    await webdb.syncThreadFeed(1, 0).catch(() => undefined);
+    expect(queryThreadFeedSpy.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
     await publishThreadState(threadSnapshot());
     expect(await webdb.getMeta('threadFeedCursor')).toBe(1);
     warn.mockRestore();
   });
 
-  it('rebuilds from a code 30006 recovery window', async () => {
-    cursorSignal.set(9);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    queryStateFeedSpy
-      .mockReturnValueOnce(
-        of({ code: 30006, data: { resumeAfter: 0, resumeBefore: 7 } }),
-      )
-      .mockReturnValueOnce(
-        of({
-          code: 0,
-          data: {
-            mode: 'full',
-            items: [],
-            hasMore: false,
-            scannedThrough: 6,
-            stateFeedEndId: 6,
-          },
-        }),
-      );
-
-    repo.onStateFeedUpdated(10);
-    await vi.waitFor(() => expect(cursorSignal()).toBe(6));
-
-    expect(warn).toHaveBeenCalledWith(
-      '[state-feed] cursor unavailable; rebuilding from 0 through 6',
-    );
-    expect(queryStateFeedSpy.mock.calls[1][0]).toEqual(
-      expect.objectContaining({ mode: 'full', after: 0, through: 6 }),
-    );
-    expect(cursorSignal()).toBe(6);
-    warn.mockRestore();
-  });
-
   /** Populate via the EAGER CACHE-PAINT (seed IDB + load) — the instant pre-HELLO path. For tests that
    *  just need a populated list (mutations, messages, peer profile) without exercising the delta. */
   async function populate(items: ConversationItem[]): Promise<void> {
-    const db = await webdb.db();
-    const tx = db.transaction('threads', 'readwrite');
-    for (const it of items) {
-      await tx.store.put(it);
-    }
-    await tx.done;
+    for (const item of items) await seedCachedThread(item);
     await repo.load();
   }
 
@@ -838,7 +816,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       emitHello({ userId: 1, stateFeedEndId: cursorSignal() ?? 0 });
       await helloSettled();
     }
-    const feedId = Number((await webdb.getMeta('threadFeedCursor')) ?? 0) + 1;
+    const current = repo.items().find((item) => item.threadId === threadId);
+    if (!current || current.type !== 'P2P')
+      throw new Error('content-head test requires an existing P2P thread');
+    const feedId = Math.max(
+      Number((await webdb.getMeta('threadFeedCursor')) ?? 0),
+      ...repo.items().map((item) => item.threadFeedId ?? 0),
+    ) + 1;
+    const peer = current.peerUser;
     queryThreadFeedSpy.mockReturnValueOnce(
       of({
         code: 0,
@@ -849,16 +834,25 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
           hasMore: false,
           items: [
             {
+              ...threadStructure(threadId, {
+                profile: {
+                  account: peer.account,
+                  domain: peer.domain,
+                  namespaceId: peer.namespaceId,
+                  profileRev: current.profileRev,
+                },
+              }),
               threadId,
               threadFeedId: feedId,
               messageEndSeq: seq,
               tombstoneEndSeq,
               alias: null,
-              threadProfileRev: 0,
+              threadProfileRev: current.profileRev,
               groupMetaFeedEndId: null,
               joinRequestEndFeedId: 0,
               joinRequestReadFeedId: -1,
               groupInviteEndFeedId: 0,
+              announcementReadFeedId: 0,
               lastReadSeq: 0,
               unreadCount: 0,
               lastMentionSeq: null,
@@ -868,10 +862,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       }),
     );
-    eventSubject.next({
-      event: 'THREAD_FEED_UPDATED',
-      data: { threadFeedEndId: feedId },
-    });
+    const result = await webdb.syncThreadFeed(feedId, feedId - 1);
+    eventSubject.next({ event: 'LOCAL_THREAD_FEED_COMMITTED', data: {
+      userId: 1, cursor: result.cursor, changes: ['THREADS'], groupThreadIds: [],
+    } });
     await vi.waitFor(async () => {
       expect(
         Number(await webdb.getMeta('threadFeedCursor')),
@@ -896,7 +890,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.status()).toBe('READY');
   });
 
-  it('load() with no cache leaves LOADING (awaiting HELLO delta)', async () => {
+  it('load() with no cache leaves LOADING (awaiting HELLO and local commits)', async () => {
     await repo.load();
     expect(repo.items()).toEqual([]);
     expect(repo.status()).toBe('LOADING');
@@ -913,6 +907,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()).toEqual([]);
     expect(toastWarn).not.toHaveBeenCalled();
     await webdb.openForUser('1');
+    await webdb.putMeta('stateFeedId', 2); // worker committed while the page cache was closed
     emitHello({ userId: 1, stateFeedEndId: 2 });
     await vi.waitFor(() => expect(cursorSignal()).toBe(2));
   });
@@ -955,7 +950,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(cursorSignal()).toBeUndefined();
   });
 
-  // The clobber guard: a cache-paint that runs AFTER a fresher HELLO delta already populated the list
+  // The clobber guard: a cache-paint that runs AFTER a newer commit already populated the list
   // must BAIL — a late IDB read must not revert the list to the (now stale) cache.
   // Regression guard for the "暂无消息 on first launch" bug: the list embeds NO preview content, so each
   // thread's preview must be derived from its newest CACHED local message (local-first). load()'s paint
@@ -1003,8 +998,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     TestBed.tick();
     await webdb.recreateForUser('1');
     expect(await webdb.getThreads()).toEqual([]);
-    const peer = stale.peerUser;
-    const items = [threadStateEvent(2, 61)];
     queryThreadFeedSpy.mockReturnValueOnce(
       of({
         code: 0,
@@ -1027,18 +1020,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       }),
     );
-    queryStateFeedSpy.mockReturnValueOnce(
-      of({
-        code: 0,
-        data: {
-          mode: 'full',
-          items,
-          scannedThrough: 2,
-          stateFeedEndId: 2,
-          hasMore: false,
-        },
-      }),
-    );
+    await webdb.syncThreadFeed(1, 0); // background worker committed before HELLO replay
+    await webdb.putMeta('stateFeedId', 2);
     emitHello({ userId: 1, stateFeedEndId: 2, threadFeedEndId: 1 });
     await vi.waitFor(async () => {
       expect((await webdb.getThreads()).map((t) => t.threadId)).toEqual([61]);
@@ -1072,17 +1055,17 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── live THREAD_CONTENT_HEAD projections ──────────────────────────────────────────────────────
 
-  it('a content head advances the HWM without changing list presentation or unread', async () => {
+  it('a content head advances the HWM and feed order without changing unread', async () => {
     await populate([
       p2p(1, 11, { lastMessageAt: 100 }),
       p2p(2, 22, { lastMessageAt: 200 }),
     ]);
-    const initialOrder = repo.items().map((item) => item.threadId);
+    expect(repo.items().map((item) => item.threadId)).toEqual([2, 1]);
 
     await emitThreadContentHead(1, 100);
 
     const items = repo.items();
-    expect(items.map((item) => item.threadId)).toEqual(initialOrder);
+    expect(items.map((item) => item.threadId)).toEqual([1, 2]);
     expect(repo.latestSeq(1)).toBe(100);
     const changed = items.find((item) => item.threadId === 1);
     expect(changed?.lastMessageSeq).toBe(100);
@@ -1109,7 +1092,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
           id: 70,
           account: '!team',
           name: 'Old name',
-          ownerId: 1,
           profileRev: 3,
         },
         { threadFeedId: 7 },
@@ -1118,7 +1100,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const write = vi.spyOn(webdb, 'commitResolvedProfile');
     repo.applyGroupUpdate(7, { name: 'Optimistic name' });
     expect(repo.items()[0]).toMatchObject({
-      group: { name: 'Optimistic name', profileRev: 3 },
+      group: { name: 'Optimistic name' },
+      profileRev: 3,
     });
     expect(write).not.toHaveBeenCalled();
   });
@@ -1127,7 +1110,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populate([
       createGroupConversation(
         7,
-        { id: 70, account: '!team', name: 'Team', ownerId: 1 },
+        { id: 70, account: '!team', name: 'Team' },
         { role: 'ADMIN', threadFeedId: 7 },
       ),
     ]);
@@ -1277,127 +1260,36 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await msgCount(2)).toBe(1); // thread 2's bodies untouched — the purge is scoped
   });
 
-  // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
-
-  it.each([false, true])(
-    'drains Group Meta after a late group shell (sync in flight: %s)',
-    async (inFlight) => {
-      emitHello({ userId: 1, stateFeedEndId: 0 });
-      await helloSettled();
-      cursorSignal.set(1);
-      // The background consumer has already committed the head while the group is unknown.
-      await webdb.mergeThreadStates(
-        [{ ...threadSnapshot(), threadId: 9, groupMetaFeedEndId: '3' }],
-        1,
-      );
-      eventSubject.next({
-        event: 'LOCAL_THREAD_FEED_COMMITTED',
-        data: { userId: 1, cursor: 1 },
-      });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      let release: (() => void) | undefined;
-      if (inFlight) {
-        let started!: () => void;
-        const entered = new Promise<void>((resolve) => {
-          started = resolve;
-        });
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        vi.mocked(webdb.syncThreadFeed).mockImplementationOnce(async () => {
-          started();
-          await gate;
-          return { cursor: 1, states: [], groupThreadIds: [] };
-        });
-        eventSubject.next({
-          event: 'THREAD_FEED_UPDATED',
-          data: { threadFeedEndId: 1 },
-        });
-        await entered;
-      }
-      queryStateFeedSpy.mockReturnValue(
-        of({
-          code: 0,
-          data: {
-            mode: 'delta',
-            items: [
-              threadStateEvent(2, 9, {
-                type: 'GROUP',
-                role: 'MEMBER',
-                profile: {
-                  account: '!dev',
-                  domain: 'local',
-                  namespaceId: 0,
-                  profileRev: 0,
-                },
-              }),
-            ],
-            hasMore: false,
-            scannedThrough: 2,
-            stateFeedEndId: 2,
-          },
-        }),
-      );
-      eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
-      await vi.waitFor(() => expect(cursorSignal()).toBe(2));
-      release?.();
-      await vi.waitFor(async () => {
-        const group = (await webdb.getThreads()).find(
-          (thread) => thread.threadId === 9,
-        );
-        expect(group?.type === 'GROUP' && group.group.groupMetaFeedId).toBe(
-          '3',
-        );
-      });
-      expect(queryThreadFeedSpy).not.toHaveBeenCalled();
-    },
-  );
-
-  it('hydrates a newly activated zero-message friendship thread from THREAD_STATE', async () => {
+  it('creates a group and drains its Meta head from one complete thread-feed snapshot', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await helloSettled();
-    cursorSignal.set(1);
-    const peer = {
-      id: 22,
-      account: 'bob',
-      name: 'Bob',
-      avatar: '',
-      bio: '',
-      domain: 'peer.test',
-      namespaceId: 12,
+    const snapshot = {
+      ...threadSnapshot(),
+      threadId: 9,
+      threadFeedId: 1,
+      type: 'GROUP' as const,
+      role: 'MEMBER' as const,
+      profile: { account: '!dev', domain: 'local', namespaceId: 0, profileRev: 0 },
+      groupMetaFeedEndId: '3',
     };
-    queryStateFeedSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: {
-          mode: 'delta',
-          items: [
-            threadStateEvent(3, 9, {
-              authorityNamespaceId: 12,
-              profile: {
-                account: 'bob',
-                domain: 'peer.test',
-                namespaceId: 12,
-                profileRev: 0,
-              },
-            }),
-          ],
-          hasMore: false,
-          scannedThrough: 4,
-          stateFeedEndId: 4,
-        },
-      }),
-    );
-    eventSubject.next({
-      event: 'STATE_FEED_UPDATED',
-      data: { feedId: 4 },
+    await publishThreadState(snapshot);
+    await vi.waitFor(async () => {
+      const group = (await webdb.getThreads()).find((thread) => thread.threadId === 9);
+      expect(group?.type === 'GROUP' && group.group.groupMetaFeedId).toBe('3');
     });
-    // The delta drain commits the state cursor as its final step.
-    await vi.waitFor(() => expect(cursorSignal()).toBe(4));
+    expect(queryStateFeedSpy).not.toHaveBeenCalled();
+  });
+
+  it('hydrates a newly activated zero-message friendship thread from its complete feed snapshot', async () => {
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await helloSettled();
     await publishThreadState({
       ...threadSnapshot(),
       threadId: 9,
       threadFeedId: 1,
+      authorityNamespaceId: 12,
+      profile: { account: 'bob', domain: 'peer.test', namespaceId: 12, profileRev: 1 },
+      threadProfileRev: 1,
       messageEndSeq: 0,
       unreadCount: 0,
       lastMentionSeq: null,
@@ -1412,98 +1304,18 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         lastMessageSeq: 0,
       }),
     ]);
+    expect(queryStateFeedSpy).not.toHaveBeenCalled();
   });
 
-  it('publishes one friend-intent revision only after draining through the committed feed HWM', async () => {
-    cursorSignal.set(1);
-    const peer = {
-      id: 22,
-      account: 'bob',
-      name: 'Bob',
-      avatar: '',
-      bio: '',
-      domain: 'local',
-    };
-    const secondPage = new Subject<unknown>();
-    queryStateFeedSpy
-      .mockReturnValueOnce(
-        of({
-          code: 0,
-          data: {
-            mode: 'delta',
-            items: [
-              {
-                feedId: 2,
-                account: 'bob',
-                domain: 'local',
-                eventType: 'RELATIONSHIP_INTENT',
-                subjectAccount: 'alice',
-                subjectDomain: 'local',
-                body: {
-                  status: 'ACCEPTED',
-                  note: '',
-                  requestedAt: 1,
-                  expiresAt: null,
-                  direction: 'INCOMING',
-                  localThreadId: 9,
-                  peer,
-                },
-              },
-            ],
-            hasMore: false,
-            scannedThrough: 2,
-            stateFeedEndId: 3,
-          },
-        }),
-      )
-      .mockReturnValueOnce(secondPage);
-
-    eventSubject.next({
-      event: 'STATE_FEED_UPDATED',
-      data: { feedId: 2 },
-    });
-    // The drain pages through: the second fetch request is its convergence point.
-    await vi.waitFor(() => expect(queryStateFeedSpy).toHaveBeenCalledTimes(2));
-
-    expect(queryStateFeedSpy).toHaveBeenCalledTimes(2);
-    expect(queryStateFeedSpy.mock.calls[1][0]).toEqual(
-      expect.objectContaining({ after: 2, through: 3 }),
-    );
-    expect(applyRelationshipIntentStateRevisionSpy).not.toHaveBeenCalled();
-
-    secondPage.next({
-      code: 0,
-      data: {
-        mode: 'delta',
-        items: [
-          {
-            feedId: 3,
-            account: 'alice',
-            domain: 'local',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'bob',
-            subjectDomain: 'local',
-            body: {
-              status: 'ACCEPTED',
-              note: '',
-              requestedAt: 1,
-              expiresAt: null,
-              direction: 'OUTGOING',
-              localThreadId: 9,
-              peer,
-            },
-          },
-        ],
-        hasMore: false,
-        scannedThrough: 3,
-        stateFeedEndId: 3,
-      },
-    });
-    secondPage.complete();
-    await vi.waitFor(() =>
-      expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledWith(3),
-    );
-
-    expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledTimes(1);
+  it('refreshes a committed worker revision without fetching a feed page on the main thread', async () => {
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await helloSettled();
+    await webdb.putMeta('stateFeedId', 3);
+    await webdb.putMeta('relationshipIntentStateRevision', 3);
+    eventSubject.next({ event: 'LOCAL_STATE_FEED_COMMITTED', data: { userId: 1, cursor: 3 } });
+    await vi.waitFor(() => expect(cursorSignal()).toBe(3));
+    expect(applyRelationshipIntentStateRevisionSpy).toHaveBeenCalledWith(3);
+    expect(queryStateFeedSpy).not.toHaveBeenCalled();
   });
+
 });

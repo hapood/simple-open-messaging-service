@@ -1,5 +1,4 @@
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
-import type { ThreadStateSnapshot } from '../../../../shared/thread-state';
 import {
   Injectable,
   InjectionToken,
@@ -210,16 +209,6 @@ export type ClientStateFeedItem =
       body: {
         readThroughFeedId: number;
       };
-    }
-  | {
-      feedId: number;
-      account: '';
-      domain: 'local';
-      namespaceId: 0;
-      eventType: 'THREAD_STATE';
-      subjectAccount: string;
-      subjectDomain: 'local';
-      body: ThreadStateSnapshot;
     };
 
 /** The persisted last-logged-in userId (device-scoped preference) — the client's sole pre-HELLO source
@@ -647,6 +636,35 @@ export class UserService {
     this._stateFeedCursor.set(feedId);
   }
 
+  /** Rehydrate signals from committed state-feed storage, including a full recovery that reset the cursor. */
+  async refreshCommittedStateFeed(): Promise<number | undefined> {
+    const userId = this.sessionUserId();
+    if (userId === null) return undefined;
+    const [cursor, requestRevision, intentRevision, readHead] = await Promise.all([
+      this.webdb.getMeta('stateFeedId'),
+      this.webdb.getMeta('relationshipRequestStateRevision'),
+      this.webdb.getMeta('relationshipIntentStateRevision'),
+      this.webdb.getMeta('relationshipRequestReadHead'),
+    ]);
+    if (this.sessionUserId() !== userId) return undefined;
+    const committed = cursor === undefined ? 0 : cursor;
+    if (typeof committed !== 'number' || !Number.isSafeInteger(committed) || committed < 0)
+      return undefined;
+    this.seedStateFeedCursor(committed);
+    this.relationshipRequestStateRevision.set(
+      typeof requestRevision === 'number' && requestRevision >= 0 ? requestRevision : 0,
+    );
+    this.relationshipIntentStateRevision.set(
+      typeof intentRevision === 'number' && intentRevision >= 0 ? intentRevision : 0,
+    );
+    const readThrough = readHead && typeof readHead === 'object'
+      ? (readHead as { readThroughFeedId?: unknown }).readThroughFeedId : undefined;
+    this.relationshipRequestReadThroughFeedId.set(
+      typeof readThrough === 'number' && readThrough >= 0 ? readThrough : 0,
+    );
+    return committed;
+  }
+
   /** Advance the cursor after applying a delta (monotonic — ignore a non-advancing/stale revision). */
   advanceStateFeedCursor(feedId: number): void {
     const cur = this._stateFeedCursor();
@@ -685,31 +703,6 @@ export class UserService {
       `${apiPrefix()}/user/update-profile`,
       params,
     );
-  }
-
-  /** Read compacted client-state projections in one fixed feed-id range. */
-  queryStateFeed(params: {
-    mode: 'full' | 'delta';
-    after: number;
-    take?: number;
-    through?: number;
-  }) {
-    const query = new URLSearchParams({
-      after: String(params.after),
-      take: String(params.take ?? 100),
-      mode: params.mode,
-    });
-    if (params.through !== undefined)
-      query.set('through', String(params.through));
-    return this.http.get<
-      StandardResponse<{
-        mode: 'full' | 'delta';
-        items: ClientStateFeedItem[];
-        scannedThrough: number;
-        stateFeedEndId: number;
-        hasMore: boolean;
-      }>
-    >(`${apiPrefix()}/user/state-feed?${query.toString()}`);
   }
 
   queryUserInfo(params: { userIds: number[] }) {

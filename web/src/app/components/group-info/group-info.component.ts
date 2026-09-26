@@ -112,11 +112,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   groupProfileEvidence(): ProfileSelector | undefined {
     const group = this.group();
     const threadId = this.threadId();
-    return group && threadId !== undefined && group.profileRev > 0
+    const rev = this.userMsgTrd()?.profileRev;
+    return group && threadId !== undefined && rev && rev > 0
       ? {
           type: 'GROUP_META',
           threadId,
-          profileRev: group.profileRev,
+          profileRev: rev,
           subject: { type: 'GROUP' },
         }
       : undefined;

@@ -33,8 +33,10 @@ function makeItem(
 } {
   const peer = {
     id: over.userId ?? 42,
+    account: 'alice',
     name: 'Alice',
-    domain: null,
+    domain: 'local',
+    namespaceId: 0,
     updatedAt: 1,
     profileRev: 7,
   } as unknown as User;

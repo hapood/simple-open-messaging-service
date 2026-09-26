@@ -11,7 +11,7 @@ describe('ChatContextService', () => {
     const context = TestBed.inject(ChatContextService);
     const conversation = createGroupConversation(
       12,
-      { id: 120, account: 'group-120', name: 'Group 120', ownerId: 1 },
+      { id: 120, account: 'group-120', name: 'Group 120' },
       { role: 'ADMIN' },
     );
 
@@ -30,7 +30,6 @@ describe('ChatContextService', () => {
       id: 120,
       account: 'group-120',
       name: 'Group 120',
-      ownerId: 1,
     });
 
     context.initialize(conversation);

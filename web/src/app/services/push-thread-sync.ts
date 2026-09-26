@@ -3,6 +3,7 @@ import { PreferenceStorage } from './preference-storage';
 import { syncThreadFeed, type ThreadFeedSyncResult } from './thread-feed-sync';
 import {
   attentionCountRange,
+  attentionSnapshot,
   projectThreadAttention,
   threadNotificationChanged,
 } from '../../../../shared/thread-attention';
@@ -10,7 +11,7 @@ import {
   threadNotificationDescriptor,
   threadNotificationIcon,
 } from './thread-notification';
-import { createP2PConversation, type User } from './model';
+import type { User } from './model';
 import type { NotificationDescriptor } from './notification-descriptor.model';
 import type {
   GroupMetaProfileResolver,
@@ -38,7 +39,7 @@ export async function syncPushThreads(
   const previous = new Map(
     (await storage.getThreadStates()).map((state) => [
       state.threadId,
-      state.server,
+      attentionSnapshot(state),
     ]),
   );
   const result = await syncThreadFeed(
@@ -63,12 +64,12 @@ export async function syncPushThreads(
   const current = new Map(states.map((state) => [state.threadId, state]));
   for (const delivered of result.states) {
     const state = current.get(delivered.threadId);
-    if (
-      !state?.server ||
-      state.server.threadFeedId !== delivered.server?.threadFeedId
-    )
+    const snapshot = attentionSnapshot(state);
+    const deliveredSnapshot = attentionSnapshot(delivered);
+    if (!state || !snapshot || !deliveredSnapshot ||
+      snapshot.threadFeedId !== deliveredSnapshot.threadFeedId)
       continue;
-    if (!threadNotificationChanged(previous.get(state.threadId), state.server))
+    if (!threadNotificationChanged(previous.get(state.threadId), snapshot))
       continue;
     const range = attentionCountRange(state);
     if (!range) continue;
@@ -84,15 +85,9 @@ export async function syncPushThreads(
       );
     }
     const projection = projectThreadAttention(state, count)!;
-    const sender = delivered.server.previews?.[0]?.sender;
-    // Missing relationship metadata affects the title only; never invent or persist a relationship.
-    const item =
-      rows.find((row) => row.threadId === state.threadId) ??
-      createP2PConversation(state.threadId, {
-        account: sender?.account ?? '',
-        domain: sender?.domain ?? '',
-        name: sender ? `${sender.account}@${sender.domain}` : 'SOMS',
-      });
+    // A concurrently deleted local conversation must not produce a fabricated notification.
+    const item = rows.find((row) => row.threadId === state.threadId);
+    if (!item) continue;
     const descriptor = threadNotificationDescriptor(
       {
         item: {
@@ -101,7 +96,7 @@ export async function syncPushThreads(
           unreadCount: projection.unreadCount,
           mentionUnread: projection.hasUnreadMention ? ['me'] : [],
         },
-        state: { ...state.server, previews: delivered.server.previews },
+        state: { ...snapshot, previews: deliveredSnapshot.previews },
       },
       mode === 'private' ? 'private' : 'message',
       copy,

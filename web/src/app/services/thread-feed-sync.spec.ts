@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
+import { threadStructure } from './thread-feed.test-helper';
 
 const groupMetaRequest = vi.fn(async () => {
   throw new Error('unexpected group-meta request');
@@ -8,6 +9,9 @@ const groupMetaRequest = vi.fn(async () => {
 const profileResolver = vi.fn(async () => false);
 
 const snapshot = (feedId: number): ThreadFeedSnapshot => ({
+  ...threadStructure(7, {
+    profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+  }),
   threadId: 7,
   threadFeedId: feedId,
   messageEndSeq: feedId,
@@ -18,6 +22,7 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,
   groupInviteEndFeedId: 0,
+  announcementReadFeedId: 0,
   lastReadSeq: 0,
   unreadCount: feedId,
   lastMentionSeq: null,
@@ -35,9 +40,8 @@ function storage() {
     mergeThreadStates: vi.fn(
       async (states: ThreadFeedSnapshot[], next: number) => {
         cursor = next;
-        return states.map((server) => ({
-          threadId: server.threadId,
-          server,
+        return states.map((snapshot) => ({
+          ...snapshot,
           localReadSeq: 0,
         }));
       },
@@ -181,7 +185,7 @@ describe('thread feed executor', () => {
     expect(result).toEqual({
       cursor: 3,
       groupThreadIds: [],
-      states: [{ threadId: 7, server: snapshot(3), localReadSeq: 0 }],
+      states: [{ ...snapshot(3), localReadSeq: 0 }],
     });
     expect(await db.getMeta()).toBe(3);
   });
@@ -203,7 +207,7 @@ describe('thread feed executor', () => {
     expect(result).toMatchObject({
       cursor: 1,
       error: 'offline',
-      states: [{ server: { threadFeedId: 1 } }],
+      states: [{ threadFeedId: 1 }],
     });
     const resumed = vi.fn().mockResolvedValue(page(2, 2));
     expect(

@@ -9,7 +9,6 @@ describe('PlaygroundConversationList', () => {
         id: 2,
         account: '!playground',
         name: 'Playground Team',
-        ownerId: 1,
         description: 'Before',
       }),
     );

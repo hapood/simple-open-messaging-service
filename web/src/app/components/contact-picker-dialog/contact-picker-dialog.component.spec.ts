@@ -48,7 +48,6 @@ describe('ContactPickerDialogComponent', () => {
   it('uses the same reference shape for a group', () => {
     const group = createGroupConversation(8, {
       id: 8,
-      ownerId: 1,
       account: '!group12',
       name: 'Group',
       domain: 'bravo.test',

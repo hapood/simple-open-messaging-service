@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import { syncGroupMeta, type GroupMetaSyncStorage } from './group-meta-sync';
 import { createGroupConversation } from './model';
+import { threadStructure } from './thread-feed.test-helper';
 
 function fixture() {
   const thread = createGroupConversation(12, {
@@ -13,26 +14,27 @@ function fixture() {
     avatar: '',
     description: '',
     profileRev: 1,
-    ownerId: 1,
   });
   const state: LocalThreadAttention = {
+    ...threadStructure(12, {
+      type: 'GROUP', authorityNamespaceId: 7,
+      profile: { account: 'room', domain: 'remote.test', namespaceId: 7, profileRev: 1 },
+    }),
     threadId: 12,
     localReadSeq: 0,
-    server: {
-      threadId: 12,
       threadFeedId: 1,
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
       alias: null,
-      threadProfileRev: 0,
+      threadProfileRev: 1,
       groupMetaFeedEndId: '3',
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,
       groupInviteEndFeedId: 0,
+      announcementReadFeedId: 0,
       lastReadSeq: 0,
       unreadCount: 0,
       lastMentionSeq: null,
-    },
   };
   const unresolved = {
     type: 'GROUP' as const,

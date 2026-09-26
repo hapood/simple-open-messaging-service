@@ -38,7 +38,7 @@ export class ContactPickerDialogComponent {
         account: target.account,
         domain: target.domain,
         namespaceId: target.namespaceId,
-        profileRev: target.profileRev,
+        profileRev: item.profileRev,
       },
       account:
         item.type === 'GROUP' ? item.group.account : item.peerUser.account,

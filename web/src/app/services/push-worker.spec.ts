@@ -2,8 +2,10 @@ import 'fake-indexeddb/auto';
 import { installPushWorker } from '../../push/push-worker';
 import { WebdbStorage } from './webdb-storage';
 import { PreferenceStorage } from './preference-storage';
+import { syncPushThreads } from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { ACTIVE_PAGE_LOCK } from './active-page';
+import { threadStructure } from './thread-feed.test-helper';
 import {
   readNotificationSince,
   resetNotificationSince,
@@ -40,24 +42,28 @@ describe('Push Service Worker entry', () => {
           data: {
             items: [
               {
-                threadId: 7,
+                ...threadStructure(7, {
+                  authorityNamespaceId: 1,
+                  profile: { account: 'peer', domain: 'test', namespaceId: 1, profileRev: 1 },
+                }),
                 threadFeedId: 1,
                 messageEndSeq: 1,
                 tombstoneEndSeq: 0,
                 alias: null,
-                threadProfileRev: 0,
+                threadProfileRev: 1,
                 groupMetaFeedEndId: null,
                 joinRequestEndFeedId: 0,
                 joinRequestReadFeedId: -1,
                 groupInviteEndFeedId: 0,
                 lastReadSeq: 0,
+                announcementReadFeedId: 0,
                 unreadCount: 1,
                 lastMentionSeq: null,
                 previews: [
                   {
                     seq: 1,
                     createdAt: '2026-09-09T00:00:00Z',
-                    sender: { account: 'peer', domain: 'test' },
+                    sender: { account: 'peer', domain: 'test', namespaceId: 1, profileRev: 1 },
                     status: 'LIVE',
                     text: 'Hello',
                   },
@@ -164,7 +170,7 @@ describe('Push Service Worker entry', () => {
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
-    expect(fetchSpy.mock.calls[0][0]).toBe('/api/v1/thread/feed-delta');
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/v1/thread-feed');
     expect(
       JSON.parse(String(fetchSpy.mock.calls[0][1]?.body)).previewCount,
     ).toBe(3);
@@ -339,6 +345,46 @@ describe('Push Service Worker entry', () => {
     });
     expect(show).not.toHaveBeenCalled();
     expect(await readNotificationSince()).toBe(0);
+  });
+  it('shows the page-worker result exactly once when it consumed the feed before push', async () => {
+    const pageResult = await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => await (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+      async () => {
+        throw new Error('unexpected group meta');
+      },
+      async () => false,
+    );
+    expect(pageResult.notifications).toHaveLength(1);
+    fetchSpy.mockClear();
+    await dispatch('push', {
+      data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [
+          {
+            feedId: pageResult.states[0].threadFeedId,
+            descriptor: pageResult.notifications[0],
+          },
+        ],
+      },
+    });
+    expect(show).toHaveBeenCalledOnce();
+    expect(await readNotificationSince()).toBe(1);
   });
   it('does not suppress a page notification when the page already consumed the target', async () => {
     await storage.putMeta('threadFeedCursor', 1);

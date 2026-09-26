@@ -112,7 +112,6 @@ interface Group {
   id: number;
   account: string;
   name: string;
-  ownerId: number;
   avatar: string;
   profileRev: number;
   description: string;
@@ -129,8 +128,9 @@ interface Group {
 }
 
 type ConversationItemBase = {
+  /** Avatar profile revision for the peer in P2P or the group itself. */
+  profileRev: number;
   visible?: boolean;
-  threadStateFeedId?: number;
   /** Account-scoped thread-feed coordinate. Present on every visible list item and authoritative for ordering. */
   threadFeedId?: number;
   threadId: number;
@@ -167,7 +167,7 @@ export type ConversationItem = ConversationItemBase &
   (
     | {
         type: 'P2P';
-        peerUser: Omit<S['UserResponseDto'], 'id'>;
+        peerUser: Omit<S['UserResponseDto'], 'id' | 'profileRev'>;
         /** Greatest peer-authored message coordinate selecting this thread's display profile. */
         peerProfileMessageSeq?: number;
         group?: never;
@@ -175,7 +175,7 @@ export type ConversationItem = ConversationItemBase &
     | {
         type: 'GROUP';
         peerUser?: never;
-        group: Group;
+        group: Omit<Group, 'profileRev'>;
         /** Fixed full-recovery boundary. Null outside a resumable Group Meta rebuild. */
         groupMetaRecoveryThrough: string | null;
         /** Last advertised server head; the current announcement is not trusted before catching up. */
@@ -202,7 +202,7 @@ export function createP2PConversation(
   peer: P2PPeerInput,
   overrides: Partial<P2PConversationItem> = {},
 ): P2PConversationItem {
-  const peerUser = localSubjectIdentity({
+  const peerProfile = localSubjectIdentity({
     avatar: '',
     bio: '',
     isGroup: false,
@@ -215,10 +215,12 @@ export function createP2PConversation(
     ...peer,
     ...overrides.peerUser,
   });
+  const { profileRev, ...peerUser } = peerProfile;
   return {
     threadId,
     authorityNamespaceId: peerUser.namespaceId,
     type: 'P2P',
+    profileRev,
     role: null,
     lastMessageAt: null,
     lastMessageSeq: null,
@@ -238,7 +240,7 @@ export function createP2PConversation(
   };
 }
 
-type GroupInput = Pick<Group, 'id' | 'account' | 'name' | 'ownerId'> &
+type GroupInput = Pick<Group, 'id' | 'account' | 'name'> &
   Partial<Group>;
 
 /** Construct the canonical local projection for an empty group thread. */
@@ -247,7 +249,7 @@ export function createGroupConversation(
   group: GroupInput,
   overrides: Partial<GroupConversationItem> = {},
 ): GroupConversationItem {
-  const groupProfile = localSubjectIdentity({
+  const groupInput = localSubjectIdentity({
     avatar: '',
     description: '',
     domain: 'local',
@@ -262,10 +264,12 @@ export function createGroupConversation(
     ...group,
     ...overrides.group,
   });
+  const { profileRev, ...groupProfile } = groupInput;
   return {
     threadId,
     authorityNamespaceId: groupProfile.namespaceId,
     type: 'GROUP',
+    profileRev,
     role: null,
     lastMessageAt: null,
     lastMessageSeq: null,
@@ -358,15 +362,4 @@ export interface DeletedMessageItem {
   updatedAt: number;
 }
 
-/** Message feed may arrive before the account-owned structural snapshot. */
-interface PendingThreadListItem {
-  threadId: number;
-  threadFeedId?: number;
-  type: 'PENDING';
-  unreadCount?: never;
-  lastMessageSeq?: never;
-  pinned?: never;
-  visible: false;
-  threadStateFeedId?: never;
-}
-export type ThreadListRecord = ConversationItem | PendingThreadListItem;
+export type ThreadListRecord = ConversationItem;

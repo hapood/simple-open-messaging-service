@@ -1,7 +1,4 @@
-import {
-  isThreadStateSnapshot,
-  type ThreadStateSnapshot,
-} from '../../../../shared/thread-state';
+import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import {
   createGroupConversation,
   createP2PConversation,
@@ -12,18 +9,15 @@ import {
 /** Merge only structural state; feed previews and local read progress have independent ownership. */
 export function applyThreadStateSnapshot(
   current: ThreadListRecord | undefined,
-  snapshot: ThreadStateSnapshot,
+  snapshot: ThreadFeedSnapshot,
   feedId: number,
 ): ConversationItem {
   if (
-    !isThreadStateSnapshot(snapshot) ||
     !Number.isSafeInteger(feedId) ||
     feedId < 1
   )
     throw new Error('invalid thread state snapshot');
-  const threadFeedId = current?.threadFeedId;
-  if (current?.type === 'PENDING') current = undefined;
-  if (current?.threadStateFeedId && current.threadStateFeedId >= feedId)
+  if (current?.threadFeedId && current.threadFeedId >= feedId)
     return current;
   if (current && current.type !== snapshot.type)
     throw new Error('thread type changed');
@@ -38,13 +32,11 @@ export function applyThreadStateSnapshot(
       : createGroupConversation(snapshot.threadId, {
           ...identity,
           id: snapshot.threadId,
-          ownerId: 0,
         }));
   const next = {
     ...base,
-    ...(threadFeedId !== undefined ? { threadFeedId } : {}),
+    threadFeedId: feedId,
     visible: true,
-    threadStateFeedId: feedId,
     authorityNamespaceId: snapshot.authorityNamespaceId,
     conversationState: snapshot.conversationState,
     blocked: snapshot.blocked,
@@ -54,17 +46,27 @@ export function applyThreadStateSnapshot(
         ? snapshot.conversationState === 'ACTIVE'
         : undefined,
   };
-  if (next.type === 'P2P' && next.peerProfileMessageSeq == null) {
-    const same =
+  if (next.type === 'P2P') {
+    const sameAddress =
       next.peerUser.account === identity.account &&
       next.peerUser.domain === identity.domain &&
-      next.peerUser.namespaceId === identity.namespaceId &&
-      next.peerUser.profileRev === identity.profileRev;
-    next.peerUser = {
-      ...next.peerUser,
-      ...identity,
-      ...(same ? { name: next.peerUser.name } : { avatar: '', bio: '' }),
-    };
+      next.peerUser.namespaceId === identity.namespaceId;
+    if (!sameAddress) {
+      next.peerProfileMessageSeq = undefined;
+      next.profileRev = identity.profileRev;
+    } else if (next.peerProfileMessageSeq == null) {
+      next.profileRev = Math.max(next.profileRev, identity.profileRev);
+    }
+    if (next.peerProfileMessageSeq == null) {
+      const { profileRev: _rev, ...peerIdentity } = identity;
+      next.peerUser = {
+        ...next.peerUser,
+        ...peerIdentity,
+        ...(sameAddress && next.profileRev === identity.profileRev
+          ? { name: next.peerUser.name }
+          : { avatar: '', bio: '' }),
+      };
+    }
   }
   return next;
 }

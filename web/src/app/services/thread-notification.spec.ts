@@ -36,13 +36,13 @@ describe('thread notification presentation', () => {
           {
             seq: 6,
             createdAt: '2026-09-09T00:00:00Z',
-            sender: { account: 'peer', domain: 'test' },
+            sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
             status: 'USER_RETRACTION',
           },
           {
             seq: 8,
             createdAt: '2026-09-09T00:00:00Z',
-            sender: { account: 'peer', domain: 'test' },
+            sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
             status: 'MODERATION_REMOVAL',
           },
         ],
@@ -62,7 +62,7 @@ describe('thread notification presentation', () => {
     );
     value.item = createGroupConversation(
       7,
-      { id: 7, account: '!group', name: 'Group profile', ownerId: 1 },
+      { id: 7, account: '!group', name: 'Group profile' },
       { alias: 'Stale group label' },
     );
     value.state.alias = 'My group';
@@ -100,7 +100,7 @@ describe('thread notification presentation', () => {
     value.state.previews = [6, 7, 8].map((seq) => ({
       seq,
       createdAt: '2026-09-09T00:00:00Z',
-      sender: { account: 'peer', domain: 'test' },
+      sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
       status: 'LIVE' as const,
       text: String(seq),
     }));

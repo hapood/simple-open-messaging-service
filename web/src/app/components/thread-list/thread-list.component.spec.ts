@@ -262,7 +262,6 @@ describe('ThreadListComponent', () => {
         id: 21,
         account: 'team',
         name: 'Team',
-        ownerId: 11,
       }),
       p2p(2, 12),
     ]);
@@ -307,7 +306,6 @@ describe('ThreadListComponent', () => {
         id: 21,
         account: 'team',
         name: 'Team',
-        ownerId: 11,
       }),
       role: 'OWNER' as const,
     };

@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { applyThreadStateSnapshot } from './thread-state-projection';
-import { threadStateEvent } from './thread-state.test-helper';
+import { threadFeedSnapshot } from './thread-feed.test-helper';
 
-describe('thread state projection', () => {
-  it('promotes a pending item and retains content when blocking or replaying a state', () => {
-    const body = threadStateEvent(2, 9).body;
-    const first = applyThreadStateSnapshot(
-      { type: 'PENDING', threadId: 9, threadFeedId: 1, visible: false },
-      body,
-      2,
-    );
-    expect(first.visible).toBe(true);
-    expect(first.threadFeedId).toBe(1);
+describe('complete thread-feed structure projection', () => {
+  it('creates a thread and retains content across block changes and stale replays', () => {
+    const firstSnapshot = threadFeedSnapshot(9, {
+      threadFeedId: 2,
+      profile: { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+    });
+    const first = applyThreadStateSnapshot(undefined, firstSnapshot, 2);
+    expect(first).toMatchObject({ type: 'P2P', threadFeedId: 2, visible: true });
     const withContent = {
       ...first,
       lastMessageSeq: 5,
@@ -21,7 +19,7 @@ describe('thread state projection', () => {
     };
     const blocked = applyThreadStateSnapshot(
       withContent,
-      { ...body, blocked: true },
+      { ...firstSnapshot, threadFeedId: 3, blocked: true },
       3,
     );
     expect(blocked).toMatchObject({
@@ -30,18 +28,15 @@ describe('thread state projection', () => {
       unreadCount: 4,
       lastMessagePreview: 'hello',
     });
-    expect(applyThreadStateSnapshot(blocked, body, 2)).toBe(blocked);
+    expect(applyThreadStateSnapshot(blocked, firstSnapshot, 2)).toBe(blocked);
   });
-  it('changes the default reference on re-establishment while retaining a message-selected peer profile', () => {
-    const body = threadStateEvent(2, 9, {
-      profile: {
-        account: 'bob',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 1,
-      },
-    }).body;
-    const first = applyThreadStateSnapshot(undefined, body, 2);
+
+  it('changes the default reference on re-establishment without replacing a message-selected peer', () => {
+    const initial = threadFeedSnapshot(9, {
+      threadFeedId: 2,
+      profile: { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+    });
+    const first = applyThreadStateSnapshot(undefined, initial, 2);
     if (first.type !== 'P2P') throw new Error('P2P expected');
     const messageProfile = {
       ...first,
@@ -51,9 +46,9 @@ describe('thread state projection', () => {
     const reopened = applyThreadStateSnapshot(
       messageProfile,
       {
-        ...body,
-        establishedAt: 20,
-        profile: { ...body.profile, profileRev: 3 },
+        ...initial,
+        threadFeedId: 4,
+        profile: { ...initial.profile, profileRev: 3 },
       },
       4,
     );
@@ -61,53 +56,34 @@ describe('thread state projection', () => {
       peerUser: { name: 'Message author', profileRev: 2 },
     });
   });
-  it('does not rewind the group-meta display profile on an unrelated thread update', () => {
-    const body = threadStateEvent(2, 9, {
+
+  it('retains a newer group-meta profile, roster and cursor across lifecycle changes', () => {
+    const initial = threadFeedSnapshot(9, {
+      threadFeedId: 2,
       type: 'GROUP',
-      profile: {
-        account: '!group',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 1,
-      },
-    }).body;
-    const first = applyThreadStateSnapshot(undefined, body, 2);
-    if (first.type !== 'GROUP') throw new Error('group expected');
-    const latest = {
-      ...first,
-      group: { ...first.group, profileRev: 3, name: 'Current group' },
-    };
-    expect(
-      applyThreadStateSnapshot(latest, { ...body, blocked: true }, 3),
-    ).toMatchObject({
-      group: { profileRev: 3, name: 'Current group' },
+      profile: { account: '!group', domain: 'local', namespaceId: 0, profileRev: 1 },
     });
-  });
-  it('preserves the roster and its cursor across read-only and re-establishment states', () => {
-    const body = threadStateEvent(2, 9, {
-      type: 'GROUP',
-      profile: {
-        account: '!group',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 1,
-      },
-    }).body;
-    const first = applyThreadStateSnapshot(undefined, body, 2);
+    const first = applyThreadStateSnapshot(undefined, initial, 2);
     if (first.type !== 'GROUP') throw new Error('group expected');
     const latest = {
       ...first,
-      group: { ...first.group, memberCount: 4, groupMetaFeedId: '20' },
+      group: {
+        ...first.group,
+        profileRev: 3,
+        name: 'Current group',
+        memberCount: 4,
+        groupMetaFeedId: '20',
+      },
     };
-    expect(
-      applyThreadStateSnapshot(latest, { ...body, establishedAt: 30 }, 6),
-    ).toMatchObject({ group: { memberCount: 4, groupMetaFeedId: '20' } });
-    expect(
-      applyThreadStateSnapshot(
-        latest,
-        { ...body, conversationState: 'READ_ONLY' },
-        5,
-      ),
-    ).toMatchObject({ group: { memberCount: 4, groupMetaFeedId: '20' } });
+    expect(applyThreadStateSnapshot(
+      latest,
+      { ...initial, threadFeedId: 3, blocked: true },
+      3,
+    )).toMatchObject({ group: { profileRev: 3, name: 'Current group' } });
+    expect(applyThreadStateSnapshot(
+      latest,
+      { ...initial, threadFeedId: 6, conversationState: 'READ_ONLY' },
+      6,
+    )).toMatchObject({ group: { memberCount: 4, groupMetaFeedId: '20' } });
   });
 });

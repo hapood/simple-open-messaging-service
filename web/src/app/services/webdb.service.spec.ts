@@ -1,4 +1,3 @@
-import { threadStateEvent } from './thread-state.test-helper';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -8,13 +7,15 @@ import { messageTomb } from '../../../../shared/message-tomb';
 import {
   advanceLocalAttentionRead,
   attentionCountRange,
-  createLocalThreadAttention,
+  attentionSnapshot,
   mergeThreadAttention,
   projectThreadAttention,
 } from '../../../../shared/thread-attention';
+import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
 import {
   createGroupConversation,
   createP2PConversation,
+  type ConversationItem,
   type Message,
 } from './model';
 import type { ClientStateFeedItem } from './user.service';
@@ -26,6 +27,38 @@ import {
   STATE_FEED_WORKER_FACTORY,
   WebdbService,
 } from './webdb.service';
+
+const peerProfile = {
+  account: 'peer',
+  domain: 'local',
+  namespaceId: 0,
+  profileRev: 0,
+};
+
+async function seedGroupFeed(webdb: WebdbService): Promise<void> {
+  await webdb.mergeThreadStates([threadFeedSnapshot(9, {
+    type: 'GROUP', role: 'OWNER', profile: {
+      account: '!team', domain: 'local', namespaceId: 0, profileRev: 0,
+    },
+  })]);
+}
+
+async function seedThread(webdb: WebdbService, item: ConversationItem): Promise<void> {
+  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
+  const feedId = item.threadFeedId ?? 1;
+  await webdb.mergeThreadStates([threadFeedSnapshot(item.threadId, {
+    threadFeedId: feedId,
+    type: item.type,
+    role: item.role,
+    authorityNamespaceId: item.authorityNamespaceId,
+    profile: {
+      account: subject.account, domain: subject.domain,
+      namespaceId: subject.namespaceId, profileRev: item.profileRev,
+    },
+    threadProfileRev: item.profileRev,
+  })]);
+  await webdb.putThread({ ...item, threadFeedId: feedId });
+}
 
 describe('WebdbService', () => {
   describe('IDB-backed storage (fake-indexeddb)', () => {
@@ -70,7 +103,7 @@ describe('WebdbService', () => {
           userId: '1',
           target: 12,
           after: 3,
-          url: '/api/v1/thread/feed-delta',
+          url: '/api/v1/thread-feed',
         });
         worker.onmessage!.call(worker, {
           data: {
@@ -122,9 +155,10 @@ describe('WebdbService', () => {
       }
     });
 
-    it('persists attention without creating a conversation or advancing the feed cursor', async () => {
+    it('creates a conversation from the complete feed snapshot without advancing the cursor', async () => {
       await webdb.openForUser('1');
       const snapshot = {
+        ...threadStructure(7, { profile: peerProfile }),
         threadId: 7,
         threadFeedId: 10,
         messageEndSeq: 200,
@@ -138,19 +172,42 @@ describe('WebdbService', () => {
         lastReadSeq: 100,
         unreadCount: 8,
         lastMentionSeq: 104,
+        announcementReadFeedId: 0,
+        previews: [],
       };
       await webdb.mergeThreadStates([snapshot]);
       expect(await webdb.getThreadStates()).toEqual([
-        { threadId: 7, server: snapshot, localReadSeq: 100 },
+        { ...snapshot, localReadSeq: 100 },
       ]);
-      expect(await webdb.getThreads()).toEqual([]);
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({ threadId: 7, type: 'P2P', threadFeedId: 10 }),
+      ]);
       expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
+    });
+
+    it('projects a counterpart-only thread revision and preserves it across stale list writes', async () => {
+      await webdb.openForUser('1');
+      const item = createP2PConversation(7, { account: 'peer', name: 'Old', profileRev: 1 });
+      await webdb.mergeThreadStates([{
+        ...threadStructure(7, { profile: { ...peerProfile, profileRev: 2 } }),
+        threadId: 7, threadFeedId: 10, messageEndSeq: 6, tombstoneEndSeq: 0,
+        alias: null, threadProfileRev: 2, groupMetaFeedEndId: null,
+        joinRequestEndFeedId: 0, joinRequestReadFeedId: -1, groupInviteEndFeedId: 0,
+        lastReadSeq: 0, unreadCount: 0, lastMentionSeq: null, previews: [],
+        announcementReadFeedId: 0,
+      }]);
+      expect((await webdb.getThreads())[0]?.profileRev).toBe(2);
+      await webdb.putThread({ ...item, threadFeedId: 10, profileRev: 99 });
+      const stored = (await webdb.getThreads())[0];
+      expect(stored?.profileRev).toBe(2);
+      if (stored?.type !== 'P2P') throw new Error('expected P2P thread');
+      expect('profileRev' in stored.peerUser).toBe(false);
     });
 
     it('preserves optimistic progress across snapshots and accepts remote rollback by feed ID', async () => {
       await webdb.openForUser('1');
-      await webdb.advanceThreadRead(7, 105);
       const snapshot = {
+        ...threadStructure(7, { profile: peerProfile }),
         threadId: 7,
         threadFeedId: 10,
         messageEndSeq: 200,
@@ -162,24 +219,26 @@ describe('WebdbService', () => {
         joinRequestReadFeedId: -1,
         groupInviteEndFeedId: 0,
         lastReadSeq: 110,
+        announcementReadFeedId: 0,
         unreadCount: 2,
         lastMentionSeq: null,
+        previews: [],
       };
+      await webdb.mergeThreadStates([{ ...snapshot, threadFeedId: 8, lastReadSeq: 100 }], 8);
+      await webdb.advanceThreadRead(7, 105);
       await webdb.mergeThreadStates([snapshot], 10);
       await webdb.mergeThreadStates([
         { ...snapshot, threadFeedId: 9, lastReadSeq: 120 },
       ]);
       await webdb.mergeThreadStates([{ ...snapshot, lastReadSeq: 130 }]);
       expect((await webdb.getThreadStates())[0]).toEqual({
-        threadId: 7,
-        server: snapshot,
+        ...snapshot,
         localReadSeq: 105,
       });
       const rolledBack = { ...snapshot, threadFeedId: 11, lastReadSeq: 95 };
       await webdb.mergeThreadStates([rolledBack]);
       expect(await webdb.advanceThreadRead(7, 104)).toEqual({
-        threadId: 7,
-        server: rolledBack,
+        ...rolledBack,
         localReadSeq: 105,
       });
       expect(await webdb.getMeta('threadFeedCursor')).toBe(10);
@@ -188,6 +247,7 @@ describe('WebdbService', () => {
     it('serializes concurrent local progress and snapshots without losing either', async () => {
       await webdb.openForUser('1');
       const snapshot = {
+        ...threadStructure(7, { profile: peerProfile }),
         threadId: 7,
         threadFeedId: 1,
         messageEndSeq: 200,
@@ -201,23 +261,29 @@ describe('WebdbService', () => {
         lastReadSeq: 100,
         unreadCount: 8,
         lastMentionSeq: null,
+        announcementReadFeedId: 0,
+        previews: [],
       };
+      await webdb.mergeThreadStates([snapshot], 1);
+      const newer = { ...snapshot, threadFeedId: 2, lastReadSeq: 101 };
       await Promise.all([
         webdb.advanceThreadRead(7, 105),
-        webdb.mergeThreadStates([snapshot], 1),
+        webdb.mergeThreadStates([newer], 2),
         webdb.advanceThreadRead(7, 110),
       ]);
       expect(await webdb.getThreadStates()).toEqual([
-        { threadId: 7, server: snapshot, localReadSeq: 110 },
+        { ...newer, localReadSeq: 110 },
       ]);
     });
 
     it('keeps attention across message-only resets but clears it on account cache deletion', async () => {
       await webdb.openForUser('1');
+      const snapshot = threadFeedSnapshot(7, { profile: peerProfile, lastReadSeq: 100 });
+      await webdb.mergeThreadStates([snapshot], 1);
       await webdb.advanceThreadRead(7, 105);
       await webdb.recreateMessageCache();
       expect(await webdb.getThreadStates()).toEqual([
-        { threadId: 7, server: null, localReadSeq: 105 },
+        { ...snapshot, localReadSeq: 105 },
       ]);
       await webdb.closeAndDelete('1');
       await webdb.openForUser('1');
@@ -234,6 +300,7 @@ describe('WebdbService', () => {
     it('rejects an invalid batch before writing any snapshot or cursor', async () => {
       await webdb.openForUser('1');
       const snapshot = {
+        ...threadStructure(7, { profile: peerProfile }),
         threadId: 7,
         threadFeedId: 1,
         messageEndSeq: 200,
@@ -247,6 +314,8 @@ describe('WebdbService', () => {
         lastReadSeq: 100,
         unreadCount: 8,
         lastMentionSeq: null,
+        announcementReadFeedId: 0,
+        previews: [],
       };
       await expect(
         webdb.mergeThreadStates(
@@ -260,10 +329,9 @@ describe('WebdbService', () => {
 
     it('normalizes local mirror members without changing the group source and keeps unresolved members', async () => {
       const db = await webdb.openForUser('1');
-      await webdb.putThread(
+      await seedThread(webdb,
         createGroupConversation(90, {
           id: 90,
-          ownerId: 0,
           name: 'Mirror',
           account: '!mirror',
           domain: 'authority.test',
@@ -327,7 +395,7 @@ describe('WebdbService', () => {
       });
       expect(await db!.get('threads', 90)).toMatchObject({
         authorityNamespaceId: 7,
-        group: { domain: 'authority.test', namespaceId: 7, profileRev: 4 },
+        profileDomain: 'authority.test', profileNamespaceId: 7,
       });
       expect(await db!.getAll('profiles')).toHaveLength(0);
       expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
@@ -433,10 +501,9 @@ describe('WebdbService', () => {
 
     it('applies metadata references without accepting inline profile content', async () => {
       const db = await webdb.openForUser('1');
-      await webdb.putThread(
+      await seedThread(webdb,
         createGroupConversation(90, {
           id: 90,
-          ownerId: 1,
           name: 'Team',
           account: '!team',
         }),
@@ -684,6 +751,10 @@ describe('WebdbService', () => {
       expect(await webdb.countUnreadMessageSlots(42, 3, 7, owner)).toBe(1);
       expect(await webdb.countUnreadMessageSlots(42, 7, 7, owner)).toBe(0);
       const snapshot = {
+        ...threadStructure(42, {
+          authorityNamespaceId: 2,
+          profile: { account: 'other', domain: 'peer.test', namespaceId: 2, profileRev: 0 },
+        }),
         threadId: 42,
         threadFeedId: 1,
         messageEndSeq: 11,
@@ -696,10 +767,11 @@ describe('WebdbService', () => {
         groupInviteEndFeedId: 0,
         lastReadSeq: 0,
         unreadCount: 6,
+        announcementReadFeedId: 0,
         lastMentionSeq: 3,
       };
       let state = advanceLocalAttentionRead(
-        mergeThreadAttention(createLocalThreadAttention(42), snapshot),
+        mergeThreadAttention(undefined, snapshot),
         3,
       );
       for (const incoming of [
@@ -801,10 +873,9 @@ describe('WebdbService', () => {
         'namespaces',
         'profileAvatarBlobs',
         'profiles',
-        'relationshipIntents',
         'relationshipRequests',
         'settings',
-        'threadStates',
+        'threadPreviews',
         'threads',
       ]);
       const messageDb = await webdb.messageDb();
@@ -1065,18 +1136,7 @@ describe('WebdbService', () => {
 
     it('full recreation blocks new core operations and waits for an admitted core read', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-        peerUser: {
-          id: 2,
-          account: 'peer',
-          name: 'Peer',
-          domain: 'local',
-          namespaceId: 0,
-        },
-      } as never);
+      await webdb.mergeThreadStates([threadFeedSnapshot(7, { profile: peerProfile })]);
       const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
@@ -1163,21 +1223,17 @@ describe('WebdbService', () => {
         expect(await webdb.getThreads()).toEqual([]);
         await webdb.applyStateFeedPage([event(true, 2)], 2);
         expect(await webdb.getThreads()).toEqual([]);
-        await webdb.applyStateFeedPage(
-          [
-            threadStateEvent(3, 77, {
-              type: kind,
-              conversationState: 'READ_ONLY',
-              profile: {
-                account: kind === 'GROUP' ? '!history' : 'alice',
-                domain: 'local',
-                namespaceId: 0,
-                profileRev: 0,
-              },
-            }),
-          ],
-          3,
-        );
+        await webdb.mergeThreadStates([
+          threadFeedSnapshot(77, {
+            threadFeedId: 3,
+            type: kind,
+            conversationState: 'READ_ONLY',
+            profile: {
+              account: kind === 'GROUP' ? '!history' : 'alice',
+              domain: 'local', namespaceId: 0, profileRev: 0,
+            },
+          }),
+        ], 3);
         expect(await webdb.getThreads()).toEqual([
           expect.objectContaining({
             threadId: 77,
@@ -1198,21 +1254,6 @@ describe('WebdbService', () => {
 
     it('atomically advances the state-feed cursor and derives P2P read-only state', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-        peerUser: {
-          id: 2,
-          account: 'peer',
-          name: 'Peer',
-          domain: 'local',
-          namespaceId: 0,
-        },
-        friendshipActive: true,
-        conversationState: 'ACTIVE',
-        blocked: true,
-      } as never);
       const revoked: ClientStateFeedItem = {
         feedId: 12,
         namespaceId: 12,
@@ -1239,18 +1280,15 @@ describe('WebdbService', () => {
         },
       };
 
-      await webdb.applyStateFeedPage(
-        [
-          revoked,
-          threadStateEvent(13, 7, {
-            conversationState: 'READ_ONLY',
-            blocked: true,
-          }),
-        ],
-        13,
-      );
+      await webdb.applyStateFeedPage([revoked], 12);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, {
+          threadFeedId: 13, conversationState: 'READ_ONLY', blocked: true,
+          profile: peerProfile,
+        }),
+      ], 13);
 
-      expect(await webdb.getMeta('stateFeedId')).toBe(13);
+      expect(await webdb.getMeta('stateFeedId')).toBe(12);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 7),
       ).toMatchObject({
@@ -1259,7 +1297,7 @@ describe('WebdbService', () => {
       });
     });
 
-    it('keeps bilateral intents out of the thread list until THREAD_STATE arrives', async () => {
+    it('keeps bilateral intents out of the thread list until the complete thread snapshot arrives', async () => {
       await webdb.openForUser('1');
       const peer = {
         namespaceId: 0,
@@ -1311,7 +1349,12 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage(items, 21);
       expect(await webdb.getThreads()).toEqual([]);
-      await webdb.applyStateFeedPage([threadStateEvent(22, 7)], 22);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, {
+          threadFeedId: 22,
+          profile: { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+        }),
+      ], 22);
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
@@ -1325,7 +1368,7 @@ describe('WebdbService', () => {
           }),
         }),
       ]);
-      expect(await webdb.getMeta('stateFeedId')).toBe(22);
+      expect(await webdb.getMeta('stateFeedId')).toBe(21);
     });
 
     it.each(['WITHDRAWN', 'REJECTED'] as const)(
@@ -1459,6 +1502,64 @@ describe('WebdbService', () => {
         actionableTotal: 1,
         items: [expect.objectContaining({ status: 'ACCEPTED' })],
       });
+    });
+
+    it('settles both pending group request directions on a group-authored acceptance', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const group = {
+        namespaceId: 0,
+        account: '!group',
+        domain: 'local',
+        isLocal: true,
+        name: 'Group',
+        avatar: '',
+        description: '',
+        profileRev: 1,
+      };
+      const event = (
+        feedId: number,
+        direction: 'INCOMING' | 'OUTGOING',
+        status: 'REQUESTED' | 'ACCEPTED',
+      ): ClientStateFeedItem => ({
+        feedId,
+        namespaceId: 0,
+        eventType: 'RELATIONSHIP_INTENT',
+        account: direction === 'INCOMING' ? '!group' : 'me',
+        domain: 'local',
+        subjectAccount: direction === 'INCOMING' ? 'me' : '!group',
+        subjectDomain: 'local',
+        body: {
+          status,
+          note: '',
+          requestedAt,
+          expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
+          threadId: 8,
+          group,
+        },
+      });
+
+      await webdb.applyStateFeedPage(
+        [
+          event(20, 'INCOMING', 'REQUESTED'),
+          event(21, 'OUTGOING', 'REQUESTED'),
+        ],
+        21,
+      );
+      await webdb.applyStateFeedPage([event(22, 'INCOMING', 'ACCEPTED')], 22);
+
+      expect(await db!.getAll('relationshipRequests')).toEqual([
+        expect.objectContaining({ direction: 'INCOMING', status: 'ACCEPTED' }),
+        expect.objectContaining({ direction: 'OUTGOING', status: 'ACCEPTED' }),
+      ]);
+      expect(
+        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
+      ).toMatchObject({ total: 1, actionableTotal: 0 });
+      await webdb.applyStateFeedPage(
+        [event(23, 'INCOMING', 'ACCEPTED')],
+        23,
+      );
+      expect(await db!.getAll('relationshipRequests')).toHaveLength(2);
     });
 
     it('persists a successful local accept on the existing received projection', async () => {
@@ -1778,33 +1879,12 @@ describe('WebdbService', () => {
 
     it('rebuilds state-feed projections without resetting the independent group roster', async () => {
       const db = await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-        peerUser: {
-          id: 2,
-          account: 'peer',
-          name: 'Peer',
-          domain: 'local',
-          namespaceId: 0,
-        },
-        friendshipActive: true,
-        conversationState: 'ACTIVE',
-      } as never);
-      await webdb.putThread({
-        threadId: 9,
-        authorityNamespaceId: 0,
-        type: 'GROUP',
-        blocked: true,
-        group: {
-          account: '!team',
-          domain: 'local',
-          namespaceId: 0,
-          memberCount: 1,
-          groupMetaFeedId: '1',
-        },
-      } as never);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, { profile: peerProfile }),
+        threadFeedSnapshot(9, { type: 'GROUP', role: 'OWNER', profile: {
+          account: '!team', domain: 'local', namespaceId: 0, profileRev: 0,
+        } }),
+      ]);
       await db!.put('members', {
         threadId: 9,
         namespaceId: 0,
@@ -1820,7 +1900,10 @@ describe('WebdbService', () => {
       expect(await db!.getAll('members')).toEqual([
         expect.objectContaining({ account: 'alice' }),
       ]);
-      expect(await webdb.getThreads()).toEqual([]);
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({ threadId: 7 }),
+        expect.objectContaining({ threadId: 9 }),
+      ]);
 
       await db!.put('members', {
         threadId: 9,
@@ -1837,9 +1920,10 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(4);
     });
 
-    it('keeps a message-first item invisible and atomically promotes it from THREAD_STATE', async () => {
+    it('atomically creates the thread and attention from one complete feed snapshot', async () => {
       const db = await webdb.openForUser('1');
       const head = {
+        ...threadStructure(9, { profile: peerProfile }),
         threadId: 9,
         threadFeedId: 4,
         messageEndSeq: 8,
@@ -1851,93 +1935,49 @@ describe('WebdbService', () => {
         joinRequestReadFeedId: -1,
         groupInviteEndFeedId: 0,
         lastReadSeq: 3,
+        announcementReadFeedId: 0,
         unreadCount: 5,
         lastMentionSeq: null,
+        previews: [],
       };
       await webdb.mergeThreadStates([head], 4);
-      expect(await webdb.getThreads()).toEqual([]);
-      expect(await db!.get('threads', 9)).toEqual({
-        threadId: 9,
-        threadFeedId: 4,
-        type: 'PENDING',
-        visible: false,
-      });
-      await webdb.applyStateFeedPage([threadStateEvent(6, 9)], 6);
       expect(await webdb.getThreads()).toEqual([
-        expect.objectContaining({ threadId: 9, visible: true }),
+        expect.objectContaining({ threadId: 9, threadFeedId: 4, visible: true }),
       ]);
-      expect((await webdb.getThreadStates())[0].server).toEqual(head);
+      expect(await db!.get('threads', 9)).toMatchObject({ type: 'P2P' });
+      expect(attentionSnapshot((await webdb.getThreadStates())[0])).toEqual(head);
       expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
-      expect(await webdb.getMeta('stateFeedId')).toBe(6);
-      const invalid = threadStateEvent(7, 10);
-      invalid.body.profile.namespaceId = -1;
-      await expect(
-        webdb.applyStateFeedPage([threadStateEvent(7, 11), invalid], 7),
-      ).rejects.toThrow();
+      const invalid = threadFeedSnapshot(10, {
+        threadFeedId: 7,
+        profile: { account: 'peer', domain: 'local', namespaceId: -1, profileRev: 0 },
+      });
+      await expect(webdb.mergeThreadStates([
+        threadFeedSnapshot(11, { threadFeedId: 6, profile: peerProfile }), invalid,
+      ], 7)).rejects.toThrow();
       expect(await db!.get('threads', 11)).toBeUndefined();
-      expect(await webdb.getMeta('stateFeedId')).toBe(6);
+      expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
     });
 
-    it('applies THREAD_STATE true and false deltas to the cached thread', async () => {
+    it('applies block and unblock deltas from the thread feed', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-        peerUser: {
-          id: 2,
-          account: 'peer',
-          name: 'Peer',
-          domain: 'local',
-          namespaceId: 0,
-        },
-        blocked: false,
-      } as never);
-      const event = (
-        feedId: number,
-        blocked: boolean,
-      ): ClientStateFeedItem => ({
-        feedId,
-        namespaceId: 0,
-        account: '',
-        domain: 'local',
-        eventType: 'THREAD_STATE',
-        subjectAccount: '7',
-        subjectDomain: 'local',
-        body: {
-          threadId: 7,
+      const event = (feedId: number, blocked: boolean) =>
+        threadFeedSnapshot(7, {
+          threadFeedId: feedId,
           blocked,
-          type: 'P2P',
-          authorityNamespaceId: 0,
-          establishedAt: 1,
-          conversationState: 'ACTIVE',
-          role: null,
-          profile: {
-            account: 'peer',
-            domain: 'local',
-            namespaceId: 0,
-            profileRev: 1,
-          },
-        },
-      });
-
-      await webdb.applyStateFeedPage([event(5, true)], 5);
+          profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 1 },
+        });
+      await webdb.mergeThreadStates([event(5, true)], 5);
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: true });
-
-      await webdb.applyStateFeedPage([event(6, false)], 6);
+      await webdb.mergeThreadStates([event(6, false)], 6);
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: false });
-      expect(await webdb.getMeta('stateFeedId')).toBe(6);
+      expect(await webdb.getMeta('threadFeedCursor')).toBe(6);
     });
 
     it('optimistically activates only the greatest newly discovered namespace', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({
-        threadId: 7,
-        authorityNamespaceId: 12,
-        type: 'P2P',
-        conversationState: 'ACTIVE',
-        peerUser: { domain: 'peer.test', namespaceId: 12 },
-      } as never);
+      await seedThread(webdb, createP2PConversation(7,
+        { account: 'peer', domain: 'peer.test', namespaceId: 12, name: '' },
+      ));
       await webdb.commitResolvedProfile({
         name: 'Old',
         account: 'old',
@@ -1976,14 +2016,11 @@ describe('WebdbService', () => {
 
     it('archives a rejected namespace without reactivating a repeated fact', async () => {
       await webdb.openForUser('1');
-      const thread = {
-        threadId: 7,
-        authorityNamespaceId: 12,
-        type: 'P2P',
-        conversationState: 'ACTIVE',
-        peerUser: { domain: 'peer.test', namespaceId: 12 },
-      } as never;
-      await webdb.putThread(thread);
+      const thread = createP2PConversation(7,
+        { account: 'peer', domain: 'peer.test', namespaceId: 12, name: '' },
+        { threadFeedId: 1 },
+      );
+      await seedThread(webdb, thread);
       await webdb.archiveNamespace('peer.test', 12);
       await webdb.putThread(thread);
 
@@ -2001,10 +2038,9 @@ describe('WebdbService', () => {
     it('commits compact member references and a group profile without treating the group profile as a member', async () => {
       await webdb.openForUser('1');
       const db = await webdb.db();
-      await webdb.putThread(
+      await seedThread(webdb,
         createGroupConversation(9, {
           id: 9,
-          ownerId: 0,
           account: '!team',
           domain: 'local',
           name: 'Old group name',
@@ -2045,13 +2081,18 @@ describe('WebdbService', () => {
           ],
         },
       });
+      expect((await webdb.getThreads())[0].profileRev).toBe(0);
+      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
+        threadFeedId: 2, type: 'GROUP', role: 'OWNER',
+        profile: { account: '!team', domain: 'local', namespaceId: 0, profileRev: 4 },
+      })]);
+      expect((await webdb.getThreads())[0].profileRev).toBe(4);
+      expect(await db.get('threads', 9)).toMatchObject({ threadProfileRev: 4 });
+      expect(await db.get('threads', 9)).not.toHaveProperty('group');
       expect(await db.get('threads', 9)).toMatchObject({
-        group: {
-          name: 'Old group name',
-          profileRev: 4,
-          memberCount: 2,
-          groupMetaFeedId: '3',
-        },
+        subjectName: 'Old group name',
+        groupMemberCount: 2,
+        groupMetaFeedId: '3',
       });
       expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
       const members = await webdb.queryGroupMembers({ threadId: 9, take: 20 });
@@ -2068,10 +2109,10 @@ describe('WebdbService', () => {
 
     it('commits announcement publish, clear and clipped full recovery as distinct states', async () => {
       await webdb.openForUser('1');
+      await seedGroupFeed(webdb);
       await webdb.putThread(
         createGroupConversation(9, {
           id: 9,
-          ownerId: 0,
           account: '!team',
           domain: 'local',
           name: 'Team',
@@ -2130,10 +2171,10 @@ describe('WebdbService', () => {
 
     it('stages an announcement across full pages until the fixed recovery boundary', async () => {
       await webdb.openForUser('1');
+      await seedGroupFeed(webdb);
       await webdb.putThread(
         createGroupConversation(9, {
           id: 9,
-          ownerId: 0,
           account: '!team',
           domain: 'local',
           name: 'Team',
@@ -2159,7 +2200,7 @@ describe('WebdbService', () => {
           ],
         },
       });
-      expect((await webdb.getThreads())[0].group?.announcement).toBeUndefined();
+      expect((await webdb.getThreads())[0].group?.announcement).toBeNull();
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
@@ -2181,6 +2222,7 @@ describe('WebdbService', () => {
 
     it('materializes full group metadata and pages/searches the local roster', async () => {
       const db = await webdb.openForUser('1');
+      await seedGroupFeed(webdb);
       await webdb.putThread({
         threadId: 9,
         authorityNamespaceId: 0,
@@ -2411,6 +2453,13 @@ describe('WebdbService', () => {
       });
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
+      ).toMatchObject({ role: 'OWNER' });
+      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
+        threadFeedId: 2, type: 'GROUP', role: 'ADMIN',
+        profile: { account: '!team', domain: 'local', namespaceId: 0, profileRev: 0 },
+      })]);
+      expect(
+        (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: 'ADMIN' });
 
       await webdb.applyGroupMetaPage({
@@ -2435,6 +2484,13 @@ describe('WebdbService', () => {
           groupMetaFeedEndId: '5',
         },
       });
+      expect(
+        (await webdb.getThreads()).find((item) => item.threadId === 9),
+      ).toMatchObject({ role: 'ADMIN' });
+      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
+        threadFeedId: 3, type: 'GROUP', role: null,
+        profile: { account: '!team', domain: 'local', namespaceId: 0, profileRev: 0 },
+      })]);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: null });
@@ -2471,7 +2527,7 @@ describe('WebdbService', () => {
       ).toBeDefined();
     });
 
-    it('materializes a group from THREAD_STATE before the background meta page commits', async () => {
+    it('materializes a group from the complete thread snapshot before background meta commits', async () => {
       await webdb.openForUser('1');
       await webdb.commitResolvedProfile({
         name: 'Bob',
@@ -2535,21 +2591,16 @@ describe('WebdbService', () => {
         },
       ];
 
-      await webdb.applyStateFeedPage(
-        [
-          ...items,
-          threadStateEvent(3, 12, {
-            type: 'GROUP',
-            profile: {
-              account: '!dev',
-              domain: 'local',
-              namespaceId: 0,
-              profileRev: 1,
-            },
-          }),
-        ],
-        3,
-      );
+      await webdb.applyStateFeedPage(items, 2);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(12, {
+          threadFeedId: 3,
+          type: 'GROUP',
+          profile: { account: '!dev', domain: 'local', namespaceId: 0, profileRev: 1 },
+          threadProfileRev: 1,
+          role: 'OWNER',
+        }),
+      ], 3);
       await webdb.applyGroupMetaPage({
         threadId: 12,
         namespaceId: 0,
@@ -2622,22 +2673,16 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0]).toEqual(
         expect.objectContaining({ conversationState: 'ACTIVE' }),
       );
-      await webdb.applyStateFeedPage(
-        [
-          threadStateEvent(5, 12, {
-            type: 'GROUP',
-            conversationState: 'READ_ONLY',
-            role: null,
-            profile: {
-              account: '!dev',
-              domain: 'local',
-              namespaceId: 0,
-              profileRev: 1,
-            },
-          }),
-        ],
-        5,
-      );
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(12, {
+          threadFeedId: 5,
+          type: 'GROUP',
+          conversationState: 'READ_ONLY',
+          role: null,
+          profile: { account: '!dev', domain: 'local', namespaceId: 0, profileRev: 1 },
+          threadProfileRev: 1,
+        }),
+      ], 5);
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
           threadId: 12,
@@ -2677,7 +2722,7 @@ describe('WebdbService', () => {
       });
     });
 
-    it('keeps a newly created local group visible when thread state and relationship projection arrive together', async () => {
+    it('keeps a newly created local group visible with independent relationship and thread feeds', async () => {
       await webdb.openForUser('1');
       const group = {
         account: '!repro-group',
@@ -2709,22 +2754,16 @@ describe('WebdbService', () => {
         },
       } satisfies ClientStateFeedItem;
 
-      await webdb.applyStateFeedPage(
-        [
-          threadStateEvent(1, 95, {
-            type: 'GROUP',
-            role: 'OWNER',
-            profile: {
-              account: group.account,
-              domain: 'local',
-              namespaceId: 0,
-              profileRev: 1,
-            },
-          }),
-          relationship,
-        ],
-        2,
-      );
+      await webdb.applyStateFeedPage([relationship], 2);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(95, {
+          threadFeedId: 1,
+          type: 'GROUP',
+          role: 'OWNER',
+          profile: { account: group.account, domain: 'local', namespaceId: 0, profileRev: 1 },
+          threadProfileRev: 1,
+        }),
+      ], 1);
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({

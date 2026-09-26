@@ -223,7 +223,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   if (!(await current()))
                     throw new Error('notification account expired');
                   const response = await fetch(
-                    API_PREFIX + '/thread/feed-delta',
+                    API_PREFIX + '/thread-feed',
                     {
                       method: 'POST',
                       credentials: 'same-origin',
