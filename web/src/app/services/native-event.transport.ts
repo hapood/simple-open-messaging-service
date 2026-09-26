@@ -4,7 +4,7 @@ import {
   type RealtimeSink,
   type StandardMessage,
 } from './realtime-transport';
-import { SSE_EVENT_FORCE_LOGOUT, SSE_EVENT_PING } from './sse-worker-protocol';
+import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
 
 /**
  * The Android realtime transport: consumes the `/events` frames Kotlin's RealtimeService forwards via
@@ -34,20 +34,25 @@ export class NativeEventTransport extends RealtimeTransport {
   start(): void {
     if (this.installed) return;
     this.installed = true;
-    // Kotlin → JS: one /events frame. FORCE_LOGOUT is intercepted (the facade re-logs in); ping is
-    // skipped defensively (Kotlin already drops it before forwarding). Everything else is re-emitted as a
+    // Kotlin → JS: one /events frame. FORCE_LOGOUT is intercepted (the facade re-logs in).
+    // Everything else is re-emitted as a
     // StandardMessage in the exact shape the worker transport produces.
     window.__SOMS_EVENT__ = (type: string, data: unknown) => {
-      if (type === SSE_EVENT_PING) return;
       if (type === SSE_EVENT_FORCE_LOGOUT) {
         // The FORCE_LOGOUT frame's `message` carries the revoke reason — e.g. 'device_revoke' when the user
         // signs this session out from the device list. Thread it to the facade so the kicked client can show
         // a reason-aware notice instead of a generic "session ended".
-        const reason = (data as { message?: string } | null | undefined)?.message;
+        const reason = (data as { message?: string } | null | undefined)
+          ?.message;
         this.sink.onForceLogout(reason);
         return;
       }
-      this.sink.onEvent({ event: type, status: 0, message: 'new message', data } as StandardMessage);
+      this.sink.onEvent({
+        event: type,
+        status: 0,
+        message: 'new message',
+        data,
+      } as StandardMessage);
     };
     // Kotlin → JS: connection-state transitions (mirrors the worker's `state` messages). Routed through
     // onConnState so an open-after-the-first also emits the reconnect backfill pulse.

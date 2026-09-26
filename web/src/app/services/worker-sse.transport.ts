@@ -24,6 +24,8 @@ import { sseUrl } from './constants';
 export class WorkerSseTransport extends RealtimeTransport {
   /** The spawned SSE worker. Undefined while stopped (or between an error and the respawn). */
   private worker?: Worker;
+  /** Another tab with this session took ownership; wait for visibility or manual retry. */
+  private replaced = false;
   /** The pending 1s respawn from {@link onWorkerError}, cancelled if {@link retryNow} fires first. */
   private respawnTimer?: ReturnType<typeof setTimeout>;
   /** Main-thread fallback for browsers that do not deliver online/offline to DedicatedWorkerGlobalScope. */
@@ -32,6 +34,9 @@ export class WorkerSseTransport extends RealtimeTransport {
   };
   private readonly onOnline = (): void => {
     this.worker?.postMessage({ type: 'network-online' } satisfies ToWorker);
+  };
+  private readonly onVisible = (): void => {
+    if (this.replaced && !document.hidden) this.retryNow();
   };
 
   constructor(sink: RealtimeSink) {
@@ -51,6 +56,7 @@ export class WorkerSseTransport extends RealtimeTransport {
 
   start(): void {
     if (this.worker) return; // idempotent — the worker owns the single connection
+    this.replaced = false;
     this.respawnTimer = undefined; // respawn fired (or retryNow spawned directly) — no longer pending
     this.sink.onState('connecting');
     // `new URL('./sse.worker', import.meta.url)` is what tells the `application` builder to emit the
@@ -70,12 +76,16 @@ export class WorkerSseTransport extends RealtimeTransport {
     if (typeof window !== 'undefined') {
       window.addEventListener('offline', this.onOffline);
       window.addEventListener('online', this.onOnline);
+      document.addEventListener('visibilitychange', this.onVisible);
     }
     worker.postMessage({ type: 'start', url: sseUrl() } satisfies ToWorker);
   }
 
   /** Logout / force-login / origin swap: tell the worker to stop, terminate it. */
   stop(): void {
+    this.replaced = false;
+    if (typeof document !== 'undefined')
+      document.removeEventListener('visibilitychange', this.onVisible);
     this.removeNetworkListeners();
     this.worker?.postMessage({ type: 'stop' } satisfies ToWorker);
     this.worker?.terminate();
@@ -90,6 +100,11 @@ export class WorkerSseTransport extends RealtimeTransport {
    *  - worker died (between {@link onWorkerError}'s terminate and its 1s respawn): cancel the pending
    *    respawn and reconnect at once. No-op when neither holds (already `open`, or `closed`). */
   override retryNow(): void {
+    if (this.replaced) {
+      this.replaced = false;
+      this.start();
+      return;
+    }
     // A manual retry voids the scheduled backoff (the current sleep is resolved, the loop reconnects at
     // once), so drop the countdown immediately — otherwise the chip keeps ticking a stale deadline while
     // the reconnect is in flight. A fresh deadline is posted on the next failure; success clears via state.
@@ -121,6 +136,13 @@ export class WorkerSseTransport extends RealtimeTransport {
         // The session 401'd (cookie revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
         // already stopped itself; the facade clears state + re-logs in (onForceLogout).
         this.sink.onForceLogout();
+        break;
+      case 'replaced':
+        this.replaced = true;
+        this.removeNetworkListeners();
+        this.worker?.terminate();
+        this.worker = undefined;
+        this.sink.onState('closed');
         break;
     }
   }

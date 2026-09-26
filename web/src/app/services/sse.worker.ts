@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 /**
  * SSE downlink worker (browser-only). Owns a native `fetch` + `ReadableStream` SSE connection, the
- * reconnect/backoff loop, the liveness watchdog, and the browser online/offline fast-path — everything
+ * reconnect/backoff loop and the browser online/offline fast-path — everything
  * that used to live on the main thread inside `WebsocketService`. Moving it off the main thread means SSE
- * parsing, backoff timers, and the watchdog no longer contend with the virtual-scroll kernel or the Tiptap
+ * parsing and backoff timers no longer contend with the virtual-scroll kernel or the Tiptap
  * editor; the realtime layer is fully decoupled from rendering.
  *
  * Auth: the worker is browser-only (the facade selects `RustChannelSseTransport` under Tauri desktop +
@@ -27,20 +27,14 @@
  * the `dom` and (via the reference above) `webworker` libs, which would otherwise make the bare
  * global `self` / `addEventListener` ambiguous.
  */
+import { SseReceiptCoalescer } from './sse-receipt-coalescer';
 import {
   SSE_EVENT_FORCE_LOGOUT,
-  SSE_EVENT_PING,
   type ToMain,
   type ToWorker,
 } from './sse-worker-protocol';
 
 const sw = self as unknown as DedicatedWorkerGlobalScope;
-
-/** No frame within STALE_MS while `open` → the stream has silently stalled (half-open TCP / a network
- *  drop with no RST). A native fetch stream neither errors nor closes on a stall, so without this the
- *  worker would believe it is connected forever. ~2× the 25s server heartbeat + jitter margin. */
-const STALE_MS = 60_000;
-const WATCHDOG_CHECK_MS = 5_000;
 
 /** Thrown when onopen sees a 401 → the loop renews the token and reopens immediately (no backoff). */
 class AuthNeededError extends Error {
@@ -64,18 +58,14 @@ let attempt = 0;
 /** Whether a stream has ever opened — only a non-first open emits the `reconnect` backfill pulse. */
 let openedOnce = false;
 let aborter: AbortController | undefined;
-/** Timestamp (ms) of the last received SSE frame (event or ping). Refreshed on every dispatch. */
-let lastFrameAt = 0;
-/** True once a server `ping` event has been observed — the watchdog only arms after this, so an old
- * backend still emitting comment pings (invisible to the reader) never false-triggers in a quiet chat. */
-let pingObserved = false;
-let watchdog: ReturnType<typeof setInterval> | undefined;
+let receipts: SseReceiptCoalescer | undefined;
 /** Resolver for the current `sleep`, so an `online` event can wake the backoff loop to retry at once. */
 let sleepResolver: (() => void) | undefined;
 let threadFeedPort: MessagePort | undefined;
 let threadFeedUserId: number | undefined;
 let helloUserId: number | undefined;
 let threadFeedTarget = 0;
+let stateFeedTarget = 0;
 
 /** Post a message to the main thread. */
 function post(msg: ToMain): void {
@@ -142,16 +132,15 @@ async function openOnce(): Promise<void> {
   }
 
   // Headers received → the stream is open. Mirror the old onopen side-effects: reset backoff, emit the
-  // reconnect backfill pulse on every open after the first, arm liveness, tell main we're up. No
+  // reconnect backfill pulse on every open after the first and tell main we're up. No
   // `openWhenHidden` is needed — a worker has no visibility concept and is not throttled on tab hide,
   // so the native reader is inherently always-open-when-hidden.
   attempt = 0;
   if (openedOnce) post({ type: 'reconnect' });
   openedOnce = true;
-  lastFrameAt = Date.now();
   post({ type: 'state', state: 'open' });
 
-  // Blocks until the server ends the stream or `aborter` fires (watchdog / offline / stop). A read or
+  // Blocks until the server ends the stream or `aborter` fires (offline / stop). A read or
   // abort error propagates to `run`, which backs off and reconnects.
   await readFrames(res.body);
 }
@@ -208,15 +197,18 @@ function parseFrame(raw: string): { event: string; data?: string } | undefined {
   return { event, data: hasData ? data : undefined };
 }
 
-/** Dispatch by the event field. Refreshes liveness, then either absorbs the heartbeat, kicks the user
- *  out on FORCE_LOGOUT, or forwards the frame to main. */
+/** Dispatch by the event field: FORCE_LOGOUT ends the session; other frames go to main. */
 function dispatch(event: string, rawData: string | undefined): void {
-  // Any frame (including the periodic ping) proves the stream is alive — refresh before dispatch.
-  lastFrameAt = Date.now();
   const data = rawData ? JSON.parse(rawData) : undefined;
-  if (event === SSE_EVENT_PING) {
-    pingObserved = true;
-    return;
+  if (
+    event === 'THREAD_FEED_UPDATED' &&
+    typeof data?.sseUuid === 'string' &&
+    Number.isInteger(data.threadFeedEndId)
+  ) {
+    receipts?.queue({
+      sseUuid: data.sseUuid,
+      threadFeedEndId: data.threadFeedEndId,
+    });
   }
   if (event === SSE_EVENT_FORCE_LOGOUT) {
     // Server-initiated kick (all-device logout / password change). Tell main to clear state + re-login,
@@ -224,6 +216,13 @@ function dispatch(event: string, rawData: string | undefined): void {
     manualClose = true;
     aborter?.abort();
     post({ type: 'force-logout' });
+    return;
+  }
+  if (event === 'SSE_REPLACED') {
+    manualClose = true;
+    receipts?.stop();
+    aborter?.abort();
+    post({ type: 'replaced' });
     return;
   }
   if (
@@ -234,11 +233,28 @@ function dispatch(event: string, rawData: string | undefined): void {
     threadFeedPort.postMessage({ event, data });
     return;
   }
+  if (event === 'HELLO') {
+    const userId = (data as { userId?: number } | undefined)?.userId;
+    if (helloUserId !== userId) {
+      stateFeedTarget = 0;
+      threadFeedTarget = 0;
+    }
+    helloUserId = userId;
+  }
+  if (event === 'HELLO' || event === 'STATE_FEED_UPDATED') {
+    const target = event === 'HELLO' ? data?.stateFeedEndId : data?.feedId;
+    if (Number.isSafeInteger(target) && target >= 0) {
+      stateFeedTarget = Math.max(stateFeedTarget, target);
+      if (threadFeedPort && threadFeedUserId === helloUserId) {
+        threadFeedPort.postMessage({ stateTarget: stateFeedTarget });
+        if (event === 'STATE_FEED_UPDATED') return;
+      }
+    }
+  }
   if (event === 'HELLO' || event === 'THREAD_FEED_UPDATED') {
     const head = data as
       | { userId?: number; threadFeedEndId?: number }
       | undefined;
-    if (event === 'HELLO') helloUserId = head?.userId;
     if (
       Number.isInteger(head?.threadFeedEndId) &&
       Number(head?.threadFeedEndId) >= 0 &&
@@ -278,32 +294,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-// --- liveness watchdog --------------------------------------------------------
-
-function startWatchdog(): void {
-  stopWatchdog();
-  watchdog = setInterval(() => {
-    // Only enforce once we've seen the server's named ping — otherwise an old comment-ping backend
-    // would make a quiet chat look stalled → spurious reconnects every STALE_MS.
-    if (!pingObserved) return;
-    if (lastFrameAt === 0) return;
-    if (Date.now() - lastFrameAt > STALE_MS) {
-      console.warn(
-        '[sse] liveness watchdog: no frame in %sms — aborting stalled stream',
-        STALE_MS,
-      );
-      aborter?.abort();
-    }
-  }, WATCHDOG_CHECK_MS);
-}
-
-function stopWatchdog(): void {
-  if (watchdog) {
-    clearInterval(watchdog);
-    watchdog = undefined;
-  }
-}
-
 // --- browser online/offline (fast path) --------------------------------------
 
 // DedicatedWorkerGlobalScope may receive `online`/`offline` directly, but browsers and WebViews do not
@@ -331,12 +321,19 @@ sw.addEventListener('message', (e: MessageEvent) => {
       threadFeedPort = port;
       threadFeedUserId = m.userId;
       port.onmessage = (event) => {
-        if (
-          manualClose ||
-          threadFeedPort !== port ||
-          event.data?.userId !== helloUserId
-        )
+        if (manualClose || threadFeedPort !== port) return;
+        if (event.data?.stateCommit) {
+          post({
+            type: 'event',
+            payload: {
+              event: 'LOCAL_STATE_FEED_COMMITTED',
+              status: 0,
+              message: 'local state committed',
+              data: event.data.stateCommit,
+            },
+          });
           return;
+        }
         for (const alias of event.data.aliases)
           post({
             type: 'event',
@@ -358,27 +355,52 @@ sw.addEventListener('message', (e: MessageEvent) => {
         });
       };
       port.start();
-      if (!manualClose && threadFeedUserId === helloUserId)
+      if (!manualClose && threadFeedUserId === helloUserId) {
+        port.postMessage({ stateTarget: stateFeedTarget });
         port.postMessage({ target: threadFeedTarget });
+      }
       break;
     }
     case 'start':
       if (running) return;
       url = m.url;
+      receipts = new SseReceiptCoalescer(async (receipt, signal) => {
+        const controller = new AbortController();
+        const onAbort = () => controller.abort();
+        const timer = setTimeout(() => controller.abort(), 2_000);
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          const response = await fetch(`${url}/receipt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(receipt),
+            signal: controller.signal,
+            credentials: 'same-origin',
+          });
+          if (!response.ok) throw new Error('SSE receipt unavailable');
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', onAbort);
+        }
+      });
       running = true;
       manualClose = false;
       attempt = 0;
       post({ type: 'state', state: 'connecting' });
-      startWatchdog();
       void run();
       break;
     case 'stop':
       threadFeedPort?.close();
       threadFeedPort = undefined;
+      threadFeedUserId = undefined;
+      helloUserId = undefined;
+      threadFeedTarget = 0;
+      stateFeedTarget = 0;
       manualClose = true;
       running = false;
       aborter?.abort();
-      stopWatchdog();
+      receipts?.stop();
+      receipts = undefined;
       post({ type: 'state', state: 'closed' });
       break;
     case 'retry-now':

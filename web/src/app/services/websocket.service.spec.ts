@@ -129,6 +129,19 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(ws.reconnectIn()).toBeNull();
   });
 
+  it('does not reconnect a replaced session automatically, but permits explicit takeover', () => {
+    const old = liveWorker!;
+    old.emit({ type: 'replaced' });
+    expect(ws.state()).toBe('closed');
+    window.dispatchEvent(new Event('online'));
+    expect(old.posted).not.toContainEqual({ type: 'network-online' });
+    ws.retryNow();
+    expect(liveWorker).not.toBe(old);
+    expect(ws.state()).toBe('connecting');
+    old.emit({ type: 'state', state: 'open' });
+    expect(ws.state()).toBe('connecting');
+  });
+
   it('forwards main-thread network changes to the active worker', () => {
     const posted = liveWorker!.posted as Array<{ type: string }>;
     window.dispatchEvent(new Event('offline'));
@@ -142,12 +155,12 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     const stoppedWorker = liveWorker!;
     window.dispatchEvent(new Event('offline'));
     window.dispatchEvent(new Event('online'));
-    expect(stoppedWorker.posted.map((message: any) => message.type)).not.toContain(
-      'network-offline',
-    );
-    expect(stoppedWorker.posted.map((message: any) => message.type)).not.toContain(
-      'network-online',
-    );
+    expect(
+      stoppedWorker.posted.map((message: any) => message.type),
+    ).not.toContain('network-offline');
+    expect(
+      stoppedWorker.posted.map((message: any) => message.type),
+    ).not.toContain('network-online');
   });
 
   it('records the deadline on reconnect-in and the ticker decrements it over time', async () => {

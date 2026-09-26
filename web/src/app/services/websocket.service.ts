@@ -263,6 +263,11 @@ export class WebsocketService implements OnDestroy {
     this.transport.stop();
   }
 
+  /** Re-establish the native handshake on foreground return, including a fresh thread-feed ceiling. */
+  public refreshHandshake(): void {
+    this.transport.forceReconnect();
+  }
+
   /** User-initiated retry (the disconnected chip clicked while `reconnecting`). No-op on platforms whose
    *  transport owns its own backoff (Android). */
   public retryNow(): void {

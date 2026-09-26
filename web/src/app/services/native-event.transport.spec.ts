@@ -4,7 +4,7 @@ import type {
   RealtimeSink,
   StandardMessage,
 } from './realtime-transport';
-import { SSE_EVENT_FORCE_LOGOUT, SSE_EVENT_PING } from './sse-worker-protocol';
+import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
 
 /**
  * NativeEventTransport unit tests — the Android event-routing seam.
@@ -128,14 +128,6 @@ describe('NativeEventTransport', () => {
         data: { feedId: 5 },
       },
     ]);
-  });
-
-  it('drops the ping heartbeat (Kotlin already skips it; the transport defends in depth)', () => {
-    installFakeFcm('open');
-    const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireEvent(SSE_EVENT_PING, {});
-    expect(rec.events.length).toBe(0);
   });
 
   it('intercepts FORCE_LOGOUT (the facade re-logs in) and does NOT re-emit it as a data event', () => {
