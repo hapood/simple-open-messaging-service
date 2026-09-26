@@ -1,6 +1,5 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
-import type { ServerResponse } from 'node:http';
 import { optionalIntEnv } from '../common/env.js';
 import {
   LogStreamStore,
@@ -8,15 +7,13 @@ import {
   type LogRecord,
 } from './log-stream-store.js';
 import { listLogFiles } from './log-rotator.js';
-import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
+import { Observable, type Subscriber } from 'rxjs';
+import type { MessageEvent } from '@nestjs/common';
+import { serializeBody } from '../common/serialize.interceptor.js';
 import type { AdminLogHistoryDto } from './log-viewer.dto.js';
 
 interface LogClient {
-  res: ServerResponse;
-  ping: NodeJS.Timeout;
-  minLevel?: string;
-  scope?: string;
-  taskId?: string;
+  sink: Subscriber<MessageEvent>;
 }
 
 export function matchesLogFilters(
@@ -30,13 +27,8 @@ export function matchesLogFilters(
 
 /**
  * Live log tail over SSE for the admin console. On connect: replay the ring buffer (filtered to records
- * at/above an optional level), then stream every new matching record. The connect-plumbing (headers +
- * 25s `ping` heartbeat + frame format) is the shared `common/sse-stream.ts` — the same wire format the
- * chat SseService and the consumer sse.worker.ts use.
- *
- * One flat subscriber set (NOT keyed by user): the viewer is admin-scoped, and fan-out is a plain Set.
- * It is a separate service from SseService (chat-keyed, event-emitter-driven) rather than overloading
- * it — the connect plumbing is shared, the subscriber model is not.
+ * at/above an optional level), then stream every new matching record. Nest owns the response and
+ * unsubscribes on disconnect. This admin-only stream does not share the chat subscriber registry.
  */
 @Injectable()
 export class LogViewerService implements OnModuleDestroy {
@@ -45,36 +37,27 @@ export class LogViewerService implements OnModuleDestroy {
   constructor(@Inject(LogStreamStore) private readonly store: LogStreamStore) {}
 
   attach(
-    res: ServerResponse,
     minLevel?: string,
-    origin?: string,
     scope?: string,
     taskId?: string,
-  ): void {
-    const ping = initSseResponse(res, origin);
-
-    // Replay the ring buffer first (newest-last → chronological render order in the viewer).
-    for (const rec of this.store.snapshot(minLevel)) {
-      if (!matchesLogFilters(rec, { scope, taskId })) continue;
-      res.write(formatSseFrame('log', rec));
-    }
-
-    const client: LogClient = { res, ping, minLevel, scope, taskId };
-    const unsub = this.store.subscribe((rec) => {
-      if (minLevel && !atOrAbove(rec.level, minLevel)) return;
-      if (!matchesLogFilters(rec, { scope, taskId })) return;
-      try {
-        res.write(formatSseFrame('log', rec));
-      } catch {
-        // Dropped connection: the close handler + heartbeat cleanup owns teardown.
-      }
-    });
-    this.clients.add(client);
-
-    res.on('close', () => {
-      clearInterval(client.ping);
-      unsub();
-      this.clients.delete(client);
+  ): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((sink) => {
+      const client: LogClient = { sink };
+      const emit = (rec: LogRecord) => {
+        if (matchesLogFilters(rec, { scope, taskId })) {
+          sink.next({ type: 'log', data: serializeBody(rec) });
+        }
+      };
+      // Replay before subscribing to new records, preserving their chronological order.
+      for (const rec of this.store.snapshot(minLevel)) emit(rec);
+      const unsub = this.store.subscribe((rec) => {
+        if (!minLevel || atOrAbove(rec.level, minLevel)) emit(rec);
+      });
+      this.clients.add(client);
+      return () => {
+        unsub();
+        this.clients.delete(client);
+      };
     });
   }
 
@@ -153,16 +136,8 @@ export class LogViewerService implements OnModuleDestroy {
     return true;
   }
 
-  /** Process exit / hot reload: clear heartbeats and close held connections to avoid handle leaks. */
+  /** Complete subscriptions when shutting down. */
   onModuleDestroy(): void {
-    for (const c of this.clients) {
-      clearInterval(c.ping);
-      try {
-        c.res.end();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.clients.clear();
+    for (const c of [...this.clients]) c.sink.complete();
   }
 }
