@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use log::warn;
@@ -59,7 +59,6 @@ struct ParsedFrame {
 #[cfg(desktop)]
 enum StreamOutcome {
     StreamClosed,                // server ended the stream cleanly → reconnect
-    Stale,                       // watchdog: no frame for 60s → reconnect
     Cancelled,                   // sse_stop / logout → exit the loop
     ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
     Err,                         // network / non-2xx → reconnect
@@ -175,7 +174,7 @@ pub(crate) fn sse_get_state(sse: tauri::State<'_, SseSupervisor>) -> String {
 }
 
 /// The webview's `navigator` online/offline is the one source that knows the network dropped before the
-/// 60s watchdog would (dropped wifi → half-open TCP → reqwest blocks near-forever). The JS transport
+/// transport could (dropped wifi → half-open TCP → reqwest blocks near-forever). The JS transport
 /// forwards both transitions here (and reuses `online=true` for user-initiated retry). `wake` releases
 /// the supervisor's current await — an open-stream read OR a backoff sleep — and the loop re-checks
 /// `offline` to decide immediate-retry vs. drop-the-stream.
@@ -274,7 +273,7 @@ async fn sse_supervisor_loop(
                 break; // no retry — a stale/revoked token would 401-loop
             }
             StreamOutcome::Cancelled => break,
-            StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
+            StreamOutcome::StreamClosed | StreamOutcome::Err => {
                 // On a connect/network error (Err), try a SMOOTH switch first: maybe_switch probes the
                 // current; if it's healthy (transient) or the OTHER is reachable (flip), reopen at once with
                 // no backoff. If both are down (BothDown) or there's no fallback, fall through to the
@@ -366,6 +365,38 @@ mod cached_hello_merge_tests;
 
 #[cfg(desktop)]
 #[derive(Default)]
+struct StateFeedHead {
+    user_id: Option<i64>,
+    target: i64,
+}
+
+#[cfg(desktop)]
+impl StateFeedHead {
+    fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i64)> {
+        if event == "HELLO" {
+            self.user_id = data
+                .get("userId")
+                .and_then(|value| value.as_i64())
+                .filter(|id| *id > 0);
+        } else if event != "STATE_FEED_UPDATED" {
+            return None;
+        }
+        let key = if event == "HELLO" {
+            "stateFeedEndId"
+        } else {
+            "feedId"
+        };
+        let target = data
+            .get(key)
+            .and_then(|value| value.as_i64())
+            .filter(|id| *id >= 0)?;
+        self.target = self.target.max(target);
+        self.user_id.map(|user_id| (user_id, self.target))
+    }
+}
+
+#[cfg(desktop)]
+#[derive(Default)]
 struct ThreadFeedHead {
     user_id: Option<i64>,
     target: i32,
@@ -414,6 +445,69 @@ async fn open_one_stream(
     let feed_cancel = cancel.child_token();
     let _feed_guard = feed_cancel.clone().drop_guard();
     let (feed_wakes, mut feed_receiver) = tokio::sync::watch::channel::<Option<(i64, i32)>>(None);
+    let receipt_cancel = cancel.child_token();
+    let _receipt_guard = receipt_cancel.clone().drop_guard();
+    let (receipt_wakes, mut receipt_receiver) =
+        tokio::sync::watch::channel::<Option<(String, i32)>>(None);
+    let receipt_url = format!("{}/api/v1/events/receipt", origin.trim_end_matches('/'));
+    let receipt_token = token.clone();
+    let receipt_origin = origin.clone();
+    // This task is independent of the stream reader and the thread-feed projection. A fixed
+    // window (not trailing debounce) coalesces continuous message wakes without delaying FCM.
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = receipt_cancel.cancelled() => break,
+                changed = receipt_receiver.changed() => if changed.is_err() { break; },
+            }
+            let Some(mut latest) = receipt_receiver.borrow_and_update().clone() else {
+                continue;
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                tokio::select! {
+                    _ = receipt_cancel.cancelled() => return,
+                    changed = receipt_receiver.changed() => {
+                        if changed.is_err() { return; }
+                        if let Some(receipt) = receipt_receiver.borrow_and_update().clone() {
+                            if receipt.0 != latest.0 || receipt.1 >= latest.1 {
+                                latest = receipt;
+                            }
+                        }
+                    },
+                    _ = tokio::time::sleep_until(deadline) => break,
+                }
+            }
+            let send = |receipt: &(String, i32)| {
+                http_client_for(&receipt_origin)
+                    .post(&receipt_url)
+                    .bearer_auth(&receipt_token)
+                    .json(&serde_json::json!({
+                        "sseUuid": &receipt.0,
+                        "threadFeedEndId": receipt.1,
+                    }))
+                    .timeout(Duration::from_secs(2))
+                    .send()
+            };
+            let success = tokio::select! {
+                _ = receipt_cancel.cancelled() => return,
+                result = send(&latest) => result.is_ok_and(|response| response.status().is_success()),
+            };
+            if !success && !receipt_receiver.has_changed().unwrap_or(false) {
+                tokio::select! {
+                    _ = receipt_cancel.cancelled() => return,
+                    changed = receipt_receiver.changed() => if changed.is_ok() { continue; } else { return; },
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                }
+                tokio::select! {
+                    _ = receipt_cancel.cancelled() => return,
+                    result = send(&latest) => { let _ = result; },
+                }
+            }
+        }
+    });
+    let state_target_for_feed = Arc::new(AtomicI64::new(0));
+    let feed_state_target = state_target_for_feed.clone();
     let feed_app = app.clone();
     let feed_proxy = proxy.clone();
     let feed_token = token.clone();
@@ -429,6 +523,17 @@ async fn open_one_stream(
             };
             if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
                 break;
+            }
+            // Structural state-feed rows must exist before thread metadata and notification
+            // projections use them. Both state wakes and this barrier share Rust's state lane.
+            let state_target = feed_state_target.load(Ordering::Acquire);
+            let state_result = tokio::select! {
+                _ = feed_cancel.cancelled() => break,
+                result = crate::native_db::state_feed_sync::synchronize(&feed_proxy, user_id, state_target) => result,
+            };
+            if let Err(error) = state_result {
+                warn!("state feed barrier before thread feed failed: {error}");
+                continue;
             }
             let result = tokio::select! {
                 _ = feed_cancel.cancelled() => break,
@@ -481,10 +586,51 @@ async fn open_one_stream(
             }
         }
     });
+    let (state_wakes, mut state_receiver) = tokio::sync::watch::channel::<Option<(i64, i64)>>(None);
+    let state_app = app.clone();
+    let state_proxy = proxy.clone();
+    let state_token = token.clone();
+    let state_cancel = cancel.child_token();
+    let _state_guard = state_cancel.clone().drop_guard();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = state_cancel.cancelled() => break,
+                changed = state_receiver.changed() => if changed.is_err() { break; },
+            }
+            let Some((user_id, target)) = *state_receiver.borrow_and_update() else {
+                continue;
+            };
+            if state_proxy.token.lock().expect("token lock").as_ref() != Some(&state_token) {
+                break;
+            }
+            let result = tokio::select! {
+                _ = state_cancel.cancelled() => break,
+                result = crate::native_db::state_feed_sync::synchronize(&state_proxy, user_id, target) => result,
+            };
+            if state_proxy.token.lock().expect("token lock").as_ref() != Some(&state_token) {
+                break;
+            }
+            match result {
+                Ok(cursor) => {
+                    let _ = state_app.emit(
+                        "soms-sse-event",
+                        SseEventPayload {
+                            event: "LOCAL_STATE_FEED_COMMITTED".into(),
+                            status: 0,
+                            message: "local state committed".into(),
+                            data: serde_json::json!({ "userId": user_id, "cursor": cursor }),
+                        },
+                    );
+                }
+                Err(error) => warn!("state feed wake failed; next wake retries: {error}"),
+            }
+        }
+    });
+    let mut state_head = StateFeedHead::default();
     let mut feed_head = ThreadFeedHead::default();
     let url = format!("{}/api/v1/events", origin.trim_end_matches('/'));
-    // Bound the CONNECT/headers phase. The in-stream watchdog only arms after a `ping`, so without this
-    // a server that accepts the connection but never sends headers would hang the connect forever.
+    // Bound the connect/headers phase: a server that never responds must not hang startup.
     let resp = match tokio::time::timeout(
         SSE_CONNECT_TIMEOUT,
         http_client_for(&origin)
@@ -529,11 +675,6 @@ async fn open_one_stream(
 
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut stream = resp.bytes_stream();
-    let mut watchdog = tokio::time::interval(Duration::from_millis(5_000));
-    watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last_frame_at = Instant::now();
-    let mut ping_observed = false;
-
     loop {
         tokio::select! {
             biased;
@@ -554,15 +695,16 @@ async fn open_one_stream(
                 None => return StreamOutcome::StreamClosed,    // server closed → reconnect
                 Some(Err(_)) => return StreamOutcome::Err,     // network error → reconnect
                 Some(Ok(bytes)) => {
-                    last_frame_at = Instant::now();
                     buf.extend_from_slice(&bytes);
                     while let Some(content) = take_sse_frame(&mut buf) {
                         if let Some(parsed) = parse_sse_frame(&content) {
                             // if/else-if (not `match parsed.event.as_str()`): the scrutinee of a match
                             // would borrow `parsed.event` for the whole match, blocking the move in the
                             // else branch. The `.as_str()` borrows in each condition end at the `)`.
-                            if parsed.event.as_str() == "ping" {
-                                ping_observed = true;
+                            if parsed.event.as_str() == "SSE_REPLACED" {
+                                // A newer stream owns this device session. Do not reconnect
+                                // automatically and evict it in a loop.
+                                return StreamOutcome::Cancelled;
                             } else if parsed.event.as_str() == "FORCE_LOGOUT" {
                                 let reason = parsed
                                     .data
@@ -571,14 +713,28 @@ async fn open_one_stream(
                                     .map(|s| s.to_string());
                                 return StreamOutcome::ForceLogout(reason);
                             } else {
+                                if parsed.event == "THREAD_FEED_UPDATED" {
+                                    if let (Some(uuid), Some(head)) = (
+                                        parsed.data.get("sseUuid").and_then(|v| v.as_str()),
+                                        parsed.data.get("threadFeedEndId").and_then(|v| v.as_i64())
+                                            .and_then(|value| i32::try_from(value).ok())
+                                            .filter(|value| *value >= 0),
+                                    ) {
+                                        receipt_wakes.send_replace(Some((uuid.to_owned(), head)));
+                                    }
+                                }
                                 // Cache/merge the frame into the cached HELLO (additive) BEFORE emitting it
                                 // — the borrows (as_str / &data) end at the call's `)`, so the move into the
                                 // payload below is unaffected (same scoping rule the FORCE_LOGOUT branch uses).
                                 merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
+                                if let Some(head) = state_head.accept(&parsed.event, &parsed.data) {
+                                    state_target_for_feed.store(head.1, Ordering::Release);
+                                    state_wakes.send_replace(Some(head));
+                                }
                                 if let Some(head) = feed_head.accept(&parsed.event, &parsed.data) {
                                     feed_wakes.send_replace(Some(head));
                                 }
-                                if parsed.event == "THREAD_FEED_UPDATED" { continue; }
+                                if parsed.event == "THREAD_FEED_UPDATED" || parsed.event == "STATE_FEED_UPDATED" { continue; }
                                 if parsed.event == "PROFILE_AVAILABLE" {
                                     if let Some(user_id) = feed_head.user_id {
                                         let profile_app = app.clone();
@@ -624,13 +780,6 @@ async fn open_one_stream(
                     }
                 }
             },
-            _ = watchdog.tick() => {
-                // Arm only after a real `ping` (not a `:` comment) to avoid false-triggers on a quiet
-                // chat. 60s ≈ 2× the 25s server heartbeat.
-                if ping_observed && last_frame_at.elapsed() > Duration::from_millis(60_000) {
-                    return StreamOutcome::Stale;
-                }
-            }
         }
     }
 }

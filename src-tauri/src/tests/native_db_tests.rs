@@ -1,7 +1,7 @@
 use super::client_state::cleanup_relationship_requests;
 use super::messages::load_message_ranges;
 use super::relationship_projection::{
-    apply_relationship_request_effect, update_live_request_projection,
+    apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
 };
 use super::{
     decode_deleted_hwm, history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
@@ -203,98 +203,104 @@ fn deleted_hwm_accepts_only_non_negative_integer_json() {
     assert!(decode_deleted_hwm("-1").is_err());
 }
 
+fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::Value {
+    let (account, role) = if kind == "GROUP" { ("!dev", serde_json::json!("MEMBER")) }
+        else { ("bob", serde_json::Value::Null) };
+    serde_json::json!({
+        "threadId":52,"threadFeedId":feed,"type":kind,"authorityNamespaceId":0,
+        "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
+        "profile":{"account":account,"domain":"local","namespaceId":0,"profileRev":3},
+        "alias":null,"threadProfileRev":3,"messageEndSeq":0,"tombstoneEndSeq":0,
+        "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
+        "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
+        "unreadCount":0,"lastMentionSeq":null,"previews":[],
+    })
+}
+
+fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
+    let tx = conn.transaction().unwrap();
+    super::client_state::apply_thread_state(&tx, 1, body, body["threadFeedId"].as_i64().unwrap())
+        .unwrap();
+    tx.commit().unwrap();
+    let local: super::attention::LocalThreadAttention = serde_json::from_value(
+        serde_json::json!({"threadId":52,"server":body,"localReadSeq":0})
+    ).unwrap();
+    super::attention::write_state(conn, 1, &local).unwrap();
+}
+
 #[test]
 fn native_thread_state_restores_history_and_ignores_old_snapshots() {
-    let mut conn = request_connection();
-    conn.execute_batch("CREATE TABLE threads(user_id INTEGER, thread_id INTEGER, payload_json TEXT, PRIMARY KEY(user_id,thread_id));").unwrap();
-    let tx = conn.transaction().unwrap();
-    let mut state = serde_json::json!({"threadId": 52, "type": "P2P", "authorityNamespaceId": 0,
-        "conversationState": "ACTIVE", "establishedAt": 100, "blocked": false, "role": null,
-        "profile": {"account": "bob", "domain": "local", "namespaceId": 0, "profileRev": 3}});
-    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
-    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.lastMessageAt', 900, '$.unreadCount', 4)", []).unwrap();
-    state["conversationState"] = "READ_ONLY".into();
-    state["blocked"] = true.into();
-    super::client_state::apply_thread_state(&tx, 1, &state, 6).unwrap();
-    state["conversationState"] = "ACTIVE".into();
-    state["profile"]["profileRev"] = 99.into();
-    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
-    let raw: String = tx
-        .query_row(
-            "SELECT payload_json FROM threads WHERE user_id=1 AND thread_id=52",
-            [],
-            |r| r.get(0),
-        )
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 5, "ACTIVE"));
+    conn.execute("UPDATE threads SET last_message_at=900,unread_count=4 WHERE thread_id=52", [])
         .unwrap();
-    let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "READ_ONLY"));
+    let mut stale = test_thread_snapshot("P2P", 5, "ACTIVE");
+    stale["profile"]["profileRev"] = 99.into();
+    let tx = conn.transaction().unwrap();
+    super::client_state::apply_thread_state(&tx, 1, &stale, 5).unwrap();
+    tx.commit().unwrap();
+    let thread = super::client_state::read_threads(&conn, 1).unwrap().remove(0);
     assert_eq!(thread["conversationState"], "READ_ONLY");
-    assert_eq!(thread["peerUser"]["profileRev"], 3);
+    assert_eq!(thread["profileRev"], 3);
     assert_eq!(thread["blocked"], true);
-    assert_eq!(thread["visible"], true);
     assert_eq!(thread["lastMessageAt"], 900);
     assert_eq!(thread["unreadCount"], 4);
 }
 
 #[test]
 fn native_read_only_and_reestablishment_preserve_group_roster() {
-    let mut conn = request_connection();
-    conn.execute_batch("CREATE TABLE threads(user_id INTEGER, thread_id INTEGER, payload_json TEXT, PRIMARY KEY(user_id,thread_id));
-      CREATE TABLE members(user_id INTEGER, thread_id INTEGER, member_account TEXT);
-      INSERT INTO members VALUES(1,52,'bob');").unwrap();
-    let tx = conn.transaction().unwrap();
-    let mut state = serde_json::json!({"threadId": 52, "type": "GROUP", "authorityNamespaceId": 0,
-      "conversationState": "ACTIVE", "establishedAt": 1, "blocked": false, "role": "MEMBER",
-      "profile": {"account": "!dev", "domain": "local", "namespaceId": 0, "profileRev": 3}});
-    super::client_state::apply_thread_state(&tx, 1, &state, 5).unwrap();
-    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 1, '$.group.groupMetaFeedId', '20')", []).unwrap();
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    conn.execute(
+        "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
+         VALUES(1,52,'bob','local',0,'MEMBER')", [],
+    ).unwrap();
+    conn.execute("UPDATE threads SET group_member_count=1,group_meta_feed_id='20'
+        WHERE thread_id=52", []).unwrap();
     for (feed, lifecycle) in [(6, "READ_ONLY"), (7, "ACTIVE")] {
-        state["conversationState"] = lifecycle.into();
-        state["establishedAt"] = feed.into();
-        super::client_state::apply_thread_state(&tx, 1, &state, feed).unwrap();
-        let raw: String = tx
-            .query_row("SELECT payload_json FROM threads", [], |r| r.get(0))
-            .unwrap();
-        let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", feed, lifecycle));
+        let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
         assert_eq!(thread["group"]["memberCount"], 1);
         assert_eq!(thread["group"]["groupMetaFeedId"], "20");
         assert_eq!(
-            tx.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
+            conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0)).unwrap(), 1
         );
     }
-    tx.commit().unwrap();
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
+        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0)).unwrap(), 0
     );
-    let raw: String = conn
-        .query_row("SELECT payload_json FROM threads", [], |r| r.get(0))
-        .unwrap();
-    let thread: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
     assert_eq!(thread["group"]["groupMetaFeedId"], "0");
 }
 
+#[test]
+fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
+    let mut conn = profile_cache_db();
+    let mut snapshot = test_thread_snapshot("GROUP", 5, "ACTIVE");
+    snapshot["previews"] = serde_json::json!([{
+        "seq": 2, "createdAt": "2026-01-01T00:00:00Z",
+        "sender": {"account":"bob","domain":"local","namespaceId":0,"profileRev":1},
+        "status":"LIVE", "text":"hello"
+    }]);
+    commit_test_thread_state(&mut conn, &snapshot);
+    conn.execute(
+        "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
+         VALUES(1,52,'bob','local',0,'MEMBER')", [],
+    ).unwrap();
+    super::client_state::delete_thread(&mut conn, 1, 52).unwrap();
+    for table in ["threads", "thread_previews", "members"] {
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE user_id=1 AND thread_id=52"),
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "{table} retained an orphan row");
+    }
+}
+
 fn request_connection() -> Connection {
-    let conn = Connection::open_in_memory().expect("open request sqlite");
-    conn.execute_batch(
-        "CREATE TABLE relationship_requests(
-           user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, payload_json TEXT NOT NULL,
-           PRIMARY KEY(user_id, stable_key)
-         );
-         CREATE TABLE relationship_intents(
-           user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, reverse_key TEXT NOT NULL,
-           payload_json TEXT NOT NULL, PRIMARY KEY(user_id, stable_key)
-         );
-         CREATE TABLE sync_state(
-           user_id INTEGER NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
-           PRIMARY KEY(user_id, key)
-         );",
-    )
-    .expect("create request schema");
-    conn
+    profile_cache_db()
 }
 
 fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_json::Value {
@@ -347,17 +353,16 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     .unwrap();
     tx.commit().unwrap();
 
-    let payload: String = conn
-        .query_row(
-            "SELECT payload_json FROM relationship_requests",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let projection = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
     assert_eq!(projection["status"], "REQUESTED");
     assert_eq!(projection["requestedSort"], now);
+    assert_eq!(projection["peer"], serde_json::json!({
+        "id":2, "account":"peer", "domain":"peer.test", "namespaceId":12,
+        "name":"Peer", "avatar":"", "bio":"",
+    }));
+    assert!(projection.get("group").is_none());
     let revision: String = conn
         .query_row(
             "SELECT value_json FROM sync_state WHERE key='relationshipRequestStateRevision'",
@@ -396,17 +401,14 @@ fn native_projection_persists_a_local_accept_side_effect() {
     update_live_request_projection(&tx, 1, &key, "ACCEPTED", now + 1).unwrap();
     tx.commit().unwrap();
 
-    let payload: String = conn
-        .query_row(
-            "SELECT payload_json FROM relationship_requests",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let projection = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
     assert_eq!(projection["direction"], "INCOMING");
     assert_eq!(projection["status"], "ACCEPTED");
+    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10).unwrap();
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["actionableTotal"], 0);
+    assert_eq!(page["items"][0], projection);
 }
 
 #[test]
@@ -417,18 +419,10 @@ fn native_projection_uses_request_metadata_for_revocation() {
         .unwrap()
         .as_millis() as i64;
     let tx = conn.transaction().unwrap();
-    tx.execute(
-        "INSERT INTO relationship_requests VALUES(1, ?1, ?2)",
-        [
-            &serde_json::json!(["friend", 12, "peer.test", "peer", "local.test", "me"]).to_string(),
-            &serde_json::json!({
-                "status": "REQUESTED", "expiresAt": now + 60_000,
-                "bucket": "RECEIVED", "direction": "INCOMING"
-            })
-            .to_string(),
-        ],
-    )
-    .unwrap();
+    apply_relationship_request_effect(
+        &tx, 1, 1, 12, "peer", "peer.test", "me", "local.test",
+        &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
+    ).unwrap();
     let mut body = friend_body("OUTGOING", "REVOKED", None);
     body["requestStatus"] = serde_json::json!("REJECTED");
     body["requestDirection"] = serde_json::json!("INCOMING");
@@ -446,42 +440,57 @@ fn native_projection_uses_request_metadata_for_revocation() {
     .unwrap();
     tx.commit().unwrap();
 
-    let payload: String = conn
-        .query_row(
-            "SELECT payload_json FROM relationship_requests",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let projection = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
     assert_eq!(projection["status"], "REJECTED");
+}
+
+#[test]
+fn native_group_request_projection_reconstructs_typed_subject() {
+    let mut conn = request_connection();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    let tx = conn.transaction().unwrap();
+    apply_group_request_effect(&tx, 1, 4, 12, "!team", "remote.test", "INCOMING", &serde_json::json!({
+        "status": "REQUESTED", "requestedAt": now, "expiresAt": now + 60_000,
+        "threadId": 42, "note": "Welcome", "group": {
+            "account": "!team", "domain": "remote.test", "isLocal": false,
+            "name": "Team", "avatar": "", "description": "About",
+            "profileRev": 3
+        }
+    })).unwrap();
+    tx.commit().unwrap();
+    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let value = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
+    assert_eq!(value["group"], serde_json::json!({
+        "account":"!team", "domain":"remote.test", "namespaceId":12,
+        "isLocal":false, "name":"Team", "avatar":"", "description":"About",
+        "profileRev":3,
+    }));
+    assert_eq!(value["sourceLabel"], "remote.test");
+    assert!(value.get("peer").is_none());
+    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10).unwrap();
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["actionableTotal"], 1);
+    assert_eq!(page["items"][0], value);
+    let columns = conn.prepare("PRAGMA table_info(relationship_requests)").unwrap()
+        .query_map([], |row| row.get::<_, String>(1)).unwrap()
+        .collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(!columns.contains(&"payload_json".to_string()));
 }
 
 #[test]
 fn native_cleanup_removes_expired_request_projections_after_retention() {
     let conn = request_connection();
-    conn.execute(
-        "INSERT INTO relationship_requests VALUES(1,'friend:test',?1)",
-        [serde_json::json!({
-            "direction": "OUTGOING",
-            "status": "REQUESTED",
-            "expiresAt": 10,
-            "updatedAt": 0
-        })
-        .to_string()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO relationship_requests VALUES(1,'group:test',?1)",
-        [serde_json::json!({
-            "direction": "INCOMING",
-            "status": "REQUESTED",
-            "expiresAt": 10,
-            "updatedAt": 0
-        })
-        .to_string()],
-    )
-    .unwrap();
+    for (key, kind, direction) in [
+        ("friend:test", "FRIEND", "OUTGOING"),
+        ("group:test", "GROUP", "INCOMING"),
+    ] {
+        conn.execute(
+            "INSERT INTO relationship_requests(user_id,stable_key,namespace_id,kind,bucket,direction,status,expires_at,note,requested_at,requested_sort,updated_at)
+             VALUES(1,?1,0,?2,'SENT',?3,'REQUESTED',10,'',0,0,0)",
+            rusqlite::params![key, kind, direction],
+        ).unwrap();
+    }
     cleanup_relationship_requests(&conn, 1, 10).unwrap();
 
     assert_eq!(
@@ -555,7 +564,7 @@ fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
 
 #[test]
 fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
-    use super::contacts::{register_namespace, write_profile};
+    use super::contacts::{read_profile, register_namespace, write_profile};
     let conn = profile_cache_db();
     register_namespace(&conn, 1, 0, "local").unwrap();
     register_namespace(&conn, 1, 7, "authority.test").unwrap();
@@ -570,8 +579,21 @@ fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 3);
-    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT json_extract(payload_json,'$.name') name FROM profiles WHERE domain='local' AND namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
+    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT name FROM profiles WHERE domain='local' AND namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
     assert_eq!(names, "Old,New");
+    let revision = read_profile(&conn, 1, "alice", "local", 0, 3).unwrap().unwrap();
+    assert_eq!(revision, serde_json::json!({
+        "account":"alice", "domain":"local", "namespaceId":0,
+        "profileRev":3, "name":"New", "avatarDigest":null, "bio":"",
+    }));
+    assert!(!write_profile(&conn, 1, &revision).unwrap());
+    let mut conflict = revision;
+    conflict["name"] = serde_json::json!("Changed");
+    assert!(write_profile(&conn, 1, &conflict).is_err());
+    let columns = conn.prepare("PRAGMA table_info(profiles)").unwrap()
+        .query_map([], |row| row.get::<_, String>(1)).unwrap()
+        .collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(!columns.contains(&"payload_json".to_string()));
     let old_tables: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','groups')",
@@ -611,12 +633,27 @@ fn native_profile_cache_rejects_a_different_avatar_for_one_revision() {
 #[test]
 fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     let mut conn = profile_cache_db();
-    conn.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(1,90,?1)", [serde_json::json!({"threadId":90,"type":"GROUP","authorityNamespaceId":7,"group":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":1}}).to_string()]).unwrap();
+    let body = serde_json::json!({
+        "threadId":90,"threadFeedId":1,"type":"GROUP","authorityNamespaceId":7,
+        "conversationState":"ACTIVE","blocked":false,"role":"MEMBER",
+        "profile":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":0},
+        "alias":null,"threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
+        "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
+        "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
+        "unreadCount":0,"lastMentionSeq":null,"previews":[],
+    });
+    let tx = conn.transaction().unwrap();
+    super::client_state::apply_thread_state(&tx, 1, &body, 1).unwrap();
+    tx.commit().unwrap();
+    let local: super::attention::LocalThreadAttention = serde_json::from_value(
+        serde_json::json!({"threadId":90,"server":body,"localReadSeq":0})
+    ).unwrap();
+    super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"operation":"MEMBER_UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
-        {"operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
-        {"operation":"GROUP_PROFILE","body":{"profileRev":4}}
+        {"feedId":"1","operation":"MEMBER_UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"ADMIN","profileRev":2}},
+        {"feedId":"2","operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
+        {"feedId":"3","operation":"GROUP_PROFILE","body":{"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -651,12 +688,10 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
         )
         .unwrap();
     assert_eq!(source, "authority.test");
-    let payload: String = conn
-        .query_row("SELECT payload_json FROM threads", [], |row| row.get(0))
-        .unwrap();
-    let thread: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let thread = super::thread_store::read(&conn, 1, 90).unwrap().unwrap();
     assert_eq!(thread["authorityNamespaceId"], 7);
-    assert_eq!(thread["group"]["profileRev"], 4);
+    assert_eq!(thread["role"], "MEMBER"); // Roster updates do not replace the thread-feed role.
+    assert!(thread.get("profileRev").is_none());
     let cursor: String = conn
         .query_row(
             "SELECT value_json FROM sync_state WHERE key='stateFeedId'",
@@ -673,7 +708,7 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     .unwrap();
     let delta = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
         "mode":"delta","scannedThrough":"4","items":[
-            {"operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,
+            {"feedId":"4","operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,
              "body":{"role":"ADMIN","profileRev":2}}
         ]}}]);
     super::client_state::apply_state_feed_page(

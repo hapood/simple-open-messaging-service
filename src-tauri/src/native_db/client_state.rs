@@ -2,6 +2,26 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::Value;
 
+fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
+    if incoming["type"] != current["type"] || !matches!(incoming["type"].as_str(), Some("P2P" | "GROUP")) {
+        return;
+    }
+    let field = if incoming["type"] == "P2P" { "peerUser" } else { "group" };
+    if ["account", "domain", "namespaceId"].iter()
+        .any(|key| incoming[field][*key] != current[field][*key])
+        || current["profileRev"].as_i64().unwrap_or(0)
+            <= incoming["profileRev"].as_i64().unwrap_or(0)
+    {
+        return;
+    }
+    incoming["profileRev"] = current["profileRev"].clone();
+    for key in ["name", "avatar", "bio", "description"] {
+        if let Some(value) = current[field].get(key) {
+            incoming[field][key] = value.clone();
+        }
+    }
+}
+
 use super::relationship_projection::{
     apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
 };
@@ -10,7 +30,7 @@ use super::{json_text, open, parse_json};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientStateFeedItem {
-    feed_id: Option<i64>,
+    pub(super) feed_id: Option<i64>,
     account: Option<String>,
     domain: Option<String>,
     namespace_id: i64,
@@ -66,26 +86,41 @@ pub(crate) fn chrono_millis() -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+pub(super) fn read_threads(conn: &Connection, user_id: i64) -> Result<Vec<Value>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT thread_id,thread_feed_id,thread_profile_rev,alias,
+                blocked,conversation_state
+         FROM threads WHERE user_id=?1 ORDER BY thread_id"
+    ).map_err(|e| format!("prepare thread read: {e}"))?;
+    let rows = stmt.query_map([user_id], |row| Ok((
+        row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+        row.get::<_, Option<String>>(3)?, row.get::<_, bool>(4)?, row.get::<_, String>(5)?,
+    ))).map_err(|e| format!("query threads: {e}"))?;
+    rows.map(|row| {
+        let (id, feed_id, revision, alias, blocked, lifecycle) =
+            row.map_err(|e| format!("read thread: {e}"))?;
+        let mut item = super::thread_store::read(conn, user_id, id)?
+            .ok_or("thread structure missing while reading list")?;
+        super::thread_store::apply_selected_profile(conn, user_id, id, &mut item)?;
+        item["threadFeedId"] = feed_id.into();
+        item["profileRev"] = revision.into();
+        item["alias"] = serde_json::json!(alias);
+        item["blocked"] = blocked.into();
+        item["conversationState"] = lifecycle.clone().into();
+        if lifecycle == "ACTIVE" && item["type"] == "P2P" {
+            item["friendshipActive"] = true.into();
+        } else if item["type"] == "P2P" {
+            item["friendshipActive"] = false.into();
+        }
+        Ok(item)
+    }).collect()
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_threads(user_id: i64) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
-        let mut stmt = conn
-            .prepare("SELECT json_set(t.payload_json, '$.alias', json_extract(s.payload_json, '$.server.alias'))
-              FROM threads t LEFT JOIN thread_states s ON s.user_id=t.user_id AND s.thread_id=t.thread_id
-              WHERE t.user_id = ?1 AND COALESCE(json_extract(t.payload_json, '$.visible'), 1) = 1")
-            .map_err(|e| format!("prepare thread read: {e}"))?;
-        let rows = stmt
-            .query_map([user_id], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("query threads: {e}"))?;
-        rows.map(|row| {
-            row.map_err(|e| format!("read thread: {e}"))
-                .and_then(parse_json)
-        })
-        .collect()
-    })
-    .await
-    .map_err(|e| format!("join thread read: {e}"))?
+    super::lifetime::spawn(move || read_threads(&open()?, user_id))
+        .await
+        .map_err(|e| format!("join thread read: {e}"))?
 }
 
 #[tauri::command]
@@ -146,18 +181,23 @@ pub(crate) async fn native_db_list_relationship_requests(
     user_id: i64,
 ) -> Result<Vec<Value>, String> {
     super::lifetime::spawn(move || {
-        let conn = open()?;
-        let mut stmt = conn
-            .prepare("SELECT payload_json FROM relationship_requests WHERE user_id = ?1")
+        let mut conn = open()?;
+        let tx = conn.transaction().map_err(|e| format!("begin request read: {e}"))?;
+        let mut stmt = tx
+            .prepare("SELECT stable_key FROM relationship_requests WHERE user_id = ?1")
             .map_err(|e| format!("prepare friend-request read: {e}"))?;
-        let rows = stmt
+        let keys = stmt
             .query_map([user_id], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("query friend intents: {e}"))?;
-        rows.map(|row| {
-            row.map_err(|e| format!("read friend intent: {e}"))
-                .and_then(parse_json)
-        })
-        .collect()
+            .map_err(|e| format!("query friend intents: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("read friend intent keys: {e}"))?;
+        drop(stmt);
+        let items = keys.into_iter().map(|key| {
+            super::request_store::read(&tx, user_id, &key)?
+                .ok_or_else(|| format!("request projection disappeared: {key}"))
+        }).collect::<Result<Vec<_>, _>>()?;
+        tx.commit().map_err(|e| format!("finish request read: {e}"))?;
+        Ok(items)
     })
     .await
     .map_err(|e| format!("join friend-intent read: {e}"))?
@@ -171,9 +211,20 @@ pub(crate) async fn native_db_page_relationship_requests(
     take: i64,
 ) -> Result<Value, String> {
     super::lifetime::spawn(move || {
-        let conn = open()?;
+        page_relationship_requests(&mut open()?, user_id, &bucket, cursor.as_deref(), take)
+    })
+    .await
+    .map_err(|e| format!("join paged friend-intent read: {e}"))?
+}
+
+pub(super) fn page_relationship_requests(
+    conn: &mut Connection,
+    user_id: i64,
+    bucket: &str,
+    cursor: Option<&str>,
+    take: i64,
+) -> Result<Value, String> {
         let parsed_cursor = cursor
-            .as_deref()
             .map(serde_json::from_str::<Value>)
             .transpose()
             .map_err(|e| format!("parse friend-intent cursor: {e}"))?;
@@ -187,18 +238,16 @@ pub(crate) async fn native_db_page_relationship_requests(
             .and_then(|value| value.get(1))
             .and_then(Value::as_str)
             .unwrap_or("\u{10ffff}");
-        let mut stmt = conn
+        let tx = conn.transaction().map_err(|e| format!("begin request page: {e}"))?;
+        let mut stmt = tx
             .prepare(
-                "SELECT payload_json FROM relationship_requests
+                "SELECT stable_key FROM relationship_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.bucket') = ?2
-                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')
-                   AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
-                     OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
-                       AND stable_key < ?5))
-                 ORDER BY CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) DESC,
-                          stable_key DESC
-                 LIMIT ?6",
+                   AND bucket = ?2
+                   AND status IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')
+                   AND (?3 = 0 OR requested_sort < ?4
+                     OR (requested_sort = ?4 AND stable_key < ?5))
+                 ORDER BY requested_sort DESC, stable_key DESC LIMIT ?6",
             )
             .map_err(|e| format!("prepare paged friend-intent read: {e}"))?;
         let rows = stmt
@@ -214,36 +263,35 @@ pub(crate) async fn native_db_page_relationship_requests(
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| format!("query paged friend intents: {e}"))?;
-        let items = rows
-            .map(|row| {
-                row.map_err(|e| format!("read paged friend intent: {e}"))
-                    .and_then(parse_json)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let total = conn
+        let keys = rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("read paged friend intent keys: {e}"))?;
+        drop(stmt);
+        let items = keys.into_iter().map(|key| {
+            super::request_store::read(&tx, user_id, &key)?
+                .ok_or_else(|| format!("request projection disappeared: {key}"))
+        }).collect::<Result<Vec<_>, _>>()?;
+        let total = tx
             .query_row(
                 "SELECT COUNT(*) FROM relationship_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.bucket') = ?2
-                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')",
+                   AND bucket = ?2
+                   AND status IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')",
                 params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("count friend intents: {e}"))?;
-        let actionable_total = conn
+        let actionable_total = tx
             .query_row(
                 "SELECT COUNT(*) FROM relationship_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.bucket') = ?2
-                   AND json_extract(payload_json, '$.status') = 'REQUESTED'",
+                   AND bucket = ?2
+                   AND status = 'REQUESTED'",
                 params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("count actionable friend requests: {e}"))?;
+        tx.commit().map_err(|e| format!("finish request page: {e}"))?;
         Ok(serde_json::json!({ "items": items, "total": total, "actionableTotal": actionable_total }))
-    })
-    .await
-    .map_err(|e| format!("join paged friend-intent read: {e}"))?
 }
 
 #[tauri::command]
@@ -285,7 +333,7 @@ pub(super) fn cleanup_relationship_requests(
     conn.execute(
         "DELETE FROM relationship_requests
              WHERE user_id=?1
-               AND CAST(json_extract(payload_json, '$.updatedAt') AS INTEGER) <= ?2 - 604800000",
+               AND updated_at <= ?2 - 604800000",
         params![user_id, now],
     )
     .map_err(|e| format!("cleanup expired friend requests: {e}"))?;
@@ -299,18 +347,104 @@ pub(crate) async fn native_db_put_thread(
     item: Value,
 ) -> Result<(), String> {
     super::lifetime::spawn(move || {
-        open()?
-            .execute(
-                "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(user_id, thread_id) DO UPDATE SET payload_json = excluded.payload_json
-                 WHERE COALESCE(json_extract(threads.payload_json, '$.threadStateFeedId'), 0) <= COALESCE(json_extract(excluded.payload_json, '$.threadStateFeedId'), 0)",
-                params![user_id, thread_id, json_text(&item)?],
-            )
-            .map_err(|e| format!("put thread: {e}"))?;
-        Ok(())
+        let mut conn = open()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin thread write: {e}"))?;
+        let mut item = item;
+        let (feed_id, revision) = presentation_state(&tx, user_id, thread_id, &item)?;
+        if item.get("threadFeedId").and_then(Value::as_i64).is_some_and(|id| id < feed_id) {
+            return Ok(());
+        }
+        let mut current = super::thread_store::read(&tx, user_id, thread_id)?
+            .ok_or("thread presentation has no matching feed state")?;
+        current["profileRev"] = revision.into();
+        item["profileRev"] = revision.into();
+        preserve_thread_profile(&mut item, &current);
+        copy_presentation_state(&mut item, &current);
+        super::thread_store::write(&tx, user_id, thread_id, &item)?;
+        tx.commit().map_err(|e| format!("commit thread write: {e}"))
     })
     .await
     .map_err(|e| format!("join thread write: {e}"))?
+}
+
+fn copy_presentation_state(item: &mut Value, current: &Value) {
+    for key in [
+        "threadFeedId", "conversationState", "blocked", "role", "alias",
+        "threadProfileRev", "messageEndSeq", "tombstoneEndSeq",
+        "groupMetaFeedEndId", "joinRequestEndFeedId", "joinRequestReadFeedId",
+        "groupInviteEndFeedId", "serverLastReadSeq", "announcementReadFeedId",
+        "serverUnreadCount", "lastMentionSeq", "localReadSeq",
+    ] {
+        item[key] = current[key].clone();
+    }
+}
+
+/// Presentation writes cannot create a conversation or select a different profile
+/// identity/revision than the committed thread-feed row.
+fn presentation_state(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+    item: &Value,
+) -> Result<(i64, i64), String> {
+    let state: Option<(i64, i64, String, i64, String, String, i64)> = conn
+        .query_row(
+            "SELECT thread_feed_id,thread_profile_rev,kind,authority_namespace_id,
+                    subject_account,subject_domain,subject_namespace_id
+             FROM threads WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                       row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .optional()
+        .map_err(|e| format!("read stored thread selection: {e}"))?;
+    let (feed_id, revision, kind, namespace, account, domain, subject_namespace) =
+        state.ok_or("thread presentation has no matching feed state")?;
+    let subject = match item.get("type").and_then(Value::as_str) {
+        Some("GROUP") => &item["group"],
+        Some("P2P") => &item["peerUser"],
+        _ => return Err("invalid thread type".into()),
+    };
+    if item["threadId"].as_i64() != Some(thread_id)
+        || item["type"].as_str() != Some(kind.as_str())
+        || item["authorityNamespaceId"].as_i64() != Some(namespace)
+        || subject["account"].as_str() != Some(account.as_str())
+        || subject["domain"].as_str() != Some(domain.as_str())
+        || subject["namespaceId"].as_i64() != Some(subject_namespace)
+    {
+        return Err("thread presentation identity differs from feed state".into());
+    }
+    Ok((feed_id, revision))
+}
+
+#[cfg(test)]
+mod presentation_state_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_threads_without_matching_feed_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads(
+               user_id INTEGER,thread_id INTEGER,thread_feed_id INTEGER,thread_profile_rev INTEGER,
+               kind TEXT,authority_namespace_id INTEGER,subject_account TEXT,subject_domain TEXT,
+               subject_namespace_id INTEGER
+             );",
+        ).unwrap();
+        let peer = serde_json::json!({
+            "threadId":7,"type":"P2P","authorityNamespaceId":0,
+            "peerUser":{"account":"peer","domain":"local","namespaceId":0}
+        });
+        assert!(presentation_state(&conn, 1, 7, &peer).is_err());
+        conn.execute(
+            "INSERT INTO threads VALUES(1,7,3,4,'P2P',0,'peer','local',0)", [],
+        ).unwrap();
+        assert_eq!(presentation_state(&conn, 1, 7, &peer).unwrap(), (3, 4));
+        let mut wrong = peer;
+        wrong["peerUser"]["account"] = "other".into();
+        assert!(presentation_state(&conn, 1, 7, &wrong).is_err());
+    }
 }
 
 #[tauri::command]
@@ -323,18 +457,36 @@ pub(crate) async fn native_db_replace_threads(
         let tx = conn
             .transaction()
             .map_err(|e| format!("begin replace threads: {e}"))?;
-        tx.execute("DELETE FROM threads WHERE user_id = ?1", [user_id])
-            .map_err(|e| format!("clear threads: {e}"))?;
-        for item in items {
+        let mut previous = std::collections::HashMap::new();
+        {
+            let mut select = tx.prepare("SELECT thread_id FROM threads WHERE user_id=?1")
+                .map_err(|e| format!("read previous threads: {e}"))?;
+            let ids = select.query_map([user_id], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            for id in ids {
+                if let Some(mut item) = super::thread_store::read(&tx, user_id, id)? {
+                    let rev: Option<i64> = tx.query_row(
+                        "SELECT thread_profile_rev FROM threads WHERE user_id=?1 AND thread_id=?2",
+                        params![user_id, id], |row| row.get(0),
+                    ).optional().map_err(|e| e.to_string())?;
+                    if let Some(rev) = rev { item["profileRev"] = rev.into(); }
+                    previous.insert(id, item);
+                }
+            }
+        }
+        for mut item in items {
             let thread_id = item
                 .get("threadId")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "thread item has no numeric threadId".to_string())?;
-            tx.execute(
-                "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)",
-                params![user_id, thread_id, json_text(&item)?],
-            )
-            .map_err(|e| format!("insert thread: {e}"))?;
+            let (_, revision) = presentation_state(&tx, user_id, thread_id, &item)?;
+            let current = previous.get(&thread_id)
+                .ok_or("thread presentation has no matching feed state")?;
+            item["profileRev"] = revision.into();
+            preserve_thread_profile(&mut item, current);
+            copy_presentation_state(&mut item, current);
+            super::thread_store::write(&tx, user_id, thread_id, &item)?;
         }
         tx.commit()
             .map_err(|e| format!("commit replace threads: {e}"))
@@ -346,16 +498,27 @@ pub(crate) async fn native_db_replace_threads(
 #[tauri::command]
 pub(crate) async fn native_db_delete_thread(user_id: i64, thread_id: i64) -> Result<(), String> {
     super::lifetime::spawn(move || {
-        open()?
-            .execute(
-                "DELETE FROM threads WHERE user_id = ?1 AND thread_id = ?2",
-                params![user_id, thread_id],
-            )
-            .map_err(|e| format!("delete thread: {e}"))?;
-        Ok(())
+        let mut conn = open()?;
+        delete_thread(&mut conn, user_id, thread_id)
     })
     .await
     .map_err(|e| format!("join delete thread: {e}"))?
+}
+
+pub(super) fn delete_thread(
+    conn: &mut Connection,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<(), String> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin delete thread: {e}"))?;
+    tx.execute("DELETE FROM thread_previews WHERE user_id=?1 AND thread_id=?2",
+        params![user_id, thread_id]).map_err(|e| format!("delete thread preview: {e}"))?;
+    tx.execute("DELETE FROM members WHERE user_id=?1 AND thread_id=?2",
+        params![user_id, thread_id]).map_err(|e| format!("delete thread roster: {e}"))?;
+    tx.execute("DELETE FROM threads WHERE user_id=?1 AND thread_id=?2",
+        params![user_id, thread_id]).map_err(|e| format!("delete thread structure: {e}"))?;
+    tx.commit().map_err(|e| format!("commit delete thread: {e}"))
 }
 
 pub(super) fn begin_group_meta_recovery(
@@ -375,30 +538,12 @@ pub(super) fn begin_group_meta_recovery(
         params![user_id, thread_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute("UPDATE threads SET payload_json=json_set(payload_json, '$.group.memberCount', 0, '$.group.groupMetaFeedId', '0', '$.groupMetaRecoveryThrough', ?3, '$.groupMetaRecoveryAnnouncement', null)
-      WHERE user_id=?1 AND thread_id=?2 AND json_extract(payload_json, '$.type')='GROUP'", params![user_id, thread_id, through]).map_err(|e| e.to_string())?;
+    tx.execute("UPDATE threads SET group_member_count=0, group_meta_feed_id='0',
+      group_meta_recovery_through=?3,
+      group_recovery_announcement_feed_id=NULL, group_recovery_announcement_text=NULL
+      WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'", params![user_id, thread_id, through])
+      .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_apply_state_feed_page(
-    user_id: i64,
-    feed_id: i64,
-    items: Vec<ClientStateFeedItem>,
-    reset_projection: bool,
-) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        apply_state_feed_page(
-            &mut open()?,
-            user_id,
-            items,
-            feed_id,
-            Vec::new(),
-            reset_projection,
-        )
-    })
-    .await
-    .map_err(|e| format!("join state-feed page: {e}"))?
 }
 
 pub(super) fn apply_state_feed_page(
@@ -408,6 +553,21 @@ pub(super) fn apply_state_feed_page(
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
     reset_projection: bool,
+) -> Result<(), String> {
+    apply_state_feed_page_with_resume(conn, user_id, items, feed_id, group_meta, reset_projection, None)
+}
+
+/// The native executor persists its full-snapshot boundary with the page and cursor. `None`
+/// leaves this independent recovery marker alone (e.g. a group-meta-only write); `Some(None)`
+/// removes it only when the last full page has committed.
+pub(super) fn apply_state_feed_page_with_resume(
+    conn: &mut Connection,
+    user_id: i64,
+    items: Vec<ClientStateFeedItem>,
+    feed_id: i64,
+    group_meta: Vec<ClientGroupMetaApply>,
+    reset_projection: bool,
+    full_through: Option<Option<i64>>,
 ) -> Result<(), String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -419,44 +579,6 @@ pub(super) fn apply_state_feed_page(
             [user_id],
         )
         .map_err(|e| format!("clear state-feed friend requests: {e}"))?;
-        tx.execute(
-            "DELETE FROM relationship_intents WHERE user_id=?1",
-            [user_id],
-        )
-        .map_err(|e| format!("clear state-feed relationship intents: {e}"))?;
-        let mut statement = tx
-            .prepare(
-                "SELECT thread_id,payload_json FROM threads
-                     WHERE user_id=?1",
-            )
-            .map_err(|e| format!("prepare state-feed thread reset: {e}"))?;
-        let rows = statement
-            .query_map([user_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|e| format!("read state-feed threads for reset: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("collect state-feed threads for reset: {e}"))?;
-        drop(statement);
-        for (thread_id, payload) in rows {
-            let mut thread = parse_json(payload)?;
-            if let Some(object) = thread.as_object_mut() {
-                object.insert("visible".into(), Value::Bool(false));
-                object.remove("threadStateFeedId");
-                if object.get("type").and_then(Value::as_str) == Some("P2P") {
-                    object.insert("friendshipActive".into(), Value::Bool(false));
-                    object.insert(
-                        "conversationState".into(),
-                        Value::String("READ_ONLY".into()),
-                    );
-                }
-            }
-            tx.execute(
-                "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
-                params![user_id, thread_id, json_text(&thread)?],
-            )
-            .map_err(|e| format!("reset state-feed thread projection: {e}"))?;
-        }
     }
     for op in &items {
         if op.event_type.as_deref() != Some("RELATIONSHIP_INTENT") {
@@ -505,16 +627,6 @@ pub(super) fn apply_state_feed_page(
             )?;
         }
     }
-    for op in &items {
-        if op.event_type.as_deref() == Some("THREAD_STATE") {
-            apply_thread_state(
-                &tx,
-                user_id,
-                op.body.as_ref().ok_or("THREAD_STATE has no body")?,
-                op.feed_id.ok_or("THREAD_STATE has no feedId")?,
-            )?;
-        }
-    }
     for update in group_meta {
         if update.source_server.is_empty() {
             return Err("group-meta sourceServer must be canonical and non-empty".into());
@@ -531,28 +643,13 @@ pub(super) fn apply_state_feed_page(
             update.namespace_id,
             &update.source_server,
         )?;
-        let payload: Option<String> = tx
-            .query_row(
-                "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
-                params![user_id, update.thread_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("read group thread: {e}"))?;
-        if payload.is_none() {
-            continue;
-        }
-        let mut thread = payload.map(parse_json).transpose()?;
-        if thread
-            .as_ref()
-            .and_then(|v| v.get("type"))
-            .and_then(Value::as_str)
-            != Some("GROUP")
-            || thread
-                .as_ref()
-                .and_then(|v| v.get("conversationState"))
-                .and_then(Value::as_str)
-                == Some("READ_ONLY")
+        let mut thread = super::thread_store::read(&tx, user_id, update.thread_id)?;
+        let lifecycle: Option<String> = tx.query_row(
+            "SELECT conversation_state FROM threads WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, update.thread_id], |row| row.get(0),
+        ).optional().map_err(|e| format!("read group lifecycle: {e}"))?;
+        if thread.as_ref().and_then(|v| v.get("type")).and_then(Value::as_str) != Some("GROUP")
+            || lifecycle.as_deref() != Some("ACTIVE")
         {
             continue;
         }
@@ -577,19 +674,11 @@ pub(super) fn apply_state_feed_page(
                 continue;
             }
             if item.operation == "GROUP_PROFILE" {
-                if let Some(group) = thread
-                    .as_mut()
-                    .and_then(|thread| thread.get_mut("group"))
-                    .and_then(Value::as_object_mut)
-                {
-                    group.insert(
-                        "profileRev".into(),
-                        item.body
-                            .get("profileRev")
-                            .cloned()
-                            .ok_or("GROUP_PROFILE has no profileRev")?,
-                    );
-                }
+                item.body.get("profileRev").and_then(Value::as_i64)
+                    .filter(|rev| *rev >= 0)
+                    .ok_or("GROUP_PROFILE has no valid profileRev")?;
+                // The complete thread feed selects the avatar revision. Meta may
+                // arrive first, so it cannot write a competing version into threads.
                 continue;
             }
             if item.account.is_empty() || item.domain.is_empty() {
@@ -655,26 +744,13 @@ pub(super) fn apply_state_feed_page(
             let recovered_announcement = if update.page.mode == "full" && !update.page.has_more {
                 Some(thread.get("groupMetaRecoveryAnnouncement").cloned().unwrap_or(Value::Null))
             } else { None };
-            let self_role: Option<String> = tx.query_row(
-                    "SELECT member.role FROM members member
-                     JOIN sync_state self_user ON self_user.user_id=member.user_id AND self_user.key='selfIdentity'
-                     WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
-                       AND member.member_account=json_extract(self_user.value_json,'$.account')
-                       AND member.member_domain='local'
-                       AND member.namespace_id=0
-                     LIMIT 1",
-                    params![user_id, update.thread_id],
-                    |row| row.get(0),
-                ).optional().map_err(|e| format!("read current group role: {e}"))?;
             let member_count: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM members WHERE user_id=?1 AND thread_id=?2 AND left_state=0",
                     params![user_id, update.thread_id], |row| row.get(0),
                 ).map_err(|e| format!("count current group members: {e}"))?;
             if let Some(object) = thread.as_object_mut() {
-                object.insert(
-                    "role".into(),
-                    self_role.map(Value::String).unwrap_or(Value::Null),
-                );
+                // The complete thread feed owns the local user's role. Roster
+                // events only update individual member rows, including self.
                 if !update.page.has_more {
                     object.insert("groupMetaRecoveryThrough".into(), Value::Null);
                     object.remove("groupMetaRecoveryAnnouncement");
@@ -691,20 +767,15 @@ pub(super) fn apply_state_feed_page(
                     Value::String(update.page.scanned_through),
                 );
             }
-            tx.execute(
-                "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
-                params![user_id, update.thread_id, json_text(&thread)?],
-            )
-            .map_err(|e| format!("update group thread metadata: {e}"))?;
+            super::thread_store::write(&tx, user_id, update.thread_id, &thread)?;
         }
     }
-    for op in items {
+    for op in &items {
         match op.event_type.as_deref().unwrap_or("") {
             "RELATIONSHIP_INTENT" => {}
-            "THREAD_STATE" => {}
             "INCOMING_INVITE_HEAD" => {
                 let body = op
-                    .body
+                    .body.as_ref()
                     .ok_or_else(|| "INCOMING_INVITE_HEAD has no body".to_string())?;
                 let read_through = body
                     .get("readThroughFeedId")
@@ -724,6 +795,35 @@ pub(super) fn apply_state_feed_page(
             }
             other => return Err(format!("unknown state-feed event type: {other}")),
         }
+    }
+    if reset_projection {
+        tx.execute("DELETE FROM sync_state WHERE user_id=?1 AND key='relationshipIntentStateRevision'", [user_id])
+            .map_err(|e| format!("reset relationship intent revision: {e}"))?;
+    }
+    if let Some(revision) = items.iter()
+        .filter(|item| item.event_type.as_deref() == Some("RELATIONSHIP_INTENT"))
+        .filter_map(|item| item.feed_id).max()
+    {
+        tx.execute(
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipIntentStateRevision',?2)
+             ON CONFLICT(user_id,key) DO UPDATE SET value_json=CAST(MAX(CAST(sync_state.value_json AS INTEGER),CAST(excluded.value_json AS INTEGER)) AS TEXT)",
+            params![user_id, revision.to_string()],
+        ).map_err(|e| format!("save relationship intent revision: {e}"))?;
+    }
+    match full_through {
+        Some(Some(boundary)) if boundary > feed_id => {
+            tx.execute(
+                "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'stateFeedFullThrough',?2)
+                 ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+                params![user_id, boundary.to_string()],
+            ).map_err(|e| format!("save state-feed full boundary: {e}"))?;
+        }
+        Some(Some(_)) => return Err("invalid state-feed full boundary".into()),
+        Some(None) => {
+            tx.execute("DELETE FROM sync_state WHERE user_id=?1 AND key='stateFeedFullThrough'", [user_id])
+                .map_err(|e| format!("finish state-feed full snapshot: {e}"))?;
+        }
+        None => {}
     }
     tx.execute(
         "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'stateFeedId', ?2)
@@ -817,63 +917,58 @@ pub(super) fn apply_thread_state(
     body.get("blocked")
         .and_then(Value::as_bool)
         .ok_or("invalid thread blocked flag")?;
-    body.get("establishedAt")
-        .and_then(Value::as_i64)
-        .filter(|v| *v >= 0)
-        .ok_or("invalid establishment time")?;
     if namespace > 0 {
         super::contacts::register_namespace(tx, user_id, namespace, domain)?;
     }
-    let previous: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, thread_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    let previous = previous.map(parse_json).transpose()?;
-    let thread_feed_id = previous
-        .as_ref()
-        .and_then(|item| item.get("threadFeedId"))
-        .and_then(Value::as_i64);
-    let mut thread = previous.filter(|item| item.get("type").and_then(Value::as_str) != Some("PENDING")).unwrap_or_else(|| serde_json::json!({
+    let previous = super::thread_store::read(tx, user_id, thread_id)?;
+    let old_state: Option<(i64, i64)> = tx.query_row(
+        "SELECT thread_feed_id,thread_profile_rev FROM threads WHERE user_id=?1 AND thread_id=?2",
+        params![user_id, thread_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let mut thread = previous.unwrap_or_else(|| serde_json::json!({
         "threadId": thread_id, "type": kind, "role": null, "lastMessageAt": null, "lastMessageSeq": null,
         "muted": false, "pinned": false, "pinnedAt": null,
         "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null, "lastMessageSenderId": null
     }));
-    if thread
-        .get("threadStateFeedId")
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-        >= feed_id
-    {
+    if old_state.is_some_and(|(old_feed, _)| old_feed >= feed_id) {
         return Ok(());
+    }
+    if let Some((_, revision)) = old_state {
+        thread["profileRev"] = revision.into();
     }
     if thread.get("type").and_then(Value::as_str) != Some(kind) {
         return Err("thread type changed".into());
     }
     let field = if kind == "P2P" { "peerUser" } else { "group" };
-    let preserve_message = kind == "P2P"
-        && thread
+    let same_address = ["account", "domain", "namespaceId"]
+        .iter()
+        .all(|key| thread[field].get(*key) == profile.get(*key));
+    if old_state.is_some() && !same_address {
+        return Err("thread feed changed a conversation identity".into());
+    }
+    let preserve_message = kind == "P2P" && same_address
+        && (thread
             .get("peerProfileMessageSeq")
             .and_then(Value::as_i64)
-            .is_some();
+            .is_some()
+            || thread["profileRev"].as_i64().unwrap_or(0)
+                > profile["profileRev"].as_i64().unwrap_or(0));
     // Group Meta exclusively owns the materialized group presentation. Relationship state only
     // creates the initial structural reference and must never rewind an already-applied Meta page.
     let preserve_group = kind == "GROUP" && thread.get("group").is_some();
     if !preserve_message && !preserve_group {
         let mut presentation = thread.get(field).cloned().unwrap_or_else(|| serde_json::json!({
-            "id": if kind == "GROUP" { thread_id } else { 0 }, "ownerId": 0,
+            "id": if kind == "GROUP" { thread_id } else { 0 },
         "createdAt": 0, "updatedAt": 0, "memberCount": 0, "groupMetaFeedId": "0", "isGroup": kind == "GROUP", "isDeleted": false
         }));
-        let same = ["account", "domain", "namespaceId", "profileRev"]
+        let same = ["account", "domain", "namespaceId"]
             .iter()
-            .all(|key| presentation.get(*key) == profile.get(*key));
+            .all(|key| presentation.get(*key) == profile.get(*key))
+            && thread.get("profileRev") == profile.get("profileRev");
         let object = presentation
             .as_object_mut()
             .ok_or("invalid thread presentation")?;
-        for key in ["account", "domain", "namespaceId", "profileRev"] {
+        for key in ["account", "domain", "namespaceId"] {
             object.insert(key.into(), profile[key].clone());
         }
         if !same {
@@ -887,6 +982,7 @@ pub(super) fn apply_thread_state(
             }
         }
         thread[field] = presentation;
+        thread["profileRev"] = profile["profileRev"].clone();
     }
     for key in [
         "authorityNamespaceId",
@@ -896,16 +992,34 @@ pub(super) fn apply_thread_state(
     ] {
         thread[key] = body[key].clone();
     }
-    if let Some(thread_feed_id) = thread_feed_id {
-        thread["threadFeedId"] = Value::from(thread_feed_id);
+    thread["threadFeedId"] = Value::from(feed_id);
+    for (stored, wire) in [
+        ("alias", "alias"),
+        ("threadProfileRev", "threadProfileRev"),
+        ("messageEndSeq", "messageEndSeq"),
+        ("tombstoneEndSeq", "tombstoneEndSeq"),
+        ("groupMetaFeedEndId", "groupMetaFeedEndId"),
+        ("joinRequestEndFeedId", "joinRequestEndFeedId"),
+        ("joinRequestReadFeedId", "joinRequestReadFeedId"),
+        ("groupInviteEndFeedId", "groupInviteEndFeedId"),
+        ("serverLastReadSeq", "lastReadSeq"),
+        ("announcementReadFeedId", "announcementReadFeedId"),
+        ("serverUnreadCount", "unreadCount"),
+        ("lastMentionSeq", "lastMentionSeq"),
+    ] {
+        thread[stored] = body.get(wire)
+            .ok_or_else(|| format!("thread snapshot has no {wire}"))?
+            .clone();
+    }
+    if old_state.is_none() {
+        thread["localReadSeq"] = thread["serverLastReadSeq"].clone();
     }
     thread["visible"] = Value::Bool(true);
-    thread["threadStateFeedId"] = Value::from(feed_id);
     if kind == "P2P" {
         thread["friendshipActive"] = Value::Bool(state == "ACTIVE");
     } else if thread.get("groupMetaRecoveryThrough").is_none() {
         thread["groupMetaRecoveryThrough"] = Value::Null;
     }
-    tx.execute("INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3) ON CONFLICT(user_id,thread_id) DO UPDATE SET payload_json=excluded.payload_json", params![user_id, thread_id, json_text(&thread)?]).map_err(|e| e.to_string())?;
+    super::thread_store::write(tx, user_id, thread_id, &thread)?;
     Ok(())
 }

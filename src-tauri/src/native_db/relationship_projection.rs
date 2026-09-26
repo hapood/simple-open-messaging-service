@@ -1,7 +1,7 @@
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Transaction};
 use serde_json::Value;
 
-use super::{chrono_millis, json_text, parse_json};
+use super::chrono_millis;
 
 fn save_request_projection(
     tx: &Transaction<'_>,
@@ -9,13 +9,7 @@ fn save_request_projection(
     key: &str,
     payload: &Value,
 ) -> Result<(), String> {
-    tx.execute(
-        "INSERT INTO relationship_requests(user_id, stable_key, payload_json) VALUES(?1, ?2, ?3)
-         ON CONFLICT(user_id, stable_key) DO UPDATE SET payload_json=excluded.payload_json",
-        params![user_id, key, json_text(payload)?],
-    )
-    .map_err(|e| format!("save friend-request projection: {e}"))?;
-    Ok(())
+    super::request_store::save(tx, user_id, key, payload)
 }
 
 pub(super) fn update_live_request_projection(
@@ -25,28 +19,12 @@ pub(super) fn update_live_request_projection(
     status: &str,
     now: i64,
 ) -> Result<(), String> {
-    let current: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM relationship_requests WHERE user_id=?1 AND stable_key=?2",
-            params![user_id, key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read request projection effect target: {e}"))?;
-    let Some(mut projection) = current.map(parse_json).transpose()? else {
-        return Ok(());
-    };
-    if projection.get("status").and_then(Value::as_str) != Some("REQUESTED")
-        || !projection
-            .get("expiresAt")
-            .and_then(Value::as_i64)
-            .is_some_and(|expires_at| expires_at > now)
-    {
-        return Ok(());
-    }
-    projection["status"] = Value::String(status.into());
-    projection["updatedAt"] = Value::from(now);
-    save_request_projection(tx, user_id, key, &projection)
+    tx.execute(
+        "UPDATE relationship_requests SET status=?4, updated_at=?5
+         WHERE user_id=?1 AND stable_key=?2 AND status='REQUESTED' AND expires_at>?3",
+        params![user_id, key, now, status, now],
+    ).map_err(|e| format!("update request projection: {e}"))?;
+    Ok(())
 }
 
 pub(super) fn apply_relationship_request_effect(
@@ -130,7 +108,7 @@ pub(super) fn apply_relationship_request_effect(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM relationship_requests
              WHERE user_id=?1 AND stable_key=?2
-               AND json_extract(payload_json,'$.status')='REQUESTED')",
+               AND status='REQUESTED')",
             params![user_id, key],
             |row| row.get(0),
         )
@@ -258,7 +236,7 @@ pub(super) fn apply_group_request_effect(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM relationship_requests
              WHERE user_id=?1 AND stable_key=?2
-               AND json_extract(payload_json,'$.status')='REQUESTED')",
+               AND status='REQUESTED')",
             params![user_id, key],
             |row| row.get(0),
         )

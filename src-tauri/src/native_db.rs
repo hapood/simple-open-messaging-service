@@ -3,12 +3,17 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub(crate) mod profile_avatars;
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod call_peer;
 pub(crate) mod attention;
 pub(crate) mod client_state;
+pub(crate) mod state_feed_sync;
 pub(crate) mod contacts;
 pub(crate) mod messages;
 pub(crate) mod preferences;
 mod relationship_projection;
+mod request_store;
+mod thread_store;
 mod lifetime;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
@@ -22,11 +27,16 @@ use messages::{
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 26;
+const CACHE_SCHEMA_VERSION: i64 = 36;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn capture_account_epoch() -> Result<u64, String> {
+    lifetime::CACHE_LIFETIME.capture()
 }
 
 #[cfg(target_os = "android")]
@@ -123,11 +133,10 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for object in [
         "namespaces",
         "threads",
-        "thread_states",
+        "thread_previews",
         "profiles",
         "members",
         "relationship_requests",
-        "relationship_intents",
         "sync_state",
         "notification_global_state",
         "messages",
@@ -180,27 +189,15 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE UNIQUE INDEX IF NOT EXISTS namespaces_domain_status
           ON namespaces(user_id, domain) WHERE status='ACTIVE';
-        CREATE TABLE IF NOT EXISTS threads (
-          user_id INTEGER NOT NULL,
-          thread_id INTEGER NOT NULL,
-          payload_json TEXT NOT NULL,
-          authority_namespace_id INTEGER GENERATED ALWAYS AS
-            (CAST(json_extract(payload_json, '$.authorityNamespaceId') AS INTEGER)) STORED NOT NULL,
-          authority_domain TEXT GENERATED ALWAYS AS
-            (CASE json_extract(payload_json, '$.type')
-              WHEN 'P2P' THEN json_extract(payload_json, '$.peerUser.domain')
-              ELSE json_extract(payload_json, '$.group.domain') END) STORED NOT NULL,
-          PRIMARY KEY (user_id, thread_id),
-          FOREIGN KEY (user_id, authority_domain, authority_namespace_id)
-            REFERENCES namespaces(user_id, domain, namespace_id)
-        );
         CREATE TABLE IF NOT EXISTS profiles (
           user_id INTEGER NOT NULL,
           account TEXT NOT NULL,
           domain TEXT NOT NULL,
           namespace_id INTEGER NOT NULL,
           profile_rev INTEGER NOT NULL CHECK(profile_rev > 0),
-          payload_json TEXT NOT NULL,
+          name TEXT NOT NULL,
+          avatar_digest TEXT,
+          bio TEXT NOT NULL,
           PRIMARY KEY (user_id, account, domain, namespace_id, profile_rev),
           FOREIGN KEY (user_id, namespace_id) REFERENCES namespaces(user_id, namespace_id)
         );
@@ -224,66 +221,42 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           ON members(user_id, thread_id, left_state, namespace_id, member_domain, member_account);
         CREATE INDEX IF NOT EXISTS members_search
           ON members(user_id, thread_id, member_account, member_domain, namespace_id);
-        CREATE TRIGGER IF NOT EXISTS threads_namespace_before_insert
-        BEFORE INSERT ON threads BEGIN
-          UPDATE namespaces SET status='ARCHIVED'
-          WHERE user_id=NEW.user_id
-            AND domain=CASE json_extract(NEW.payload_json, '$.type')
-              WHEN 'P2P' THEN json_extract(NEW.payload_json, '$.peerUser.domain')
-              ELSE json_extract(NEW.payload_json, '$.group.domain') END
-            AND namespace_id<CAST(json_extract(NEW.payload_json, '$.authorityNamespaceId') AS INTEGER);
-          INSERT OR IGNORE INTO namespaces(user_id,namespace_id,domain,status)
-          VALUES(
-            NEW.user_id,
-            CAST(json_extract(NEW.payload_json, '$.authorityNamespaceId') AS INTEGER),
-            CASE json_extract(NEW.payload_json, '$.type')
-              WHEN 'P2P' THEN json_extract(NEW.payload_json, '$.peerUser.domain')
-              ELSE json_extract(NEW.payload_json, '$.group.domain') END,
-            CASE
-              WHEN CAST(json_extract(NEW.payload_json, '$.authorityNamespaceId') AS INTEGER)=0
-                OR NOT EXISTS(
-                  SELECT 1 FROM namespaces
-                  WHERE user_id=NEW.user_id
-                    AND domain=CASE json_extract(NEW.payload_json, '$.type')
-                      WHEN 'P2P' THEN json_extract(NEW.payload_json, '$.peerUser.domain')
-                      ELSE json_extract(NEW.payload_json, '$.group.domain') END
-                    AND namespace_id>CAST(json_extract(NEW.payload_json, '$.authorityNamespaceId') AS INTEGER)
-                )
-              THEN 'ACTIVE' ELSE 'ARCHIVED' END
-          );
-        END;
         CREATE TABLE IF NOT EXISTS relationship_requests (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
-          payload_json TEXT NOT NULL,
-          PRIMARY KEY (user_id, stable_key)
-        );
-        CREATE TABLE IF NOT EXISTS relationship_intents (
-          user_id INTEGER NOT NULL,
-          stable_key TEXT NOT NULL,
-          reverse_key TEXT NOT NULL,
-          payload_json TEXT NOT NULL,
+          namespace_id INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('FRIEND', 'GROUP')),
+          bucket TEXT NOT NULL CHECK(bucket IN ('RECEIVED', 'SENT')),
+          direction TEXT NOT NULL CHECK(direction IN ('INCOMING', 'OUTGOING')),
+          status TEXT NOT NULL CHECK(status IN ('REQUESTED', 'ACCEPTED', 'WITHDRAWN', 'REJECTED', 'EXPIRED')),
+          expires_at INTEGER NOT NULL,
+          local_thread_id INTEGER,
+          note TEXT NOT NULL,
+          requested_at INTEGER NOT NULL,
+          requested_sort INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          source_label TEXT,
+          subject_id INTEGER,
+          subject_account TEXT,
+          subject_domain TEXT,
+          subject_namespace_id INTEGER,
+          subject_name TEXT,
+          subject_avatar TEXT,
+          subject_bio TEXT,
+          subject_description TEXT,
+          subject_is_local INTEGER,
+          subject_profile_rev INTEGER,
           PRIMARY KEY (user_id, stable_key)
         );
         CREATE INDEX IF NOT EXISTS relationship_requests_direction_status
           ON relationship_requests(
-            user_id,
-            json_extract(payload_json, '$.direction'),
-            json_extract(payload_json, '$.status'),
-            CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) DESC,
-            stable_key DESC
+            user_id, direction, status, requested_sort DESC, stable_key DESC
           );
         CREATE TABLE IF NOT EXISTS sync_state (
           user_id INTEGER NOT NULL,
           key TEXT NOT NULL,
           value_json TEXT NOT NULL,
           PRIMARY KEY (user_id, key)
-        );
-        CREATE TABLE IF NOT EXISTS thread_states (
-          user_id INTEGER NOT NULL,
-          thread_id INTEGER NOT NULL,
-          payload_json TEXT NOT NULL,
-          PRIMARY KEY (user_id, thread_id)
         );
         CREATE TABLE IF NOT EXISTS notification_global_state (
           account_id INTEGER PRIMARY KEY,
@@ -317,6 +290,10 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| format!("initialize native cache: {e}"))?;
+    conn.execute_batch(thread_store::SCHEMA)
+        .map_err(|e| format!("initialize typed thread cache: {e}"))?;
+    conn.execute_batch(thread_store::PREVIEW_SCHEMA)
+        .map_err(|e| format!("initialize typed thread previews: {e}"))?;
     conn.execute(
         "INSERT INTO client_preferences(scope,key,value_json,updated_at)
          VALUES('cache','schemaVersion',?1,?2)
@@ -330,7 +307,8 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
 
 fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "DROP TABLE IF EXISTS thread_states;
+        "DROP TABLE IF EXISTS thread_previews;
+         DROP TABLE IF EXISTS thread_states;
          DROP TABLE IF EXISTS attention_states;
          DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
@@ -503,12 +481,11 @@ pub(crate) async fn native_db_clear_user(
             .transaction()
             .map_err(|e| format!("begin user clear: {e}"))?;
         for table in [
+            "thread_previews",
             "threads",
-            "thread_states",
             "profiles",
             "members",
             "relationship_requests",
-            "relationship_intents",
             "sync_state",
             "messages",
             "message_ranges",
@@ -534,12 +511,11 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
         if path.exists() {
             let conn = open()?;
             conn.execute_batch(
-                "DELETE FROM thread_states;
+                "DELETE FROM thread_previews;
                  DELETE FROM threads;
                  DELETE FROM profiles;
                  DELETE FROM members;
                  DELETE FROM relationship_requests;
-                 DELETE FROM relationship_intents;
                  DELETE FROM sync_state;
                  DELETE FROM messages;
                  DELETE FROM message_ranges;

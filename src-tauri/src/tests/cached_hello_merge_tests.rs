@@ -37,6 +37,37 @@ fn thread_feed_wakes_wait_for_identity_and_keep_the_highest_target() {
     );
 }
 
+#[test]
+fn state_feed_wakes_wait_for_identity_and_keep_the_highest_target() {
+    let mut head = super::StateFeedHead::default();
+    assert_eq!(
+        head.accept("STATE_FEED_UPDATED", &serde_json::json!({"feedId": 8})),
+        None
+    );
+    assert_eq!(
+        head.accept(
+            "HELLO",
+            &serde_json::json!({"userId": 1, "stateFeedEndId": 3})
+        ),
+        Some((1, 8))
+    );
+    assert_eq!(
+        head.accept("STATE_FEED_UPDATED", &serde_json::json!({"feedId": 5})),
+        Some((1, 8))
+    );
+    assert_eq!(
+        head.accept("STATE_FEED_UPDATED", &serde_json::json!({"feedId": -1})),
+        None
+    );
+    assert_eq!(
+        head.accept(
+            "THREAD_FEED_UPDATED",
+            &serde_json::json!({"threadFeedEndId": 12})
+        ),
+        None
+    );
+}
+
 #[tokio::test]
 async fn thread_feed_pending_wakes_coalesce_without_an_automatic_retry() {
     let (sender, mut receiver) = tokio::sync::watch::channel(None);

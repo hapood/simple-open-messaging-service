@@ -63,25 +63,27 @@ fn sender_profile(
     thread: &Value,
     account: &str,
     domain: &str,
+    message_reference: Option<(i64, i64)>,
 ) -> Result<Option<Value>, String> {
     let peer = &thread["peerUser"];
-    let reference =
-        if peer["account"].as_str() == Some(account) && peer["domain"].as_str() == Some(domain) {
-            peer["namespaceId"]
-                .as_i64()
-                .zip(peer["profileRev"].as_i64())
-        } else {
-            conn.query_row(
-                "SELECT m.namespace_id,m.profile_rev FROM members m
+    let reference = if let Some(reference) = message_reference {
+        Some(reference)
+    } else if peer["account"].as_str() == Some(account) && peer["domain"].as_str() == Some(domain) {
+        peer["namespaceId"]
+            .as_i64()
+            .zip(peer["profileRev"].as_i64())
+    } else {
+        conn.query_row(
+            "SELECT m.namespace_id,m.profile_rev FROM members m
              JOIN namespaces n ON n.user_id=m.user_id AND n.namespace_id=m.namespace_id
              WHERE m.user_id=?1 AND m.thread_id=?2 AND m.member_account=?3 AND m.member_domain=?4
                AND n.status='ACTIVE' ORDER BY m.namespace_id DESC LIMIT 1",
-                params![user_id, thread_id, account, domain],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| format!("read notification member: {e}"))?
-        };
+            params![user_id, thread_id, account, domain],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("read notification member: {e}"))?
+    };
     match reference {
         Some((namespace, revision)) => {
             super::contacts::read_profile(conn, user_id, account, domain, namespace, revision)
@@ -99,7 +101,26 @@ pub(crate) async fn synchronize(
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     let result = super::attention::sync_thread_feed(None, proxy, user_id, target).await?;
     super::lifetime::spawn_at(Ok(epoch), move || {
+        let has_threads = !result.states.is_empty();
+        let group_thread_ids = result.group_thread_ids;
+        let cursor = result.cursor;
         let mut batch = assemble(&mut super::open()?, user_id, result.states, result.error)?;
+        let mut metadata: Value =
+            serde_json::from_str(&batch.metadata).map_err(|e| e.to_string())?;
+        let mut changes = Vec::new();
+        if has_threads {
+            changes.push("THREADS");
+        }
+        if !group_thread_ids.is_empty() {
+            changes.push("GROUP_META");
+        }
+        metadata["commit"] = serde_json::json!({
+            "userId": user_id,
+            "cursor": cursor,
+            "changes": changes,
+            "groupThreadIds": group_thread_ids,
+        });
+        batch.metadata = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
         batch.account_epoch = epoch;
         Ok(batch)
     })
@@ -109,19 +130,21 @@ pub(crate) async fn synchronize(
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine;
     use super::super::attention::ThreadFeedSnapshot;
     use super::*;
+    use base64::Engine;
+    use std::sync::OnceLock;
+
+    fn avatar_store() {
+        static DIRECTORY: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let directory = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
+        super::super::location::initialize(directory.path()).unwrap();
+    }
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE sync_state(user_id INTEGER,key TEXT,value_json TEXT);
-          CREATE TABLE thread_states(user_id INTEGER,thread_id INTEGER,payload_json TEXT);
-          CREATE TABLE threads(user_id INTEGER,thread_id INTEGER,payload_json TEXT);
-          CREATE TABLE messages(user_id INTEGER,thread_id INTEGER,seq INTEGER,payload_json TEXT);
-          CREATE TABLE members(user_id INTEGER,thread_id INTEGER,member_account TEXT,member_domain TEXT,namespace_id INTEGER,profile_rev INTEGER);
-          CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,status TEXT);
-          CREATE TABLE profiles(user_id INTEGER,account TEXT,domain TEXT,namespace_id INTEGER,profile_rev INTEGER,payload_json TEXT);").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        super::super::create_cache_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO sync_state VALUES(1,'selfProfile',?1)",
             [r#"{"account":"me"}"#],
@@ -130,12 +153,33 @@ mod tests {
         conn
     }
 
+    fn preview(seq: i32, rev: i32, status: &str, text: Option<&str>) -> super::super::attention::ThreadPreview {
+        serde_json::from_value(serde_json::json!({
+            "seq": seq,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "sender": {"account":"peer","domain":"local","namespaceId":0,"profileRev":rev},
+            "status": status,
+            "text": text,
+        })).unwrap()
+    }
+
     fn state(local: i32) -> LocalThreadAttention {
         LocalThreadAttention {
             notification_changed: true,
             thread_id: 7,
             local_read_seq: Some(local),
             server: Some(ThreadFeedSnapshot {
+                kind: "P2P".into(),
+                authority_namespace_id: 0,
+                conversation_state: "ACTIVE".into(),
+                blocked: false,
+                role: None,
+                profile: super::super::attention::ThreadFeedProfile {
+                    account: "peer".into(),
+                    domain: "local".into(),
+                    namespace_id: 0,
+                    profile_rev: 0,
+                },
                 thread_id: 7,
                 thread_feed_id: 8,
                 alias: None,
@@ -147,30 +191,45 @@ mod tests {
                 join_request_read_feed_id: -1,
                 group_invite_end_feed_id: 0,
                 last_read_seq: 2,
+                announcement_read_feed_id: 0,
                 unread_count: 8,
                 last_mention_seq: Some(5),
-                previews: Some(vec![
-                    serde_json::json!({"seq": 5, "sender":{"account":"peer","domain":"local"},"status":"USER_RETRACTION"}),
-                    serde_json::json!({"seq": 6, "sender":{"account":"peer","domain":"local"},"status":"LIVE","text":"hello"}),
-                ]),
+                previews: vec![
+                    preview(5, 1, "USER_RETRACTION", None),
+                    preview(6, 1, "LIVE", Some("hello")),
+                ],
             }),
         }
     }
 
     fn save(conn: &Connection, state: &LocalThreadAttention) {
-        conn.execute("DELETE FROM thread_states", []).unwrap();
-        conn.execute(
-            "INSERT INTO thread_states VALUES(1,7,?1)",
-            [serde_json::to_string(state).unwrap()],
-        )
-        .unwrap();
+        if super::super::thread_store::read(conn, 1, state.thread_id as i64)
+            .unwrap().is_none()
+        {
+            let server = state.server.as_ref().unwrap();
+            let mut base = serde_json::to_value(server).unwrap();
+            base["type"] = server.kind.clone().into();
+            base["authorityNamespaceId"] = server.authority_namespace_id.into();
+            base["serverLastReadSeq"] = server.last_read_seq.into();
+            base["serverUnreadCount"] = server.unread_count.into();
+            base["localReadSeq"] = state.local_read_seq.unwrap_or(server.last_read_seq).into();
+            if server.kind == "GROUP" {
+                let mut group = serde_json::to_value(&server.profile).unwrap();
+                group["id"] = (server.thread_id as i64).into();
+                base["group"] = group;
+            } else {
+                base["peerUser"] = serde_json::to_value(&server.profile).unwrap();
+            }
+            super::super::thread_store::write(conn, 1, state.thread_id as i64, &base).unwrap();
+        }
+        super::super::attention::write_state(conn, 1, state).unwrap();
     }
 
     #[test]
     fn notification_count_rebases_known_slots_including_tombs_and_excluding_self() {
         let conn = db();
         for (seq, account) in [(3, "peer"), (4, "me"), (5, "peer")] {
-            conn.execute("INSERT INTO messages VALUES(1,7,?1,?2)", params![seq,
+            conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)", params![seq,
                 serde_json::json!({"isDeleted":true,"creator":{"account":account,"domain":"local","namespaceId":0}}).to_string()]).unwrap();
         }
         let owner = MessageCountOwner {
@@ -199,21 +258,17 @@ mod tests {
         let mut conn = db();
         let delivered = state(2);
         save(&conn, &delivered);
-        conn.execute(
-            "INSERT INTO threads VALUES(1,7,?1)",
-            [r#"{"peerUser":{"account":"peer","domain":"local","namespaceId":0,"profileRev":1}}"#],
-        )
-        .unwrap();
         let bytes = vec![0_u8, 128, 255];
-        let directory = tempfile::tempdir().unwrap();
-        super::super::location::initialize(directory.path()).unwrap();
+        avatar_store();
         let digest = super::super::profile_avatars::save(
             1,
             Some(&base64::engine::general_purpose::STANDARD.encode(&bytes)),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         conn.execute(
-            "INSERT INTO profiles VALUES(1,'peer','local',0,1,?1)",
-            [serde_json::json!({"name":"Peer","avatarDigest":digest}).to_string()],
+            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,1,'Peer',?1,'')",
+            [digest.clone()],
         )
         .unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
@@ -237,15 +292,55 @@ mod tests {
     }
 
     #[test]
+    fn preview_sender_revision_wins_over_stale_thread_peer_avatar() {
+        let mut conn = db();
+        let mut delivered = state(2);
+        delivered.server.as_mut().unwrap().previews = vec![
+            preview(6, 2, "LIVE", Some("new")),
+        ];
+        save(&conn, &delivered);
+        avatar_store();
+        let bytes = vec![10_u8, 20, 30];
+        let digest = super::super::profile_avatars::save(
+            1,
+            Some(&base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        )
+        .unwrap()
+        .unwrap();
+        conn.execute(
+            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,1,'Old peer',NULL,'')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,2,'New peer',?1,'')",
+            [digest.clone()],
+        )
+        .unwrap();
+
+        let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(batch.avatars, vec![bytes]);
+        assert_eq!(
+            metadata["threads"][0]["previews"][0]["senderName"],
+            "New peer"
+        );
+        assert_eq!(metadata["threads"][0]["previews"][0]["avatarIndex"], 0);
+    }
+
+    #[test]
     fn alias_titles_use_the_snapshot_and_clear_to_the_profile() {
         let mut conn = db();
-        conn.execute(
-            "INSERT INTO threads VALUES(1,7,?1)",
-            [r#"{"alias":"Stale cache","group":{"name":"Profile name"}}"#],
-        ).unwrap();
         let mut delivered = state(2);
+        let server = delivered.server.as_mut().unwrap();
+        server.kind = "GROUP".into();
+        server.role = Some("MEMBER".into());
+        server.profile.account = "!group".into();
         delivered.server.as_mut().unwrap().alias = Some("Private name".into());
         save(&conn, &delivered);
+        let mut presentation = super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap();
+        presentation["group"]["name"] = "Profile name".into();
+        super::super::thread_store::write(&conn, 1, 7, &presentation).unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Private name");
@@ -254,6 +349,17 @@ mod tests {
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Profile name");
+        delivered.server.as_mut().unwrap().profile.profile_rev = 3;
+        delivered.server.as_mut().unwrap().thread_profile_rev = 3;
+        save(&conn, &delivered);
+        super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
+            "account":"!group","domain":"local","namespaceId":0,"profileRev":3,
+            "name":"Resolved group","avatarDigest":null,"bio":"",
+        })).unwrap();
+        let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(metadata["threads"][0]["title"], "Resolved group");
+        assert_eq!(super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap()["group"]["name"], "Profile name");
         delivered.notification_changed = false;
         let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
@@ -323,19 +429,13 @@ fn assemble(
         }
         let local = current.local_read_seq.unwrap_or(server.last_read_seq);
         let count = projected_count(&tx, user_id, &current, owner.as_ref())?;
-        let thread_json: Option<String> = tx
-            .query_row(
-                "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2 AND COALESCE(json_extract(payload_json, '$.visible'), 1)=1",
-                params![user_id, current.thread_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let thread: Value = thread_json
-            .map(|json| serde_json::from_str(&json))
-            .transpose()
-            .map_err(|e| e.to_string())?
+        let mut thread = super::thread_store::read(&tx, user_id, i64::from(current.thread_id))?
             .unwrap_or(Value::Null);
+        if !thread.is_null() {
+            super::thread_store::apply_selected_profile(
+                &tx, user_id, i64::from(current.thread_id), &mut thread,
+            )?;
+        }
         let mut previews = Vec::new();
         for preview in delivered
             .server
@@ -343,28 +443,29 @@ fn assemble(
             .ok_or("missing delivered notification snapshot")?
             .previews
             .iter()
-            .flatten()
-            .filter(|preview| {
-                preview["seq"]
-                    .as_i64()
-                    .is_some_and(|seq| seq > i64::from(local))
-            })
+            .filter(|preview| preview.seq > local)
             .take(5)
         {
-            if preview["sender"].is_null() {
-                let mut value = preview.clone();
-                value["senderName"] = Value::String("SOMS".into());
-                previews.push(value);
-                continue;
-            }
+            let preview = serde_json::to_value(preview)
+                .map_err(|e| format!("encode notification preview: {e}"))?;
             let account = preview["sender"]["account"]
                 .as_str()
                 .ok_or("invalid preview sender")?;
             let domain = preview["sender"]["domain"]
                 .as_str()
                 .ok_or("invalid preview sender")?;
-            let profile =
-                sender_profile(&tx, user_id, current.thread_id, &thread, account, domain)?;
+            let message_reference = preview["sender"]["namespaceId"]
+                .as_i64()
+                .zip(preview["sender"]["profileRev"].as_i64());
+            let profile = sender_profile(
+                &tx,
+                user_id,
+                current.thread_id,
+                &thread,
+                account,
+                domain,
+                message_reference,
+            )?;
             let name = profile
                 .as_ref()
                 .and_then(|value| value["name"].as_str())
@@ -395,7 +496,9 @@ fn assemble(
             }
             previews.push(value);
         }
-        let title = server.alias.as_deref()
+        let title = server
+            .alias
+            .as_deref()
             .filter(|alias| !alias.is_empty())
             .or_else(|| thread["group"]["name"].as_str())
             .or_else(|| thread["peerUser"]["name"].as_str())

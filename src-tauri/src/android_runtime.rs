@@ -66,6 +66,126 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_syncStateFeed(
+    mut env: JNIEnv,
+    _receiver: JObject,
+    user_id: jni::sys::jint,
+    target: jni::sys::jlong,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let proxy = proxy_state()?;
+        let token = proxy
+            .token
+            .lock()
+            .map_err(|_| "token lock poisoned")?
+            .clone()
+            .ok_or("state-feed session is not authenticated")?;
+        let epoch = crate::native_db::capture_account_epoch()?;
+        let cursor = tauri::async_runtime::block_on(
+            crate::native_db::state_feed_sync::synchronize(proxy, i64::from(user_id), target),
+        )?;
+        if !crate::native_db::is_account_epoch_current(epoch)
+            || proxy
+                .token
+                .lock()
+                .map_err(|_| "token lock poisoned")?
+                .as_ref()
+                != Some(&token)
+        {
+            return Err("state-feed session expired".into());
+        }
+        Ok(
+            serde_json::json!({ "userId": user_id, "cursor": cursor, "accountEpoch": epoch })
+                .to_string(),
+        )
+    })();
+    match result {
+        Ok(value) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or_else(|_| std::ptr::null_mut()),
+        Err(error) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_getNotificationPreference(
+    mut env: JNIEnv,
+    _receiver: JObject,
+    key: JString,
+) -> jstring {
+    let result = (|| -> Result<Option<String>, String> {
+        let key: String = env.get_string(&key).map_err(|e| e.to_string())?.into();
+        crate::native_db::preferences::read_notification_preference(&key)
+    })();
+    match result {
+        Ok(Some(value)) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or_else(|_| std::ptr::null_mut()),
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_setNotificationPreference(
+    mut env: JNIEnv,
+    _receiver: JObject,
+    key: JString,
+    value: JString,
+) {
+    let result = (|| -> Result<(), String> {
+        let key: String = env.get_string(&key).map_err(|e| e.to_string())?.into();
+        let value: String = env.get_string(&value).map_err(|e| e.to_string())?.into();
+        crate::native_db::preferences::write_notification_preference(&key, &value)
+    })();
+    if let Err(error) = result {
+        let _ = env.throw_new("java/lang/IllegalStateException", error);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
+    mut env: JNIEnv,
+    _receiver: JObject,
+    user_id: jni::sys::jint,
+    thread_id: jni::sys::jint,
+    account: JString,
+    domain: JString,
+) -> jstring {
+    let result = (|| -> Result<Option<String>, String> {
+        let account: String = env.get_string(&account).map_err(|e| e.to_string())?.into();
+        let domain: String = env.get_string(&domain).map_err(|e| e.to_string())?.into();
+        crate::native_db::call_peer::read_call_peer(
+            i64::from(user_id),
+            i64::from(thread_id),
+            &account,
+            &domain,
+        )?
+        .map(|value| serde_json::to_string(&value).map_err(|e| e.to_string()))
+        .transpose()
+    })();
+    match result {
+        Ok(Some(value)) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or_else(|_| std::ptr::null_mut()),
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 static PROXY: OnceLock<crate::ProxyState> = OnceLock::new();
 
 #[no_mangle]

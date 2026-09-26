@@ -1,7 +1,7 @@
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 
-use super::{json_text, open, parse_json};
+use super::{open, parse_json};
 
 pub(super) fn register_namespace(
     conn: &rusqlite::Connection,
@@ -44,26 +44,22 @@ pub(super) fn write_profile(
     if rev < 1 {
         return Ok(false);
     }
-    let snapshot = serde_json::json!({ "account": account, "domain": domain, "namespaceId": namespace,
-        "profileRev": rev, "name": profile.get("name").and_then(Value::as_str).ok_or("profile has no name")?,
-        "avatarDigest": profile.get("avatarDigest").and_then(Value::as_str),
-        "bio": profile.get("bio").and_then(Value::as_str).ok_or("profile has no bio")? });
-    let existing: Option<String> = conn.query_row(
-        "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
-        params![user_id, account, domain, namespace, rev], |row| row.get(0))
+    let name = profile.get("name").and_then(Value::as_str).ok_or("profile has no name")?;
+    let avatar_digest = profile.get("avatarDigest").and_then(Value::as_str);
+    let bio = profile.get("bio").and_then(Value::as_str).ok_or("profile has no bio")?;
+    let existing: Option<(String, Option<String>, String)> = conn.query_row(
+        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
+        params![user_id, account, domain, namespace, rev],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .optional().map_err(|e| e.to_string())?;
-    if let Some(existing) = existing {
-        let previous = parse_json(existing)?;
-        if previous.get("name") != snapshot.get("name")
-            || previous.get("bio") != snapshot.get("bio")
-            || previous.get("avatarDigest") != snapshot.get("avatarDigest")
-        {
+    if let Some((previous_name, previous_digest, previous_bio)) = existing {
+        if previous_name != name || previous_bio != bio || previous_digest.as_deref() != avatar_digest {
             return Err("conflicting cached profile revision".into());
         }
         return Ok(false);
     }
-    conn.execute("INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![user_id,account,domain,namespace,rev,json_text(&snapshot)?]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![user_id,account,domain,namespace,rev,name,avatar_digest,bio]).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -77,11 +73,15 @@ pub(super) fn read_profile(
     namespace_id: i64,
     profile_rev: i64,
 ) -> Result<Option<Value>, String> {
-    let value = conn.query_row(
-        "SELECT payload_json FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
-        params![user_id,account,domain,namespace_id,profile_rev], |row| row.get::<_,String>(0))
+    let value: Option<(String, Option<String>, String)> = conn.query_row(
+        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
+        params![user_id,account,domain,namespace_id,profile_rev],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .optional().map_err(|e| e.to_string())?;
-    value.map(parse_json).transpose()
+    Ok(value.map(|(name, avatar_digest, bio)| serde_json::json!({
+        "account": account, "domain": domain, "namespaceId": namespace_id,
+        "profileRev": profile_rev, "name": name, "avatarDigest": avatar_digest, "bio": bio,
+    })))
 }
 
 #[tauri::command]
@@ -116,10 +116,14 @@ pub(crate) async fn native_db_get_group_member(
                'profileRev',member.profile_rev,
                'profileMessageSeq',member.profile_message_seq,
                'resolvedProfileRev',identity.profile_rev,
-               'profileName',json_extract(identity.payload_json,'$.name'),
-               'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
-               'user',json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
-                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio',''))))
+               'profileName',identity.name,
+               'profileBio',COALESCE(identity.bio,''),
+               'user',json(CASE WHEN identity.profile_rev IS NOT NULL THEN
+                 json_object('account',identity.account,'domain',identity.domain,
+                   'namespaceId',identity.namespace_id,'profileRev',identity.profile_rev,
+                   'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
+               ELSE json_object('account',member.member_account,'domain',member.member_domain,
+                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END))
              FROM members member LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
               AND identity.domain=member.member_domain
@@ -164,10 +168,14 @@ pub(crate) async fn native_db_query_group_members(
                    'profileRev',member.profile_rev,
                    'profileMessageSeq',member.profile_message_seq,
                    'resolvedProfileRev',identity.profile_rev,
-                   'profileName',json_extract(identity.payload_json,'$.name'),
-                   'profileBio',COALESCE(json_extract(identity.payload_json,'$.bio'),''),
-                   'user', json(COALESCE(identity.payload_json, json_object('account',member.member_account,'domain',member.member_domain,
-                 'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','')))
+                   'profileName',identity.name,
+                   'profileBio',COALESCE(identity.bio,''),
+                   'user', json(CASE WHEN identity.profile_rev IS NOT NULL THEN
+                     json_object('account',identity.account,'domain',identity.domain,
+                       'namespaceId',identity.namespace_id,'profileRev',identity.profile_rev,
+                       'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
+                   ELSE json_object('account',member.member_account,'domain',member.member_domain,
+                     'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END)
                  )
                  FROM members member LEFT JOIN profiles identity
                    ON identity.user_id=member.user_id
@@ -176,7 +184,7 @@ pub(crate) async fn native_db_query_group_members(
                   AND identity.namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                    AND (member.namespace_id,member.member_domain,member.member_account)>(?3,?4,?5)
-                   AND (?6='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?6))>0
+                   AND (?6='' OR instr(lower(identity.name),lower(?6))>0
                                 OR instr(lower(member.member_account),lower(?6))>0)
                  ORDER BY member.namespace_id,member.member_domain,member.member_account LIMIT ?7",
             )
