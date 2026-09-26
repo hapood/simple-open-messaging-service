@@ -1,16 +1,16 @@
-import { provideZonelessChangeDetection } from '@angular/core';
-import { TestBed } from '@angular/core/testing';
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MediaTransferService } from './media-transfer.service';
 
 describe('MediaTransferService', () => {
   let service: MediaTransferService;
 
   beforeEach(() => {
-    TestBed.configureTestingModule({
-      providers: [provideZonelessChangeDetection()],
-    });
-    service = TestBed.inject(MediaTransferService);
+    service = new MediaTransferService();
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
   });
+  afterEach(() => vi.restoreAllMocks());
 
   const file = (name: string, size: number) =>
     new File([new Uint8Array(size)], name, { type: 'image/png' });
@@ -41,6 +41,22 @@ describe('MediaTransferService', () => {
     );
     expect(service.activeCount()).toBe(1);
     expect(service.failedCount()).toBe(1);
+  });
+
+  it('discards the optimistic send when the transfer card is dismissed', () => {
+    const discard = vi.fn();
+    service.start({
+      clientMessageId: 'cid',
+      threadId: 10,
+      kind: 'file',
+      name: 'report.pdf',
+      size: 10,
+    });
+    service.registerDiscard('cid', discard);
+    service.fail('cid');
+    service.discard('cid');
+    expect(discard).toHaveBeenCalledOnce();
+    expect(service.tasks()).toEqual([]);
   });
 
   it('removes a successful task and restarts a failed retry in place', () => {

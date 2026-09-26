@@ -13,7 +13,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { TranslocoModule } from '@jsverse/transloco';
+import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
   ChatEditorComponent,
   type ChatMember,
@@ -41,6 +41,7 @@ import { PopupType, RouteService } from '../../services/route.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { assetUrl } from '../../services/runtime';
 import type { ContactCardTarget } from '../../services/model';
+import { ToastService } from '../../services/toast.service';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -141,6 +142,8 @@ const MAX_RECORD_SECS = 60;
 export class ChatInputComponent implements OnDestroy {
   readonly AppIconType = AppIconType;
   private readonly nativeUploads = inject(NativeUploadService);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
   readonly memberSearch = input<
     ((query: string) => Promise<ChatMember[]>) | undefined
   >();
@@ -543,9 +546,12 @@ export class ChatInputComponent implements OnDestroy {
 
   onAttachClick(): void {
     if (this.nativeUploads.supported()) {
-      void this.nativeUploads.pick('image').then((files) => {
-        if (files.length) this.send.emit({ kind: 'native-files', files });
-      });
+      void this.nativeUploads.pick('image').then(
+        (files) => {
+          if (files.length) this.send.emit({ kind: 'native-files', files });
+        },
+        () => this.toast.warn(this.transloco.translate('transfer.pickFailed')),
+      );
       return;
     }
     this.attachInput()?.nativeElement.click();
@@ -562,9 +568,12 @@ export class ChatInputComponent implements OnDestroy {
 
   onFileClick(): void {
     if (this.nativeUploads.supported()) {
-      void this.nativeUploads.pick('file').then((files) => {
-        if (files.length) this.send.emit({ kind: 'native-files', files });
-      });
+      void this.nativeUploads.pick('file').then(
+        (files) => {
+          if (files.length) this.send.emit({ kind: 'native-files', files });
+        },
+        () => this.toast.warn(this.transloco.translate('transfer.pickFailed')),
+      );
       return;
     }
     this.fileInput()?.nativeElement.click();

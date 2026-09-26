@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { NEVER, of, Subject, firstValueFrom } from 'rxjs';
 import type { TranslocoService } from '@jsverse/transloco';
 import type { MessageThreadAdapter } from './message-thread-adapter';
 import type { MediaTransferService } from '../../services/media-transfer.service';
@@ -7,10 +8,86 @@ import type { DebugToolsService } from '../../services/debug-tools.service';
 import type { ToastService } from '../../services/toast.service';
 import {
   ThreadAttachmentUploadController,
+  WEB_UPLOAD_IDLE_TIMEOUT_MS,
+  withUploadIdleTimeout,
   type ThreadAttachmentUploadHost,
 } from './thread-attachment-upload.controller';
 
 describe('ThreadAttachmentUploadController', () => {
+  it('renews the web upload deadline on actual progress and unsubscribes on a stall', async () => {
+    vi.useFakeTimers();
+    try {
+      const source = new Subject<number>();
+      const progress = vi.fn();
+      let report!: (loaded: number, total: number) => void;
+      const pending = expect(
+        firstValueFrom(
+          withUploadIdleTimeout((callback) => {
+            report = callback;
+            return source;
+          }, progress),
+        ),
+      ).rejects.toThrow('Upload stalled');
+      await vi.advanceTimersByTimeAsync(WEB_UPLOAD_IDLE_TIMEOUT_MS - 1);
+      report(10, 100);
+      await vi.advanceTimersByTimeAsync(WEB_UPLOAD_IDLE_TIMEOUT_MS - 1);
+      expect(source.observed).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(source.observed).toBe(false);
+      expect(progress).toHaveBeenCalledWith(10, 100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(['stage', 'upload'] as const)(
+    'fails a stalled voice %s and leaves the bubble retryable',
+    async (phase) => {
+      vi.useFakeTimers();
+      try {
+        const failPending = vi.fn(async () => undefined);
+        const fail = vi.fn();
+        const uploadPart = vi.fn(() => NEVER);
+        const controller = new ThreadAttachmentUploadController(
+          {
+            stageMedia: () => (phase === 'stage' ? NEVER : of({ code: 0 })),
+            uploadPart,
+          } as unknown as MessageThreadAdapter,
+          {
+            isUploading: () => true,
+            cancelled: () => NEVER,
+            cancel: vi.fn(),
+            fail,
+          } as unknown as MediaTransferService,
+          { translate: (key: string) => key } as TranslocoService,
+          {} as NativeUploadService,
+          { enabled: () => false } as DebugToolsService,
+          {} as ToastService,
+          {
+            threadId: () => 9,
+            failPending,
+            markAccepted: vi.fn(),
+            surfaceQuota: vi.fn(),
+          },
+        );
+        const send = controller.uploadAudio(
+          'voice-cid',
+          'part',
+          { size: 100 } as File,
+          { id: -1, data: { type: 'msg' } } as never,
+          false,
+        );
+        await vi.advanceTimersByTimeAsync(WEB_UPLOAD_IDLE_TIMEOUT_MS + 1);
+        await send;
+        expect(fail).toHaveBeenCalledOnce();
+        expect(failPending).toHaveBeenCalledOnce();
+        expect(uploadPart).toHaveBeenCalledTimes(phase === 'stage' ? 0 : 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('rejects an oversized image before staging network work', async () => {
     const fail = vi.fn();
     const failPending = vi.fn(async () => undefined);

@@ -58,7 +58,7 @@ declare global {
         ) => Promise<unknown>;
       };
       /** The event surface (withGlobalTauri): emit an event the Rust side listens for, or subscribe to
-       *  one Rust emits. Used by `listenEvent` (the OTA `web-download-progress` + the desktop SSE
+       *  one Rust emits. Used by `listenEvent` (the desktop SSE
        *  supervisor's `soms-sse-*` events) and `emitTauriEvent`. */
       event?: {
         emit: (event: string, payload?: unknown) => Promise<void> | void;
@@ -84,6 +84,7 @@ declare global {
       getPendingThreadId: () => string | null;
       acknowledgeThreadId: (threadId: string) => void;
       clearMessageNotifications: () => void;
+      setActiveThreadId: (threadId: number) => void;
       requestToken: () => void;
       requestNotificationPermission: () => void;
       /** System notification status as a JSON string `{"enabled":boolean,"canRequest":boolean}`.
@@ -157,7 +158,7 @@ declare global {
       getFcmStatus: () => string;
       /** Manual FCM availability check — force a token fetch + refresh lastCheck, bypassing the daily gate. Android-only. */
       requestFcmCheck: () => void;
-      /** Hand the server's Firebase client config (the 4 fields, folded into GET /shell/compat) to
+      /** Hand the server's Firebase client config (the 4 fields, folded into GET /client/compat) to
        *  native so it persists it in EncryptedSharedPreferences and (re)initializes FirebaseApp. Pass a
        *  JSON string `{apiKey,projectId,appId,gcmSenderId}` to configure/reconfigure (a different project →
        *  deleteToken + deleteApp + re-init + new token, routed through __SOMS_FCM_TOKEN__), or null to clear
@@ -323,6 +324,7 @@ declare global {
       requestId: string;
       items: import('./native-upload.service').NativeUploadSelection[];
     }) => void;
+    __SOMS_UPLOAD_INSPECTING__?: (payload: { requestId: string }) => void;
     __SOMS_UPLOAD_PROGRESS__?: (payload: {
       uploadId: string;
       attemptId: string;
@@ -479,9 +481,8 @@ export function emitTauriEvent(event: string, payload?: unknown): void {
   window.__TAURI__?.event?.emit?.(event, payload ?? null);
 }
 
-/** Subscribe to a Tauri event the Rust side emits (e.g. `web-download-progress` while streaming the web
- *  bundle in Settings→About). Resolves to an unlisten fn (call to stop), or undefined when not in the
- *  shell. Mirrors emitTauriEvent in riding the global `window.__TAURI__` (no @tauri-apps/api dep). */
+/** Subscribe to a Tauri event from Rust. Resolves to an unlisten function, or undefined
+ *  outside the installed app. Uses the same global bridge as emitTauriEvent. */
 export async function listenEvent<T = unknown>(
   event: string,
   handler: (e: { payload: T }) => void,
@@ -653,10 +654,9 @@ export async function openNativeVideo(path: string): Promise<boolean> {
 }
 
 /**
- * Open an external URL outside the app. On the web it is a normal `window.open` (new tab, noopener).
- * Under the Tauri shell the webview's navigation guard blocks external document navigation, so it is
- * routed to a Rust command that hands the URL to the OS's system-browser opener (tauri-plugin-opener).
- * Used by the link-card row to open the shared page on tap.
+ * Attempt to open an external link target outside the app. On the web this uses `window.open`
+ * (new tab, noopener); browsers may refuse unsupported schemes. Under Tauri the target is
+ * passed to the OS URL handler through a Rust command (tauri-plugin-opener).
  */
 export async function openExternalUrl(url: string): Promise<void> {
   if (!isTauri()) {
@@ -742,16 +742,15 @@ export async function getOriginMode(): Promise<'primary' | 'secondary'> {
 
 /** The exact backend endpoint currently used by native HTTP transports.
  *
- * New shells expose the authoritative Rust `ProxyState.api_origin` directly. The fallback keeps a newer
- * OTA Web bundle usable on an older shell that only exposes mode + the two configured addresses; it is
- * compatibility behavior, not the authoritative path on current packages.
+ * Rust exposes the authoritative active `ProxyState.api_origin` directly so the Web layer follows
+ * failover to the currently selected endpoint.
  */
 export async function getActiveApiOrigin(): Promise<string> {
   if (!isTauri()) return apiOrigin();
   return canonicalOrigin(await tauriInvoke<string>('get_active_api_origin'));
 }
 
-/** The login-init concurrent race — probe both origins' `/health`, pick the reachable one, set Rust's active
+/** The login-init concurrent race — probe both origins' `/client/compat`, pick the reachable one, set Rust's active
  *  origin. Call BEFORE the auth request so login targets a reachable origin (on the LAN the public origin is
  *  hairpin-unreachable — a boot-time pick could be stale if the network changed before login). ONCE per
  *  process (a QR-poll loop reuses the result instead of re-racing every tick); a failure clears the cache so

@@ -12,6 +12,7 @@ import type {
   MessageThreadAdapter,
   MessageThreadSource,
 } from './message-thread-adapter';
+import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 
 export interface ThreadMessageSendHost {
   threadId(): number | undefined;
@@ -28,6 +29,27 @@ export interface ThreadMessageSendHost {
   fail(item: CbItem<ChatItemData>): Promise<void>;
   accept(item: CbItem<ChatItemData>): Promise<void>;
   surfaceFailure(response: StandardResponse<unknown>, threadId: number): void;
+}
+
+// A missing IPC reply must not leave a message in "sending" indefinitely. A failed write is
+// ambiguous; retries reuse the original clientMessageId for server-side deduplication.
+function withSendTimeout<T>(request: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('Message send timed out')),
+      MESSAGE_SEND_TIMEOUT_MS,
+    );
+    request.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Owns non-media optimistic sends and their HTTP acceptance lifecycle. */
@@ -83,14 +105,15 @@ export class ThreadMessageSendController {
       'CONTACT_CARD',
     );
     this.host.dispatch(item);
-    void this.adapter
-      .sendContact({
+    void withSendTimeout(
+      this.adapter.sendContact({
         threadId,
         target: contact.target,
         clientMessageId: cid,
         optimistic: item,
         source,
-      })
+      }),
+    )
       .then((response) => this.settle(response, threadId, item))
       .catch(() => void this.host.fail(item));
   }
@@ -103,8 +126,8 @@ export class ThreadMessageSendController {
     const threadId = this.host.threadId();
     const source = this.host.source();
     if (!threadId || !source || !item.clientMessageId) return;
-    this.adapter
-      .sendText({
+    void withSendTimeout(
+      this.adapter.sendText({
         threadId,
         content: stringifyTextMessageContent({
           text: item.data.wireText ?? item.data.text,
@@ -115,7 +138,8 @@ export class ThreadMessageSendController {
         clientMessageId: item.clientMessageId,
         optimistic: item,
         source,
-      })
+      }),
+    )
       .then((response) => this.settle(response, threadId, item))
       .catch(() => void this.host.fail(item));
   }
@@ -123,12 +147,13 @@ export class ThreadMessageSendController {
   private dispatchLink(item: CbItem<ChatMsgData>, generationId: string): void {
     const threadId = this.host.threadId();
     if (!threadId || !item.clientMessageId) return;
-    this.adapter
-      .sendLink({
+    void withSendTimeout(
+      this.adapter.sendLink({
         threadId,
         generationId,
         clientMessageId: item.clientMessageId,
-      })
+      }),
+    )
       .then((response) => this.settle(response, threadId, item))
       .catch(() => void this.host.fail(item));
   }

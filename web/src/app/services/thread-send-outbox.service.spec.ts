@@ -1,6 +1,38 @@
+import { describe, expect, it, vi } from 'vitest';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 describe('ThreadSendOutbox', () => {
+  it('marks a send failed in its original thread after the view is gone', () => {
+    const outbox = new ThreadSendOutbox();
+    const pending = outbox.forThread(42);
+    pending.push({
+      id: -1,
+      clientMessageId: 'cid',
+      data: { type: 'msg', status: 'sending', kind: 'pending' },
+    } as never);
+    expect(outbox.failPending('cid')).toBe(true);
+    expect(outbox.forThread(42)[0].data.status).toBe('failed');
+    expect(outbox.failPending('other')).toBe(false);
+  });
+
+  it('discards an unmounted native voice and its retained recording', () => {
+    const outbox = new ThreadSendOutbox();
+    const discard = vi.fn();
+    outbox.forThread(42).push({
+      id: -1,
+      clientMessageId: 'cid',
+      data: { type: 'msg', status: 'failed' },
+    } as never);
+    outbox.retainResource('cid', {
+      type: 'native-voice',
+      threadId: 42,
+      size: 512,
+      discard,
+    });
+    expect(outbox.discardPending('cid')).toBe(42);
+    expect(outbox.resource('cid')).toBeUndefined();
+    expect(discard).toHaveBeenCalledOnce();
+  });
   it('retains retry resources across thread bucket release and disposes them explicitly', () => {
     const outbox = new ThreadSendOutbox();
     const dispose = vi.fn().mockName('dispose');

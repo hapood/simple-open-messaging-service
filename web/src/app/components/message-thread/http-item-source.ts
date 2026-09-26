@@ -127,6 +127,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly pending: CbItem<ChatMsgData>[];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
+  private livePaused = false;
   private mediaStatusSub?: Subscription;
   private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
   private readonly onNewerAvailable: (seq: number) => void;
@@ -196,23 +197,44 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
     // Filter to THIS thread. Multiple mounted sources share the repository's thread state while keeping
     // their viewport demand/cancellation lifecycle independent.
-    this.sseSub = repo.liveSignal$
+    this.resumeLiveUpdates();
+    // Shared mediaStatus changes → re-render that one card
+    // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
+    this.mediaStatusSub = repo.mediaStatusLive$
+      .pipe(filter((s) => s.threadId === this.conv.threadId))
+      .subscribe((s) => this.onMediaStatus(s.seq, s.status));
+  }
+
+  /** Stop this chatbox's live mounts while the app is hidden. Account-level thread-feed
+   * synchronization remains active; the pending newer demand is resumed from its cursor. */
+  pauseLiveUpdates(): void {
+    this.livePaused = true;
+    this.sseSub?.unsubscribe();
+    this.sseSub = undefined;
+    this.reconnectSub?.unsubscribe();
+    this.reconnectSub = undefined;
+  }
+
+  resumeLiveUpdates(latestSeq?: number): void {
+    if (this.sseSub) return;
+    this.livePaused = false;
+    this.sseSub = this.repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
         if (!this.initializingDb && s.seq > this.loadedSeq)
           this.onNewerAvailable(s.seq);
         this.requestNewerPump();
       });
-    // Shared mediaStatus changes → re-render that one card
-    // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
-    this.mediaStatusSub = repo.mediaStatusLive$
-      .pipe(filter((s) => s.threadId === this.conv.threadId))
-      .subscribe((s) => this.onMediaStatus(s.seq, s.status));
-    // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
-    // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
-    this.reconnectSub = repo.reconnectSignal$.subscribe(() => {
-      this.requestNewerPump();
-    });
+    this.reconnectSub = this.repo.reconnectSignal$.subscribe(() =>
+      this.requestNewerPump(),
+    );
+    // Subjects do not replay frames missed while paused. Seed the kernel's newer
+    // demand from the authoritative feed ceiling before pumping the parked cursor.
+    if (latestSeq !== undefined && latestSeq > this.loadedSeq) {
+      this.repo.retainNewestSeq(this.conv.threadId, latestSeq);
+      this.onNewerAvailable(latestSeq);
+    }
+    this.requestNewerPump();
   }
 
   /**
@@ -337,6 +359,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (
       this.pumpingNewer ||
       this.initializingDb ||
+      this.livePaused ||
       this.newerWaiters.size === 0
     )
       return;
@@ -346,6 +369,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // The viewport owns at most one newer demand. Keep the loop general so a future second consumer
       // shares the same source contract without changing the completion semantics.
       for (const waiter of [...this.newerWaiters]) {
+        if (this.livePaused) break; // finish the current request, but start no new one
         if (!this.newerWaiters.has(waiter)) continue;
         try {
           const items =
@@ -364,13 +388,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
     } finally {
       this.pumpingNewer = false;
-      if (this.newerPumpVersion !== pumpVersion) void this.pumpNewerWaiters();
+      if (!this.livePaused && this.newerPumpVersion !== pumpVersion)
+        void this.pumpNewerWaiters();
     }
   }
 
   private requestNewerPump(): void {
     this.newerPumpVersion++;
-    if (!this.initializingDb) void this.pumpNewerWaiters();
+    if (!this.initializingDb && !this.livePaused) void this.pumpNewerWaiters();
   }
 
   /** Production SSE data is cached by {@link MessageRepository}; its update event pumps active source demands. The
@@ -391,6 +416,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         item.data.quote = { seq: item.data.quote.seq, unavailable: true };
       }
       if (item.data.type !== 'msg') return true;
+      if (item.data.contentType === 'AUDIO' && item.clientMessageId) {
+        const resource = this.outbox.resource(item.clientMessageId);
+        if (resource?.type === 'voice' || resource?.type === 'native-voice')
+          return true;
+      }
       return !(
         item.data.status !== 'failed' &&
         (item.data.contentType === 'IMAGE' ||
@@ -400,6 +430,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           item.data.contentType === 'GALLERY')
       );
     });
+  }
+
+  acceptedPending(): CbItem<ChatItemData>[] {
+    return this.pending.filter((item) => item.data.status === 'accepted');
   }
 
   private async restoreMediaStages(): Promise<void> {
@@ -523,17 +557,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * entry matches the clientMessageId (e.g. the confirm already arrived and dropped it).
    */
   failPending(clientMessageId: string): boolean {
-    const i = this.pending.findIndex(
-      (p) => p.clientMessageId === clientMessageId,
-    );
-    if (i < 0) return false;
-    const entry = this.pending.splice(i, 1)[0];
-    const failed: CbItem<ChatMsgData> = {
-      ...entry,
-      data: { ...entry.data, status: 'failed', kind: undefined },
-    };
-    this.pending.push(failed); // sink to the end of the pending queue
-    return true;
+    return this.outbox.failPending(clientMessageId);
   }
 
   /**
@@ -558,13 +582,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Permanently discard a failed optimistic send after explicit user confirmation/action. */
   discardPending(clientMessageId: string): boolean {
-    const index = this.pending.findIndex(
-      (item) => item.clientMessageId === clientMessageId,
-    );
-    if (index < 0) return false;
-    this.pending.splice(index, 1);
-    this.outbox.releaseResource(clientMessageId, true);
-    this.outbox.releaseIfEmpty(this.conv.threadId);
+    if (!this.pending.some((item) => item.clientMessageId === clientMessageId))
+      return false;
+    this.outbox.discardPending(clientMessageId);
     void firstValueFrom(
       this.messages.abandonMediaStage(this.conv.threadId, clientMessageId),
     ).catch(() => undefined);

@@ -1,4 +1,13 @@
-import type { Mock } from 'vitest';
+// @vitest-environment jsdom
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 /**
  * HttpItemSource unit tests — production data layer, signal-only live contract (no DOM, no kernel).
  *
@@ -15,6 +24,7 @@ import type { Mock } from 'vitest';
  */
 import { firstValueFrom, Subject, of } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
+import { StableReadTracker } from './stable-read-tracker';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import type {
@@ -368,6 +378,28 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     };
   }
 
+  it('remounts an accepted native voice bubble so its confirmation timeout and retry remain visible', () => {
+    const { src, outbox } = setup({ code: 0, message: 'ok', data: [] });
+    const pending = pendingItem('voice-cid') as unknown as {
+      id: number;
+      clientMessageId: string;
+      data: Record<string, unknown>;
+    };
+    const item = {
+      ...pending,
+      data: { ...pending.data, contentType: 'AUDIO', status: 'accepted' },
+    };
+    outbox.retainResource('voice-cid', {
+      type: 'native-voice',
+      threadId: 42,
+      size: 512,
+      discard: vi.fn(),
+    });
+    src.addPending(item as never);
+    expect(src.getPending()).toEqual([item]);
+    expect(src.acceptedPending()).toEqual([item]);
+  });
+
   it('puts message evidence on the rendered item without resolving on the source', async () => {
     const repository = {
       getProfile: vi.fn().mockResolvedValue(undefined),
@@ -484,6 +516,26 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(0);
   });
 
+  it('unsubscribes while hidden and explicitly catches up the missed feed ceiling on resume', () => {
+    const { src, repo, liveSignal$, newerAvailable } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    src.finishLocalInit(undefined);
+    newerAvailable.mockClear();
+    src.pauseLiveUpdates();
+    liveSignal$.next({ threadId: 42, seq: 101 });
+    expect(newerAvailable).not.toHaveBeenCalled();
+
+    src.resumeLiveUpdates(101);
+    expect(repo.retainNewestSeq).toHaveBeenCalledWith(42, 101);
+    expect(newerAvailable).toHaveBeenCalledWith(101);
+    liveSignal$.next({ threadId: 42, seq: 102 });
+    expect(newerAvailable).toHaveBeenCalledWith(102);
+    src.destroy();
+  });
+
   it('keeps a newer demand pending at newest and resolves it after source data updates', async () => {
     const { src, repo, liveSignal$ } = setup({
       code: 0,
@@ -513,6 +565,72 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(
       result.kind === 'items' ? result.items.map((item) => item.id) : [],
     ).toEqual([101]);
+  });
+
+  it('delivers an already in-flight newer request after live updates are paused', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    src.finishLocalInit(undefined);
+    const queryMessages = repo.queryMessages as Mock;
+    let finishQuery!: (value: { data: MessageQueryRow[]; hasMore: boolean }) => void;
+    queryMessages.mockImplementationOnce(
+      () => new Promise((resolve) => { finishQuery = resolve; }),
+    );
+    const resultPromise = firstValueFrom(src.requestNewer(100, 50));
+    await vi.waitFor(() => expect(queryMessages).toHaveBeenCalledOnce());
+    src.pauseLiveUpdates();
+    finishQuery({ data: [row(101, 2)], hasMore: false });
+    const result = await resultPromise;
+    expect(result.kind).toBe('items');
+    expect(queryMessages).toHaveBeenCalledOnce();
+    src.resumeLiveUpdates(101);
+    expect(queryMessages).toHaveBeenCalledOnce();
+    src.destroy();
+  });
+
+  it('delivers a frozen in-flight page without reading it until the resumed viewport exposes it', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    src.finishLocalInit(undefined);
+    const commit = vi.fn();
+    const reads = new StableReadTracker(commit);
+    reads.startFromViewport([100]);
+    commit.mockClear();
+    let finishQuery!: (value: { data: MessageQueryRow[]; hasMore: boolean }) => void;
+    const queryMessages = repo.queryMessages as Mock;
+    queryMessages.mockImplementationOnce(
+      () => new Promise((resolve) => { finishQuery = resolve; }),
+    );
+    const page = firstValueFrom(src.requestNewer(100, 50));
+    await vi.waitFor(() => expect(queryMessages).toHaveBeenCalledOnce());
+
+    reads.noteFullyVisible([100]);
+    reads.flush();
+    reads.reset();
+    src.pauseLiveUpdates();
+    finishQuery({ data: [row(101, 2)], hasMore: false });
+    const delivered = await page;
+    expect(delivered.kind).toBe('items');
+    expect(delivered.kind === 'items' ? delivered.items.map((item) => item.id) : []).toEqual([101]);
+    reads.noteFullyVisible([101]); // a layout callback may still fire while hidden
+    expect(commit.mock.calls).toEqual([[100]]);
+
+    src.resumeLiveUpdates(101);
+    reads.startFromViewport([100]); // 101 is delivered, but not currently visible
+    expect(commit.mock.calls).toEqual([[100], [100]]);
+    reads.noteFullyVisible([101]);
+    reads.flush();
+    expect(commit.mock.calls.at(-1)).toEqual([101]);
+    reads.reset();
+    src.destroy();
   });
 
   it('cancels a pending newer demand without waiting for source data', async () => {

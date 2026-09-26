@@ -55,7 +55,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     deferInitFill: true,
   });
 
-  private source?: MockItemSource;
+  private readonly sources = new Map<number, MockItemSource>();
   private readonly groupSources = new WeakSet<MessageThreadSource>();
   override createSource(
     conversation: ConversationItem,
@@ -71,7 +71,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       this.groupSenderCount(),
     );
     if (isGroupConversation) this.groupSources.add(source);
-    this.source = source;
+    this.sources.set(conversation.threadId, source);
     return source;
   }
 
@@ -130,11 +130,11 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }): Promise<StandardResponse<unknown>> {
     await wait(this.confirmDelay());
     if (this.sendError()) return { code: -1, message: 'Mock action failed' };
-    const source = this.source;
-    if (source) {
-      const optimistic = source.pendingByClientMessageId(
-        request.clientMessageId,
-      );
+    const source = this.sources.get(request.threadId);
+    const optimistic = source?.pendingByClientMessageId(
+      request.clientMessageId,
+    );
+    if (source && optimistic) {
       const sentId = source.allocateMsgId();
       const now = new Date();
       source.pushLive([
@@ -142,13 +142,13 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
           id: sentId,
           clientMessageId: request.clientMessageId,
           data: {
-            ...(optimistic?.data as ChatMsgData | undefined),
+            ...(optimistic.data as ChatMsgData),
             type: 'msg' as const,
             msgId: sentId,
             creator: JSON.stringify([0, 'mock.local', 'user-1']),
             isSelf: true,
             name: 'Me',
-            text: optimistic?.data.text ?? '',
+            text: optimistic.data.text,
             time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
             contentType: 'LINK',
             images: null,
@@ -163,7 +163,10 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override searchMessages(request: SearchMessagesRequest) {
-    const data = this.source?.search(request.keyword, request.take) ?? [];
+    const data =
+      this.sources
+        .get(request.threadId)
+        ?.search(request.keyword, request.take) ?? [];
     return of({ code: 0, message: 'ok', data, hasMore: false });
   }
 
@@ -172,8 +175,8 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override withdrawMessage(request: { threadId: number; seq: number }) {
-    this.source?.withdraw(request.seq);
-    return of(this.mockResponse());
+    this.sources.get(request.threadId)?.withdraw(request.seq);
+    return of({ code: 0, message: 'ok' });
   }
 
   override sendForward(_request: ForwardMessagesRequest) {

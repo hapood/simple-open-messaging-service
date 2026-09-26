@@ -4,6 +4,7 @@ import {
   effect,
   ElementRef,
   EnvironmentInjector,
+  HostListener,
   inject,
   input,
   isDevMode,
@@ -72,7 +73,7 @@ import { ComposerDraftService } from '../../services/composer-draft.service';
 import { LinkCardGenerationService } from '../../services/link-card-generation.service';
 import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
-import { assetUrl } from '../../services/runtime';
+import { assetUrl, isAndroidNative } from '../../services/runtime';
 import { MessageRepository } from '../../services/message-repository.service';
 import {
   MediaAvailabilityRegistration,
@@ -319,8 +320,10 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly debugTools = inject(DebugToolsService);
   private readonly toast = inject(ToastService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
-  private readonly optimistic = new ThreadOptimisticController(() =>
-    this.sendOutbox.allocatePlaceholderId(),
+  private readonly optimistic = new ThreadOptimisticController(
+    () => this.sendOutbox.allocatePlaceholderId(),
+    (cid) => this.onConfirmationTimeout(cid),
+    (cid) => { this.sendOutbox.failPending(cid); },
   );
   private readonly sendRetry = new ThreadSendRetryController(
     this.sendOutbox,
@@ -339,6 +342,8 @@ export class MessageThreadComponent implements OnDestroy {
           { duration: resource.duration },
           true,
         ),
+      nativeVoice: (cid, resource, item) =>
+        this.nativeVoiceUploads.retry(cid, item, resource.threadId, resource.size),
       nativeAttachment: (cid, resource, item) =>
         void this.queueNativeUpload(
           cid,
@@ -513,6 +518,15 @@ export class MessageThreadComponent implements OnDestroy {
       dispatch: (item) => this.dispatchPending(item),
       accept: (item) => this.markAccepted(item),
       fail: (item) => this.failPending(item),
+      retain: (cid, threadId, size) => this.sendOutbox.retainResource(cid, {
+        type: 'native-voice',
+        threadId,
+        size,
+        discard: () => {
+          this.nativeVoiceUploads.forget(cid);
+          void tauriInvoke('discard_native_voice', { clientMessageId: cid });
+        },
+      }),
     },
   );
 
@@ -526,6 +540,12 @@ export class MessageThreadComponent implements OnDestroy {
    *  `teardownKernel` → reinit). */
   private kernelReady = false;
   private readonly scrollState = new ThreadScrollController();
+  private readonly appVisible = signal(
+    typeof document === 'undefined' || document.visibilityState === 'visible',
+  );
+  private resumeAfterBackground = false;
+  private readonly unreadDividerReady = signal(false);
+  private pendingDividerRefresh: number[] = [];
   private readonly stableRead = new StableReadTracker((seq) => {
     const threadId = this.threadId();
     if (threadId !== undefined) {
@@ -755,6 +775,29 @@ export class MessageThreadComponent implements OnDestroy {
         }
         return;
       }
+      // Native background delivery can outlive the WebView's list projection. Wait for
+      // this foreground's HELLO/thread-feed drain before mounting or resuming reads.
+      if (isAndroidNative() && (!this.appVisible() || !this.convList.threadFeedReady()))
+        return;
+      if (this.resumeAfterBackground && this.currentTrdId === trd.threadId) {
+        // A pane already mounted before backgrounding keeps its kernel, draft and
+        // viewport. Replace only the measured divider rows, then catch up newer.
+        if (!this.kernelReady) {
+          this.initialLoading();
+          return;
+        }
+        this.resumeAfterBackground = false;
+        untracked(() => {
+          this.applyUnreadDivider(trd.threadId);
+          const latestSeq = Math.max(
+            this.convList.latestSeq(trd.threadId) ?? -1,
+            trd.lastMessageSeq ?? -1,
+          );
+          this.source?.resumeLiveUpdates?.(latestSeq);
+          this.unreadDividerReady.set(true);
+        });
+        return;
+      }
       if (this.currentTrdId === trd.threadId) return;
       this.teardown();
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
@@ -765,7 +808,18 @@ export class MessageThreadComponent implements OnDestroy {
     effect(() => {
       const active = this.nativeComposerActive();
       const loading = this.initialLoading();
-      if (active && !loading && this.kernelReady) this.stableRead.start();
+      if (
+        active &&
+        !loading &&
+        this.kernelReady &&
+        this.unreadDividerReady() &&
+        (!isAndroidNative() || (this.appVisible() && this.convList.threadFeedReady()))
+      ) {
+        // A cold notification launch or background return can reset the tracker
+        // after the kernel's one-time visible-enter events. Sample the current
+        // mounted viewport before start() flushes the read cursor.
+        this.stableRead.startFromViewport(this.scroller?.getFullyVisibleIds() ?? []);
+      }
     });
     // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
     // deferred so the message list re-pins to the post-animation viewport exactly once.
@@ -811,7 +865,8 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       this.hideNativeComposer();
-      const initialDraft = this.nativeDraft.open(threadId);
+      // Draft changes must not re-run the native context setup/update effect.
+      const initialDraft = untracked(() => this.nativeDraft.open(threadId));
       const contextId = ++nativeComposerContextSequence;
       this.nativeComposerContextId = contextId;
       this.nativeComposerThreadId = threadId;
@@ -938,6 +993,12 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {
+    // Saving a draft reads and writes signal-backed state. A native event effect
+    // must not subscribe to those signals and replay the same event indefinitely.
+    untracked(() => this.dispatchNativeComposerEvent(event));
+  }
+
+  private dispatchNativeComposerEvent(event: NativeComposerEvent): void {
     switch (event.kind) {
       case 'interaction':
         if (this.chatboxDialogOpen()) this.route.closeDlg();
@@ -959,6 +1020,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (accepted) {
           this.nativeDraft.set('');
           this.nativeDraft.clearLink();
+          this.saveNativeComposerDraft();
         }
         return;
       }
@@ -980,10 +1042,12 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       case 'draft':
         this.nativeDraft.set(event.text);
+        this.saveNativeComposerDraft();
         return;
       case 'linkMarkers':
         this.nativeDraft.set(event.text);
         this.nativeDraft.consumeLink(event.links[0]?.href ?? null, event.text);
+        this.saveNativeComposerDraft();
         return;
       case 'destroy':
         this.nativeDraft.set(event.text);
@@ -1064,6 +1128,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.nativeComposer.acknowledge(event.actionId, true);
     } catch {
       this.nativeComposer.acknowledge(event.actionId, false);
+      this.toast.warn(this.transloco.translate('transfer.pickFailed'));
     }
   }
 
@@ -1152,6 +1217,10 @@ export class MessageThreadComponent implements OnDestroy {
     });
     this.threadAdapter.configureScroller(this.scroller);
     this.optimistic.bind(this.scroller, this.source);
+    for (const item of this.source.getPending())
+      this.registerMediaDiscard(item);
+    for (const item of this.source.acceptedPending?.() ?? [])
+      this.registerMediaDiscard(item);
     // The tail cap is created synchronously with the scroller. If transfers survived a pane remount, the
     // conditional stack may already exist and needs one post-construction placement pass.
     queueMicrotask(() => {
@@ -1166,12 +1235,14 @@ export class MessageThreadComponent implements OnDestroy {
     this.initialLoading.set(true);
     this.initialLoadFailed.set(false);
     this.kernelReady = false;
-    const boundary = this.convList.unreadEntryBoundary(trd.threadId);
-    this.scrollState.open(boundary?.firstUnreadSeq ?? null);
+    this.unreadDividerReady.set(false);
+    const initialPosition = this.convList.previewUnreadEntryBoundary(trd.threadId);
+    this.scrollState.open(null);
     const openOptions = messageOpenOptions(
       this.chatAppearance.openPosition(),
-      this.scrollState.firstUnreadSeq,
+      initialPosition?.firstUnreadSeq ?? null,
     );
+    let missedUnreadAnchor = false;
     const source = this.source;
     const scroller = this.scroller;
     void scroller
@@ -1180,17 +1251,22 @@ export class MessageThreadComponent implements OnDestroy {
           ? {
               ...openOptions,
               onFallbackToLatest: () => {
-                // A local-only init miss is not evidence that the server-side unread anchor disappeared.
-                // Keep the frozen boundary and position it after finishLocalInit drives the catch-up demand.
-                this.scrollState.markUnreadReanchorNeeded();
+                // An uncached unread anchor may arrive only during the post-mount catch-up.
+                missedUnreadAnchor = true;
               },
             }
           : undefined,
       )
       .then(() => {
         if (this.source !== source || this.scroller !== scroller) return;
-        this.initialLoading.set(false);
         this.kernelReady = true;
+        if (!isAndroidNative() || (this.appVisible() && this.convList.threadFeedReady())) {
+          this.applyUnreadDivider(trd.threadId);
+          if (missedUnreadAnchor && this.scrollState.firstUnreadSeq !== null)
+            this.scrollState.markUnreadReanchorNeeded();
+          this.unreadDividerReady.set(true);
+        }
+        this.initialLoading.set(false);
         // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
         // kernel callback: explicitly recompute once init has settled so a top-anchored unread divider suppresses
         // the floating date pill before the pane is handed to the user.
@@ -1661,7 +1737,8 @@ export class MessageThreadComponent implements OnDestroy {
       message.contentType === 'AUDIO' ||
       message.contentType === 'FILE' ||
       message.contentType === 'LINK' ||
-      message.contentType === 'FORWARD'
+      message.contentType === 'FORWARD' ||
+      message.contentType === 'CONTACT_CARD'
     );
   }
 
@@ -1766,7 +1843,55 @@ export class MessageThreadComponent implements OnDestroy {
       });
   }
 
+  @HostListener('document:visibilitychange')
+  onAppVisibilityChange(): void {
+    if (!isAndroidNative()) return;
+    const visible = document.visibilityState === 'visible';
+    if (!visible) {
+      // Commit only what was already visible before leaving the screen. Neither
+      // in-flight SSE nor later background mounts may advance the read cursor.
+      this.stableRead.noteFullyVisible(this.scroller?.getFullyVisibleIds() ?? []);
+      this.stableRead.flush();
+      this.stableRead.reset();
+      this.unreadDividerReady.set(false);
+      this.source?.pauseLiveUpdates?.();
+      if (this.currentTrdId !== null) {
+        this.resumeAfterBackground = true;
+        this.convList.resetUnreadEntryBoundary(this.currentTrdId);
+      }
+    }
+    this.appVisible.set(visible);
+  }
+
+  /** The initial pane and a retained pane share the boundary calculation, but
+   * reactivation replaces measured rows in place rather than remounting the kernel. */
+  private applyUnreadDivider(threadId: number): void {
+    const previous = this.scrollState.firstUnreadSeq;
+    const next =
+      this.convList.captureUnreadEntryBoundary(threadId)?.firstUnreadSeq ?? null;
+    if (previous === next) return;
+    this.scrollState.open(next);
+    this.pendingDividerRefresh = [...new Set(
+      [previous, next].filter((seq): seq is number => seq !== null),
+    )];
+    this.refreshMountedDivider();
+    this.updateStickyOverlays();
+  }
+
+  private refreshMountedDivider(): void {
+    const scroller = this.scroller;
+    if (!scroller || this.pendingDividerRefresh.length === 0) return;
+    const pending = this.pendingDividerRefresh;
+    this.pendingDividerRefresh = [];
+    for (const seq of pending) {
+      if (scroller.getMountedGeometry(seq) &&
+          !scroller.mutateItem(seq, (item) => ({ ...item })))
+        this.pendingDividerRefresh.push(seq);
+    }
+  }
+
   private onScroll(info: CbScrollInfo): void {
+    this.refreshMountedDivider();
     if (
       this.messageContextMenu() &&
       Math.abs(info.scrollTop - this.contextMenuScrollTop) > 0.5
@@ -1861,6 +1986,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   cancelFailedTransfers(): void {
+    for (const task of this.transferState.failed())
+      this.optimistic.cancel(task.clientMessageId);
     this.transferState.cancelFailed();
   }
 
@@ -2557,8 +2684,17 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async cancelPending(clientMessageId: string): Promise<void> {
-    if (this.optimistic.cancel(clientMessageId))
-      this.transfers.discard(clientMessageId);
+    this.discardOptimistic(clientMessageId);
+    this.transfers.discard(clientMessageId);
+  }
+
+  private discardOptimistic(clientMessageId: string): void {
+    if (this.optimistic.cancel(clientMessageId)) return;
+    const threadId = this.sendOutbox.discardPending(clientMessageId);
+    if (threadId !== undefined)
+      void firstValueFrom(
+        this.threadAdapter.abandonMediaStage(threadId, clientMessageId),
+      ).catch(() => undefined);
   }
 
   /** Mark an optimistic send FAILED: the source flips its pending entry to status:'failed' (stable identity);
@@ -2566,6 +2702,45 @@ export class MessageThreadComponent implements OnDestroy {
    *  the lost-HTTP-response race: if the SSE echo already dropped the pending entry, failPending finds nothing. */
   private async failPending(item: CbItem<ChatItemData>): Promise<void> {
     await this.optimistic.fail(item);
+  }
+
+  /** An upload can finish while its content-head echo is lost. Restore the retry card even if
+   * completed-transfer cleanup already hid it; the retained outbox still owns the original file. */
+  private onConfirmationTimeout(cid: string): void {
+    const resource = this.sendOutbox.resource(cid);
+    if (!resource || resource.type === 'voice' || resource.type === 'native-voice')
+      return; // These two have retry/cancel actions directly on their message bubble.
+    const threadId = this.threadId();
+    if (!threadId) return;
+    const existing = this.transfers.tasks().find((task) => task.clientMessageId === cid);
+    if (!existing) {
+      if (resource.type === 'web-attachment') {
+        this.transfers.start({
+          clientMessageId: cid, threadId, kind: resource.mediaKind, file: resource.file,
+        });
+      } else if (resource.type === 'native-attachment') {
+        const file = resource.selection;
+        this.transfers.start({
+          clientMessageId: cid, threadId, kind: file.kind,
+          name: file.name, size: file.size, previewUrl: file.preview,
+        });
+      } else if (resource.type === 'web-gallery') {
+        this.transfers.start({
+          clientMessageId: cid, threadId, kind: 'file',
+          name: resource.parts[0].file.name,
+          size: resource.parts.reduce((sum, part) => sum + part.file.size, 0),
+        });
+      } else {
+        this.transfers.start({
+          clientMessageId: cid, threadId, kind: 'file',
+          name: resource.parts[0].selection.name,
+          size: resource.parts.reduce((sum, part) => sum + part.selection.size, 0),
+        });
+      }
+    }
+    this.transfers.fail(cid, this.transloco.translate('transfer.confirmationTimeout'));
+    this.transfers.registerRetry(cid, () => void this.retrySend(cid));
+    this.transfers.registerDiscard(cid, () => this.discardOptimistic(cid));
   }
 
   /** Record HTTP/upload acceptance without confirming delivery visually. The optimistic row becomes `accepted`:
@@ -2583,13 +2758,26 @@ export class MessageThreadComponent implements OnDestroy {
    *  (noNewer, the common case) this is synchronous. When the newer end is trimmed (scrolled into history),
    *  queue the item and scrollToBottom() — the follow chain mounts the newest and onScroll drains the queue. */
   private dispatchPending(item: CbItem<ChatItemData>): void {
+    this.registerMediaDiscard(item);
     this.optimistic.dispatch(item);
   }
 
   /** Keep an attachment send in the source outbox for retry/SSE reconciliation without mounting a
    * second per-file optimistic bubble. The aggregate transfer card is the sole pending presentation. */
   private registerPending(item: CbItem<ChatItemData>): void {
+    this.registerMediaDiscard(item);
     this.optimistic.register(item);
+  }
+
+  private registerMediaDiscard(item: CbItem<ChatItemData>): void {
+    if (
+      item.clientMessageId &&
+      item.data.type === 'msg' &&
+      ['AUDIO', 'IMAGE', 'VIDEO', 'FILE', 'GALLERY'].includes(item.data.contentType)
+    ) {
+      const cid = item.clientMessageId;
+      this.transfers.registerDiscard(cid, () => this.discardOptimistic(cid));
+    }
   }
 
   /** Build a fully-shaped optimistic self message. id/msgId = a synthetic NEGATIVE placeholder (msgId is a number
@@ -2627,6 +2815,8 @@ export class MessageThreadComponent implements OnDestroy {
     this.messageInteraction.reset();
     this.stableRead.flush();
     this.stableRead.reset();
+    this.unreadDividerReady.set(false);
+    this.pendingDividerRefresh = [];
     this.scrollState.reset();
     this.stickyOverlays()?.clear();
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
@@ -2648,10 +2838,10 @@ export class MessageThreadComponent implements OnDestroy {
     this.currentTrdId = null;
   }
 
-  /** Android sends this only when its native composer is genuinely destroyed. Temporary hide operations
-   *  (dialogs, selection mode, attachment surfaces) deliberately do not publish the draft. */
+  /** Persist while the native context still owns the text. hide() clears its EditText after releasing
+   *  the Web context, so neither its final TextWatcher event nor Activity destruction can save it. */
   private saveNativeComposerDraft(): void {
-    const threadId = this.threadId();
+    const threadId = this.nativeComposerThreadId;
     if (!threadId) return;
     this.nativeDraft.save(threadId, escapeComposerText);
   }

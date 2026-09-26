@@ -21,6 +21,15 @@ export class StableReadTracker {
     if (this.active) this.arm();
   }
 
+  /** Discard candidates collected while inactive (including background page delivery),
+   * then commit only what is actually fully visible on this activation. */
+  startFromViewport(ids: readonly number[]): void {
+    if (this.active) return;
+    this.candidate = null;
+    this.noteFullyVisible(ids);
+    this.start();
+  }
+
   /** Activate foreground tracking and immediately commit the current fully-visible HWM. */
   start(): void {
     if (this.active) return;

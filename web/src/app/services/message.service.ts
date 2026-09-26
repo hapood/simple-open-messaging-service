@@ -10,11 +10,13 @@ import {
   defer,
   filter,
   firstValueFrom,
+  fromEvent,
   map,
-  of,
+  Observable,
   switchMap,
+  takeUntil,
   tap,
-  type Observable,
+  timeout,
 } from 'rxjs';
 import {
   Message,
@@ -217,17 +219,55 @@ export class MsgService {
     onProgress?: UploadProgressHandler,
   ): Observable<StandardResponse<T>> {
     if (this.canStream(file)) {
-      return defer(() =>
-        this.streamUpload<T>(
+      return new Observable<StandardResponse<T>>((subscriber) => {
+        let settled = false;
+        void this.streamUpload<T>(
           file,
           '/upload',
           this.partFields(identity),
           identity.clientMessageId,
-          onProgress,
-        ),
-      );
+          onProgress
+            ? (loaded, total) => {
+                if (!subscriber.closed) onProgress(loaded, total);
+              }
+            : undefined,
+        ).then(
+          (result) => {
+            settled = true;
+            subscriber.next(result);
+            subscriber.complete();
+          },
+          (error) => {
+            settled = true;
+            subscriber.error(error);
+          },
+        );
+        return () => {
+          if (!settled)
+            void tauriInvoke('cancel_upload', {
+              clientMessageId: identity.clientMessageId,
+            }).catch(() => undefined);
+        };
+      });
     }
-    return defer(() => this.resumableUpload<T>(file, identity, onProgress));
+    return new Observable<StandardResponse<T>>((subscriber) => {
+      const abort = new AbortController();
+      void this.resumableUpload<T>(
+        file,
+        identity,
+        abort.signal,
+        (loaded, total) => {
+          if (!abort.signal.aborted) onProgress?.(loaded, total);
+        },
+      ).then(
+        (result) => {
+          subscriber.next(result);
+          subscriber.complete();
+        },
+        (error) => subscriber.error(error),
+      );
+      return () => abort.abort();
+    });
   }
 
   private partFields(identity: UploadPartIdentity): Record<string, string> {
@@ -273,7 +313,11 @@ export class MsgService {
         clientMessageId: clientMessageId ?? null,
       });
     } finally {
-      if (clientMessageId) this.streamProgressHandlers.delete(clientMessageId);
+      if (
+        clientMessageId &&
+        this.streamProgressHandlers.get(clientMessageId) === onProgress
+      )
+        this.streamProgressHandlers.delete(clientMessageId);
     }
   }
 
@@ -336,9 +380,16 @@ export class MsgService {
   private async resumableUpload<T>(
     file: File,
     identity: UploadPartIdentity,
+    signal: AbortSignal,
     onProgress?: UploadProgressHandler,
   ): Promise<StandardResponse<T>> {
-    const init = await firstValueFrom(
+    const read = <R>(request: Observable<R>): Promise<R> => {
+      if (signal.aborted) return Promise.reject(new Error('Upload cancelled'));
+      return firstValueFrom(
+        request.pipe(timeout(120_000), takeUntil(fromEvent(signal, 'abort'))),
+      );
+    };
+    const init = await read(
       this.http.post<StandardResponse<ResumableUploadState>>(
         `${apiPrefix()}/uploads/resumable/init`,
         {
@@ -355,7 +406,7 @@ export class MsgService {
     );
     if (init.code !== 0 || !init.data)
       throw new Error(init.message || 'upload init failed');
-    let state = await firstValueFrom(
+    let state = await read(
       this.http.get<StandardResponse<ResumableUploadState>>(
         `${apiPrefix()}/uploads/resumable/${encodeURIComponent(init.data.uploadId)}`,
         { context: new HttpContext().set(REPLAY_SAFE, true) },
@@ -368,7 +419,7 @@ export class MsgService {
     while (current.status === 'UPLOADING' && current.offset < file.size) {
       const end = Math.min(current.offset + current.chunkSize, file.size);
       const chunk = file.slice(current.offset, end);
-      const response = await firstValueFrom(
+      const response = await read(
         this.http.put<StandardResponse<ResumableUploadState>>(
           `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}`,
           chunk,
@@ -389,7 +440,7 @@ export class MsgService {
     if (current.status === 'COMPLETED' && current.result) {
       return { code: 0, message: 'success', data: current.result as T };
     }
-    const completed = await firstValueFrom(
+    const completed = await read(
       this.http.post<StandardResponse<ResumableUploadState>>(
         `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}/complete`,
         {},

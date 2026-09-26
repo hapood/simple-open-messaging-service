@@ -23,6 +23,7 @@ export class ComposerDraftService {
   );
   private hydrated = false;
   private writeRevision = 0;
+  private persistTail: Promise<void> = Promise.resolve();
 
   readonly drafts = this.draftsState.asReadonly();
   readonly threadIds = computed(
@@ -53,7 +54,7 @@ export class ComposerDraftService {
     if (draft.plainText.trim()) next.set(draft.threadId, draft);
     else next.delete(draft.threadId);
     this.draftsState.set(next);
-    void this.persist(next);
+    void this.persist(next).catch(() => undefined);
   }
 
   clear(threadId: number): void {
@@ -63,7 +64,7 @@ export class ComposerDraftService {
     const next = new Map(this.draftsState());
     next.delete(threadId);
     this.draftsState.set(next);
-    void this.persist(next);
+    void this.persist(next).catch(() => undefined);
   }
 
   private async restore(): Promise<void> {
@@ -84,7 +85,13 @@ export class ComposerDraftService {
   }
 
   private persist(drafts: ReadonlyMap<number, ComposerDraft>): Promise<void> {
-    return this.webdb.putMeta(META_KEY, Array.from(drafts.values()));
+    const value = Array.from(drafts.values());
+    // Native input can publish on every keystroke. Serialize writes so a slow
+    // earlier snapshot cannot overwrite a later edit or a successful send.
+    this.persistTail = this.persistTail
+      .catch(() => undefined)
+      .then(() => this.webdb.putMeta(META_KEY, value));
+    return this.persistTail;
   }
 }
 

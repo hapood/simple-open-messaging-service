@@ -18,6 +18,7 @@ function handlers(): ThreadSendRetryHandlers {
     webGallery: vi.fn(),
     nativeGallery: vi.fn(),
     voice: vi.fn(),
+    nativeVoice: vi.fn(),
     nativeAttachment: vi.fn(),
     webAttachment: vi.fn(),
     text: vi.fn(),
@@ -60,5 +61,29 @@ describe('ThreadSendRetryController', () => {
       resource,
       item,
     );
+  });
+
+  it('retries a native voice using its retained recording rather than sending empty text', async () => {
+    const callbacks = handlers();
+    const resource = {
+      type: 'native-voice' as const,
+      threadId: 4,
+      size: 512,
+      discard: vi.fn(),
+    };
+    const controller = new ThreadSendRetryController(
+      {
+        resource: () => resource,
+      } as unknown as ThreadSendOutbox,
+      { beginRetry: async () => item } as unknown as ThreadOptimisticController,
+      callbacks,
+    );
+    await controller.retry('voice-cid');
+    expect(callbacks.nativeVoice).toHaveBeenCalledWith(
+      'voice-cid',
+      resource,
+      item,
+    );
+    expect(callbacks.text).not.toHaveBeenCalled();
   });
 });

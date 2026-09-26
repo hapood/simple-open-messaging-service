@@ -47,7 +47,14 @@ interface UploadCallbacks {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   progress?: (loaded: number, total: number) => void;
+  idleTimer?: ReturnType<typeof setTimeout>;
+  lastLoaded: number;
 }
+
+// The native picker itself is user-driven and has no deadline. Once upload has begun, however,
+// the bridge must report progress or completion; losing its callback must not hang the transfer.
+export const NATIVE_UPLOAD_IDLE_TIMEOUT_MS = 120_000;
+export const NATIVE_PICK_INSPECTION_TIMEOUT_MS = 30_000;
 
 /** Rust's `ok` means the HTTP exchange completed, while the API envelope can still describe a business
  * failure. Release the native selection only for an actual successful upload so failure remains retryable. */
@@ -65,6 +72,8 @@ export class NativeUploadService {
   private pendingPick?: {
     requestId: string;
     resolve: (items: NativeUploadSelection[]) => void;
+    reject: (reason: Error) => void;
+    timer?: ReturnType<typeof setTimeout>;
   };
   private readonly uploads = new Map<string, UploadCallbacks>();
   private readonly attemptByUpload = new Map<string, string>();
@@ -73,9 +82,22 @@ export class NativeUploadService {
     if (typeof window === 'undefined') return;
     window.__SOMS_UPLOAD_PICKED__ = ({ requestId, items }) => {
       const pending = this.pendingPick;
-      if (!pending || pending.requestId !== requestId) return;
+      if (!pending || pending.requestId !== requestId) {
+        for (const item of items) window.SomsUpload?.discard(item.uploadId);
+        return;
+      }
+      if (pending.timer) clearTimeout(pending.timer);
       this.pendingPick = undefined;
       pending.resolve(items);
+    };
+    window.__SOMS_UPLOAD_INSPECTING__ = ({ requestId }) => {
+      const pending = this.pendingPick;
+      if (!pending || pending.requestId !== requestId || pending.timer) return;
+      pending.timer = setTimeout(() => {
+        if (this.pendingPick !== pending) return;
+        this.pendingPick = undefined;
+        pending.reject(new Error('File inspection timed out'));
+      }, NATIVE_PICK_INSPECTION_TIMEOUT_MS);
     };
     window.__SOMS_UPLOAD_PROGRESS__ = ({
       uploadId,
@@ -83,7 +105,13 @@ export class NativeUploadService {
       loaded,
       total,
     }) => {
-      this.uploads.get(attemptId)?.progress?.(loaded, total);
+      const callbacks = this.uploads.get(attemptId);
+      if (!callbacks || callbacks.uploadId !== uploadId) return;
+      if (loaded > callbacks.lastLoaded) {
+        callbacks.lastLoaded = loaded;
+        this.refreshIdleTimer(callbacks);
+      }
+      callbacks.progress?.(loaded, total);
     };
     window.__SOMS_UPLOAD_COMPLETED__ = ({ uploadId, attemptId, response }) => {
       const callbacks = this.takeAttempt(uploadId, attemptId);
@@ -118,6 +146,10 @@ export class NativeUploadService {
     }>('upload-progress', ({ payload }) => {
       for (const callbacks of this.uploads.values()) {
         if (callbacks.clientMessageId === payload.clientMessageId) {
+          if (payload.loaded > callbacks.lastLoaded) {
+            callbacks.lastLoaded = payload.loaded;
+            this.refreshIdleTimer(callbacks);
+          }
           callbacks.progress?.(payload.loaded, payload.total);
           break;
         }
@@ -157,11 +189,16 @@ export class NativeUploadService {
   pick(kind: 'image' | 'file'): Promise<NativeUploadSelection[]> {
     if (!this.supported()) return Promise.resolve([]);
     if (this.pendingPick) return Promise.resolve([]);
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const requestId = uuid();
-      this.pendingPick = { requestId, resolve };
-      if (kind === 'image') window.SomsUpload!.pickPhotos(requestId);
-      else window.SomsUpload!.pickFile(requestId);
+      this.pendingPick = { requestId, resolve, reject };
+      try {
+        if (kind === 'image') window.SomsUpload!.pickPhotos(requestId);
+        else window.SomsUpload!.pickFile(requestId);
+      } catch (error) {
+        this.pendingPick = undefined;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -178,21 +215,29 @@ export class NativeUploadService {
       }
       const attemptId = uuid();
       this.attemptByUpload.set(selection.uploadId, attemptId);
-      this.uploads.set(attemptId, {
+      const callbacks: UploadCallbacks = {
         uploadId: selection.uploadId,
         attemptId,
         clientMessageId,
         resolve: resolve as (value: unknown) => void,
         reject,
         progress,
-      });
-      window.SomsUpload!.upload(
-        selection.uploadId,
-        attemptId,
-        selection.kind,
-        clientMessageId,
-        JSON.stringify(fields),
-      );
+        lastLoaded: -1,
+      };
+      this.uploads.set(attemptId, callbacks);
+      this.refreshIdleTimer(callbacks);
+      try {
+        window.SomsUpload!.upload(
+          selection.uploadId,
+          attemptId,
+          selection.kind,
+          clientMessageId,
+          JSON.stringify(fields),
+        );
+      } catch (error) {
+        this.takeAttempt(selection.uploadId, attemptId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -222,9 +267,21 @@ export class NativeUploadService {
   ): UploadCallbacks | undefined {
     if (this.attemptByUpload.get(uploadId) !== attemptId) return undefined;
     const callbacks = this.uploads.get(attemptId);
+    if (callbacks?.idleTimer) clearTimeout(callbacks.idleTimer);
     this.uploads.delete(attemptId);
     this.attemptByUpload.delete(uploadId);
     return callbacks;
+  }
+
+  private refreshIdleTimer(callbacks: UploadCallbacks): void {
+    if (callbacks.idleTimer) clearTimeout(callbacks.idleTimer);
+    callbacks.idleTimer = setTimeout(() => {
+      if (!this.takeAttempt(callbacks.uploadId, callbacks.attemptId)) return;
+      window.SomsUpload?.cancel(callbacks.uploadId, callbacks.attemptId);
+      callbacks.reject(
+        new NativeUploadError('Upload stalled', 'network', true),
+      );
+    }, NATIVE_UPLOAD_IDLE_TIMEOUT_MS);
   }
 
   private rejectActive(

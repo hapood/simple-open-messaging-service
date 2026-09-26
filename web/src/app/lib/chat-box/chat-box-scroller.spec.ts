@@ -685,6 +685,10 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.init();
 
     expect(entered).toEqual([0, 1, 2]);
+    // A tracker reset during a native foreground transition can recover the
+    // existing viewport without requiring another visible-enter event.
+    expect(scroller.getFullyVisibleIds()).toEqual([0, 1, 2]);
+    expect(entered).toEqual([0, 1, 2]);
   });
 
   it('exposes mounted viewport geometry from cached heights including short-list bottom alignment', async () => {

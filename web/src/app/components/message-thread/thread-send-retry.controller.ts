@@ -22,6 +22,11 @@ export interface ThreadSendRetryHandlers {
     resource: Extract<PendingSendResource, { type: 'voice' }>,
     item: CbItem<ChatItemData>,
   ): void;
+  nativeVoice(
+    clientMessageId: string,
+    resource: Extract<PendingSendResource, { type: 'native-voice' }>,
+    item: CbItem<ChatItemData>,
+  ): void;
   nativeAttachment(
     clientMessageId: string,
     resource: Extract<PendingSendResource, { type: 'native-attachment' }>,
@@ -60,6 +65,9 @@ export class ThreadSendRetryController {
         return;
       case 'voice':
         this.handlers.voice(clientMessageId, resource, item);
+        return;
+      case 'native-voice':
+        this.handlers.nativeVoice(clientMessageId, resource, item);
         return;
       case 'native-attachment':
         this.handlers.nativeAttachment(clientMessageId, resource, item);

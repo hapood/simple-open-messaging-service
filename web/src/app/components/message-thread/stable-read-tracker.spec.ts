@@ -36,6 +36,31 @@ describe('StableReadTracker', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('freezes background arrivals and only reads the current viewport after reactivation', () => {
+    const commit = vi.fn().mockName('commit');
+    const tracker = new StableReadTracker(commit);
+    tracker.noteFullyVisible([10]);
+    tracker.start();
+    commit.mockClear();
+
+    // Backgrounding flushes the visible position and resets active tracking.
+    tracker.noteFullyVisible([11]);
+    tracker.flush();
+    tracker.reset();
+    tracker.noteFullyVisible([12]); // an in-flight page completes while hidden
+    vi.advanceTimersByTime(500);
+    expect(vi.mocked(commit).mock.calls).toEqual([[11]]);
+
+    // The reactivation snapshot replaces that hidden candidate before reads resume.
+    tracker.startFromViewport([11]);
+    expect(vi.mocked(commit).mock.calls).toEqual([[11], [11]]);
+    tracker.reset();
+    tracker.noteFullyVisible([13]);
+    tracker.startFromViewport([]);
+    expect(vi.mocked(commit).mock.calls).toEqual([[11], [11]]);
+    tracker.reset();
+  });
+
   it('flush commits the latest fully-visible HWM before teardown', () => {
     const commit = vi.fn().mockName('commit');
     const tracker = new StableReadTracker(commit);

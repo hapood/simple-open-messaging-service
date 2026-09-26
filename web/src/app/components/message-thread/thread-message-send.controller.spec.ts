@@ -9,8 +9,44 @@ import {
   ThreadMessageSendController,
   type ThreadMessageSendHost,
 } from './thread-message-send.controller';
+import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 
 describe('ThreadMessageSendController', () => {
+  it('fails a text send when the HTTP/IPC promise never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const fail = vi.fn(async () => undefined);
+      const item = {
+        id: -1,
+        clientMessageId: 'cid',
+        data: { type: 'msg', text: 'hello' },
+      } as unknown as CbItem<ChatMsgData>;
+      const host = {
+        threadId: () => 3,
+        selfAccount: () => 'alice',
+        consumeQuote: () => null,
+        makeItem: () => item,
+        newClientMessageId: () => 'cid',
+        dispatch: vi.fn(),
+        source: () => ({}) as never,
+        fail,
+        accept: vi.fn(),
+        surfaceFailure: vi.fn(),
+      } satisfies ThreadMessageSendHost;
+      new ThreadMessageSendController(
+        {
+          sendText: () => new Promise(() => undefined),
+        } as unknown as MessageThreadAdapter,
+        host,
+      ).text('hello');
+      await vi.advanceTimersByTimeAsync(MESSAGE_SEND_TIMEOUT_MS);
+      expect(fail).toHaveBeenCalledWith(item);
+      expect(host.accept).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('builds and dispatches one optimistic text send', async () => {
     const sendText = vi.fn(async () => ({ code: 0, message: 'ok' }));
     const dispatch = vi.fn();
@@ -36,7 +72,7 @@ describe('ThreadMessageSendController', () => {
       { sendText } as unknown as MessageThreadAdapter,
       host,
     ).text(' hello ');
-    await Promise.resolve();
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(item));
     expect(dispatch).toHaveBeenCalledWith(item);
     expect(sendText).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 3, clientMessageId: 'cid' }),
@@ -82,7 +118,7 @@ describe('ThreadMessageSendController', () => {
       avatar: '',
       bio: '',
     });
-    await Promise.resolve();
+    await vi.waitFor(() => expect(host.accept).toHaveBeenCalledWith(item));
 
     expect(host.dispatch).toHaveBeenCalledWith(item);
     expect(sendContact).toHaveBeenCalledWith({

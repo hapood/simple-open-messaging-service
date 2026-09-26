@@ -307,6 +307,9 @@ export interface ScrollerApi<T = unknown> {
    *  already confirmed (the cb-confirmed class is present) — so the choreography fires exactly once. */
   confirmPending(clientMessageId: string): void;
   getInfo(): CbScrollInfo;
+  /** Snapshot the currently fully visible message ids, including album members.
+   * A read tracker can use this after resuming even when no new enter event fires. */
+  getFullyVisibleIds(): number[];
   /** Visit mounted items in DOM order using the kernel's cached integer heights and prefix sums. */
   visitMountedGeometry(
     visitor: (geometry: CbMountedGeometry<T>) => boolean | void,
@@ -3047,24 +3050,30 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.onScroll?.(this.getInfo());
   }
 
-  private emitFullyVisibleEnter(): void {
-    if (!this.onFullyVisibleEnter) return;
+  private fullyVisibleEntries(): Array<{ item: CbItem<T>; el: HTMLElement }> {
     const indexes = fullyVisibleIndexes(
       this.mounted.map((entry) => entry.height),
       this.viewport.scrollTop,
       this.vh,
       this.totalH(),
     );
-    const current = new Set<number>();
-    const entered: Array<{ item: CbItem<T>; el: HTMLElement }> = [];
-    for (const index of indexes) {
+    return indexes.flatMap((index) => {
       const entry = this.mounted[index];
-      if (!entry || entry.leaving || entry.el.classList.contains('cb-ghost'))
-        continue;
-      current.add(entry.item.id);
-      if (!this.fullyVisibleIds.has(entry.item.id))
-        entered.push({ item: entry.item, el: entry.el });
-    }
+      return entry && !entry.leaving && !entry.el.classList.contains('cb-ghost')
+        ? [{ item: entry.item, el: entry.el }]
+        : [];
+    });
+  }
+
+  getFullyVisibleIds(): number[] {
+    return this.fullyVisibleEntries().flatMap(({ item }) => item.ids ?? [item.id]);
+  }
+
+  private emitFullyVisibleEnter(): void {
+    if (!this.onFullyVisibleEnter) return;
+    const entries = this.fullyVisibleEntries();
+    const current = new Set(entries.map(({ item }) => item.id));
+    const entered = entries.filter(({ item }) => !this.fullyVisibleIds.has(item.id));
     this.fullyVisibleIds = current;
     if (entered.length > 0) this.onFullyVisibleEnter(entered);
   }

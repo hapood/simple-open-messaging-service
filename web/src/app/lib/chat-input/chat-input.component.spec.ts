@@ -1,6 +1,7 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
+import { TranslocoService } from '@jsverse/transloco';
 import { ChatInputComponent } from './chat-input.component';
 import { NativeUploadService } from '../../services/native-upload.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
@@ -21,6 +22,10 @@ describe('ChatInputComponent link generation', () => {
       providers: [
         { provide: NativeUploadService, useValue: {} },
         { provide: KeyboardInsetService, useValue: {} },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
         {
           provide: PreferenceStore,
           useValue: {

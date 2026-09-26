@@ -1,5 +1,5 @@
 import { inject, Injectable, InjectionToken } from '@angular/core';
-import { firstValueFrom, type Observable } from 'rxjs';
+import { firstValueFrom, timeout, type Observable } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
   CbConfig,
@@ -24,6 +24,7 @@ import type {
   UploadPartIdentity,
   UploadProgressHandler,
 } from '../../services/message.service';
+import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 
 export interface MessageThreadLiveCallbacks {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
@@ -41,10 +42,13 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined;
   discardPending(clientMessageId: string): boolean;
   markPendingAccepted(clientMessageId: string): boolean;
+  acceptedPending?(): CbItem<ChatItemData>[];
   finishLocalInit?(
     liveLatestSeq: number | undefined,
     persistedLatestSeq?: number | null,
   ): void;
+  pauseLiveUpdates?(): void;
+  resumeLiveUpdates?(latestSeq?: number): void;
 }
 
 export interface SendTextRequest {
@@ -216,12 +220,14 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     request: SendTextRequest,
   ): Promise<StandardResponse<unknown>> {
     return firstValueFrom(
-      this.messages.sendMessage({
-        threadId: request.threadId,
-        content: request.content,
-        contentType: 'PURE_TEXT',
-        clientMessageId: request.clientMessageId,
-      }),
+      this.messages
+        .sendMessage({
+          threadId: request.threadId,
+          content: request.content,
+          contentType: 'PURE_TEXT',
+          clientMessageId: request.clientMessageId,
+        })
+        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
     );
   }
 
@@ -229,11 +235,13 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     request: SendContactRequest,
   ): Promise<StandardResponse<unknown>> {
     return firstValueFrom(
-      this.messages.sendContactCard({
-        threadId: request.threadId,
-        target: request.target,
-        clientMessageId: request.clientMessageId,
-      }),
+      this.messages
+        .sendContactCard({
+          threadId: request.threadId,
+          target: request.target,
+          clientMessageId: request.clientMessageId,
+        })
+        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
     );
   }
 
@@ -243,12 +251,14 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     clientMessageId: string;
   }): Promise<StandardResponse<unknown>> {
     return firstValueFrom(
-      this.messages.sendMessage({
-        threadId: request.threadId,
-        content: request.generationId,
-        contentType: 'LINK',
-        clientMessageId: request.clientMessageId,
-      }),
+      this.messages
+        .sendMessage({
+          threadId: request.threadId,
+          content: request.generationId,
+          contentType: 'LINK',
+          clientMessageId: request.clientMessageId,
+        })
+        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
     );
   }
 

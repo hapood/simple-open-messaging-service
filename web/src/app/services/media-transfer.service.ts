@@ -48,6 +48,7 @@ export class MediaTransferService {
   private readonly cancelSignals = new Map<string, ReplaySubject<void>>();
   private readonly retryActions = new Map<string, () => void>();
   private readonly cancelActions = new Map<string, () => void>();
+  private readonly discardActions = new Map<string, () => void>();
   private readonly taskMap = signal<ReadonlyMap<string, MediaTransferTask>>(
     new Map(),
   );
@@ -156,11 +157,7 @@ export class MediaTransferService {
     this.scheduleCompletedCleanup(current.threadId);
   }
 
-  fail(
-    clientMessageId: string,
-    errorReason?: string,
-    retryable = true,
-  ): void {
+  fail(clientMessageId: string, errorReason?: string, retryable = true): void {
     const current = this.taskMap().get(clientMessageId);
     if (!current) return;
     this.patch(clientMessageId, {
@@ -213,6 +210,7 @@ export class MediaTransferService {
         );
       }
     }
+    this.discardActions.get(clientMessageId)?.();
     this.dismiss(clientMessageId);
   }
 
@@ -222,6 +220,10 @@ export class MediaTransferService {
 
   registerCancel(clientMessageId: string, cancel: () => void): void {
     this.cancelActions.set(clientMessageId, cancel);
+  }
+
+  registerDiscard(clientMessageId: string, discard: () => void): void {
+    this.discardActions.set(clientMessageId, discard);
   }
 
   retry(clientMessageId: string): void {
@@ -299,5 +301,6 @@ export class MediaTransferService {
     this.cancelSignals.delete(clientMessageId);
     this.retryActions.delete(clientMessageId);
     this.cancelActions.delete(clientMessageId);
+    this.discardActions.delete(clientMessageId);
   }
 }

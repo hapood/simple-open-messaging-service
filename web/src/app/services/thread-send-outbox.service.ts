@@ -25,6 +25,12 @@ export type PendingSendResource =
       previewUrl: string;
     }
   | {
+      type: 'native-voice';
+      threadId: number;
+      size: number;
+      discard: () => void;
+    }
+  | {
       type: 'web-gallery';
       parts: readonly {
         file: File;
@@ -83,6 +89,39 @@ export class ThreadSendOutbox {
     return this.resources.get(clientMessageId);
   }
 
+  /** A network timeout can arrive after the thread view was torn down. Keep the outbox
+   * retryable even without a mounted source or scroller; a later mount reads this same array. */
+  failPending(clientMessageId: string): boolean {
+    for (const pending of this.byThread.values()) {
+      const index = pending.findIndex(
+        (item) => item.clientMessageId === clientMessageId,
+      );
+      if (index < 0) continue;
+      const item = pending.splice(index, 1)[0];
+      pending.push({
+        ...item,
+        data: { ...item.data, status: 'failed', kind: undefined },
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /** Discard a send whose thread source is no longer mounted. */
+  discardPending(clientMessageId: string): number | undefined {
+    for (const [threadId, pending] of this.byThread) {
+      const index = pending.findIndex(
+        (item) => item.clientMessageId === clientMessageId,
+      );
+      if (index < 0) continue;
+      pending.splice(index, 1);
+      this.releaseResource(clientMessageId, true);
+      this.releaseIfEmpty(threadId);
+      return threadId;
+    }
+    return undefined;
+  }
+
   /** Release retry data only when its pending send is confirmed or explicitly discarded. */
   releaseResource(clientMessageId: string, discard = false): void {
     const resource = this.resources.get(clientMessageId);
@@ -93,6 +132,7 @@ export class ThreadSendOutbox {
       else resource.release();
     }
     if (resource.type === 'voice') URL.revokeObjectURL(resource.previewUrl);
+    if (resource.type === 'native-voice') resource.discard();
     if (resource.type === 'web-gallery') {
       for (const url of resource.previewUrls) URL.revokeObjectURL(url);
     }

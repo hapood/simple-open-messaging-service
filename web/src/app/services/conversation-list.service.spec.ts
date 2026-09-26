@@ -32,6 +32,7 @@ describe('ConversationListService stable markRead flush', () => {
             setOpenThread: vi.fn().mockName('setOpenThread'),
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
+            readCursorState: vi.fn(),
             refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
             load: vi.fn().mockName('load'),
           },
@@ -65,5 +66,45 @@ describe('ConversationListService stable markRead flush', () => {
     convList.markReadStable(7, 5);
     convList.close();
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it('captures unread before the nav effect opens the thread and preserves it after reads', () => {
+    const repo = TestBed.inject(ThreadRepository);
+    Object.assign(repo, {
+      openThreadId: signal<number | undefined>(undefined).asReadonly(),
+      items: signal([
+        { threadId: 7, unreadCount: 2, lastMessageSeq: 25, lastReadSeq: 23 },
+      ]).asReadonly(),
+    });
+    vi.mocked(repo.readCursorState).mockReturnValue({
+      serverLastReadSeq: 23,
+      localStableReadSeq: 23,
+      effectiveLastReadSeq: 23,
+    });
+
+    expect(convList.previewUnreadEntryBoundary(7)).toMatchObject({
+      firstUnreadSeq: 24,
+    });
+    Object.assign(repo, {
+      items: signal([
+        { threadId: 7, unreadCount: 0, lastMessageSeq: 25, lastReadSeq: 25 },
+      ]).asReadonly(),
+    });
+    expect(convList.captureUnreadEntryBoundary(7)).toBeUndefined();
+    Object.assign(repo, {
+      items: signal([
+        { threadId: 7, unreadCount: 2, lastMessageSeq: 25, lastReadSeq: 23 },
+      ]).asReadonly(),
+    });
+    const boundary = convList.captureUnreadEntryBoundary(7);
+    expect(boundary).toMatchObject({ firstUnreadSeq: 24, unreadCount: 2 });
+    Object.assign(repo, {
+      items: signal([
+        { threadId: 7, unreadCount: 0, lastMessageSeq: 25, lastReadSeq: 25 },
+      ]).asReadonly(),
+    });
+    convList.open(7);
+    expect(convList.captureUnreadEntryBoundary(7)).toBe(boundary);
+    expect(repo.setOpenThread).toHaveBeenCalledWith(7);
   });
 });

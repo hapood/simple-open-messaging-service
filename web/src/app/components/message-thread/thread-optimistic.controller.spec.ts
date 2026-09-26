@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ScrollerApi } from '../../lib/chat-box/chat-box-scroller';
+import type { CbItem, ScrollerApi } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData } from '../message-cards/chat-item';
 import type { MessageThreadSource } from './message-thread-adapter';
 import { ThreadOptimisticController } from './thread-optimistic.controller';
@@ -46,5 +46,104 @@ describe('ThreadOptimisticController', () => {
     expect(scroller.insertAfter).toHaveBeenCalledWith(42, item, {
       optimistic: true,
     });
+  });
+
+  it('fails an accepted message only when its delivery echo is still missing', async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, source, scroller } = harness(true);
+      const item = {
+        id: -1,
+        clientMessageId: 'cid',
+        data: { type: 'msg', status: 'sending' },
+      } as unknown as CbItem<ChatItemData>;
+      source.markPendingAccepted = vi.fn(() => true);
+      source.pendingByClientMessageId = vi.fn(() => ({
+        ...item,
+        data: { ...item.data, status: 'accepted' },
+      })) as never;
+      source.failPending = vi.fn(() => true);
+      scroller.reconcilePending = vi.fn(async () => undefined) as never;
+      await controller.accept(item);
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(source.failPending).toHaveBeenCalledWith('cid');
+      expect(scroller.reconcilePending).toHaveBeenCalledTimes(2);
+      controller.reset();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('notifies the transfer owner when an accepted send is unconfirmed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { source, scroller } = harness(true);
+      const notify = vi.fn();
+      const controller = new ThreadOptimisticController(() => -1, notify);
+      controller.bind(scroller, source);
+      const item = {
+        id: -1,
+        clientMessageId: 'cid',
+        data: { type: 'msg' },
+      } as CbItem<ChatItemData>;
+      source.markPendingAccepted = vi.fn(() => true);
+      let status: 'accepted' | 'failed' = 'accepted';
+      source.pendingByClientMessageId = vi.fn(() => ({
+        ...item,
+        data: { ...item.data, status },
+      })) as never;
+      source.failPending = vi.fn(() => {
+        status = 'failed';
+        return true;
+      });
+      scroller.reconcilePending = vi.fn(async () => undefined) as never;
+      await controller.accept(item);
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(notify).toHaveBeenCalledWith('cid');
+      controller.reset();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores a confirmation timer when an accepted send is remounted', async () => {
+    vi.useFakeTimers();
+    try {
+      const { source, scroller } = harness(true);
+      const item = {
+        id: -1,
+        clientMessageId: 'voice-cid',
+        data: { type: 'msg', status: 'accepted' },
+      } as CbItem<ChatItemData>;
+      source.acceptedPending = vi.fn(() => [item]);
+      source.pendingByClientMessageId = vi.fn(() => item);
+      source.failPending = vi.fn(() => true);
+      scroller.reconcilePending = vi.fn(async () => undefined) as never;
+      const controller = new ThreadOptimisticController(() => -1);
+      controller.bind(scroller, source);
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(source.failPending).toHaveBeenCalledWith('voice-cid');
+      controller.reset();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks the shared outbox failed when a timeout arrives after leaving the thread', async () => {
+    const failDetached = vi.fn();
+    const controller = new ThreadOptimisticController(
+      () => -1,
+      undefined,
+      failDetached,
+    );
+    const { source, scroller } = harness(true);
+    controller.bind(scroller, source);
+    controller.reset();
+    await controller.fail({
+      id: -1,
+      clientMessageId: 'old-thread-cid',
+      data: { type: 'msg' },
+    } as CbItem<ChatItemData>);
+    expect(failDetached).toHaveBeenCalledWith('old-thread-cid');
   });
 });

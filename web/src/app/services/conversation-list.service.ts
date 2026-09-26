@@ -32,6 +32,7 @@ export class ConversationListService {
   private readonly repo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
 
+  readonly threadFeedReady = this.repo.threadFeedReady;
   private readonly unreadEntryBoundaries = new Map<
     number,
     UnreadEntryBoundary
@@ -72,6 +73,25 @@ export class ConversationListService {
     if (prev !== undefined) {
       this.unreadEntryBoundaries.delete(prev);
     }
+    void this.repo.setOpenThread(threadId);
+  }
+
+  /** A non-mutating read for last-read positioning before the first mount. The
+   * divider itself is captured and applied only once the pane has mounted. */
+  previewUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
+    return this.unreadEntryBoundaries.get(threadId) ?? this.computeUnreadEntryBoundary(threadId);
+  }
+
+  /** Freeze the first boundary for this open session after mount, or replace it on reactivation. */
+  captureUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
+    const existing = this.unreadEntryBoundaries.get(threadId);
+    if (existing) return existing;
+    const boundary = this.computeUnreadEntryBoundary(threadId);
+    if (boundary) this.unreadEntryBoundaries.set(threadId, boundary);
+    return boundary;
+  }
+
+  private computeUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
     const item = this.repo.items().find((t) => t.threadId === threadId);
     const latestSeq = item?.lastMessageSeq;
     const unreadCount = item?.unreadCount ?? 0;
@@ -84,7 +104,7 @@ export class ConversationListService {
       const firstUnreadSeq =
         effectiveLastReadSeq === null ? 0 : effectiveLastReadSeq + 1;
       if (firstUnreadSeq <= latestSeq) {
-        this.unreadEntryBoundaries.set(threadId, {
+        return {
           threadId,
           serverLastReadSeq: cursor.serverLastReadSeq,
           localStableReadSeq: cursor.localStableReadSeq,
@@ -92,12 +112,15 @@ export class ConversationListService {
           firstUnreadSeq,
           unreadCount,
           latestSeq,
-        });
+        };
       }
-    } else {
-      this.unreadEntryBoundaries.delete(threadId);
     }
-    void this.repo.setOpenThread(threadId);
+    return undefined;
+  }
+
+  /** An inactive pane must recompute its entry boundary from the next foreground feed. */
+  resetUnreadEntryBoundary(threadId: number): void {
+    this.unreadEntryBoundaries.delete(threadId);
   }
 
   /** Clear the open thread and discard its session-only entry boundary. An unstable (<500ms) viewport
@@ -117,11 +140,6 @@ export class ConversationListService {
     joinRequestReadFeedId: number,
   ): void {
     this.repo.markJoinRequestsReadLocally(threadId, joinRequestReadFeedId);
-  }
-
-  /** Frozen unread boundary captured before this open session advances any local/server read cursor. */
-  unreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
-    return this.unreadEntryBoundaries.get(threadId);
   }
 
   /** Viewport dwell supplies throttled progress; submission has no pending-read barrier. */

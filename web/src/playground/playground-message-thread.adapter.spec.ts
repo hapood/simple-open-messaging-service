@@ -129,6 +129,97 @@ describe('PlaygroundMessageThreadAdapter', () => {
     expect(adapter.syncWithdrawalsAfterMutation()).toBe(false);
   });
 
+  it('routes search and withdrawal to the requested conversation after switching threads', async () => {
+    const adapter = new PlaygroundMessageThreadAdapter();
+    adapter.sourceLatency.set(0);
+    adapter.itemCount.set(30);
+    const first = adapter.createSource({ threadId: 1 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
+    adapter.itemCount.set(1);
+    const second = adapter.createSource({ threadId: 2 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
+
+    const search = await firstValueFrom(
+      adapter.searchMessages({
+        threadId: 1,
+        keyword: 'virtual scroll',
+        take: 50,
+      }),
+    );
+    expect(search.data?.length).toBeGreaterThan(0);
+    expect(second.search('virtual scroll', 50)).toEqual([]);
+
+    await firstValueFrom(adapter.withdrawMessage({ threadId: 1, seq: 1 }));
+    expect((await first.init(-1, 50, 0)).some((item) => item.id === 1)).toBe(
+      false,
+    );
+    expect((await second.init(-1, 50, 0)).map((item) => item.id)).toEqual([1]);
+  });
+
+  it('keeps withdrawal successful when send errors are enabled', async () => {
+    const adapter = new PlaygroundMessageThreadAdapter();
+    adapter.itemCount.set(2);
+    adapter.sourceLatency.set(0);
+    const source = adapter.createSource({ threadId: 1 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
+    adapter.sendError.set(true);
+
+    const result = await firstValueFrom(
+      adapter.withdrawMessage({ threadId: 1, seq: 1 }),
+    );
+    expect(result.code).toBe(0);
+    expect((await source.init(-1, 50, 0)).map((item) => item.id)).toEqual([
+      2,
+    ]);
+  });
+
+  it('confirms a delayed link in its original conversation, not the newly opened one', async () => {
+    const adapter = new PlaygroundMessageThreadAdapter();
+    adapter.itemCount.set(0);
+    adapter.sourceLatency.set(0);
+    adapter.confirmDelay.set(10);
+    const first = adapter.createSource({ threadId: 1 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
+    first.addPending({
+      id: -1,
+      clientMessageId: 'link-1',
+      data: {
+        type: 'msg',
+        msgId: -1,
+        creator: JSON.stringify([0, 'mock.local', 'user-1']),
+        isSelf: true,
+        name: 'Me',
+        text: 'Link for first thread',
+        time: '12:00',
+        contentType: 'LINK',
+        images: null,
+        file: null,
+        createdAtMs: Date.now(),
+      },
+    });
+    const sending = adapter.sendLink({
+      threadId: 1,
+      generationId: 'generation-1',
+      clientMessageId: 'link-1',
+    });
+    const second = adapter.createSource({ threadId: 2 } as ConversationItem, {
+      onNewerAvailable: () => undefined,
+      onMediaStatus: () => undefined,
+    }) as MockItemSource;
+
+    expect((await sending).code).toBe(0);
+    expect((await first.init(-1, 50, 0)).map((item) => item.id)).toEqual([1]);
+    expect(await second.init(-1, 50, 0)).toEqual([]);
+  });
+
   it('completes mock uploads without an HTTP transport', async () => {
     const adapter = new PlaygroundMessageThreadAdapter();
     const file = new File(['image'], 'sample.png', { type: 'image/png' });

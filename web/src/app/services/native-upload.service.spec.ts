@@ -1,8 +1,19 @@
-import type { Mock } from 'vitest';
+// @vitest-environment jsdom
+import {
+  beforeEach,
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import {
   NativeUploadError,
   NativeUploadSelection,
   NativeUploadService,
+  NATIVE_UPLOAD_IDLE_TIMEOUT_MS,
+  NATIVE_PICK_INSPECTION_TIMEOUT_MS,
   isSuccessfulUploadResponse,
 } from './native-upload.service';
 
@@ -40,9 +51,31 @@ describe('NativeUploadService attempt routing', () => {
   afterEach(() => {
     delete window.SomsUpload;
     delete window.__SOMS_UPLOAD_PICKED__;
+    delete window.__SOMS_UPLOAD_INSPECTING__;
     delete window.__SOMS_UPLOAD_PROGRESS__;
     delete window.__SOMS_UPLOAD_COMPLETED__;
     delete window.__SOMS_UPLOAD_FAILED__;
+  });
+
+  it('times out file inspection only after the system picker returns', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(service, 'supported').mockReturnValue(true);
+      const pending = service.pick('image');
+      const failure = expect(pending).rejects.toThrow(
+        'File inspection timed out',
+      );
+      const requestId = vi.mocked(bridge.pickPhotos as Mock).mock
+        .lastCall![0] as string;
+      await vi.advanceTimersByTimeAsync(NATIVE_PICK_INSPECTION_TIMEOUT_MS * 2);
+      window.__SOMS_UPLOAD_INSPECTING__?.({ requestId });
+      await vi.advanceTimersByTimeAsync(NATIVE_PICK_INSPECTION_TIMEOUT_MS);
+      await failure;
+      window.__SOMS_UPLOAD_PICKED__?.({ requestId, items: [selection] });
+      expect(bridge.discard).toHaveBeenCalledWith(selection.uploadId);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ignores a stale completion and resolves only the matching attempt', async () => {
@@ -84,6 +117,35 @@ describe('NativeUploadService attempt routing', () => {
     await expect(result).rejects.toThrowError('upload cancelled');
     expect(bridge.cancel).toHaveBeenCalledTimes(1);
     expect(bridge.cancel).toHaveBeenCalledWith(selection.uploadId, attemptId);
+  });
+
+  it('cancels a stalled native bridge attempt and ignores its late callback', async () => {
+    vi.useFakeTimers();
+    try {
+      const result = expect(
+        service.upload(selection, 'cid-1', {}),
+      ).rejects.toThrow('Upload stalled');
+      const attemptId = vi.mocked(bridge.upload as Mock).mock
+        .lastCall![1] as string;
+      await vi.advanceTimersByTimeAsync(NATIVE_UPLOAD_IDLE_TIMEOUT_MS - 1);
+      window.__SOMS_UPLOAD_PROGRESS__?.({
+        uploadId: selection.uploadId,
+        attemptId,
+        loaded: 1,
+        total: 10,
+      });
+      await vi.advanceTimersByTimeAsync(NATIVE_UPLOAD_IDLE_TIMEOUT_MS);
+      await result;
+      expect(bridge.cancel).toHaveBeenCalledWith(selection.uploadId, attemptId);
+      window.__SOMS_UPLOAD_COMPLETED__?.({
+        uploadId: selection.uploadId,
+        attemptId,
+        response: { code: 0 },
+      });
+      expect(service.state(selection.uploadId)).toBe('selected');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('release does not cancel or detach an active completion', async () => {
