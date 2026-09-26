@@ -8,75 +8,44 @@ import { NotificationPrefsService } from './notification-prefs.service';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { BrowserNotificationAdapter } from './browser-notification.adapter';
-import { createP2PConversation } from './model';
-import type { ThreadNotificationUpdate } from './thread-notification';
 import { WebdbService } from './webdb.service';
+import { WebPushService } from './web-push.service';
+import type {
+  BrowserNotificationBatch,
+  NotificationDescriptor,
+} from './notification-descriptor.model';
 
 import 'fake-indexeddb/auto';
-import {
-  resetNotificationSince,
-  readNotificationSince,
-  advanceNotificationSince,
-} from './browser-notification-checkpoint';
 
-describe('UnreadAttentionService committed thread notifications', () => {
-  let updates: Subject<ThreadNotificationUpdate[]>;
+describe('UnreadAttentionService browser worker bridge', () => {
   const openChat = vi.fn();
+  const setTopSection = vi.fn();
+  const postMessage = vi.fn();
+  const worker = vi.fn().mockResolvedValue({ active: { postMessage } });
   const refreshBackgroundThreadFeed = vi.fn().mockResolvedValue(undefined);
-  let show: ReturnType<typeof vi.spyOn>;
-  const update = (feed = 1, count = 3): ThreadNotificationUpdate => ({
-    item: createP2PConversation(
-      7,
-      { account: 'peer', name: 'Peer' },
-      { unreadCount: count, lastReadSeq: 2 },
-    ),
-    state: {
-      threadId: 7,
-      threadFeedId: feed,
-      messageEndSeq: 5,
-      tombstoneEndSeq: 0,
-      alias: null,
-      threadProfileRev: 0,
-      groupMetaFeedEndId: null,
-      joinRequestEndFeedId: 0,
-      joinRequestReadFeedId: -1,
-      groupInviteEndFeedId: 0,
-      lastReadSeq: 1,
-      unreadCount: 4,
-      lastMentionSeq: null,
-      previews: [
-        {
-          seq: 5,
-          createdAt: '2026-09-09T00:00:00Z',
-          sender: { account: 'peer', domain: 'test' },
-          status: 'LIVE',
-          text: 'Hello',
-        },
-      ],
-    },
-  });
-  /** One bounded task-turn drain for absence assertions: the service's queue chain is pure
-   *  microtasks (fake-indexeddb + mocked adapter schedule no timers), so a single turn is
-   *  deterministically complete. */
-  const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const chatThreadId = signal<number | undefined>(undefined);
+  const topSection = signal('chats');
+  let browserNotifications: Subject<BrowserNotificationBatch>;
+  let updates: Subject<unknown[]>;
 
-  beforeEach(async () => {
-    await resetNotificationSince();
+  beforeEach(() => {
     openChat.mockClear();
+    setTopSection.mockClear();
+    postMessage.mockClear();
+    worker.mockClear();
+    chatThreadId.set(undefined);
+    topSection.set('chats');
+    browserNotifications = new Subject();
     updates = new Subject();
-    show = vi
-      .spyOn(BrowserNotificationAdapter.prototype, 'showDescriptor')
-      .mockResolvedValue();
-    vi.spyOn(BrowserNotificationAdapter.prototype, 'clear').mockResolvedValue();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         UnreadAttentionService,
         {
           provide: WebdbService,
-          useValue: { getAvatar: vi.fn().mockResolvedValue(undefined) },
+          useValue: { browserNotifications$: browserNotifications },
         },
+        { provide: WebPushService, useValue: { worker } },
         {
           provide: ConversationListService,
           useValue: {
@@ -93,7 +62,10 @@ describe('UnreadAttentionService committed thread notifications', () => {
             sound: () => true,
           },
         },
-        { provide: NavStateMachineService, useValue: { openChat } },
+        {
+          provide: NavStateMachineService,
+          useValue: { openChat, setTopSection, chatThreadId, topSection },
+        },
         {
           provide: TranslocoService,
           useValue: {
@@ -110,100 +82,62 @@ describe('UnreadAttentionService committed thread notifications', () => {
     vi.restoreAllMocks();
   });
 
-  it('routes notification taps', () => {
+  it('routes a notification tap to the existing chat shell', () => {
     navigator.serviceWorker.dispatchEvent(
       new MessageEvent('message', {
         data: { type: SOMS_NOTIF_MSG.OPEN, threadId: 42 },
       }),
     );
+    expect(setTopSection).toHaveBeenCalledWith('chats');
     expect(openChat).toHaveBeenCalledWith(42);
   });
-  it('refreshes committed database state only for a complete background wake', () => {
-    refreshBackgroundThreadFeed.mockClear();
+
+  it('answers the worker with the active chat', async () => {
+    chatThreadId.set(7);
+    const channel = new MessageChannel();
+    const reply = vi.fn();
+    channel.port1.onmessage = (event) => reply(event.data);
     navigator.serviceWorker.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: SOMS_NOTIF_MSG.COMMITTED, userId: 7 },
+        data: { type: SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST },
+        ports: [channel.port2],
       }),
     );
-    expect(refreshBackgroundThreadFeed).not.toHaveBeenCalled();
-    navigator.serviceWorker.dispatchEvent(
-      new MessageEvent('message', {
-        data: { type: SOMS_NOTIF_MSG.COMMITTED, userId: 7, cursor: 0 },
-      }),
-    );
-    expect(refreshBackgroundThreadFeed).toHaveBeenCalledWith(7);
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledWith({ threadId: 7 }));
+    channel.port1.close();
+    channel.port2.close();
   });
-  it('uses the reconciled count and immediately replaces an older update without HTTP', async () => {
-    window.dispatchEvent(new Event('blur'));
-    updates.next([update(1, 3)]);
-    updates.next([update(2, 2)]);
-    await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(2));
-    expect(show.mock.calls[1][0]).toMatchObject({
-      count: 2,
-      body: 'Hello',
-      data: { threadId: 7 },
-    });
-    expect(await readNotificationSince()).toBe(2);
-  });
-  it('groups the server-provided previews in one per-thread replacement card', async () => {
-    const value = update(1, 6);
-    value.item.lastReadSeq = 0;
-    value.state.previews = [4, 5, 6].map((seq) => ({
-      seq,
-      createdAt: '2026-09-09T00:00:00Z',
-      sender: { account: 'peer', domain: 'test' },
-      status: 'LIVE' as const,
-      text: String(seq),
-    }));
-    window.dispatchEvent(new Event('blur'));
-    updates.next([value]);
-    await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
-    expect(show.mock.calls[0][0]).toMatchObject({
+
+  it('relays worker-projected notifications without building them on the main thread', async () => {
+    const descriptor = {
       tag: 'soms-thread-7',
-      body: '4\n5\n6',
+      data: { threadId: 7 },
+      count: 2,
+    } as NotificationDescriptor;
+    browserNotifications.next({
+      userId: 11,
+      entries: [{ feedId: 9, descriptor }],
     });
+    await vi.waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith({
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId: 11,
+        entries: [{ feedId: 9, descriptor }],
+      }),
+    );
+    updates.next([]);
+    expect(postMessage).toHaveBeenCalledTimes(1);
   });
-  it('does not replay a foreground update after blur', async () => {
-    updates.next([update()]);
-    window.dispatchEvent(new Event('blur'));
-    // The suppressed present() still consumes its checkpoint (writes feedId 1) — that write is the
-    // proof the queue drained, making the "nothing shown" assertion race-free.
-    await vi.waitFor(async () => expect(await readNotificationSince()).toBe(1));
-    expect(show).not.toHaveBeenCalled();
-  });
-  it('does not replay pending updates after focus and blur', async () => {
-    window.dispatchEvent(new Event('blur'));
-    updates.next([update()]);
-    window.dispatchEvent(new Event('focus'));
-    window.dispatchEvent(new Event('blur'));
-    // The invalidated generation still consumes its checkpoint (writes feedId 1) — wait for that
-    // drain proof, then assert nothing was shown.
-    await vi.waitFor(async () => expect(await readNotificationSince()).toBe(1));
-    expect(show).not.toHaveBeenCalled();
-  });
-  it('drops pending work at account invalidation', async () => {
-    window.dispatchEvent(new Event('blur'));
-    updates.next([update()]);
+
+  it('does not relay a completed worker registration after session invalidation', async () => {
+    let resolve!: (value: {
+      active: { postMessage: typeof postMessage };
+    }) => void;
+    worker.mockReturnValueOnce(new Promise((done) => (resolve = done)));
+    browserNotifications.next({ userId: 11, entries: [] });
     TestBed.inject(SessionLifecycleService).invalidateSession();
-    // No convergence signal exists (invalidation early-returns before any checkpoint write) —
-    // a bounded drain of the microtask chain is the deterministic form of the absence check.
-    await drain();
-    expect(show).not.toHaveBeenCalled();
-    expect(await readNotificationSince()).toBe(0);
-  });
-  it('does not display a feed update already presented by another tab', async () => {
-    await advanceNotificationSince(5);
-    window.dispatchEvent(new Event('blur'));
-    updates.next([update(4)]);
-    // The stale feedId produces no state change (checkpoint stays 5, nothing observable) —
-    // a bounded drain is the deterministic form of the absence check.
-    await drain();
-    expect(show).not.toHaveBeenCalled();
-  });
-  it('passes a zero count to close the existing browser card', async () => {
-    window.dispatchEvent(new Event('blur'));
-    updates.next([update(2, 0)]);
-    await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
-    expect(show.mock.calls[0][0].count).toBe(0);
+    resolve({ active: { postMessage } });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });

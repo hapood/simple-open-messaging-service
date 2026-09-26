@@ -1,6 +1,6 @@
 import { WebdbStorage } from './webdb-storage';
 import { PreferenceStorage } from './preference-storage';
-import { syncThreadFeed } from './thread-feed-sync';
+import { syncThreadFeed, type ThreadFeedSyncResult } from './thread-feed-sync';
 import {
   attentionCountRange,
   projectThreadAttention,
@@ -17,12 +17,11 @@ import type {
   GroupMetaRequester,
 } from './group-meta-sync';
 
-export interface PushThreadResult {
+export interface PushThreadResult extends ThreadFeedSyncResult {
   userId: number;
   consumed: boolean;
   cursor: number;
   notifications: NotificationDescriptor[];
-  error?: string;
 }
 
 /** Background projection shares the normal feed drain, storage and optimistic interval-count algorithm. */
@@ -115,6 +114,7 @@ export async function syncPushThreads(
     }
   }
   return {
+    ...result,
     userId,
     consumed: true,
     cursor: result.cursor,

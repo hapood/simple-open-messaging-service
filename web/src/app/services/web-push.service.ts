@@ -74,7 +74,8 @@ export class WebPushService {
       this.registration.refresh();
   }
 
-  private async worker(): Promise<ServiceWorkerRegistration | null> {
+  /** Ensure the notification renderer is active before forwarding a projected worker batch. */
+  async worker(): Promise<ServiceWorkerRegistration | null> {
     if (
       typeof Notification === 'undefined' ||
       Notification.permission !== 'granted'

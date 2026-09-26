@@ -4,13 +4,118 @@ import { SOMS_NOTIF_MSG } from '../app/services/sw-notif-protocol';
 import { WebdbStorage } from '../app/services/webdb-storage';
 import { PreferenceStorage } from '../app/services/preference-storage';
 import { syncPushThreads } from '../app/services/push-thread-sync';
-import { advanceNotificationSince } from '../app/services/browser-notification-checkpoint';
+import {
+  advanceNotificationSince,
+  readNotificationSince,
+} from '../app/services/browser-notification-checkpoint';
+import type { BrowserNotificationBatch } from '../app/services/notification-descriptor.model';
 import en from '../app/i18n/en.json';
 import zh from '../app/i18n/zh-CN.json';
 import { activePageClientId } from '../app/services/active-page';
 
 export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   const preferences = new PreferenceStorage();
+
+  async function visibleChat(pages: readonly Client[]): Promise<{
+    known: boolean;
+    threadId?: number;
+  }> {
+    const activeId = await activePageClientId(scope.navigator.locks);
+    const activePage = pages.find(
+      (page) =>
+        page.id === activeId &&
+        (page as WindowClient).visibilityState === 'visible' &&
+        (page as WindowClient).focused,
+    );
+    if (!activePage) return { known: true };
+    const channel = new MessageChannel();
+    let known = false;
+    let threadId: number | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    const reply = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 500);
+      channel.port1.onmessage = (answer) => {
+        threadId = answer.data?.threadId;
+        known = true;
+        resolve();
+      };
+    });
+    try {
+      activePage.postMessage({ type: SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST }, [
+        channel.port2,
+      ]);
+      await reply;
+    } catch {
+      // A closing page cannot answer; conservatively suppress visible-page alerts.
+    } finally {
+      clearTimeout(timer!);
+      channel.port1.close();
+    }
+    return { known, threadId };
+  }
+
+  scope.addEventListener('message', (event) => {
+    const data = event.data as Partial<BrowserNotificationBatch> & {
+      type?: string;
+    };
+    if (data?.type !== SOMS_NOTIF_MSG.PRESENT || !scope.navigator.locks) return;
+    event.waitUntil(
+      scope.navigator.locks.request(
+        'soms-notification-projection',
+        async () => {
+          if (
+            data.userId !== (await accountId()) ||
+            !Array.isArray(data.entries)
+          )
+            return;
+          const since = await readNotificationSince();
+          const pages = await scope.clients.matchAll({
+            type: 'window',
+            includeUncontrolled: true,
+          });
+          const { known, threadId: activeChat } = await visibleChat(pages);
+          let end = since;
+          for (const entry of data.entries) {
+            if (data.userId !== (await accountId())) return;
+            if (
+              !Number.isInteger(entry.feedId) ||
+              entry.feedId <= since ||
+              !Number.isInteger(entry.descriptor?.data?.threadId) ||
+              entry.descriptor.data.threadId! <= 0 ||
+              entry.descriptor.tag !==
+                `soms-thread-${entry.descriptor.data.threadId}` ||
+              !Number.isInteger(entry.descriptor.count) ||
+              entry.descriptor.count < 0
+            )
+              continue;
+            if (entry.descriptor.count <= 0)
+              await closeCard(entry.descriptor.tag);
+            else if (known && entry.descriptor.data.threadId !== activeChat) {
+              await scope.registration.showNotification(
+                entry.descriptor.title,
+                {
+                  body: entry.descriptor.body,
+                  tag: entry.descriptor.tag,
+                  data: entry.descriptor.data,
+                  icon: entry.descriptor.icon ?? undefined,
+                  lang: entry.descriptor.lang,
+                  silent: entry.descriptor.silent,
+                  renotify: entry.descriptor.renotify,
+                } as NotificationOptions & { renotify: boolean },
+              );
+              if (data.userId !== (await accountId())) {
+                await closeCard(entry.descriptor.tag);
+                return;
+              }
+            }
+            end = Math.max(end, entry.feedId);
+          }
+          if (data.userId === (await accountId()))
+            await advanceNotificationSince(end);
+        },
+      ),
+    );
+  });
 
   scope.addEventListener('pushsubscriptionchange', (event) => {
     (event as ExtendableEvent).waitUntil(
@@ -213,17 +318,12 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 type: 'window',
                 includeUncontrolled: true,
               });
-              const activeId = await activePageClientId(scope.navigator.locks);
-              const visible = pages.some(
-                (page) =>
-                  page.id === activeId &&
-                  (page as WindowClient).visibilityState === 'visible' &&
-                  (page as WindowClient).focused,
-              );
+              // Query the page at render time; a timeout suppresses visible-page alerts.
+              const { known, threadId: activeChat } = await visibleChat(pages);
               for (const descriptor of result.notifications) {
                 if (!(await current())) return;
                 if (descriptor.count <= 0) await closeCard(descriptor.tag);
-                else if (!visible) {
+                else if (known && descriptor.data.threadId !== activeChat) {
                   const options: NotificationOptions & { renotify: boolean } = {
                     body: descriptor.body,
                     tag: descriptor.tag,

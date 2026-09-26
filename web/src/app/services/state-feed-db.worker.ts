@@ -2,7 +2,11 @@
 
 import { WebdbStorage } from './webdb-storage';
 import type { ClientStateFeedItem } from './user.service';
-import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
+import { coalesceThreadFeedWakes } from './thread-feed-sync';
+import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
+import { PreferenceStorage } from './preference-storage';
+import en from '../i18n/en.json';
+import zh from '../i18n/zh-CN.json';
 import type { GroupMetaProfileReference } from './group-meta-model';
 import {
   isProfileSelector,
@@ -20,6 +24,7 @@ interface ApplyRequest {
 }
 
 const storage = new WebdbStorage();
+const preferences = new PreferenceStorage();
 // Forward committed snapshots, including immediate HTTP READY responses.
 storage.profileWake$.subscribe((wake) =>
   postMessage({ type: 'profile-wake', wake }),
@@ -27,6 +32,51 @@ storage.profileWake$.subscribe((wake) =>
 let openedUserId: string | null = null;
 let queue = Promise.resolve();
 let feedPort: MessagePort | null = null;
+
+async function synchronizeNotifications(
+  userId: string,
+  target: number,
+  url: string,
+  groupMetaUrl: string,
+  profileResolutionUrl: string,
+): Promise<PushThreadResult> {
+  const language =
+    (await preferences.get<string>('global', 'language')) ?? navigator.language;
+  const locale = language.startsWith('zh') ? zh : en;
+  const result = await syncPushThreads(
+    storage,
+    Number(userId),
+    target,
+    requestThreadFeed(url),
+    preferences,
+    {
+      lang: language,
+      privateBody: locale.settings.notifNewMessage,
+      retracted: '[' + locale.chat.messageRetracted + ']',
+      removed: '[' + locale.chat.messageRemovedByAdmin + ']',
+    },
+    requestGroupMeta(groupMetaUrl),
+    resolveGroupMetaProfile(profileResolutionUrl),
+  );
+  if (result.notifications.length && openedUserId === userId) {
+    const feedIds = new Map(
+      result.states.flatMap((state) =>
+        state.server
+          ? [[state.threadId, state.server.threadFeedId] as const]
+          : [],
+      ),
+    );
+    postMessage({
+      type: 'notification-batch',
+      userId: Number(userId),
+      entries: result.notifications.flatMap((descriptor) => {
+        const feedId = feedIds.get(descriptor.data.threadId ?? -1);
+        return feedId === undefined ? [] : [{ feedId, descriptor }];
+      }),
+    });
+  }
+  return result;
+}
 
 interface ResolvedProfile {
   namespaceId: number;
@@ -175,12 +225,12 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           async (target) => {
             if (feedPort !== port) return;
             try {
-              const result = await syncThreadFeed(
-                storage,
+              const result = await synchronizeNotifications(
+                data.userId,
                 target,
-                requestThreadFeed(data.url),
-                requestGroupMeta(data.groupMetaUrl),
-                resolveGroupMetaProfile(data.profileResolutionUrl),
+                data.url,
+                data.groupMetaUrl,
+                data.profileResolutionUrl,
               );
               if (result.error)
                 console.warn(
@@ -285,12 +335,12 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
         return;
       }
       if (data.type === 'thread-sync') {
-        const result = await syncThreadFeed(
-          storage,
+        const result = await synchronizeNotifications(
+          data.userId,
           data.target,
-          requestThreadFeed(data.url),
-          requestGroupMeta(data.groupMetaUrl),
-          resolveGroupMetaProfile(data.profileResolutionUrl),
+          data.url,
+          data.groupMetaUrl,
+          data.profileResolutionUrl,
         );
         const changes = await storage.readThreadFeedChanges(data.after);
         const notificationStates = new Map(

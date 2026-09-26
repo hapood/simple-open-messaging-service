@@ -22,11 +22,9 @@ import { SettingsPushProbeComponent } from './settings-push-probe.component';
 /**
  * Settings → Notifications sub-page (browser build only — the category is visible when `!isTauri()`).
  *
- * The first row grants the browser notification permission. The instant that's granted,
- * {@link UnreadAttentionService} posts a SINGLE rolling summary notification — "Alice, Bob sent you N
- * messages" — that replaces itself (shared tag, never stacks) on each new background
- * message and is dismissed when the tab regains focus. No message content/preview is shown, only the
- * sender + count summary. The permission row reflects the browser permission:
+ * The first row grants browser notification permission. A database worker projects per-thread
+ * notifications from committed messages; the push service worker displays and routes their cards.
+ * The permission row reflects the browser permission:
  *
  *  - `default`  → unchecked, clickable. Flipping it on calls {@link WebPushService.enable}, which fires
  *                 the permission prompt (the user-gesture path browsers require) and, on grant, LOCAL

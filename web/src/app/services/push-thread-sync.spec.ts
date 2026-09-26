@@ -92,6 +92,7 @@ describe('Push thread-feed synchronization', () => {
       take: 100,
       previewCount: 3,
     });
+    expect(result.states[0].server?.threadFeedId).toBe(1);
     expect(result.notifications[0]).toMatchObject({
       count: 7,
       body: '5\n[Retracted]\n[Removed]',

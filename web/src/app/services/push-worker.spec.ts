@@ -19,6 +19,7 @@ describe('Push Service Worker entry', () => {
   let openWindow: ReturnType<typeof vi.fn>;
   let fetchSpy: ReturnType<typeof vi.spyOn>;
   let post: ReturnType<typeof vi.fn>;
+  let visible: boolean;
 
   beforeEach(async () => {
     await resetNotificationSince();
@@ -31,6 +32,7 @@ describe('Push Service Worker entry', () => {
     focus = vi.fn().mockResolvedValue(undefined);
     openWindow = vi.fn().mockResolvedValue(undefined);
     post = vi.fn();
+    visible = false;
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -90,8 +92,8 @@ describe('Push Service Worker entry', () => {
           {
             id: 'active-page',
             url: 'https://chat.test/',
-            visibilityState: 'hidden',
-            focused: false,
+            visibilityState: visible ? 'visible' : 'hidden',
+            focused: visible,
             postMessage: post,
             focus,
           },
@@ -177,6 +179,166 @@ describe('Push Service Worker entry', () => {
       cursor: 1,
     });
     expect(await readNotificationSince()).toBe(1);
+  });
+  it.each([
+    [7, false],
+    [9, true],
+  ])(
+    'while focused only suppresses the open chat (%i)',
+    async (threadId, shouldShow) => {
+      visible = true;
+      post.mockImplementation(
+        (message: { type: string }, ports?: MessagePort[]) => {
+          if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
+            ports?.[0].postMessage({ threadId });
+        },
+      );
+      await dispatch('push', {
+        data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+      });
+      expect(show).toHaveBeenCalledTimes(shouldShow ? 1 : 0);
+    },
+  );
+  it('renders worker-projected messages in the service worker without a push wake', async () => {
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [
+          {
+            feedId: 1,
+            descriptor: {
+              tag: 'soms-thread-7',
+              title: 'Peer',
+              body: 'Hello',
+              count: 1,
+              data: { threadId: 7 },
+            },
+          },
+        ],
+      },
+    });
+    expect(show).toHaveBeenCalledWith(
+      'Peer',
+      expect.objectContaining({ body: 'Hello' }),
+    );
+    expect(await readNotificationSince()).toBe(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [
+          {
+            feedId: 1,
+            descriptor: {
+              tag: 'soms-thread-7',
+              title: 'Peer',
+              body: 'Hello',
+              count: 1,
+              data: { threadId: 7 },
+            },
+          },
+        ],
+      },
+    });
+    expect(show).toHaveBeenCalledOnce();
+  });
+  it.each([
+    [7, false],
+    [9, true],
+  ])(
+    'worker presentation skips only the visible chat (%i)',
+    async (threadId, shouldShow) => {
+      visible = true;
+      post.mockImplementation(
+        (message: { type: string }, ports?: MessagePort[]) => {
+          if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
+            ports?.[0].postMessage({ threadId });
+        },
+      );
+      await dispatch('message', {
+        data: {
+          type: SOMS_NOTIF_MSG.PRESENT,
+          userId,
+          entries: [
+            {
+              feedId: 1,
+              descriptor: {
+                tag: 'soms-thread-7',
+                title: 'Peer',
+                body: 'Hello',
+                count: 1,
+                data: { threadId: 7 },
+              },
+            },
+          ],
+        },
+      });
+      expect(show).toHaveBeenCalledTimes(shouldShow ? 1 : 0);
+      expect(await readNotificationSince()).toBe(1);
+    },
+  );
+  it('closes only the affected card when the worker reports no unread messages', async () => {
+    const close = vi.fn();
+    const getNotifications = vi
+      .fn()
+      .mockResolvedValue([{ tag: 'soms-thread-7', close }]);
+    const scope = {
+      navigator: {
+        locks: {
+          request: async (_name: string, run: () => Promise<void>) => run(),
+          query: async () => ({ held: [], pending: [] }),
+        },
+      },
+      registration: { showNotification: show, getNotifications },
+      clients: { matchAll: async () => [] },
+      addEventListener: (type: string, handler: (event: unknown) => void) =>
+        handlers.set(type, handler),
+    } as unknown as ServiceWorkerGlobalScope;
+    installPushWorker(scope);
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [
+          {
+            feedId: 1,
+            descriptor: {
+              tag: 'soms-thread-7',
+              title: 'Peer',
+              body: '',
+              count: 0,
+              data: { threadId: 7 },
+            },
+          },
+        ],
+      },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(show).not.toHaveBeenCalled();
+  });
+  it('ignores a worker batch from a different account', async () => {
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId: userId + 1,
+        entries: [
+          {
+            feedId: 1,
+            descriptor: {
+              tag: 'soms-thread-7',
+              title: 'Peer',
+              body: 'Hello',
+              count: 1,
+              data: { threadId: 7 },
+            },
+          },
+        ],
+      },
+    });
+    expect(show).not.toHaveBeenCalled();
+    expect(await readNotificationSince()).toBe(0);
   });
   it('does not suppress a page notification when the page already consumed the target', async () => {
     await storage.putMeta('threadFeedCursor', 1);

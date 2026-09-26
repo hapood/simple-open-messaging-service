@@ -1,5 +1,7 @@
 /** Shared, validated Push Service Worker -> page protocol. */
 export const SOMS_NOTIF_MSG = {
+  ACTIVE_CHAT_REQUEST: 'soms-active-chat-request',
+  PRESENT: 'soms-notification-present',
   OPEN: 'soms-notif-open',
   COMMITTED: 'soms-thread-feed-committed',
 } as const;

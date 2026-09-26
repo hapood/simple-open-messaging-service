@@ -7,6 +7,7 @@ import type { SessionLifecycleService } from './session-lifecycle.service';
 import { Subject, type Subscription } from 'rxjs';
 import { apiPrefix } from './constants';
 import type { ThreadFeedSyncResult } from './thread-feed-sync';
+import type { BrowserNotificationBatch } from './notification-descriptor.model';
 import type {
   ClientGroupMetaApply,
   ClientGroupMetaFeedPage,
@@ -339,6 +340,9 @@ export type StateFeedWorkerFactory = () => Worker | null;
 export class WebdbStorage {
   private readonly workerFailed = new Subject<void>();
   readonly workerFailed$ = this.workerFailed.asObservable();
+  private readonly browserNotifications =
+    new Subject<BrowserNotificationBatch>();
+  readonly browserNotifications$ = this.browserNotifications.asObservable();
   private readonly profileWake = new Subject<ProfileWake>();
   readonly profileWake$ = this.profileWake.asObservable();
 
@@ -1691,12 +1695,25 @@ export class WebdbStorage {
           id?: number;
           type?: string;
           wake?: ProfileWake;
+          userId?: number;
+          entries?: BrowserNotificationBatch['entries'];
           ok?: boolean;
           error?: string;
           result?: unknown;
         }>,
       ) => {
         if (this.stateFeedWorker !== worker) return;
+        if (
+          event.data.type === 'notification-batch' &&
+          event.data.userId === Number(this.currentUserId) &&
+          event.data.entries
+        ) {
+          this.browserNotifications.next({
+            userId: event.data.userId,
+            entries: event.data.entries,
+          });
+          return;
+        }
         if (event.data.type === 'profile-wake' && event.data.wake) {
           this.profileWake.next(event.data.wake);
           return;

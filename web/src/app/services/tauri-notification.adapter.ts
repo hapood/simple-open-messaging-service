@@ -30,6 +30,14 @@ export class TauriNotificationAdapter extends NotificationAdapter {
     });
   }
 
+  clearThread(threadId: number): Promise<void> {
+    return this.enqueue(() =>
+      tauriInvoke<void>('desktop_notification_update', {
+        notification: { threadId, title: '', body: '', count: 0, silent: true },
+      }),
+    );
+  }
+
   clear(): Promise<void> {
     ++this.generation;
     return this.enqueue(() =>

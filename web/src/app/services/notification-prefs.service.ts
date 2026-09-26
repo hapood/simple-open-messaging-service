@@ -7,7 +7,7 @@ const SOUND_KEY = 'notificationSound';
 const PREVIEW_MODE_KEY = 'notificationPreviewMode';
 
 /**
- * App-level notification preferences for the browser in-tab attention path ({@link UnreadAttentionService}).
+ * App-level notification preferences shared with worker-owned browser presentation.
  * Two booleans, both default `true`, persisted device-level via {@link PreferenceStore} — the
  * same shape as {@link MediaSizeThresholdService}.
  *

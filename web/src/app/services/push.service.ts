@@ -169,8 +169,9 @@ export class PushService {
   /** Open the tapped thread via the nav state machine (the URL mirror updates `/chat/:id`; ChatPane renders
    *  from ConversationListService.openThreadId which the home shell syncs from the state machine). */
   private openPendingThread() {
-    consumePendingThreadNavigation(window.SomsFcm, (threadId) =>
-      this.nav.openChat(threadId),
-    );
+    consumePendingThreadNavigation(window.SomsFcm, (threadId) => {
+      this.nav.setTopSection('chats');
+      this.nav.openChat(threadId);
+    });
   }
 }

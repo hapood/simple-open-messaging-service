@@ -1,5 +1,11 @@
 /** Client-owned presentation model assembled from committed thread-feed projections. */
 
+/** Sent from the database worker through the page to the push service worker. */
+export interface BrowserNotificationBatch {
+  userId: number;
+  entries: { feedId: number; descriptor: NotificationDescriptor }[];
+}
+
 export interface NotificationDescriptor {
   /** Stable per-thread id; posting the same tag replaces that conversation's prior notification. */
   tag: string;
