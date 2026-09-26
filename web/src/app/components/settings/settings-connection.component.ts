@@ -23,7 +23,7 @@ import {
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
 
-/** Result of a manual server-health probe. */
+/** Result of a manual server reachability probe. */
 interface HealthResult {
   ok: boolean;
   version?: string;
@@ -58,9 +58,9 @@ export function classifyProbeError(e: unknown): string {
  *     {@link WebsocketService.state} is shown as a colored pill (green=open, amber=connecting/
  *     reconnecting, muted=closed), with a Retry button that calls {@link WebsocketService.retryNow}
  *     (skips the worker's backoff — for impatience; the stream auto-reconnects on its own).
- *  2. Server health — a manual liveness probe against the public `GET /api/v1/health` (no sign-in
+ *  2. Server reachability — a manual pre-login compatibility probe (no sign-in
  *     needed). Reports reachable/unreachable with the server version + round-trip latency. Deliberately
- *     INDEPENDENT of the SSE stream: health can be OK while the authenticated stream is reconnecting
+ *     INDEPENDENT of the SSE stream: reachability can be OK while the authenticated stream is reconnecting
  *     (e.g. a stale token mid-renew), and the stream can be open while health is unchecked.
  *
  * Body-only: the host (mobile aside or desktop dialog) provides the panel shell + category list. The
@@ -117,7 +117,7 @@ export function classifyProbeError(e: unknown): string {
             </div>
           </mat-list-item>
 
-          <!-- Server health (liveness probe) -->
+          <!-- Server reachability (client compatibility probe) -->
           <mat-list-item>
             <span matListItemTitle>{{
               'settings.serverHealth' | transloco
@@ -285,7 +285,7 @@ export class SettingsConnectionComponent {
     });
   });
 
-  /** Probe `GET /api/v1/health` (public), measure round-trip latency, store the result. Goes through
+  /** Probe `GET /api/v1/client/compat` (public), measure round-trip latency, store the result. Goes through
    *  HttpClient (→ the TauriHttpBackend under Tauri / the stock fetch backend in the browser) so it works
    *  on Android, where a raw fetch of an API path would miss the (removed) `api://` proxy. Independent of
    *  the authenticated SSE stream: health can be OK while the stream reconnects. */
@@ -296,11 +296,17 @@ export class SettingsConnectionComponent {
     try {
       const json = await firstValueFrom(
         this.http
-          .get<{ data?: { version?: string } }>(`${apiPrefix()}/health`)
+          .get<{
+            code: number;
+            data?: { serverVersion?: string; apiVersion?: number };
+          }>(`${apiPrefix()}/client/compat`)
           .pipe(timeout(this.probeTimeoutMs)),
       );
       const ms = Math.round(performance.now() - t0);
-      const version = json?.data?.version ?? '';
+      if (json?.code !== 0 || !Number.isInteger(json.data?.apiVersion)) {
+        throw new Error('Invalid client compatibility response');
+      }
+      const version = json.data?.serverVersion ?? '';
       this.health.set({ ok: true, version, ms });
     } catch (e) {
       this.health.set({ ok: false, error: classifyProbeError(e) });

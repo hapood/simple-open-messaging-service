@@ -139,7 +139,7 @@ describe('SettingsConnectionComponent', () => {
     expect(comp.healthPillClass()).toBe('');
     expect(comp.healthPillLabel()).toBe('Not checked');
     expect(comp.healthHint()).toBe(
-      "Probe the server's liveness endpoint (no sign-in needed).",
+      "Check the server's client configuration response (no sign-in needed).",
     );
   });
 
@@ -164,11 +164,11 @@ describe('SettingsConnectionComponent', () => {
 
   // ── check() probe ─────────────────────────────────────────────────────────────────────────
 
-  it('check() records ok + version + latency on a healthy 200 and hits the public health URL', async () => {
+  it('check() records ok + version + latency from client compatibility', async () => {
     const p = comp.check();
-    const req = httpMock.expectOne(`${apiPrefix()}/health`);
+    const req = httpMock.expectOne(`${apiPrefix()}/client/compat`);
     expect(req.request.method).toBe('GET');
-    req.flush({ data: { version: '1.2.3' } });
+    req.flush({ code: 0, data: { serverVersion: '1.2.3', apiVersion: 1 } });
     await p;
     const h = comp.health()!;
     expect(h.ok).toBe(true);
@@ -178,17 +178,26 @@ describe('SettingsConnectionComponent', () => {
     expect(comp.checking()).toBe(false);
   });
 
-  it('check() falls back to an empty version when the payload omits data.version', async () => {
+  it('check() falls back to an empty version when the payload omits serverVersion', async () => {
     const p = comp.check();
-    httpMock.expectOne(`${apiPrefix()}/health`).flush({ data: {} });
+    httpMock
+      .expectOne(`${apiPrefix()}/client/compat`)
+      .flush({ code: 0, data: { apiVersion: 1 } });
     await p;
     expect(comp.health()?.version).toBe('');
+  });
+
+  it('rejects a successful HTTP response that is not a SOMS compat envelope', async () => {
+    const p = comp.check();
+    httpMock.expectOne(`${apiPrefix()}/client/compat`).flush({ data: {} });
+    await p;
+    expect(comp.health()?.ok).toBe(false);
   });
 
   it('check() records an HTTP error status when the response is not ok', async () => {
     const p = comp.check();
     httpMock
-      .expectOne(`${apiPrefix()}/health`)
+      .expectOne(`${apiPrefix()}/client/compat`)
       .flush({}, { status: 503, statusText: 'Service Unavailable' });
     await p;
     // Non-2xx surfaces as an HttpErrorResponse; the catch maps it to "HTTP <status>" (HttpErrorResponse
@@ -200,7 +209,7 @@ describe('SettingsConnectionComponent', () => {
   it('check() records "network" for a connection-level failure (status 0) and clears checking', async () => {
     const p = comp.check();
     httpMock
-      .expectOne(`${apiPrefix()}/health`)
+      .expectOne(`${apiPrefix()}/client/compat`)
       .error(new ErrorEvent('error', { message: 'boom' }));
     await p;
     // An ErrorEvent flush yields an HttpErrorResponse with status 0 → mapped to "network".
@@ -238,9 +247,9 @@ describe('SettingsConnectionComponent', () => {
     const first = comp.check();
     expect(comp.checking()).toBe(true);
     await comp.check(); // guard short-circuits — must not issue a second GET
-    const req = httpMock.expectOne(`${apiPrefix()}/health`); // exactly one outstanding request
-    expect(httpMock.match(`${apiPrefix()}/health`).length).toBe(0); // no second request queued
-    req.flush({ data: { version: '9.9.9' } });
+    const req = httpMock.expectOne(`${apiPrefix()}/client/compat`); // exactly one outstanding request
+    expect(httpMock.match(`${apiPrefix()}/client/compat`).length).toBe(0); // no second request queued
+    req.flush({ code: 0, data: { serverVersion: '9.9.9', apiVersion: 1 } });
     await first;
     expect(comp.health()?.ok).toBe(true);
     expect(comp.health()?.version).toBe('9.9.9');
