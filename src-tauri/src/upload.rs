@@ -91,7 +91,9 @@ async fn upload_stream_open_file_core(
         return Err("unsupported upload endpoint".to_string());
     }
     if let Some(cid) = client_message_id.as_ref() {
-        return upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid).await;
+        let part = ResumablePart::from_fields(&fields)?;
+        return upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid, part)
+            .await;
     }
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let url = format!("{}/api/v1{}", origin, endpoint);
@@ -189,6 +191,30 @@ async fn upload_stream_open_file_core(
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
 }
 
+struct ResumablePart {
+    part_id: String,
+    position: u32,
+    intent: String,
+}
+
+impl ResumablePart {
+    fn from_fields(fields: &std::collections::HashMap<String, String>) -> Result<Self, String> {
+        let required = |key: &str| {
+            fields
+                .get(key)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("missing resumable upload field: {key}"))
+        };
+        Ok(Self {
+            part_id: required("partId")?.clone(),
+            position: required("position")?
+                .parse()
+                .map_err(|_| "invalid resumable upload position".to_string())?,
+            intent: required("intent")?.clone(),
+        })
+    }
+}
+
 /// Native counterpart of the browser's sequential resumable protocol. The server owns the
 /// authoritative offset; every retry re-initializes idempotently and resumes from that offset.
 async fn upload_resumable_open_file(
@@ -199,6 +225,7 @@ async fn upload_resumable_open_file(
     mime: String,
     size: u64,
     client_message_id: &str,
+    part: ResumablePart,
 ) -> Result<serde_json::Value, String> {
     const FALLBACK_CHUNK: usize = 4 * 1024 * 1024;
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
@@ -212,19 +239,19 @@ async fn upload_resumable_open_file(
         }
     };
     let init_url = format!("{origin}/api/v1/uploads/resumable/init");
-    let init = auth(client.post(init_url).json(&serde_json::json!({
-        "clientMessageId": client_message_id,
-        "originalName": filename,
-        "mimeType": if mime.is_empty() { "application/octet-stream" } else { &mime },
-        "totalBytes": size,
-    })))
-    .send()
-    .await
-    .map_err(|e| format!("upload init: {e}"))?;
-    let init_value = init
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("upload init parse: {e}"))?;
+    let init_value = timed_upload_json(
+        auth(client.post(init_url).json(&serde_json::json!({
+            "clientMessageId": client_message_id,
+            "partId": part.part_id,
+            "position": part.position,
+            "intent": part.intent,
+            "originalName": filename,
+            "mimeType": if mime.is_empty() { "application/octet-stream" } else { &mime },
+            "totalBytes": size,
+        }))),
+        "upload init",
+    )
+    .await?;
     if init_value.get("code").and_then(|v| v.as_i64()) != Some(0) {
         return Ok(init_value);
     }
@@ -234,13 +261,7 @@ async fn upload_resumable_open_file(
         .ok_or_else(|| "upload init omitted uploadId".to_string())?
         .to_string();
     let status_url = format!("{origin}/api/v1/uploads/resumable/{upload_id}");
-    let status = auth(client.get(&status_url))
-        .send()
-        .await
-        .map_err(|e| format!("upload status: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("upload status parse: {e}"))?;
+    let status = timed_upload_json(auth(client.get(&status_url)), "upload status").await?;
     if status.get("code").and_then(|v| v.as_i64()) != Some(0) {
         return Ok(status);
     }
@@ -271,19 +292,17 @@ async fn upload_resumable_open_file(
                 .await
                 .map_err(|e| format!("read upload source: {e}"))?;
             let end = offset + wanted as u64 - 1;
-            let response = auth(
-                client
-                    .put(&status_url)
-                    .header("content-type", "application/octet-stream")
-                    .header("content-range", format!("bytes {offset}-{end}/{size}"))
-                    .body(chunk),
+            let response = timed_upload_json(
+                auth(
+                    client
+                        .put(&status_url)
+                        .header("content-type", "application/octet-stream")
+                        .header("content-range", format!("bytes {offset}-{end}/{size}"))
+                        .body(chunk),
+                ),
+                "upload chunk",
             )
-            .send()
-            .await
-            .map_err(|e| format!("upload chunk: {e}"))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("upload chunk parse: {e}"))?;
+            .await?;
             if response.get("code").and_then(|v| v.as_i64()) != Some(0) {
                 return Ok(response);
             }
@@ -300,17 +319,15 @@ async fn upload_resumable_open_file(
                 }),
             );
         }
-        auth(
-            client
-                .post(format!("{status_url}/complete"))
-                .json(&serde_json::json!({})),
+        timed_upload_json(
+            auth(
+                client
+                    .post(format!("{status_url}/complete"))
+                    .json(&serde_json::json!({})),
+            ),
+            "upload complete",
         )
-        .send()
         .await
-        .map_err(|e| format!("upload complete: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("upload complete parse: {e}"))
     };
     let result = tokio::select! {
         value = transfer => value,
@@ -322,6 +339,68 @@ async fn upload_resumable_open_file(
         .expect("upload_cancels lock")
         .remove(client_message_id);
     result
+}
+
+/// Each bounded resumable operation is at most one chunk, so a progressing large upload has
+/// no total-duration limit. A stalled HTTP response (including its body) can never pin the task.
+async fn timed_upload_json(
+    request: reqwest::RequestBuilder,
+    phase: &str,
+) -> Result<serde_json::Value, String> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        request.send().await?.json::<serde_json::Value>().await
+    })
+    .await
+    .map_err(|_| format!("{phase} timed out"))?
+    .map_err(|e| format!("{phase}: {e}"))
+}
+
+#[cfg(test)]
+mod resumable_part_tests {
+    use super::*;
+
+    #[test]
+    fn native_voice_stage_and_retry_use_the_resumable_contract() {
+        let part_id = uuid::Uuid::new_v4().to_string();
+        let fields = native_voice_upload_fields(&part_id);
+        let part = ResumablePart::from_fields(&fields).unwrap();
+        assert_eq!(part.part_id, part_id);
+        assert_eq!(part.position, 0);
+        assert_eq!(part.intent, "AUDIO");
+        assert_eq!(native_voice_upload_fields(&part_id), fields);
+
+        let first = native_voice_stage_body(4, "voice-cid", false);
+        let retry = native_voice_stage_body(4, "voice-cid", true);
+        assert_eq!(first["threadId"], 4);
+        assert_eq!(first["contentType"], "AUDIO");
+        assert_eq!(first["clientMessageId"], "voice-cid");
+        assert_eq!(first["retry"], false);
+        assert_eq!(retry["retry"], true);
+        assert!(first.get("meta").is_none());
+        assert!(retry.get("meta").is_none());
+    }
+
+    #[test]
+    fn native_resumable_init_preserves_browser_part_identity() {
+        let fields = std::collections::HashMap::from([
+            (
+                "partId".into(),
+                "3d69ea67-50ea-49d9-98f0-d54360699b33".into(),
+            ),
+            ("position".into(), "0".into()),
+            ("intent".into(), "FILE".into()),
+        ]);
+        let part = ResumablePart::from_fields(&fields).unwrap();
+        let value = serde_json::json!({
+            "partId": part.part_id,
+            "position": part.position,
+            "intent": part.intent,
+        });
+        assert_eq!(value["partId"], fields["partId"]);
+        assert_eq!(value["position"], 0);
+        assert_eq!(value["intent"], "FILE");
+        assert!(ResumablePart::from_fields(&std::collections::HashMap::new()).is_err());
+    }
 }
 
 /// Android's source adapter transfers ownership of a readable descriptor (system-picker content URI or
@@ -418,6 +497,96 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_cancelUpload(
     );
 }
 
+#[cfg(any(not(desktop), test))]
+fn native_voice_stage_body(
+    thread_id: i64,
+    client_message_id: &str,
+    retry: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "contentType": "AUDIO",
+        "clientMessageId": client_message_id,
+        "retry": retry,
+    })
+}
+
+#[cfg(any(not(desktop), test))]
+fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::from([
+        ("partId".into(), part_id.into()),
+        ("position".into(), "0".into()),
+        ("intent".into(), "AUDIO".into()),
+    ])
+}
+
+#[cfg(not(desktop))]
+#[derive(Clone)]
+pub(crate) struct NativeVoicePending {
+    path: String,
+    part_id: String,
+    context_id: i64,
+    thread_id: i64,
+    duration_ms: i64,
+    size: i64,
+    active: bool,
+}
+
+#[cfg(not(desktop))]
+impl NativeVoicePending {
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Only a previously recorded app-private file may be retried. JS supplies the opaque send ID,
+/// never a path. Keep the recording until confirmation or explicit discard.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub(crate) fn retry_native_voice(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ProxyState>,
+    client_message_id: String,
+) -> Result<(), String> {
+    let pending = {
+        let mut entries = proxy
+            .native_voice_pending
+            .lock()
+            .expect("native voice lock");
+        let entry = entries
+            .get_mut(&client_message_id)
+            .ok_or("voice recording unavailable")?;
+        if entry.active {
+            return Err("voice upload already active".into());
+        }
+        entry.active = true;
+        entry.clone()
+    };
+    spawn_native_voice_upload(app, proxy.inner().clone(), pending, client_message_id, true);
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub(crate) fn discard_native_voice(proxy: tauri::State<'_, ProxyState>, client_message_id: String) {
+    if let Some(token) = proxy
+        .upload_cancels
+        .lock()
+        .expect("upload cancels lock")
+        .remove(&client_message_id)
+    {
+        token.cancel();
+    }
+    if let Some(pending) = proxy
+        .native_voice_pending
+        .lock()
+        .expect("native voice lock")
+        .remove(&client_message_id)
+    {
+        let _ = fs::remove_file(pending.path);
+    }
+}
+
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
@@ -441,7 +610,41 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         return;
     };
     let proxy = app.state::<ProxyState>().inner().clone();
+    let pending = NativeVoicePending {
+        path,
+        part_id: uuid::Uuid::new_v4().to_string(),
+        context_id,
+        thread_id,
+        duration_ms,
+        size,
+        active: true,
+    };
+    proxy
+        .native_voice_pending
+        .lock()
+        .expect("native voice lock")
+        .insert(client_message_id.clone(), pending.clone());
+    spawn_native_voice_upload(app, proxy, pending, client_message_id, false);
+}
+
+#[cfg(not(desktop))]
+fn spawn_native_voice_upload(
+    app: tauri::AppHandle,
+    proxy: ProxyState,
+    pending: NativeVoicePending,
+    client_message_id: String,
+    retry: bool,
+) {
     tauri::async_runtime::spawn(async move {
+        let NativeVoicePending {
+            path,
+            part_id,
+            context_id,
+            thread_id,
+            duration_ms,
+            size,
+            ..
+        } = pending;
         let emit_phase = |phase: &str, error: Option<&str>| {
             let _ = app.emit(
                 "native-voice-upload",
@@ -459,13 +662,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         emit_phase("started", None);
         let origin = proxy.api_origin.lock().expect("origin lock").clone();
         let token = proxy.token.lock().ok().and_then(|value| value.clone());
-        let stage_body = serde_json::json!({
-            "threadId": thread_id,
-            "contentType": "AUDIO",
-            "clientMessageId": client_message_id,
-            "meta": { "duration": duration_ms as f64 / 1000.0 },
-        })
-        .to_string();
+        let stage_body = native_voice_stage_body(thread_id, &client_message_id, retry).to_string();
         let mut stage = proxy
             .api_client(&origin)
             .post(format!("{origin}/api/v1/send-media"))
@@ -475,11 +672,13 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
             stage = stage.header("authorization", format!("Bearer {token}"));
         }
         let stage_result = async {
-            let response = stage.send().await.map_err(|e| format!("stage send: {e}"))?;
-            let status = response.status();
-            let text = response
-                .text()
+            let response = send_with_headers_deadline(stage, API_HEADERS_TIMEOUT)
                 .await
+                .map_err(|e| format!("stage send: {e:?}"))?;
+            let status = response.status();
+            let text = tokio::time::timeout(API_HEADERS_TIMEOUT, response.text())
+                .await
+                .map_err(|_| "stage body timed out".to_string())?
                 .map_err(|e| format!("stage read: {e}"))?;
             if !status.is_success() {
                 return Err(format!("stage HTTP {}: {text}", status.as_u16()));
@@ -496,27 +695,41 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
             Ok(()) => {
                 upload_stream_path_core(
                     app.clone(),
-                    proxy,
+                    proxy.clone(),
                     path.clone(),
                     "/upload/audio".to_string(),
                     "voice.m4a".to_string(),
                     "audio/mp4".to_string(),
                     size.max(0) as u64,
-                    std::collections::HashMap::new(),
+                    native_voice_upload_fields(&part_id),
                     Some(client_message_id.clone()),
                 )
                 .await
             }
             Err(error) => Err(error),
         };
-        match result {
-            Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0) => {
-                emit_phase("completed", None)
+        let success = matches!(&result, Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0));
+        // Discard may have removed this entry while an IPC request was in flight. Never resurrect it.
+        let retained = {
+            let mut entries = proxy
+                .native_voice_pending
+                .lock()
+                .expect("native voice lock");
+            if let Some(entry) = entries.get_mut(&client_message_id) {
+                entry.active = false;
+                true
+            } else {
+                false
             }
+        };
+        if !retained {
+            return;
+        }
+        match result {
+            Ok(_) if success => emit_phase("completed", None),
             Ok(response) => emit_phase("failed", Some(&format!("upload rejected: {response}"))),
             Err(error) => emit_phase("failed", Some(&error)),
         }
-        let _ = fs::remove_file(path);
     });
 }
 
