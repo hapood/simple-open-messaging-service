@@ -17,7 +17,7 @@ import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
-import { ShellUpdateService } from './services/shell-update.service';
+import { ClientCompatService } from './services/client-compat.service';
 import { RouteService, PopupType } from './services/route.service';
 import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.component';
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
@@ -92,9 +92,9 @@ export class AppComponent {
   // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
   // like `/chat/2` before the mirror's first replaceState.
   private readonly nav = inject(NavStateMachineService);
-  // ShellUpdateService: the Tauri-shell dynamic web-update probe (background download + reload prompt).
+  // Read-only client bootstrap probe for an already configured app.
   // Eagerly constructed; its check() is fired after the first paint below.
-  private readonly shellUpdate = inject(ShellUpdateService);
+  private readonly clientCompat = inject(ClientCompatService);
   // RouteService: opens the once-per-launch shell-incompatibility dialog when the probe finds the
   // backend is too new for this shell.
   private readonly route = inject(RouteService);
@@ -181,13 +181,13 @@ export class AppComponent {
       );
     });
     void this.webPush.init();
-    // afterNextRender: the SPA has painted — probe for a background web-bundle update and surface an
+    // afterNextRender: the SPA has painted — probe the connected server and surface an
     // incompatibility prompt if this shell is too old for the backend. The `spa-ready` emit is a
     // historical leftover from the old two-window shell (single-window now → no Rust listener); kept
     // harmless. Everything here no-ops outside the Tauri shell.
     afterNextRender(() => {
       emitTauriEvent('spa-ready');
-      void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
+      void this.clientCompat.check().then(() => this.maybePromptIncompatible());
       void this.finishNativeSplashWhenReady();
     });
   }
@@ -261,10 +261,10 @@ export class AppComponent {
    *  at server-setup; this is the soft reminder for an already-logged-in session). */
   private maybePromptIncompatible(): void {
     if (this.incompatiblePromptShown) return;
-    const status = this.shellUpdate.updateStatus();
+    const status = this.clientCompat.status();
     if (!status?.incompatible) return;
     this.incompatiblePromptShown = true;
-    this.route.popupDlg(PopupType.SHELL_INCOMPATIBLE, {
+    this.route.popupDlg(PopupType.CLIENT_INCOMPATIBLE, {
       serverVersion: status.serverVersion,
     });
   }

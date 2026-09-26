@@ -2,12 +2,10 @@ import { inject, Injectable } from '@angular/core';
 import { appVersion } from '../version';
 import { flushConsoleBuffer } from './log-buffer';
 import { apiOrigin, isAndroid, isTauri, tauriInvoke } from './runtime';
-import { ShellUpdateService } from './shell-update.service';
+import { ClientCompatService } from './client-compat.service';
 
 export interface DiagnosticsManifest {
   readonly app: string;
-  readonly web: string;
-  readonly shell: string;
   readonly server: string;
   readonly platform: 'android' | 'desktop' | 'web';
   readonly origin: string;
@@ -17,7 +15,7 @@ export interface DiagnosticsManifest {
 /** Shared native diagnostic-bundle uploader used by Settings and the live log panel. */
 @Injectable({ providedIn: 'root' })
 export class DiagnosticsReportService {
-  private readonly shellUpdate = inject(ShellUpdateService);
+  private readonly clientCompat = inject(ClientCompatService);
 
   async upload(): Promise<number> {
     const manifest = this.buildManifest();
@@ -27,11 +25,9 @@ export class DiagnosticsReportService {
   }
 
   buildManifest(at = Date.now()): DiagnosticsManifest {
-    const update = this.shellUpdate.updateStatus();
+    const update = this.clientCompat.status();
     return {
       app: appVersion,
-      web: update?.installedWebVersion ?? appVersion,
-      shell: update?.shellVersion ?? '',
       server: update?.serverVersion ?? '',
       platform: isTauri() ? (isAndroid() ? 'android' : 'desktop') : 'web',
       origin: apiOrigin(),

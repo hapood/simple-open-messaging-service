@@ -27,7 +27,6 @@ import { PushService, type FirebaseClientConfigPayload } from '../../services/pu
 import {
   apiOrigin,
   canonicalOrigin,
-  listenEvent,
   originIsInsecure,
   pickLoginOrigin,
   setApiOrigin,
@@ -38,16 +37,13 @@ import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 import { AppBackDispatcherService } from '../../services/app-back-dispatcher.service';
 
-/** The connect flow phase — surfaced as a progress value + a step label. After compat + cert the installed
- *  web bundle's hash is compared to the server's manifest; if they differ (or none is installed yet) the
- *  bundle is downloaded + swapped as a `download` phase, then the page reloads — the running SPA is the old
- *  build, so only a reload surfaces the freshly-installed one. */
-type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
+/** Server setup phases. The frontend always comes from the installed app package. */
+type Phase = 'form' | 'compat' | 'cert' | 'done';
 
 /**
  * Decide whether the server-advertised origins describe the address the user actually entered.
  *
- * `/shell/compat` advertises the deployment's canonical public origin. A user may reach the same server
+ * `/client/compat` advertises the deployment's canonical public origin. A user may reach the same server
  * through an unadvertised LAN IP (for example while SOMS_LAN_DOMAIN is unset). In that case the advertised
  * public origin and the just-probed address form the two endpoints: the existing login-time health race
  * can then select whichever one is reachable.
@@ -81,11 +77,9 @@ export function resolveOriginSelection(
 /**
  * Shared backend-config surface. First run is mounted by the guarded `/config` startup state as a required,
  * non-dismissible modal over an empty background; an existing configuration opens the same component in
- * the global auth-flow dialog without changing routes. On save it runs `init_check_compat` →
- * `init_validate_cert` → a hash
- * check (`init_update_status`); if the server advertises a web bundle whose sha256 differs from the
- * installed one it downloads + swaps it (`init_download_web`) and reloads, otherwise it persists the origin
- * (`setApiOrigin` → Rust config + SomsSecureStore + the live `apiOrigin` signal) and redirects to login.
+ * the global auth-flow dialog without changing routes. On save it fetches public client config,
+ * validates HTTPS certificates, persists the origin, and redirects to login. The SPA is embedded
+ * in the installed app package and never downloaded from the server.
  * No `handoff_to_spa` / window swap (one window, one origin).
  *
  * Owns Android Back while active: reconfigure closes the surface; required first-run setup exits the
@@ -120,7 +114,7 @@ export class ServerConfigPageComponent implements OnInit {
   private readonly config = inject(ConfigService);
   private readonly push = inject(PushService);
   private readonly appBack = inject(AppBackDispatcherService);
-  /** The most recent /shell/compat firebaseConfig probed for the origin being connected — applied to native
+  /** The most recent /client/compat firebaseConfig probed for the origin being connected — applied to native
    *  in finalize() (Android: re-inits FirebaseApp). Stashed so the auto-fill confirm-modal path applies it too. */
   private firebaseConfig: FirebaseClientConfigPayload | null = null;
   private unregisterBack?: () => void;
@@ -134,11 +128,7 @@ export class ServerConfigPageComponent implements OnInit {
   });
   /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
    *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
-  readonly autoFill = signal<{
-    primary: string;
-    lan: string | null;
-    reachable: string;
-  } | null>(null);
+  readonly autoFill = signal<{ primary: string; lan: string | null; reachable: string } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -173,44 +163,14 @@ export class ServerConfigPageComponent implements OnInit {
     return this.url.value.trim().length > 0;
   }
   readonly insecure = computed(() => originIsInsecure(this.origin()));
-  /** Byte-progress for the `download` phase, fed by the `web-download-progress` Tauri event. `total` is
-   *  null until the first chunk carries a Content-Length (or for a chunked transfer with none) — the bar
-   *  goes indeterminate in that window (see {@link progressMode}). */
-  private readonly downloadReceived = signal(0);
-  private readonly downloadTotal = signal<number | null>(null);
-  private readonly progressByPhase: Record<Exclude<Phase, 'download'>, number> = {
+  private readonly progressByPhase: Record<Phase, number> = {
     form: 0,
     compat: 40,
     cert: 80,
     done: 100,
   };
-  /** Overall connect progress 0–100. During `download` the bundle's byte-progress is mapped onto the
-   *  80→100 tail so the bar never moves backward across compat→cert→download→done; an unknown total
-   *  (chunked) holds at the cert boundary while {@link progressMode} flips the bar to indeterminate. */
-  readonly progress = computed(() => {
-    const phase = this.phase();
-    if (phase === 'download') {
-      const total = this.downloadTotal();
-      if (!total || total <= 0) return 80;
-      const bytePct = Math.min(100, Math.round((this.downloadReceived() / total) * 100));
-      return 80 + Math.round(bytePct * 0.2);
-    }
-    return this.progressByPhase[phase];
-  });
-  /** Indeterminate while a download has no Content-Length; determinate otherwise (including every
-   *  non-download phase, which uses the discrete {@link progress} values). */
-  readonly progressMode = computed<'determinate' | 'indeterminate'>(() => {
-    const total = this.downloadTotal();
-    return this.phase() === 'download' && (!total || total <= 0) ? 'indeterminate' : 'determinate';
-  });
-  readonly downloadProgressText = computed(() => {
-    if (this.phase() !== 'download') return '';
-    const total = this.downloadTotal();
-    if (!total) return '';
-    const received = Math.min(this.downloadReceived(), total);
-    const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-    return `${Math.round((received / total) * 100)}% · ${mb(received)} / ${mb(total)}`;
-  });
+  readonly progress = computed(() => this.progressByPhase[this.phase()]);
+  readonly progressMode = computed<'determinate'>(() => 'determinate');
   /** transloco key for the current step label (empty when on the form). */
   readonly stepKey = computed(() => {
     switch (this.phase()) {
@@ -218,8 +178,6 @@ export class ServerConfigPageComponent implements OnInit {
         return 'serverConfig.stepCompat';
       case 'cert':
         return 'serverConfig.stepCert';
-      case 'download':
-        return 'serverConfig.stepDownload';
       case 'done':
         return 'serverConfig.stepDone';
       default:
@@ -233,7 +191,6 @@ export class ServerConfigPageComponent implements OnInit {
       this.errorKey.set(null);
       this.errorDetail.set('');
     });
-    this.registerDownloadProgress();
     this.destroyRef.onDestroy(() => this.unregisterBack?.());
   }
 
@@ -318,9 +275,7 @@ export class ServerConfigPageComponent implements OnInit {
     }
   }
 
-  /** Persist the configured pair, race every address, then use Rust's winning active endpoint for all
-   *  remaining work. Configuration is durable before the optional OTA check, so an update outage cannot
-   *  leave the app stuck on its previous server. */
+  /** Persist the configured pair and race every address before entering login. */
   private async finalize(primary: string, lan: string | null): Promise<void> {
     try {
       await setApiOrigin(primary);
@@ -333,41 +288,7 @@ export class ServerConfigPageComponent implements OnInit {
           active,
         });
       }
-      // Compare the installed web bundle's hash to the server's manifest. On a first run there is no
-      // installed hash yet, so the fresh bundle is pulled as part of connecting. A failed probe resolves to
-      // false → skip + proceed in-page; the launch-time About probe catches it later.
-      const status = await tauriInvoke<{ webUpdateAvailable: boolean }>('init_update_status', {
-        origin: active,
-      });
-      if (status?.webUpdateAvailable) {
-        this.phase.set('download');
-        this.downloadReceived.set(0);
-        this.downloadTotal.set(null);
-        // init_download_web streams + sha256-verifies + extracts + swaps the served assets. The running SPA
-        // is still the OLD build, so only a hard navigation can boot the freshly-installed one.
-        await tauriInvoke('init_download_web', { origin: active });
-        // Apply the server's Firebase client config to native BEFORE the reload. `SomsFcm.setFirebaseConfig`
-        // persists + (re)initializes FirebaseApp in the shell, and that state survives the webview reload
-        // (boot's PushService.init deliberately does NOT re-apply it; the cold-start `SomsApplication`
-        // reader only recovers what was already persisted). This download branch is the FIRST-RUN path, so
-        // omitting it leaves native Firebase unconfigured → no FCM token → no push until a later reconfigure.
-        // Firebase is ancillary to reaching login. A missing/broken Android bridge must not strand the
-        // setup flow after the bundle and both origins have already been committed.
-        try {
-          this.push.applyFirebaseConfig(this.firebaseConfig);
-        } catch (e) {
-          console.error('server-config firebase apply failed', e);
-        }
-        this.phase.set('done');
-        // This must be the next operation after required persistence. The new SPA performs its normal
-        // login-time origin race; no optional post-install work is allowed to block this navigation.
-        if (isDevMode()) {
-          console.info('server-config hard navigation', { route: RoutePage.AUTH_LOGIN });
-        }
-        this.route.reloadTo(RoutePage.AUTH_LOGIN);
-        return;
-      }
-      // The new server may publish a different Firebase project — apply its /shell/compat firebaseConfig to
+      // The new server may publish a different Firebase project — apply its /client/compat firebaseConfig to
       // native so the Android shell re-inits FirebaseApp. The backend changed → invalidate the cached /config
       // so login re-fetches loginMode/registrationOpen.
       try {
@@ -417,7 +338,7 @@ export class ServerConfigPageComponent implements OnInit {
     else this.closed.emit();
   }
 
-  /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */
+  /** Surface a connection failure as a categorized toast and reset to the form. */
   private fail(e: unknown): void {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('server-config connect failed', msg);
@@ -438,17 +359,6 @@ export class ServerConfigPageComponent implements OnInit {
     }
     if (msg.includes('cert') || msg.includes('self-signed') || msg.includes('expired')) {
       return 'serverConfig.certErr';
-    }
-    // Bundle download / integrity / extract failures from `init_download_web` (sha256 mismatch, network
-    // read, tar extract). The server WAS reached (compat + cert already passed), so this is distinct from
-    // `connectErr`.
-    if (
-      msg.includes('sha256') ||
-      msg.includes('download') ||
-      msg.includes('extract') ||
-      msg.includes('bundle')
-    ) {
-      return 'serverConfig.downloadErr';
     }
     return 'serverConfig.connectErr';
   }
@@ -478,20 +388,4 @@ export class ServerConfigPageComponent implements OnInit {
     });
   }
 
-  /** Subscribe once to the Rust `web-download-progress` stream so the `download` phase drives a real
-   *  byte-progress bar. The handler ignores events outside the download phase, so a single registration
-   *  covers every retry without leaking a listener. */
-  private registerDownloadProgress(): void {
-    void (async () => {
-      const unlisten = await listenEvent<{ received: number; total: number | null }>(
-        'web-download-progress',
-        (e) => {
-          if (this.phase() !== 'download') return;
-          this.downloadReceived.set(e.payload.received);
-          this.downloadTotal.set(e.payload.total);
-        },
-      );
-      if (unlisten) this.destroyRef.onDestroy(unlisten);
-    })();
-  }
 }

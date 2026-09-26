@@ -5,11 +5,10 @@ import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
 /**
- * Once-per-launch, non-blocking notice shown when the running shell is incompatible with the backend it
- * connected to (the server's version is at/above this shell's hard-coded `COMPAT_BACKEND_MAX`). The shell
- * cannot self-update its binary (Tauri can't replace its own APK/desktop binary), so the only remedy is a
- * newer build from the administrator — hence a single "acknowledge" button, not a confirm/cancel pair.
- * Opened via {@link PopupType.SHELL_INCOMPATIBLE} on the shared root popup layer, so it inherits the
+ * Once-per-launch, non-blocking notice reserved for future client API incompatibility checks.
+ * The native compatibility predicate currently accepts all valid client bootstrap responses;
+ * when enabled, an incompatible installation requires a new app package.
+ * Opened via {@link PopupType.CLIENT_INCOMPATIBLE} on the shared root popup layer, so it inherits the
  * backdrop, the centered responsive modal card, the enter/leave motion, the
  * system-back-to-dismiss contract, and the z-1000 modal tier — all without per-call wiring.
  *
@@ -17,7 +16,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  * offsetHeight is whole-pixel at any line wrap count.
  */
 @Component({
-  selector: 'app-shell-incompatible-dialog',
+  selector: 'app-client-incompatible-dialog',
   imports: [MatButtonModule, TranslocoPipe, IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -25,11 +24,11 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
       <div class="badge">
         <app-icon [type]="AppIconType.REPORT" [style]="{ width: '34px', height: '34px' }"></app-icon>
       </div>
-      <h2 class="title">{{ 'shell.incompatibleTitle' | transloco }}</h2>
-      <p class="message">{{ 'shell.incompatibleMessage' | transloco: { version: serverVersion() } }}</p>
+      <h2 class="title">{{ 'clientCompat.incompatibleTitle' | transloco }}</h2>
+      <p class="message">{{ 'clientCompat.incompatibleMessage' | transloco: { version: serverVersion() } }}</p>
       <div class="actions">
         <button type="button" mat-flat-button color="primary" (click)="acknowledge()">
-          {{ 'shell.incompatibleDismiss' | transloco }}
+          {{ 'clientCompat.incompatibleDismiss' | transloco }}
         </button>
       </div>
     </div>
@@ -92,7 +91,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
     }
   `],
 })
-export class ShellIncompatibleDialogComponent {
+export class ClientIncompatibleDialogComponent {
   private readonly routeService = inject(RouteService);
 
   /** Exposed so the template can reference the fixed warning glyph (`AppIconType.REPORT`). */

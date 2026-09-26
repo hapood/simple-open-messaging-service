@@ -7,7 +7,7 @@ import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/
 import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
-import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
+import { ClientIncompatibleDialogComponent } from '../components/client-incompatible-dialog/client-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import { SettingsComponent } from '../components/settings/settings.component';
 import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
@@ -66,7 +66,7 @@ export enum PopupType {
   EDIT_PROFILE,
   AVATAR_EDITOR,
   CONFIRM,
-  SHELL_INCOMPATIBLE,
+  CLIENT_INCOMPATIBLE,
   UPLOAD_DETAIL,
   FORWARD,
   FORWARD_DETAIL,
@@ -88,7 +88,7 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.EDIT_PROFILE]: () => EditProfileComponent,
   [PopupType.AVATAR_EDITOR]: () => AvatarEditorComponent,
   [PopupType.CONFIRM]: () => ConfirmDialogComponent,
-  [PopupType.SHELL_INCOMPATIBLE]: () => ShellIncompatibleDialogComponent,
+  [PopupType.CLIENT_INCOMPATIBLE]: () => ClientIncompatibleDialogComponent,
   [PopupType.UPLOAD_DETAIL]: () => UploadDetailDialogComponent,
   [PopupType.FORWARD]: () => ForwardDialogComponent,
   [PopupType.FORWARD_DETAIL]: () => ForwardDetailComponent,
@@ -106,7 +106,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.EDIT_PROFILE]: 'page',
   [PopupType.AVATAR_EDITOR]: 'viewer',
   [PopupType.CONFIRM]: 'modal',
-  [PopupType.SHELL_INCOMPATIBLE]: 'modal',
+  [PopupType.CLIENT_INCOMPATIBLE]: 'modal',
   [PopupType.UPLOAD_DETAIL]: 'page',
   [PopupType.FORWARD]: 'page',
   [PopupType.FORWARD_DETAIL]: 'viewer',
@@ -140,7 +140,7 @@ export interface PopupInput {
     checkboxKey?: string;
   };
   /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
-  [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string };
+  [PopupType.CLIENT_INCOMPATIBLE]: { serverVersion: string };
   [PopupType.UPLOAD_DETAIL]: { threadId?: number };
   [PopupType.FORWARD]: {
     messages?: readonly ForwardMessageItem[];
@@ -191,7 +191,7 @@ export interface PopupResult {
     | { confirmed: true; checked: boolean }
     | undefined;
   // acknowledge-only — no meaningful result (undefined on dismiss).
-  [PopupType.SHELL_INCOMPATIBLE]: undefined;
+  [PopupType.CLIENT_INCOMPATIBLE]: undefined;
   [PopupType.UPLOAD_DETAIL]: undefined;
   [PopupType.FORWARD]: ForwardDialogResult | undefined;
   [PopupType.FORWARD_DETAIL]: undefined;
@@ -336,22 +336,6 @@ export class RouteService {
     } else {
       console.error(`no page to redirect [${page}]`);
     }
-  }
-
-  /** Full page reload that lands on `page` — used after a web-bundle swap, where the RUNNING SPA is the old
-   *  build and must be re-fetched (an in-SPA {@link redirect} would keep serving stale code). The target URL
-   *  is built through the Router (so it honors the route definitions + the app base href — no hardcoded path
-   *  to drift) and applied via `location.replace`, leaving no stale history entry to back into (mirrors
-   *  {@link redirect}'s `replaceUrl`). `location.replace` to a different path is a hard navigation, so the
-   *  freshly-swapped bundle is served on the reload. */
-  reloadTo(page: RoutePage): void {
-    const commands = this.getPageRoute(page);
-    if (!commands) {
-      console.error(`no page to reload-to [${page}]`);
-      return;
-    }
-    const url = this.router.serializeUrl(this.router.createUrlTree(commands));
-    location.replace(url);
   }
 
   /** Push a dialog onto the nav pane stack; returns a {@link DlgRef} for targeted close. The dialog's

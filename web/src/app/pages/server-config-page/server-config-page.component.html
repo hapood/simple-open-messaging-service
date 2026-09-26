@@ -25,9 +25,6 @@
     @if (stepKey()) {
       <p class="cfg-step" role="status" aria-live="polite">
         {{ stepKey() | transloco }}
-        @if (downloadProgressText()) {
-          <span>{{ downloadProgressText() }}</span>
-        }
       </p>
     }
   }
@@ -107,7 +104,7 @@
     </form>
   </div>
 
-  <!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
+  <!-- Auto-fill confirmation modal: shown when /client/compat supplied the field the user didn't enter. The
   field already displays the filled value; the user confirms before it's trusted as a connection target. -->
   @if (autoFill()) {
     <app-material-dialog [isShow]="true">
