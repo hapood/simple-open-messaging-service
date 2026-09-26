@@ -20,6 +20,7 @@ import {
   type Messaging,
   type Message,
 } from 'firebase-admin/messaging';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import webpush from 'web-push';
 import {
   and,
@@ -50,6 +51,7 @@ import {
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
+import { sendFcmMessages } from './fcm-transport.js';
 
 export type PushProbeStatus = PushProbeStatusDto;
 
@@ -79,7 +81,8 @@ type SessionPushRegistration = {
  * remain independently eligible. Duplicate wake delivery is harmless because the pull pipeline is idempotent.
  *
  * Two transports, branched by `SessionToken.pushPlatform`:
- *  - ANDROID / IOS → firebase-admin `sendEach` (data-only, high priority).
+ *  - ANDROID / IOS → firebase-admin batch delivery (data-only, high priority); with an HTTPS proxy,
+ *    use individual HTTP/1 sends because the SDK's HTTP/2 batch transport bypasses the proxy.
  *  - WEB           → `web-push` lib (standard Web Push + VAPID), payload is the JSON-stringified signal.
  *
  * Degradation: each transport is independently gated on its own config — the operator-provided
@@ -91,6 +94,7 @@ export class PushService implements OnModuleDestroy {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
   private readonly fcmCredentialPath: string;
+  private readonly fcmUsesHttpProxy: boolean;
   private readonly pushProbes = new Map<string, PushProbeEntry>();
   private readonly pushProbeCooldowns = new Map<string, number>();
   private readonly messageThrottle = new AccountFeedThrottle(
@@ -126,15 +130,22 @@ export class PushService implements OnModuleDestroy {
       configDirectory('firebase-service-account.json');
     if (existsSync(this.fcmCredentialPath)) {
       process.env.GOOGLE_APPLICATION_CREDENTIALS = this.fcmCredentialPath;
+      const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
+      const httpAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+      this.fcmUsesHttpProxy = !!httpAgent;
       const app = getApps().length
         ? getApp()
-        : initializeApp({ credential: applicationDefault() });
+        : initializeApp({
+            credential: applicationDefault(httpAgent),
+            ...(httpAgent ? { httpAgent } : {}),
+          });
       this.messaging = getMessaging(app);
       this.logger.log(
         `FCM messaging initialized from ${this.fcmCredentialPath}`,
       );
     } else {
       this.messaging = null;
+      this.fcmUsesHttpProxy = false;
       this.logger.warn(
         `FCM service-account file not found at ${this.fcmCredentialPath} — FCM dispatch disabled`,
       );
@@ -525,7 +536,11 @@ export class PushService implements OnModuleDestroy {
           data: dataFor(t.userId),
           android: { priority: 'high', ttl: 2_419_200 }, // 28 days — the FCM max retention window
         }));
-        const res = await this.messaging.sendEach(messages);
+        const res = await sendFcmMessages(
+          this.messaging,
+          messages,
+          this.fcmUsesHttpProxy,
+        );
         res.responses.forEach((r, i) => {
           if (
             !r.success &&
@@ -537,7 +552,7 @@ export class PushService implements OnModuleDestroy {
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
           this.logger.warn(
-            `FCM sendEach: ${failed} transient failure(s) (not pruned)`,
+            `FCM send: ${failed} transient failure(s) (not pruned)`,
           );
         }
       }
@@ -643,7 +658,11 @@ export class PushService implements OnModuleDestroy {
           data,
           android: { priority: 'high', ttl: 30_000 }, // 30s — a ring is ephemeral
         }));
-        const res = await this.messaging.sendEach(messages);
+        const res = await sendFcmMessages(
+          this.messaging,
+          messages,
+          this.fcmUsesHttpProxy,
+        );
         res.responses.forEach((r, i) => {
           if (
             !r.success &&
@@ -655,7 +674,7 @@ export class PushService implements OnModuleDestroy {
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
           this.logger.warn(
-            `FCM sendEach (call): ${failed} transient failure(s) (not pruned)`,
+            `FCM send (call): ${failed} transient failure(s) (not pruned)`,
           );
         }
       }
