@@ -1,5 +1,3 @@
-import { propagateLocalMemberProfileInTx } from '../group/meta/member-profile-propagation.js';
-import { GroupMetaFeedService } from '../group/meta/group-meta-feed.service.js';
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
@@ -31,10 +29,7 @@ const publicUserColumns = {
 
 @Injectable()
 export class UserService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly groupMeta: GroupMetaFeedService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   findUniqueUser(where: UserLookup) {
     return this.database.db
@@ -123,12 +118,6 @@ export class UserService {
         .update(accountTable)
         .set({ defaultProfileRev: nextRev, updatedAt: new Date() })
         .where(eq(accountTable.id, userId));
-      await propagateLocalMemberProfileInTx(
-        tx,
-        this.groupMeta,
-        current.account,
-        nextRev,
-      );
       const [row] = await tx
         .select(publicUserColumns)
         .from(accountTable)

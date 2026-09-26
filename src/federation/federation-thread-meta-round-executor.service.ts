@@ -18,12 +18,11 @@ import {
   isValidSomfpUserAccount,
   normalizeAccount,
 } from '../common/account.js';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
-import { FederationProfileService } from './federation-profile.service.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
 import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
 
@@ -35,8 +34,6 @@ const MAX_FULL_SNAPSHOT_PAGES = 200;
 
 export interface MetaRoundPlan {
   groupAccount: string;
-  metaEndId: number;
-  profileRev: number;
   metaTargetId: number;
   metaProcessedThroughId: number;
   /** The open recovery drain's fixed through; null selects delta. */
@@ -52,15 +49,10 @@ export interface MetaRoundPlan {
  * and the round budget only. */
 @Injectable()
 export class FederationThreadMetaRoundExecutorService {
-  private readonly logger = new Logger(
-    FederationThreadMetaRoundExecutorService.name,
-  );
-
   constructor(
     private readonly database: DatabaseService,
     private readonly client: FederationGroupMetaClient,
     private readonly messages: MessageService,
-    private readonly profiles: FederationProfileService,
   ) {}
 
   /** Returns true when another round is needed: the page budget ran out
@@ -95,24 +87,6 @@ export class FederationThreadMetaRoundExecutorService {
       throw error;
     }
     const next = await this.plan(threadId, peerDomain, namespaceId);
-    if (next && next.profileRev > plan.profileRev)
-      // The GROUP_PROFILE feed item carries the revision only, not the
-      // content. Pull the exact revision from the origin so the local
-      // Profile projection renders it; a failure leaves the round committed
-      // and degrades display until the next head re-admits the pull.
-      await this.profiles
-        .pullRemoteGroupProfile(
-          { account: plan.groupAccount, domain: peerDomain },
-          next.profileRev,
-          namespaceId,
-        )
-        .catch((error: unknown) => {
-          this.logger.warn(
-            `group profile pull for thread ${threadId} failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        });
     return next !== null && next.metaTargetId > next.metaProcessedThroughId;
   }
 
@@ -124,14 +98,12 @@ export class FederationThreadMetaRoundExecutorService {
     const result = await this.database.db.execute<{
       groupAccount: string;
       metaEndId: number | null;
-      profileRev: number | null;
       metaTargetId: number | null;
       metaProcessedThroughId: number | null;
       metaRecoveryThroughId: number | null;
     }>(sql`
       SELECT ${groupStateFields.account} AS "groupAccount",
         feed."metaEndId" AS "metaEndId",
-        feed."profileRev" AS "profileRev",
         feed."metaTargetId" AS "metaTargetId",
         feed."metaProcessedThroughId" AS "metaProcessedThroughId",
         feed."metaRecoveryThroughId" AS "metaRecoveryThroughId"
@@ -148,8 +120,6 @@ export class FederationThreadMetaRoundExecutorService {
     if (!row || row.metaEndId === null) return null;
     return {
       groupAccount: row.groupAccount,
-      metaEndId: row.metaEndId,
-      profileRev: row.profileRev ?? 0,
       metaTargetId: row.metaTargetId!,
       metaProcessedThroughId: row.metaProcessedThroughId!,
       metaRecoveryThroughId: row.metaRecoveryThroughId,

@@ -390,12 +390,27 @@ export class ProfileResolutionCoordinatorService {
         AND (
           (self.account = ${account} AND ${domain} = ${this.config.domain})
           OR EXISTS (
-            SELECT 1 FROM "ClientStateFeed" state
-            WHERE state."userId" = self.id AND state."eventType" = 'THREAD_STATE'
-              AND state.body->'profile'->>'account' = ${account}
-              AND state.body->'profile'->>'domain' = ${storageDomain}
-              AND (state.body->'profile'->>'namespaceId')::integer = ${namespaceId}
-              AND (state.body->'profile'->>'profileRev')::integer = ${selector.rev}
+            SELECT 1 FROM "AccountThreadState" state
+            JOIN "MessageThread" thread ON thread.id = state."threadId"
+            JOIN "RelationshipPair" pair ON pair."threadId" = thread.id AND pair.established
+              AND ((pair."endpointAType" = 'USER' AND pair."endpointAAccount" = self.account
+                AND pair."endpointADomain" = 'local')
+                OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account
+                  AND pair."endpointBDomain" = 'local'))
+            WHERE state."accountId" = self.id AND state."threadProfileRev" = ${selector.rev}
+              AND ((thread.type = 'GROUP'
+                AND thread."groupAccount" = ${account}
+                AND thread."groupDomain" = ${storageDomain}
+                AND thread."authorityNamespaceId" = ${namespaceId})
+                OR (thread.type = 'P2P'
+                  AND ((pair."endpointAAccount" = self.account AND pair."endpointADomain" = 'local'
+                    AND pair."endpointBAccount" = ${account}
+                    AND pair."endpointBDomain" = ${storageDomain}
+                    AND pair."endpointBNamespaceId" = ${namespaceId})
+                  OR (pair."endpointBAccount" = self.account AND pair."endpointBDomain" = 'local'
+                    AND pair."endpointAAccount" = ${account}
+                    AND pair."endpointADomain" = ${storageDomain}
+                    AND pair."endpointANamespaceId" = ${namespaceId}))))
           )
           OR EXISTS (
             SELECT 1 FROM "RelationshipIntent" intent

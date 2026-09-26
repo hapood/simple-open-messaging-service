@@ -13,6 +13,30 @@ function target() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
     pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
+    getAuthorizedAccountProfile: vi.fn().mockResolvedValue({
+      account: 'alice',
+      domain: 'local.example',
+      profileRev: 4,
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+    }),
+    getAuthorizedGroupMemberProfile: vi.fn().mockResolvedValue({
+      account: 'alice',
+      domain: 'member.example',
+      profileRev: 4,
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+    }),
+    getAuthorizedIntentProfile: vi.fn().mockResolvedValue({
+      account: '!team',
+      domain: 'local.example',
+      profileRev: 7,
+      displayName: 'Team',
+      bio: '',
+      avatar: null,
+    }),
     getStoredProfile: vi.fn().mockResolvedValue({
       account: 'alice',
       domain: 'member.example',
@@ -126,6 +150,120 @@ function replyTarget() {
     result: () => ({ status, headers, body }),
   };
 }
+
+describe('S2sController intent profiles', () => {
+  it('passes only the authenticated signer and exact path identity to intent authorization', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/intent-profiles/%21team/alice/7';
+    expect(await controller.getIntentProfile(req)).toEqual({
+      account: '!team',
+      domain: 'local.example',
+      displayName: 'Team',
+      bio: '',
+      avatar: null,
+    });
+    expect(federation.getAuthorizedIntentProfile).toHaveBeenCalledWith(
+      '!team',
+      'alice',
+      7,
+      'a.example',
+      7,
+    );
+  });
+
+  it('rejects zero and queries without consulting stored evidence', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/intent-profiles/%21team/alice/0';
+    await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+    req.url = '/s2s/v1/intent-profiles/%21team/alice/7?rev=7';
+    await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+    expect(federation.getAuthorizedIntentProfile).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2sController account profiles', () => {
+  it('passes only the exact account/revision and authenticated signer', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/account-profiles/alice/4';
+    expect(await controller.getExactAccountProfile(req)).toMatchObject({
+      account: 'alice',
+      domain: 'local.example',
+      displayName: 'Alice',
+    });
+    expect(federation.getAuthorizedAccountProfile).toHaveBeenCalledWith(
+      'alice',
+      4,
+      'a.example',
+      7,
+    );
+  });
+
+  it('rejects non-canonical paths, query and zero rev', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    for (const url of [
+      '/s2s/v1/account-profiles/alice/0',
+      '/s2s/v1/account-profiles/%61lice/4',
+      '/s2s/v1/account-profiles/alice/4?seq=1',
+      '/s2s/v1/account-profiles/alice/4/extra',
+    ]) {
+      req.url = url;
+      await expect(controller.getExactAccountProfile(req)).rejects.toMatchObject({
+        bizCode: BusinessCode.FEDERATION_MALFORMED,
+      });
+    }
+    expect(federation.getAuthorizedAccountProfile).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2sController group member profiles', () => {
+  it('passes canonical independent path variables and authenticated signer', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/group-member-profiles/%21team/member.example/alice/4';
+    expect(await controller.getGroupMemberProfile(req)).toEqual({
+      account: 'alice',
+      domain: 'member.example',
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+    });
+    expect(federation.getAuthorizedGroupMemberProfile).toHaveBeenCalledWith(
+      '!team',
+      'member.example',
+      'alice',
+      4,
+      'a.example',
+      7,
+    );
+  });
+
+  it('rejects bad account, non-canonical encoding, zero revision and query', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    for (const url of [
+      '/s2s/v1/group-member-profiles/alice/member.example/bob/4',
+      '/s2s/v1/group-member-profiles/%21team/member.example/%61lice/4',
+      '/s2s/v1/group-member-profiles/%21team/member.example/alice/0',
+      '/s2s/v1/group-member-profiles/%21team/member.example/alice/4?seq=1',
+    ]) {
+      req.url = url;
+      await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject(
+        {
+          bizCode: BusinessCode.FEDERATION_MALFORMED,
+        },
+      );
+    }
+    expect(federation.getAuthorizedGroupMemberProfile).not.toHaveBeenCalled();
+  });
+});
 
 describe('S2sController federation media errors', () => {
   it('returns the registered JSON envelope and Content-Range for 416', async () => {

@@ -48,6 +48,7 @@ import { FederationService } from '../src/federation/federation.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
+import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { findGroupRelationship, seedUser } from './seed.js';
@@ -636,19 +637,20 @@ describe('group join decision', () => {
         alias: 'keep alias',
         messageEndSeq: 2,
       });
-      const threadState = await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(tables.clientStateFeed.userId, f.applicant.id),
-          eq(tables.clientStateFeed.eventType, 'THREAD_STATE'),
-          eq(tables.clientStateFeed.subjectAccount, String(f.group.threadId)),
-        ),
-      });
-      expect(threadState?.body).toMatchObject({
+      const threadState = (
+        await app.get(ThreadFeedService).queryThreadFeedDelta(f.applicant.id, {
+          after: 0,
+        })
+      ).items.find((item) => item.threadId === f.group.threadId);
+      expect(threadState).toMatchObject({
         conversationState: 'ACTIVE',
         role: 'MEMBER',
         blocked,
         profile: { account: f.group.account, domain: 'local', profileRev: 1 },
       });
+      expect(threadState?.profile.profileRev).toBe(
+        result.intents.find((intent) => intent.authorSide === 'A')?.profileRev,
+      );
       expect(result.feed?.body).toMatchObject({ established: true });
       expect(
         await database.db.query.message.findMany({
@@ -978,6 +980,16 @@ describe('group join decision', () => {
       )
     ).rows;
     expect(participant?.groupMetaFeedEndId).toBe(Number(meta.metaEndId));
+    const [profileFact] = (
+      await database.pool.query(
+        `SELECT "feedId", (body ->> 'profileRev')::integer AS rev
+           FROM "GroupMetaMemberFeed"
+           WHERE "threadId" = $1 AND operation = 'GROUP_PROFILE'`,
+        [f.group.threadId],
+      )
+    ).rows;
+    expect(participant?.threadProfileRev).toBe(profileFact.rev);
+    expect(participant?.profileSourceId).toBe(profileFact.feedId);
   });
 
   it('syncs the manager watermark once and never regresses it', async () => {

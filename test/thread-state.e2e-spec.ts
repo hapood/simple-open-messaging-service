@@ -1,12 +1,11 @@
 import { UserService } from '../src/user/user.service.js';
-import type { ThreadStateSnapshot } from '../shared/thread-state.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
+import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/federation/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -26,7 +25,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       {} as never,
       { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() } as never,
     );
-  const feed = () => new ClientStateFeedService(database, {} as never);
+  const feed = () => new ThreadFeedService(database);
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
@@ -43,7 +42,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         defaultProfileRev: 9,
       })
       .returning();
-    const users = new UserService(database, {} as never);
+    const users = new UserService(database);
     expect(await users.findSelfProfile(owner.id)).toBeNull();
     await database.db.insert(tables.profileTable).values({
       account: owner.account,
@@ -130,19 +129,13 @@ describe('account-owned THREAD_STATE and default profiles', () => {
           .where(eq(tables.relationshipIntent.pairId, pair.id));
         await tx
           .update(tables.relationshipPair)
-          .set({ active: true })
+          .set({ active: true, established: true })
           .where(eq(tables.relationshipPair.id, pair.id));
       });
     const snapshot = async () =>
-      (
-        await database.db.execute<{
-          body: ThreadStateSnapshot;
-          feedId: number;
-        }>(sql`
-      SELECT body, "feedId" FROM "ClientStateFeed" WHERE "userId" = ${owner.id}
-        AND "eventType" = 'THREAD_STATE' AND "subjectAccount" = ${String(thread.id)}
-    `)
-      ).rows[0];
+      (await feed().queryThreadFeedDelta(owner.id, { after: 0 })).items.find(
+        (item) => item.threadId === thread.id,
+      );
     return {
       owner,
       thread,
@@ -183,7 +176,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         SET "clientStateFeedEndId" = "clientStateFeedEndId" + 1 WHERE id = $1`,
         [f.owner.id],
       );
-      expect((await f.snapshot()).body.conversationState).toBe('ACTIVE');
+      expect((await f.snapshot())?.conversationState).toBe('ACTIVE');
     } finally {
       await foreignKeyWriter.query('ROLLBACK');
       foreignKeyWriter.release();
@@ -273,14 +266,14 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       database.db.transaction(async (tx) => {
         await tx
           .update(tables.relationshipPair)
-          .set({ active: true })
+          .set({ active: true, established: true })
           .where(eq(tables.relationshipPair.id, f.pair.id));
         throw new Error('rollback');
       }),
     ).rejects.toThrow('rollback');
     expect(await f.snapshot()).toBeUndefined();
     await f.activate();
-    expect((await f.snapshot()).body).toMatchObject({
+    expect(await f.snapshot()).toMatchObject({
       conversationState: 'ACTIVE',
       profile: { profileRev: 7 },
     });
@@ -315,7 +308,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         .update(tables.relationshipIntent)
         .set({ status: 'REVOKED', expiresAt: null, profileRev: 99 })
         .where(eq(tables.relationshipIntent.pairId, f.pair.id));
-      expect((await f.snapshot()).body).toMatchObject({
+      expect(await f.snapshot()).toMatchObject({
         conversationState: 'READ_ONLY',
         profile: { profileRev: 7 },
       });
@@ -338,8 +331,12 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .set({ blocked: true })
       .where(eq(tables.accountThreadState.threadId, f.thread.id));
     const blocked = await f.snapshot();
-    expect(blocked.feedId).toBeGreaterThan(first.feedId);
-    expect(blocked.body).toEqual({ ...first.body, blocked: true });
+    expect(blocked!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
+    expect(blocked).toEqual({
+      ...first,
+      blocked: true,
+      threadFeedId: blocked!.threadFeedId,
+    });
     await database.db.insert(tables.profileTable).values({
       account: f.target,
       domain: 'local',
@@ -353,8 +350,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .update(tables.account)
       .set({ defaultProfileRev: 8 })
       .where(eq(tables.account.account, f.target));
-    expect((await f.snapshot()).body).toMatchObject({
-      establishedAt: first.body.establishedAt,
+    expect(await f.snapshot()).toMatchObject({
       profile: { profileRev: 7 },
     });
     await database.db
@@ -362,14 +358,16 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .set({ blocked: false })
       .where(eq(tables.accountThreadState.threadId, f.thread.id));
     const current = await f.snapshot();
-    const all = await feed().query(f.owner.id, 'full', 0, current.feedId);
-    expect(
-      all.some(
-        (item) =>
-          item.eventType === 'THREAD_STATE' &&
-          (item.body as Record<string, unknown>).blocked === false,
-      ),
-    ).toBe(true);
+    const all = await feed().queryThreadFeedDelta(f.owner.id, {
+      after: blocked!.threadFeedId,
+    });
+    expect(all.items).toContainEqual(
+      expect.objectContaining({
+        threadId: f.thread.id,
+        blocked: false,
+        threadFeedId: current!.threadFeedId,
+      }),
+    );
   });
   it('changes the grant only on re-establishment and rejects other revisions even after a cache hit', async () => {
     const f = await fixture();
@@ -403,16 +401,40 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     await f.activate();
     const second = await f.snapshot();
-    expect(second.body.profile.profileRev).toBe(8);
-    expect(second.body.establishedAt).toBeGreaterThanOrEqual(
-      first.body.establishedAt,
-    );
-    expect(second.feedId).toBeGreaterThan(first.feedId);
+    expect(second?.profile.profileRev).toBe(8);
+    expect(second!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
     await expect(coordinator.start(f.owner.id, exact)).rejects.toMatchObject({
       bizCode: BusinessCode.NOT_FOUND,
     });
     await expect(
       coordinator.start(f.owner.id, { ...exact, rev: 8 }),
     ).resolves.toMatchObject({ status: 'READY', profile: { rev: 8 } });
+  });
+
+  it('re-establishes a retained P2P state from the new intent even when its revision is lower', async () => {
+    const f = await fixture();
+    await f.activate();
+    const first = await f.snapshot();
+    expect(first?.profile.profileRev).toBe(7);
+
+    await database.db
+      .update(tables.relationshipPair)
+      .set({ active: false })
+      .where(eq(tables.relationshipPair.id, f.pair.id));
+    await database.db
+      .update(tables.relationshipIntent)
+      .set({ status: 'REVOKED', profileRev: 5 })
+      .where(
+        sql`${tables.relationshipIntent.pairId} = ${f.pair.id}
+          AND ${tables.relationshipIntent.authorSide} = 'B'`,
+      );
+    await f.activate();
+
+    const reestablished = await f.snapshot();
+    expect(reestablished).toMatchObject({
+      conversationState: 'ACTIVE',
+      profile: { profileRev: 5 },
+    });
+    expect(reestablished!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
   });
 });

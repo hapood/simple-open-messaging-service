@@ -1,4 +1,4 @@
-import type { ServerResponse } from 'node:http';
+import type { Subscription } from 'rxjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -24,7 +24,8 @@ describe('account feed notification delivery', () => {
   const readPositions = new ThreadReadPositionService(database, sse);
   const participants = new AccountThreadStateService(database, clientFeed);
   const hints = vi.spyOn(sse, 'onThreadFeedUpdated');
-  const devices: string[][] = [[], []];
+  const devices: { type: string; data: Record<string, unknown> }[][] = [[], []];
+  const subscriptions: Subscription[] = [];
   let userId: number;
   let threadId: number;
 
@@ -66,23 +67,23 @@ describe('account feed notification delivery', () => {
       previews: new ThreadPreviewService(database),
     });
     for (const [index, writes] of devices.entries()) {
-      sse.register(userId, index + 1, {
-        writeHead: vi.fn(),
-        write: (frame: string) => {
-          writes.push(frame);
-          return true;
-        },
-        on: vi.fn(),
-        end: vi.fn(),
-      } as unknown as ServerResponse);
+      subscriptions.push(
+        sse.register(userId, index + 1).subscribe((event) => {
+          writes.push({
+            type: event.type,
+            data: event.data as Record<string, unknown>,
+          });
+        }),
+      );
     }
     await vi.waitFor(() => {
       for (const writes of devices)
-        expect(writes.some((w) => w.includes('event: HELLO'))).toBe(true);
+        expect(writes.some((event) => event.type === 'HELLO')).toBe(true);
     });
     hints.mockClear();
   });
   afterAll(async () => {
+    for (const subscription of subscriptions) subscription.unsubscribe();
     clientFeed.onModuleDestroy();
     sse.onModuleDestroy();
     await database.onApplicationShutdown();
@@ -99,9 +100,7 @@ describe('account feed notification delivery', () => {
         for (const writes of devices)
           expect(
             writes.some(
-              (frame) =>
-                frame.includes(`event: ${event}\n`) &&
-                frame.includes(`"${field}":${head}}`),
+              (frame) => frame.type === event && frame.data[field] === head,
             ),
           ).toBe(true);
       },
@@ -128,29 +127,25 @@ describe('account feed notification delivery', () => {
     expect(state?.lastReadSeq).toBe(4);
   });
 
-  it('delivers both heads changed by blocking and resetting the read window', async () => {
+  it('delivers thread-feed changes from blocking and resetting the read window', async () => {
+    const before = await heads();
     await participants.setBlocked(userId, threadId, true);
     const blocked = await heads();
+    expect(blocked.threadFeedEndId).toBeGreaterThan(before.threadFeedEndId);
+    expect(blocked.clientStateFeedEndId).toBe(before.clientStateFeedEndId);
     await expectDelivered(
-      'STATE_FEED_UPDATED',
-      'feedId',
-      blocked.clientStateFeedEndId,
+      'THREAD_FEED_UPDATED',
+      'threadFeedEndId',
+      blocked.threadFeedEndId,
     );
     await participants.setBlocked(userId, threadId, false);
     const unblocked = await heads();
     expect(unblocked.threadFeedEndId).toBeGreaterThan(blocked.threadFeedEndId);
-    expect(unblocked.clientStateFeedEndId).toBeGreaterThan(
-      blocked.clientStateFeedEndId,
-    );
+    expect(unblocked.clientStateFeedEndId).toBe(blocked.clientStateFeedEndId);
     await expectDelivered(
       'THREAD_FEED_UPDATED',
       'threadFeedEndId',
       unblocked.threadFeedEndId,
-    );
-    await expectDelivered(
-      'STATE_FEED_UPDATED',
-      'feedId',
-      unblocked.clientStateFeedEndId,
     );
   });
 
@@ -215,8 +210,11 @@ describe('account feed notification delivery', () => {
       ).items,
     ).toEqual([expect.objectContaining(latest)]);
     expect(
-      (await feed.queryThreadFeedDelta(other.id, { after: 0 })).items[0].alias,
-    ).toBeNull();
+      await database.db.query.accountThreadState.findFirst({
+        where: eq(accountThreadState.accountId, other.id),
+        columns: { alias: true },
+      }),
+    ).toMatchObject({ alias: null });
   });
 
   it('never publishes an alias from a rolled back transaction', async () => {

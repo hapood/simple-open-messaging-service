@@ -108,7 +108,10 @@ describe('HTTP/2 over TLS', () => {
     database = app.get(DatabaseService);
     port = (app.getHttpServer().address() as { port: number }).port;
 
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     // Seed a user + session directly (registration is closed; the server is TLS-only so supertest can't
     // reach it anyway). The token drives the h2 SSE test below.
     token = (await seedUserWithSession(app, 'h2user', { name: 'H2 User' }))
@@ -138,9 +141,7 @@ describe('HTTP/2 over TLS', () => {
     expect(JSON.parse(res.body).code).toBe(0);
   });
 
-  it('opens the SSE stream over h2 without a Connection-header crash', async () => {
-    // reply.hijack + reply.raw under h2; SseService must omit Connection: keep-alive or
-    // Node http2 throws. The first written frame is the `: connected` comment.
+  it('opens the framework SSE stream over h2 and delivers HELLO', async () => {
     const firstFrame = await new Promise<string>((resolve, reject) => {
       const client = http2.connect(`https://127.0.0.1:${port}`, {
         rejectUnauthorized: false,
@@ -150,14 +151,21 @@ describe('HTTP/2 over TLS', () => {
         ':path': '/api/v1/events',
         authorization: `Bearer ${token}`,
       });
+      let wire = '';
+      req.on('response', (headers) => {
+        expect(headers['content-type']).toBe('text/event-stream');
+        expect(headers.connection).toBeUndefined();
+      });
       req.on('data', (c: Buffer) => {
-        resolve(c.toString());
+        wire += c.toString();
+        if (!wire.includes('event: HELLO')) return;
+        resolve(wire);
         req.close();
         client.close();
       });
       req.on('error', reject);
       req.end();
     });
-    expect(firstFrame).toContain(': connected');
+    expect(firstFrame).toContain('event: HELLO');
   }, 10000);
 });

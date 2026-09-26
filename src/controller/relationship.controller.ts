@@ -120,23 +120,20 @@ export class RelationshipController {
     const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
     if (account.startsWith('!')) {
-      if (domain === 'local' || domain === this.federationService.ourDomain) {
-        return businessEnvelope(
-          BusinessCode.VALIDATION_FAILED,
-          'a local group relationship requires an existing group invitation',
-          { status: 'REJECTED' as const, reason: 'INVALID_TARGET' },
-        );
-      }
       return this.memberIntentResult(
         await this.memberIntents.executeAddressed({
           memberUserId: me,
           target: { account, domain },
           decision: 'REQUESTED',
           note: dto.note ?? '',
-          snapshot: {
-            displayName: dto.displayName!,
-            ...(dto.avatar ? { avatar: dto.avatar } : {}),
-          },
+          ...(domain === 'local' || domain === this.federationService.ourDomain
+            ? {}
+            : {
+                snapshot: {
+                  displayName: dto.displayName!,
+                  ...(dto.avatar ? { avatar: dto.avatar } : {}),
+                },
+              }),
           admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx),
         }),
       );

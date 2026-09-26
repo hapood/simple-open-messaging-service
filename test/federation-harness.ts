@@ -12,6 +12,7 @@ import sharp from 'sharp';
 import { databaseSchema } from '../src/database/database-schema.js';
 import type { Database } from '../src/database/database.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
+import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
 import { ensureDatabase } from './database.js';
@@ -492,10 +493,14 @@ export async function truncateFederationDbs(
   await Promise.all([
     appA.database.transaction(async (tx) => {
       await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+      await tx.execute(sql`DELETE FROM "SystemSetting"
+        WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
       await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
     }),
     appB.database.transaction(async (tx) => {
       await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+      await tx.execute(sql`DELETE FROM "SystemSetting"
+        WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
       await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
     }),
   ]);

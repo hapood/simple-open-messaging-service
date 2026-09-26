@@ -87,8 +87,8 @@ describe('execution measurement with PostgreSQL', () => {
       kind: 'business',
       name: 'group.create',
       outcome: 'SUCCEEDED',
-      sqlExecutionCount: 170,
-      databaseRoundTripCount: 170,
+      sqlExecutionCount: 180,
+      databaseRoundTripCount: 180,
       databaseFailureCount: 0,
       unfinishedDatabaseRoundTripCount: 0,
     });

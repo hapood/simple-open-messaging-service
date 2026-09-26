@@ -457,6 +457,54 @@ export class FederationService {
     );
   }
 
+  async getAuthorizedIntentProfile(
+    account: string,
+    peerAccount: string,
+    rev: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getAuthorizedIntentProfile(
+      account,
+      peerAccount,
+      rev,
+      peerDomain,
+      namespaceId,
+    );
+  }
+
+  async getAuthorizedAccountProfile(
+    account: string,
+    rev: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getAuthorizedAccountProfile(
+      account,
+      rev,
+      peerDomain,
+      namespaceId,
+    );
+  }
+
+  async getAuthorizedGroupMemberProfile(
+    groupAccount: string,
+    memberDomain: string,
+    memberAccount: string,
+    rev: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getAuthorizedGroupMemberProfile(
+      groupAccount,
+      memberDomain,
+      memberAccount,
+      rev,
+      peerDomain,
+      namespaceId,
+    );
+  }
+
   async getStoredProfile(
     account: string,
     domain: string,

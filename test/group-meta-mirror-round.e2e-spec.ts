@@ -5,7 +5,6 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   accountThreadState,
-  clientStateFeed,
   federatedPeer,
   groupMeta,
   groupMetaMemberFeed,
@@ -273,14 +272,6 @@ describe('mirror Group Meta rounds', () => {
       metaRecoveryThroughId: null,
     });
     // Group Meta commits only version references, even before profile content exists.
-    expect(
-      (
-        await database.db
-          .select()
-          .from(clientStateFeed)
-          .where(eq(clientStateFeed.userId, localUserId))
-      ).map((row) => row.eventType),
-    ).toEqual(['THREAD_STATE']);
     expect(
       await database.db.query.profileTable.findFirst({
         where: and(

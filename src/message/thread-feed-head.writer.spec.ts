@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { ThreadFeedHeadWriter } from './thread-feed-head.writer.js';
 
 describe('mention projection in the shared head writer', () => {
@@ -12,6 +14,7 @@ describe('mention projection in the shared head writer', () => {
     messageEndSeq: 5,
     tombstoneEndSeq: 0,
     threadProfileRev: 0,
+    profileSourceId: null,
     blocked: false,
     clearedSeq: null,
     messageVisibleThroughSeq: null,
@@ -120,6 +123,66 @@ describe('mention projection in the shared head writer', () => {
         { ...next, messageEndSeq: 5 },
       ),
     ).toBe(2);
+  });
+
+  it('takes the latest counterpart message revision for P2P without changing group revisions on content fanout', async () => {
+    vi.spyOn(ThreadFeedHeadWriter, 'readStateInTx').mockResolvedValue({
+      ...state,
+      lastMentionSeq: null,
+    });
+    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(null);
+    vi.spyOn(ThreadFeedHeadWriter, 'unreadDeltaInTx').mockResolvedValue(0);
+    vi.spyOn(ThreadFeedHeadWriter, 'previewSeqsInTx').mockResolvedValue([]);
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
+      threadId: 2, messageEndSeq: 6, tombstoneEndSeq: 0, profileRev: 100,
+    });
+    const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
+    expect(update.sql).toContain("CASE WHEN thread.type = 'P2P'");
+    expect(update.sql).toContain('WITH selected_peer_profile AS');
+    expect(update.sql).toContain('SELECT "profileRev" FROM selected_peer_profile');
+    expect(update.sql).toContain('SELECT seq FROM selected_peer_profile');
+    expect(update.sql).toContain('"profileSourceId" = CASE WHEN thread.type = \'P2P\'');
+    expect(update.sql).toContain('"profileRev" IS DISTINCT FROM');
+    expect(update.sql).toContain('message."creatorAccount" = viewer.account');
+    expect(update.sql).toContain('message."creatorDomain" = viewer.domain');
+    expect(update.sql).toContain('ORDER BY message.seq DESC LIMIT 1');
+    expect(update.sql).not.toContain('meta_head."profileRev"');
+    expect(update.params).not.toContain(100);
+  });
+
+  it('does not replace a profile selected by a newer message coordinate', async () => {
+    vi.spyOn(ThreadFeedHeadWriter, 'readStateInTx').mockResolvedValue({
+      ...state,
+      lastMentionSeq: null,
+      profileSourceId: 10,
+    });
+    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(null);
+    vi.spyOn(ThreadFeedHeadWriter, 'unreadDeltaInTx').mockResolvedValue(0);
+    vi.spyOn(ThreadFeedHeadWriter, 'previewSeqsInTx').mockResolvedValue([]);
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
+      threadId: 2, messageEndSeq: 8, tombstoneEndSeq: 0,
+    });
+    const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
+    expect(update.sql).toContain('message.seq > $');
+    expect(update.params).toContain(10);
+    expect(update.sql).toContain('SELECT seq FROM selected_peer_profile');
+  });
+
+  it('compares GROUP_PROFILE feed IDs before revisions and does not rebase on the source ID alone', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    await ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(
+      { execute } as never,
+      { threadId: 2, userIds: [1], groupMetaFeedEndId: 7,
+        profileRev: 3, profileSourceId: 5 },
+    );
+    const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
+    expect(update.sql).toContain('s."profileSourceId" IS NULL');
+    expect(update.sql).toContain('s."profileSourceId" <');
+    expect(update.sql).toContain('s."threadProfileRev" IS DISTINCT FROM');
+    expect(update.sql).toContain('"profileSourceId" = CASE');
+    expect(update.sql).toContain('"groupMetaFeedEndId" = GREATEST');
   });
 
   it('skips duplicate fanout heads entirely', async () => {

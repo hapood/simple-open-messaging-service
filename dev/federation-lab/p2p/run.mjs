@@ -100,7 +100,7 @@ async function assertLabReady() {
     federationLabNodes.map(async (node) => {
       let response;
       try {
-        response = await fetch(`${node.backendBaseUrl}/api/v1/health`, {
+        response = await fetch(`${node.backendBaseUrl}/api/v1/client/compat`, {
           signal: AbortSignal.timeout(3_000),
         });
       } catch (error) {

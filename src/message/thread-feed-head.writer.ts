@@ -19,8 +19,7 @@ function userMentionTargetsAccount(
   const target = account.toLowerCase();
   const id = entityId.toLowerCase();
   if (id === target) return true;
-  if (id.endsWith('@local'))
-    return id.slice(0, -'@local'.length) === target;
+  if (id.endsWith('@local')) return id.slice(0, -'@local'.length) === target;
   const parsed = parseSomfpUserAddress(entityId);
   if (!parsed) return false;
   const own = (ownDomain ?? loadFederationConfig().domain).toLowerCase();
@@ -54,6 +53,7 @@ type MentionProjectionState = {
   messageEndSeq: number;
   tombstoneEndSeq: number;
   threadProfileRev: number;
+  profileSourceId: number | null;
   blocked: boolean;
   clearedSeq: number | null;
   messageVisibleThroughSeq: number | null;
@@ -116,7 +116,7 @@ export class ThreadFeedHeadWriter {
   ) {
     const result = await tx.execute<MentionProjectionState>(sql`
       SELECT a.account, s."unreadCount", s."previewSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
-        s."tombstoneEndSeq", s."threadProfileRev", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
+        s."tombstoneEndSeq", s."threadProfileRev", s."profileSourceId", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
       FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
       JOIN "MessageThread" t ON t.id = s."threadId"
       WHERE s."accountId" = ${accountId} AND s."threadId" = ${threadId}
@@ -252,6 +252,7 @@ export class ThreadFeedHeadWriter {
       userIds: readonly number[];
       groupMetaFeedEndId: number;
       profileRev: number;
+      profileSourceId: number | null;
     },
   ): Promise<number[]> {
     if (input.userIds.length === 0) return [];
@@ -259,12 +260,18 @@ export class ThreadFeedHeadWriter {
       UPDATE "AccountThreadState" s
       SET "groupMetaFeedEndId" = GREATEST(
         COALESCE(s."groupMetaFeedEndId", 0), ${input.groupMetaFeedEndId}),
-        "threadProfileRev" = GREATEST(s."threadProfileRev", ${input.profileRev})
+        "threadProfileRev" = CASE WHEN ${input.profileSourceId}::integer IS NOT NULL
+          AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
+          AND s."threadProfileRev" IS DISTINCT FROM ${input.profileRev}
+          THEN ${input.profileRev} ELSE s."threadProfileRev" END,
+        "profileSourceId" = CASE WHEN ${input.profileSourceId}::integer IS NOT NULL
+          AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
+          AND s."threadProfileRev" IS DISTINCT FROM ${input.profileRev}
+          THEN ${input.profileSourceId} ELSE s."profileSourceId" END
       FROM unnest(${sql.param([...input.userIds])}::integer[]) AS u(id)
       WHERE s."threadId" = ${input.threadId} AND s."accountId" = u.id
         AND s.blocked = false
-        AND (COALESCE(s."groupMetaFeedEndId", 0) < ${input.groupMetaFeedEndId}
-          OR s."threadProfileRev" < ${input.profileRev})
+        AND COALESCE(s."groupMetaFeedEndId", 0) < ${input.groupMetaFeedEndId}
       RETURNING s."accountId" AS "accountId"`);
     return changed.rows.map(({ accountId }) => accountId);
   }
@@ -279,16 +286,25 @@ export class ThreadFeedHeadWriter {
     const result = await tx.execute<{
       metaEndId: number;
       profileRev: number;
+      profileSourceId: number | null;
     }>(sql`
-      SELECT "metaEndId", "profileRev" FROM "GroupMeta"
-      WHERE "threadId" = ${input.threadId} LIMIT 1`);
+      SELECT meta."metaEndId", meta."profileRev",
+        fact."feedId" AS "profileSourceId"
+      FROM "GroupMeta" meta
+      LEFT JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
+        AND fact.operation = 'GROUP_PROFILE'
+        AND (fact.body ->> 'profileRev')::integer = meta."profileRev"
+      WHERE meta."threadId" = ${input.threadId} LIMIT 1`);
     const head = result.rows[0];
     if (!head?.metaEndId) return [];
+    if (head.profileRev > 0 && head.profileSourceId === null)
+      throw new Error('group profile reference has no matching GROUP_PROFILE item');
     return this.advanceGroupMetaCoordinatesInTx(tx, {
       threadId: input.threadId,
       userIds: input.userIds,
       groupMetaFeedEndId: head.metaEndId,
       profileRev: head.profileRev,
+      profileSourceId: head.profileSourceId,
     });
   }
 
@@ -379,23 +395,44 @@ export class ThreadFeedHeadWriter {
       previewChanged = deleted.rows.length > 0;
     }
     await tx.execute(sql`
+      WITH selected_peer_profile AS (
+        SELECT message.seq, message."profileRev"
+        FROM "Message" message
+        JOIN "Account" viewer ON viewer.id = ${accountId}
+        WHERE message."threadId" = ${target.threadId}
+          AND message.seq > ${Math.max(state.messageEndSeq, state.profileSourceId ?? 0)}
+          AND message.seq <= ${target.messageEndSeq}
+          AND message."creatorAccount" IS NOT NULL
+          AND message."creatorDomain" IS NOT NULL
+          AND message."creatorAccount" <> '$system'
+          AND NOT (message."creatorAccount" = viewer.account
+            AND message."creatorDomain" = viewer.domain)
+        ORDER BY message.seq DESC LIMIT 1
+      )
       UPDATE "AccountThreadState" SET
         "previewSeqs" = ${sql.param(previewSeqs)}::integer[],
         "unreadCount" = ${unreadCount},
         "lastMentionSeq" = ${lastMentionSeq},
-        "messageEndSeq" = GREATEST("messageEndSeq", ${target.messageEndSeq}),
-        "tombstoneEndSeq" = GREATEST("tombstoneEndSeq", ${target.tombstoneEndSeq}),
-        "threadProfileRev" = GREATEST("threadProfileRev", ${target.profileRev ?? 0}, meta_head."profileRev")
-      FROM (
-        SELECT COALESCE(MAX("profileRev"), 0) AS "profileRev" FROM "GroupMeta"
-        WHERE "threadId" = ${target.threadId}
-      ) meta_head
-      WHERE "accountId" = ${accountId} AND "threadId" = ${target.threadId}
-        AND blocked = false
-        AND ("messageEndSeq" < ${target.messageEndSeq}
-          OR "tombstoneEndSeq" < ${target.tombstoneEndSeq}
-          OR "lastMentionSeq" IS DISTINCT FROM ${lastMentionSeq}::integer
-          OR "previewSeqs" IS DISTINCT FROM ${sql.param(previewSeqs)}::integer[])`);
+        "messageEndSeq" = GREATEST("AccountThreadState"."messageEndSeq", ${target.messageEndSeq}),
+        "tombstoneEndSeq" = GREATEST("AccountThreadState"."tombstoneEndSeq", ${target.tombstoneEndSeq}),
+        "threadProfileRev" = CASE WHEN thread.type = 'P2P' THEN COALESCE((
+            SELECT "profileRev" FROM selected_peer_profile
+          ), "AccountThreadState"."threadProfileRev")
+          ELSE "AccountThreadState"."threadProfileRev" END,
+        "profileSourceId" = CASE WHEN thread.type = 'P2P'
+          AND EXISTS (SELECT 1 FROM selected_peer_profile
+            WHERE "profileRev" IS DISTINCT FROM ${state.threadProfileRev})
+          THEN (SELECT seq FROM selected_peer_profile)
+          ELSE "AccountThreadState"."profileSourceId" END
+      FROM "MessageThread" thread
+      WHERE "AccountThreadState"."accountId" = ${accountId}
+        AND "AccountThreadState"."threadId" = ${target.threadId}
+        AND thread.id = ${target.threadId}
+        AND "AccountThreadState".blocked = false
+        AND ("AccountThreadState"."messageEndSeq" < ${target.messageEndSeq}
+          OR "AccountThreadState"."tombstoneEndSeq" < ${target.tombstoneEndSeq}
+          OR "AccountThreadState"."lastMentionSeq" IS DISTINCT FROM ${lastMentionSeq}::integer
+          OR "AccountThreadState"."previewSeqs" IS DISTINCT FROM ${sql.param(previewSeqs)}::integer[])`);
     return {
       unreadCountChanged: unreadCount !== state.unreadCount,
       previewChanged,

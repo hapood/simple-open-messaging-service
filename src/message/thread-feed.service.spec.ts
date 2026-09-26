@@ -10,6 +10,8 @@ describe('thread feed database previews', () => {
         createdAt: '2026-09-08T00:00:0' + (seq - 1) + 'Z',
         creatorAccount: 'peer',
         creatorDomain: 'local',
+        creatorNamespaceId: 0,
+        profileRev: seq,
         isDeleted: seq !== 1,
         deletionType:
           seq === 2
@@ -29,6 +31,17 @@ describe('thread feed database previews', () => {
               {
                 threadId: 7,
                 threadFeedId: 10,
+                type: 'P2P',
+                authorityNamespaceId: 0,
+                conversationState: 'ACTIVE',
+                blocked: false,
+                role: null,
+                profileAccount: 'peer',
+                profileDomain: 'local',
+                profileNamespaceId: 0,
+                profileRev: 3,
+                threadProfileRev: 3,
+                profileSourceId: 12,
                 messageEndSeq: 4,
                 tombstoneEndSeq: 2,
                 groupMetaFeedEndId: 4,
@@ -52,9 +65,14 @@ describe('thread feed database previews', () => {
     const { service, read } = setup();
     const result = await service.queryThreadFeedDelta(1, { after: 0 });
     expect(result.items[0]).not.toHaveProperty('previews');
+    expect(result.items[0]).not.toHaveProperty('establishedAt');
     expect(result.items[0]).toMatchObject({
       groupMetaFeedEndId: '4',
       announcementReadFeedId: 2,
+      type: 'P2P',
+      blocked: false,
+      profileSourceId: 12,
+      profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 3 },
     });
     expect(read).not.toHaveBeenCalled();
   });
@@ -69,20 +87,20 @@ describe('thread feed database previews', () => {
       {
         seq: 1,
         createdAt: '2026-09-08T00:00:00.000Z',
-        sender: { account: 'peer', domain: 'local' },
+        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 1 },
         status: 'LIVE',
         text: 'hello',
       },
       {
         seq: 2,
         createdAt: '2026-09-08T00:00:01.000Z',
-        sender: { account: 'peer', domain: 'local' },
+        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 2 },
         status: 'USER_RETRACTION',
       },
       {
         seq: 3,
         createdAt: '2026-09-08T00:00:02.000Z',
-        sender: { account: 'peer', domain: 'local' },
+        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 3 },
         status: 'MODERATION_REMOVAL',
       },
     ]);
@@ -97,6 +115,8 @@ describe('thread feed database previews', () => {
         createdAt: '2026-09-08T00:00:02Z',
         creatorAccount: 'peer',
         creatorDomain: 'local',
+        creatorNamespaceId: 0,
+        profileRev: 3,
         isDeleted: false,
         deletionType: null,
         contentType: 'PURE_TEXT',

@@ -28,6 +28,7 @@ import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.consta
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import {
   parseFederationResourceRequest,
+  parseFederationResourcePath,
   parseFederationFixedResourceRequest,
   parseFederationRange,
   requireAccount,
@@ -525,6 +526,113 @@ export class S2sController {
       );
     }
     return profile;
+  }
+
+  @Get('intent-profiles/:account/:peerAccount/:profileRev')
+  async getIntentProfile(@Req() req: FastifyRequest) {
+    const path = parseFederationResourcePath(req, '/s2s/v1/intent-profiles/', [
+      'account',
+      'peerAccount',
+      'profileRev',
+    ]);
+    const account = requireAccount(path.account, 'account');
+    const peerAccount = requireAccount(path.peerAccount, 'peerAccount');
+    const rev = requireSafeDecimal(path.profileRev, 'profileRev');
+    if (rev < 1) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'profileRev must be positive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const profile = await this.resourceOperation(() =>
+      this.federation.getAuthorizedIntentProfile(
+        account,
+        peerAccount,
+        rev,
+        this.signerDomain(req),
+        req.peer!.namespaceId,
+      ),
+    );
+    if (!profile) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
+    }
+    const { account: owner, domain, displayName, bio, avatar } = profile;
+    return { account: owner, domain, displayName, bio, avatar };
+  }
+
+  @Get('account-profiles/:account/:profileRev')
+  async getExactAccountProfile(@Req() req: FastifyRequest) {
+    const path = parseFederationResourcePath(req, '/s2s/v1/account-profiles/', [
+      'account',
+      'profileRev',
+    ]);
+    const account = requireAccount(path.account, 'account');
+    const rev = requireSafeDecimal(path.profileRev, 'profileRev');
+    if (rev < 1)
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'profileRev must be positive',
+        HttpStatus.BAD_REQUEST,
+      );
+    const profile = await this.resourceOperation(() =>
+      this.federation.getAuthorizedAccountProfile(
+        account,
+        rev,
+        this.signerDomain(req),
+        req.peer!.namespaceId,
+      ),
+    );
+    if (!profile)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
+    const { account: owner, domain, displayName, bio, avatar } = profile;
+    return { account: owner, domain, displayName, bio, avatar };
+  }
+
+  @Get(
+    'group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev',
+  )
+  async getGroupMemberProfile(@Req() req: FastifyRequest) {
+    const path = parseFederationResourcePath(
+      req,
+      '/s2s/v1/group-member-profiles/',
+      ['groupAccount', 'memberDomain', 'memberAccount', 'profileRev'],
+    );
+    const groupAccount = requireAccount(path.groupAccount, 'groupAccount');
+    if (!groupAccount.startsWith('!')) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'groupAccount must be a GroupAccount',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const memberDomain = requireDomain(path.memberDomain, 'memberDomain');
+    const memberAccount = requireUserAccount(
+      path.memberAccount,
+      'memberAccount',
+    );
+    const rev = requireSafeDecimal(path.profileRev, 'profileRev');
+    if (rev < 1) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'profileRev must be positive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const profile = await this.resourceOperation(() =>
+      this.federation.getAuthorizedGroupMemberProfile(
+        groupAccount,
+        memberDomain,
+        memberAccount,
+        rev,
+        this.signerDomain(req),
+        req.peer!.namespaceId,
+      ),
+    );
+    if (!profile)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
+    const { account, domain, displayName, bio, avatar } = profile;
+    return { account, domain, displayName, bio, avatar };
   }
 
   @Get('profiles/:account')

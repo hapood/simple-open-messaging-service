@@ -263,16 +263,16 @@ export class AccountThreadStateService {
       avatar: string;
     }>(sql`
       SELECT pair."threadId", peer.account, peer.domain, peer."namespaceId",
-        COALESCE((state.body->'profile'->>'profileRev')::integer, 0) AS "profileRev",
+        COALESCE(state."threadProfileRev", 0) AS "profileRev",
         COALESCE(snapshot."displayName", peer.account) AS name,
         COALESCE(snapshot.avatar, '') AS avatar
       FROM "RelationshipPair" pair
       JOIN "Account" self_identity ON self_identity.id = ${notUserId}
       JOIN ${p2pPeerRelation(sql`pair`, sql`self_identity`)} peer ON true
-      LEFT JOIN "ClientStateFeed" state ON state."userId" = self_identity.id
-        AND state."eventType" = 'THREAD_STATE' AND state."subjectAccount" = pair."threadId"::text
+      LEFT JOIN "AccountThreadState" state ON state."accountId" = self_identity.id
+        AND state."threadId" = pair."threadId"
       LEFT JOIN "Profile" snapshot ON snapshot.account = peer.account AND snapshot.domain = peer.domain
-        AND snapshot."namespaceId" = peer."namespaceId" AND snapshot."profileRev" = (state.body->'profile'->>'profileRev')::integer
+        AND snapshot."namespaceId" = peer."namespaceId" AND snapshot."profileRev" = state."threadProfileRev"
       WHERE pair.kind = 'P2P' AND pair."threadId" = ANY(${sql.param(threadIds)}::integer[])
     `);
     return rows.rows;

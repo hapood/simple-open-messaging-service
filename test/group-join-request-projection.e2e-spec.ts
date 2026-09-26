@@ -276,6 +276,13 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
     expect(history.body.data.data[0].status).toBe('WITHDRAWN');
+
+    const lateJoin = await request(app.getHttpServer())
+      .post('/api/v1/group/join-request')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ groupId: threadId });
+    expect(lateJoin.body.code).toBe(BusinessCode.NOT_FOUND);
+    expect(lateJoin.body.data?.status).not.toBe('APPLIED');
   });
 
   it('updates an existing application on manager ACK without creating an invitation projection', async () => {

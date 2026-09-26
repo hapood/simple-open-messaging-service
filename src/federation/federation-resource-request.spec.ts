@@ -6,7 +6,9 @@ import {
   encodeFederationResourceComponent,
   parseFederationRange,
   parseFederationResourceRequest,
+  parseFederationResourcePath,
   requireBundleId,
+  requireAccount,
   requireSafeDecimal,
 } from './federation-resource-request.js';
 
@@ -113,6 +115,37 @@ describe('Federation resource raw request validation', () => {
         spec,
       ),
     );
+  });
+
+  it('parses independently encoded exact-profile path segments without a query', () => {
+    const path = '/s2s/v1/intent-profiles/';
+    expect(
+      parseFederationResourcePath(
+        request(`${path}%21group/alice/7`),
+        path,
+        ['account', 'peerAccount', 'profileRev'],
+      ),
+    ).toEqual({ account: '!group', peerAccount: 'alice', profileRev: '7' });
+    for (const url of [
+      `${path}!group/alice/7`,
+      `${path}%21group/alice/7?rev=7`,
+      `${path}%21group/alice/7/extra`,
+      `${path}%21group//7`,
+    ])
+      expectMalformed(() =>
+        parseFederationResourcePath(
+          request(url),
+          path,
+          ['account', 'peerAccount', 'profileRev'],
+        ),
+      );
+    // One decoding pass leaves a literal percent sign, not a group account.
+    const encodedPercent = parseFederationResourcePath(
+      request(`${path}%2521group/alice/7`),
+      path,
+      ['account', 'peerAccount', 'profileRev'],
+    );
+    expectMalformed(() => requireAccount(encodedPercent.account, 'account'));
   });
 
   it('rejects values outside the safe seq and bundle ID bounds', () => {

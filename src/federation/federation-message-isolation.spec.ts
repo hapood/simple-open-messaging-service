@@ -64,6 +64,7 @@ function createMessagePageService() {
     validator: new FederationInboundMessageValidatorService(),
     routes,
     inboundMessageStore: { store: vi.fn() },
+    deletedMessages: { applyPendingReceiptInTx: vi.fn() },
   });
   return service;
 }

@@ -114,7 +114,7 @@ async function assertLabReady() {
     [applicantNode, ownerNode].map(async (node) => {
       let response;
       try {
-        response = await fetch(`${node.backendBaseUrl}/api/v1/health`, {
+        response = await fetch(`${node.backendBaseUrl}/api/v1/client/compat`, {
           signal: AbortSignal.timeout(3_000),
         });
       } catch (error) {
@@ -124,7 +124,7 @@ async function assertLabReady() {
       }
       if (!response.ok) {
         throw new Error(
-          `${node.domain} health returned HTTP ${response.status}`,
+          `${node.domain} client compatibility returned HTTP ${response.status}`,
         );
       }
     }),
@@ -449,7 +449,7 @@ function findJoinSystemMessage(messages, applicantAccount, applicantDomain) {
 }
 
 /** A client that stays idle until an SSE wake-up arrives and then pulls exactly like the
- *  shipped apps: THREAD_FEED_UPDATED → POST /thread/feed-delta, STATE_FEED_UPDATED →
+ *  shipped apps: THREAD_FEED_UPDATED → POST /thread-feed, STATE_FEED_UPDATED →
  *  GET /user/state-feed (delta). Every changed GROUP thread is read once through
  *  POST /query-messages until the GROUP_JOINED system message appears. Concurrent wake-ups
  *  coalesce into one follow-up pull, mirroring the client's in-flight guard.
@@ -566,7 +566,7 @@ class SseDrivenFeedClient {
   async #pullThreadFeed() {
     this.pulls += 1;
     const page = await this.#user.post(
-      '/thread/feed-delta',
+      '/thread-feed',
       { after: this.#threadCursor, take: 200 },
       'pull thread feed delta',
     );

@@ -216,7 +216,7 @@ async function main() {
   await save();
   try {
     for (const node of federationLabNodes) {
-      const running = await fetch(`${node.backendBaseUrl}/api/v1/health`, {
+      const running = await fetch(`${node.backendBaseUrl}/api/v1/client/compat`, {
         signal: AbortSignal.timeout(1000),
       }).then(
         () => true,

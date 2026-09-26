@@ -197,7 +197,7 @@
         "the discarded gap is absent rather than pending",
         "the discarded gap does not imply source-side deletion",
         "role-and-profile-reference group-meta departures commit before messages become visible",
-        "message profiles are fetched lazily by exact message coordinate"
+        "group member profile references advance through a later allocated Group Meta coordinate after the exact snapshot is available"
       ]
     },
     {
@@ -224,7 +224,7 @@
       ]
     },
     {
-      "name": "profile lookup is lazy and bound to current readable message evidence",
+      "name": "group origin resolves member message evidence before publishing a new Meta reference",
       "steps": [
         {
           "request": "messages",
@@ -237,7 +237,25 @@
           "thread": "!team",
           "account": "alice@a.example",
           "profileRev": 3,
+          "signerIsGroupOrigin": true,
+          "membershipConfirmed": true,
           "messageServiceableToSigner": true,
+          "commit": true
+        },
+        {
+          "action": "publish-member-upsert",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "allocateNewFeedId": true
+        },
+        {
+          "request": "group-member-profile",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "authorizedGroupAudience": true,
+          "canonicalCurrentGroupMetaReference": true,
           "commit": true
         },
         {
@@ -245,14 +263,17 @@
           "thread": "!team",
           "account": "alice@a.example",
           "profileRev": 4,
+          "signerIsGroupOrigin": true,
           "messageServiceableToSigner": false,
           "responseCode": 10001,
           "commit": false
         }
       ],
       "assertions": [
-        "profile revision 3 is revealed only when the consumer needs it",
-        "current readable message evidence and current thread authorization are both verified",
+        "member messages can be distributed before the profile snapshot is resolved",
+        "only a confirmed group origin may use group-message evidence at the member home",
+        "a changed member Meta reference receives a new feed ID after the exact snapshot is available",
+        "a group peer resolves member bytes at the group origin, not the member home",
         "a profile revision outside the current readable message interval is unavailable",
         "no current-profile fallback is returned"
       ]
@@ -330,7 +351,7 @@
         "a rejoined current member may temporarily use an account-domain placeholder in either direction",
         "group meta supplies role and an exact profile reference but no display bytes",
         "group-member profile resolution uses the exact revision selected by committed group meta",
-        "message evidence profiles are requested lazily with exact account and revision",
+        "member-message revisions are published through newly allocated Group Meta coordinates after exact snapshot resolution",
         "group-meta departures carry no body, role, or profile revision"
       ]
     }

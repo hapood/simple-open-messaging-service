@@ -857,15 +857,17 @@ describe('canonical Group Meta feed', () => {
       );
 
     await expect(
-      publisher.resolveAllocatedMemberProfile(
-        peerDomain,
-        peerNamespaceId,
-        groupAccount,
-        ownerAccount,
-        localDomain,
-        1,
-      ),
-    ).resolves.toBe(0);
+      publisher.resolveProfileReference(peerDomain, peerNamespaceId, groupAccount, {
+        type: 'MEMBER',
+        account: ownerAccount,
+        domain: localDomain,
+      }),
+    ).resolves.toEqual({
+      account: ownerAccount,
+      domain: localDomain,
+      namespaceId: 0,
+      profileRev: 1,
+    });
     await database.db
       .update(relationshipPair)
       .set({ active: true })

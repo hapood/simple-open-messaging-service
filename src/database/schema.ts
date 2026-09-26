@@ -568,6 +568,9 @@ export const accountThreadState = pgTable(
      * last published to this member on the thread feed. Client-visible: any
      * writer must let the allocation trigger see the change. */
     threadProfileRev: integer().default(0).notNull(),
+    /** Selected GROUP_PROFILE feed ID for a group, or selected peer message seq
+     * for P2P. Null when the profile was initialized from an intent. */
+    profileSourceId: integer(),
     muted: boolean().default(false).notNull(),
     /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
     blocked: boolean().default(false).notNull(),
@@ -629,6 +632,10 @@ export const accountThreadState = pgTable(
     check(
       'AccountThreadState_threadProfileRev_check',
       sql`${table.threadProfileRev} >= 0`,
+    ),
+    check(
+      'AccountThreadState_profileSourceId_check',
+      sql`${table.profileSourceId} IS NULL OR ${table.profileSourceId} > 0`,
     ),
     check(
       'AccountThreadState_lastMentionSeq_check',
@@ -1887,6 +1894,9 @@ export const groupMetaMemberFeed = pgTable(
     memberDomain: varchar({ length: 63 }).notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
+    /** Backend-only member-message coordinate behind the currently published
+     * profile revision. Null for an intent-initialized membership. */
+    profileSourceSeq: integer(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1910,6 +1920,10 @@ export const groupMetaMemberFeed = pgTable(
       name: 'GroupMetaMemberFeed_threadId_fkey',
     }).onDelete('cascade'),
     check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'GroupMetaMemberFeed_profileSourceSeq_check',
+      sql`${table.profileSourceSeq} IS NULL OR ${table.profileSourceSeq} > 0`,
+    ),
     check(
       'GroupMetaMemberFeed_body_check',
       sql`jsonb_typeof(${table.body}) = 'object'

@@ -392,7 +392,7 @@ export class MarkReadDto {
 }
 
 /** Pull complete thread snapshots in a bounded account feed range. */
-export class ThreadFeedDeltaDto {
+export class ThreadFeedQueryDto {
   @ApiPropertyOptional({
     default: 0,
     minimum: 0,

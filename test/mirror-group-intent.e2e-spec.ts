@@ -820,6 +820,8 @@ describe('mirror group intent application', () => {
     expect(JSON.parse(aliceNotices[0]!.content as string).member).toEqual({
       account: alice.account,
       domain: 'local',
+      namespaceId: 0,
+      profileRev: 1,
     });
 
     await run(bob, revocationBody());

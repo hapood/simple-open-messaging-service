@@ -21,7 +21,7 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD' | 'THREAD_STATE';
+  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;
@@ -55,8 +55,8 @@ export class ClientStateFeedService implements OnModuleDestroy {
   ) {}
 
   notifyFeedUpdated(pending: PendingClientStateFeedUpdate): void {
-    // Conversation mutations can advance both independent feeds. A repeated
-    // state head must not suppress a newer read/preview head.
+    // Relationship and conversation mutations can advance either feed. A repeated
+    // relationship head must not suppress a newer thread snapshot head.
     if (pending.threadFeedEndId !== undefined)
       this.sse.onThreadFeedUpdated(pending.userId, {
         threadFeedEndId: pending.threadFeedEndId,
@@ -348,6 +348,9 @@ export class ClientStateFeedService implements OnModuleDestroy {
     afterFeedId: number,
     targetFeedId: number,
   ) {
+    // Expired request projections are removed on devices. Do not replay their
+    // compacted intent heads during a full rebuild (or a delayed delta pull).
+    // Other event types are durable snapshots and must remain available.
     return this.database.db
       .select()
       .from(clientStateFeed)
@@ -356,6 +359,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
           eq(clientStateFeed.userId, userId),
           gt(clientStateFeed.feedId, afterFeedId),
           lte(clientStateFeed.feedId, targetFeedId),
+          sql`(${clientStateFeed.eventType} <> 'RELATIONSHIP_INTENT' OR ${clientStateFeed.updatedAt} > CURRENT_TIMESTAMP - INTERVAL '7 days')`,
         ),
       )
       .orderBy(asc(clientStateFeed.feedId));

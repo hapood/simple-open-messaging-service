@@ -182,7 +182,7 @@ describe('POST /thread/mark-read authoritative state', () => {
       lastReadSeq: 1000,
     });
     const page = await request(app.getHttpServer())
-      .post('/api/v1/thread/feed-delta')
+      .post('/api/v1/thread-feed')
       .set('Authorization', `Bearer ${token}`)
       .send({ after: 0, take: 100 });
     expect(page.body.code).toBe(0);
@@ -198,7 +198,7 @@ describe('POST /thread/mark-read authoritative state', () => {
   it('rejects negative positions and attention cursors above the account head', async () => {
     expect((await commit(-1)).body.code).not.toBe(0);
     const response = await request(app.getHttpServer())
-      .post('/api/v1/thread/feed-delta')
+      .post('/api/v1/thread-feed')
       .set('Authorization', `Bearer ${token}`)
       .send({ after: 2147483647 });
     expect(response.body.code).toBe(30007);

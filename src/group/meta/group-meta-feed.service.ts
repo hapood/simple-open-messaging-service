@@ -122,6 +122,10 @@ export class GroupMetaFeedService {
         FROM coordinate
         ON CONFLICT ("threadId", "memberAccount", "memberDomain")
         DO UPDATE SET "feedId" = EXCLUDED."feedId",
+          "profileSourceSeq" = CASE
+            WHEN "GroupMetaMemberFeed".operation = 'MEMBER_DEPART'
+              AND EXCLUDED.operation = 'MEMBER_UPSERT' THEN NULL
+            ELSE "GroupMetaMemberFeed"."profileSourceSeq" END,
           operation = EXCLUDED.operation, body = EXCLUDED.body,
           "updatedAt" = CURRENT_TIMESTAMP
         RETURNING "feedId"

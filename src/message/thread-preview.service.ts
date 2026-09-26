@@ -68,15 +68,17 @@ export class ThreadPreviewService {
     const result = await tx.execute<{
       seq: number;
       createdAt: string;
-      creatorAccount: string | null;
-      creatorDomain: string | null;
+      creatorAccount: string;
+      creatorDomain: string;
+      creatorNamespaceId: number;
+      profileRev: number;
       isDeleted: boolean;
       deletionType: MessageDeleteType | null;
       contentType: string | null;
       content: string | null;
     }>(sql`
       SELECT m.seq, m."createdAt"::text AS "createdAt", m."creatorAccount", m."creatorDomain",
-        m."isDeleted", d.type AS "deletionType",
+        m."creatorNamespaceId", m."profileRev", m."isDeleted", d.type AS "deletionType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m."contentType" END AS "contentType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m.content::text END AS content
       FROM "AccountThreadState" s

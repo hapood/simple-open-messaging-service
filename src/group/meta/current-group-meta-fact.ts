@@ -23,6 +23,11 @@ export async function upsertCurrentGroupMetaFactsInTx(
         feedId: sql`EXCLUDED."feedId"`,
         operation: sql`EXCLUDED.operation`,
         body: sql`EXCLUDED.body`,
+        // Departures retain the old message coordinate; rejoining starts a
+        // new membership interval and must not inherit that coordinate.
+        profileSourceSeq: sql`CASE WHEN "GroupMetaMemberFeed".operation = 'MEMBER_DEPART'
+          AND EXCLUDED.operation = 'MEMBER_UPSERT' THEN NULL
+          ELSE "GroupMetaMemberFeed"."profileSourceSeq" END`,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       },
     });

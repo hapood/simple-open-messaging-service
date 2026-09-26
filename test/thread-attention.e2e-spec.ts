@@ -13,6 +13,10 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
   accountThreadState,
+  groupAccount,
+  groupMeta,
+  groupMetaMemberFeed,
+  relationshipIntent,
   messageThread,
   message,
   durableTask,
@@ -122,6 +126,134 @@ describe('transactional thread attention', () => {
     await progress.projectActiveAccount(taskId, target, userId);
     expect(await state()).toMatchObject(target);
     expect((await state()).threadFeedId).toBeGreaterThan(blocked.threadFeedId);
+  });
+
+  it('publishes block and lifecycle changes in complete thread snapshots with no unread', async () => {
+    const initial = await state();
+    expect(initial.unreadCount).toBe(0);
+    const first = await service.queryThreadFeedDelta(userId, { after: 0 });
+    expect(first.items[0]).toMatchObject({
+      threadId,
+      type: 'P2P',
+      blocked: false,
+      conversationState: 'ACTIVE',
+      profile: { account: 'peer', domain: 'local', namespaceId: 0 },
+    });
+
+    await db.db.update(accountThreadState)
+      .set({ blocked: true })
+      .where(eq(accountThreadState.accountId, userId));
+    const blocked = await state();
+    expect(blocked.unreadCount).toBe(0);
+    expect(blocked.threadFeedId).toBeGreaterThan(initial.threadFeedId);
+    expect((await service.queryThreadFeedDelta(userId, {
+      after: initial.threadFeedId,
+    })).items[0]).toMatchObject({ blocked: true, unreadCount: 0 });
+
+    await db.db.update(relationshipPair)
+      .set({ active: false })
+      .where(eq(relationshipPair.threadId, threadId));
+    const revoked = await state();
+    expect(revoked.threadFeedId).toBeGreaterThan(blocked.threadFeedId);
+    expect((await service.queryThreadFeedDelta(userId, {
+      after: blocked.threadFeedId,
+    })).items[0]).toMatchObject({
+      conversationState: 'READ_ONLY',
+      blocked: true,
+      profile: first.items[0].profile,
+    });
+  });
+
+  it('ignores group intents for avatar revisions and advances only from group meta', async () => {
+    const [control] = await db.db.insert(groupAccount)
+      .values({ account: '!avatar-seed' }).returning();
+    const [group] = await db.db.insert(messageThread)
+      .values({ type: 'GROUP', groupAccount: control.account, groupDomain: 'local',
+        groupAccountId: control.id, updatedAt: new Date() })
+      .returning();
+    const [pair] = await db.db.insert(relationshipPair).values({
+      kind: 'GROUP_MEMBER', threadId: group.id, active: false,
+      endpointAType: 'GROUP', endpointAAccount: control.account,
+      endpointADomain: 'local', endpointANamespaceId: 0,
+      endpointBType: 'USER', endpointBAccount: 'reader',
+      endpointBDomain: 'local', endpointBNamespaceId: 0,
+    }).returning();
+    await db.db.insert(relationshipIntent).values({
+      pairId: pair.id, authorSide: 'A', status: 'ACCEPTED',
+      profileRev: 99, messageEndSeq: 0, tombstoneEndSeq: 0,
+      requestedAt: new Date(), expiresAt: null,
+    });
+    await db.db.insert(accountThreadState).values({ accountId: userId, threadId: group.id });
+    await db.db.update(relationshipPair).set({ active: true, established: true })
+      .where(eq(relationshipPair.id, pair.id));
+    const initial = await db.db.query.accountThreadState.findFirst({
+      where: eq(accountThreadState.threadId, group.id),
+    });
+    expect(initial?.threadProfileRev).toBe(0);
+    expect((await service.queryThreadFeedDelta(userId, { after: 0 })).items
+      .find((item) => item.threadId === group.id)).toMatchObject({
+        type: 'GROUP', profile: { account: control.account, profileRev: 0 },
+      });
+
+    await db.db.insert(groupMeta).values({ threadId: group.id, metaEndId: 1, profileRev: 3 });
+    await db.db.insert(groupMetaMemberFeed).values({
+      threadId: group.id, feedId: 1, memberAccount: control.account,
+      memberDomain: 'local', operation: 'GROUP_PROFILE', body: { profileRev: 3 },
+    });
+    await db.db.transaction((tx) => ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(tx, {
+      threadId: group.id, userIds: [userId], groupMetaFeedEndId: 1, profileRev: 3,
+      profileSourceId: 1,
+    }));
+    const updated = await db.db.query.accountThreadState.findFirst({
+      where: eq(accountThreadState.threadId, group.id),
+    });
+    expect(updated?.threadProfileRev).toBe(3);
+    expect(updated?.profileSourceId).toBe(1);
+    expect(updated!.threadFeedId).toBeGreaterThan(initial!.threadFeedId);
+    expect((await service.queryThreadFeedDelta(userId, {
+      after: initial!.threadFeedId,
+    })).items.find((item) => item.threadId === group.id)).toMatchObject({
+      profile: { account: control.account, profileRev: 3 },
+    });
+    await db.db.update(groupMeta)
+      .set({ metaEndId: 2, profileRev: 1 })
+      .where(eq(groupMeta.threadId, group.id));
+    await db.db.update(groupMetaMemberFeed)
+      .set({ feedId: 2, body: { profileRev: 1 } })
+      .where(eq(groupMetaMemberFeed.threadId, group.id));
+    await db.db.transaction((tx) =>
+      ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
+        threadId: group.id,
+        userIds: [userId],
+      }),
+    );
+    expect(await db.db.query.accountThreadState.findFirst({
+      where: eq(accountThreadState.threadId, group.id),
+    })).toMatchObject({ groupMetaFeedEndId: 2, threadProfileRev: 1, profileSourceId: 2 });
+  });
+
+  it('takes the latest counterpart message revision rather than the maximum revision', async () => {
+    await put(1, 'older profile', { profileRev: 7 });
+    await put(2, 'newer message', { profileRev: 5 });
+    await projectCurrentHeads();
+    expect(await state()).toMatchObject({
+      messageEndSeq: 2,
+      threadProfileRev: 5,
+      profileSourceId: 2,
+    });
+    await put(3, 'same profile', { profileRev: 5 });
+    await projectCurrentHeads();
+    expect(await state()).toMatchObject({
+      messageEndSeq: 3,
+      threadProfileRev: 5,
+      profileSourceId: 2,
+    });
+    await put(4, 'different profile', { profileRev: 4 });
+    await projectCurrentHeads();
+    expect(await state()).toMatchObject({
+      threadProfileRev: 4,
+      profileSourceId: 4,
+    });
   });
 
   it('publishes heads through the same feed even when unread stays zero', async () => {
@@ -462,7 +594,10 @@ describe('transactional thread attention', () => {
     expect(delta.items[0].previews).toEqual([
       expect.objectContaining({
         seq: 1,
-        sender: { account: '$system', domain: 'local' },
+        sender: expect.objectContaining({
+          account: '$system',
+          domain: 'local',
+        }),
         text: '[System message]',
       }),
     ]);
@@ -758,6 +893,19 @@ describe('transactional thread attention', () => {
         .insert(messageThread)
         .values({ type: 'P2P', updatedAt: new Date() })
         .returning();
+      await db.db.insert(relationshipPair).values({
+        kind: 'P2P',
+        threadId: thread.id,
+        active: true,
+        endpointAType: 'USER',
+        endpointAAccount: `peer-${i}`,
+        endpointADomain: 'local',
+        endpointANamespaceId: 0,
+        endpointBType: 'USER',
+        endpointBAccount: 'reader',
+        endpointBDomain: 'local',
+        endpointBNamespaceId: 0,
+      });
       await db.db.insert(accountThreadState).values({
         accountId: userId,
         threadId: thread.id,

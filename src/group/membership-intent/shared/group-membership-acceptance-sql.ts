@@ -108,7 +108,8 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       WHERE p."memberChanged"
       ON CONFLICT ("threadId", "memberAccount", "memberDomain")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
-        operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
+        operation = EXCLUDED.operation, body = EXCLUDED.body,
+        "profileSourceSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), profile_fact AS (
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
@@ -122,6 +123,14 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
+    ), group_profile_source AS MATERIALIZED (
+      SELECT "feedId" AS "profileSourceId" FROM profile_fact
+      UNION ALL
+      SELECT fact."feedId" AS "profileSourceId"
+      FROM "GroupMetaMemberFeed" fact
+      WHERE fact."threadId" = ${input.threadId} AND fact.operation = 'GROUP_PROFILE'
+        AND (fact.body ->> 'profileRev')::integer = ${input.groupProfileRev}
+        AND NOT EXISTS (SELECT 1 FROM profile_fact)
     ), seq_alloc AS (
       UPDATE "MessageThread" t SET
         "updatedAt" = CURRENT_TIMESTAMP,
@@ -153,17 +162,22 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
     local_member AS MATERIALIZED (
       SELECT * FROM "Account" WHERE account = ${input.memberAccount} AND domain = 'local' AND "namespaceId" = 0
     ), member_state AS (
-      INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq", "groupMetaFeedEndId", "updatedAt")
+      INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq", "groupMetaFeedEndId", "threadProfileRev", "profileSourceId", "updatedAt")
       SELECT a.id, ${input.threadId}, p.role::"GroupRole",
         CASE WHEN a.availability = 'AVAILABLE' AND NOT s."wasActive" THEN s."curSeq" ELSE 0 END,
-        h."metaEndId", CURRENT_TIMESTAMP
+        h."metaEndId", ${input.groupProfileRev}, (SELECT "profileSourceId" FROM group_profile_source), CURRENT_TIMESTAMP
       FROM local_member a CROSS JOIN roster_plan p CROSS JOIN join_source s
+      CROSS JOIN accepted_intent i
       CROSS JOIN recipient_prepared
       CROSS JOIN (SELECT count(*) FROM pair_change) pair_barrier
       CROSS JOIN (SELECT count(*) FROM member_fact) roster_barrier
       CROSS JOIN meta_head h
       ON CONFLICT ("accountId", "threadId") DO UPDATE SET
         role = EXCLUDED.role, "messageVisibleThroughSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP,
+        "threadProfileRev" = CASE WHEN (SELECT "wasActive" FROM join_source)
+          THEN "AccountThreadState"."threadProfileRev" ELSE EXCLUDED."threadProfileRev" END,
+        "profileSourceId" = CASE WHEN (SELECT "wasActive" FROM join_source)
+          THEN "AccountThreadState"."profileSourceId" ELSE EXCLUDED."profileSourceId" END,
         "groupMetaFeedEndId" = GREATEST(
           COALESCE("AccountThreadState"."groupMetaFeedEndId", 0), EXCLUDED."groupMetaFeedEndId"),
         "lastReadSeq" = CASE WHEN (SELECT availability = 'AVAILABLE' FROM local_member) AND NOT (SELECT "wasActive" FROM join_source)

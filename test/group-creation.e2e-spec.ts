@@ -169,7 +169,12 @@ describe('group creation', () => {
     });
     expect(JSON.parse(creation!.content)).toEqual({
       type: 'GROUP_CREATED',
-      creator: { account: owner.account, domain: 'local' },
+      creator: {
+        account: owner.account,
+        domain: 'local',
+        namespaceId: 0,
+        profileRev: 1,
+      },
     });
     expect(
       await database.db.query.accountThreadState.findFirst({

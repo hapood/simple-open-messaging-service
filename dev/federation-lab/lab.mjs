@@ -375,7 +375,7 @@ try {
       // into the repository root instead; those encoded an environment-specific
       // mount path (container vs host) and broke startup after switching, so
       // retire any that are still around.
-      for (const name of ['package.json', 'config', 'shell-bundle']) {
+      for (const name of ['package.json', 'config']) {
         const legacy = join(nodeDir, name);
         try {
           if (lstatSync(legacy).isSymbolicLink()) unlinkSync(legacy);
@@ -462,7 +462,7 @@ try {
             Promise.all(
               nodes.map((node) =>
                 waitForUrl(
-                  `http://127.0.0.1:${node.backendPort}/api/v1/health`,
+                  `http://127.0.0.1:${node.backendPort}/api/v1/client/compat`,
                   signal,
                 ),
               ),
@@ -500,7 +500,7 @@ try {
                 Promise.all(
                   nodes.map((node) =>
                     waitForUrl(
-                      `http://127.0.0.1:${node.backendPort}/api/v1/health`,
+                      `http://127.0.0.1:${node.backendPort}/api/v1/client/compat`,
                       signal,
                     ),
                   ),

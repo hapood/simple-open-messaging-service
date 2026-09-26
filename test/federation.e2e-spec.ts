@@ -2231,7 +2231,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(groupRequestProjection.direction, 'APPLICATION'),
             ),
           }),
-        ).toMatchObject({ status: 'REVOKED' });
+        ).toMatchObject({ status: 'REJECTED' });
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2324,7 +2324,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(groupRequestProjection.direction, 'APPLICATION'),
           ),
         });
-        expect(row).toMatchObject({ status: 'REVOKED' });
+        expect(row).toMatchObject({ status: 'WITHDRAWN' });
         // feedId numbers the application; concluding that application flips
         // its status without allocating another request number.
         expect(row!.feedId).toBe(renewedProjection.feedId);

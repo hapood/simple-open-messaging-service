@@ -27,7 +27,7 @@ import {
   MessageQueryPageDto,
   MessageResponseDto,
   MessageTombstoneQueryPageDto,
-  ThreadFeedDeltaPageDto,
+  ThreadFeedPageDto,
   ThreadAliasResultDto,
   ThreadReadPositionResultDto,
 } from '../dto/response.dto.js';
@@ -47,7 +47,7 @@ import {
   QueryMediaStagesDto,
   QueryMessagesDto,
   MarkReadDto,
-  ThreadFeedDeltaDto,
+  ThreadFeedQueryDto,
   MediaStatusDto,
   RelocalizeMediaDto,
   SetMutedDto,
@@ -808,14 +808,14 @@ export class MessageController {
   @Throttle('thread.feed-delta')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('thread/feed-delta')
-  @ApiResultResponse(ThreadFeedDeltaPageDto)
+  @Post('thread-feed')
+  @ApiResultResponse(ThreadFeedPageDto)
   @ApiOperation({
     summary: 'Fetch unified thread snapshots in a bounded feed range',
   })
-  async threadFeedDelta(
+  async threadFeed(
     @Request() req: FastifyRequest,
-    @Body() dto: ThreadFeedDeltaDto,
+    @Body() dto: ThreadFeedQueryDto,
   ) {
     return this.attention.queryThreadFeedDelta(req.user.userId, dto);
   }

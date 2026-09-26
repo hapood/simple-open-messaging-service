@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
 import {
   groupAccount,
+  groupMeta,
   messageThread,
   profileTable,
 } from '../database/schema.js';
@@ -90,7 +91,12 @@ describe('GroupService creation', () => {
       owner: 11,
     });
 
-    expect(insertedTables).toEqual([groupAccount, messageThread, profileTable]);
+    expect(insertedTables).toEqual([
+      groupAccount,
+      messageThread,
+      profileTable,
+      groupMeta,
+    ]);
     expect(execute).toHaveBeenCalledOnce();
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,

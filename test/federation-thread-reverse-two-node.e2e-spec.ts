@@ -1485,6 +1485,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       updatedAt: new Date(),
     });
     const hiddenText = 'history-before-restricted-authorization';
+    let hiddenThrough: number;
     const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
       'restricted-federation-history',
       async (threadId) => {
@@ -1498,6 +1499,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
             clientMessageId: randomUUID(),
           });
         expect(sent.body.code).toBe(BusinessCode.OK);
+        hiddenThrough = (await appA.database.query.messageThread.findFirst({
+          where: eq(messageThread.id, threadId),
+          columns: { curSeq: true },
+        }))!.curSeq;
       },
     );
 
@@ -1510,7 +1515,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
               eq(threadAudience.targetDomain, FED_DOMAIN_B),
             ),
           }),
-        ).toMatchObject({ messageAccessAfterSeq: 1 });
+        ).toMatchObject({ messageAccessAfterSeq: hiddenThrough });
       },
       { timeout: 20_000, interval: 100 },
     );

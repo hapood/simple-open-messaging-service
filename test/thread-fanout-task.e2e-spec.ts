@@ -322,7 +322,7 @@ describe('transactional thread fanout queue', () => {
     await database.db.transaction(async (tx) => {
       const boundary = await messages.writeSystemMessageInTx(tx, threadId, {
         type: 'GROUP_LEFT',
-        member: member.id,
+        member: participant(member),
       });
       await tx
         .update(accountThreadState)

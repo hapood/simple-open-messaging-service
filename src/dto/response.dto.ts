@@ -89,10 +89,15 @@ export class ThreadFeedPreviewDto {
   @ApiProperty({ format: 'date-time' }) createdAt!: string;
   @ApiProperty({
     type: 'object',
-    properties: { account: { type: 'string' }, domain: { type: 'string' } },
-    required: ['account', 'domain'],
+    properties: {
+      account: { type: 'string' },
+      domain: { type: 'string' },
+      namespaceId: { type: 'number' },
+      profileRev: { type: 'number' },
+    },
+    required: ['account', 'domain', 'namespaceId', 'profileRev'],
   })
-  sender!: { account: string; domain: string };
+  sender!: { account: string; domain: string; namespaceId: number; profileRev: number };
   @ApiProperty({ enum: ['LIVE', 'USER_RETRACTION', 'MODERATION_REMOVAL'] })
   status!: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   @ApiProperty({ required: false }) text?: string;
@@ -105,8 +110,23 @@ export class ThreadAliasResultDto {
   @ApiProperty({ type: String, nullable: true }) alias!: string | null;
 }
 
-/** Complete server thread snapshot; content and attention share one feed coordinate. */
+/** Exact counterpart or group identity resolved from the established relationship. */
+export class ThreadFeedProfileDto {
+  @ApiProperty() account!: string;
+  @ApiProperty() domain!: string;
+  @ApiProperty({ minimum: 0 }) namespaceId!: number;
+  @ApiProperty({ minimum: 0 }) profileRev!: number;
+}
+
+/** Complete server thread snapshot; structure and attention share one feed coordinate. */
 export class ThreadFeedStateDto {
+  @ApiProperty({ enum: ['P2P', 'GROUP'] }) type!: 'P2P' | 'GROUP';
+  @ApiProperty({ minimum: 0 }) authorityNamespaceId!: number;
+  @ApiProperty({ enum: ['ACTIVE', 'READ_ONLY'] }) conversationState!: 'ACTIVE' | 'READ_ONLY';
+  @ApiProperty() blocked!: boolean;
+  @ApiProperty({ enum: ['OWNER', 'ADMIN', 'MEMBER'], nullable: true })
+  role!: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+  @ApiProperty({ type: ThreadFeedProfileDto }) profile!: ThreadFeedProfileDto;
   @ApiProperty({ minimum: 0 }) threadProfileRev!: number;
   @ApiProperty({ type: String, nullable: true }) alias!: string | null;
   @ApiProperty({ type: [ThreadFeedPreviewDto], required: false })
@@ -159,7 +179,7 @@ export class ThreadFeedStateDto {
   lastMentionSeq!: number | null;
 }
 
-export class ThreadFeedDeltaPageDto {
+export class ThreadFeedPageDto {
   @ApiProperty() threadFeedEndId!: number;
   @ApiProperty() through!: number;
   @ApiProperty() scannedThrough!: number;

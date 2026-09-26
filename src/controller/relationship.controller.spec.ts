@@ -210,6 +210,32 @@ describe('RelationshipController.revokeRelationship', () => {
 });
 
 describe('RelationshipController.requestRelationship', () => {
+  it('authors an exact local-group application with quota admission', async () => {
+    const memberIntents = {
+      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
+    };
+    const controller = build({
+      federation: { ourDomain: 'us.test' },
+      userQuota: { tick: vi.fn() },
+      memberIntents,
+    });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: '!local-group',
+        domain: 'local',
+        note: 'hello',
+      }),
+    ).resolves.toEqual({ status: 'APPLIED' });
+    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+      memberUserId: 7,
+      target: { account: '!local-group', domain: 'local' },
+      decision: 'REQUESTED',
+      note: 'hello',
+      admissionInTx: expect.any(Function),
+    });
+  });
+
   it('authors an addressed remote-group application directly', async () => {
     const admissionTx = { admission: true };
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };

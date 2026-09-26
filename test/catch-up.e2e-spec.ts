@@ -11,7 +11,13 @@ import {
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { DatabaseService } from '../src/database/database.service';
-import { message, messageThread } from '../src/database/schema';
+import { eq, sql } from 'drizzle-orm';
+import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service';
+import {
+  clientStateFeed,
+  message,
+  messageThread,
+} from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
@@ -124,10 +130,79 @@ describe('client state feed + notification feed', () => {
 
   function getThreads(body: Record<string, number> = { after: 0 }) {
     return request(app.getHttpServer())
-      .post('/api/v1/thread/feed-delta')
+      .post('/api/v1/thread-feed')
       .set('Authorization', 'Bearer ' + sessionToken)
       .send(body);
   }
+
+  it('omits intents last updated over seven days ago without hiding invite heads or stalling cursors', async () => {
+    const feed = app.get(ClientStateFeedService);
+    for (const subjectAccount of ['expired', 'current']) {
+      await database.db.transaction((tx) =>
+        feed.writeInTx(tx, {
+          userId: recipientId,
+          account: 'recip',
+          domain: 'local',
+          namespaceId: 0,
+          eventType: 'RELATIONSHIP_INTENT',
+          subjectAccount,
+          subjectDomain: 'local',
+          body: { status: 'REQUESTED' },
+        }),
+      );
+    }
+    await database.db
+      .update(clientStateFeed)
+      .set({ updatedAt: sql`CURRENT_TIMESTAMP - INTERVAL '8 days'` })
+      .where(eq(clientStateFeed.subjectAccount, 'expired'));
+    await database.db.transaction((tx) =>
+      feed.writeInTx(tx, {
+        userId: recipientId,
+        account: '',
+        domain: 'local',
+        namespaceId: 0,
+        eventType: 'INCOMING_INVITE_HEAD',
+        subjectAccount: '',
+        subjectDomain: 'local',
+        body: { readThroughFeedId: 0 },
+      }),
+    );
+    await database.db
+      .update(clientStateFeed)
+      .set({ updatedAt: sql`CURRENT_TIMESTAMP - INTERVAL '8 days'` })
+      .where(eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'));
+
+    for (const mode of ['full', 'delta']) {
+      const page = (await getState({ after: 0, take: 200, mode })).body.data;
+      expect(
+        page.items.some(
+          (item: { subjectAccount: string }) =>
+            item.subjectAccount === 'expired',
+        ),
+      ).toBe(false);
+      expect(
+        page.items.some(
+          (item: { subjectAccount: string }) =>
+            item.subjectAccount === 'current',
+        ),
+      ).toBe(true);
+      expect(
+        page.items.some(
+          (item: { eventType: string }) =>
+            item.eventType === 'INCOMING_INVITE_HEAD',
+        ),
+      ).toBe(true);
+      expect(page.scannedThrough).toBe(page.stateFeedEndId);
+    }
+    const end = (await getState({ after: 0, take: 200 })).body.data
+      .stateFeedEndId;
+    const empty = (
+      await getState({ after: end - 3, through: end - 2, take: 1 })
+    ).body.data;
+    expect(empty.items).toEqual([]);
+    expect(empty.scannedThrough).toBe(end - 2);
+    expect(empty.hasMore).toBe(false);
+  });
 
   it('returns content heads and unread state together, outside state feed', async () => {
     const response = await getThreads();

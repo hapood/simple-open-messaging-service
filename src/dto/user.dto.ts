@@ -26,7 +26,7 @@ import { IsDisplayName } from '../common/validators.js';
 export class UserResolveDto {
   @ApiProperty({
     example: 'alice',
-    description: "Account (a local account, or the peer user's account)",
+    description: 'Exact user or group account (local or peer)',
   })
   @IsString()
   @IsNotEmpty()
