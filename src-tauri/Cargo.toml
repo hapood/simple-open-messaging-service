@@ -56,11 +56,9 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
 # transitive tokio tauri/reqwest pull in; declaring tokio direct guarantees them.
 tokio = { version = "1", features = ["macros", "time", "sync", "rt", "fs", "io-util", "net"] }
 getrandom = "0.2"
-# Web-bundle integrity for the dynamic-update flow: the shell downloads the main SPA from the
-# user-configured server and SHA-256-verifies it against the manifest before extracting/executing a
-# byte (transport integrity + authenticity come from TLS on https origins; IP/http are not guaranteed
-# secure by policy). sha2 = the bundle SHA-256 the manifest advertises; flate2 + tar extract the gzip
-# tarball; reqwest "stream" + futures-util stream the download so the shell can emit byte-progress.
+uuid = { version = "1", features = ["v4"] }
+# SHA-256, gzip and tar are used by offline diagnostic report archives; futures-util streams
+# backend requests and media responses. They are unrelated to frontend application updates.
 sha2 = { version = "0.10", default-features = false }
 base64 = "0.22"
 # Chat-list thumbnails are generated beside the authenticated native media cache. Keep codecs explicit

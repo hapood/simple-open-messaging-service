@@ -3700,6 +3700,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
  "windows",
  "zbus",
 ]

@@ -1,14 +1,10 @@
 "$schema" = "schemas/schema.json"
 
-# App-defined IPC commands registered via generate_handler! in src/lib.rs. This file is the AUTHORITATIVE
-# command list for the ACL: each command needs a [[permission]] entry here, and the [default] aggregate is
-# what the `default` capability (capabilities/default.json) grants to the SPA's webview. tauri-build
-# regenerates gen/schemas from THIS file (permissions/ is a rerun-if-changed input) — NOT by parsing
-# lib.rs — so the ACL tracks this file, not generate_handler!.
-#
-# KEEP IN SYNC with generate_handler!: a command missing here is rejected at runtime
-# ("<cmd> not allowed. Command not found"), and a command removed from lib.rs but left here is a dead
-# permission. (This is why a newly-added command seemed "un-addable" — the file wasn't updated.)
+# App-defined IPC commands registered via generate_handler! in src/lib.rs. This file defines the
+# reviewed ACL; registering a new Rust command does not grant it webview access. Every registered
+# command must have an explicit permission in the default capability, and removed commands must be
+# removed here. The repository's permission test checks both directions so omissions fail before APK
+# packaging. tauri-build reads this file to generate the capability schema.
 
 [[permission]]
 identifier = "allow-set-api-origin"
@@ -49,7 +45,7 @@ commands.allow = ["get_origin_mode"]
 
 [[permission]]
 identifier = "allow-init-pick-origin"
-description = "Enables init_pick_origin — the login-init concurrent race (probe both /health, pick reachable, set active)."
+description = "Enables init_pick_origin — the login-init concurrent race (probe both /client/compat, pick reachable, set active)."
 commands.allow = ["init_pick_origin"]
 
 [[permission]]
@@ -68,13 +64,13 @@ description = "Enables the clear_session_token command."
 commands.allow = ["clear_session_token"]
 
 [[permission]]
-identifier = "allow-get-shell-version"
-description = "Enables get_shell_version (CARGO_PKG_VERSION) for the compat check + About display."
-commands.allow = ["get_shell_version"]
+identifier = "allow-begin-logout"
+description = "Detaches the native session before remote revocation during logout."
+commands.allow = ["begin_logout"]
 
 [[permission]]
 identifier = "allow-init-check-compat"
-description = "Enables init_check_compat — shell↔server version compatibility probe (GET /shell/compat)."
+description = "Enables init_check_compat — public client configuration probe (GET /client/compat)."
 commands.allow = ["init_check_compat"]
 
 [[permission]]
@@ -86,16 +82,6 @@ commands.allow = ["init_validate_cert"]
 identifier = "allow-init-compat-status"
 description = "Enables init_compat_status — read-only client configuration probe."
 commands.allow = ["init_compat_status"]
-
-[[permission]]
-identifier = "allow-init-download-web"
-description = "Enables init_download_web — manifest → download → sha256 verify → atomic install (OTA bundle swap)."
-commands.allow = ["init_download_web"]
-
-[[permission]]
-identifier = "allow-init-update-status"
-description = "Enables init_update_status — on-launch / on-demand probe of the server manifest vs the installed web hash."
-commands.allow = ["init_update_status"]
 
 # Trusted-device secure storage (desktop keyring): persist/read/clear a TRUSTED desktop's permanent
 # session token in the OS credential store instead of plaintext localStorage.
@@ -152,6 +138,16 @@ description = "Enables cancel_upload — idempotently cancel one desktop streami
 commands.allow = ["cancel_upload"]
 
 [[permission]]
+identifier = "allow-retry-native-voice"
+description = "Retry a previously recorded native voice upload by client message ID."
+commands.allow = ["retry_native_voice"]
+
+[[permission]]
+identifier = "allow-discard-native-voice"
+description = "Discard a retained native voice recording by client message ID."
+commands.allow = ["discard_native_voice"]
+
+[[permission]]
 identifier = "allow-report-diagnostics"
 description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle (Rust logs + webview console capture + manifest) and upload it to the backend for field support; on failure it is cached under app_cache_dir for next-launch retry."
 commands.allow = ["report_diagnostics"]
@@ -160,6 +156,11 @@ commands.allow = ["report_diagnostics"]
 identifier = "allow-read-native-log"
 description = "Enables read_native_log — tail the active Rust log or the Kotlin native.log BY NAME (never a caller-supplied path) for the debug log panel. Source-attributed + filterable read-only view; not a generic file-read."
 commands.allow = ["read_native_log"]
+
+[[permission]]
+identifier = "allow-debug-logging"
+description = "Controls diagnostic logging and mirrors bounded WebView console lines to the native log."
+commands.allow = ["set_debug_logging", "log_js"]
 
 [[permission]]
 identifier = "allow-api-request"
@@ -198,12 +199,36 @@ commands.allow = ["open_external_url"]
 identifier = "allow-native-db"
 description = "Enables the typed native SQLite cache commands used by the bundled SPA."
 commands.allow = [
+  "native_db_advance_thread_read",
+  "native_db_apply_deleted_messages",
+  "native_db_apply_group_member_profile_drift",
+  "native_db_archive_namespace",
+  "native_db_cleanup_relationship_requests",
+  "native_db_correct_system_message_profile",
+  "native_db_count_messages",
+  "native_db_count_unread_message_slots",
+  "native_db_delete_preference",
+  "native_db_get_deleted_hwm",
+  "native_db_get_group_member",
+  "native_db_get_preference",
+  "native_db_list_relationship_requests",
+  "native_db_mark_relationship_request_accepted",
+  "native_db_merge_thread_states",
+  "native_db_namespaces",
+  "native_db_page_relationship_requests",
+  "native_db_put_cached_messages",
+  "native_db_put_message_head",
+  "native_db_put_preference",
+  "native_db_query_group_members",
+  "native_db_record_group_member_profile_ref",
+  "native_db_recreate_cache",
+  "native_db_recreate_messages",
+  "native_db_thread_states",
+  "native_db_validate_cache",
   "native_db_threads",
-  "native_db_reset_group_meta",
   "native_db_put_thread",
   "native_db_replace_threads",
   "native_db_delete_thread",
-  "native_db_apply_thread_delta",
   "native_db_get_profile",
   "native_db_get_meta",
   "native_db_put_meta",
@@ -211,11 +236,13 @@ commands.allow = [
   "native_db_clear_all",
   "native_db_get_profile_avatar",
   "native_db_query_messages",
-  "native_db_put_messages",
   "native_db_get_message",
   "native_db_get_deleted_message_seqs",
   "native_db_newest_messages",
   "native_db_delete_messages_by_thread",
+  "native_message_history_get",
+  "native_profile_resolve",
+  "native_thread_feed_changes",
 ]
 
 [[permission]]
@@ -238,15 +265,13 @@ permissions = [
   "allow-set-active-origin",
   "allow-set-session-token",
   "allow-clear-session-token",
+  "allow-begin-logout",
   "allow-secure-set-token",
   "allow-secure-get-token",
   "allow-secure-clear-token",
-  "allow-get-shell-version",
   "allow-init-check-compat",
   "allow-init-validate-cert",
   "allow-init-compat-status",
-  "allow-init-download-web",
-  "allow-init-update-status",
   "allow-sse-start",
   "allow-sse-stop",
   "allow-sse-get-state",
@@ -254,8 +279,11 @@ permissions = [
   "allow-sse-replay-hello",
   "allow-upload-stream-file",
   "allow-cancel-upload",
+  "allow-retry-native-voice",
+  "allow-discard-native-voice",
   "allow-report-diagnostics",
   "allow-read-native-log",
+  "allow-debug-logging",
   "allow-api-request",
   "allow-media-request",
   "allow-media-download",

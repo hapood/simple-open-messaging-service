@@ -7,13 +7,8 @@
 // remote and rejected by the capability matcher). First-run server setup is an in-SPA `/config` route
 // (the `configGuard` forces it until `is_origin_configured`).
 //
-// The `init_*` commands drive shell↔server setup + OTA: `init_check_compat` (version gate), then
-// `init_validate_cert` (strict TLS for HTTPS — skipped for IP/http), then `init_download_web`
-// (download → sha256 → atomic install under `app_data_dir/web/<active>/`) for OTA bundle updates. The
-// installed bundle is served via `Context::set_assets` (the Assets provider swaps the served dir, with
-// the bundled baseline as fallback) — see the OTA section. `init_update_status` is the read-only
-// hash-compare probe (Settings → About). `set_api_origin` persists the backend origin (media proxy +
-// HttpClient + native SSE all read it).
+// The `init_*` commands fetch client bootstrap configuration and validate TLS. The webview
+// always loads the SPA embedded in the installation package; `set_api_origin` persists the server.
 //
 // Also registers the `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
@@ -33,7 +28,7 @@ mod secure_storage;
 #[cfg(desktop)]
 mod sse;
 mod upload;
-mod web_update;
+mod client_compat;
 
 pub(crate) use proxy::{
     activate_origin, is_network_failure, perform_api_request, pick_origin_race, runtime_switch,
@@ -45,7 +40,7 @@ use std::fs;
 use std::net::IpAddr;
 #[cfg(target_os = "android")]
 use std::os::fd::FromRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -59,10 +54,7 @@ use futures_util::StreamExt;
 // the JS errors do (visible via edge://inspect / adb logcat). Previously these were swallowed or silent.
 use log::{error, warn};
 use tauri::http::{Response, StatusCode};
-use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
-use tauri::{
-    Assets, Emitter, Manager, Runtime, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
 
@@ -77,40 +69,28 @@ const MEDIA_SCHEME: &str = "media";
 static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
-/// supervisor, the OTA commands) — set on the client builder in `http_client_for`. Bounds the "backend
+/// supervisor, the client configuration probe) — set on the client builder in `http_client_for`. Bounds the "backend
 /// unreachable" wait so a dead host fails fast instead of hanging the webview request. This is a
 /// CONNECT timeout only — it never aborts an in-progress body transfer (uploads / large responses take
 /// as long as they take; a total-duration timeout would wrongly kill a legitimate large upload).
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Max wait for a proxied API request's HEADERS (connect + send + server processing). The response BODY
-/// read is unbounded — a slow/large download must not be aborted. A backend that accepts the connection
-/// but never responds → 504 Gateway Timeout.
+/// Max wait for a proxied API request's HEADERS (connect + send + server processing), and
+/// independently for reading its JSON response body. Streaming media has its own transport;
+/// resumable uploads have per-operation deadlines rather than a total-duration limit.
+/// A backend that never sends headers produces 504 Gateway Timeout.
 const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Timeout for a `probe_health` reachability probe (`select_origin`'s cheap-check + race). Bounds the
-/// WHOLE probe (DNS + connect + TLS + headers) so an unreachable origin fails fast instead of hanging the
-/// cold-start race or a fail-through flip; overrides the client's longer connect_timeout.
-const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Timeout for the unauthenticated client-compatibility probe used in origin selection.
+/// Bounds the full request (including its response body) during cold start and failover.
+const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Max wait for the SSE stream's opening response. The in-stream liveness watchdog (60s, no frame)
-/// only arms AFTER a real `ping` is observed, so without this a server that accepts the connection but
+/// Max wait for the SSE stream's opening response. A server that accepts the connection but
 /// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
 /// + reconnect (parity with any other connect failure).
 #[cfg(desktop)]
 const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The shell version, baked from Cargo.toml (`CARGO_PKG_VERSION`) — the same source the Makefile
-/// asserts equals `tauri.conf.json.version`. Surfaced in Settings→About for display only.
-pub const SHELL_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Exclusive upper bound on the backend (server) version this shell supports. The server reports its
-/// version via `/shell/compat`; this shell is compatible iff `serverVersion < COMPAT_BACKEND_MAX`
-/// (i.e. `!semver_gte(serverVersion, COMPAT_BACKEND_MAX)`). E.g. `0.2.0` accepts any `0.1.x` backend
-/// and rejects `0.2.0` onward — a breaking server bump the operator must ship a new shell for. The
-/// compatibility range is authored here (in the shell), not on the server: the server carries no shell
-/// floor, so the shell self-gates against the backend version it was built/tested against.
-const COMPAT_BACKEND_MAX: &str = "0.2.0";
 
 /// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
 /// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the
@@ -127,26 +107,6 @@ const CONFIG_FILENAME: &str = "api_origin";
 /// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
 const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
 
-/// Web-bundle layout under app_data_dir: `web/active.json` atomically holds the active version + its
-/// verified bundle SHA-256; `web/<version>/` is the extracted SPA; `web/.staging-<version>/` an
-/// in-flight install.
-const WEB_DIRNAME: &str = "web";
-const ACTIVE_STATE_FILENAME: &str = "active.json";
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct ActiveWebState {
-    version: String,
-    sha256: String,
-}
-
-fn read_active_web_state(web_root: &Path) -> Option<ActiveWebState> {
-    let raw = fs::read_to_string(web_root.join(ACTIVE_STATE_FILENAME)).ok()?;
-    let state: ActiveWebState = serde_json::from_str(&raw).ok()?;
-    if state.version.trim().is_empty() || state.sha256.trim().is_empty() {
-        return None;
-    }
-    Some(state)
-}
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -168,7 +128,7 @@ pub(crate) struct ProxyState {
     /// secondary before the first request flies.
     api_origin: Arc<Mutex<String>>,
     /// The user-configured PRIMARY origin (field-1). Only `persist_origin` writes it (set_api_origin /
-    /// init_download_web). `is_origin_configured` reads THIS, so a fallback swap to the secondary doesn't
+    /// set_api_origin). `is_origin_configured` reads THIS, so a fallback swap to the secondary doesn't
     /// trip the /config first-run guard.
     api_origin_primary: Arc<Mutex<String>>,
     /// The optional LAN (secondary) origin (field-2). None = no fallback configured → select_origin is a
@@ -198,15 +158,13 @@ pub(crate) struct ProxyState {
     /// changes (see `ProxyState::api_client`) — so API calls reuse one connection pool (TCP+TLS
     /// keepalive across requests) instead of `http_client_for` building a fresh client (fresh pool, no
     /// reuse) on every single request. `(origin, client)`; the origin tag detects a swap. The SSE
-    /// supervisor + OTA commands still build per-call clients (infrequent: once per reconnect / once).
+    /// supervisor and bootstrap probes still build per-call clients (infrequent).
     api_http: Arc<Mutex<(String, reqwest::Client)>>,
-    /// The active OTA web-bundle dir (extracted under `app_data_dir/web/<version>/`). Shared with the
-    /// `OtaAssets` resolver — `init_download_web` swaps it, boot `setup()` seeds it, and the NEXT asset
-    /// request serves from the new dir. None → the embedded baseline (`frontendDist`) is served.
-    ota_active: Arc<Mutex<Option<PathBuf>>>,
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    #[cfg(not(desktop))]
+    native_voice_pending: Arc<Mutex<std::collections::HashMap<String, upload::NativeVoicePending>>>,
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
@@ -217,6 +175,15 @@ impl ProxyState {
         if let Ok(mut current) = self.token.lock() {
             if current.is_some() && *current != token {
                 native_db::invalidate_account_work().expect("invalidate previous session work");
+                #[cfg(not(desktop))]
+                {
+                    for (cid, voice) in self.native_voice_pending.lock().expect("native voice lock").drain() {
+                        if let Some(cancel) = self.upload_cancels.lock().expect("upload cancels lock").remove(&cid) {
+                            cancel.cancel();
+                        }
+                        let _ = std::fs::remove_file(voice.path());
+                    }
+                }
             }
             let previous = std::mem::replace(&mut *current, token);
             drop(current);
@@ -247,8 +214,9 @@ impl ProxyState {
                 initial_origin.clone(),
                 http_client_for(&initial_origin),
             ))),
-            ota_active: Arc::new(Mutex::new(None)),
             upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            #[cfg(not(desktop))]
+            native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -304,7 +272,7 @@ enum TlsPosture {
     /// hostname-mismatch → handshake error.
     Strict,
     /// `http` scheme OR literal-IP host: accept self-signed / cleartext. LAN self-hosted servers commonly
-    /// have no valid cert for a bare IP; the web-bundle signature still guards integrity.
+    /// have no valid cert for a bare IP; this transport is not guaranteed secure.
     Permissive,
 }
 
@@ -340,14 +308,14 @@ fn http_client_for(origin: &str) -> reqwest::Client {
 
 /// Persist + activate a backend origin: validate, write the app-data config file (survives restarts,
 /// feeds the media proxy Arc), and update the live Arc (so `/uploads/*` immediately uses the new host).
-/// Factored so `set_api_origin` (Server page, legacy) and `init_download_web` (new) share one writer —
+/// Shared writer for configuration and origin fallback logic —
 /// the two persistence surfaces (this file + the web's `SomsSecureStore`) stay consistent.
 fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
     let normalized =
         validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
     let path = state.config_path.lock().expect("config_path lock").clone();
     fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
-    // This is the "user explicitly chose the primary" path (set_api_origin / init_download_web): record it
+    // This is the "user explicitly chose the primary" path (set_api_origin): record it
     // as the primary, make it active, and reset the mode. The secondary is managed separately by
     // persist_origin_secondary. select_origin may later flip `api_origin` to the secondary on failure.
     *state.api_origin_primary.lock().expect("primary lock") = normalized.clone();
@@ -391,127 +359,6 @@ fn persist_origin_secondary(
     Ok(normalized)
 }
 
-/// `MAJOR.MINOR.PATCH` `>=` compare (shell versions are clean triplets; prerelease/build ignored).
-fn semver_gte(a: &str, b: &str) -> bool {
-    let pa: Vec<u64> = a
-        .split('.')
-        .map(|s| {
-            s.split('-')
-                .next()
-                .unwrap_or(s)
-                .split('+')
-                .next()
-                .unwrap_or(s)
-        })
-        .map(|s| s.parse::<u64>().unwrap_or(0))
-        .collect();
-    let pb: Vec<u64> = b
-        .split('.')
-        .map(|s| {
-            s.split('-')
-                .next()
-                .unwrap_or(s)
-                .split('+')
-                .next()
-                .unwrap_or(s)
-        })
-        .map(|s| s.parse::<u64>().unwrap_or(0))
-        .collect();
-    for i in 0..pa.len().max(pb.len()) {
-        let x = pa.get(i).copied().unwrap_or(0);
-        let y = pb.get(i).copied().unwrap_or(0);
-        if x != y {
-            return x > y;
-        }
-    }
-    true
-}
-
-// --- OTA asset resolver (runtime web-bundle swap) ----------------------------------------
-//
-// The shell embeds a baseline SPA via `tauri::generate_context!` (frontendDist). OTA updates download a
-// newer bundle, sha256-verify it, and extract it under `app_data_dir/web/<version>/`. To actually SERVE it
-// the webview's asset resolver must read from that dir at request time. `Context::set_assets` can swap the
-// resolver, but it takes `&mut Context` — unreachable from a runtime IPC command (which only has an
-// AppHandle) — so instead a CUSTOM `Assets` impl is installed ONCE at `run()` (before the webview builds),
-// wrapping the embedded baseline as a fallback and holding a shared `active: Arc<Mutex<Option<PathBuf>>>`
-// that `init_download_web` updates. The next request after a swap serves the new bundle; the running page
-// reloads (Settings→About → `location.reload()`) to pick it up. At boot `setup()` seeds `active` from
-// `app_data/web/active.json`, so a bundle installed on a prior run is served immediately — not lost on
-// restart.
-
-/// A custom `Assets` resolver: serve from the active OTA bundle dir when one is set AND the requested key
-/// exists there, otherwise fall back to the embedded baseline. The fallback is the build-time
-/// `EmbeddedAssets` moved out of `Context.assets` at `run()` — so the shipped baseline is always available
-/// (cold start before any OTA, an OTA dir that doesn't override every key, or a corrupt/missing OTA file).
-struct OtaAssets<R: Runtime> {
-    active: Arc<Mutex<Option<PathBuf>>>,
-    fallback: Box<dyn Assets<R>>,
-}
-
-impl<R: Runtime> Assets<R> for OtaAssets<R> {
-    fn get(&self, key: &AssetKey) -> Option<Cow<'_, [u8]>> {
-        if let Some(dir) = self.active.lock().ok().and_then(|g| g.clone()) {
-            if let Some(bytes) = read_ota_asset(&dir, key.as_ref()) {
-                return Some(Cow::Owned(bytes));
-            }
-            // Angular uses history-mode routes. A hard navigation after installing an OTA bundle requests
-            // e.g. `auth/login`, not `index.html`. Falling through to EmbeddedAssets here can return the
-            // embedded baseline's SPA fallback, silently booting the OLD bundle after a successful update.
-            // Route-like keys must therefore resolve to the active bundle's entry document.
-            if is_spa_route_key(key.as_ref()) {
-                if let Some(bytes) = read_ota_asset(&dir, "index.html") {
-                    return Some(Cow::Owned(bytes));
-                }
-            }
-        }
-        self.fallback.get(key)
-    }
-    fn iter(&self) -> Box<AssetsIter<'_>> {
-        // Only the embedded set is enumerable (the static list known at build time); OTA-served files are
-        // resolved per-request via `get`. `iter` is not on the serve path, so delegating is correct.
-        self.fallback.iter()
-    }
-    fn csp_hashes(&self, html_path: &AssetKey) -> Box<dyn Iterator<Item = CspHash<'_>> + '_> {
-        // Delegate to the embedded baseline. The enforced CSP is the static `tauri.conf.json` policy
-        // (script-src 'self', style-src 'unsafe-inline'), so per-asset hashes are not load-bearing: the
-        // embedded hashes neither over-restrict (hashes only ADD to the allow-list) nor under-restrict
-        // (script-src 'self' already covers every OTA script) for an OTA-served page.
-        self.fallback.csp_hashes(html_path)
-    }
-}
-
-fn is_spa_route_key(key: &str) -> bool {
-    let rel = key.trim_start_matches('/').trim_end_matches('/');
-    rel.is_empty()
-        || rel
-            .rsplit('/')
-            .next()
-            .is_some_and(|part| !part.contains('.'))
-}
-
-#[cfg(test)]
-#[path = "tests/ota_asset_tests.rs"]
-mod ota_asset_tests;
-
-/// Read one asset (`key`, e.g. `index.html` / `assets/x.js` — the leading slash Tauri may include is
-/// stripped, matching how `AssetKey` is requested) from an OTA bundle dir. Path-traversal-hardened: the
-/// key may not contain `..` or a backslash, and the resolved canonical path must stay within `dir`
-/// (defends against symlinks too), so a malformed/malicious key can never escape to an arbitrary file.
-fn read_ota_asset(dir: &Path, key: &str) -> Option<Vec<u8>> {
-    let rel = key.trim_start_matches('/');
-    if rel.is_empty() || rel.contains("..") || rel.contains('\\') {
-        return None;
-    }
-    let candidate = dir.join(rel);
-    let canon_dir = dir.canonicalize().ok()?;
-    let canon_candidate = candidate.canonicalize().ok()?;
-    if !canon_candidate.starts_with(&canon_dir) {
-        return None;
-    }
-    fs::read(&canon_candidate).ok()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "android")]
@@ -519,7 +366,6 @@ pub fn run() {
         .expect("Application must initialize the Rust runtime before Tauri").clone();
     #[cfg(not(target_os = "android"))]
     let proxy_state = ProxyState::new();
-    let ota_active = proxy_state.ota_active.clone();
     let proxy_for_media = proxy_state.clone();
 
     let builder = tauri::Builder::default();
@@ -634,12 +480,9 @@ pub fn run() {
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
-                    web_update::get_shell_version,
-                    web_update::init_check_compat,
-                    web_update::init_validate_cert,
-                    web_update::init_compat_status,
-                    web_update::init_download_web,
-                    web_update::init_update_status,
+                    client_compat::init_check_compat,
+                    client_compat::init_validate_cert,
+                    client_compat::init_compat_status,
                     sse::sse_start,
                     sse::sse_stop,
                     sse::sse_get_state,
@@ -671,7 +514,6 @@ pub fn run() {
                     native_db::client_state::native_db_put_thread,
                     native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
-                    native_db::client_state::native_db_apply_state_feed_page,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
@@ -679,7 +521,6 @@ pub fn run() {
                     native_db::contacts::native_db_apply_group_member_profile_drift,
                     native_db::native_db_get_meta,
                     native_db::attention::native_db_thread_states,
-                    native_db::attention::native_thread_feed_sync,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_merge_thread_states,
@@ -725,14 +566,13 @@ pub fn run() {
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::begin_logout,
-                    web_update::get_shell_version,
-                    web_update::init_check_compat,
-                    web_update::init_validate_cert,
-                    web_update::init_compat_status,
-                    web_update::init_download_web,
-                    web_update::init_update_status,
+                    client_compat::init_check_compat,
+                    client_compat::init_validate_cert,
+                    client_compat::init_compat_status,
                     upload::upload_stream_file,
                     upload::cancel_upload,
+                    upload::retry_native_voice,
+                    upload::discard_native_voice,
                     diagnostics::report_diagnostics,
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,
@@ -756,7 +596,6 @@ pub fn run() {
                     native_db::client_state::native_db_put_thread,
                     native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
-                    native_db::client_state::native_db_apply_state_feed_page,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
@@ -764,7 +603,6 @@ pub fn run() {
                     native_db::contacts::native_db_apply_group_member_profile_drift,
                     native_db::native_db_get_meta,
                     native_db::attention::native_db_thread_states,
-                    native_db::attention::native_thread_feed_sync,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_merge_thread_states,
@@ -851,23 +689,7 @@ pub fn run() {
                 *proxy_state.config_path.lock().expect("config_path lock") = config_path;
             }
 
-            // Seed the OTA asset resolver from a previously-installed bundle: if `web/active.json` names a
-            // version whose extracted dir exists, serve it on this boot. The `OtaAssets` resolver (installed
-            // at `.run`) reads this Arc, so a bundle installed on a prior run is picked up immediately and
-            // is never lost on restart. Best-effort: a missing/invalid state file or a deleted dir just
-            // leaves the embedded baseline served (the normal cold-start state).
-            let web_root = data_dir.join(WEB_DIRNAME);
-            if let Some(active) = read_active_web_state(&web_root) {
-                let dir = web_root.join(&active.version);
-                if dir.is_dir() {
-                    *proxy_state.ota_active.lock().expect("ota_active lock") = Some(dir);
-                }
-            }
-
-            // The single window always loads the bundled SPA (frontendDist → `tauri://localhost`). There
-            // is no separate bootstrap and no `somsapp://` origin anymore: the merged frontend owns both
-            // first-run config (an in-SPA `/config` route) and the app. OTA bundle updates swap the served
-            // asset dir via `Context::set_assets` (the Assets provider), not a second origin.
+            // The single window loads only the embedded SPA.
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("SOMS")
                 .on_navigation(navigation::is_allowed)
@@ -888,20 +710,7 @@ pub fn run() {
             // selected even when no session token exists and before the user submits the login form.
             Ok(())
         })
-        .run({
-            // Install the OTA asset resolver: move the embedded baseline (`Context.assets` is a pub field)
-            // out and wrap it in `OtaAssets`, which serves the active OTA bundle dir when one is set and
-            // falls back to the embedded baseline otherwise. The shared `ota_active` Arc is the same one
-            // `ProxyState` holds, so `init_download_web` / boot `setup()` swaps take effect on the next
-            // asset request with no `&mut Context` needed at runtime.
-            let mut context = tauri::generate_context!();
-            let embedded = context.assets;
-            context.assets = Box::new(OtaAssets {
-                active: ota_active.clone(),
-                fallback: embedded,
-            });
-            context
-        })
+        .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
