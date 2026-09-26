@@ -15,6 +15,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
+import { translateBizResult } from '../../services/biz-code';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -83,6 +84,7 @@ export class ProfileEditorComponent {
   /** Local crop preview shown until the refreshed session profile takes over. */
   readonly avatarPreviewUrl = signal('');
   readonly saving = signal(false);
+  readonly saveError = signal('');
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
   private savedTimer?: ReturnType<typeof setTimeout>;
@@ -96,10 +98,12 @@ export class ProfileEditorComponent {
   }
 
   onNameInput(value: string): void {
+    this.saveError.set('');
     this.name.set(limitUnicodeCodePoints(value, this.NAME_MAX));
   }
 
   onBioInput(value: string): void {
+    this.saveError.set('');
     this.bio.set(limitUnicodeCodePoints(value, this.BIO_MAX));
   }
 
@@ -174,6 +178,7 @@ export class ProfileEditorComponent {
   }
 
   finishAvatarEdit(file: File) {
+    this.saveError.set('');
     this.avatarDraft.set(null);
     this.pendingAvatar.set(file);
     this.clearAvatarPreview();
@@ -182,6 +187,7 @@ export class ProfileEditorComponent {
 
   async save() {
     if (!this.canSave()) return;
+    this.saveError.set('');
     this.saving.set(true);
     let avatarBase64: string | undefined;
     const avatar = this.pendingAvatar();
@@ -190,6 +196,7 @@ export class ProfileEditorComponent {
         avatarBase64 = await this.fileBase64(avatar);
       } catch {
         this.saving.set(false);
+        this.saveError.set(this.transloco.translate('profile.saveFailed'));
         return;
       }
     }
@@ -207,10 +214,18 @@ export class ProfileEditorComponent {
             this.userService.updateSessionProfile();
             this.saved.emit();
             this.flashSaved();
+          } else {
+            this.saveError.set(
+              res.message === 'invalid avatar'
+                ? this.transloco.translate('profile.avatarInvalid')
+                : translateBizResult(res, this.transloco) ||
+                    this.transloco.translate('profile.saveFailed'),
+            );
           }
         },
         error: () => {
           this.saving.set(false);
+          this.saveError.set(this.transloco.translate('profile.saveFailed'));
         },
       });
   }
@@ -220,7 +235,9 @@ export class ProfileEditorComponent {
       const bytes = new Uint8Array(buffer);
       let binary = '';
       for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        binary += String.fromCharCode(
+          ...bytes.subarray(offset, offset + 0x8000),
+        );
       }
       return btoa(binary);
     });

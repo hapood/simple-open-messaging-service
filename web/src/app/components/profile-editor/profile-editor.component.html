@@ -34,6 +34,9 @@
     </app-page-header>
 
     <div class="body">
+      @if (saveError()) {
+        <div class="save-error" role="alert">{{ saveError() }}</div>
+      }
       <div class="avatar-wrap">
         <div class="avatar">
           <app-user-avatar

@@ -1,6 +1,7 @@
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService } from '@jsverse/transloco';
+import { of, throwError } from 'rxjs';
 import { UserService } from '../../services/user.service';
 import { ProfileEditorComponent } from './profile-editor.component';
 
@@ -46,5 +47,43 @@ describe('ProfileEditorComponent', () => {
     expect(component.bio()).toBe('🧪'.repeat(120));
     expect(component.bioLength()).toBe(120);
     expect(component.isNameValid()).toBe(true);
+  });
+
+  it('shows a localized rejection for an invalid avatar and keeps the draft for retry', async () => {
+    const component = createComponent();
+    const user = TestBed.inject(UserService);
+    vi.mocked(user.updateProfile).mockReturnValue(
+      of({ code: 10000, message: 'invalid avatar' }),
+    );
+    const avatar = new File(['avatar'], 'avatar.png', { type: 'image/png' });
+    component.pendingAvatar.set(avatar);
+
+    await component.save();
+
+    expect(component.saving()).toBe(false);
+    expect(component.saveError()).toBe('profile.avatarInvalid');
+    expect(component.pendingAvatar()).toBe(avatar);
+    expect(user.updateSessionProfile).not.toHaveBeenCalled();
+    component.onNameInput('New name');
+    expect(component.saveError()).toBe('');
+  });
+
+  it('shows failures for other business responses and network errors, then clears on retry', async () => {
+    const component = createComponent();
+    const user = TestBed.inject(UserService);
+    component.onBioInput('new bio');
+    vi.mocked(user.updateProfile).mockReturnValueOnce(
+      of({ code: 99999, message: 'server rejection' }),
+    );
+    await component.save();
+    expect(component.saveError()).toBe('server rejection');
+
+    vi.mocked(user.updateProfile).mockReturnValueOnce(
+      throwError(() => new Error('offline')),
+    );
+    await component.save();
+    expect(component.saveError()).toBe('profile.saveFailed');
+    expect(component.saving()).toBe(false);
+    expect(component.canSave()).toBe(true);
   });
 });
