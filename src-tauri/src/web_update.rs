@@ -36,23 +36,20 @@ struct CompatData {
     /// The server's LAN (secondary) origin, when SOMS_LAN_DOMAIN is configured. Optional.
     #[serde(rename = "lanOrigin", default)]
     lan_origin: Option<String>,
-    /// The Firebase client config folded into /shell/compat (the Android shell inits FirebaseApp from this
+    /// The Firebase client config folded into /client/compat (the Android shell inits FirebaseApp from this
     /// at runtime — replaces a separate /push/firebase-config round-trip). Raw passthrough: the shell hands
     /// it straight back to JS unchanged, so a typed struct would only add a match risk. Null on older servers.
     #[serde(rename = "firebaseConfig", default)]
     firebase_config: Option<serde_json::Value>,
 }
 
-/// Fetch the server's reported version from `/shell/compat`. The server carries no shell floor — it only
-/// reports `serverVersion`; the shell decides compatibility against `COMPAT_BACKEND_MAX`. Shared by the
-/// compat gate, the download-time re-check, and the launch update-status probe. Connectivity /
-/// bad-response errors are tagged `address:` so the wizard's `errorKeyFor` maps them to `sc.addrErr`
-/// (wrong port, offline, or not a SOMS backend) — distinct from a true version mismatch (`sc.compatErr`,
-/// raised separately by `init_check_compat` when `serverVersion >= COMPAT_BACKEND_MAX`).
+/// Fetch the server's reported version from `/client/compat`. Shared by the compat gate,
+/// the retained OTA re-check, and the launch status probe. Connectivity / bad-response errors are
+/// tagged `address:` so the wizard maps them to the address error rather than a true mismatch.
 async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<String, String> {
     let base = origin.trim_end_matches('/');
     let resp = client
-        .get(format!("{base}/api/v1/shell/compat"))
+        .get(format!("{base}/api/v1/client/compat"))
         .send()
         .await
         .map_err(|e| format!("address: could not reach server: {e}"))?;
@@ -75,14 +72,12 @@ async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<
         .unwrap_or_default())
 }
 
-/// Fetch the FULL `/shell/compat` body (version + the advertised client origins), for `init_check_compat`
-/// to surface `primaryOrigin`/`lanOrigin` to the shell's symmetric auto-fill. Errors tagged `address:`
-/// (parity with `fetch_server_version`, which stays the minimal version-only path the download +
-/// update-status probes use).
+/// Fetch the full `/client/compat` body for `init_check_compat` to surface advertised origins.
+/// Errors are tagged `address:` for parity with `fetch_server_version`.
 async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatData, String> {
     let base = origin.trim_end_matches('/');
     let resp = client
-        .get(format!("{base}/api/v1/shell/compat"))
+        .get(format!("{base}/api/v1/client/compat"))
         .send()
         .await
         .map_err(|e| format!("address: could not reach server: {e}"))?;
@@ -103,10 +98,8 @@ async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatDa
         .ok_or_else(|| "address: server did not report a version".to_string())
 }
 
-/// Step 1: `GET /api/v1/shell/compat` — the server reports its version; THIS shell decides compatibility
-/// (it carries the upper bound `COMPAT_BACKEND_MAX`). Hard-blocks (returns Err) when the server is too
-/// new for this shell. The wizard's `errorKeyFor` maps the error text to `sc.compatErr` via the
-/// "not compatible" substring.
+/// Step 1: `GET /api/v1/client/compat` — the server reports its version and client bootstrap data.
+/// This shell keeps the existing upper-bound compatibility gate until API-version negotiation lands.
 #[tauri::command]
 pub(crate) async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> {
     let client = http_client_for(&origin);
@@ -122,7 +115,7 @@ pub(crate) async fn init_check_compat(origin: String) -> Result<serde_json::Valu
         ));
     }
     // Surface the server's advertised origins so the shell can symmetrically auto-fill the field the user
-    // didn't enter (the user types one; /shell/compat supplies the other; a modal confirms before trust).
+    // didn't enter (the user types one; /client/compat supplies the other; a modal confirms before trust).
     Ok(serde_json::json!({
         "compatible": true,
         "serverVersion": server_version,
@@ -132,7 +125,7 @@ pub(crate) async fn init_check_compat(origin: String) -> Result<serde_json::Valu
     }))
 }
 
-/// Step 2: verify the TLS certificate is valid. HTTPS + DNS host → strict probe of `/api/v1/health`
+/// Step 2: verify the TLS certificate is valid. HTTPS + DNS host → strict probe of `/api/v1/client/compat`
 /// (rustls validates the chain: self-signed/expired/hostname-mismatch → error). IP host or `http` →
 /// skipped (IP/http origins are not guaranteed secure by policy).
 #[tauri::command]
@@ -143,7 +136,7 @@ pub(crate) async fn init_validate_cert(origin: String) -> Result<serde_json::Val
         );
     }
     let client = http_client_for(&origin);
-    let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
+    let url = format!("{}/api/v1/client/compat", origin.trim_end_matches('/'));
     match client.get(&url).send().await {
         Ok(r) if r.status().is_success() => {
             Ok(serde_json::json!({ "valid": true, "summary": "https" }))
@@ -400,6 +393,21 @@ async fn fetch_compat_and_manifest(
         .unwrap_or_default();
 
     Ok((server_version, server_hash, server_web))
+}
+
+/// Read-only client compatibility status. This replaces the launch-time update probe for the
+/// embedded-client flow and never checks or downloads web bundles.
+#[tauri::command]
+pub(crate) async fn init_compat_status(origin: String) -> Result<serde_json::Value, String> {
+    let origin = origin.trim_end_matches('/').to_string();
+    let client = http_client_for(&origin);
+    Ok(match fetch_server_version(&client, &origin).await {
+        Ok(server_version) => serde_json::json!({
+            "serverVersion": server_version,
+            "incompatible": !server_version.is_empty() && semver_gte(&server_version, COMPAT_BACKEND_MAX),
+        }),
+        Err(_) => serde_json::json!({ "serverVersion": "", "incompatible": false }),
+    })
 }
 
 /// Read-only update status for the SPA's Settings→About page + the launch-time incompatibility prompt

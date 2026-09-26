@@ -83,6 +83,11 @@ description = "Enables init_validate_cert — strict TLS probe for https domains
 commands.allow = ["init_validate_cert"]
 
 [[permission]]
+identifier = "allow-init-compat-status"
+description = "Enables init_compat_status — read-only client configuration probe."
+commands.allow = ["init_compat_status"]
+
+[[permission]]
 identifier = "allow-init-download-web"
 description = "Enables init_download_web — manifest → download → sha256 verify → atomic install (OTA bundle swap)."
 commands.allow = ["init_download_web"]
@@ -239,6 +244,7 @@ permissions = [
   "allow-get-shell-version",
   "allow-init-check-compat",
   "allow-init-validate-cert",
+  "allow-init-compat-status",
   "allow-init-download-web",
   "allow-init-update-status",
   "allow-sse-start",
