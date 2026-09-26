@@ -65,21 +65,17 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       avatar: null,
       profileRev: 9,
     };
-    const peerHttp = { get: vi.fn().mockResolvedValue(wire) };
+    const peerHttp = { get: vi.fn() };
     const profiles = {
+      fetchExactAccountProfile: vi.fn().mockResolvedValue(wire),
       materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
       getStoredProfile: vi.fn().mockResolvedValue(wire),
-    };
-    const threadSources = {
-      resolve: vi.fn().mockResolvedValue({
-        selector: { account: '!group', peerAccount: 'local-user' },
-      }),
     };
     const subject = new ProfileResolutionCoordinatorService(
       {} as never,
       peerHttp as never,
       profiles as never,
-      threadSources as never,
+      {} as never,
       {} as never,
     );
 
@@ -99,10 +95,12 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       },
     );
 
-    expect(peerHttp.get).toHaveBeenCalledWith(
-      '/s2s/v1/message-author-profile?account=%21group&peerAccount=local-user&messageSeq=81',
+    expect(profiles.fetchExactAccountProfile).toHaveBeenCalledWith(
+      'alice',
+      9,
       'group-host.example',
     );
+    expect(peerHttp.get).not.toHaveBeenCalled();
     expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
       wire,
       'group-host.example',
@@ -134,8 +132,9 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       avatar: null,
       profileRev: 9,
     };
-    const peerHttp = { get: vi.fn().mockResolvedValue(wire) };
+    const peerHttp = { get: vi.fn() };
     const profiles = {
+      fetchExactGroupMemberProfile: vi.fn().mockResolvedValue(wire),
       materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
       getStoredProfile: vi.fn().mockResolvedValue(wire),
     };
@@ -167,15 +166,214 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       },
     );
 
-    expect(peerHttp.get).toHaveBeenCalledWith(
-      '/s2s/v1/group-meta-profile?account=%21group&subject=MEMBER&memberAccount=alice&memberDomain=member.example',
+    expect(profiles.fetchExactGroupMemberProfile).toHaveBeenCalledWith(
+      '!group',
+      'member.example',
+      'alice',
+      9,
       'group-host.example',
     );
+    expect(peerHttp.get).not.toHaveBeenCalled();
     expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
       wire,
       'group-host.example',
       12,
     );
+  });
+
+  it('uses account-profiles for an exact account selector', async () => {
+    const wire = {
+      account: 'alice',
+      domain: 'peer.example',
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+      profileRev: 4,
+    };
+    const database = {
+      db: {
+        query: {
+          federatedPeer: {
+            findFirst: vi.fn().mockResolvedValue({ activeNamespaceId: 7 }),
+          },
+        },
+      },
+    };
+    const profiles = {
+      fetchExactAccountProfile: vi.fn().mockResolvedValue(wire),
+      materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
+      getStoredProfile: vi.fn().mockResolvedValue(wire),
+    };
+    const subject = new ProfileResolutionCoordinatorService(
+      database as never,
+      { get: vi.fn() } as never,
+      profiles as never,
+      {} as never,
+      {} as never,
+    );
+
+    await subject['fetch'](
+      { namespaceId: 7, account: 'alice', domain: 'peer.example', rev: 4 },
+      { kind: 'exact', account: 'alice', domain: 'peer.example', rev: 4 },
+    );
+
+    expect(profiles.fetchExactAccountProfile).toHaveBeenCalledWith(
+      'alice',
+      4,
+      'peer.example',
+    );
+    expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
+      wire,
+      'peer.example',
+      7,
+    );
+  });
+
+  it('uses account-profiles for a group account Meta reference', async () => {
+    const wire = {
+      account: '!group',
+      domain: 'group-host.example',
+      displayName: 'Group',
+      bio: '',
+      avatar: null,
+      profileRev: 3,
+    };
+    const profiles = {
+      fetchExactAccountProfile: vi.fn().mockResolvedValue(wire),
+      materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
+      getStoredProfile: vi.fn().mockResolvedValue(wire),
+    };
+    const subject = new ProfileResolutionCoordinatorService(
+      {} as never,
+      { get: vi.fn() } as never,
+      profiles as never,
+      {} as never,
+      {} as never,
+    );
+
+    await subject['fetch'](
+      {
+        namespaceId: 7,
+        account: '!group',
+        domain: 'group-host.example',
+        rev: 3,
+      },
+      {
+        kind: 'groupMeta',
+        publisherDomain: 'group-host.example',
+        publisherNamespaceId: 7,
+        groupAccount: '!group',
+        subject: { type: 'GROUP' },
+      },
+    );
+
+    expect(profiles.fetchExactAccountProfile).toHaveBeenCalledWith(
+      '!group',
+      3,
+      'group-host.example',
+    );
+  });
+
+  it('queues a backend account prefetch without client evidence or SSE listeners', async () => {
+    const database = {
+      db: {
+        query: {
+          federatedPeer: {
+            findFirst: vi.fn().mockResolvedValue({ activeNamespaceId: 7 }),
+          },
+        },
+      },
+    };
+    const profiles = { getStoredProfile: vi.fn().mockResolvedValue(null) };
+    const sse = { onProfileAvailable: vi.fn(), onProfileUnavailable: vi.fn() };
+    const subject = new ProfileResolutionCoordinatorService(
+      database as never,
+      { get: vi.fn() } as never,
+      profiles as never,
+      {} as never,
+      sse as never,
+    );
+    vi.spyOn(subject as never, 'drain').mockImplementation(() => undefined);
+
+    await subject.prefetchAccountProfile({
+      namespaceId: 7,
+      account: 'alice',
+      domain: 'peer.example',
+      rev: 4,
+    });
+
+    const pending = subject['pending'].get(
+      JSON.stringify([7, 'alice', 'peer.example', 4]),
+    );
+    expect(pending?.methods.values().next().value).toMatchObject({
+      evidence: null,
+      users: new Set(),
+      method: {
+        kind: 'exact',
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 4,
+      },
+    });
+    const method = pending!.methods.values().next().value;
+    subject['complete'](
+      JSON.stringify([7, 'alice', 'peer.example', 4]),
+      JSON.stringify(method.method),
+      method,
+      {
+        namespaceId: 7,
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 4,
+        name: 'Alice',
+        bio: '',
+        avatarBase64: null,
+      },
+    );
+    expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+    expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('queues backend group-member prefetch against the group origin', async () => {
+    const profiles = { getStoredProfile: vi.fn().mockResolvedValue(null) };
+    const subject = new ProfileResolutionCoordinatorService(
+      {} as never,
+      { get: vi.fn() } as never,
+      profiles as never,
+      {} as never,
+      {} as never,
+    );
+    vi.spyOn(subject as never, 'drain').mockImplementation(() => undefined);
+
+    await subject.prefetchGroupMemberProfile({
+      groupAccount: '!group',
+      groupDomain: 'group.example',
+      groupNamespaceId: 7,
+      member: {
+        namespaceId: 7,
+        account: 'alice',
+        domain: 'member.example',
+        rev: 9,
+      },
+    });
+
+    const pending = subject['pending'].get(
+      JSON.stringify([7, 'alice', 'member.example', 9]),
+    );
+    expect(pending?.methods.values().next().value).toMatchObject({
+      evidence: null,
+      method: {
+        kind: 'groupMeta',
+        publisherDomain: 'group.example',
+        publisherNamespaceId: 7,
+        groupAccount: '!group',
+        subject: {
+          type: 'MEMBER',
+          account: 'alice',
+          domain: 'member.example',
+        },
+      },
+    });
   });
 
   it('authorizes a group member profile against the active relationship and canonical meta', async () => {
@@ -222,10 +420,17 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
   });
 
   it('rebases a stale group member revision to the current authorized roster fact', async () => {
-    const execute = vi.fn().mockResolvedValue({ rows: [{
-      groupAccount: '!group', publisherDomain: 'host.test',
-      publisherNamespaceId: 7, memberNamespaceId: 9, profileRev: 5,
-    }] });
+    const execute = vi.fn().mockResolvedValue({
+      rows: [
+        {
+          groupAccount: '!group',
+          publisherDomain: 'host.test',
+          publisherNamespaceId: 7,
+          memberNamespaceId: 9,
+          profileRev: 5,
+        },
+      ],
+    });
     const subject = new ProfileResolutionCoordinatorService(
       { db: { execute } } as never,
       {} as never,
@@ -234,10 +439,14 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
       {} as never,
     );
 
-    await expect(subject['normalizeAndAuthorize'](3, {
-      type: 'GROUP_META', threadId: 41, profileRev: 4,
-      subject: { type: 'MEMBER', account: 'alice', domain: 'member.test' },
-    })).resolves.toMatchObject({
+    await expect(
+      subject['normalizeAndAuthorize'](3, {
+        type: 'GROUP_META',
+        threadId: 41,
+        profileRev: 4,
+        subject: { type: 'MEMBER', account: 'alice', domain: 'member.test' },
+      }),
+    ).resolves.toMatchObject({
       key: { account: 'alice', rev: 5, namespaceId: 9 },
       method: { kind: 'groupMeta', groupAccount: '!group' },
     });
@@ -270,7 +479,12 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         publisherNamespaceId: 7,
         publisherMessageSeq: 12,
       },
-      evidence: { type: 'MESSAGE_AUTHOR' as const, threadId: 9, messageSeq: 12, rev: 4 },
+      evidence: {
+        type: 'MESSAGE_AUTHOR' as const,
+        threadId: 9,
+        messageSeq: 12,
+        rev: 4,
+      },
       users: new Set([1]),
     };
     const retained = {
@@ -280,7 +494,12 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         domain: 'peer.example',
         rev: 4,
       },
-      evidence: { type: 'EXACT' as const, account: 'alice', domain: 'peer.example', rev: 4 },
+      evidence: {
+        type: 'EXACT' as const,
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 4,
+      },
       users: new Set([3]),
     };
     const actual = {
@@ -290,7 +509,12 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
         domain: 'peer.example',
         rev: 5,
       },
-      evidence: { type: 'EXACT' as const, account: 'alice', domain: 'peer.example', rev: 5 },
+      evidence: {
+        type: 'EXACT' as const,
+        account: 'alice',
+        domain: 'peer.example',
+        rev: 5,
+      },
       users: new Set([2]),
     };
     const expectedKeyString = JSON.stringify([7, 'alice', 'peer.example', 4]);
@@ -325,6 +549,30 @@ describe('ProfileResolutionCoordinatorService durable references', () => {
     expect(subject['pendingMethodCount']).toBe(2);
     expect(subject['queue']).toContain(expectedKeyString);
     expect(subject['queue']).toContain(actualKeyString);
+    expect(sse.onProfileAvailable.mock.calls).toEqual([
+      [1, actualKey, invoking.evidence],
+    ]);
+
+    subject['complete'](
+      actualKeyString,
+      'backend',
+      {
+        method: {
+          kind: 'exact' as const,
+          account: 'alice',
+          domain: 'peer.example',
+          rev: 5,
+        },
+        evidence: null,
+        users: new Set(),
+      },
+      {
+        ...actualKey,
+        name: 'Alice',
+        bio: '',
+        avatarBase64: null,
+      },
+    );
     expect(sse.onProfileAvailable.mock.calls).toEqual([
       [1, actualKey, invoking.evidence],
     ]);

@@ -4,7 +4,7 @@ import {
   type ProfileSelector as Selector,
 } from '../../shared/profile-selector.js';
 import { groupStateSql } from '../group/shared/group-state.js';
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -13,7 +13,6 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
-import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { S2sResponseError } from './federation-errors.js';
@@ -56,7 +55,7 @@ type ResolutionMethod =
 
 interface PendingMethod {
   method: ResolutionMethod;
-  evidence: Selector;
+  evidence: Selector | null;
   users: Set<number>;
 }
 
@@ -95,56 +94,95 @@ export class ProfileResolutionCoordinatorService {
   ): Promise<ProfileResolutionStart> {
     this.assertSelector(selector);
     const normalized = await this.normalizeAndAuthorize(userId, selector);
-    const keyString = profileKeyString(normalized.key);
+    return this.enqueueResolution(normalized.key, normalized.method, selector, [
+      userId,
+    ]);
+  }
+
+  async prefetchAccountProfile(key: ProfileKey): Promise<void> {
+    if (key.rev < 1) return;
+    await this.enqueueResolution(
+      key,
+      { kind: 'exact', account: key.account, domain: key.domain, rev: key.rev },
+      null,
+      [],
+    );
+  }
+
+  async prefetchGroupMemberProfile(params: {
+    groupAccount: string;
+    groupDomain: string;
+    groupNamespaceId: number;
+    member: ProfileKey;
+  }): Promise<void> {
+    if (params.member.rev < 1) return;
+    await this.enqueueResolution(
+      params.member,
+      {
+        kind: 'groupMeta',
+        publisherDomain: params.groupDomain,
+        publisherNamespaceId: params.groupNamespaceId,
+        groupAccount: params.groupAccount,
+        subject: {
+          type: 'MEMBER',
+          account: params.member.account,
+          domain: params.member.domain,
+        },
+      },
+      null,
+      [],
+    );
+  }
+
+  private async enqueueResolution(
+    key: ProfileKey,
+    method: ResolutionMethod,
+    evidence: Selector | null,
+    users: Iterable<number>,
+  ): Promise<ProfileResolutionStart> {
+    const keyString = profileKeyString(key);
     const cached = this.cache.get(keyString);
     if (cached) {
       this.touch(keyString, cached);
       return { status: 'READY', profile: cached };
     }
-    const durable = await this.readDurable(normalized.key);
+    const durable = await this.readDurable(key);
     if (durable) {
       this.touch(keyString, durable);
       return { status: 'READY', profile: durable };
     }
-    if (
-      normalized.key.domain === this.config.domain &&
-      normalized.key.namespaceId === 0
-    ) {
+    if (key.domain === this.config.domain && key.namespaceId === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local profile revision is unavailable',
       );
     }
-    const methodKey = JSON.stringify(normalized.method);
+    const methodKey = JSON.stringify(method);
+    const userSet = new Set(users);
     const existing = this.pending.get(keyString);
     if (existing) {
-      const method = existing.methods.get(methodKey);
-      if (method) method.users.add(userId);
-      else {
+      const pending = existing.methods.get(methodKey);
+      if (pending) {
+        for (const userId of userSet) pending.users.add(userId);
+      } else {
         this.assertMethodCapacity();
-        existing.methods.set(methodKey, {
-          method: normalized.method,
-          evidence: selector,
-          users: new Set([userId]),
-        });
+        existing.methods.set(methodKey, { method, evidence, users: userSet });
         this.pendingMethodCount++;
       }
-      return { status: 'PENDING', key: normalized.key };
+      return { status: 'PENDING', key };
     }
     if (this.pending.size >= ProfileResolutionCoordinatorService.CAPACITY)
       this.capacityExceeded();
     this.assertMethodCapacity();
     this.pending.set(keyString, {
-      key: normalized.key,
-      methods: new Map([
-        [methodKey, { method: normalized.method, evidence: selector, users: new Set([userId]) }],
-      ]),
+      key,
+      methods: new Map([[methodKey, { method, evidence, users: userSet }]]),
       state: 'QUEUED',
     });
     this.pendingMethodCount++;
     this.enqueue(keyString);
     this.drain();
-    return { status: 'PENDING', key: normalized.key };
+    return { status: 'PENDING', key };
   }
 
   private async normalizeAndAuthorize(userId: number, selector: Selector) {
@@ -604,8 +642,10 @@ export class ProfileResolutionCoordinatorService {
       }
     }
 
-    for (const userId of pendingMethod.users)
-      this.sse.onProfileAvailable(userId, actualKey, pendingMethod.evidence);
+    if (pendingMethod.evidence) {
+      for (const userId of pendingMethod.users)
+        this.sse.onProfileAvailable(userId, actualKey, pendingMethod.evidence);
+    }
   }
 
   private fail(
@@ -626,8 +666,10 @@ export class ProfileResolutionCoordinatorService {
     const message = `profile resolution failed for ${expectedKeyString}: ${reason} (${detail})`;
     if (reason === 'TEMPORARILY_UNAVAILABLE') this.logger.warn(message);
     else this.logger.debug(message);
-    for (const userId of pendingMethod.users)
-      this.sse.onProfileUnavailable(userId, { ...item.key, reason });
+    if (pendingMethod.evidence) {
+      for (const userId of pendingMethod.users)
+        this.sse.onProfileUnavailable(userId, { ...item.key, reason });
+    }
     if (item.methods.size === 0) this.removeItem(expectedKeyString, item);
     else {
       item.state = 'QUEUED';
@@ -661,86 +703,19 @@ export class ProfileResolutionCoordinatorService {
         'profile revision is unavailable',
       );
     }
-    let profile: S2SProfile;
-    let sourceDomain: string;
-    if (method.kind === 'message') {
-      if (method.publisherNamespaceId === 0) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'message publisher is unavailable',
-        );
-      }
-      const source = await this.threadSources.resolve(
-        method.threadId,
-        method.publisherDomain,
-        method.publisherNamespaceId,
-      );
-      const query = new URLSearchParams({ account: source.selector.account });
-      if ('peerAccount' in source.selector)
-        query.set('peerAccount', source.selector.peerAccount);
-      query.set('messageSeq', method.publisherMessageSeq.toString());
-      profile = await this.peerHttp.get<S2SProfile>(
-        `/s2s/v1/message-author-profile?${query.toString()}`,
-        method.publisherDomain,
-      );
-      sourceDomain = method.publisherDomain;
-    } else if (method.kind === 'groupMeta') {
-      if (method.publisherNamespaceId === 0) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'locally allocated Group Meta profile is unavailable',
-        );
-      }
-      const query = new URLSearchParams({
-        account: method.groupAccount,
-        subject: method.subject.type,
-      });
-      if (method.subject.type === 'MEMBER') {
-        query.set('memberAccount', method.subject.account);
-        query.set('memberDomain', method.subject.domain);
-      }
-      profile = await this.peerHttp.get<S2SProfile>(
-        `/s2s/v1/group-meta-profile?${query.toString()}`,
-        method.publisherDomain,
-      );
-      sourceDomain = method.publisherDomain;
-    } else {
-      const peer = await this.database.db.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, method.domain),
-        columns: { activeNamespaceId: true },
-      });
-      if (peer?.activeNamespaceId !== expected.namespaceId)
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'profile namespace is no longer available remotely',
-        );
-      profile = await this.peerHttp.get<S2SProfile>(
-        `/s2s/v1/profiles/${encodeFederationResourceComponent(method.account)}?rev=${method.rev}`,
-        method.domain,
-      );
-      sourceDomain = method.domain;
-    }
-    if (
-      profile.account.toLowerCase() !== expected.account ||
-      profile.domain !== expected.domain ||
-      !Number.isSafeInteger(profile.profileRev) ||
-      profile.profileRev < 1
-    ) {
+    const profile = await this.fetchExactProfile(expected, method);
+    if (!profile.profile) {
       throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'peer returned a different profile identity',
-        HttpStatus.BAD_REQUEST,
+        BusinessCode.NOT_FOUND,
+        'profile revision is unavailable',
       );
     }
     await this.profiles.materializeExactForeignProfile(
-      profile,
-      sourceDomain,
+      profile.profile,
+      profile.sourceDomain,
       expected.namespaceId,
     );
-    const materialized = await this.readDurable({
-      ...expected,
-      rev: profile.profileRev,
-    });
+    const materialized = await this.readDurable(expected);
     if (!materialized) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -748,6 +723,73 @@ export class ProfileResolutionCoordinatorService {
       );
     }
     return materialized;
+  }
+
+  private async fetchExactProfile(
+    expected: ProfileKey,
+    method: ResolutionMethod,
+  ) {
+    if (method.kind === 'message') {
+      if (method.publisherNamespaceId === 0) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'message publisher is unavailable',
+        );
+      }
+      return {
+        profile: await this.profiles.fetchExactAccountProfile(
+          expected.account,
+          expected.rev,
+          method.publisherDomain,
+        ),
+        sourceDomain: method.publisherDomain,
+      };
+    }
+    if (method.kind === 'groupMeta') {
+      if (method.publisherNamespaceId === 0) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'locally allocated Group Meta profile is unavailable',
+        );
+      }
+      if (method.subject.type === 'MEMBER') {
+        return {
+          profile: await this.profiles.fetchExactGroupMemberProfile(
+            method.groupAccount,
+            method.subject.domain,
+            method.subject.account,
+            expected.rev,
+            method.publisherDomain,
+          ),
+          sourceDomain: method.publisherDomain,
+        };
+      }
+      return {
+        profile: await this.profiles.fetchExactAccountProfile(
+          method.groupAccount,
+          expected.rev,
+          method.publisherDomain,
+        ),
+        sourceDomain: method.publisherDomain,
+      };
+    }
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, method.domain),
+      columns: { activeNamespaceId: true },
+    });
+    if (peer?.activeNamespaceId !== expected.namespaceId)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile namespace is no longer available remotely',
+      );
+    return {
+      profile: await this.profiles.fetchExactAccountProfile(
+        method.account,
+        method.rev,
+        method.domain,
+      ),
+      sourceDomain: method.domain,
+    };
   }
 
   private assertMethodCapacity(): void {
