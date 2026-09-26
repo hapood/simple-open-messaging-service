@@ -11,9 +11,9 @@ fn line_end_at_handles_all_forms() {
 
 #[test]
 fn take_frame_lf_boundary_consumes_through_it() {
-    let mut buf = b"event: ping\ndata: {}\n\nrest".to_vec();
+    let mut buf = b"event: HELLO\ndata: {}\n\nrest".to_vec();
     let frame = take_sse_frame(&mut buf).expect("complete frame");
-    assert_eq!(frame, b"event: ping\ndata: {}"); // content, boundary NOT included
+    assert_eq!(frame, b"event: HELLO\ndata: {}"); // content, boundary NOT included
     assert_eq!(buf, b"rest"); // boundary consumed, remainder stays
 }
 
@@ -27,10 +27,10 @@ fn take_frame_crlf_boundary() {
 
 #[test]
 fn take_frame_returns_none_and_leaves_buf_when_incomplete() {
-    let mut buf = b"event: ping\ndata: {}".to_vec(); // no blank-line terminator yet
+    let mut buf = b"event: HELLO\ndata: {}".to_vec(); // no blank-line terminator yet
     assert!(take_sse_frame(&mut buf).is_none());
     assert_eq!(
-        buf, b"event: ping\ndata: {}",
+        buf, b"event: HELLO\ndata: {}",
         "incomplete buffer must be untouched"
     ); // chunk-split safe
 }
@@ -47,7 +47,7 @@ fn take_frame_drains_multiple_frames_in_order() {
 
 #[test]
 fn parse_basic_event_and_json_data() {
-    let f = parse_sse_frame(b"event: EXAMPLE_EVENT\ndata: {\"id\":5}").unwrap();
+    let f = parse_sse_frame(b"event: EXAMPLE_EVENT\nid: 0\ndata: {\"id\":5}").unwrap();
     assert_eq!(f.event, "EXAMPLE_EVENT");
     assert_eq!(f.data, serde_json::json!({"id": 5}));
 }
@@ -69,7 +69,7 @@ fn parse_strips_exactly_one_leading_space_after_colon() {
 
 #[test]
 fn parse_comment_line_is_ignored_but_event_still_parsed() {
-    // The leading `: connected` heartbeat frame has no `event:` → dropped (next test). But a comment
+    // A comment-only frame has no `event:` → dropped (next test). But a comment
     // INSIDE a real frame is ignored without breaking the parse.
     let f = parse_sse_frame(b": keepalive\nevent: x\ndata: 1").unwrap();
     assert_eq!(f.event, "x");
@@ -78,17 +78,16 @@ fn parse_comment_line_is_ignored_but_event_still_parsed() {
 
 #[test]
 fn parse_frame_with_no_event_is_dropped() {
-    // The connect heartbeat (`: connected`) and a bare `data:` frame have no event → None.
-    assert!(parse_sse_frame(b": connected").is_none());
+    // A comment and a bare `data:` frame have no event → None.
+    assert!(parse_sse_frame(b": ignored").is_none());
     assert!(parse_sse_frame(b"data: hello").is_none());
 }
 
 #[test]
 fn parse_empty_data_is_null_not_dropped() {
-    // `event: ping\ndata:` → event kept, data Null. Critical: a ping must NOT be dropped (it arms the
-    // watchdog), so empty data must yield Null, not None.
-    let f = parse_sse_frame(b"event: ping\ndata:").unwrap();
-    assert_eq!(f.event, "ping");
+    // An event with empty data remains visible, with a null payload.
+    let f = parse_sse_frame(b"event: HELLO\ndata:").unwrap();
+    assert_eq!(f.event, "HELLO");
     assert!(f.data.is_null());
 }
 

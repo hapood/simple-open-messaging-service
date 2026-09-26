@@ -14,15 +14,9 @@ pub(crate) fn is_allowed(url: &reqwest::Url) -> bool {
     scheme == "tauri" || scheme == "about" || host == "tauri.localhost"
 }
 
-/// Open a link-message target in the system browser.
+/// Attempt to open a link-message target with the operating system's URL handler.
 #[tauri::command]
 pub(crate) async fn open_external_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
-    // Keep non-web schemes away from OS protocol handlers. Message parsing also
-    // enforces this, but the native boundary validates every caller independently.
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("refused non-http(s) url: {url}"));
-    }
-
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url, None::<&str>)

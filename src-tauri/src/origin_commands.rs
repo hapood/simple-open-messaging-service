@@ -45,7 +45,7 @@ pub(crate) fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool 
 }
 
 /// Persist a new backend origin. Legacy entry point (the bundled bootstrap also reaches this via
-/// `persist_origin` inside `init_download_web`). Returns the canonical origin Rust stored.
+/// `persist_origin` in this command). Returns the canonical origin Rust stored.
 #[tauri::command]
 pub(crate) fn set_api_origin(
     url: String,
@@ -85,10 +85,10 @@ pub(crate) fn get_origin_mode(state: tauri::State<'_, ProxyState>) -> String {
     }
 }
 
-/// Login initialization — the CONCURRENT race. Probe both origins' `/health`, pick the reachable one, set
+/// Login initialization — the CONCURRENT race. Probe both origins' `/client/compat`, pick the reachable one, set
 /// it active. Called by the shell ONCE before the auth request, so login targets a reachable origin (on the
-/// LAN the public origin is hairpin-unreachable). Pre-token (no SSE yet) — health is the only probe that
-/// works. No-op when no secondary is configured (single-origin). Returns the active origin Rust picked.
+/// LAN the public origin is hairpin-unreachable). Pre-token (no SSE yet) — client bootstrap is the
+/// unauthenticated probe. No-op when no secondary is configured (single-origin). Returns the active origin Rust picked.
 #[tauri::command]
 pub(crate) async fn init_pick_origin(
     state: tauri::State<'_, ProxyState>,
