@@ -223,8 +223,8 @@ pub(crate) async fn send_with_headers_deadline(
 //    (sequential, single — NOT concurrent); flip if the other is reachable. Used on single-point failures
 //    (a transport request / the SSE stream). Lighter than a full race; never races both at runtime.
 //
-// `GET /api/v1/health` (public) is the ONLY reachability oracle — it works PRE-LOGIN (no token), unlike
-// SSE. No request re-send: the failed request surfaces to the caller and the SSE HELLO/reconcile restores
+// `GET /api/v1/client/compat` works PRE-LOGIN (no token), unlike SSE. No request re-send:
+// the failed request surfaces to the caller and the SSE HELLO/reconcile restores
 // state; these only fix which origin subsequent traffic uses.
 //
 // Authority: on DESKTOP Rust decides both (race + switch + `origin_notify` to its own SSE supervisor). On
@@ -239,17 +239,28 @@ pub(crate) fn is_network_failure(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout()
 }
 
-/// Short-timeout UNAUTHENTICATED probe of `{origin}/api/v1/health` — true iff the origin answered a
-/// healthy (2xx) response within `HEALTH_PROBE_TIMEOUT`. No Bearer: health is public, so this works
-/// PRE-LOGIN (when no session token exists and SSE cannot connect). A fresh client per probe (probes are
-/// infrequent: login + on failure + reconnect); the outer timeout bounds DNS + connect + TLS + headers.
-async fn probe_health(origin: &str) -> bool {
-    let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
+/// Short-timeout unauthenticated client bootstrap probe. Verify the SOMS response envelope,
+/// not just HTTP 200: a reverse proxy welcome page must not win the origin race.
+pub(crate) fn is_compat_probe_body(body: &serde_json::Value) -> bool {
+    body.get("code").and_then(|v| v.as_i64()) == Some(0)
+        && body.pointer("/data/apiVersion").and_then(|v| v.as_u64()).is_some()
+}
+
+async fn probe_client_compat(origin: &str) -> bool {
+    let url = format!("{}/api/v1/client/compat", origin.trim_end_matches('/'));
     let client = http_client_for(origin);
-    match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.get(&url).send()).await {
-        Ok(Ok(r)) => r.status().is_success(),
-        _ => false, // timeout, connect/DNS/TLS failure, or non-2xx → not healthy
-    }
+    matches!(
+        tokio::time::timeout(ORIGIN_PROBE_TIMEOUT, async {
+            let response = client.get(&url).send().await?;
+            if !response.status().is_success() {
+                return Ok(false);
+            }
+            let body: serde_json::Value = response.json().await?;
+            Ok::<bool, reqwest::Error>(is_compat_probe_body(&body))
+        })
+        .await,
+        Ok(Ok(true))
+    )
 }
 
 /// Apply a chosen origin + mode as the active one, notifying the desktop SSE supervisor to reopen on it
@@ -296,8 +307,8 @@ pub(crate) async fn pick_origin_race(state: &ProxyState) -> Option<String> {
     // every such check burns a full timeout before the reachable fallback is even considered.
     let _guard = state.select_lock.lock().await;
     let chosen = {
-        let primary_probe = probe_health(&primary);
-        let secondary_probe = probe_health(&secondary);
+        let primary_probe = probe_client_compat(&primary);
+        let secondary_probe = probe_client_compat(&secondary);
         tokio::pin!(primary_probe, secondary_probe);
 
         // Resolve as soon as one endpoint is healthy. Leaving this scope immediately drops the losing
@@ -363,9 +374,9 @@ pub(crate) async fn runtime_switch(state: &ProxyState) {
 /// former `proxy_api` did, but as an IPC command: build a reqwest request to `${api_origin}${path}`
 /// (`path` already includes `/api/v1…` + query), forward a whitelist of JS headers (NEVER `authorization`
 /// — Rust injects the Bearer from `ProxyState.token`), buffer the response, return status + headers +
-/// UTF-8 body. Uses the cached `api_client` (one connection pool per origin); the body READ is unbounded,
-/// only the headers phase is bounded by `API_HEADERS_TIMEOUT` (connect-only failures are already caught
-/// by `BACKEND_CONNECT_TIMEOUT`). Redirects are never followed (same posture as `http_client_for`).
+/// UTF-8 body. Uses the cached `api_client` (one connection pool per origin). Message/API JSON replies
+/// have a bounded body read as well as bounded headers; media downloads use a separate transport.
+/// Redirects are never followed (same posture as `http_client_for`).
 #[derive(serde::Serialize)]
 pub(crate) struct ApiRequestResult {
     pub(crate) status: u16,
@@ -499,9 +510,12 @@ pub(crate) async fn perform_api_request_with_events(
             out_headers.insert(name.as_str().to_string(), vs.to_string());
         }
     }
-    let bytes = upstream
-        .bytes()
+    // A server can return headers then stall forever before completing a JSON reply. This deadline
+    // bounds that gap independently of the header deadline. Uploads use their own progress-aware
+    // transport; do not impose a total-duration deadline on a streaming upload here.
+    let bytes = tokio::time::timeout(API_HEADERS_TIMEOUT, upstream.bytes())
         .await
+        .map_err(|_| "api_request body timed out".to_string())?
         .map_err(|e| format!("api_request read: {e}"))?;
     Ok(ApiRequestResult {
         status,

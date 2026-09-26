@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn origin_probe_requires_a_valid_client_compat_envelope() {
+    assert!(crate::proxy::is_compat_probe_body(&serde_json::json!({
+        "code": 0,
+        "data": { "apiVersion": 1 },
+    })));
+    for invalid in [
+        serde_json::json!({ "status": "ok" }),
+        serde_json::json!({ "code": 0, "data": {} }),
+        serde_json::json!({ "code": 0, "data": { "apiVersion": "1" } }),
+    ] {
+        assert!(!crate::proxy::is_compat_probe_body(&invalid));
+    }
+}
+
 /// The correctness boundary for origin fallback: a connect-level failure (ECONNREFUSED on a closed
 /// loopback port) must classify as a network failure → a select_origin re-race candidate. An HTTP
 /// status (incl. 401) never reaches `is_network_failure` (it's an `Ok(Response)`, not an `Err`), so
@@ -16,7 +31,7 @@ async fn is_network_failure_classifies_a_connect_failure_as_switchable() {
         .build()
         .unwrap();
     let err = client
-        .get(format!("http://{addr}/api/v1/health"))
+        .get(format!("http://{addr}/api/v1/client/compat"))
         .send()
         .await
         .expect_err("connecting to a closed port must error");

@@ -7,7 +7,6 @@ fn runtime_clone_shares_session_pool_and_shell_resources() {
     let shell = background.clone();
     assert!(Arc::ptr_eq(&background.api_http, &shell.api_http));
     assert!(Arc::ptr_eq(&background.select_lock, &shell.select_lock));
-    assert!(Arc::ptr_eq(&background.ota_active, &shell.ota_active));
     assert!(Arc::ptr_eq(&background.config_path, &shell.config_path));
     assert_eq!(shell.token.lock().unwrap().as_deref(), Some("test-session"));
     shell.replace_session_token(None);
