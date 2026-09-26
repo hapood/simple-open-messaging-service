@@ -43,7 +43,7 @@ object ClientStateDb {
         }
     }
 
-    fun getNotificationPreviewMode(ctx: Context): String {
+    fun getNotificationPreviewMode(): String {
         val value = try { RustRuntimeBridge.getNotificationPreference("notificationPreviewMode") }
         catch (e: Exception) {
             SomsLog.w("SomsNotification") { "preview preference unavailable: ${e.javaClass.simpleName}" }
@@ -52,13 +52,13 @@ object ClientStateDb {
         return value?.takeIf { it == "message" || it == "private" } ?: "message"
     }
 
-    fun setNotificationPreviewMode(ctx: Context, mode: String) {
+    fun setNotificationPreviewMode(mode: String) {
         RustRuntimeBridge.setNotificationPreference(
             "notificationPreviewMode", if (mode == "private") "private" else "message",
         )
     }
 
-    fun getNotificationAlertPolicy(ctx: Context): String {
+    fun getNotificationAlertPolicy(): String {
         val value = try { RustRuntimeBridge.getNotificationPreference("notificationAlertPolicy") }
         catch (e: Exception) {
             SomsLog.w("SomsNotification") { "alert preference unavailable: ${e.javaClass.simpleName}" }
@@ -68,7 +68,7 @@ object ClientStateDb {
             ?: "cooldown_5s"
     }
 
-    fun setNotificationAlertPolicy(ctx: Context, policy: String) {
+    fun setNotificationAlertPolicy(policy: String) {
         val value = policy.takeIf {
             it == "cooldown_2s" || it == "cooldown_5s" || it == "once_per_thread"
         } ?: "cooldown_5s"

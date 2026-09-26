@@ -1727,8 +1727,8 @@ class MainActivity : TauriActivity() {
          *  page to render the segmented control's initial state. */
         @JavascriptInterface
         fun getNotificationPreviewMode(): String {
-            val a = activityRef.get() ?: return "message"
-            return ClientStateDb.getNotificationPreviewMode(a)
+            if (activityRef.get() == null) return "message"
+            return ClientStateDb.getNotificationPreviewMode()
         }
 
         /** Set the away-notification grouping pref ("thread" | "all"). Persists immediately; takes effect on
@@ -1736,20 +1736,20 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun setNotificationPreviewMode(mode: String) {
             val a = activityRef.get() ?: return
-            ClientStateDb.setNotificationPreviewMode(a, mode)
+            ClientStateDb.setNotificationPreviewMode(mode)
             SomsMessagingService.clearAllMessageNotifs(a)
         }
 
         @JavascriptInterface
         fun getNotificationAlertPolicy(): String {
-            val a = activityRef.get() ?: return "cooldown_5s"
-            return ClientStateDb.getNotificationAlertPolicy(a)
+            if (activityRef.get() == null) return "cooldown_5s"
+            return ClientStateDb.getNotificationAlertPolicy()
         }
 
         @JavascriptInterface
         fun setNotificationAlertPolicy(policy: String) {
-            val a = activityRef.get() ?: return
-            ClientStateDb.setNotificationAlertPolicy(a, policy)
+            if (activityRef.get() == null) return
+            ClientStateDb.setNotificationAlertPolicy(policy)
         }
 
         /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings row. */

@@ -172,7 +172,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
             val batch = RustRuntimeBridge.synchronizeNotifications(userId, target)
-            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(ctx),
+            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(),
                 ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
                 ctx.getString(R.string.notif_message_removed))
             RustRuntimeBridge.withCurrentSession(batch.accountEpoch) {
@@ -215,7 +215,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             allowAlert: Boolean,
         ) {
             // Stable IDs replace named conversations; absent threads remain untouched.
-            val policy = ClientStateDb.getNotificationAlertPolicy(ctx)
+            val policy = ClientStateDb.getNotificationAlertPolicy()
             var alertSlot = allowAlert && when (policy) {
                 "cooldown_2s" -> alertThrottle2s.tryClaim()
                 "cooldown_5s" -> alertThrottle5s.tryClaim()

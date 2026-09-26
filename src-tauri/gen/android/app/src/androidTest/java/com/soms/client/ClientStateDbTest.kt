@@ -14,13 +14,13 @@ class ClientStateDbTest {
         val previousPreview = RustRuntimeBridge.getNotificationPreference("notificationPreviewMode")
         val previousAlert = RustRuntimeBridge.getNotificationPreference("notificationAlertPolicy")
         try {
-            RustRuntimeBridge.setNotificationPreference("notificationPreviewMode", "private")
-            RustRuntimeBridge.setNotificationPreference("notificationAlertPolicy", "once_per_thread")
-            assertEquals("private", RustRuntimeBridge.getNotificationPreference("notificationPreviewMode"))
-            assertEquals("once_per_thread", RustRuntimeBridge.getNotificationPreference("notificationAlertPolicy"))
+            ClientStateDb.setNotificationPreviewMode("private")
+            ClientStateDb.setNotificationAlertPolicy("once_per_thread")
+            assertEquals("private", ClientStateDb.getNotificationPreviewMode())
+            assertEquals("once_per_thread", ClientStateDb.getNotificationAlertPolicy())
         } finally {
-            RustRuntimeBridge.setNotificationPreference("notificationPreviewMode", previousPreview ?: "message")
-            RustRuntimeBridge.setNotificationPreference("notificationAlertPolicy", previousAlert ?: "cooldown_5s")
+            ClientStateDb.setNotificationPreviewMode(previousPreview ?: "message")
+            ClientStateDb.setNotificationAlertPolicy(previousAlert ?: "cooldown_5s")
         }
     }
 
