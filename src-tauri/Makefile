@@ -69,7 +69,7 @@ MULTI_ABIS := aarch64 armv7
 # armeabi-v7a) for Play-Store-style per-device distribution.
 VARIANTS   := $(if $(ABI),$(ABI),$(if $(SPLIT),$(MULTI_ABIS) universal,universal))
 # Skip the merged-SPA `ng build` when it is already built (WEB_BUILD=0). The APK bundles the SPA
-# (frontendDist → web/dist/web/browser); OTA bundle updates are downloaded + sha256-verified at runtime.
+# (frontendDist → web/dist/web/browser); updates require installing a new app package.
 WEB_BUILD  ?= 1
 # Versioned APKs (gitignored) land under dist/<platform>/ — Android here (dist/android/). Raw gradle
 # output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Future desktop
@@ -131,9 +131,8 @@ define do_build
 	  rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "✗ missing rust target $$t — run: rustup target add $$t"; exit 1; }; \
 	done
 	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/web/browser). The APK bundles
-	@# it as the baseline; OTA bundle updates are downloaded + sha256-verified at runtime (packaged
-	@# server-side by scripts/package-web-bundle.mjs, served from app_data_dir/web/<active>/ via
-	@# Context::set_assets). Build it on the host first, then blank beforeBuildCommand (cargo line below)
+	@# it as the only web frontend. Build it on the host first, then blank beforeBuildCommand
+	@# (cargo line below)
 	@# so tauri doesn't re-run npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the
 	@# Angular "development" configuration (sourcemaps on, unminified) so the webview JS is debuggable;
 	@# release uses "production".
