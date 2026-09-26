@@ -4,9 +4,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class OriginSelectorTest {
 
@@ -52,6 +57,30 @@ class OriginSelectorTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun client_compat_probe_rejects_an_unrelated_http_200() {
+        fun response(json: String) = Response.Builder()
+            .request(Request.Builder().url("http://localhost/api/v1/client/compat").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(json.toResponseBody())
+            .build()
+
+        response("""{"code":0,"data":{"apiVersion":1}}""").use {
+            assertTrue(OriginSelector.acceptsCompat(it))
+        }
+        response("""{"code":0,"data":{}}""").use {
+            assertFalse(OriginSelector.acceptsCompat(it))
+        }
+        response("""{"code":0,"data":{"apiVersion":"1"}}""").use {
+            assertFalse(OriginSelector.acceptsCompat(it))
+        }
+        response("""{"status":"ok"}""").use {
+            assertFalse(OriginSelector.acceptsCompat(it))
+        }
     }
 
     private class FakeProbe(

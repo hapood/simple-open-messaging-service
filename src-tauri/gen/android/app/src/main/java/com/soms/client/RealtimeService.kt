@@ -9,15 +9,21 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import okhttp3.OkHttpClient
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.io.IOException
 import org.json.JSONObject
 
 /** logcat tag for this otherwise-headless service. The FGS runs with no WebView and used to
@@ -40,15 +46,13 @@ private const val NOTIFICATION_COALESCE_MS = 500L
  * fetchers (FCM / WorkManager).
  *
  * **Lifecycle (the service must run while foregrounded — the WebView's only event source is this stream):**
- *  - Started right after login (`SomsFcm.setSessionToken`) and on every `onResume`, with
- *    `ACTION_FOREGROUND`: while the app is visible the process already has foreground priority, so the
- *    connection survives as a plain service with NO persistent notification.
- *  - `onStop` + the background toggle on re-delivers `ACTION_BACKGROUND`, promoting the already-running
- *    service to a `dataSync` foreground service (persistent notification) so the system keeps it alive in
- *    the background. Toggle off → `stopService` (background delivery falls back to FCM / WorkManager).
- *  - A `START_STICKY` system restart (null intent) also promotes, so a killed-and-restarted service
- *    survives on its own — it re-reads the session token from [SomsSecureStore] and reconnects with no
- *    help from the WebView or Rust (a system-restarted service cannot bring the Tauri runtime back up).
+ *  - When background realtime is enabled, promote while the activity is visible (onResume or login) and
+ *    retain the foreground notification across onStop. Promoting for the first time from onStop is too late
+ *    on Android 12+, which may already consider the app backgrounded.
+ *  - When disabled, the visible WebView still needs this stream as a plain service; onStop stops it and
+ *    background delivery falls back to FCM / WorkManager.
+ *  - A `START_STICKY` system restart (null intent) promotes only if background realtime remains enabled
+ *    and the session token is present. It reconnects without a WebView or Tauri activity.
  *
  * **Foreground** ([SomsMessagingService.appInForeground] true): every named event is forwarded to the
  * WebView via `window.__SOMS_EVENT__(type, data)` — the JS `WebsocketService` feeds the existing
@@ -67,7 +71,6 @@ class RealtimeService : Service() {
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS) // long-lived stream — no read timeout
-        .pingInterval(25, TimeUnit.SECONDS) // TCP keepalive; mirrors the backend's 25s SSE heartbeat
         .build()
     private val sseFactory = EventSources.createFactory(client)
 
@@ -77,6 +80,83 @@ class RealtimeService : Service() {
     // and mis-fire the FORCE_RECONNECT race guard (null the fresh socket → a duplicate stream opens).
     @Volatile private var eventSource: EventSource? = null
     private val handler = Handler(Looper.getMainLooper())
+    private data class FeedReceipt(val sseUuid: String, val threadFeedEndId: Int)
+    private var receiptOrigin: String? = null
+    private var receiptToken: String? = null
+    private var pendingReceipt: FeedReceipt? = null
+    private var receiptDueAt = 0L
+    private var receiptRetries = 0
+    private var receiptScheduled = false
+    private var receiptCall: Call? = null
+    private val receiptTask = Runnable { flushReceipt() }
+
+    /** The main looper owns this bounded buffer; OkHttp performs HTTP asynchronously. */
+    private fun queueReceipt(receipt: FeedReceipt) {
+        handler.post {
+            if (stopping) return@post
+            val previous = pendingReceipt
+            if (previous == null) {
+                receiptDueAt = SystemClock.elapsedRealtime() + 3_000
+                receiptRetries = 0
+            }
+            if (previous == null || previous.sseUuid != receipt.sseUuid ||
+                previous.threadFeedEndId <= receipt.threadFeedEndId) {
+                pendingReceipt = receipt
+            }
+            scheduleReceipt()
+        }
+    }
+
+    private fun scheduleReceipt() {
+        if (pendingReceipt == null || receiptScheduled || stopping) return
+        receiptScheduled = true
+        handler.postDelayed(
+            receiptTask,
+            (receiptDueAt - SystemClock.elapsedRealtime()).coerceAtLeast(0),
+        )
+    }
+
+    private fun flushReceipt() {
+        receiptScheduled = false
+        if (stopping || receiptCall != null) return
+        val receipt = pendingReceipt ?: return
+        pendingReceipt = null
+        val origin = receiptOrigin
+        val token = receiptToken
+        if (origin == null || token == null) return // The five-second FCM fallback owns this wake.
+        val body = JSONObject()
+            .put("sseUuid", receipt.sseUuid)
+            .put("threadFeedEndId", receipt.threadFeedEndId)
+            .toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$origin${SomsSecureStore.API_PREFIX}/events/receipt")
+            .addHeader("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        val call = client.newCall(request)
+        call.timeout().timeout(2, TimeUnit.SECONDS)
+        receiptCall = call
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) = finish(false)
+            override fun onResponse(call: Call, response: Response) {
+                response.use { finish(it.isSuccessful) }
+            }
+
+            private fun finish(success: Boolean) {
+                handler.post {
+                    if (receiptCall !== call || stopping) return@post
+                    receiptCall = null
+                    if (!success && pendingReceipt == null && receiptRetries == 0) {
+                        pendingReceipt = receipt
+                        receiptRetries = 1
+                        receiptDueAt = SystemClock.elapsedRealtime() + 1_000
+                    }
+                    scheduleReceipt()
+                }
+            }
+        })
+    }
 
     /** Single-thread executor for blocking origin probes and notification projection pulls. */
     private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsRealtimeIo") }
@@ -137,11 +217,12 @@ class RealtimeService : Service() {
         SomsLog.i("Rt") { "onStartCommand action=${intent?.action} (null=sticky-restart) streamOpen=${eventSource != null} startId=$startId" }
         when (intent?.action) {
             ACTION_FOREGROUND -> {
-                // App visible: the process has foreground priority, so the connection survives without FGS
-                // status. Drop the persistent notification (annoying while in use), but keep the stream.
-                SomsLog.i("Rt") { "onStartCommand foreground (drop persistent notification)" }
                 handler.removeCallbacks(notificationProjectionTask)
-                dropForegroundNotification()
+                if (SomsSecureStore.getForegroundServiceEnabled(this)) {
+                    if (!promoteOrStop(startId)) return START_NOT_STICKY
+                } else {
+                    dropForegroundNotification()
+                }
             }
             ACTION_RETRY -> {
                 // User tapped the disconnected chip (SomsFcm.retryNow → this action): cancel the pending
@@ -173,10 +254,14 @@ class RealtimeService : Service() {
                 return START_STICKY
             }
             else -> {
-                // ACTION_BACKGROUND (app backgrounded + toggle on) OR a START_STICKY system restart:
-                // promote to a dataSync foreground service so the system keeps the connection alive.
-                SomsLog.i("Rt") { "onStartCommand background/sticky (promote to foreground service)" }
-                startForegroundCompat()
+                // Only a START_STICKY restart or an already-foreground-enabled service reaches this path.
+                // Never resurrect a disabled/logged-out background connection after a process restart.
+                if (!SomsSecureStore.getForegroundServiceEnabled(this) ||
+                    SomsSecureStore.getSessionToken(this) == null) {
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                if (!promoteOrStop(startId)) return START_NOT_STICKY
             }
         }
         openStream()
@@ -185,6 +270,17 @@ class RealtimeService : Service() {
 
     /** Bound-mode is unused (this is a started service); satisfy the abstract base. */
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** Quota exhaustion or FGS restrictions must not crash a sticky service restart. Stop rather than
+     *  keeping a background socket without its foreground-service anchor. */
+    private fun promoteOrStop(startId: Int): Boolean = try {
+        startForegroundCompat()
+        true
+    } catch (e: RuntimeException) {
+        Log.w(TAG, "dataSync foreground promotion rejected", e)
+        stopSelfResult(startId)
+        false
+    }
 
     /** Promote to foreground with the persistent notification. The typed `dataSync` startForeground is
      *  required on Android 14+ (UPSIDE_DOWN_CAKE); older versions fall back to the 2-arg overload and
@@ -278,6 +374,10 @@ class RealtimeService : Service() {
      *  banner keeps the [establishConnection] `asState` ("connecting" boot / "reconnecting" failure) until onOpen
      *  flips it to "open", so a recovery doesn't flicker reconnecting→connecting→open (expand→collapse→gone). */
     private fun openStreamOn(origin: String, token: String) {
+        handler.post {
+            receiptOrigin = origin
+            receiptToken = token
+        }
         val request = Request.Builder()
             .url("$origin${SomsSecureStore.API_PREFIX}/events")
             .addHeader("Authorization", "Bearer $token")
@@ -304,15 +404,16 @@ class RealtimeService : Service() {
         }
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-            // The 25s liveness heartbeat is a NAMED `ping` event (data "{}") — not a payload, skip it. Logged
-            // at debug (NOT returned silently): in a background no-message window this is the single proof the
-            // stream is still alive — one line every ~25s. If these stop while the device is backgrounded, the
-            // connection is silently dead even though the service process is alive.
-            if (type == "ping") {
-                SomsLog.d("Rt") { "ping (liveness) appInFg=${SomsMessagingService.appInForeground}" }
-                return
-            }
             attempt = 0 // any real frame resets the reconnect backoff
+            if (type == "THREAD_FEED_UPDATED" && this@RealtimeService.eventSource === eventSource) {
+                val receipt = runCatching {
+                    val body = JSONObject(data)
+                    val uuid = body.optString("sseUuid")
+                    val head = body.optInt("threadFeedEndId", -1)
+                    if (uuid.isNotEmpty() && head >= 0) FeedReceipt(uuid, head) else null
+                }.getOrNull()
+                if (receipt != null) queueReceipt(receipt)
+            }
             // Cache HELLO + merge incremental revision frames (runs in fg AND bg, so the cache stays fresh
             // while the WebView is suspended). SomsFcm.replayHello hands a re-attached WebView this merged
             // HELLO — a retained open stream does not re-push HELLO on its own.
@@ -324,6 +425,16 @@ class RealtimeService : Service() {
             // appears, the failure is downstream in native notification synchronization/renderDescriptors (see Soms/Notif).
             SomsLog.i("Rt") {
                 "onEvent type=$type id=$id dataLen=${data.length} appInFg=${SomsMessagingService.appInForeground}"
+            }
+
+            if (type == "SSE_REPLACED") {
+                if (this@RealtimeService.eventSource !== eventSource) return
+                // A newer stream authenticated as this device session took ownership.
+                // Do not reconnect the displaced socket and evict it in a loop.
+                this@RealtimeService.eventSource = null
+                eventSource.cancel()
+                stopSelf()
+                return
             }
 
             // FORCE_LOGOUT: the session was invalidated (all-device logout / password change / admin
@@ -347,17 +458,44 @@ class RealtimeService : Service() {
                 CallController.onFrame(type, data)
             }
 
+            if (SomsMessagingService.appInForeground &&
+                (type == "HELLO" || type == "THREAD_FEED_UPDATED" || type == "STATE_FEED_UPDATED")) {
+                val frame = runCatching { JSONObject(data) }.getOrNull()
+                val threadTarget = if (type == "HELLO" || type == "THREAD_FEED_UPDATED")
+                    frame?.optInt("threadFeedEndId", -1)?.takeIf { it >= 0 } else null
+                val stateTarget = if (type == "HELLO" || type == "STATE_FEED_UPDATED")
+                    frame?.optLong(if (type == "HELLO") "stateFeedEndId" else "feedId", -1)
+                        ?.takeIf { it >= 0 } else null
+                if (threadTarget != null || stateTarget != null) {
+                    ioExecutor.execute {
+                        if (stateTarget != null && !syncNativeStateFeed(stateTarget)) return@execute
+                        if (threadTarget != null) runCatching {
+                            SomsMessagingService.renderForegroundNotification(this@RealtimeService, threadTarget)
+                        }.onFailure { e -> SomsLog.w("Notif", e) { "foreground projection failed" } }
+                        if (SomsMessagingService.appInForeground) forwardToJs(type, data)
+                    }
+                    return
+                }
+            }
+
             if (SomsMessagingService.appInForeground) {
                 // Foreground: hand every event to the WebView. It dispatches via WebsocketService exactly
                 // as the sse.worker would, so all downstream consumers (chat-box, threadlist, …) are
                 // unchanged. `data` is the server-serialized JSON, valid as a JS expression.
                 SomsLog.d("Rt") { "branch=foreground → forwardToJs (WebView is suspended if appInFg lags reality)" }
                 forwardToJs(type, data)
-            } else if (type == "THREAD_FEED_UPDATED" || type == "HELLO") {
-                // The WebView is suspended, so native code takes over notification aggregation for this
-                // live device session. The query remains cursor-based; this SSE frame is only a wake.
-                val target = runCatching { JSONObject(data).getInt("threadFeedEndId") }.getOrNull()
-                if (target != null && target >= 0) scheduleNotificationProjection(target)
+            } else if (type == "THREAD_FEED_UPDATED" || type == "HELLO" || type == "STATE_FEED_UPDATED") {
+                // Background state-feed pages are also Rust-owned; resume reads their committed cursor.
+                if (type == "HELLO" || type == "STATE_FEED_UPDATED") {
+                    val key = if (type == "HELLO") "stateFeedEndId" else "feedId"
+                    val stateTarget = runCatching { JSONObject(data).getLong(key) }.getOrNull()
+                    if (stateTarget != null && stateTarget >= 0)
+                        ioExecutor.execute { syncNativeStateFeed(stateTarget) }
+                }
+                if (type == "HELLO" || type == "THREAD_FEED_UPDATED") {
+                    val target = runCatching { JSONObject(data).getInt("threadFeedEndId") }.getOrNull()
+                    if (target != null && target >= 0) scheduleNotificationProjection(target)
+                }
             } else {
                 // Background durable events are recovered by cursor on resume. Message notification wakes
                 // arrive independently through FCM, so the SSE stream does not own notification rendering.
@@ -457,14 +595,12 @@ class RealtimeService : Service() {
                     sid, peerId, peerAccount, peerDomain, peer?.name ?: "",
                     peer?.avatarDataUrl() ?: "", threadId, callType,
                 )
-                // The recovery missed the original incoming (SSE was down) → if backgrounded, ALSO post the
-                // call notification (seedIncoming rings but doesn't notify). startIncoming's seedIncoming is a
-                // no-op now (already seeded); its startIncomingForeground posts the notification.
-                if (!SomsMessagingService.appInForeground) {
-                    CallService.startIncoming(
-                        this, sid, peerId, peerAccount, peerDomain, threadId, callType,
-                    )
-                }
+                // The recovery missed the original incoming (SSE was down): post the same CallStyle
+                // notification whether or not the app is visible. seedIncoming rings but doesn't notify;
+                // startIncoming's seedIncoming is a no-op now (already seeded).
+                CallService.startIncoming(
+                    this, sid, peerId, peerAccount, peerDomain, threadId, callType,
+                )
             }
         } catch (e: Exception) {
             SomsLog.w("Rt") { "reconcileActiveCall failed: ${e.message}" }
@@ -479,6 +615,25 @@ class RealtimeService : Service() {
         connState = state
         SomsLog.i("Rt") { "connState=$state" }
         SomsBridge.eval("window.__SOMS_CONN_STATE__ && window.__SOMS_CONN_STATE__(${SomsBridge.jsonStr(state)});")
+    }
+
+    private fun syncNativeStateFeed(target: Long): Boolean {
+        val userId = SomsSecureStore.getCurrentUserId(this) ?: return false
+        val token = SomsSecureStore.getSessionToken(this) ?: return false
+        val committed = runCatching { RustRuntimeBridge.synchronizeStateFeed(userId, target) }
+            .getOrElse { e ->
+                SomsLog.w("Rt", e) { "native state-feed synchronization failed" }
+                return false
+            }
+        if (SomsSecureStore.getCurrentUserId(this) != userId ||
+            SomsSecureStore.getSessionToken(this) != token) return false
+        var current = false
+        RustRuntimeBridge.withCurrentSession(committed.getLong("accountEpoch")) {
+            current = true
+            if (SomsMessagingService.appInForeground)
+                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('LOCAL_STATE_FEED_COMMITTED', $committed);")
+        }
+        return current
     }
 
     private var notificationTarget = 0
@@ -527,14 +682,18 @@ class RealtimeService : Service() {
         SomsBridge.eval("window.__SOMS_RECONNECT_IN__ && window.__SOMS_RECONNECT_IN__($ms);")
     }
 
-    /** Android 15 (API 35) dataSync time budget exhausted (~6h/24h). Stop cleanly; the WorkManager
-     *  poller (if its toggle is on) continues the long tail. The system calls this only on API 35+. */
+    /** Android 15+ dataSync time budget exhausted (~6h/24h). Stop promptly; FCM and the independently
+     *  scheduled WorkManager poll remain available. Do not try to restart from the background. */
     override fun onTimeout(startId: Int) {
         stopSelf()
     }
 
     override fun onDestroy() {
         stopping = true
+        receiptCall?.cancel()
+        receiptCall = null
+        receiptToken = null
+        receiptOrigin = null
         connectivityManager?.unregisterNetworkCallback(networkCallback)
         handler.removeCallbacksAndMessages(null)
         ioExecutor.shutdownNow()
@@ -545,12 +704,8 @@ class RealtimeService : Service() {
     }
 
     companion object {
-        /** App resumed → run as a plain service (the process has foreground priority); drop the
-         *  persistent notification. Delivered by MainActivity.onResume + SomsFcm.setSessionToken. */
+        /** App visible → retain the FGS if enabled, otherwise run as a plain service. */
         const val ACTION_FOREGROUND = "com.soms.client.action.FOREGROUND"
-        /** App backgrounded + toggle on → promote to a dataSync foreground service so the connection
-         *  survives in the background. Delivered by MainActivity.onStop. */
-        const val ACTION_BACKGROUND = "com.soms.client.action.BACKGROUND"
         /** User tapped the disconnected chip → cancel the pending backoff + reconnect now (the JS→native
          *  retry channel, parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered
          *  by SomsFcm.retryNow. */

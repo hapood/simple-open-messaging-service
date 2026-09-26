@@ -25,7 +25,11 @@ object RustRuntimeBridge {
         )
     }
 
-    fun getDatabasePath(): String = checkNotNull(databasePath) { "Rust runtime is not initialized" }
+    // The account cache uses Rust's bundled SQLite. Android's platform SQLite can be too old
+    // to parse its schema, so background Kotlin components must never open that file directly.
+    external fun getNotificationPreference(key: String): String?
+    external fun setNotificationPreference(key: String, value: String)
+    external fun queryCallPeer(userId: Int, threadId: Int, account: String, domain: String): String?
 
     private fun origins(ctx: Context): String = JSONObject().apply {
         put("primary", SomsSecureStore.getApiOrigin(ctx) ?: JSONObject.NULL)
@@ -59,6 +63,13 @@ object RustRuntimeBridge {
         return queryNotifications(userId, threadFeedEndId)
     }
 
+    fun synchronizeStateFeed(userId: Int, stateFeedEndId: Long): JSONObject {
+        check(Looper.myLooper() != Looper.getMainLooper()) { "State-feed synchronization must run off the main thread" }
+        checkNotNull(databasePath) { "Rust runtime is not initialized" }
+        return JSONObject(syncStateFeed(userId, stateFeedEndId))
+    }
+
+    private external fun syncStateFeed(userId: Int, target: Long): String
     private external fun queryNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch
     private external fun setOrigins(originsJson: String)
     private external fun initializeRuntime(dataDirectory: String, originsJson: String, token: String?): String

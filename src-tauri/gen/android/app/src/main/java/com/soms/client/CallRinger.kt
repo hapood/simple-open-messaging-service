@@ -23,16 +23,21 @@ class CallRinger(private val contextProvider: () -> Context?) {
     @Volatile private var wakeLock: PowerManager.WakeLock? = null
 
     /** Prepare ringtone routing and keep the process awake while the system notification channel rings. */
+    @Synchronized
     fun startRing() {
+        if (wakeLock?.isHeld == true) return
         SomsLog.i(TAG) { "startRing appInFg=${SomsMessagingService.appInForeground}" }
         val ctx = contextProvider() ?: return
         val am = (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
         am.mode = AudioManager.MODE_RINGTONE
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "soms:ring").also { it.acquire() }
+        // A duplicate SSE/FCM ring must not replace an acquired lock, and a missed end event must not
+        // leave the CPU awake indefinitely. The server's incoming-call timeout is shorter than this cap.
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "soms:ring").also { it.acquire(60_000L) }
     }
 
     /** Release the wake lock and restore MODE_NORMAL. Safe when not ringing. */
+    @Synchronized
     fun stopRing() {
         SomsLog.i(TAG) { "stopRing" }
         wakeLock?.takeIf { it.isHeld }?.runCatching { release() }; wakeLock = null

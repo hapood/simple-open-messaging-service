@@ -44,22 +44,27 @@ class SomsMessagingService : FirebaseMessagingService() {
                 notifyAdminTest(this, data["title"] ?: "Test", data["body"] ?: "")
             }
             "NEW_MESSAGE" -> {
-                if (appInForeground) return // SSE handled it; suppress the system notification.
+                // Keep FCM as a wake even in the foreground: SSE can be temporarily disconnected.
+                // Both wakes synchronize through Rust's cursor, so only the winner projects cards.
                 val target = data["threadFeedEndId"]?.toIntOrNull()?.takeIf { it >= 0 } ?: return
-                renderAwayNotification(this, allowAlert = true, threadFeedEndId = target)
+                // Firebase's callback has a short lifetime; network + SQLite projection belongs in
+                // expedited work, which may finish even if this process is reclaimed after the callback.
+                try {
+                    NotificationPushWorker.enqueue(this, target)
+                } catch (e: RuntimeException) {
+                    SomsLog.w("Notif", e) { "could not enqueue push projection" }
+                }
             }
             "CALL_INCOMING" -> {
-                // The phone must ring even when the app is backgrounded / killed. The high-priority FCM grant
-                // is the exemption that lets the CallService phoneCall FGS start here. Suppress only when the
-                // app is foregrounded (the live SSE already delivered CALL_EVENT{incoming} + the in-app UI owns
-                // display — no loud system ring while the user is in the app).
-                if (appInForeground) return
+                // FCM also covers a temporarily disconnected SSE while the app is visible. Both paths post
+                // the same CallStyle notification; avoid a redundant start when SSE already seeded this call.
+                // A high-priority FCM grant permits the phoneCall FGS start when backgrounded or killed.
                 val sid = data["callSid"] ?: return
                 // A late/duplicate push for a call already past incoming (the SSE path answered/ended it) —
                 // don't re-ring. seedIncoming is itself idempotent on the same incoming callSid; this guards
                 // the ring for a call the SSE already advanced.
                 val p = CallController.phase
-                if (CallController.callSid == sid && p != "incoming" && p != "idle") return
+                if (CallController.callSid == sid && p != "idle") return
                 val callerUserId = data["callerUserId"]?.toIntOrNull() ?: return
                 val callerAccount = data["callerAccount"] ?: return
                 val callerDomain = data["callerDomain"] ?: return
@@ -117,6 +122,9 @@ class SomsMessagingService : FirebaseMessagingService() {
         @Volatile
         var appInForeground: Boolean = false
 
+        @Volatile
+        var activeThreadId: Int = -1
+
         private val HTTP: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -142,7 +150,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** All background sources use one cursor-owning Rust executor. A target of -1 is a scheduled poll. */
+        /** SSE, FCM and scheduled polls share one single-flight Rust projection lane.
+         * A newer target replaces the pending end id; -1 requests a full catch-up poll. */
         fun renderAwayNotification(ctx: Context, allowAlert: Boolean, threadFeedEndId: Int = -1) {
             if (!notificationProjectionGate.tryStart(allowAlert, threadFeedEndId)) return
             var next: NotificationProjectionGate.Wake? = NotificationProjectionGate.Wake(allowAlert, threadFeedEndId)
@@ -154,6 +163,11 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
+        /** Foreground wakes use the same coalescing lane as FCM and background SSE. */
+        fun renderForegroundNotification(ctx: Context, threadFeedEndId: Int) {
+            renderAwayNotification(ctx, allowAlert = true, threadFeedEndId = threadFeedEndId)
+        }
+
         private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
@@ -162,9 +176,15 @@ class SomsMessagingService : FirebaseMessagingService() {
                 ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
                 ctx.getString(R.string.notif_message_removed))
             RustRuntimeBridge.withCurrentSession(batch.accountEpoch) {
-                if (!appInForeground && SomsSecureStore.getCurrentUserId(ctx) == userId &&
+                if (SomsSecureStore.getCurrentUserId(ctx) == userId &&
                     SomsSecureStore.getSessionToken(ctx) == token) {
-                    renderDescriptors(ctx, descriptors, allowAlert)
+                    renderDescriptors(ctx, if (appInForeground) descriptors.filter {
+                        it.data.optInt("threadId", -1) != activeThreadId
+                    } else descriptors, allowAlert)
+                    if (appInForeground) {
+                        val committed = JSONObject(batch.metadata).getJSONObject("commit")
+                        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('LOCAL_THREAD_FEED_COMMITTED', $committed);")
+                    }
                 }
             }
         }
@@ -305,6 +325,13 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
+        /** Close just the chat that the foreground UI is currently displaying. */
+        fun clearThreadNotification(ctx: Context, threadId: Int) {
+            if (threadId <= 0) return
+            ContextCompat.getSystemService(ctx, NotificationManager::class.java)
+                ?.cancel(threadNotifId(threadId))
+        }
+
         /** Close message notifications when the foreground UI takes over. */
         private fun cancelMessageNotifications(ctx: Context) {
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
@@ -318,6 +345,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         }
 
         fun clearSessionMessageNotifs(ctx: Context) {
+            activeThreadId = -1
             SomsBridge.DeepLink.clear()
             clearAllMessageNotifs(ctx)
         }

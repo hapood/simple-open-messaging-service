@@ -111,9 +111,10 @@
 
         <!-- The native-owned realtime channel (foreground service, dataSync type). Holds a long-lived SSE
              to /events with the session token, continuous across fg/bg, so messages arrive in near-real-time
-             when FCM is unavailable; in the foreground it forwards every event to the WebView. Started/stopped
-             by MainActivity.onStop/onResume based on the Settings toggle. Android 15 caps its runtime at
-             ~6h/24h, after which onTimeout stops it and the WorkManager poll takes over. See RealtimeService. -->
+             when FCM is unavailable; in the foreground it forwards every event to the WebView. Promoted
+             while the activity is visible if enabled, and retained across onStop; otherwise stopped onStop.
+             Android 15 caps dataSync runtime at ~6h/24h; onTimeout stops it and FCM or the independently
+             enabled WorkManager poll can continue delivery. -->
         <service
             android:name=".RealtimeService"
             android:foregroundServiceType="dataSync"

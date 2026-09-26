@@ -605,17 +605,14 @@ object CallController {
                 peerDomain = obj.optString("callerDomain", "")
                 seedIncomingState(sid, obj.optInt("callerUserId"), obj.optString("callerName", ""),
                     obj.optString("callerAvatar", ""), obj.optInt("threadId"), obj.optString("callType", "AUDIO"))
-                // Ring + post the call notification when backgrounded. The SSE FGS (RealtimeService) is alive
-                // whenever the process lives, so CALL_EVENT{incoming} is the RELIABLE ring trigger (the FCM
-                // push is the killed-process fallback). Idempotent with the FCM/HELLO paths (a re-seed is a
-                // no-op on the same values; ringer.startRing + the notification are idempotent).
-                if (!SomsMessagingService.appInForeground) {
-                    ringer.startRing()
-                    appContext?.let {
-                        CallService.startIncoming(
-                            it, sid, peerUserId, peerAccount, peerDomain, threadId, callType,
-                        )
-                    }
+                // Always use the same system CallStyle notification and its channel sound, including when
+                // the app is visible. The in-app incoming screen remains visual-only. The SSE path is the
+                // primary trigger; FCM is the killed-process fallback.
+                ringer.startRing()
+                appContext?.let {
+                    CallService.startIncoming(
+                        it, sid, peerUserId, peerAccount, peerDomain, threadId, callType,
+                    )
                 }
             }
             "ringing" -> {
@@ -1210,8 +1207,8 @@ object CallController {
     /** Seed the callee-side incoming snapshot — the shared body of the THREE incoming trigger paths: the SSE
      *  CALL_EVENT{incoming} ([handleEventFrame]), the CALL_INCOMING FCM push ([seedIncoming]), + the HELLO
      *  activeCall recovery ([RealtimeService.reconcileActiveCall]). Flips the FSM to 'incoming' + acks
-     *  alerting (POST /calls/ringing). Does NOT ring nor post the call notification — the foreground SSE path
-     *  skips the ring (the user is in-app); the background paths add it after this, so each owns its choice. */
+     *  alerting (POST /calls/ringing). Does NOT ring nor post the call notification — each trigger does that
+     *  after seeding, regardless of whether the app is visible. */
     private fun seedIncomingState(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
         callSid = sid
         threadId = tid

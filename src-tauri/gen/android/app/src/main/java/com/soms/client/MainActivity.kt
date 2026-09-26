@@ -93,6 +93,7 @@ class MainActivity : TauriActivity() {
     ) { uris ->
         val requestId = nativePhotoRequestId.orEmpty()
         nativePhotoRequestId = null
+        NativeUploadManager.pickerReturned(requestId)
         NativeUploadManager.accept(this, uris, "image", requestId)
         nativeComposer.restoreAfterExternalPicker()
     }
@@ -129,6 +130,7 @@ class MainActivity : TauriActivity() {
     ) { uris ->
         val requestId = nativeFileRequestId.orEmpty()
         nativeFileRequestId = null
+        NativeUploadManager.pickerReturned(requestId)
         NativeUploadManager.accept(this, uris, "file", requestId)
         nativeComposer.restoreAfterExternalPicker()
     }
@@ -1124,9 +1126,10 @@ class MainActivity : TauriActivity() {
         captureWebView()
         SomsMessagingService.appInForeground = true
         SomsLog.i("Ui") { "onResume → appInForeground=true" }
-        // App visible: ensure the realtime service is running (the WebView's only event source on Android
-        // is this /events stream) and drop the persistent FGS notification + away-notification so the
-        // in-app UI owns message display again. The start is guarded for two reasons:
+        // App visible: start the realtime service and, if background realtime is enabled, promote it
+        // BEFORE leaving the activity. The persistent FGS notification stays visible across fg/bg;
+        // onStop cannot safely start a new FGS after Android has classified the app as backgrounded.
+        // The start is guarded for two reasons:
         //  1. No session token yet (pre-login, e.g. right after the server-config handoff) → openStream()
         //     stopSelf's immediately, so the start is pointless; skip it. Mirrors onStop's token guard.
         //  2. onResume can fire while the system still considers the process "background" (during the
@@ -1137,14 +1140,13 @@ class MainActivity : TauriActivity() {
         //     retries, and any missed realtime frames are backstopped by the WebView's HWM catch-up.
         if (SomsSecureStore.getSessionToken(this) != null) {
             try {
-                startService(Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND))
+                startRealtimeServiceWhileVisible()
             } catch (e: RuntimeException) {
                 Log.w("SomsActivity", "realtime start skipped: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
-        // Drop the away card + the whole per-thread group + the in-memory dismiss map — the in-app UI owns
-        // message display again while the activity is visible.
-        SomsMessagingService.clearAllMessageNotifs(this)
+        // Keep other conversations' cards on return. The foreground chat clears only its own card
+        // through the WebView notification adapter once the visible chat state is known.
     }
 
     override fun onStop() {
@@ -1153,16 +1155,10 @@ class MainActivity : TauriActivity() {
         SomsLog.i("Ui") {
             "onStop → appInForeground=false fgsEnabled=${SomsSecureStore.getForegroundServiceEnabled(this)} tokenPresent=${SomsSecureStore.getSessionToken(this) != null}"
         }
-        // Backgrounded: keep the realtime connection alive only if the toggle is on AND the user is logged
-        // in (session token present) — promote the already-running service to a foreground service so the
-        // system doesn't kill it. Toggle off → stop it (background delivery falls back to FCM/WorkManager).
-        if (SomsSecureStore.getForegroundServiceEnabled(this) &&
-            SomsSecureStore.getSessionToken(this) != null
-        ) {
-            startForegroundService(
-                Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_BACKGROUND),
-            )
-        } else {
+        // Never start/promote a service after leaving the visible state. The enabled FGS was promoted
+        // while visible; with the toggle off (or on logout), background delivery uses FCM / WorkManager.
+        if (!SomsSecureStore.getForegroundServiceEnabled(this) ||
+            SomsSecureStore.getSessionToken(this) == null) {
             stopService(Intent(this, RealtimeService::class.java))
         }
     }
@@ -1404,23 +1400,25 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /** Apply the foreground-service toggle: enabling just writes the pref (the FGS starts on the next
-     *  background — it's a background-only path); disabling stops a running service immediately. If
-     *  toggled on while already backgrounded, start it now. */
+    /** Start or re-deliver the realtime service only while the activity is visible. A background-enabled
+     *  session needs the FGS notification even while in-app, so there is no onStop promotion race. */
+    private fun startRealtimeServiceWhileVisible() {
+        val intent = Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND)
+        if (SomsSecureStore.getForegroundServiceEnabled(this)) startForegroundService(intent)
+        else startService(intent)
+    }
+
     private fun applyForegroundServiceEnabled(enabled: Boolean) {
-        if (!enabled) {
-            // Do NOT tear down the SSE while the app is visible — RealtimeService is the WebView's ONLY
-            // event source, so stopping it here would kill in-app realtime delivery (chat-box / threadlist)
-            // until the next onResume. The disable takes effect on the next onStop, which consults this
-            // toggle and stops the service (rather than promoting it to a background FGS) when the user
-            // actually leaves the app. Mirrors the enable branch's `!appInForeground` guard.
-            if (!SomsMessagingService.appInForeground) {
-                stopService(Intent(this, RealtimeService::class.java))
-            }
+        if (!SomsMessagingService.appInForeground) {
+            // A settings callback can race onStop. Never attempt a new FGS from the background.
+            if (!enabled) stopService(Intent(this, RealtimeService::class.java))
             return
         }
-        if (!SomsMessagingService.appInForeground) {
-            startForegroundService(Intent(this, RealtimeService::class.java))
+        if (SomsSecureStore.getSessionToken(this) == null) return
+        try {
+            startRealtimeServiceWhileVisible()
+        } catch (e: RuntimeException) {
+            Log.w("SomsActivity", "realtime toggle start skipped: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -1587,6 +1585,16 @@ class MainActivity : TauriActivity() {
             SomsMessagingService.clearSessionMessageNotifs(a)
         }
 
+        /** UI state only: Rust owns the notification projection and Kotlin owns presentation. */
+        @JavascriptInterface
+        fun setActiveThreadId(threadId: Int) {
+            val a = activityRef.get() ?: return
+            val selected = threadId.takeIf { it > 0 } ?: -1
+            SomsMessagingService.activeThreadId = selected
+            if (selected > 0 && SomsMessagingService.appInForeground)
+                a.runOnUiThread { SomsMessagingService.clearThreadNotification(a, selected) }
+        }
+
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned
          *  /events stream (RealtimeService) and the background Rust thread-feed fetchers
          *  (FCM / WorkManager) can authenticate while the WebView is suspended. Called from JS on login;
@@ -1597,14 +1605,16 @@ class MainActivity : TauriActivity() {
             SomsSecureStore.setSessionToken(a, token)
             // The realtime service lifecycle follows the session: a freshly-persisted token (login) opens
             // the /events stream the WebView consumes; clearing it (logout) tears the stream down.
-            // ACTION_FOREGROUND because login happens while the app is visible. startService/stopService
-            // are thread-safe (this @JavascriptInterface runs on a background JS thread).
+            // A login may race the activity leaving the screen. Start/promote only while visible;
+            // otherwise FCM / WorkManager cover the background until the next onResume.
             if (token.isNullOrEmpty()) {
                 a.stopService(Intent(a, RealtimeService::class.java))
-            } else {
-                a.startService(
-                    Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND),
-                )
+            } else if (SomsMessagingService.appInForeground) {
+                try {
+                    a.startRealtimeServiceWhileVisible()
+                } catch (e: RuntimeException) {
+                    Log.w("SomsActivity", "realtime login start skipped: ${e.javaClass.simpleName}: ${e.message}")
+                }
             }
         }
 
@@ -1830,7 +1840,7 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        /** Hand the server's Firebase client config (the 4 fields from the web's `/shell/compat` payload)
+        /** Hand the server's Firebase client config (the 4 fields from the web's `/client/compat` payload)
          *  to native. Persists it in EncryptedSharedPreferences and
          *  (re)initializes FirebaseApp via [SomsFirebase.reconfigure]: a different project → deleteToken +
          *  deleteApp + re-init + a fresh token that flows back through `window.__SOMS_FCM_TOKEN__`. Pass

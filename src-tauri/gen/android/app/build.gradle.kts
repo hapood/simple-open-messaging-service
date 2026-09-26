@@ -6,7 +6,7 @@ plugins {
     id("rust")
     // The google-services plugin is intentionally NOT applied: this APK ships WITHOUT google-services.json.
     // Each operator runs their own Firebase project, so the Firebase client config is fetched at runtime
-    // from the server's /shell/compat payload and FirebaseApp is initialized manually by SomsFirebase
+    // from the server's /client/compat payload and FirebaseApp is initialized manually by SomsFirebase
     // (process-start hook in SomsApplication). See src-tauri/FCM_ANDROID_PATCH.md.
 }
 
@@ -43,6 +43,7 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.soms.client"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

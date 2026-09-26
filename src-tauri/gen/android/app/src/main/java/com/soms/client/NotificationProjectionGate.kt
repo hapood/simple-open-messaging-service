@@ -1,9 +1,9 @@
 package com.soms.client
 
 /**
- * Process-wide single-flight gate for away-notification projection.
+ * Process-wide single-flight gate for native notification projection.
  *
- * FCM, background SSE, and WorkManager may wake the same session concurrently. The first caller executes;
+ * FCM, foreground/background SSE, and WorkManager may wake the same session concurrently. The first caller executes;
  * later callers collapse into one trailing execution so a genuinely newer wake is not lost. Alert intent is
  * merged with OR: if any collapsed caller requested an alert, the trailing projection may alert.
  */

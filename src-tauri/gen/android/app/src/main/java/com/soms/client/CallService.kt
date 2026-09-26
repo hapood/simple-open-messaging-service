@@ -42,8 +42,8 @@ import androidx.core.graphics.drawable.IconCompat
  *    CALL_INCOMING FCM push. The high-priority grant is the exemption that lets a backgrounded/killed app
  *    start a phoneCall FGS. Seeds CallController into the incoming phase + rings + posts the incoming-ring
  *    notification (MAX priority, CATEGORY_CALL, full-screen intent, Answer/Decline) — the phone rings even
- *    from a killed process. Comms audio is NOT acquired here (the ring uses MODE_RINGTONE, set by
- *    CallController.startRing); [onAccepted] switches to it.
+ *    from a killed process. Comms audio is NOT acquired here (CallRinger sets MODE_RINGTONE for the
+ *    notification channel sound); [onAccepted] switches to it.
  *  - **default** (outgoing, or a re-delivered start): anchor + acquire comms audio at once.
  *
  * The peer name for the incoming notification rides the FCM push (a cold-started callee has no live SSE for
@@ -76,23 +76,14 @@ class CallService : Service() {
         val callerAccount = intent?.getStringExtra(EXTRA_CALLER_ACCOUNT) ?: ""
         val callerDomain = intent?.getStringExtra(EXTRA_CALLER_DOMAIN) ?: ""
         val incomingThreadId = intent?.getIntExtra(EXTRA_THREAD_ID, 0) ?: 0
-        val localPeer = if (isIncoming && callerAccount.isNotEmpty()) {
-            ClientStateDb.getCallPeer(this, callerAccount, callerDomain, incomingThreadId)
-        } else null
-        // Promote to foreground FIRST. The phoneCall FGS must call startForeground within ~5s of
-        // startForegroundService or the system throws RemoteServiceException + kills the process (observed
-        // crashing the callee on Android 9). The old code returned BEFORE startForeground on an empty sid, and
-        // a throw in the notification builder would also skip it — both crashed the process. Now startForeground
-        // runs unconditionally first (the incoming-ring card for a valid incoming sid, else the ongoing-call
-        // card), with a minimal fallback notification if the builder throws, so the service ALWAYS promotes
-        // in time. The seed/loadAvatar/acquireAudio work runs after, safely past the deadline.
+        // Promote before touching SQLite or decoding an avatar: a cold FCM start has only a short
+        // deadline to call startForeground. The initial incoming card has a placeholder caller; it is
+        // updated under the same notification ID once presentation has been resolved.
         try {
             if (isIncoming && !sid.isNullOrEmpty()) {
-                incomingCallerName = localPeer?.name ?: ""
+                incomingCallerName = ""
+                avatarBitmap = null
                 incomingCallType = intent?.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
-                avatarBitmap = localPeer?.avatarBytes?.let {
-                    BitmapFactory.decodeByteArray(it, 0, it.size)
-                } ?: LetterAvatar.render(this, incomingCallerName)
                 startIncomingForeground(sid)
             } else {
                 startCallForeground()
@@ -105,6 +96,22 @@ class CallService : Service() {
             } catch (_: Exception) { /* nothing more we can do */ }
         }
         if (isIncoming && !sid.isNullOrEmpty()) {
+            val localPeer = try {
+                ClientStateDb.getCallPeer(this, callerAccount, callerDomain, incomingThreadId)
+            } catch (e: Exception) {
+                SomsLog.w("SomsCall") { "incoming caller lookup failed: ${e.message}" }
+                null
+            }
+            incomingCallerName = localPeer?.name ?: ""
+            avatarBitmap = runCatching {
+                localPeer?.avatarBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                    ?: LetterAvatar.render(this, incomingCallerName)
+            }.getOrNull()
+            try {
+                startIncomingForeground(sid)
+            } catch (e: Exception) {
+                SomsLog.w("SomsCall") { "incoming notification update failed: ${e.message}" }
+            }
             CallController.seedIncoming(
                 sid,
                 callerUserId,
@@ -211,9 +218,8 @@ class CallService : Service() {
 
     /** The incoming-ring notification: MAX priority + CATEGORY_CALL + a full-screen intent (launches the app
      *  to the incoming UI, or the system call screen on a locked device) + Answer (→ MainActivity) / Decline
-     *  (→ SomsActionReceiver) actions. The audible ring is the device ringtone (CallController.startRing, on
-     *  the ring stream); this channel carries NO sound (avoids a double ding) — its job is the full-screen
-     *  surface + the action buttons. */
+     *  (→ SomsActionReceiver) actions. The incoming channel owns the ringtone; the in-app incoming screen
+     *  never plays a second sound. The notification provides the same alert in foreground and background. */
     private fun buildIncomingNotification(sid: String): Notification {
         ensureChannels()
         val answerIntent = Intent(this, MainActivity::class.java).apply {
@@ -265,6 +271,7 @@ class CallService : Service() {
             .setStyle(callStyle)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setContentIntent(showIncomingPi)
             .setFullScreenIntent(showIncomingPi, true)
@@ -340,9 +347,6 @@ class CallService : Service() {
         super.onDestroy()
     }
 
-    /** Lazily create the "Calls" channels: ONGOING (LOW — an active call is not a loud alert) + INCOMING
-     *  (HIGH — the heads-up / full-screen ring surface; NO sound — the audible ring is the device ringtone
-     *  played by CallController.startRing, so a channel sound would double up). Idempotent. */
     /** Decode a native-SQLite avatar data URL for an outgoing-call notification. */
     internal fun loadAvatar(src: String, name: String) {
         if (src.isEmpty()) {
@@ -389,6 +393,7 @@ class CallService : Service() {
     /** Avatar completion uses the same phase-driven notification refresh as lifecycle transitions. */
     private fun refreshNotification() = refreshForPhase()
 
+    /** Create the low-importance ongoing and audible high-importance incoming channels if absent. */
     private fun ensureChannels() {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (mgr.getNotificationChannel(CHANNEL_ONGOING) == null) {

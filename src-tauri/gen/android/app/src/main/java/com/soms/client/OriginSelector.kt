@@ -17,11 +17,11 @@ import java.util.concurrent.TimeUnit
  * follows the same endpoint.
  */
 object OriginSelector {
-    private const val HEALTH_PROBE_TIMEOUT_S = 3L
+    private const val COMPAT_PROBE_TIMEOUT_S = 3L
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
-        .readTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
+        .connectTimeout(COMPAT_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
+        .readTimeout(COMPAT_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
         .build()
 
     fun select(ctx: Context): String? {
@@ -33,8 +33,8 @@ object OriginSelector {
 
         val winner = race(
             listOf(
-                OkHttpProbe(primary, healthCall(primary)),
-                OkHttpProbe(secondary, healthCall(secondary)),
+                OkHttpProbe(primary, compatCall(primary)),
+                OkHttpProbe(secondary, compatCall(secondary)),
             ),
         ) ?: return null
         val mode = if (winner.trimEnd('/') == secondary.trimEnd('/')) "secondary" else "primary"
@@ -45,16 +45,24 @@ object OriginSelector {
 
     private fun probe(origin: String): Boolean {
         return try {
-            healthCall(origin).execute().use { it.isSuccessful }
+            compatCall(origin).execute().use(::acceptsCompat)
         } catch (e: Exception) {
             SomsLog.d("Origin") { "probe $origin → ${e.javaClass.simpleName}: ${e.message}" }
             false
         }
     }
 
-    private fun healthCall(origin: String): okhttp3.Call {
+    internal fun acceptsCompat(response: okhttp3.Response): Boolean {
+        if (!response.isSuccessful) return false
+        val result = org.json.JSONObject(response.body?.string() ?: return false)
+        val apiVersion = result.optJSONObject("data")?.opt("apiVersion")
+        return result.optInt("code", -1) == 0 &&
+            apiVersion is Number && apiVersion.toLong() >= 0
+    }
+
+    private fun compatCall(origin: String): okhttp3.Call {
         val request = Request.Builder()
-            .url("${origin.trimEnd('/')}${SomsSecureStore.API_PREFIX}/health")
+            .url("${origin.trimEnd('/')}${SomsSecureStore.API_PREFIX}/client/compat")
             .get()
             .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
             .build()
@@ -92,7 +100,7 @@ object OriginSelector {
     ) : Probe {
         override fun execute(): Boolean {
             return try {
-                call.execute().use { it.isSuccessful }
+                call.execute().use(::acceptsCompat)
             } catch (e: Exception) {
                 SomsLog.d("Origin") {
                     "probe $origin → ${e.javaClass.simpleName}: ${e.message}"

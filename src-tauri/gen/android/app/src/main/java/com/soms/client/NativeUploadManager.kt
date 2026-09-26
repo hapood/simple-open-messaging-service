@@ -49,6 +49,10 @@ object NativeUploadManager {
 
     private val calls = ConcurrentHashMap<String, ActiveUpload>()
 
+    fun pickerReturned(requestId: String) {
+        emit("__SOMS_UPLOAD_INSPECTING__", JSONObject().put("requestId", requestId))
+    }
+
     fun accept(context: Context, uris: List<Uri>, requestedKind: String, requestId: String) {
         accept(context, uris, requestedKind) { items ->
             emit(
