@@ -69,6 +69,7 @@ export class NotificationPrefsService {
     if (revision !== this.writeRevision) return;
     if (typeof enabled === 'boolean') this._enabled.set(enabled);
     if (typeof sound === 'boolean') this._sound.set(sound);
-    if (previewMode === 'message' || previewMode === 'private') this._previewMode.set(previewMode);
+    if (previewMode === 'message' || previewMode === 'private')
+      this._previewMode.set(previewMode);
   }
 }

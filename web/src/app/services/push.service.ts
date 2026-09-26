@@ -9,7 +9,7 @@ import {
 import { uuid } from '../lib/uuid';
 
 /** Android FCM adapter and notification navigation. The shared session coordinator owns registration. */
-/** The Firebase client config payload (folded into /shell/compat). `{configured:false}` when the server has
+/** The Firebase client config payload (folded into /client/compat). `{configured:false}` when the server has
  *  no google-services.json; otherwise the 4 client fields an Android app needs to init FirebaseApp. */
 export type FirebaseClientConfigPayload = {
   configured: boolean;
@@ -56,7 +56,7 @@ export class PushService {
         create: (replace) => this.createRegistration(replace),
       });
     // The native Firebase client config is NOT synced here at boot — it is applied in the server-config
-    // flow (server-config-page.finalize) from the config folded into /shell/compat, and the native
+    // flow (server-config-page.finalize) from the config folded into /client/compat, and the native
     // SomsApplication.onCreate cold-start reader covers boot from the persisted value. No separate fetch.
   }
 
@@ -89,7 +89,7 @@ export class PushService {
   }
 
   /** Apply a server-provided Firebase client config to native so the Android shell (re)initializes
-   *  FirebaseApp. Called from the server-config flow with the config folded into /shell/compat (the APK
+   *  FirebaseApp. Called from the server-config flow with the config folded into /client/compat (the APK
    *  ships without google-services.json; each server publishes its own — no separate /push/firebase-config
    *  fetch). Android-only (desktop has no Firebase). The 4 fields are only re-pushed when they actually
    *  change (avoids needless token churn on identical config); an explicit {configured:false} clears native

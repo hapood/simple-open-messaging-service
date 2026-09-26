@@ -24,8 +24,8 @@ import {
 import { WebdbService } from './webdb.service';
 import { WebPushService } from './web-push.service';
 
-/** Browser: bridge worker-projected updates to the push service worker and answer active-chat
- * queries. Desktop keeps native notification presentation; Android remains native-owned. */
+/** Browser: bridge worker-projected updates to the push service worker, and answer active-chat
+ * queries. Android sends only the selected chat to native; Rust projects its notifications. */
 @Injectable({ providedIn: 'root' })
 export class UnreadAttentionService {
   private readonly convList = inject(ConversationListService);
@@ -50,7 +50,21 @@ export class UnreadAttentionService {
   private readonly nativeAdapter?: NotificationAdapter;
 
   constructor() {
-    if (typeof document === 'undefined' || isAndroidNative()) return;
+    if (typeof document === 'undefined') return;
+    if (isAndroidNative()) {
+      effect(() => {
+        const threadId =
+          this.nav.topSection() === 'chats'
+            ? (this.nav.chatThreadId() ?? -1)
+            : -1;
+        window.SomsFcm!.setActiveThreadId(threadId);
+      });
+      this.lifecycle.invalidated$
+        .pipe(takeUntilDestroyed())
+        .subscribe(() => window.SomsFcm!.setActiveThreadId(-1));
+      this.destroyRef.onDestroy(() => window.SomsFcm?.setActiveThreadId(-1));
+      return;
+    }
     if (isTauri()) this.nativeAdapter = new TauriNotificationAdapter();
     this.adapter = this.nativeAdapter ?? new BrowserNotificationAdapter();
     if (isTauri()) this.installDesktopNavigation();

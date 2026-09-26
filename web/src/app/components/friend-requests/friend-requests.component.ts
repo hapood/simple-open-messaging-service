@@ -317,7 +317,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight();
     this.localResults.set([]);
 
-    // All friend search is exact. A local account resolves by account alone; a federated address resolves
+    // Identity search is exact. A local account resolves by account alone; a federated address resolves
     // by account + domain. This deliberately never calls fuzzy user discovery, so the UI can show at most
     // one result and cannot be used to enumerate accounts or display names.
     // The `@` is a UI input aid ONLY — split the typed `account@domain` into two fields here, at the
@@ -478,6 +478,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   relationshipLabel(user: Pick<User, 'account' | 'domain'>): string {
+    if (user.account.startsWith('!')) return 'friend.joinGroup';
     switch (this.relationshipStates().get(this.userIdentity(user))) {
       case 'OUTGOING_PENDING':
         return 'friend.sentStatus';

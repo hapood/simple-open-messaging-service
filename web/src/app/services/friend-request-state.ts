@@ -21,18 +21,8 @@ interface FriendRequestPeer {
   profileRev?: number;
 }
 
-export interface RelationshipIntentFact {
-  established?: boolean;
-  key: string;
-  reverseKey: string;
-  status: FriendRequestIntentStatus;
-  expiresAt: number | null;
-  localThreadId: number | null;
-  updatedAt: number;
-}
-
-/** A disposable UI projection rooted in one authored REQUESTED fact. Conversation state is supplied by
- * THREAD_STATE, never derived from this request record. */
+/** A disposable UI projection rooted in one authored REQUESTED fact. Conversation state
+ * comes from the thread feed, never from this request record. */
 export interface FriendRequestProjection {
   key: string;
   namespaceId: number;
