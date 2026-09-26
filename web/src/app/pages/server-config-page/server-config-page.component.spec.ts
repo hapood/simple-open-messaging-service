@@ -1,6 +1,25 @@
-import { resolveOriginSelection } from './server-config-page.component';
+import {
+  resolveOriginSelection,
+  singleOriginAfterDecliningPair,
+} from './server-config-page.component';
 
 describe('resolveOriginSelection', () => {
+  it('keeps the entered reachable address when the advertised pair is declined', () => {
+    const selection = resolveOriginSelection(
+      'http://127.0.0.1:3101/',
+      'http://alpha.test:7667',
+      null,
+    );
+    expect(selection).toEqual({
+      primary: 'http://alpha.test:7667',
+      lan: 'http://127.0.0.1:3101',
+      confirmPair: true,
+    });
+    expect(singleOriginAfterDecliningPair('http://127.0.0.1:3101/')).toBe(
+      'http://127.0.0.1:3101',
+    );
+  });
+
   it('pairs an unadvertised LAN IP with the advertised public domain', () => {
     expect(
       resolveOriginSelection(

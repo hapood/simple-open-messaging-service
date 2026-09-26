@@ -55,6 +55,10 @@ type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
  * When the server already advertises a complete pair, use it if the entered address is one of the pair.
  * Otherwise retain the known-reachable entered address as the fallback instead of discarding it.
  */
+export function singleOriginAfterDecliningPair(reachable: string): string {
+  return canonicalOrigin(reachable);
+}
+
 export function resolveOriginSelection(
   reachable: string,
   advertisedPrimary?: string | null,
@@ -130,7 +134,11 @@ export class ServerConfigPageComponent implements OnInit {
   });
   /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
    *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
-  readonly autoFill = signal<{ primary: string; lan: string | null } | null>(null);
+  readonly autoFill = signal<{
+    primary: string;
+    lan: string | null;
+    reachable: string;
+  } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -278,6 +286,7 @@ export class ServerConfigPageComponent implements OnInit {
         this.autoFill.set({
           primary: selection.primary,
           lan: selection.lan,
+          reachable: primaryRaw,
         });
         return;
       }
@@ -389,12 +398,12 @@ export class ServerConfigPageComponent implements OnInit {
     await this.finalize(af.primary, af.lan);
   }
 
-  /** Continue with only the primary endpoint when the user declines the advertised second server. */
+  /** Keep only the endpoint that was just probed when the user declines the advertised pair. */
   async cancelAutoFill(): Promise<void> {
     const af = this.autoFill();
     if (!af) return;
     this.autoFill.set(null);
-    await this.finalize(af.primary, null);
+    await this.finalize(singleOriginAfterDecliningPair(af.reachable), null);
   }
 
   /** Match the shared modal dismissal contract on browser/desktop; Android Back is handled through the
