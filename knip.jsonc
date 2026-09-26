@@ -9,7 +9,7 @@
       "entry": [
         "src/main.ts!",
         "scripts/{migrate-db,federation-conformance}.ts!",
-        "scripts/{package-web-bundle,check-version-sync}.mjs!",
+        "scripts/check-version-sync.mjs!",
         "dev/federation-lab/{lab,reset}.mjs!",
         "dev/federation-lab/diagnostics/{session,collect,preload,statement-probe}.mjs!",
         "dev/federation-lab/p2p/run.mjs!",

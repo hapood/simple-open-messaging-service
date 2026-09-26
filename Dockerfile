@@ -48,17 +48,8 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY src ./src
 COPY shared ./shared
 RUN npm run build
-# Package the web SPA as a downloadable, SHA-256-integrity-checked bundle for the Tauri shell
-# dynamic-update flow (scripts/package-web-bundle.mjs → shell-bundle/{manifest.json, soms-web-<ver>.tar.gz}).
-# web/package.json + the Stage-1 browser build are copied in so the packager can read the version + tar
-# the output. No signing key — integrity over the wire is TLS (https) + the bundle SHA-256.
-COPY web/package.json ./web/package.json
-COPY --from=web-build /build/web/dist/web/browser ./web/dist/web/browser
-# scripts/ holds the packager invoked next (package-web-bundle.mjs); copy it in so the browser build
-# can be archived and its manifest emitted under shell-bundle/.
 COPY scripts ./scripts
 COPY database ./database
-RUN node scripts/package-web-bundle.mjs
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
 RUN npm prune --omit=dev
 
@@ -68,7 +59,7 @@ RUN npm prune --omit=dev
 #   docker build -t soms-base:latest -f Dockerfile.base .   (scripts/build-image.sh does this for you)
 FROM ${SOMS_BASE} AS runtime
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
-# `docker image inspect`, /api/v1/health (reads package.json), and /.well-known/somfp. Default "dev".
+# `docker image inspect`, /client/compat (serverVersion), and /.well-known/somfp. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app
@@ -87,12 +78,6 @@ COPY --chown=node:node --from=server-build /build/database ./database
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
 COPY --chown=node:node --from=admin-build /build/admin-web/dist ./public/admin
-# The SHA-256-integrity-checked web bundle + manifest the Tauri shell downloads at init/reconfigure/update
-# (soms-web-<ver>.tar.gz + manifest.json, produced by the Stage-3 packaging step). Baked at /app/shell-bundle
-# — READ-ONLY and image-bound, deliberately OUTSIDE the bind-mounted /app/data volume so the bundle is
-# immutable per image and an operator can never mutate the integrity-checked artifact the shell verifies.
-# shell.service reads cwd/shell-bundle (= /app/shell-bundle under WORKDIR); no entrypoint seeding, no volume.
-COPY --chown=node:node --from=server-build /build/shell-bundle ./shell-bundle
 # Persistent state dir, mounted as a bind by compose. Pre-created + chowned to `node`.
 RUN mkdir -p data && chown -R node:node data
 # Image ENTRYPOINT (env-loader) + the node+caddy supervisor + the custom init program.
@@ -103,10 +88,10 @@ RUN --mount=type=bind,source=docker,target=/checks \
     && mkdir -p /app/data/caddy && chown -R node:node /app/data/caddy \
     && CADDY_BIN=/usr/bin/caddy bash /checks/init.test.sh
 USER node
-# Public liveness probe via Node's global fetch (no curl/wget install). /api/v1/health is
-# unauthenticated (src/controller/health.controller.ts) — fit for an orchestrator probe.
+# Reuse the existing pre-login client bootstrap response for HTTP liveness;
+# the federation health endpoint retains its separate signed contract.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/api/v1/health').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/api/v1/client/compat').then(async r=>{let j=r.ok?await r.json():null;process.exit(j?.code===0&&Number.isInteger(j?.data?.apiVersion)?0:1)}).catch(()=>process.exit(1))"
 # Only 7667 is published (Caddy edge: HTTPS web UI + API + SSE + federation S2S; +udp for HTTP/3).
 EXPOSE 7667/tcp
 EXPOSE 7667/udp
