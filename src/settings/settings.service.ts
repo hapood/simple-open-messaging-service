@@ -300,13 +300,13 @@ export class SettingsService implements OnModuleInit {
   // the server — structurally the same kind of artifact as the Firebase service-account key, NOT a
   // server-generated value like the VAPID keypair. It lives at the fixed data/google-services.json path
   // and is read once at boot. The 4
-  // fields are published to clients folded into GET /shell/compat (the connect-time payload) so the Android
+  // fields are published to clients folded into GET /client/compat (the connect-time payload) so the Android
   // APK initializes FirebaseApp at runtime without baking google-services.json into the build. Independent of
   // the send-side data/firebase-service-account.json file (PushService.fcmConfigured).
 
   /** The current Firebase client config, or null when no valid google-services.json is present. Returns the
    *  value loaded once at boot (onModuleInit) — restart to pick up a changed file. Published to clients
-   *  folded into GET /shell/compat (ShellService.compat). */
+   *  folded into GET /client/compat (ClientCompatService.compat). */
   getFirebaseConfig(): FirebaseClientConfig | null {
     return this.fbFile ?? null;
   }

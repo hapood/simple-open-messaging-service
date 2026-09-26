@@ -5,7 +5,7 @@
  * google-services.json; the operator places theirs at data/google-services.json — the same file-on-disk
  * model as the send-side data/firebase-service-account.json
  * service-account key, NOT the DB-backed model the VAPID keypair uses), the server folds these 4 fields
- * into GET /shell/compat (the connect-time payload), and the native shell applies them at server setup so
+ * into GET /client/compat (the connect-time payload), and the native shell applies them at server setup so
  * the client initializes `FirebaseApp.initializeApp` at process start.
  *
  * The 4 fields are the only values the client needs from google-services.json, and all of them are "public"
@@ -130,7 +130,7 @@ export function isValidSenderId(v: string): boolean {
 
 /** Admin read view. projectId / appId / gcmSenderId are shown as proof of configuration; apiKey is omitted
  *  from the descriptor (it is the most key-like of the four and is not needed for the admin display) —
- *  parallel to how the VAPID descriptor omits privateKey. All 4 fields are also folded into GET /shell/compat
+ *  parallel to how the VAPID descriptor omits privateKey. All 4 fields are also folded into GET /client/compat
  *  for the Android client's runtime init (the client needs them). */
 export interface FirebaseConfigDescriptor {
   configured: boolean;

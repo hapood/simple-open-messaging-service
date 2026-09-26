@@ -1,7 +1,7 @@
 /**
  * Canonical client/browser origin for a deployment domain, derived from SOMS_TLS_MODE — the edge Caddy
  * config that docker/init.sh generated. One source of truth for the scheme+port scheme, shared by
- * /shell/compat (advertising origins to the native shell for symmetric auto-fill) and WebAuthn
+ * /client/compat (advertising origins to the native shell for symmetric auto-fill) and WebAuthn
  * (allowed-origins). Mirrors the bash site-emission scheme in docker/init.sh.
  *
  *   standard → https://<domain>        (Caddy on 443, port implicit)

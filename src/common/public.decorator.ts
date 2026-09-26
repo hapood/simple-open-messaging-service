@@ -13,7 +13,7 @@ export const IS_PUBLIC = 'isPublic';
 
 /**
  * Mark a controller or handler as public — the global `SessionAuthGuard` (registered as APP_GUARD in
- * AuthModule) short-circuits to `true` without inspecting the bearer token. Use on login/register/health
+ * AuthModule) short-circuits to `true` without inspecting the bearer token. Use on login/register/client bootstrap
  * and on routes authenticated by a *different* mechanism (the admin session cookie via AdminAuthGuard,
  * the s2s HTTP signature) so this guard does not reject them before their own guard runs.
  */

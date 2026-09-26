@@ -22,15 +22,14 @@ import { FederationModule } from './federation/federation.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
-import { HealthController } from './controller/health.controller.js';
 import { ConfigController } from './controller/config.controller.js';
 import { AuthOtpController } from './controller/auth-otp.controller.js';
 import { AuthQrController } from './controller/auth-qr.controller.js';
 import { MessageFanoutModule } from './message/message-fanout.module.js';
 import { ClientStateFeedModule } from './client-state-feed/client-state-feed.module.js';
 import { QuotaModule } from './quota/quota.module.js';
-import { ShellModule } from './shell/shell.module.js';
-import { ShellController } from './shell/shell.controller.js';
+import { ClientCompatModule } from './client-compat/client-compat.module.js';
+import { ClientCompatController } from './client-compat/client-compat.controller.js';
 import { DiagnosticsModule } from './diagnostics/diagnostics.module.js';
 import { LinkPreviewModule } from './link-preview/link-preview.module.js';
 import { CallsModule } from './calls/calls.module.js';
@@ -72,7 +71,7 @@ import { DurableTaskSchedulerService } from './durable-task/durable-task-schedul
     MessageFanoutModule,
     ClientStateFeedModule,
     QuotaModule,
-    ShellModule,
+    ClientCompatModule,
     DiagnosticsModule,
     LinkPreviewModule,
     CallsModule,
@@ -87,11 +86,10 @@ import { DurableTaskSchedulerService } from './durable-task/durable-task-schedul
     RelationshipController,
     DeviceController,
     NotificationController,
-    HealthController,
     ConfigController,
     AuthOtpController,
     AuthQrController,
-    ShellController,
+    ClientCompatController,
     CallsController,
   ],
 })

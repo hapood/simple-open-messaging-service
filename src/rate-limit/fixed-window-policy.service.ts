@@ -12,9 +12,7 @@ export interface FixedWindowPolicy {
 const SETTING_KEY = 'rateLimit:fixedWindowPolicies';
 
 export const FIXED_WINDOW_DEFAULTS = {
-  'shell.compat': [30, 60],
-  'shell.manifest': [30, 60],
-  'shell.bundle': [10, 60],
+  'client.compat': [30, 60],
   'admin.two-factor': [10, 60],
   'admin.webauthn': [10, 60],
   'admin.login': [5, 60],

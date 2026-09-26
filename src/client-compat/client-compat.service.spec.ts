@@ -2,23 +2,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
-import { ShellService } from './shell.service.js';
+import { ClientCompatService } from './client-compat.service.js';
 import type { SettingsService } from '../settings/settings.service.js';
 
 /**
- * ShellService.compat reports this server's version + the public login policy + the canonical client
- * origins (primaryOrigin from SOMS_DOMAIN, lanOrigin from SOMS_LAN_DOMAIN) for the native shell's
- * symmetric auto-fill: the user enters one domain, the shell fills in the other. compat() is pure (no
- * shell-bundle I/O), so it tests without a fixture. manifest()/bundlePath() hit the filesystem and are
- * covered by the e2e harness instead.
+ * ClientCompatService.compat reports the client API version, server version, login policy and canonical
+ * client origins. Its output does not depend on any on-disk web bundle.
  *
  * Origin derivation (deriveOrigin in src/common/origin.ts) is driven by SOMS_TLS_MODE; these tests set the
  * env per-case because compat() reads process.env at call time (not module load).
  */
-describe('ShellService.compat', () => {
+describe('ClientCompatService.compat', () => {
   // SettingsService is @Global in the app; pass a stub whose getFirebaseConfig() returns null so the folded
   // firebaseConfig is {configured:false} without dragging in the real service + its database dep.
-  const svc = new ShellService({
+  const svc = new ClientCompatService({
     getFirebaseConfig: () => null,
   } as unknown as SettingsService);
   // SERVER_VERSION is read from <cwd>/package.json at module load; compare against the same source so
@@ -48,6 +45,7 @@ describe('ShellService.compat', () => {
     delete process.env.SOMS_LAN_DOMAIN;
     const r = svc.compat();
     expect(r.serverVersion).toBe(pkgVersion);
+    expect(r.apiVersion).toBe(1);
   });
 
   it('folds in the public login policy (registrationOpen + loginMode) from PUBLIC_CONFIG', () => {
@@ -63,7 +61,6 @@ describe('ShellService.compat', () => {
     delete process.env.SOMS_LAN_DOMAIN;
     const r = svc.compat();
     expect(r).not.toHaveProperty('compatible');
-    expect(r).not.toHaveProperty('minShellVersion');
   });
 
   it('derives primaryOrigin from SOMS_DOMAIN + SOMS_TLS_MODE (single-port → https :7667)', () => {
