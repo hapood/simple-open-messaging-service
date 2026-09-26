@@ -18,19 +18,14 @@ import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG, parseSwNotifMessage } from './sw-notif-protocol';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import {
-  advanceNotificationSince,
-  readNotificationSince,
-} from './browser-notification-checkpoint';
-import {
   threadNotificationDescriptor,
-  threadNotificationIcon,
   type ThreadNotificationUpdate,
 } from './thread-notification';
 import { WebdbService } from './webdb.service';
+import { WebPushService } from './web-push.service';
 
-/** Desktop/browser presentation consumes committed, reconciled thread-feed updates.
- * It neither queries a notification endpoint nor owns a second feed drain.
- * Android presentation belongs to the native runtime. */
+/** Browser: bridge worker-projected updates to the push service worker and answer active-chat
+ * queries. Desktop keeps native notification presentation; Android remains native-owned. */
 @Injectable({ providedIn: 'root' })
 export class UnreadAttentionService {
   private readonly convList = inject(ConversationListService);
@@ -40,6 +35,7 @@ export class UnreadAttentionService {
   private readonly i18n = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly webdb = inject(WebdbService);
+  private readonly webPush = inject(WebPushService);
   private readonly baseTitle =
     typeof document !== 'undefined' ? document.title : 'SOMS';
   private readonly focused = signal(true);
@@ -50,13 +46,13 @@ export class UnreadAttentionService {
   private generation = 0;
   private desktopSince = 0;
   private navigationQueue: Promise<void> = Promise.resolve();
-  private readonly adapter!: NotificationAdapter;
+  private readonly adapter!: BrowserNotificationAdapter | NotificationAdapter;
+  private readonly nativeAdapter?: NotificationAdapter;
 
   constructor() {
     if (typeof document === 'undefined' || isAndroidNative()) return;
-    this.adapter = isTauri()
-      ? new TauriNotificationAdapter()
-      : new BrowserNotificationAdapter(this.prefs);
+    if (isTauri()) this.nativeAdapter = new TauriNotificationAdapter();
+    this.adapter = this.nativeAdapter ?? new BrowserNotificationAdapter();
     if (isTauri()) this.installDesktopNavigation();
     const blur = () => this.onFocusChange(false);
     const focus = () => this.onFocusChange(true);
@@ -75,6 +71,12 @@ export class UnreadAttentionService {
       this.dismissActive();
     });
     effect(() => {
+      const threadId =
+        this.nav.topSection() === 'chats' ? this.nav.chatThreadId() : undefined;
+      if (this.focused() && threadId !== undefined)
+        void this.adapter.clearThread(threadId);
+    });
+    effect(() => {
       const count = this.unreadTotal();
       document.title =
         count > 0 && !this.focused()
@@ -84,16 +86,40 @@ export class UnreadAttentionService {
     this.lifecycle.invalidated$
       .pipe(takeUntilDestroyed())
       .subscribe(() => this.dismissActive());
-    this.convList.threadNotifications$
-      .pipe(takeUntilDestroyed())
-      .subscribe((updates) => {
-        const epoch = this.lifecycle.accountEpoch;
-        const generation = this.generation;
-        const suppressed = this.focused();
-        this.queue = this.queue
-          .then(() => this.present(updates, epoch, generation, suppressed))
-          .catch(() => {});
-      });
+    if (!isTauri()) {
+      this.webdb.browserNotifications$
+        .pipe(takeUntilDestroyed())
+        .subscribe(({ userId, entries }) => {
+          const epoch = this.lifecycle.accountEpoch;
+          void this.webPush
+            .worker()
+            .then((registration) => {
+              if (this.lifecycle.isCurrent(epoch))
+                registration?.active?.postMessage({
+                  type: SOMS_NOTIF_MSG.PRESENT,
+                  userId,
+                  entries,
+                });
+            })
+            .catch((error) =>
+              console.warn('[notification] worker unavailable', error),
+            );
+        });
+    } else {
+      this.convList.threadNotifications$
+        .pipe(takeUntilDestroyed())
+        .subscribe((updates) => {
+          const epoch = this.lifecycle.accountEpoch;
+          const generation = this.generation;
+          const activeChat =
+            this.focused() && this.nav.topSection() === 'chats'
+              ? this.nav.chatThreadId()
+              : undefined;
+          this.queue = this.queue
+            .then(() => this.present(updates, epoch, generation, activeChat))
+            .catch(() => {});
+        });
+    }
   }
 
   private installDesktopNavigation(): void {
@@ -112,7 +138,7 @@ export class UnreadAttentionService {
             threadId: number;
           } | null>('desktop_notification_pending');
           if (!tap || destroyed || !this.lifecycle.isCurrent(epoch)) return;
-          this.nav.openChat(tap.threadId);
+          this.openNotificationChat(tap.threadId);
           await tauriInvoke<void>('desktop_notification_acknowledge', tap);
         })
         .catch((error) =>
@@ -136,9 +162,9 @@ export class UnreadAttentionService {
   private onFocusChange(focused: boolean): void {
     this.focused.set(focused);
     if (focused) {
-      // Invalidate queued renders; they still consume their presentation checkpoint silently.
+      // Invalidate native renders queued while the app was away.
       this.generation++;
-      void this.adapter.clear();
+      // The reactive open-chat effect dismisses only the chat now displayed.
     }
   }
 
@@ -149,6 +175,15 @@ export class UnreadAttentionService {
   }
 
   private onSwMessage(event: MessageEvent): void {
+    if (event.data?.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST) {
+      event.ports[0]?.postMessage({
+        threadId:
+          this.focused() && this.nav.topSection() === 'chats'
+            ? this.nav.chatThreadId()
+            : undefined,
+      });
+      return;
+    }
     const data = parseSwNotifMessage(event.data);
     if (!data) return;
     if (
@@ -161,38 +196,40 @@ export class UnreadAttentionService {
       typeof data.threadId === 'number'
     ) {
       window.focus();
-      this.nav.openChat(data.threadId);
+      this.openNotificationChat(data.threadId);
     }
+  }
+
+  private openNotificationChat(threadId: number): void {
+    this.nav.setTopSection('chats');
+    this.nav.openChat(threadId);
   }
 
   private async present(
     batch: ThreadNotificationUpdate[],
     epoch: number,
     generation: number,
-    suppressed: boolean,
+    activeChat: number | undefined,
   ): Promise<void> {
     const run = async () => {
       if (!this.lifecycle.isCurrent(epoch)) return;
-      const after = isTauri()
-        ? this.desktopSince
-        : await readNotificationSince();
+      const after = this.desktopSince;
       if (!this.lifecycle.isCurrent(epoch)) return;
-      const fresh = batch.filter(
-        (update) => update.state.threadFeedId > after,
-      );
+      const fresh = batch.filter((update) => update.state.threadFeedId > after);
       const end = Math.max(
         after,
         ...fresh.map((update) => update.state.threadFeedId),
       );
       for (const update of fresh) {
         if (!this.lifecycle.isCurrent(epoch)) return;
+        if (generation !== this.generation || !this.prefs.enabled()) break;
         if (
-          generation !== this.generation ||
-          this.focused() ||
-          !this.prefs.enabled()
+          update.item.threadId === activeChat &&
+          this.focused() &&
+          this.nav.topSection() === 'chats' &&
+          this.nav.chatThreadId() === activeChat
         )
-          break;
-        if (suppressed) continue;
+          continue;
         const descriptor = threadNotificationDescriptor(
           update,
           this.prefs.previewMode(),
@@ -205,24 +242,14 @@ export class UnreadAttentionService {
           },
         );
         descriptor.silent = !!descriptor.silent || !this.prefs.sound();
-        if (!isTauri() && descriptor.count > 0)
-          descriptor.icon = await threadNotificationIcon(
-            this.webdb,
-            update.item,
-          );
         if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
           break;
-        await this.adapter.showDescriptor(descriptor);
+        await this.nativeAdapter!.showDescriptor(descriptor);
         if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
           await this.adapter.clear();
       }
-      if (this.lifecycle.isCurrent(epoch)) {
-        if (isTauri()) this.desktopSince = end;
-        else await advanceNotificationSince(end);
-      }
+      if (this.lifecycle.isCurrent(epoch)) this.desktopSince = end;
     };
-    if (!isTauri() && navigator.locks) {
-      await navigator.locks.request('soms-notification-projection', run);
-    } else await run();
+    await run();
   }
 }
