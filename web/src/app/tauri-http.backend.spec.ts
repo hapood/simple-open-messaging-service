@@ -237,6 +237,25 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     expect(err instanceof HttpErrorResponse).toBe(true);
     expect((err as HttpErrorResponse).status).toBe(415);
   });
+
+  it('preserves a Rust-generated plain-text 504 instead of turning it into a network error', async () => {
+    tauriWindow().__TAURI__ = {
+      core: {
+        invoke: async () => ({
+          status: 504,
+          headers: {},
+          body: 'Gateway Timeout',
+        }),
+      },
+    };
+    const err = (await firstValueFrom(
+      TestBed.inject(HttpBackend).handle(
+        new HttpRequest('POST', '/api/v1/send-message', {}),
+      ),
+    ).catch((e: unknown) => e)) as HttpErrorResponse;
+    expect(err.status).toBe(504);
+    expect(err.error).toBe('Gateway Timeout');
+  });
 });
 
 describe('TauriHttpBackend media proxy routing under Tauri', () => {

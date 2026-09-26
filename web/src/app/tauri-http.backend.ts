@@ -102,7 +102,11 @@ export class TauriHttpBackend implements HttpBackend {
         req.context.get(REPLAY_SAFE),
     });
     const respHeaders = new HttpHeaders(r.headers);
-    const parsed = this.parseBody(r.body, req.responseType);
+    // Rust may synthesize a plain-text gateway timeout without an API JSON envelope.
+    // Preserve its HTTP status rather than treating JSON.parse as an IPC network error.
+    const parsed = r.status >= 200 && r.status < 300
+      ? this.parseBody(r.body, req.responseType)
+      : this.parseErrorBody(r.body, req.responseType);
     if (r.status >= 200 && r.status < 300) {
       return new HttpResponse({ body: parsed, headers: respHeaders, status: r.status, url: req.url });
     }
@@ -240,6 +244,11 @@ export class TauriHttpBackend implements HttpBackend {
   private parseBody(text: string, responseType: string): unknown {
     if (responseType === 'text') return text;
     return text.length === 0 ? null : JSON.parse(text);
+  }
+
+  private parseErrorBody(text: string, responseType: string): unknown {
+    if (responseType === 'text') return text;
+    try { return this.parseBody(text, responseType); } catch { return text; }
   }
 
   /** Map an IPC failure (api_request rejected — backend unreachable / timeout) to a status-0
