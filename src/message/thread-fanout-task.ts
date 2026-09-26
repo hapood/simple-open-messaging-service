@@ -15,8 +15,9 @@ export interface ThreadFanoutTarget {
   threadId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  /** Counterpart profile revision carried by the landed message. P2P inbound
-   * commits set it; group writers leave it to the canonical GroupMeta row. */
+  /** Legacy coalesced message revision hint. It is not a viewer-specific avatar
+   * revision: the head writer derives that from committed counterpart messages
+   * or the group-wide Meta row, so mixed-author fanouts remain safe. */
   profileRev?: number;
 }
 

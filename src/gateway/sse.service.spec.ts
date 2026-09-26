@@ -1,362 +1,305 @@
-import { describe, it, expect, vi } from 'vitest';
-import type { ServerResponse } from 'node:http';
+import { Controller, Sse, type MessageEvent } from '@nestjs/common';
+import { FastifyAdapter } from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { get } from 'node:http';
 import { once } from 'node:events';
-import { Test } from '@nestjs/testing';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import type { Observable, Subscription } from 'rxjs';
+import { describe, expect, it, vi } from 'vitest';
 import { SseService } from './sse.service.js';
 
-/**
- * SseService registry, disconnect, and HTTP shutdown with a real held SSE connection.
- * Covers the per-session FORCE_LOGOUT (onSessionRevoked disconnects ONLY the
- * matching session, including multi-tab same-credential, and leaves other devices online), the all-device
- * broadcast (onSessionsInvalidated), and the unknown-session no-op. The @OnEvent handlers are invoked
- * directly as methods (the decorator only wires the emitter; the method itself is plain).
- */
-describe('SseService', () => {
-  function makeService() {
-    const database = {
-      db: {
-        select: vi.fn(() => {
-          const query = {
-            from: () => query,
-            innerJoin: () => query,
-            where: () => query,
-            limit: async () => [
-              {
-                stateFeedEndId: 4,
-                threadFeedEndId: 3,
-                profileRev: 2,
-                pushSubscriptionRev: 3,
-              },
-            ],
-          };
-          return query;
-        }),
-      },
-    };
-    const callState = { get: vi.fn().mockReturnValue(null) };
-    return new SseService(database as never, callState as never);
-  }
+function makeService() {
+  const database = {
+    db: {
+      update: vi.fn(() => {
+        const query = {
+          set: () => query,
+          where: () => query,
+          returning: async () => [{ id: 11 }],
+        };
+        return query;
+      }),
+      select: vi.fn(() => {
+        const query = {
+          from: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          limit: async () => [
+            {
+              stateFeedEndId: 4,
+              threadFeedEndId: 3,
+              profileRev: 2,
+              pushSubscriptionRev: 3,
+            },
+          ],
+        };
+        return query;
+      }),
+    },
+  };
+  const callState = { get: vi.fn().mockReturnValue(null) };
+  return {
+    svc: new SseService(database as never, callState as never),
+    database,
+  };
+}
 
-  /** A mock hijacked raw response that records everything written so a FORCE_LOGOUT frame is detectable. */
-  function mockRes() {
-    const writes: string[] = [];
-    return {
-      writes,
-      res: {
-        writeHead: vi.fn(),
-        write: vi.fn((s: string) => {
-          writes.push(s);
-          return true;
-        }),
-        end: vi.fn(),
-        on: vi.fn(),
-      } as unknown as ServerResponse,
-    };
-  }
+function connect(svc: SseService, userId: number, sessionId: number) {
+  const events: MessageEvent[] = [];
+  const subscription: Subscription = svc
+    .register(userId, sessionId)
+    .subscribe((event) => events.push(event));
+  return { events, subscription };
+}
 
-  /** True when the connection received a FORCE_LOGOUT frame. */
-  function gotForceLogout(writes: string[]) {
-    return writes.some((w) => w.includes('event: FORCE_LOGOUT'));
-  }
+function eventsOf(client: ReturnType<typeof connect>, type: string) {
+  return client.events.filter((event) => event.type === type);
+}
 
-  it('ends every stream and clears heartbeats even when one close fails', () => {
+@Controller()
+class FixtureController {
+  constructor(private readonly sse: SseService) {}
+
+  @Sse('events')
+  stream(): Observable<MessageEvent> {
+    return this.sse.register(7, 11);
+  }
+}
+
+async function serve(svc: SseService) {
+  const module = await Test.createTestingModule({
+    controllers: [FixtureController],
+    providers: [{ provide: SseService, useValue: svc }],
+  }).compile();
+  const app = module.createNestApplication(new FastifyAdapter(), {
+    logger: false,
+  });
+  app.enableCors({ origin: true });
+  await app.listen(0, '127.0.0.1');
+  return app;
+}
+
+describe('framework SSE streams', () => {
+  it('registers on subscription and removes the exact client on unsubscribe', async () => {
+    const { svc } = makeService();
+    const stream = svc.register(7, 11);
+    expect(svc.snapshot().total).toBe(0);
+    const a = connect(svc, 7, 11);
+    const b = connect(svc, 7, 22);
+    expect(svc.isSessionOnline(7, 11)).toBe(true);
+    expect(svc.isSessionOnline(7, 22)).toBe(true);
+    await vi.waitFor(() => expect(eventsOf(a, 'HELLO')).toHaveLength(1));
+    expect(eventsOf(a, 'HELLO')[0].data).toMatchObject({
+      userId: 7,
+      sessionId: 11,
+      stateFeedEndId: 4,
+      pushSubscriptionRev: 3,
+    });
+    a.subscription.unsubscribe();
+    expect(svc.isSessionOnline(7, 11)).toBe(false);
+    expect(svc.snapshot().total).toBe(1);
+    b.subscription.unsubscribe();
+    expect(svc.snapshot().total).toBe(0);
+    expect(stream).toBeDefined();
+    svc.onModuleDestroy();
+  });
+
+  it('sends push revision only to matching sessions and thread wake-up only to its user', () => {
+    const { svc } = makeService();
+    const a = connect(svc, 7, 11);
+    const tab = connect(svc, 7, 11);
+    const b = connect(svc, 7, 22);
+    const other = connect(svc, 8, 33);
+    svc.onPushSubscriptionChanged(7, 11, 5);
+    svc.onThreadFeedUpdated(7, { threadFeedEndId: 9 });
+    expect(a.subscription.closed).toBe(true);
+    expect(eventsOf(a, 'SSE_REPLACED')).toHaveLength(1);
+    expect(eventsOf(a, 'PUSH_SUBSCRIPTION_CHANGED')).toHaveLength(0);
+    expect(eventsOf(tab, 'PUSH_SUBSCRIPTION_CHANGED')).toHaveLength(1);
+    expect(eventsOf(b, 'PUSH_SUBSCRIPTION_CHANGED')).toHaveLength(0);
+    expect(eventsOf(tab, 'THREAD_FEED_UPDATED')[0].data).toEqual({
+      threadFeedEndId: 9,
+    });
+    expect(eventsOf(other, 'THREAD_FEED_UPDATED')).toHaveLength(0);
+    svc.onModuleDestroy();
+  });
+
+  it('throttles state and thread heads independently and sends the highest head', async () => {
     vi.useFakeTimers();
-    const svc = makeService();
-    const clients = [mockRes(), mockRes(), mockRes()];
+    const { svc } = makeService();
     try {
-      svc.register(7, 11, clients[0].res);
-      svc.register(7, 11, clients[1].res);
-      svc.register(8, 22, clients[2].res);
-      vi.mocked(clients[0].res.end).mockImplementation(() => {
-        throw new Error('connection already closed');
-      });
-      // A synchronous close callback must not make iteration skip another tab.
-      vi.mocked(clients[1].res.end).mockImplementation(() => {
-        const close = vi
-          .mocked(clients[1].res.on)
-          .mock.calls.find(([event]) => event === 'close')![1];
-        close();
-        return clients[1].res;
-      });
-
+      const client = connect(svc, 7, 11);
+      svc.onStateFeedUpdated(7, { feedId: 5 });
+      await vi.advanceTimersByTimeAsync(400);
+      svc.onStateFeedUpdated(7, { feedId: 9 });
+      svc.onStateFeedUpdated(7, { feedId: 7 });
+      svc.onThreadFeedUpdated(7, { threadFeedEndId: 3 });
+      expect(eventsOf(client, 'THREAD_FEED_UPDATED')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(eventsOf(client, 'STATE_FEED_UPDATED').map((e) => e.data)).toEqual(
+        [{ feedId: 5 }, { feedId: 9 }],
+      );
       svc.onModuleDestroy();
-      svc.onModuleDestroy();
-
-      for (const client of clients) {
-        expect(client.res.end).toHaveBeenCalledTimes(1);
-        expect(gotForceLogout(client.writes)).toBe(false);
-      }
-      expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
       expect(vi.getTimerCount()).toBe(0);
     } finally {
-      vi.clearAllTimers();
+      svc.onModuleDestroy();
       vi.useRealTimers();
     }
   });
 
-  it('closes the HTTP server while a client holds an SSE stream open', async () => {
-    const svc = makeService();
-    const module = await Test.createTestingModule({
-      providers: [{ provide: SseService, useValue: svc }],
-    }).compile();
-    const adapter = new FastifyAdapter();
-    const app = module.createNestApplication(adapter, { logger: false });
-    adapter.getInstance().get('/events', (_request, reply) => {
-      reply.hijack();
-      svc.register(7, 11, reply.raw);
+  it('one device session has one stream; UUID and emitted head scope its receipts', async () => {
+    vi.useFakeTimers();
+    const { svc, database } = makeService();
+    try {
+      const firstStream = connect(svc, 7, 11);
+      const other = connect(svc, 7, 22);
+      svc.onThreadFeedUpdated(7, {
+        threadFeedEndId: 4,
+        notificationRelevant: true,
+      });
+      const first = eventsOf(firstStream, 'THREAD_FEED_UPDATED')[0].data as {
+        sseUuid: string;
+      };
+      expect(
+        (
+          eventsOf(other, 'THREAD_FEED_UPDATED')[0].data as {
+            sseUuid: string;
+          }
+        ).sseUuid,
+      ).not.toBe(first.sseUuid);
+      expect(await svc.confirmThreadReceipt(7, 22, first.sseUuid, 4)).toBe(
+        false,
+      );
+      expect(await svc.confirmThreadReceipt(8, 11, first.sseUuid, 4)).toBe(
+        false,
+      );
+      expect(await svc.confirmThreadReceipt(7, 11, first.sseUuid, 5)).toBe(
+        false,
+      );
+      expect(await svc.confirmThreadReceipt(7, 11, first.sseUuid, 4)).toBe(
+        true,
+      );
+      expect(svc.confirmedThreadHead(7, 11)).toBe(4);
+      const current = connect(svc, 7, 11);
+      expect(firstStream.subscription.closed).toBe(true);
+      expect(eventsOf(firstStream, 'SSE_REPLACED')).toHaveLength(1);
+      expect(svc.snapshot().total).toBe(2);
+      svc.onThreadFeedUpdated(7, {
+        threadFeedEndId: 5,
+        notificationRelevant: true,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const second = eventsOf(current, 'THREAD_FEED_UPDATED')[0].data as {
+        sseUuid: string;
+      };
+      expect(second.sseUuid).not.toBe(first.sseUuid);
+      expect(await svc.confirmThreadReceipt(7, 11, first.sseUuid, 4)).toBe(
+        false,
+      );
+      expect(svc.confirmedThreadHead(7, 11)).toBe(4);
+      expect(await svc.confirmThreadReceipt(7, 11, second.sseUuid, 5)).toBe(
+        true,
+      );
+      expect(svc.confirmedThreadHead(7, 11)).toBe(5);
+      expect(database.db.update).not.toHaveBeenCalled();
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll database or send idle ping events', async () => {
+    vi.useFakeTimers();
+    const { svc, database } = makeService();
+    try {
+      const client = connect(svc, 7, 11);
+      await vi.advanceTimersByTimeAsync(1);
+      database.db.select.mockClear();
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(database.db.select).not.toHaveBeenCalled();
+      expect(eventsOf(client, 'ping')).toHaveLength(0);
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes only the current stream of a device session', () => {
+    const { svc } = makeService();
+    const old = connect(svc, 7, 11);
+    const current = connect(svc, 7, 11);
+    const other = connect(svc, 7, 22);
+    expect(old.subscription.closed).toBe(true);
+    svc.onSessionRevoked({ userId: 7, sessionId: 11, reason: 'device_revoke' });
+    expect(eventsOf(current, 'FORCE_LOGOUT')[0].data).toMatchObject({
+      message: 'device_revoke',
     });
-    await app.listen(0, '127.0.0.1');
-    const request = get(`${await app.getUrl()}/events`);
-    let closing: Promise<void> | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    expect(current.subscription.closed).toBe(true);
+    expect(other.subscription.closed).toBe(false);
+    expect(svc.snapshot().total).toBe(1);
+    svc.onModuleDestroy();
+  });
+
+  it('invalidates all sessions and ignores an unknown revoked session', () => {
+    const { svc } = makeService();
+    const a = connect(svc, 7, 11);
+    const b = connect(svc, 7, 22);
+    svc.onSessionRevoked({ userId: 7, sessionId: 99, reason: 'unknown' });
+    expect(svc.snapshot().total).toBe(2);
+    svc.onSessionsInvalidated({ userId: 7, reason: 'password_change' });
+    expect(eventsOf(a, 'FORCE_LOGOUT')).toHaveLength(1);
+    expect(eventsOf(b, 'FORCE_LOGOUT')).toHaveLength(1);
+    expect(svc.snapshot().total).toBe(0);
+    svc.onModuleDestroy();
+  });
+
+  it('unsubscribes after an actual HTTP disconnect and flushes framework SSE headers', async () => {
+    const { svc } = makeService();
+    const app = await serve(svc);
+    const request = get(`${await app.getUrl()}/events`, {
+      headers: { Origin: 'https://tauri.localhost' },
+    });
     try {
       const [response] = await once(request, 'response');
-      const ended = once(response, 'end');
-      response.resume();
-      expect(svc.isSessionOnline(7, 11)).toBe(true);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('text/event-stream');
+      expect(response.headers['access-control-allow-origin']).toBe(
+        'https://tauri.localhost',
+      );
+      const chunks: string[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+      await vi.waitFor(() => expect(chunks.join('')).toContain('event: HELLO'));
+      expect(chunks.join('')).toContain('"stateFeedEndId":4');
+      expect(chunks.join('')).toContain('id:');
+      await vi.waitFor(() => expect(svc.snapshot().total).toBe(1));
+      request.destroy();
+      await vi.waitFor(() => expect(svc.snapshot().total).toBe(0));
+    } finally {
+      request.destroy();
+      await app.close();
+    }
+  });
 
+  it('ends held streams when Nest shuts down', async () => {
+    const { svc } = makeService();
+    const app = await serve(svc);
+    const request = get(`${await app.getUrl()}/events`);
+    let closing: Promise<void> | undefined;
+    try {
+      const [response] = await once(request, 'response');
+      response.resume();
+      const ended = once(response, 'end');
       closing = app.close();
       await Promise.race([
         Promise.all([closing, ended]),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('shutdown blocked by open SSE stream')),
-            1000,
-          );
-        }),
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error('SSE shutdown blocked')), 1500),
+        ),
       ]);
-      expect(response.complete).toBe(true);
-      expect(svc.isSessionOnline(7, 11)).toBe(false);
+      expect(svc.snapshot().total).toBe(0);
     } finally {
-      clearTimeout(timer);
       request.destroy();
       app.getHttpServer().closeAllConnections();
       await (closing ?? app.close());
     }
-  });
-
-  it('always includes the mandatory stateFeedEndId in HELLO', async () => {
-    const svc = makeService();
-    const client = mockRes();
-
-    svc.register(7, 11, client.res);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const hello = client.writes.find((write) => write.includes('event: HELLO'));
-    expect(hello).toContain('"stateFeedEndId":4');
-    expect(hello).toContain('"sessionId":11');
-    expect(hello).toContain('"pushSubscriptionRev":3');
-    svc.onModuleDestroy();
-  });
-
-  it('sends push recovery to every connection of only the affected session', () => {
-    const svc = makeService();
-    const first = mockRes(),
-      second = mockRes(),
-      other = mockRes();
-    svc.register(7, 11, first.res);
-    svc.register(7, 11, second.res);
-    svc.register(7, 22, other.res);
-    svc.onPushSubscriptionChanged(7, 11, 4);
-    expect(first.writes.join('')).toContain('"pushSubscriptionRev":4');
-    expect(second.writes.join('')).toContain('PUSH_SUBSCRIPTION_CHANGED');
-    expect(other.writes.join('')).not.toContain('PUSH_SUBSCRIPTION_CHANGED');
-    svc.onModuleDestroy();
-  });
-
-  it('reports online state for the exact session rather than the whole user', () => {
-    const svc = makeService();
-    const client = mockRes();
-    svc.register(7, 11, client.res);
-
-    expect(svc.isSessionOnline(7, 11)).toBe(true);
-    expect(svc.isSessionOnline(7, 22)).toBe(false);
-    expect(svc.isSessionOnline(8, 11)).toBe(false);
-    svc.onModuleDestroy();
-  });
-
-  it('pushes only the attention revision as the durable-feed wake-up', () => {
-    const svc = makeService();
-    const client = mockRes();
-    svc.register(7, 11, client.res);
-
-    svc.onThreadFeedUpdated(7, { threadFeedEndId: 9 });
-
-    const frame = client.writes.find((write) =>
-      write.includes('event: THREAD_FEED_UPDATED'),
-    );
-    expect(frame).toContain('"threadFeedEndId":9');
-    expect(frame).not.toContain('threadId');
-    expect(frame).not.toContain('unreadCount');
-    svc.onModuleDestroy();
-  });
-
-  it('throttles state hints per account independently of thread hints and broadcasts the maximum head', async () => {
-    vi.useFakeTimers();
-    const svc = makeService();
-    const clients = [mockRes(), mockRes(), mockRes()];
-    const stateFrames = (client: ReturnType<typeof mockRes>) =>
-      client.writes.filter((write) =>
-        write.includes('event: STATE_FEED_UPDATED'),
-      );
-    try {
-      svc.register(7, 11, clients[0].res);
-      svc.register(7, 22, clients[1].res);
-      svc.register(8, 33, clients[2].res);
-
-      svc.onStateFeedUpdated(7, { feedId: 5 });
-      for (const client of clients.slice(0, 2)) {
-        expect(stateFrames(client)).toHaveLength(1);
-        expect(stateFrames(client)[0]).toContain('"feedId":5');
-      }
-      await vi.advanceTimersByTimeAsync(400);
-      svc.onStateFeedUpdated(7, { feedId: 9 });
-      svc.onStateFeedUpdated(7, { feedId: 7 });
-      svc.onStateFeedUpdated(8, { feedId: 6 });
-      svc.onThreadFeedUpdated(7, { threadFeedEndId: 3 });
-      expect(stateFrames(clients[2])).toHaveLength(1);
-      expect(stateFrames(clients[2])[0]).toContain('"feedId":6');
-      expect(
-        clients[0].writes.filter((write) =>
-          write.includes('event: THREAD_FEED_UPDATED'),
-        ),
-      ).toHaveLength(1);
-
-      await vi.advanceTimersByTimeAsync(599);
-      expect(stateFrames(clients[0])).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(1);
-      for (const client of clients.slice(0, 2)) {
-        expect(stateFrames(client)).toHaveLength(2);
-        expect(stateFrames(client)[1]).toContain('"feedId":9');
-      }
-      svc.onStateFeedUpdated(7, { feedId: 9 });
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(stateFrames(clients[0])).toHaveLength(2);
-
-      svc.onStateFeedUpdated(7, { feedId: 10 });
-      expect(stateFrames(clients[0])).toHaveLength(3);
-      svc.onStateFeedUpdated(7, { feedId: 11 });
-      await Promise.resolve();
-      svc.onModuleDestroy();
-      expect(vi.getTimerCount()).toBe(0);
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(stateFrames(clients[0])).toHaveLength(3);
-    } finally {
-      svc.onModuleDestroy();
-      vi.useRealTimers();
-    }
-  });
-
-  it('pushes committed heads to every online device without idle head queries', async () => {
-    vi.useFakeTimers();
-    const svc = makeService();
-    const first = mockRes();
-    const second = mockRes();
-    svc.register(7, 11, first.res);
-    svc.register(7, 12, second.res);
-    await Promise.resolve();
-    const database = (
-      svc as unknown as {
-        database: { db: { select: ReturnType<typeof vi.fn> } };
-      }
-    ).database;
-    database.db.select.mockClear();
-    try {
-      svc.onThreadFeedUpdated(7, { threadFeedEndId: 8 });
-      svc.onStateFeedUpdated(7, { feedId: 9 });
-      svc.onThreadFeedUpdated(99, { threadFeedEndId: 10 });
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(database.db.select).not.toHaveBeenCalled();
-      for (const client of [first, second]) {
-        expect(
-          client.writes.filter((w) => w.includes('event: THREAD_FEED_UPDATED')),
-        ).toEqual([expect.stringContaining('"threadFeedEndId":8')]);
-        expect(
-          client.writes.filter((w) => w.includes('event: STATE_FEED_UPDATED')),
-        ).toEqual([expect.stringContaining('"feedId":9')]);
-      }
-    } finally {
-      svc.onModuleDestroy();
-      vi.useRealTimers();
-    }
-  });
-
-  it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {
-    const svc = makeService();
-    const a = mockRes(); // session 11
-    const b = mockRes(); // session 22 — same user, different device
-    svc.register(7, 11, a.res);
-    svc.register(7, 22, b.res);
-
-    svc.onSessionRevoked({ userId: 7, sessionId: 11, reason: 'device_revoke' });
-
-    expect(gotForceLogout(a.writes)).toBe(true);
-    expect(a.res.end).toHaveBeenCalled();
-    expect(gotForceLogout(b.writes)).toBe(false);
-    expect(b.res.end).not.toHaveBeenCalled();
-    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
-    svc.onModuleDestroy();
-  });
-
-  it('onSessionRevoked disconnects every connection sharing the sessionId (multi-tab same credential)', () => {
-    const svc = makeService();
-    const tab1 = mockRes();
-    const tab2 = mockRes(); // same session 11 — two tabs, one session token
-    const other = mockRes(); // session 22
-    svc.register(7, 11, tab1.res);
-    svc.register(7, 11, tab2.res);
-    svc.register(7, 22, other.res);
-
-    svc.onSessionRevoked({ userId: 7, sessionId: 11, reason: 'device_revoke' });
-
-    expect(gotForceLogout(tab1.writes)).toBe(true);
-    expect(gotForceLogout(tab2.writes)).toBe(true);
-    expect(gotForceLogout(other.writes)).toBe(false);
-    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
-    svc.onModuleDestroy();
-  });
-
-  it('onSessionRevoked drops the user slot when no connections remain', () => {
-    const svc = makeService();
-    const a = mockRes();
-    svc.register(7, 11, a.res);
-
-    svc.onSessionRevoked({ userId: 7, sessionId: 11, reason: 'device_revoke' });
-
-    expect(gotForceLogout(a.writes)).toBe(true);
-    expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
-  });
-
-  it("onSessionsInvalidated kicks ALL of the user's sessions (broadcast)", () => {
-    const svc = makeService();
-    const a = mockRes();
-    const b = mockRes();
-    svc.register(7, 11, a.res);
-    svc.register(7, 22, b.res);
-
-    svc.onSessionsInvalidated({ userId: 7, reason: 'password_change' });
-
-    expect(gotForceLogout(a.writes)).toBe(true);
-    expect(gotForceLogout(b.writes)).toBe(true);
-    expect(svc.snapshot()).toMatchObject({ total: 0, uniqueUsers: 0 });
-  });
-
-  it('onSessionRevoked is a no-op for an unknown sessionId', () => {
-    const svc = makeService();
-    const a = mockRes();
-    svc.register(7, 11, a.res);
-
-    svc.onSessionRevoked({
-      userId: 7,
-      sessionId: 999,
-      reason: 'device_revoke',
-    });
-
-    expect(gotForceLogout(a.writes)).toBe(false);
-    expect(a.res.end).not.toHaveBeenCalled();
-    expect(svc.snapshot()).toMatchObject({ total: 1, uniqueUsers: 1 });
-    svc.onModuleDestroy();
   });
 });

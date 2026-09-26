@@ -14,7 +14,9 @@ import {
   message,
   messageThread,
   account as user,
+  sessionToken,
 } from '../src/database/schema';
+import { SseService } from '../src/gateway/sse.service';
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
 import { seedAcceptedRelationship, seedUserWithSession } from './seed';
@@ -24,7 +26,7 @@ import { truncateTablesForTest } from './support/truncate';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
 // not cover: Swagger UI on Fastify, the @fastify/multipart upload path (UploadService.consumeImage)
-// + static serving of the result, and the SSE stream via reply.hijack()/reply.raw.
+// + static serving of the result, and the Nest-managed SSE stream.
 
 // Minimal valid 1×1 PNG (real PNG signature so UploadService.isImage's magic-number check passes).
 const PNG_1X1 = Buffer.from(
@@ -112,31 +114,35 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
   beforeAll(async () => {
     ({ app, database } = await createTestApp((builder) => {
-      builder
-        .overrideProvider(MediaMetadataService)
-        .useValue({
-          fromBuffer: vi.fn(
-            async (
-              _input: Buffer,
-              intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
-            ) =>
-              intent === 'IMAGE'
-                ? { w: 1, h: 1 }
-                : intent === 'VIDEO'
-                  ? { w: 1, h: 1, duration: 1 }
-                  : intent === 'AUDIO'
-                    ? { duration: 1 }
-                    : {},
-          ),
-        });
+      builder.overrideProvider(MediaMetadataService).useValue({
+        fromBuffer: vi.fn(
+          async (
+            _input: Buffer,
+            intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+          ) =>
+            intent === 'IMAGE'
+              ? { w: 1, h: 1 }
+              : intent === 'VIDEO'
+                ? { w: 1, h: 1, duration: 1 }
+                : intent === 'AUDIO'
+                  ? { duration: 1 }
+                  : {},
+        ),
+      });
     }));
     port = (app.getHttpServer().address() as { port: number }).port;
 
     // Seed two local users + sessions directly (registration is closed; the spec needs authenticated
     // users, not the login flow). userAId is the member for the per-object media-authz tests.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account" RESTART IDENTITY CASCADE',
+    );
     // MediaAsset (CAS ref counts) — start clean so dedup assertions are predictable.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY',
+    );
     const userA = await seedUserWithSession(app, 'fastify', {
       name: 'Fastify',
     });
@@ -379,7 +385,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     });
 
     const download = await request(app.getHttpServer())
-      .get(`${JSON.parse(msg!.content).url}?threadId=${thread.id}&seq=${msg!.seq}`)
+      .get(
+        `${JSON.parse(msg!.content).url}?threadId=${thread.id}&seq=${msg!.seq}`,
+      )
       .set('Authorization', `Bearer ${token}`);
     expect(download.status).toBe(200);
     // The CAS response is presentation-neutral; the FILE message name is applied by the frontend's
@@ -595,7 +603,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(forgedExternal.body.code).toBe(BusinessCode.VALIDATION_FAILED);
   });
 
-  it('opens an SSE stream (reply.hijack + reply.raw) and emits the connected frame', async () => {
+  it('opens a framework SSE stream and emits HELLO', async () => {
     const firstChunk = await new Promise<string>((resolve, reject) => {
       const req = http.request(
         {
@@ -606,8 +614,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
           headers: { Authorization: `Bearer ${token}` },
         },
         (res) => {
+          let wire = '';
           res.on('data', (chunk: Buffer) => {
-            resolve(chunk.toString());
+            wire += chunk.toString();
+            if (!wire.includes('event: HELLO')) return;
+            resolve(wire);
             req.destroy();
             res.destroy();
           });
@@ -617,6 +628,103 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       req.on('error', reject);
       req.end();
     });
-    expect(firstChunk).toContain(': connected');
+    expect(firstChunk).toContain('event: HELLO');
   }, 10000);
+
+  it('requires an authenticated, issued SSE receipt rather than accepting arbitrary IDs', async () => {
+    const body = { sseUuid: randomUUID(), threadFeedEndId: 1 };
+    const anonymous = await request(app.getHttpServer())
+      .post('/api/v1/events/receipt')
+      .send(body);
+    expect(anonymous.status).toBe(401);
+
+    const authenticated = await request(app.getHttpServer())
+      .post('/api/v1/events/receipt')
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.data).toEqual({ accepted: false });
+  });
+
+  it('confirms an actual SSE hint and never lets its old receipt confirm the next head', async () => {
+    const [accountHead] = await database.db
+      .select({ endId: user.threadFeedEndId })
+      .from(user)
+      .where(eq(user.id, userAId));
+    const firstHead = accountHead.endId + 10;
+    const secondHead = firstHead + 1;
+    const aborter = new AbortController();
+    const deadline = setTimeout(() => aborter.abort(), 8_000).unref();
+    const response = await fetch(`http://127.0.0.1:${port}/api/v1/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: aborter.signal,
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const sse = app.get(SseService);
+    let buffer = '';
+    const nextReceipt = async (): Promise<{
+      sseUuid: string;
+      threadFeedEndId: number;
+    }> => {
+      for (;;) {
+        const match =
+          /event: THREAD_FEED_UPDATED\r?\n(?:id: [^\r\n]*\r?\n)?data: ([^\r\n]+)/.exec(
+            buffer,
+          );
+        if (match) {
+          buffer = buffer.slice(match.index + match[0].length);
+          const frame = JSON.parse(match[1]) as {
+            sseUuid?: string;
+            threadFeedEndId: number;
+          };
+          if (frame.sseUuid)
+            return {
+              sseUuid: frame.sseUuid,
+              threadFeedEndId: frame.threadFeedEndId,
+            };
+        }
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error('SSE closed before receipt challenge');
+        buffer += new TextDecoder().decode(chunk.value);
+      }
+    };
+    try {
+      sse.onThreadFeedUpdated(userAId, {
+        threadFeedEndId: firstHead,
+        notificationRelevant: true,
+      });
+      const first = await nextReceipt();
+      expect(first.threadFeedEndId).toBe(firstHead);
+      const acknowledge = (body: {
+        sseUuid: string;
+        threadFeedEndId: number;
+      }) =>
+        request(app.getHttpServer())
+          .post('/api/v1/events/receipt')
+          .set('Authorization', `Bearer ${token}`)
+          .send(body);
+      expect((await acknowledge(first)).body.data).toEqual({ accepted: true });
+
+      sse.onThreadFeedUpdated(userAId, {
+        threadFeedEndId: secondHead,
+        notificationRelevant: true,
+      });
+      const second = await nextReceipt();
+      expect(second.sseUuid).toBe(first.sseUuid);
+      expect(second.threadFeedEndId).toBe(secondHead);
+      expect((await acknowledge(first)).body.data).toEqual({ accepted: true });
+      const [session] = await database.db
+        .select({ id: sessionToken.id })
+        .from(sessionToken)
+        .where(eq(sessionToken.userId, userAId));
+      expect(sse.confirmedThreadHead(userAId, session.id)).toBe(firstHead);
+      expect((await acknowledge(second)).body.data).toEqual({ accepted: true });
+      expect(sse.confirmedThreadHead(userAId, session.id)).toBe(secondHead);
+    } finally {
+      clearTimeout(deadline);
+      aborter.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+  }, 10_000);
 });

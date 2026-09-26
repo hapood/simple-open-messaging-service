@@ -1,7 +1,9 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import type { ServerResponse } from 'http';
-import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
+import { randomUUID } from 'node:crypto';
+import type { MessageEvent } from '@nestjs/common';
+import { Observable, type Subscriber } from 'rxjs';
+import { serializeBody } from '../common/serialize.interceptor.js';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
@@ -12,26 +14,23 @@ import {
 import { CallStateRegistry } from './call-state.registry.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 
-/** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
- *  session-token row id — so a single revoked session can be targeted for FORCE_LOGOUT without kicking the
- *  user's other devices (see onSessionRevoked). */
+/** One subscribed event stream and its authenticated session identity. */
 interface SseClient {
-  res: ServerResponse;
-  ping: NodeJS.Timeout;
+  sink: Subscriber<MessageEvent>;
   since: number;
   sessionId: number;
+  sseUuid: string;
 }
 
 /**
  * SSE (Server-Sent Events) downstream push service: push-only, no business uplink.
  *
- * Compared to WebSocket, SSE is a dedicated one-way push channel with native browser resumption
- * (Last-Event-ID) and controllable reconnection via fetch-event-source, which removes a whole class
- * of connection/reconnect/auth complexity at the root.
+ * SSE is a one-way push channel. Clients explicitly reconnect and reconcile durable feed cursors;
+ * generated wire IDs are not used as history cursors.
  *
  * One registry, `clients`, keyed by userId (a user may have multiple live connections — multiple
  * tabs/devices — in an array): the primary session stream (GET /events) carrying wake-ups and
- * ephemeral call coordination, with `res.on('close')` cleanup. (The former
+ * ephemeral call coordination, with Observable teardown on disconnect. (The former
  * separate notification-stream registry + its scoped notification token were removed — the Android
  * foreground service now consumes `/events` directly via the Kotlin-owned connection.)
  */
@@ -39,6 +38,21 @@ interface SseClient {
 export class SseService implements OnModuleDestroy {
   private readonly logger = new Logger(SseService.name);
   private readonly clients: Record<number, SseClient[]> = {};
+  private readonly notificationHeads = new Map<number, number>();
+  private readonly receipts = new Map<
+    number,
+    {
+      userId: number;
+      sseUuid: string;
+      issuedHeads: Map<number, number>;
+      confirmedHead: number;
+      confirmedAt: number;
+    }
+  >();
+  private readonly receiptCleanup = setInterval(
+    () => this.pruneReceipts(),
+    60_000,
+  ).unref();
   private readonly stateThrottle = new AccountFeedThrottle(
     1000,
     (userId, feedId) =>
@@ -47,8 +61,7 @@ export class SseService implements OnModuleDestroy {
   );
   private readonly threadThrottle = new AccountFeedThrottle(
     1000,
-    (userId, threadFeedEndId) =>
-      this.pushToUser(userId, 'THREAD_FEED_UPDATED', { threadFeedEndId }),
+    (userId, threadFeedEndId) => this.pushThreadFeed(userId, threadFeedEndId),
     (error) => this.logger.warn(`Thread SSE hint failed: ${String(error)}`),
   );
 
@@ -57,37 +70,49 @@ export class SseService implements OnModuleDestroy {
     private readonly callState: CallStateRegistry,
   ) {}
 
-  /**
-   * Register one SSE connection (GET /events): the SSE headers, the `: connected` flush, and the 25s
-   * named-ping heartbeat are in common/sse-stream.ts (one source of truth — the same wire format the
-   * admin log viewer and the consumer sse.worker.ts use). This keeps the per-user registry insertion
-   * + the close cleanup. Auth is already done by the route's guard before reaching this service
-   * (SessionAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
-   * response carries its CORS header.
-   */
-  register(
-    userId: number,
-    sessionId: number,
-    res: ServerResponse,
-    origin?: string,
-  ): void {
-    const ping = initSseResponse(res, origin);
-
-    const entry: SseClient = { res, ping, since: Date.now(), sessionId };
-    (this.clients[userId] ??= []).push(entry);
-
-    res.on('close', () => {
-      clearInterval(ping);
-      const list = this.clients[userId];
-      if (!list) return;
-      const idx = list.indexOf(entry);
-      if (idx !== -1) list.splice(idx, 1);
-      if (list.length === 0) delete this.clients[userId];
+  /** Nest subscribes after guards succeed and unsubscribes when the HTTP connection closes. */
+  register(userId: number, sessionId: number): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((sink) => {
+      // A device session owns exactly one stream. Complete the old Observable;
+      // its identity-based teardown removes only that entry, never the new one.
+      for (const old of [...(this.clients[userId] ?? [])]) {
+        if (old.sessionId === sessionId) {
+          // The old client must not reconnect automatically and evict the new
+          // connection in a loop (e.g. two tabs sharing one session cookie).
+          this.emit(old.sink, 'SSE_REPLACED', {});
+          old.sink.complete();
+        }
+      }
+      const sseUuid = randomUUID();
+      const previous = this.receipts.get(sessionId);
+      this.receipts.set(sessionId, {
+        userId,
+        sseUuid,
+        issuedHeads: new Map(),
+        confirmedHead:
+          previous?.userId === userId ? previous.confirmedHead : -1,
+        confirmedAt: previous?.userId === userId ? previous.confirmedAt : 0,
+      });
+      const entry: SseClient = { sink, since: Date.now(), sessionId, sseUuid };
+      (this.clients[userId] ??= []).push(entry);
+      // HELLO captures the feed heads; a reconnect catches up from persisted cursors.
+      void this.sendHello(userId, entry);
+      return () => {
+        const list = this.clients[userId];
+        if (!list) return;
+        const idx = list.indexOf(entry);
+        if (idx !== -1) list.splice(idx, 1);
+        if (list.length === 0) delete this.clients[userId];
+      };
     });
+  }
 
-    // The connect handshake carries account revision snapshots. Durable message gaps are recovered from the
-    // per-user feed, so HELLO does not carry a message cursor.
-    void this.sendHello(userId, entry);
+  private emit(
+    sink: Subscriber<MessageEvent>,
+    type: string,
+    data: unknown,
+  ): void {
+    if (!sink.closed) sink.next({ type, data: serializeBody(data) as object });
   }
 
   /** Whether this exact authenticated device session currently owns a live SSE connection. */
@@ -95,6 +120,66 @@ export class SseService implements OnModuleDestroy {
     return !!this.clients[userId]?.some(
       (client) => client.sessionId === sessionId,
     );
+  }
+
+  /** Mark receipt-eligible heads on the existing one-second feed hint. */
+  private pushThreadFeed(userId: number, threadFeedEndId: number): void {
+    const relevant = this.notificationHeads.has(userId);
+    this.notificationHeads.delete(userId);
+    for (const client of this.clients[userId] ?? []) {
+      const slot = this.receipts.get(client.sessionId);
+      const receiptEligible =
+        relevant && !client.sink.closed && slot?.sseUuid === client.sseUuid;
+      if (receiptEligible)
+        slot.issuedHeads.set(threadFeedEndId, Date.now() + 30_000);
+      this.emit(client.sink, 'THREAD_FEED_UPDATED', {
+        threadFeedEndId,
+        ...(receiptEligible ? { sseUuid: client.sseUuid } : {}),
+      });
+    }
+  }
+
+  /** A receipt must identify this session's current stream and a head it emitted. */
+  async confirmThreadReceipt(
+    userId: number,
+    sessionId: number,
+    sseUuid: string,
+    threadFeedEndId: number,
+  ): Promise<boolean> {
+    const slot = this.receipts.get(sessionId);
+    if (
+      slot?.userId !== userId ||
+      slot.sseUuid !== sseUuid ||
+      !Number.isInteger(threadFeedEndId) ||
+      (slot.issuedHeads.get(threadFeedEndId) ?? 0) <= Date.now()
+    )
+      return false;
+    slot.confirmedHead = Math.max(slot.confirmedHead, threadFeedEndId);
+    slot.confirmedAt = Date.now();
+    return true;
+  }
+
+  /** Only a receipt issued to this device session suppresses its current message wake. */
+  confirmedThreadHead(userId: number, sessionId: number): number {
+    const slot = this.receipts.get(sessionId);
+    return slot?.userId === userId && slot.confirmedAt > Date.now() - 60_000
+      ? slot.confirmedHead
+      : -1;
+  }
+
+  private pruneReceipts(): void {
+    const now = Date.now();
+    for (const [sessionId, slot] of this.receipts) {
+      for (const [head, expiresAt] of slot.issuedHeads) {
+        if (expiresAt <= now) slot.issuedHeads.delete(head);
+      }
+      if (
+        slot.issuedHeads.size === 0 &&
+        slot.confirmedAt <= now - 60_000 &&
+        !this.isSessionOnline(slot.userId, sessionId)
+      )
+        this.receipts.delete(sessionId);
+    }
   }
 
   /** Push the HELLO handshake to one connection (the just-registered one). Best-effort: a racing close or a
@@ -114,7 +199,7 @@ export class SseService implements OnModuleDestroy {
           and(eq(account.id, userId), eq(sessionToken.id, entry.sessionId)),
         )
         .limit(1);
-      const frame = formatSseFrame('HELLO', {
+      const data = {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
         // IDB store on this userId (previously the /user/my-profile fetch was load-bearing for that, which
@@ -136,8 +221,8 @@ export class SseService implements OnModuleDestroy {
         // FSM (driven by CALL_EVENT) is the live authority; this is the connect-time snapshot, mirrored by
         // CallsService. Null when no call OR after the call ended (cleared on terminal).
         activeCall: this.callState.get(userId),
-      });
-      if (!entry.res.writableEnded) entry.res.write(frame);
+      };
+      this.emit(entry.sink, 'HELLO', data);
     } catch (e) {
       // HELLO is load-bearing: client state cannot synchronize without its stateFeedEndId.
       // 0..rev). A send failure must therefore be OBSERVABLE, not silently swallowed — the connection still
@@ -157,15 +242,16 @@ export class SseService implements OnModuleDestroy {
     uniqueUsers: number;
     clients: { userId: number; connections: number; since: number }[];
   } {
-    const uids = Object.keys(this.clients).map(Number);
-    const clients = uids.map((uid) => {
-      const list = this.clients[uid];
-      return {
-        userId: uid,
-        connections: list.length,
-        since: list.reduce((min, c) => Math.min(min, c.since), Date.now()),
-      };
-    });
+    const clients = Object.keys(this.clients)
+      .map(Number)
+      .map((uid) => {
+        const list = this.clients[uid];
+        return {
+          userId: uid,
+          connections: list.length,
+          since: list.reduce((min, c) => Math.min(min, c.since), Date.now()),
+        };
+      });
     clients.sort((a, b) => a.since - b.since);
     return {
       total: clients.reduce((sum, c) => sum + c.connections, 0),
@@ -174,49 +260,26 @@ export class SseService implements OnModuleDestroy {
     };
   }
 
-  /**
-   * Write one frame to all of a user's live connections. Reverse iteration + cleaning up failed/broken
-   * connections inline so a dead connection cannot abort the fan-out; backpressure (write returns
-   * false) is not handled here — left for the next frame / heartbeat to detect the drop. When the
-   * user's connection list empties, its slot is deleted.
-   */
+  /** Publish to subscribed streams; Nest serializes events and handles stream backpressure. */
   onPushSubscriptionChanged(
     userId: number,
     sessionId: number,
     pushSubscriptionRev: number,
   ): void {
-    const frame = formatSseFrame('PUSH_SUBSCRIPTION_CHANGED', {
-      sessionId,
-      pushSubscriptionRev,
-    });
     for (const client of this.clients[userId] ?? []) {
-      if (client.sessionId !== sessionId || client.res.writableEnded) continue;
-      try {
-        client.res.write(frame);
-      } catch {
-        // HELLO recovers the persisted revision when this connection returns.
+      if (client.sessionId === sessionId) {
+        this.emit(client.sink, 'PUSH_SUBSCRIPTION_CHANGED', {
+          sessionId,
+          pushSubscriptionRev,
+        });
       }
     }
   }
 
   private pushToUser(userId: number, eventName: string, data: unknown): void {
-    const list = this.clients[userId];
-    if (!list || list.length === 0) return;
-    const frame = formatSseFrame(eventName, data);
-    for (let i = list.length - 1; i >= 0; i--) {
-      const { res } = list[i];
-      try {
-        if (!res.write(frame)) {
-          // Backpressure: write buffer full; not handled here (the next frame / heartbeat will detect
-          // the drop). Keep the connection; do not actively end.
-        }
-      } catch {
-        // Connection is broken: clean up this entry so a later forEach doesn't throw and abort the fan-out.
-        clearInterval(list[i].ping);
-        list.splice(i, 1);
-      }
+    for (const client of this.clients[userId] ?? []) {
+      this.emit(client.sink, eventName, data);
     }
-    if (list.length === 0) delete this.clients[userId];
   }
 
   /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /
@@ -293,42 +356,35 @@ export class SseService implements OnModuleDestroy {
   }
 
   /** Thread projection cursor only. The durable, compacted feed owns the item body. */
-  onThreadFeedUpdated(userId: number, data: { threadFeedEndId: number }) {
+  onThreadFeedUpdated(
+    userId: number,
+    data: { threadFeedEndId: number; notificationRelevant?: boolean },
+  ) {
+    if (data.notificationRelevant)
+      this.notificationHeads.set(userId, data.threadFeedEndId);
     this.threadThrottle.enqueue(userId, data.threadFeedEndId);
   }
 
-  /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
-   *  entries from the registry (the broadcast deletes the whole user slot; the per-session path splices
-   *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.
-   *  formatSseFrame keeps the wire shape identical to the client's SSE_EVENT_FORCE_LOGOUT handler. */
+  /** Finish the selected streams after sending the logout event. Completion triggers registry teardown. */
   private forceLogout(entries: SseClient[], reason: string): void {
-    const frame = formatSseFrame('FORCE_LOGOUT', {
-      event: 'FORCE_LOGOUT',
-      status: 0,
-      message: reason,
-    });
-    for (const { res, ping } of entries) {
-      clearInterval(ping);
-      try {
-        res.write(frame);
-        res.end();
-      } catch {}
+    for (const { sink } of [...entries]) {
+      this.emit(sink, 'FORCE_LOGOUT', {
+        event: 'FORCE_LOGOUT',
+        status: 0,
+        message: reason,
+      });
+      sink.complete();
     }
   }
 
-  /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop ALL of
-   *  the user's live connections. */
+  /** All-device logout / password change / force-kick: complete every subscribed stream. */
   @OnEvent('auth.sessions-invalidated')
   onSessionsInvalidated(payload: { userId: number; reason: string }) {
     const list = this.clients[payload.userId];
     if (list) this.forceLogout(list, payload.reason);
-    delete this.clients[payload.userId];
   }
 
-  /** Single-session revoke (the "revoke this device" action from the device list): push FORCE_LOGOUT to +
-   *  end ONLY that session's connection(s), leaving the user's other devices online. A device may hold
-   *  several connections (multiple tabs sharing one session token) — all are disconnected, since they all
-   *  ride the now-revoked credential. Splices the matching entries out and drops the user slot if empty. */
+  /** Revoke only the selected session; multiple tabs can share one credential. */
   @OnEvent('auth.session-revoked')
   onSessionRevoked(payload: {
     userId: number;
@@ -338,30 +394,18 @@ export class SseService implements OnModuleDestroy {
     const list = this.clients[payload.userId];
     if (!list || list.length === 0) return;
     const revoked = list.filter((c) => c.sessionId === payload.sessionId);
-    if (revoked.length === 0) return;
-    this.forceLogout(revoked, payload.reason);
-    const survivors = list.filter((c) => c.sessionId !== payload.sessionId);
-    if (survivors.length === 0) delete this.clients[payload.userId];
-    else this.clients[payload.userId] = survivors;
+    if (revoked.length > 0) this.forceLogout(revoked, payload.reason);
   }
 
-  /** End held responses so HTTP shutdown does not wait indefinitely for SSE clients. */
+  /** Complete held streams so HTTP shutdown does not wait for SSE clients. */
   onModuleDestroy() {
+    clearInterval(this.receiptCleanup);
+    this.receipts.clear();
+    this.notificationHeads.clear();
     this.stateThrottle.stop();
     this.threadThrottle.stop();
-    for (const uid of Object.keys(this.clients)) {
-      const id = Number(uid);
-      const clients = this.clients[id];
-      // Detach before closing: close callbacks must not mutate the iteration.
-      delete this.clients[id];
-      for (const { res, ping } of clients) {
-        clearInterval(ping);
-        try {
-          res.end();
-        } catch {
-          // A broken connection must not prevent the remaining streams from closing.
-        }
-      }
+    for (const list of Object.values(this.clients)) {
+      for (const { sink } of [...list]) sink.complete();
     }
   }
 }

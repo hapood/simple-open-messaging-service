@@ -37,7 +37,11 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { sessionToken, account as user } from '../database/schema.js';
+import {
+  accountThreadState,
+  sessionToken,
+  account as user,
+} from '../database/schema.js';
 import {
   clearPushRegistration,
   pushRegistrationFields,
@@ -50,7 +54,6 @@ import {
 } from '../dto/device.dto.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
 import { sendFcmMessages } from './fcm-transport.js';
 
 export type PushProbeStatus = PushProbeStatusDto;
@@ -74,11 +77,11 @@ type SessionPushRegistration = {
 /**
  * Multi-platform push delivery — the wake-up channel that complements SSE.
  *
- * Committed fanout results wake connected clients through their durable Thread Feed. Count or preview
- * changes independently enter a five-second account throttle. PushService sends the `NEW_MESSAGE`
- * data-only payload to registered target sessions that do not currently own a live
- * SSE connection. An online session takes over notification aggregation from its State Feed; other devices
- * remain independently eligible. Duplicate wake delivery is harmless because the pull pipeline is idempotent.
+ * Committed fanout results wake clients through their durable Thread Feed. Count or preview
+ * changes start a fixed five-second, process-local window per registered device session. Only
+ * an acknowledged SSE head suppresses that session's `NEW_MESSAGE` data-only push; an online
+ * unconfirmed session checks unread attention first. Other devices remain independently eligible.
+ * Pending windows are lost on process restart. Duplicate wakes are harmless because pulls are idempotent.
  *
  * Two transports, branched by `SessionToken.pushPlatform`:
  *  - ANDROID / IOS → firebase-admin batch delivery (data-only, high priority); with an HTTPS proxy,
@@ -97,24 +100,103 @@ export class PushService implements OnModuleDestroy {
   private readonly fcmUsesHttpProxy: boolean;
   private readonly pushProbes = new Map<string, PushProbeEntry>();
   private readonly pushProbeCooldowns = new Map<string, number>();
-  private readonly messageThrottle = new AccountFeedThrottle(
-    5_000,
-    (userId, threadFeedEndId) =>
-      this.dispatchForMessage([{ userId, threadFeedEndId }]),
-    (error) => this.logger.warn(`Thread push hint failed: ${String(error)}`),
-  );
+  private readonly messageWakes = new Map<
+    number,
+    {
+      userId: number;
+      sessionId: number;
+      head: number;
+      dueAt: number;
+      sending: boolean;
+      timer?: NodeJS.Timeout;
+    }
+  >();
+  private stopped = false;
 
-  /** Only notification-relevant projection changes enter this account window.
-   * Session validity and SSE ownership are checked by dispatch at send time. */
-  enqueueForMessage(
+  /** A device session starts one fixed five-second window on its first hint. */
+  async enqueueForMessage(
     targets: { userId: number; threadFeedEndId: number }[],
-  ): void {
+  ): Promise<void> {
+    if (this.stopped || targets.length === 0) return;
+    const heads = new Map<number, number>();
     for (const { userId, threadFeedEndId } of targets)
-      this.messageThrottle.enqueue(userId, threadFeedEndId);
+      heads.set(userId, Math.max(heads.get(userId) ?? 0, threadFeedEndId));
+    const sessions = await this.registrations(
+      inArray(sessionToken.userId, [...heads.keys()]),
+    );
+    if (this.stopped) return;
+    for (const session of sessions) {
+      const head = heads.get(session.userId)!;
+      const pending = this.messageWakes.get(session.sessionId);
+      if (pending) {
+        if (head > pending.head) {
+          pending.head = head;
+          if (pending.sending) pending.dueAt = Date.now() + 5_000;
+        }
+        continue;
+      }
+      const wake = {
+        userId: session.userId,
+        sessionId: session.sessionId,
+        head,
+        dueAt: Date.now() + 5_000,
+        sending: false,
+      };
+      this.messageWakes.set(session.sessionId, wake);
+      this.scheduleMessageWake(wake);
+    }
+  }
+
+  private scheduleMessageWake(wake: {
+    userId: number;
+    sessionId: number;
+    head: number;
+    dueAt: number;
+    sending: boolean;
+    timer?: NodeJS.Timeout;
+  }): void {
+    if (this.stopped || wake.timer || wake.sending) return;
+    wake.timer = setTimeout(
+      () => {
+        wake.timer = undefined;
+        void this.sendMessageWake(wake);
+      },
+      Math.max(0, wake.dueAt - Date.now()),
+    );
+    wake.timer.unref();
+  }
+
+  private async sendMessageWake(wake: {
+    userId: number;
+    sessionId: number;
+    head: number;
+    dueAt: number;
+    sending: boolean;
+    timer?: NodeJS.Timeout;
+  }): Promise<void> {
+    if (this.stopped || this.messageWakes.get(wake.sessionId) !== wake) return;
+    wake.sending = true;
+    const head = wake.head;
+    try {
+      await this.dispatchForMessage(
+        [{ userId: wake.userId, threadFeedEndId: head }],
+        wake.sessionId,
+      );
+    } catch (error) {
+      this.logger.warn(`Message push wake failed: ${String(error)}`);
+    } finally {
+      wake.sending = false;
+      if (this.messageWakes.get(wake.sessionId) !== wake || this.stopped)
+        return;
+      if (wake.head === head) this.messageWakes.delete(wake.sessionId);
+      else this.scheduleMessageWake(wake);
+    }
   }
 
   onModuleDestroy(): void {
-    this.messageThrottle.stop();
+    this.stopped = true;
+    for (const wake of this.messageWakes.values()) clearTimeout(wake.timer);
+    this.messageWakes.clear();
   }
 
   constructor(
@@ -448,6 +530,35 @@ export class PushService implements OnModuleDestroy {
     );
   }
 
+  /** A receipt suppresses only the exact session's covered feed head, even if its stream closes. */
+  private canDeliverMessageOutOfBand(
+    token: SessionPushRegistration,
+    now: Date,
+    threadFeedEndId: number,
+  ): boolean {
+    return (
+      token.revokedAt === null &&
+      token.expiresAt > now &&
+      this.sse.confirmedThreadHead(token.userId, token.sessionId) <
+        threadFeedEndId
+    );
+  }
+
+  /** Recheck unread attention just before an unconfirmed live SSE session gets FCM. */
+  private async hasUnreadForMessagePush(userId: number): Promise<boolean> {
+    const rows = await this.database.db
+      .select({ id: accountThreadState.id })
+      .from(accountThreadState)
+      .where(
+        and(
+          eq(accountThreadState.accountId, userId),
+          gt(accountThreadState.unreadCount, 0),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   /** Encrypt for the subscription and authenticate with the managed VAPID keypair. */
   private async sendWebPush(
     sub: { endpoint: string; keys: { p256dh: string; auth: string } },
@@ -467,19 +578,22 @@ export class PushService implements OnModuleDestroy {
   }
 
   /**
-   * Deliver one admitted round of identity-only wake-ups. The account throttle
-   * invokes this outside durable fanout completion and the HTTP send path.
-   * Provider failures are logged and never propagated to the caller.
+   * Deliver one admitted device-session round of identity-only wake-ups. The
+   * process-local five-second timer invokes this outside durable fanout.
+   * Per-token provider failures are logged and never propagated to the caller.
    *
    * Recipient filtering: only count or preview changes enter the throttle.
-   * A token is suppressed only when its exact authenticated session owns a live SSE connection; that device
-   * takes over notification aggregation from `STATE_FEED_UPDATED`. Other devices receive the same payload
-   * `{ type:'NEW_MESSAGE', threadFeedEndId }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
+   * A session is suppressed only if it confirmed an SSE hint at least as new as this
+   * feed head, even if the socket has since closed. Without confirmation, recheck unread
+   * for live sessions before FCM; offline sessions keep the existing wake semantics
+   * (including previews). Other devices receive the same payload
+   * `{ type:'NEW_MESSAGE', threadFeedEndId }`, branched by platform: ANDROID/IOS → FCM,
    * WEB → Web Push `sendNotification`. Per-token errors that indicate a definitively-dead subscription
    * (FCM UNREGISTERED / Web Push 404/410) are cleared and advance the session revision; other errors preserve registration.
    */
   async dispatchForMessage(
     targets: { userId: number; threadFeedEndId: number }[],
+    sessionId?: number,
   ): Promise<void> {
     try {
       const heads = new Map<number, number>();
@@ -499,13 +613,45 @@ export class PushService implements OnModuleDestroy {
       if (userIds.length === 0) return;
 
       const tokens = await this.registrations(
-        inArray(sessionToken.userId, userIds),
+        and(
+          inArray(sessionToken.userId, userIds),
+          sessionId === undefined ? undefined : eq(sessionToken.id, sessionId),
+        ),
       );
       const now = new Date();
-      const deliverableTokens = tokens.filter((token) =>
-        this.canDeliverOutOfBand(token, now),
+      const candidates = tokens.filter((token) =>
+        this.canDeliverMessageOutOfBand(token, now, heads.get(token.userId)!),
       );
-      if (deliverableTokens.length === 0) return;
+      const unread = new Map<number, Promise<boolean>>();
+      const eligible = await Promise.all(
+        candidates.map(async (token) => {
+          if (!this.sse.isSessionOnline(token.userId, token.sessionId))
+            return true;
+          let check = unread.get(token.userId);
+          if (!check) {
+            check = this.hasUnreadForMessagePush(token.userId).catch(
+              (error: unknown) => {
+                // Fail open: an unread lookup failure must not make a lost SSE wake permanent.
+                this.logger.warn(
+                  `Message push unread check failed: ${String(error)}`,
+                );
+                return true;
+              },
+            );
+            unread.set(token.userId, check);
+          }
+          return check;
+        }),
+      );
+      const deliverableTokens = candidates.filter(
+        (_, index) => eligible[index],
+      );
+      if (deliverableTokens.length === 0) {
+        this.logger.debug(
+          `Message push skipped: registrations=${tokens.length}, eligible=0`,
+        );
+        return;
+      }
 
       // Identity-only wake-up — {type, threadFeedEndId}. No body/preview/contentType/msgid: the client
       // pulls the body. FCM requires string values; Web Push carries the JSON-stringified form. No
@@ -549,10 +695,13 @@ export class PushService implements OnModuleDestroy {
             dead.push(fcmTokens[i]);
           }
         });
+        this.logger.debug(
+          `FCM message handoff accepted=${res.successCount}, failed=${res.failureCount}`,
+        );
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
           this.logger.warn(
-            `FCM send: ${failed} transient failure(s) (not pruned)`,
+            `FCM sendEach: ${failed} transient failure(s) (not pruned)`,
           );
         }
       }
@@ -587,10 +736,12 @@ export class PushService implements OnModuleDestroy {
 
       for (const snapshot of dead) await this.invalidateSubscription(snapshot);
     } catch (e) {
-      // Last-resort guard: a push failure must NEVER surface to the send path (it's fire-and-forget).
+      // Provider failures are handled per token above. An infrastructure
+      // failure is surfaced to the in-memory timer owner for diagnostics.
       this.logger.error(
         `push dispatchForMessage failed: ${(e as Error).message}`,
       );
+      throw e;
     }
   }
 
@@ -674,7 +825,7 @@ export class PushService implements OnModuleDestroy {
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
           this.logger.warn(
-            `FCM send (call): ${failed} transient failure(s) (not pruned)`,
+            `FCM sendEach (call): ${failed} transient failure(s) (not pruned)`,
           );
         }
       }

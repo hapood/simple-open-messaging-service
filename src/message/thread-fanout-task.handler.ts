@@ -26,7 +26,7 @@ import {
 
 const FANOUT_YIELD_WINDOW = 50;
 
-/** Durable database projection with lossy post-commit notification hints.
+/** Durable database projection with lossy post-commit SSE and push hints.
  * Network delivery is not part of the task's completion condition. */
 @Injectable()
 export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
@@ -126,8 +126,8 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     await this.wakeBatch(projected);
   }
 
-  /** Best-effort hints only; a committed feed is discoverable even if this
-   * callback never runs or a provider never acknowledges it. */
+  /** Best-effort hints. A process restart during the five-second window drops
+   * this in-memory push round; the committed feed remains recoverable. */
   private async wakeBatch(projected: ThreadFanoutProjection[]): Promise<void> {
     const heads = await Promise.all(
       projected.map(async (result) => ({
@@ -135,7 +135,7 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
         feedId: await this.feed.readEndId(result.userId),
       })),
     );
-    // Register both channels independently: an SSE failure must not suppress Push.
+    // SSE failure must not suppress the independently scheduled Push fallback.
     for (const {
       userId,
       feedId,
@@ -143,13 +143,18 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
       previewChanged,
     } of heads) {
       try {
-        this.sse.onThreadFeedUpdated(userId, { threadFeedEndId: feedId });
+        this.sse.onThreadFeedUpdated(userId, {
+          threadFeedEndId: feedId,
+          notificationRelevant: unreadCountChanged || previewChanged,
+        });
       } catch (error) {
         this.logger.warn(`Thread SSE hint failed: ${String(error)}`);
       }
       if (unreadCountChanged || previewChanged) {
         try {
-          this.push.enqueueForMessage([{ userId, threadFeedEndId: feedId }]);
+          await this.push.enqueueForMessage([
+            { userId, threadFeedEndId: feedId },
+          ]);
         } catch (error) {
           this.logger.warn(`Thread push hint failed: ${String(error)}`);
         }

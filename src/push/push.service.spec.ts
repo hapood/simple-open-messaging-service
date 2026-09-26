@@ -23,7 +23,10 @@ describe('PushService — identity-only payloads', () => {
     isWebPushConfigured: boolean;
     getVapid: ReturnType<typeof vi.fn>;
   };
-  let sse: { isSessionOnline: ReturnType<typeof vi.fn> };
+  let sse: {
+    isSessionOnline: ReturnType<typeof vi.fn>;
+    confirmedThreadHead: ReturnType<typeof vi.fn>;
+  };
   beforeEach(() => {
     sendNotification.mockReset();
     registrations = vi.fn().mockResolvedValue([]);
@@ -35,7 +38,10 @@ describe('PushService — identity-only payloads', () => {
         privateKey: 'sk',
       })),
     };
-    sse = { isSessionOnline: vi.fn(() => false) };
+    sse = {
+      isSessionOnline: vi.fn(() => false),
+      confirmedThreadHead: vi.fn(() => -1),
+    };
     svc = new PushService(
       {
         db: {},
@@ -45,6 +51,40 @@ describe('PushService — identity-only payloads', () => {
       '/definitely-not-present/soms-firebase-service-account.json',
     );
     svc['registrations'] = registrations;
+    svc['hasUnreadForMessagePush'] = vi.fn().mockResolvedValue(true);
+  });
+
+  it('holds independent device wakes for five seconds and coalesces the newest head', async () => {
+    vi.useFakeTimers();
+    try {
+      registrations.mockResolvedValue(
+        [10, 20].map((sessionId) => ({
+          userId: 1,
+          sessionId,
+          token: `https://push/${sessionId}`,
+          platform: 'WEB',
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: null,
+        })),
+      );
+      const dispatch = vi.spyOn(svc, 'dispatchForMessage').mockResolvedValue();
+      await svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 1 }]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 3 }]);
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(dispatch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      expect(
+        dispatch.mock.calls.map(([targets, sessionId]) => [targets, sessionId]),
+      ).toEqual([
+        [[{ userId: 1, threadFeedEndId: 3 }], 10],
+        [[{ userId: 1, threadFeedEndId: 3 }], 20],
+      ]);
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
   });
 
   it.each([404, 410])(
@@ -102,8 +142,7 @@ describe('PushService — identity-only payloads', () => {
     expect(invalidate).toHaveBeenCalledExactlyOnceWith(snapshot);
   });
 
-  it('coalesces for five seconds and rechecks each device session at trailing delivery', async () => {
-    vi.useFakeTimers();
+  it('rechecks each device session when its in-memory round becomes due', async () => {
     const session = {
       userId: 1,
       expiresAt: new Date(Date.now() + 60_000),
@@ -120,28 +159,19 @@ describe('PushService — identity-only payloads', () => {
         webAuth: 'auth',
       })),
     );
-    try {
-      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 1 }]);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(sendNotification).toHaveBeenCalledTimes(2);
-      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 2 }]);
-      svc.enqueueForMessage([{ userId: 1, threadFeedEndId: 3 }]);
-      sse.isSessionOnline.mockImplementation(
-        (_userId: number, sessionId: number) => sessionId === 10,
-      );
-      await vi.advanceTimersByTimeAsync(4999);
-      expect(sendNotification).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(sendNotification).toHaveBeenCalledTimes(3);
-      expect(sendNotification).toHaveBeenLastCalledWith(
-        expect.objectContaining({ endpoint: 'https://push/20' }),
-        JSON.stringify({ type: 'NEW_MESSAGE', threadFeedEndId: '3' }),
-        expect.anything(),
-      );
-    } finally {
-      svc.onModuleDestroy();
-      vi.useRealTimers();
-    }
+    sse.isSessionOnline.mockImplementation(
+      (_userId: number, sessionId: number) => sessionId === 10,
+    );
+    sse.confirmedThreadHead.mockImplementation(
+      (_userId: number, sessionId: number) => (sessionId === 10 ? 3 : -1),
+    );
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 3 }]);
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(sendNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ endpoint: 'https://push/20' }),
+      JSON.stringify({ type: 'NEW_MESSAGE', threadFeedEndId: '3' }),
+      expect.anything(),
+    );
   });
 
   it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", threadFeedEndId }', async () => {
@@ -207,11 +237,11 @@ describe('PushService — identity-only payloads', () => {
     ]);
   });
 
-  it('does not propagate notification database errors to callers', async () => {
+  it('reports a registration lookup failure without suppressing later rounds', async () => {
     registrations.mockRejectedValue(new Error('database unavailable'));
     await expect(
       svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow('database unavailable');
   });
 
   it('does not propagate transient Web Push failures to callers', async () => {
@@ -237,7 +267,10 @@ describe('PushService — identity-only payloads', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('skips only the online device session and still sends to another device', async () => {
+  it('skips only the confirmed online device session and still sends to another device', async () => {
+    sse.confirmedThreadHead.mockImplementation(
+      (_userId: number, sessionId: number) => (sessionId === 10 ? 7 : -1),
+    );
     sse.isSessionOnline.mockImplementation(
       (_userId: number, sessionId: number) => sessionId === 10,
     );
@@ -272,6 +305,66 @@ describe('PushService — identity-only payloads', () => {
     expect(sendNotification.mock.calls[0][0]).toMatchObject({
       endpoint: 'https://push/b',
     });
+  });
+
+  it('does not push a confirmed head even when its SSE socket has since disconnected', async () => {
+    sse.confirmedThreadHead.mockReturnValue(7);
+    registrations.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/confirmed',
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      },
+    ]);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it('falls back at the five-second decision when the live SSE has not confirmed the target head', async () => {
+    sse.confirmedThreadHead.mockReturnValue(6);
+    sse.isSessionOnline.mockReturnValue(true);
+    registrations.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/unconfirmed',
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      },
+    ]);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(JSON.parse(sendNotification.mock.calls[0][1]).threadFeedEndId).toBe(
+      '7',
+    );
+  });
+
+  it('does not fallback-push an online unconfirmed session after its unread attention cleared', async () => {
+    sse.isSessionOnline.mockReturnValue(true);
+    svc['hasUnreadForMessagePush'] = vi.fn().mockResolvedValue(false);
+    registrations.mockResolvedValue([
+      {
+        userId: 1,
+        sessionId: 10,
+        token: 'https://push/already-read',
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      },
+    ]);
+    await svc.dispatchForMessage([{ userId: 1, threadFeedEndId: 7 }]);
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(svc['hasUnreadForMessagePush']).toHaveBeenCalledExactlyOnceWith(1);
   });
 
   it('does not wake a revoked or expired authenticated session', async () => {

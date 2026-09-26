@@ -15,7 +15,12 @@ function setup() {
     readEndId: vi.fn().mockResolvedValue(12),
     notifyFeedUpdates: vi.fn(),
   };
-  const push = { enqueueForMessage: vi.fn() };
+  const push = { enqueueForMessage: vi.fn().mockResolvedValue(undefined) };
+  const sse = { onThreadFeedUpdated: vi.fn() };
+  sse.onThreadFeedUpdated.mockImplementation(
+    (userId: number, data: { threadFeedEndId: number }) =>
+      feed.notifyFeedUpdates([{ userId, feedId: data.threadFeedEndId }]),
+  );
   const progress = {
     read: vi.fn().mockResolvedValue({ phase: 'FEED', afterAccountId: 0 }),
     save: vi.fn().mockResolvedValue(undefined),
@@ -36,12 +41,7 @@ function setup() {
     feed as never,
     push as never,
     progress as never,
-    {
-      onThreadFeedUpdated: (
-        userId: number,
-        data: { threadFeedEndId: number },
-      ) => feed.notifyFeedUpdates([{ userId, feedId: data.threadFeedEndId }]),
-    } as never,
+    sse as never,
   );
   handler.onModuleInit();
   const task = {
@@ -62,6 +62,7 @@ function setup() {
     dispatcher,
     participants,
     feed,
+    sse,
     push,
     progress,
     handler,
@@ -122,7 +123,7 @@ describe('durable thread fanout handler', () => {
       'database rollback',
     );
     expect(h.feed.notifyFeedUpdates).not.toHaveBeenCalled();
-    expect(h.push.enqueueForMessage).not.toHaveBeenCalled();
+    expect(h.sse.onThreadFeedUpdated).not.toHaveBeenCalled();
     expect(h.progress.save).not.toHaveBeenCalledWith(1n, {
       phase: 'DONE',
       afterAccountId: 0,
@@ -153,7 +154,7 @@ describe('durable thread fanout handler', () => {
     h.progress.read.mockResolvedValue({ phase: 'DONE', afterAccountId: 0 });
     await h.handler.execute(h.task);
     expect(h.participants.getActiveParticipantUserIds).not.toHaveBeenCalled();
-    expect(h.push.enqueueForMessage).not.toHaveBeenCalled();
+    expect(h.sse.onThreadFeedUpdated).not.toHaveBeenCalled();
   });
 
   it('resumes database projection after its saved recipient cursor', async () => {
@@ -171,20 +172,7 @@ describe('durable thread fanout handler', () => {
     });
   });
 
-  it('does not fail database fanout when a push attempt rejects', async () => {
-    const h = setup();
-    h.push.enqueueForMessage.mockImplementationOnce(() => {
-      throw new Error('provider unavailable');
-    });
-    await expect(h.dispatcher.execute(h.task)).resolves.toBeUndefined();
-    await vi.waitFor(() => expect(h.push.enqueueForMessage).toHaveBeenCalled());
-    expect(h.progress.save).toHaveBeenLastCalledWith(1n, {
-      phase: 'DONE',
-      afterAccountId: 0,
-    });
-  });
-
-  it('sends every projection to SSE and only count or preview changes to Push', async () => {
+  it('marks only count or preview changes as receipt-bearing SSE hints', async () => {
     const h = setup();
     h.participants.getActiveParticipantUserIds.mockResolvedValue(
       [1, 2, 3].map((userId) => ({
@@ -207,10 +195,14 @@ describe('durable thread fanout handler', () => {
       expect(h.feed.notifyFeedUpdates).toHaveBeenCalledTimes(3),
     );
     expect(
-      h.push.enqueueForMessage.mock.calls.flatMap(([targets]) => targets),
+      h.sse.onThreadFeedUpdated.mock.calls.map(([userId, data]) => [
+        userId,
+        data.notificationRelevant,
+      ]),
     ).toEqual([
-      { userId: 2, threadFeedEndId: 12 },
-      { userId: 3, threadFeedEndId: 12 },
+      [1, false],
+      [2, true],
+      [3, true],
     ]);
   });
 
@@ -221,7 +213,6 @@ describe('durable thread fanout handler', () => {
     });
     await expect(h.handler.execute(h.task)).resolves.toBeUndefined();
     await vi.waitFor(() => expect(h.feed.notifyFeedUpdates).toHaveBeenCalled());
-    expect(h.push.enqueueForMessage).toHaveBeenCalled();
     expect(h.progress.save).toHaveBeenLastCalledWith(1n, {
       phase: 'DONE',
       afterAccountId: 0,
