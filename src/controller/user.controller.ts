@@ -4,7 +4,8 @@ import {
   Post,
   Body,
   Query,
-  Res,
+  Sse,
+  type MessageEvent,
   Request,
   HttpStatus,
   HttpCode,
@@ -12,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import type { FastifyReply } from 'fastify';
+import { Observable } from 'rxjs';
 import { FederationDomainResolutionError } from '../federation/discovery.service.js';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
@@ -45,9 +46,10 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
-import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
+import { GroupService } from '../group/group.service.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
@@ -55,7 +57,7 @@ type ClientStateFeedItem = {
   account: string;
   domain: string;
   namespaceId: number;
-  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD' | 'THREAD_STATE';
+  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   subjectAccount: string;
   subjectDomain: string;
   body: unknown;
@@ -87,7 +89,34 @@ export class UserController {
     private readonly userQuotaService: UserQuotaService,
     private readonly relationships: RelationshipService,
     private readonly durableTasks: DurableTaskQueueService,
+    private readonly groups: GroupService,
   ) {}
+
+  private async resolveLocalAccount(account: string) {
+    if (account.startsWith('!')) {
+      const group = await this.groups.findPublicLocalGroupByAccount(account);
+      if (!group) return null;
+      return {
+        id: group.id,
+        account: group.account,
+        name: group.name,
+        avatar: group.avatar,
+        bio: group.description,
+        isGroup: true,
+        domain: 'local',
+        namespaceId: 0,
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+        profileRev: group.profileRev,
+        isDeleted: false,
+      };
+    }
+    return this.userService.findUniqueUser({
+      account_domain: { account, domain: 'local' },
+      namespaceId: 0,
+      availability: 'AVAILABLE',
+    });
+  }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -356,9 +385,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
-  @ApiOperation({
-    summary: 'Resolve a local user by account',
-  })
+  @ApiOperation({ summary: 'Resolve a local user or group by exact account' })
   @ApiResultResponse(UserResponseDto)
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
@@ -370,11 +397,7 @@ export class UserController {
       );
     }
     // No domain, or our own domain, is a local account lookup.
-    const user = await this.userService.findUniqueUser({
-      account_domain: { account: account, domain: 'local' },
-      namespaceId: 0,
-      availability: 'AVAILABLE',
-    });
+    const user = await this.resolveLocalAccount(account);
     if (user !== null) {
       return user;
     }
@@ -388,76 +411,55 @@ export class UserController {
    * browser may close it at any time; the peer request retains its normal bounded S2S timeout. */
   @Raw()
   @ApiBearerAuth()
-  @Get('user/resolve-federated-stream')
-  async resolveFederatedUserStream(
-    @Request() req: FastifyRequest,
+  @Sse('user/resolve-federated-stream')
+  resolveFederatedUserStream(
     @Query() dto: UserResolveDto,
-    @Res() reply: FastifyReply,
-  ): Promise<void> {
-    reply.hijack();
-    const heartbeat = initSseResponse(reply.raw, req.headers.origin);
-    let closed = false;
-    const finish = (event: string, data: unknown) => {
-      if (closed) return;
-      closed = true;
-      clearInterval(heartbeat);
-      reply.raw.write(formatSseFrame(event, data));
-      reply.raw.end();
-    };
-    reply.raw.on('close', () => {
-      closed = true;
-      clearInterval(heartbeat);
-    });
+  ): Observable<MessageEvent> {
     const account = normalizeAccount(dto.account);
     const domain = dto.domain?.trim().toLowerCase() ?? '';
-    if (!domain) {
-      finish('failed', { reason: 'INVALID_ADDRESS' });
-      return;
-    }
-    if (domain === this.federationService.ourDomain) {
-      const localUser = await this.userService.findUniqueUser({
-        account_domain: { account, domain: 'local' },
-        namespaceId: 0,
-        availability: 'AVAILABLE',
-      });
-      if (!localUser) {
-        finish('failed', { reason: 'NOT_FOUND' });
-        return;
-      }
-      finish('resolved', { user: localUser });
-      return;
-    }
-    let unsubscribeProgress: () => void = () => undefined;
-    const deadlineAt = Date.now() + 30_000;
-    const deadline = new Promise<never>((_, reject) => {
-      const handle = setTimeout(
-        () => reject(new Error('resolve deadline exceeded')),
+    return new Observable<MessageEvent>((sink) => {
+      let unsubscribeProgress: () => void = () => undefined;
+      const emit = (type: string, data: unknown) => {
+        if (!sink.closed)
+          sink.next({ type, data: serializeBody(data) as object });
+      };
+      const finish = (type: string, data: unknown) => {
+        if (sink.closed) return;
+        emit(type, data);
+        sink.complete();
+      };
+      const deadlineAt = Date.now() + 30_000;
+      const deadline = setTimeout(
+        () => finish('failed', { reason: 'TIMEOUT' }),
         30_000,
       );
-      reply.raw.once('close', () => clearTimeout(handle));
-    });
-    try {
-      const profile = await Promise.race([
-        (async () => {
+      void (async () => {
+        try {
+          if (!domain) {
+            finish('failed', { reason: 'INVALID_ADDRESS' });
+            return;
+          }
+          if (domain === this.federationService.ourDomain) {
+            const localUser = await this.resolveLocalAccount(account);
+            finish(
+              localUser ? 'resolved' : 'failed',
+              localUser ? { user: localUser } : { reason: 'NOT_FOUND' },
+            );
+            return;
+          }
           const recognitionComplete =
             await this.federationService.hasCompletePeerRecognition(domain);
+          if (sink.closed) return;
           if (!recognitionComplete) {
             unsubscribeProgress = this.federationRecognition.subscribeProgress(
               domain,
-              (stage) => {
-                if (!closed) {
-                  reply.raw.write(formatSseFrame('progress', { stage }));
-                }
-              },
+              (stage) => emit('progress', { stage }),
             );
             await this.federationRecognition.recognize(domain);
           }
-          if (!closed) {
-            reply.raw.write(
-              formatSseFrame('progress', { stage: 'WAITING_FOR_PEER' }),
-            );
-          }
-          while (!closed && Date.now() < deadlineAt) {
+          if (sink.closed) return;
+          emit('progress', { stage: 'WAITING_FOR_PEER' });
+          while (!sink.closed && Date.now() < deadlineAt) {
             try {
               const status =
                 await this.federationService.checkPeerHealth(domain);
@@ -477,46 +479,43 @@ export class UserController {
             }
             await new Promise((resolve) => setTimeout(resolve, 1_000));
           }
-          if (closed) throw new Error('resolve stream closed');
+          if (sink.closed) return;
           if (Date.now() >= deadlineAt) {
-            throw new Error('resolve deadline exceeded');
+            finish('failed', { reason: 'TIMEOUT' });
+            return;
           }
-          if (!closed) {
-            reply.raw.write(
-              formatSseFrame('progress', { stage: 'FETCHING_USER' }),
+          emit('progress', { stage: 'FETCHING_USER' });
+          const profile = await this.federationService.fetchRemoteAccount({
+            account,
+            domain,
+          });
+          finish('resolved', { user: this.transientFederatedUser(profile) });
+        } catch (error) {
+          if (sink.closed) return;
+          const reason =
+            error instanceof FederationDomainResolutionError
+              ? 'DOMAIN_RESOLUTION_FAILED'
+              : error instanceof S2sResponseError &&
+                  error.code === BusinessCode.NOT_FOUND
+                ? 'NOT_FOUND'
+                : error instanceof BusinessException &&
+                    error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
+                  ? 'BLOCKED'
+                  : 'UNREACHABLE';
+          if (reason !== 'NOT_FOUND' && reason !== 'BLOCKED') {
+            const detail = error instanceof Error ? error.stack : String(error);
+            this.logger.warn(
+              `Federated resolve ${account}@${domain} failed (${reason}): ${detail}`,
             );
           }
-          return this.federationService.fetchRemoteAccount({ account, domain });
-        })(),
-        deadline,
-      ]);
-      finish('resolved', { user: this.transientFederatedUser(profile) });
-    } catch (error) {
-      if (closed) return;
-      const reason =
-        (error as Error).message === 'resolve deadline exceeded'
-          ? 'TIMEOUT'
-          : error instanceof FederationDomainResolutionError
-            ? 'DOMAIN_RESOLUTION_FAILED'
-            : error instanceof S2sResponseError &&
-                error.code === BusinessCode.NOT_FOUND
-              ? 'NOT_FOUND'
-              : error instanceof BusinessException &&
-                  error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
-                ? 'BLOCKED'
-                : 'UNREACHABLE';
-      if (reason !== 'NOT_FOUND' && reason !== 'BLOCKED') {
-        const detail = error instanceof Error ? error.stack : String(error);
-        this.logger.warn(
-          `Federated resolve ${account}@${domain} failed (${reason}): ${detail}`,
-        );
-      }
-      finish('failed', {
-        reason,
-      });
-    } finally {
-      unsubscribeProgress();
-    }
+          finish('failed', { reason });
+        }
+      })();
+      return () => {
+        clearTimeout(deadline);
+        unsubscribeProgress();
+      };
+    });
   }
 
   private transientFederatedUser(profile: S2SProfile) {

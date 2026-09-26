@@ -335,6 +335,20 @@ export class GroupService {
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
 
+  /** Exact public lookup; dissolved and uninitialized groups cannot be discovered. */
+  async findPublicLocalGroupByAccount(account: string) {
+    const row = await readGroupState(
+      this.database.db,
+      and(
+        eq(groupStateFields.account, account),
+        eq(groupStateFields.domain, 'local'),
+        eq(groupStateFields.namespaceId, 0),
+        isNull(groupStateFields.dissolvedAt),
+      ),
+    );
+    return row && row.profileRev > 0 ? row : null;
+  }
+
   /** Resolve a group address visible to a member without trusting a client-supplied thread id. */
   async findVisibleGroupByAddress(
     userId: number,
