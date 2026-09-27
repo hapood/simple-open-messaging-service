@@ -76,3 +76,13 @@ dev/federation-lab/local/
 /test/browser-e2e/report/
 /test/browser-e2e/playwright-report/
 /test/browser-e2e/**/report/
+
+# Local E2E execution state and defect investigations; canonical test plans remain tracked.
+/docs/development/*-e2e-progress.md
+/docs/development/*-e2e-handoff.md
+/docs/development/*-e2e-bug-*.md
+/docs/development/android-device-*.md
+
+# Pi local package cache and session state; project configuration may still be tracked.
+/.pi/npm/
+/.pi/subagent-history.json

@@ -11,10 +11,9 @@ and client behavior.
 - [Architecture](./overview/architecture.md)
 - [Database model](./overview/database.md)
 - [Client and administration API](./api/api.md)
-- [Cross-platform E2E test plan](./development/browser-e2e-test-plan.md)
+- [Web browser E2E test plan](./development/browser-e2e-test-plan.md)
+- [Android E2E test plan](./development/android-e2e-test-plan.md)
 - [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
-- [Cross-platform E2E progress](./development/browser-e2e-progress.md)
-- [Browser E2E handoff](./development/browser-e2e-handoff.md)
 - [Browser E2E reusable tools](./development/browser-e2e-tools.md)
 
 ## Design

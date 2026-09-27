@@ -35,12 +35,13 @@ must be accounted for before accepting a run result.
 
 ## Authoring contract
 
-- Add or change business coverage only in `browser-e2e-test-plan.md`; its historical filename is retained to avoid
-  breaking links, but the document now covers browser and Android.
+- Add or change business coverage in the plan for the target platform:
+  `browser-e2e-test-plan.md` for browser, `android-e2e-test-plan.md` for
+  Android.
 - Give every independently runnable item a globally unique bold numeric id such as `6.1` or `6.3a`.
 - Describe user intent and visible expected behavior. Do not put CSS selectors, Android coordinates, or view hierarchy
   assumptions in a business case.
-- State platform exceptions in the case. Consumer cases otherwise run on browser and Android.
+- State platform exceptions in the case.
 - Keep credentials and one-time codes out of plans, prompts, screenshots, and artifacts.
 - The loader includes indented continuation lines and rejects duplicate numeric ids instead of choosing one silently.
 
@@ -51,10 +52,14 @@ must be accounted for before accepting a run result.
    Record APK/build identity, Android version, device, and installed WebView version.
 2. Start Appium with the UiAutomator2 driver, for example `appium --base-path /`.
 3. Connect an unlocked emulator or device with USB debugging enabled.
-4. Make sure the app can reach the federation lab edge from the Android device. `localhost` inside Android is the
-   device itself; use a reachable host address or `adb reverse` as appropriate.
-   Configure the node through the app before the run: `CROSS_PLATFORM_BROWSER_URL`
-   does not navigate or configure the Android app.
+4. Make sure the app can reach the federation lab edge from the Android device. Run
+   `node scripts/android-lab-server.mjs` after each host network change. It
+   probes the current host addresses, configures `adb reverse` for ports `3101`
+   through `3103` when a device is attached, and prints the server origins to use
+   in the Android app. `localhost` inside Android is the device itself; use the
+   helper's loopback recommendation only after `adb reverse` succeeds, otherwise
+   use the printed LAN address. Configure the node through the app before the
+   run: `CROSS_PLATFORM_BROWSER_URL` does not navigate or configure the Android app.
 5. Verify that Appium can attach to the app WebView with a compatible driver.
    If no WebView is available, report a tooling block rather than an app failure.
 6. Use a dedicated test device/session with the expected account already prepared.
@@ -70,7 +75,8 @@ Useful environment variables:
   Do not use reset behavior to prepare a retained regression fixture.
 - `CROSS_PLATFORM_BROWSER_URL`, default `http://localhost:3101/`
 - `CROSS_PLATFORM_PLATFORM`, default `both`; also accepts `browser` or `android`
-- `CROSS_PLATFORM_SCENARIOS`, default `docs/development/browser-e2e-test-plan.md`
+- `CROSS_PLATFORM_SCENARIOS`, default `docs/development/browser-e2e-test-plan.md`;
+  Android runs must point it at `docs/development/android-e2e-test-plan.md`
 - `AI_TEST_CASE`, exact numeric ID preferred, defaults to `0.1`; exact IDs are
   required when available. A title-substring selector must match exactly one
   case; ambiguous matches are rejected with candidate IDs.
@@ -120,7 +126,6 @@ broader than its implemented execution capabilities.
   Android `recentErrors` is not a collected logcat/WebView-console feed; an
   empty list does not prove an error-free run.
 
-Record manual Android results in the
-[shared progress log](./browser-e2e-progress.md#android-validation-status), using
-the same business case IDs and the Android supplement in the
-[test plan](./browser-e2e-test-plan.md#11-android-platform-supplement).
+Record manual Android results in local `android-e2e-progress.md`, using the
+same business case IDs and the Android supplement cases in the
+[Android E2E test plan](./android-e2e-test-plan.md).

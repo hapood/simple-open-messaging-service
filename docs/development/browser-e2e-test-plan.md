@@ -1,8 +1,9 @@
-# Cross-platform E2E Test Plan
+# Web Browser E2E Test Plan
 
 This document is the canonical natural-language acceptance suite for the local
-three-node federation lab. The same numbered business cases run against the Web
-client and Android Tauri client unless a case or platform rule says otherwise.
+three-node federation lab. The numbered business cases run against the Web
+client in a browser. Android acceptance cases are defined separately in
+[android-e2e-test-plan.md](./android-e2e-test-plan.md).
 It covers account isolation, local and federated users, direct messages, group
 messages, media, calls, administrative actions, and visual defects. Backend API
 calls may be used only to prepare fixtures or verify a result after a visible
@@ -14,14 +15,16 @@ This document is the canonical acceptance inventory. It contains stable test
 scope, execution rules, matrices, and result semantics; it does not contain run
 history or current completion claims.
 
-Browser E2E documentation has four distinct owners:
+Browser and Android E2E documentation has parallel owners per platform:
 
-- `browser-e2e-test-plan.md` defines what must be tested.
-- `browser-e2e-progress.md` records only current coverage, current blockers,
-  next work, and concise evidence for the latest authoritative result.
-- `browser-e2e-handoff.md` records only ephemeral state needed to resume the
-  current run, such as running services, retained fixtures, cleanup obligations,
-  and the exact stop point.
+- `browser-e2e-test-plan.md` defines what must be tested in the browser;
+  `android-e2e-test-plan.md` does the same for Android.
+- `browser-e2e-progress.md` and `android-e2e-progress.md` record only current
+  coverage, current blockers, next work, and concise evidence for the latest
+  authoritative result of their platform.
+- `browser-e2e-handoff.md` and `android-e2e-handoff.md` record only ephemeral
+  state needed to resume the current run of their platform, such as running
+  services, retained fixtures, cleanup obligations, and the exact stop point.
 - `browser-e2e-bug-*.md` is temporary investigation state for an open defect or
   a fix awaiting required regression. After the fix has durable automated
   coverage and the required browser regression passes, summarize the outcome in
@@ -36,11 +39,11 @@ instructions in `browser-e2e-tools.md`, not in progress or handoff.
 
 ## Execution Status
 
-Use the [current coverage dashboard](./browser-e2e-progress.md#current-coverage-dashboard)
-for tested scopes, remaining work, current blockers, and links to active defect
-records. New independent runs use fresh fixture prefixes; a documented
-continuation may reuse retained fixtures after confirming their current roles
-and state.
+Use local `browser-e2e-progress.md` for tested scopes, remaining work, current
+blockers, and links to active defect records. Progress, handoff, and defect
+investigation files are intentionally ignored local run state. New independent
+runs use fresh fixture prefixes; a documented continuation may reuse retained
+fixtures after confirming their current roles and state.
 
 ## Test Rules
 
@@ -60,22 +63,18 @@ npm run test:browser
 
 The runner refuses to start unless both Angular Web and Admin Vite report a
 current successful HMR build in `/tmp/soms-browser-e2e/status/`. Built frontend
-assets are not a browser acceptance target. Android uses the separate automation
-APK target `npm run build:android:e2e` and is reported independently.
+assets are not a browser acceptance target.
 
-The adaptive runner reads the numbered cases in this document and lets an AI
-agent operate either Playwright or Android Appium through a restricted action
-protocol:
+An adaptive browser runner can also read the numbered cases in this document
+and let an AI agent operate Playwright through a restricted action protocol:
 
 ```bash
 CROSS_PLATFORM_PLATFORM=browser AI_TEST_CASE=6.1 AI_TEST_API_KEY=... npm run test:cross-platform
-CROSS_PLATFORM_PLATFORM=android AI_TEST_CASE=6.1 AI_TEST_API_KEY=... npm run test:cross-platform
 ```
 
-The adaptive runner defaults to `both`, launching independent platform runs;
-it does not coordinate multi-user cases. Review the
+It does not coordinate multi-user cases. Review the
 [runner limitations](./cross-platform-ai-e2e.md#current-implementation-limits-2026-09-20)
-before using it. Manual execution remains valid for the shared acceptance suite.
+before using it. Manual execution remains valid for the acceptance suite.
 
 The Playwright runner uses the installed system Chrome by default
 (`/usr/bin/google-chrome`); set `CHROME_PATH` only when another Chrome binary
@@ -113,7 +112,7 @@ harness. A harness failure is **BLOCKED**, not a product **FAIL** or **BUG**.
 - Expand matrix bullets into stable case IDs before execution. Record platform,
   local/federated topology, fixture, build, and evidence per case. Use NOT RUN
   for planned work; SKIPPED requires a reason. A targeted unit test does not
-  complete a browser or Android acceptance case.
+  complete a browser acceptance case.
 - Establish the expected product behavior before labeling a difference a BUG.
   Record the selected profile revision for versioned identity surfaces and the
   refresh trigger for snapshot lists. A historical avatar or a request list
@@ -129,23 +128,12 @@ harness. A harness failure is **BLOCKED**, not a product **FAIL** or **BUG**.
 
 ### Platform coverage
 
-- Consumer cases run on both **browser** and **Android** by default. A pass on
-  one platform is not a pass on the other.
-- Administration cases run in a browser Admin context. When a case also
-  affects a consumer, the resulting consumer behavior must be checked in both
-  browser and Android runs.
-- Browser multi-user cases use one isolated Playwright context per account.
-  Android multi-user cases use one emulator/device or isolated app-data profile
-  per account; never replace one account's session while the case still needs
-  that participant.
-- On Android, WebView content is operated in its WebView context. Native
-  composer, system keyboard, emoji surface, pickers, permissions, notifications,
-  and system Back are operated and asserted in `NATIVE_APP` context.
-- Browser-only mechanics such as tab isolation do not substitute for Android
-  lifecycle checks. Android-only mechanics do not change the business expected
-  result.
-- A platform exception must be stated in the numbered case itself. The runner
-  must report an inapplicable platform as **SKIPPED**, not PASS.
+- All cases run in a browser. Consumer cases use the Web client edges;
+  administration cases use the browser Admin context of the selected node.
+- Multi-user cases use one isolated Playwright context per account. Never
+  replace one account's session while the case still needs that participant.
+- A case that cannot run in a browser must be stated in the numbered case
+  itself and reported as **SKIPPED**, not PASS.
 
 Every small item has one of these outcomes:
 
@@ -158,17 +146,15 @@ Every small item has one of these outcomes:
   labels, incorrect avatars, leaked withdrawn content, and a page that cannot
   recover from a reconnect.
 - **BLOCKED**: the environment prevented a meaningful test, such as a missing
-  browser/Appium capability, missing media permission, or an unavailable
-  node. A blocked item must include the exact cause and must not be reported as
-  a pass.
+  browser capability, missing media permission, or an unavailable node. A
+  blocked item must include the exact cause and must not be reported as a pass.
 
 For each completed small item, record:
 
 1. The item ID and outcome.
-2. The platform, browser context or Android device/profile, user, node, and viewport.
+2. The browser context, user, node, and viewport.
 3. The exact UI actions and visible result.
-4. Screenshots before and after important mutations, including native Android
-   surfaces when they participate in the flow.
+4. Screenshots before and after important mutations.
 5. Any console error, failed network request, or unexpected API response.
 6. Cleanup status and whether the fixture can be reused.
 
@@ -507,8 +493,8 @@ Every group membership scenario must be executed twice:
 
 For each side of the matrix test:
 
-- Owner invitation, invitee acceptance, rejection, cancellation, expiry,
-  duplicate invitation, and accept/reject race.
+- Owner invitation, invitee acceptance, rejection, cancellation, duplicate
+  invitation, and accept/reject race.
 - Invitee-initiated application, owner approval, owner rejection, applicant
   cancellation, duplicate application, re-application after rejection,
   re-application after leaving, and application after being kicked.
@@ -518,6 +504,16 @@ For each side of the matrix test:
   direct navigation; simultaneous decisions by two managers.
 - Request tabs, counts, unread dots, read watermarks, ordering, stale cards,
   refresh/reconnect, and node restart.
+
+Scope revision, 2026-09-24: invitation expiry, accept/reject and
+simultaneous-manager decision races, disabled-account, and remote-node-
+unavailable variants are out of browser scope — the browser cannot
+deterministically stage concurrent decisions or peer-node outages. The
+invitation/application branches verified in the browser (owner
+invitation/accept/reject/revoke, invitee reject, accepted-invite update,
+application apply/approve/reject/cancel, duplicate suppression, re-application
+after rejection/leaving/being kicked, and the federated application round trip)
+are recorded in `browser-e2e-progress.md`.
 - Roster cardinality, role, account/domain labels, group thread count/order,
   composer write permission, and lifecycle system-message uniqueness.
 
@@ -604,8 +600,9 @@ Run this matrix separately for a local group and a mixed federated group:
 - OWNER demotes ADMIN to MEMBER; the former ADMIN immediately loses manager
   controls, including after refresh/reconnect and direct navigation.
 - OWNER transfers ownership to a local member and to a federated member.
-  Verify the new OWNER gains manager controls, the old OWNER becomes MEMBER,
-  and both system messages and domain labels are correct.
+  Verify the new OWNER gains manager controls, the old OWNER becomes an
+  administrator as the transfer dialog states, and both system messages and
+  domain labels are correct.
 - ADMIN attempts allowed member management and forbidden owner-only actions;
   MEMBER attempts every manager action. Hidden/disabled controls and server
   rejection must agree.
@@ -648,8 +645,11 @@ sender, recipient, and observing browser visible in the test log.
   refresh.
 - **6.2** Send several messages quickly from different users and verify stable
   ordering and no duplicates after reconnect.
-- **6.3** Verify unread badge, thread preview, notification state, and mark-read
-  behavior for each account.
+- **Scope revision (2026-09-24, 6.3):** the OS desktop-notification firing cut
+  is out of browser scope until the driver can grant
+  `Notification.permission`; the badge, preview, and mark-read parts stay in
+  browser scope. **6.3** Verify unread badge, thread preview,
+  notification state, and mark-read behavior for each account.
 - **6.3a** Verify the composer, emoji panel, attachment tools, and send control
   do not obscure one another; the default panel state must not prevent text
   sending or make message order unreadable.
@@ -684,14 +684,19 @@ sender, recipient, and observing browser visible in the test log.
   separately for each message origin and conversation shape:
   - local P2P: reporter, sender, and observer use independent browser contexts;
   - local group: reporter, sender, and third member observe the same thread;
-  - federated P2P: report on one node and verify deletion on both homes;
-  - federated group: report from a remote member and verify all authorized
-    local/remote members converge on the deletion tombstone.
-    For every case, record the exact message sequence, report success, Admin list
-    visibility, Admin delete response, tombstone/system presentation, and the
-    report row transition. Verify that the original text/media/URL is no longer
-    shown to any authorized participant and that unauthorized participants do not
-    gain access through the report flow.
+  - federated P2P: deletion on the author's home propagates to the peer; deletion
+    of a peer-authored mirror by the local admin stays on the reporting node and
+    must not remove the author's home copy;
+  - federated group: moderation at the authoritative group propagates to member
+    mirrors, including the author's home; moderation at a member home of its
+    own author's message propagates through the origin; moderation of another
+    home's author at a mirror remains local-only.
+    For each authorized propagation, record the publisher and receiver message
+    coordinates, report success, Admin list visibility, Admin delete response,
+    tombstone/system presentation, and report row transition. Verify the
+    original body is absent at every authorized receiver, including after
+    refresh/reconnect; local-only moderation must leave other nodes unchanged.
+    Unauthorized participants must not gain access through the report flow.
 - **6.12a** Repeat 6.12 with unread state and attention state already pending.
   Assert unread count, mention unread, all-members mention, thread item count, thread
   order, preview, notification, and in-thread ordering after deletion. Repeat
@@ -704,8 +709,14 @@ sender, recipient, and observing browser visible in the test log.
   the deleted source body. Test duplicate reports, report dismissal, repeated
   deletion, deletion of an already withdrawn message, and attempts to report
   own/system/call/unauthorized messages.
+- Receipt-timing, origin-retraction refusal, coordinate-collision, and
+  tombstone-before-message variants have no browser-reachable entry point and
+  are intentionally not part of this browser plan.
 
 ### 7. Quote, forward, and nested content
+
+Current Web status: **COMPLETE** for the browser matrix as of 2026-09-24. The
+items below remain the acceptance definition for future regressions.
 
 - **7.1** Quote local text and verify the target preview opens the correct
   message.
@@ -746,10 +757,19 @@ sender, recipient, and observing browser visible in the test log.
 #### 7.14 Forwarded identity and avatar acceptance
 
 Run direct forwards, multi-author history forwards, and nested forwards
-separately, with local and federated authors and recipients:
+separately, with local and federated authors and recipients. The entry point
+determines the mode, and each mode has its own expected rendering:
 
-- **7.14a** Distinguish the outer sending user's avatar from each inner source
-  author's avatar. Verify account, domain, and the revision selected by each
+- **Direct forward** (context-menu `转发` on one message, mode `DIRECT`):
+  the recipient sees the ordinary message row re-sent as the forwarder. The
+  forwarder is the sole author; no FORWARD card, inner source identity, or
+  detail view is expected on this branch.
+- **History forward** (multi-select `合并转发`, mode `HISTORY`): the recipient
+  sees the FORWARD card; the identity and avatar assertions below apply to
+  this branch.
+
+- **7.14a** (History branch) Distinguish the outer sending user's avatar from
+  each inner source author's avatar. Verify account, domain, and the revision selected by each
   card's evidence. Include equal account names on different home domains.
 - **7.14b** Inspect both the collapsed card and opened history/detail view,
   including depth 2/3. Check real image loading, not only an accessible image
@@ -770,6 +790,8 @@ separately, with local and federated authors and recipients:
   source access. Do not assume cached, already-authorized history must vanish.
 
 ### 8. System messages and lifecycle events
+
+Current Web status: **COMPLETE** for the browser matrix as of 2026-09-24. Keep the cases below as regression definitions.
 
 System messages are server-authored events, not ordinary user text. Verify
 their content, ordering, sender presentation, localization, and visibility in
@@ -799,6 +821,8 @@ details unless the product explicitly defines them as user-visible.
   corruption is a **BUG**.
 
 ### 9. Media, audio, and files
+
+Current Web status: **COMPLETE for the browser matrix as of 2026-09-24.** Keep the cases below as regression definitions. Media authorization follows retained-history semantics: logout and non-members are denied, withdrawal invalidates the contextual object, while an established P2P relationship removal or group leave preserves already-visible history as read-only and may continue serving its bound media; the composer and attachment controls must still disappear.
 
 - **9.1** Send a valid image and verify thumbnail, full-size preview, loading,
   failure, and download states.
@@ -832,51 +856,6 @@ permissions granted only to the test origins.
 - **10.7** Test a federated call and verify the correct domain/account labels.
 - **10.8** Test permission denial and device absence. The UI must provide a
   recoverable error, not a frozen overlay or an unusable page.
-
-### 11. Android platform supplement
-
-These are Android-only execution checks in addition to the shared business cases,
-not a second copy of those cases. Mark these items SKIPPED on browser. Repeat
-relevant business assertions for local and federated peers; use separate devices
-or isolated app sessions when both participants must remain active. A single
-runner session cannot establish multi-participant delivery.
-
-- **11.1** Record APK/build identity, Android and WebView versions, device/profile,
-  home node and signed-in account. Verify the app reaches its configured lab node
-  and preserves the full account/domain identity. Browser `localhost` URLs must
-  not be assumed to address the host from Android.
-- **11.2** Exercise native composer input, IME composition, emoji, mention
-  selection, multiline editing and send. Switch between native and WebView
-  surfaces where appropriate; verify no duplicate/lost text and exact mention
-  identity. System Back first dismisses the active keyboard/dialog as expected;
-  controls remain visible with keyboard and system insets.
-- **11.3** Exercise system avatar/media pickers, crop/preview, cancel, save and
-  permission denial/retry. Verify cancellation preserves the previous image,
-  successful changes update the intended identity, and returning from the picker
-  does not lose the editing/session state. Repeat the applicable Additional I cases.
-- **11.4** Background and foreground the app, lock/unlock the device, disconnect
-  and restore networking, and relaunch after process termination. Verify allowed
-  messages and metadata converge without duplicates, stale loading or wrong-account
-  data. Record OS background restrictions and distinguish process termination
-  from force-stop; do not assume force-stopped apps receive background delivery.
-- **11.5** Test notification permission grant/deny, enabled/disabled preferences,
-  foreground/background receipt and tapping a notification. Verify the correct
-  thread/account opens, read clearing converges and mention/withdrawal semantics
-  follow the shared cases. Record transport/device conditions; a push probe alone
-  does not establish real message notification delivery.
-- **11.6** Repeat Profile/name/avatar changes while a native recipient's roster
-  is already mounted. Verify visible convergence for immediate resolution and
-  deferred availability where reproducible, rapid updates, reopening and app
-  restart. Native SQLite materialization and native event delivery require their
-  own evidence; Web IndexedDB tests and native routing mocks are insufficient.
-- **11.7** Repeat voice/media and call cases with Android microphone/camera/audio
-  routing and permission controls. Verify incoming-call UI, background return,
-  normal hang-up and interrupted recording; distinguish fake-media signaling
-  checks from audible/visible real media verification.
-- **11.8** Log out and switch accounts, then relaunch and tap any retained
-  notification. Verify previous-account data is not displayed to the new account
-  and subscriptions/session state follow the active identity. Preserve other
-  participants' sessions while observing the transition.
 
 ## Cross-Domain Coverage Matrix
 
@@ -1084,21 +1063,19 @@ explicitly defines that behavior.
 
 #### I.2c Resolution paths and lifecycle isolation
 
+Browser scope, 2026-09-24 revision: I.2c.6 (clear-cache recovery) stays in
+this browser plan. I.2c.3 (revision/namespace match isolation), I.2c.4
+(delayed completion across session switches), and I.2c.5 (disconnect during
+pending resolution) require deterministically staged out-of-order
+notifications and pending-resolution windows of a few hundred milliseconds;
+they are removed from the browser sweep. Negative assertions about internal
+notification ordering are not reliably provable from rendered DOM alone.
+
 - **I.2c.1** Warm-cache/READY: mount each identity surface with the selected
   profile already cached. It must render without requiring a later event.
 - **I.2c.2** Cold-cache/PENDING: keep the surface mounted through runtime
   completion and local notification. It must update without manual refresh.
   Exercise proactive UI demand and state-feed-triggered resolution separately.
-- **I.2c.3** Match `(namespaceId, account, domain, rev)`: notifications for a
-  different namespace, same account on another domain, or an older revision
-  must not overwrite the current identity. A cache hit must not disable later
-  matching notification handling.
-- **I.2c.4** Delay completion, switch the selected revision or conversation,
-  unmount/remount, and log out into another account. Late results must not
-  change the new session or reuse an old avatar. Include self-profile views.
-- **I.2c.5** Disconnect during pending resolution, then reconnect or restart
-  the client runtime. Repeat the demand and verify recovery without resetting
-  data. Test an unavailable profile and a subsequent successful retry.
 - **I.2c.6** Clear chat cache using Settings, then reopen/reload identity
   surfaces. Profile rows and avatar assets must remain usable according to the
   profile-cache contract. Test fresh-cache behavior separately; no historical
@@ -1107,7 +1084,7 @@ explicitly defines that behavior.
 Browser assertions establish visible behavior. Deterministic event ordering,
 commit-before-notification, and four-field mismatch cases also require focused
 runtime/repository tests; record those separately and do not claim that UI code
-subscribes to raw backend SSE. Android needs its own runtime evidence.
+subscribes to raw backend SSE.
 
 #### I.3 Group avatar lifecycle
 
@@ -1187,9 +1164,8 @@ Use one entry per small item:
 ```text
 Major category: 6. Message receipt and withdrawal
 Small item: 6.4 Sender withdrawal in mixed federated group
-Platform: browser | android
+Platform: browser
 Build/revision: ...
-Android device / OS / WebView / app-data profile (if applicable): ...
 Execution: manual | Playwright smoke | adaptive runner
 Outcome: PASS | FAIL | BUG | BLOCKED | SKIPPED
 Contexts: alice-alpha, bob-alpha, charlie-bravo, diana-charlie

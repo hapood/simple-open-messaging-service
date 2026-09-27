@@ -30,7 +30,7 @@
     "test:browser": "playwright test --config test/browser-e2e/playwright.config.ts",
     "test:browser:unit": "vitest run --config vitest.browser-e2e.config.ts",
     "test:cross-platform:unit": "vitest run --config vitest.cross-platform.config.ts",
-    "pi:webtest": "pi --no-extensions --no-skills --extension ./tools/pi-web-testing/extension/index.ts --skill ./tools/pi-web-testing/skill --tools read,bash,edit,write,browser_driver",
+    "pi:webtest": "pi --no-extensions --no-skills --extension ./tools/pi-web-testing/extension/index.ts --extension npm:@bacnh85/pi-subagent@0.23.0 --skill ./tools/pi-web-testing/skill --tools read,bash,edit,write,browser_driver,subagent",
     "test:cross-platform": "tsx test/cross-platform/run.ts",
     "federation:conformance": "tsx scripts/federation-conformance.ts",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",

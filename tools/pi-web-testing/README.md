@@ -14,7 +14,7 @@ Pass an initial task after `--` when useful:
 npm run pi:webtest -- "Continue the next unfinished browser acceptance case"
 ```
 
-The command intentionally does not include plan-mode or subagent extensions. The canonical project plan, progress dashboard, and handoff already define the work, while the persistent driver and retained fixtures are shared mutable resources that need one coordinator. The agent selects a bounded batch before acting and then executes it in the same session.
+The command intentionally does not include unrelated plan-mode extensions. It explicitly loads the local subagent extension so independent browser work can run in parallel; ordinary `pi` sessions do not load that extension. The canonical project plan, progress dashboard, and handoff remain the source of truth. Parallel work must use separate browser profiles, fixture scopes, and temporary step files; stateful commands against the same profile or shared fixture must remain sequential.
 
 The extension exposes one compact `browser_driver` tool backed by `test/browser-e2e/driver.mjs`. The skill routes the agent to the canonical test plan, progress dashboard, handoff, and tooling guide without duplicating them.
 

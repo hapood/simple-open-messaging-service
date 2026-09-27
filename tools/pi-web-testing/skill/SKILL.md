@@ -9,12 +9,22 @@ Use the repository's existing browser harness and documentation as the source of
 
 ## Read only what the task needs
 
-Start with these short routing reads:
+Start with these short routing reads. Browser and Android each have a plan,
+progress log, and handoff; route to the platform the task targets.
 
-1. Read `docs/development/browser-e2e-progress.md` from the beginning through **Next Unfinished Work** to learn current status. Read dated evidence only when the selected case needs it.
-2. Read the **Resume here**, **Running environment**, and **Retained fixtures and driver** sections of `docs/development/browser-e2e-handoff.md` before continuing retained work.
-3. Read the selected numbered section and the applicable cross-cutting rules in `docs/development/browser-e2e-test-plan.md`. Do not load the entire plan when one section is enough.
-4. Read `docs/development/browser-e2e-tools.md` before controlling the persistent driver.
+1. Read `docs/development/browser-e2e-progress.md` (or
+   `android-e2e-progress.md`) from the beginning through **Next Unfinished
+   Work** to learn current status. Read dated evidence only when the selected
+   case needs it.
+2. Read the **Resume here**, **Running environment**, and **Retained fixtures
+   and driver** sections of `docs/development/browser-e2e-handoff.md` (or
+   `android-e2e-handoff.md`) before continuing retained work.
+3. Read the selected numbered section and the applicable cross-cutting rules in
+   `docs/development/browser-e2e-test-plan.md` (or
+   `android-e2e-test-plan.md`). Do not load the entire plan when one section is
+   enough.
+4. Read `docs/development/browser-e2e-tools.md` before controlling the
+   persistent driver; its Android lab preflight applies to Android runs.
 
 Use `rg -n '^## |^### |<case id>|<feature term>'` to locate relevant sections before reading large documents.
 
@@ -25,6 +35,10 @@ Use `rg -n '^## |^### |<case id>|<feature term>'` to locate relevant sections be
 - The canonical acceptance inventory belongs in `docs/development/browser-e2e-test-plan.md`.
 - Current coverage and concise evidence belong in `docs/development/browser-e2e-progress.md`.
 - Resume-only operational state belongs in `docs/development/browser-e2e-handoff.md`.
+- Android acceptance, progress, and resume state live in
+  `android-e2e-test-plan.md`, `android-e2e-progress.md`, and
+  `android-e2e-handoff.md`; Android defect records use the
+  `android-e2e-bug-*.md` prefix.
 - A reproducible open product defect or a fix awaiting required platform regression belongs in a focused `docs/development/browser-e2e-bug-*.md` record linked from progress. After durable regression coverage and the required browser regression pass, summarize the current outcome in progress and delete the bug record; Git history retains its investigation.
 - Do not duplicate those facts in this skill. Update the owning source instead.
 
@@ -47,7 +61,16 @@ export default async ({ page, expect, pageOf, shot, nodes }) => {
 };
 ```
 
-Promote a temporary method into `test/browser-e2e/` only when it is generally reusable. Promote a scenario into a committed `*.spec.ts` when it should become a deterministic regression gate. Do not preserve one-off fixture IDs, credentials, OTPs, cookies, or session state in source.
+Promote a temporary method into `test/browser-e2e/` only when it is generally reusable. For local user and friendship setup through visible controls, reuse `test/browser-e2e/steps/ui-fixtures.mjs`: `createLocalUser(adminPage, { account, displayName })`, `requestLocalFriend(senderPage, { account, displayName })`, and `acceptLocalFriend(recipientPage, { displayName })`. These helpers do not call APIs or write the database; login remains the browser driver's separate OTP setup. Keep reusable step source and comments in English and use structural/semantic selectors instead of localized labels. Promote a scenario into a committed `*.spec.ts` when it should become a deterministic regression gate. Do not preserve one-off fixture IDs, credentials, OTPs, cookies, or session state in source.
+
+## Android network preflight
+
+For Android/Appium validation, follow the Android lab network preflight in
+`docs/development/browser-e2e-tools.md` before configuring the app or recording a
+native verdict. When validating Android FCM in a restricted network, remember
+that the backend Firebase Admin SDK uses the process/system `HTTPS_PROXY` or
+`https_proxy` environment variable for FCM credential and send requests; do not
+record or paste proxy URLs in evidence.
 
 ## Browser-driver workflow
 
@@ -58,7 +81,7 @@ The `browser_driver` tool wraps `test/browser-e2e/driver.mjs` and keeps isolated
 1. Check running services and processes without restarting or resetting them automatically.
 2. Call `status`, then reopen only the required named profiles.
 3. Use `inspect` for the current URL and accessibility snapshot.
-4. Use `adminLogin`, `issueOtp`, and `userLogin` only when login is actually required. Never return or persist an OTP or password.
+4. Use `adminLogin`, `issueOtp`, and `userLogin` only when login is actually required. Never return or persist an OTP or password. For parallel sessions, pass a private admin profile via `user` (e.g. `admin-parallel-1`) to `adminLogin`/`issueOtp` instead of sharing `admin-<node>`; keep `/dev/shm/soms-admin-pw` in sync with `.env` after a lab reset.
 5. Write scenario-specific actions to the temporary step directory and invoke them with `eval`.
 6. Use semantic locators and Playwright web-first assertions. Do not use fixed sleeps as the success condition.
 7. On failure, collect `shot`, `errors`, and an explicit trace when useful. Distinguish harness, environment, and product failures.
@@ -79,9 +102,15 @@ Navigation is restricted to the Alpha, Bravo, and Charlie local lab edges on por
 
 After a completed case:
 
-- Add a terse, explicitly labeled PASS/BUG/BLOCKED/NOT VERIFIED result to the current dashboard/evidence section in `browser-e2e-progress.md`; when a later run supersedes a contradictory claim, correct that claim rather than leaving both as current PASS evidence.
+- Add a terse, explicitly labeled PASS/BUG/BLOCKED/NOT VERIFIED result to the
+  current dashboard/evidence section in the platform's progress log
+  (`browser-e2e-progress.md` or `android-e2e-progress.md`); when a later run
+  supersedes a contradictory claim, correct that claim rather than leaving both
+  as current PASS evidence.
 - Update the corresponding unfinished checkbox only when its complete declared scope is covered.
-- Update `browser-e2e-handoff.md` only with state needed by the next session: build identity, running services, reusable profiles/fixtures, dirty cleanup, stop point, and exact next action.
+- Update `browser-e2e-handoff.md` (or `android-e2e-handoff.md`) only with state
+  needed by the next session: build identity, running services, reusable
+  profiles/fixtures, dirty cleanup, stop point, and exact next action.
 - Add or update a bug record for a real open defect; link it from progress. Delete it after the documented closure conditions pass, and never let historical defect evidence override a newer verified result.
 - Replace superseded progress evidence instead of appending a dated session diary.
 - Update the canonical test plan only when acceptance scope or rules change, not for ordinary run results.

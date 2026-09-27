@@ -28,7 +28,7 @@ runtime:
 2. Operator: place `google-services.json` on the server at `data/google-services.json`, or configure the
    `FIREBASE_CLIENT_CONFIG` environment variable, and restart the backend. It parses and validates the file
    (the Android client must target `com.soms.client`) and publishes the 4 client fields at the public
-   `GET /api/v1/shell/compat` response. The admin console (Push → Transport config) is read-only status only —
+   `GET /api/v1/client/compat` response. The admin console (Push → Transport config) is read-only status only —
    the file is not edited there. The APK receives these after resolving its server origin and initializes
    FirebaseApp at process start (see SomsApplication / SomsFirebase).
 3. Operator (server-side sending): Project Settings → Service Accounts → "Generate new private key" → set
@@ -220,7 +220,7 @@ release build.
 | Kotlin → JS (token rotation, warm deep link)  | `WebView.evaluateJavascript` calling a global hook (`window.__SOMS_FCM_TOKEN__`, `window.__SOMS_DEEP_LINK__`) | Mirrors the origin init-script pattern                                                                                   |
 | JS → Kotlin (token read, permission request)  | `@JavascriptInterface` named `SomsFcm`, attached in `onWebViewCreate`                                         | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern                                                                        |
 | JS → Kotlin (firebase client config hand-off) | `SomsFcm.setFirebaseConfig(json)` / `getFirebaseConfig()` `@JavascriptInterface`                              | web fetches the server's 4 fields and hands them to native, which persists + (re)initializes FirebaseApp; null clears it |
-| Backend → client (public firebase config)     | `GET /api/v1/shell/compat` (`@Public`)                                                                        | its `firebase` field contains the 4 client fields when configured, else `{configured:false}`                             |
+| Backend → client (public firebase config)     | `GET /api/v1/client/compat` (`@Public`)                                                                        | its `firebase` field contains the 4 client fields when configured, else `{configured:false}`                             |
 | JS → backend (register HTTP)                  | `POST /api/v1/devices/register`                                                                               | standard                                                                                                                 |
 
 No `@tauri-apps/api` dependency, no Tauri event permission, no custom Rust plugin — the bridge reuses
