@@ -675,7 +675,8 @@ data: <json>
 | `PUSH_SUBSCRIPTION_CHANGED`  | session-specific push recovery `{ sessionId, pushSubscriptionRev }` | `HELLO.pushSubscriptionRev`                  |
 | `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }`                   | `HELLO.stateFeedEndId` + ranged state pull   |
 | `THREAD_FEED_UPDATED`        | one-second thread-feed hint `{ threadFeedEndId, sseUuid? }`         | `HELLO.threadFeedEndId` + ranged thread pull |
-| `MEDIA_STATUS`               | media-localization completion wake                                  | message/media query                          |
+| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS` | temporary media-message download progress `{ threadId, seq, completedFiles, totalFiles, activeFile, status }` | terminal frame closes the temporary stream |
+| `MEDIA_FILE_DOWNLOAD_PROGRESS`    | temporary single-file byte progress `{ threadId, seq, file, loaded, total, status }`                         | terminal frame closes the temporary stream |
 | `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling                       | active-call snapshot/new negotiation         |
 | `FORCE_LOGOUT`               | terminate a revoked session                                         | authentication state                         |
 | `SSE_REPLACED`               | stop an old connection when its device session opens a new SSE      | new connection's `HELLO`                     |

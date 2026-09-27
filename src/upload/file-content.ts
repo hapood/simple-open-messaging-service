@@ -119,10 +119,19 @@ export function extractDigests(content: string): string[] {
   return [...out];
 }
 
-export function extractDigestEntries(
+export interface DigestFileRef {
+  digest: string;
+  name: string;
+  size?: number;
+}
+
+function visitDigestObjects(
   content: string,
-): Array<{ digest: string; size?: number }> {
-  const sizes = new Map<string, number>();
+  onDigestObject: (
+    digest: string,
+    item: Record<string, unknown>,
+  ) => void,
+): void {
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
       value.forEach(visit);
@@ -132,22 +141,50 @@ export function extractDigestEntries(
     const item = value as Record<string, unknown>;
     if (typeof item.url === 'string') {
       const match = CAS_UPLOAD_URL_RE.exec(item.url);
-      if (
-        match &&
-        typeof item.size === 'number' &&
-        Number.isSafeInteger(item.size) &&
-        item.size >= 0
-      ) {
-        sizes.set(match[3], Math.max(sizes.get(match[3]) ?? 0, item.size));
-      }
+      if (match) onDigestObject(match[3], item);
     }
     Object.values(item).forEach(visit);
   };
   visit(JSON.parse(content));
+}
+
+export function extractDigestEntries(
+  content: string,
+): Array<{ digest: string; size?: number }> {
+  const sizes = new Map<string, number>();
+  visitDigestObjects(content, (digest, item) => {
+    if (
+      typeof item.size === 'number' &&
+      Number.isSafeInteger(item.size) &&
+      item.size >= 0
+    ) {
+      sizes.set(digest, Math.max(sizes.get(digest) ?? 0, item.size));
+    }
+  });
   return extractDigests(content).map((digest) => ({
     digest,
     size: sizes.get(digest),
   }));
+}
+
+export function extractDigestFileRefs(content: string): DigestFileRef[] {
+  const refs = new Map<string, DigestFileRef>();
+  visitDigestObjects(content, (digest, item) => {
+    if (refs.has(digest)) return;
+    if (typeof item.name !== 'string' || item.name.length === 0) {
+      throw new Error('media digest is missing a filename');
+    }
+    refs.set(digest, {
+      digest,
+      name: item.name,
+      ...(typeof item.size === 'number' &&
+      Number.isSafeInteger(item.size) &&
+      item.size >= 0
+        ? { size: item.size }
+        : {}),
+    });
+  });
+  return [...refs.values()];
 }
 
 /**
@@ -274,8 +311,8 @@ export interface OutboundFilePayload {
   url: string;
   size: number;
   family: OutboundFileFamily;
-  /** Sanitized display filename; optional for images created before filename capture. */
-  name?: string;
+  /** Sanitized display filename. */
+  name: string;
   /** Display MIME (FILE/VIDEO/AUDIO). Omitted for IMAGE. */
   mimeType?: string;
   /** Image/video pixel width (client-companion field). */
@@ -300,7 +337,7 @@ interface GalleryItem {
   kind: OutboundFileFamily;
   url: string;
   size: number;
-  name?: string;
+  name: string;
   mimeType?: string;
   w?: number;
   h?: number;
@@ -324,7 +361,7 @@ export function assembleOutboundContent(
       kind: p.family,
       url: p.url,
       size: p.size,
-      ...(p.name !== undefined ? { name: p.name } : {}),
+      name: p.name,
       ...(p.mimeType !== undefined ? { mimeType: p.mimeType } : {}),
       ...(p.w !== undefined ? { w: p.w } : {}),
       ...(p.h !== undefined ? { h: p.h } : {}),
@@ -340,7 +377,7 @@ export function assembleOutboundContent(
         w: p.w ?? 0,
         h: p.h ?? 0,
         size: p.size,
-        ...(p.name !== undefined ? { name: p.name } : {}),
+        name: p.name,
       });
     case ContentType.FILE:
       return JSON.stringify({

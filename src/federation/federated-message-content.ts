@@ -123,8 +123,7 @@ function validateSingleFields(value: JsonObject, extra: string[]): void {
   if (extra.includes('duration')) assertPositiveFinite(value['duration']);
 }
 
-function validateOptionalImageName(value: JsonObject): void {
-  if (value['name'] === undefined) return;
+function validateImageName(value: JsonObject): void {
   assertNonEmptyString(value['name']);
   if (
     value['name'].length > MAX_FILE_NAME_LEN ||
@@ -247,9 +246,9 @@ export function toFederatedMessageContent(
         projectTextContent(value, false, { from: 'local', to: localDomain }),
       );
     case ContentType.IMAGE:
-      validateOptionalImageName(value);
+      validateImageName(value);
       return JSON.stringify(
-        withoutUndefined(projectSingleToWire(value, ['w', 'h'], ['name'])),
+        withoutUndefined(projectSingleToWire(value, ['w', 'h', 'name'])),
       );
     case ContentType.FILE:
       return JSON.stringify(
@@ -286,7 +285,7 @@ export function toFederatedMessageContent(
         const kind = record['kind'];
         const fields =
           kind === 'IMAGE'
-            ? ['w', 'h']
+            ? ['name', 'w', 'h']
             : kind === 'VIDEO'
               ? ['name', 'mimeType', 'w', 'h', 'duration']
               : kind === 'AUDIO'
@@ -295,14 +294,9 @@ export function toFederatedMessageContent(
                   ? ['name', 'mimeType']
                   : null;
         if (!fields) throw new Error('invalid gallery kind');
-        if (kind === 'IMAGE') validateOptionalImageName(record);
         return withoutUndefined({
           kind,
-          ...projectSingleToWire(
-            record,
-            ['kind', ...fields],
-            kind === 'IMAGE' ? ['name'] : [],
-          ),
+          ...projectSingleToWire(record, ['kind', ...fields]),
         });
       });
       return JSON.stringify({ items });
@@ -426,8 +420,8 @@ export function fromFederatedMessageContent(
         projectTextContent(value, true, { from: localDomain, to: 'local' }),
       );
     case ContentType.IMAGE:
-      validateOptionalImageName(value);
-      return single(['width', 'height'], ['name']);
+      validateImageName(value);
+      return single(['width', 'height', 'name']);
     case ContentType.FILE:
       return single(['name', 'mimeType']);
     case ContentType.VIDEO:
@@ -447,7 +441,7 @@ export function fromFederatedMessageContent(
         const kind = record['kind'];
         const fields =
           kind === 'IMAGE'
-            ? ['width', 'height']
+            ? ['name', 'width', 'height']
             : kind === 'VIDEO'
               ? ['name', 'mimeType', 'width', 'height', 'duration']
               : kind === 'AUDIO'
@@ -456,17 +450,9 @@ export function fromFederatedMessageContent(
                   ? ['name', 'mimeType']
                   : null;
         if (!fields) throw new Error('invalid gallery kind');
-        assertKeys(
-          record,
-          ['kind', 'digest', ...fields],
-          kind === 'IMAGE' ? ['name'] : [],
-        );
-        if (kind === 'IMAGE') validateOptionalImageName(record);
+        assertKeys(record, ['kind', 'digest', ...fields]);
         assertDigest(record['digest']);
-        validateSingleFields(record, [
-          ...fields,
-          ...(kind === 'IMAGE' && record['name'] !== undefined ? ['name'] : []),
-        ]);
+        validateSingleFields(record, fields);
         const size = assetBytes.get(record['digest']);
         assertSafeInteger(size);
         return withoutUndefined({

@@ -1,12 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { requireInboundPendingMedia } from '../message/pending-media-row.js';
-import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
@@ -44,7 +43,6 @@ export class FederationInboundMediaBatchService {
     private readonly fileSync: FederationInboundFileSync,
     private readonly promoter: FederationPendingMediaPromoter,
     private readonly mediaRanges: FederationMediaRangeClient,
-    private readonly participants: AccountThreadStateService,
     private readonly sse: SseService,
   ) {}
 
@@ -58,8 +56,9 @@ export class FederationInboundMediaBatchService {
       (id) => this.promotePendingMessage(id),
       (id) => this.failPendingMessage(id),
       async (id) => {
-        const claimed = await this.claimDownloading(id);
-        if (claimed) await this.publishMessageStatus(claimed, 'downloading');
+        await this.claimDownloading(id);
+        const progress = await this.readBatchProgressSummary(id);
+        if (progress) this.publishMessageProgress(progress, 'downloading');
       },
     );
   }
@@ -78,14 +77,17 @@ export class FederationInboundMediaBatchService {
 
   /** Materialize a completed STUB and recursively wake durable quotes waiting on it. */
   async promotePendingMessage(batchId: string): Promise<void> {
+    const completion = await this.readBatchProgressSummary(batchId);
     const promoted = await this.promoter.promote(batchId);
     if (!promoted) return;
+    if (completion) this.completeProgressTargets(completion, 'ready');
     for (const dependentBatchId of promoted.dependentBatchIds) {
       await this.promotePendingMessage(dependentBatchId);
     }
   }
 
   private async failPendingMessage(batchId: string): Promise<void> {
+    const completion = await this.readBatchProgressSummary(batchId);
     const failed = await this.database.db.transaction(async (tx) => {
       const row = await tx.query.pendingMedia.findFirst({
         where: and(
@@ -128,7 +130,9 @@ export class FederationInboundMediaBatchService {
         .where(eq(tables.pendingMedia.id, batch.id));
       return message;
     });
-    if (failed) await this.publishMessageStatus(failed, 'failed');
+    if (failed) {
+      if (completion) this.completeProgressTargets(completion, 'failed');
+    }
   }
 
   private async claimDownloading(
@@ -156,22 +160,75 @@ export class FederationInboundMediaBatchService {
     });
   }
 
-  async publishMessageStatus(
-    message: { threadId: number; seq: number },
-    status: 'pending' | 'downloading' | 'failed',
-  ): Promise<void> {
-    try {
-      const recipients = await this.participants.getActiveParticipantUserIds(
-        message.threadId,
-      );
-      for (const recipient of recipients) {
-        if (!recipient.blocked) {
-          this.sse.onMediaStatus(recipient.userId, { ...message, status });
-        }
-      }
-    } catch {
-      // Signal-only wake: mount/reconnect queries remain authoritative.
-    }
+  private async readBatchProgressSummary(batchId: string): Promise<{
+    message: { threadId: number; seq: number };
+    completedFiles: number;
+    totalFiles: number;
+  } | null> {
+    const batch = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(tables.pendingMedia.batchId, batchId),
+        eq(tables.pendingMedia.direction, 'INBOUND'),
+      ),
+      columns: { messageId: true },
+    });
+    if (!batch?.messageId) return null;
+    const message = await this.database.db.query.message.findFirst({
+      where: eq(tables.message.id, batch.messageId),
+      columns: { threadId: true, seq: true },
+    });
+    if (!message) return null;
+    if (!this.sse.hasMediaMessageProgressSubscriber(message.threadId, message.seq))
+      return null;
+    const [counts] = await this.database.db
+      .select({
+        totalFiles: sql<number>`COUNT(*)::int`,
+        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'SUCCEEDED')::int`,
+      })
+      .from(tables.fileSyncProgress)
+      .where(eq(tables.fileSyncProgress.batchId, batchId));
+    return {
+      message,
+      completedFiles: counts?.completedFiles ?? 0,
+      totalFiles: counts?.totalFiles ?? 0,
+    };
+  }
+
+  private publishMessageProgress(
+    completion: {
+      message: { threadId: number; seq: number };
+      completedFiles: number;
+      totalFiles: number;
+    },
+    status: 'downloading' | 'ready' | 'failed',
+  ): void {
+    this.sse.onMediaMessageDownloadProgress({
+      threadId: completion.message.threadId,
+      seq: completion.message.seq,
+      status,
+      completedFiles: completion.completedFiles,
+      totalFiles: completion.totalFiles,
+      activeFile: null,
+    });
+  }
+
+  private completeProgressTargets(
+    completion: {
+      message: { threadId: number; seq: number };
+      completedFiles: number;
+      totalFiles: number;
+    },
+    status: 'ready' | 'failed',
+  ): void {
+    this.sse.completeMediaMessageDownloadProgress({
+      threadId: completion.message.threadId,
+      seq: completion.message.seq,
+      status,
+      completedFiles:
+        status === 'ready' ? completion.totalFiles : completion.completedFiles,
+      totalFiles: completion.totalFiles,
+      activeFile: null,
+    });
   }
 
   private async resumeInboundBatch(

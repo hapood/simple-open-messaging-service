@@ -525,7 +525,7 @@ export class UploadService {
       url,
       size,
       family: resolved.family,
-      ...(resolved.name !== undefined ? { name: resolved.name } : {}),
+      name: resolved.name,
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
       ...metadata,
     };
@@ -547,7 +547,7 @@ export class UploadService {
    *     webm/mp4 containers, mapped to audio);
    *   - GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
    * Returns the detected family, the trusted on-disk ext, the display MIME (omitted for IMAGE), and the
-   * sanitized display name (omitted for IMAGE).
+   * sanitized display name.
    */
   private resolveOutboundFile(
     detected: DetectedMedia | null,
@@ -558,7 +558,7 @@ export class UploadService {
     family: OutboundFilePayload['family'];
     ext: string;
     mime?: string;
-    name?: string;
+    name: string;
     overrideContentType?: ContentType;
   } {
     let family: OutboundFilePayload['family'];
@@ -618,11 +618,8 @@ export class UploadService {
         break;
     }
     let mime: string | undefined;
-    let name: string | undefined;
-    if (family === 'IMAGE') {
-      // Preserve the original display name as searchable metadata, independent of the CAS digest.
-      if (filename) name = this.sanitizeName(filename, '');
-    } else if (family === 'FILE') {
+    let name = this.sanitizeName(filename, ext);
+    if (family === 'FILE') {
       const ft = resolveFileType(filename, declaredMime);
       mime = ft.mime;
       if (ext === 'bin' && ft.ext) ext = ft.ext;
@@ -768,7 +765,7 @@ export class UploadService {
       url,
       size: info.size,
       family: resolved.family,
-      ...(resolved.name !== undefined ? { name: resolved.name } : {}),
+      name: resolved.name,
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
       ...metadata,
     };

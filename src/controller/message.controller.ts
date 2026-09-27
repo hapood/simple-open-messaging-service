@@ -4,13 +4,17 @@ import {
   Post,
   Param,
   Body,
+  Query,
   Request,
   UseGuards,
   HttpStatus,
   HttpCode,
+  Sse,
+  type MessageEvent,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
+import type { Observable } from 'rxjs';
 import { MessageService } from '../message/message.service.js';
 import { ContactCardProfileService } from '../message/contact-card/contact-card-profile.service.js';
 import { assertContactCardTargetVisible } from '../message/contact-card/contact-card-target.js';
@@ -37,6 +41,7 @@ import { ThreadFeedService } from '../message/thread-feed.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import { parseLinkContent } from '../upload/file-content.js';
 import { FederationService } from '../federation/federation.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
@@ -49,6 +54,8 @@ import {
   MarkReadDto,
   ThreadFeedQueryDto,
   MediaStatusDto,
+  MediaFileProgressDto,
+  MediaMessageProgressDto,
   RelocalizeMediaDto,
   SetMutedDto,
   SetBlockedDto,
@@ -68,6 +75,7 @@ import {
 } from '../common/message-entity.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { SseService } from '../gateway/sse.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportDto } from '../message/message-report.dto.js';
@@ -98,6 +106,7 @@ export class MessageController {
     private readonly groups: GroupService,
     private readonly contactProfiles: ContactCardProfileService,
     private readonly readPositions: ThreadReadPositionService,
+    private readonly sse: SseService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -956,6 +965,85 @@ export class MessageController {
       dto.seq,
     );
     return { status };
+  }
+
+  @Raw()
+  @ApiBearerAuth()
+  @Sse('message/media-message-progress')
+  async mediaMessageProgress(
+    @Request() req: FastifyRequest,
+    @Query() dto: MediaMessageProgressDto,
+  ): Promise<Observable<MessageEvent>> {
+    const { threadId, seq } = await this.authorizeMediaProgress(
+      req.user.userId,
+      dto,
+    );
+    return this.sse.registerMediaMessageProgress(req.user.userId, threadId, seq);
+  }
+
+  @Raw()
+  @ApiBearerAuth()
+  @Sse('message/media-file-progress')
+  async mediaFileProgress(
+    @Request() req: FastifyRequest,
+    @Query() dto: MediaFileProgressDto,
+  ): Promise<Observable<MessageEvent>> {
+    const { threadId, seq } = await this.authorizeMediaProgress(
+      req.user.userId,
+      dto,
+    );
+    const digest = typeof dto.digest === 'string' ? dto.digest.trim() : '';
+    if (!/^[0-9a-f]{64}$/i.test(digest)) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'digest must be a 64-character hex string',
+      );
+    }
+    if (!(await this.messageService.hasMessageMediaDigest(threadId, seq, digest))) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'media not found');
+    }
+    return this.sse.registerMediaFileProgress(
+      req.user.userId,
+      threadId,
+      seq,
+      digest.toLowerCase(),
+    );
+  }
+
+  private async authorizeMediaProgress(
+    userId: number,
+    dto: MediaMessageProgressDto,
+  ): Promise<{ threadId: number; seq: number }> {
+    const threadId = Number(dto.threadId);
+    const seq = Number(dto.seq);
+    if (!Number.isSafeInteger(threadId) || threadId < 1) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'threadId must be a positive integer',
+      );
+    }
+    if (!Number.isSafeInteger(seq) || seq < 1) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'seq must be a positive integer',
+      );
+    }
+    const participant =
+      await this.participantService.findActiveParticipantWithThread(
+        userId,
+        threadId,
+      );
+    if (participant === null) {
+      throw new BusinessException(
+        BusinessCode.THREAD_NOT_FOUND,
+        `no thread [${threadId}]`,
+      );
+    }
+    const status = await this.messageService.queryMediaStatus(threadId, [seq]);
+    if (status.length === 0) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'media not found');
+    }
+    return { threadId, seq };
   }
 
   @UseGuards(ThreadAccessGuard)

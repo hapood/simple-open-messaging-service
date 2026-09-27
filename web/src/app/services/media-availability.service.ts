@@ -27,6 +27,8 @@ interface MediaEntry {
  *
  * Cards and viewers register the same (threadId, seq), so one backend snapshot/SSE transition owns
  * both presentations. Registration and SSE reconnect coalesce into bulk queries; no interval exists.
+ * TODO: replace the coarse MEDIA_STATUS wake with the backend's temporary media-message/file progress
+ * SSE streams when the Web/Tauri media progress UI is migrated.
  */
 @Injectable({ providedIn: 'root' })
 export class MediaAvailabilityService {

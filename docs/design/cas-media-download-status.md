@@ -23,16 +23,15 @@ This design makes that lifecycle explicit in the client. It covers:
    terminal task record.
 
 This design does not add automatic retry, download priority controls, detailed
-byte progress in the message DTO, download-progress SSE, or automatic cleanup
-of retained inbound task rows. Retention limits and a cleanup policy are
-explicitly deferred. Status SSE is used only as a four-state transition wake;
-it does not carry byte progress.
+byte progress in the message DTO, or automatic cleanup of retained inbound task
+rows. Retention limits and a cleanup policy are explicitly deferred.
 
-`MEDIA_STATUS` uses the application's existing authenticated `/events` stream.
-It does not own a media-specific SSE connection. Profile resolution reuses the
-same stream as defined in
-[Profile Version Storage and Resolution](./profile-version-resolution.md); the
-two features differ only by named event type and subscriber.
+Download progress uses temporary authenticated SSE streams rather than the main
+`/events` stream. Message-level subscribers receive
+`MEDIA_MESSAGE_DOWNLOAD_PROGRESS` with completed-file counts and the currently
+active digest, while file-level subscribers receive `MEDIA_FILE_DOWNLOAD_PROGRESS`
+with byte counts for one digest. Terminal `ready` or `failed` frames close the
+corresponding temporary stream.
 
 ### 1.1 Current implementation baseline
 
@@ -46,8 +45,8 @@ The repository already has most of the delivery path:
 - `/message/media-status` can probe up to 50 message sequences in one thread;
 - `MediaProbeScheduler` probes tracked `downloading` messages after scrolling,
   rate-limited to five seconds;
-- the frontend subscribes to the existing terminal-only `MEDIA_STATUS`, but the
-  backend currently has no caller of `SseService.onMediaStatus`; and
+- temporary progress SSE streams are available for message-level and file-level
+  progress, with frontend Web/Tauri integration pending; and
 - terminal inbound success and failure currently delete both
   `FileSyncProgress` and `PendingMedia`; failure first changes the `Message` to
   `FAILED`.
@@ -179,8 +178,9 @@ interface MediaStatusSnapshot {
 Initial STUB creation exposes `pending`. The batch claim atomically changes
 `PendingMedia` to `downloading`; promotion persists `ready`; terminal failure
 persists `failed`; and manual retry persists `pending` before a later
-`downloading`. Every committed public transition emits `MEDIA_STATUS` with one
-of the four states. No per-file or byte-progress event is introduced.
+`downloading`. Progress is reported only on temporary SSE streams: message-level
+progress reports `completedFiles`, `totalFiles`, and `activeFile`; file-level
+progress reports `loaded` and `total` for one file reference.
 
 Both normal history serialization and `POST /message/media-status` use the same
 bulk status derivation function. The probe remains thread-authorized and capped
@@ -218,7 +218,7 @@ demand. Its key is the server message identity `(threadId, seq)`, never a card
 component instance or gallery index. It receives updates from:
 
 - message-history ingestion after a `THREAD_CONTENT_HEAD` advances the query ceiling;
-- `MEDIA_STATUS` SSE;
+- temporary message-level and file-level progress SSE streams;
 - its registration/reconnect query; and
 - the manual retry response.
 
@@ -260,9 +260,9 @@ registration-driven coordinator with this lifecycle:
    card; an album registers every member `seq` represented by the card;
 2. debounce one immediate bulk probe so a batch of registrations produces one
    request;
-3. after the registration query completes, create no timer; subsequent
-   `pending`, `downloading`, `ready`, and `failed` transitions arrive through
-   `MEDIA_STATUS`;
+3. after the registration query completes, create no timer; subsequent progress
+   arrives through temporary media progress SSE streams, whose terminal frames
+   close those streams;
 4. when a card is unmounted, call every registration handle immediately;
 5. when a card absorbs or removes an album member in place, register or
    unregister that member without remounting the fixed-height card;
@@ -303,20 +303,21 @@ the reconnect query observes the current database state. Manual retry updates
 the shared entry from its HTTP response; the later batch-claim and terminal
 transitions arrive through SSE.
 
-No byte-level download progress is pushed to this service. `downloading` uses an
-indeterminate presentation. Existing outbound-upload and user-initiated
-save/download progress are separate features and remain unchanged.
+Message-level progress reports completed files out of the total and the current
+active digest. File-level progress reports byte counts for a single digest.
+Existing outbound-upload and user-initiated save/download progress are separate
+features and remain unchanged.
 
 Message withdrawal is authoritative over media availability. When a mounted
 message is withdrawn, the repository deletion event removes its shared service
 entry, notifies every registration, closes any gallery/file viewer displaying
 it, and lets the card's normal tombstone path remove the card. A later HTTP
-snapshot or `MEDIA_STATUS` frame for that key is ignored. If withdrawal deletes
+snapshot or temporary progress frame for that key is ignored. If withdrawal deletes
 the server-side staged task while a transfer is running, the transfer's late
 completion cannot recreate the message or its frontend availability entry.
 
 **Review checkpoint 5 — accepted:** use reference-counted mount registration,
-one registration/reconnect reconciliation query, four-state SSE transitions,
+one registration/reconnect reconciliation query, temporary progress SSE streams,
 no periodic timer, and strict unregister-on-destroy behavior.
 
 ## 6. Presentation behavior

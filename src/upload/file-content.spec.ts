@@ -48,13 +48,6 @@ describe('assembleOutboundContent image filenames', () => {
         .name,
     ).toBe('searchable.png');
   });
-
-  it('keeps images without an original filename compatible', () => {
-    const { name: _name, ...legacy } = image;
-    expect(
-      JSON.parse(assembleOutboundContent(ContentType.IMAGE, [legacy])),
-    ).not.toHaveProperty('name');
-  });
 });
 
 describe('parseFileExt', () => {

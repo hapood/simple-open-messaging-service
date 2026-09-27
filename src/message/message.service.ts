@@ -1791,6 +1791,47 @@ export class MessageService {
    *  requested seq that exists; missing seqs
    *  are omitted (the client keeps its last known state). Reuses attachMediaStatus for the digest check;
    *  never exposes content/id. */
+  async hasMessageMediaDigest(
+    threadId: number,
+    seq: number,
+    digest: string,
+  ): Promise<boolean> {
+    const materialized = await this.database.db
+      .select({ id: messageAsset.messageId })
+      .from(messageAsset)
+      .innerJoin(message, eq(message.id, messageAsset.messageId))
+      .where(
+        and(
+          eq(message.threadId, threadId),
+          eq(message.seq, seq),
+          eq(message.isDeleted, false),
+          eq(messageAsset.digest, digest),
+        ),
+      )
+      .limit(1);
+    if (materialized.length > 0) return true;
+
+    const pending = await this.database.db
+      .select({ id: pendingMedia.id })
+      .from(pendingMedia)
+      .innerJoin(message, eq(message.id, pendingMedia.messageId))
+      .innerJoin(
+        fileSyncProgress,
+        eq(fileSyncProgress.batchId, pendingMedia.batchId),
+      )
+      .where(
+        and(
+          eq(message.threadId, threadId),
+          eq(message.seq, seq),
+          eq(message.isDeleted, false),
+          eq(pendingMedia.direction, 'INBOUND'),
+          eq(fileSyncProgress.digest, digest),
+        ),
+      )
+      .limit(1);
+    return pending.length > 0;
+  }
+
   async queryMediaStatus(
     threadId: number,
     seqs: number[],

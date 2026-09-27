@@ -565,6 +565,30 @@ export class RelocalizeMediaDto {
 
 /** Bulk media-status snapshot for mounted messages in one thread. Returns { seq, status } per
  *  existing seq; missing seqs are omitted. */
+export class MediaMessageProgressDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ example: 42, description: 'Per-thread message seq' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  seq!: number;
+}
+
+export class MediaFileProgressDto extends MediaMessageProgressDto {
+  @ApiProperty({
+    example: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    description: 'CAS digest for one file in the message',
+  })
+  @IsString()
+  @IsNotEmpty()
+  digest!: string;
+}
+
 export class MediaStatusDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)

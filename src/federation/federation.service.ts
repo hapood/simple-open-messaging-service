@@ -1119,10 +1119,9 @@ export class FederationService {
   /**
    * Manually re-run localize for one federated media message (the user tapped retry in the detail
    * view). Resolves the localizeMedia context (creator account/domain + the thread's receiver/peer
-   * domain) from the stored message alone, then re-runs the SAME localize path the pull flow uses —
-   * localizeMedia is idempotent (already-local digests skip the fetch and cost no quota) and pushes
-   * the terminal MEDIA_STATUS itself, so this method needs no push of its own. Returns the post-
-   * localize status so the endpoint can answer the client. Non-media → 'ready' (nothing to do);
+   * domain) from the stored message alone, then re-runs the SAME localize path the pull flow uses.
+   * localizeMedia is idempotent (already-local digests skip the fetch and cost no quota). Returns the
+   * post-localize status so the endpoint can answer the client. Non-media → 'ready' (nothing to do);
    * missing message/creator → NOT_FOUND.
    */
   async localizeMediaForMessage(

@@ -15,8 +15,8 @@ describe('federated message content projection', () => {
   it.each([
     [
       ContentType.IMAGE,
-      { url: cas(digestA), w: 10, h: 20, size: 30 },
-      { digest: digestA, width: 10, height: 20 },
+      { url: cas(digestA), w: 10, h: 20, size: 30, name: 'a.png' },
+      { digest: digestA, width: 10, height: 20, name: 'a.png' },
     ],
     [
       ContentType.FILE,
@@ -81,7 +81,7 @@ describe('federated message content projection', () => {
     ).toEqual({ ...local, url: cas(digestA) });
   });
 
-  it('preserves optional image filenames across peers while accepting older images', () => {
+  it('requires image filenames across peers', () => {
     const local = {
       url: cas(digestA),
       w: 10,

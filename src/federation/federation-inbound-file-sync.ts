@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
@@ -8,6 +8,11 @@ import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { CasOversizeError, UploadService } from '../upload/upload.service.js';
+import {
+  SseService,
+  type MediaProgressFileRef,
+} from '../gateway/sse.service.js';
+import { extractDigestFileRefs } from '../upload/file-content.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 
 type FileSyncKind =
@@ -59,12 +64,23 @@ export function federationFileSyncKind(type: ContentType): FileSyncKind {
 @Injectable()
 export class FederationInboundFileSync {
   private readonly batchLocks = new KeyedMutex();
+  private readonly progressTargets = new Map<
+    string,
+    {
+      batchId: string;
+      threadId: number;
+      seq: number;
+      file: MediaProgressFileRef;
+      total: number | null;
+    }
+  >();
 
   constructor(
     private readonly database: DatabaseService,
     private readonly quota: QuotaService,
     private readonly upload: UploadService,
     private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly sse: SseService,
   ) {}
 
   async runBatch(
@@ -148,6 +164,8 @@ export class FederationInboundFileSync {
       if (!have) {
         await this.chargeQuota(progressId, row?.namespaceId, declaredBytes, row);
         await this.claim(progressId, declaredBytes);
+        await this.publishProgress(progressId, 0);
+        await this.publishMessageProgress(progressId, true);
         let lastWrite = 0;
         await this.upload.saveCasFromStream(
           (offset) => this.checkedChunks(progressId, fetchChunks(offset)),
@@ -178,6 +196,9 @@ export class FederationInboundFileSync {
         )
         .returning({ id: tables.fileSyncProgress.id });
       if (completed.length === 0) throw new FederationDownloadTerminatedError();
+      await this.publishFileTerminal(progressId, 'ready');
+      await this.publishMessageProgress(progressId, false);
+      this.progressTargets.delete(progressId.toString());
     } catch (error) {
       await this.handleFailure(progressId, row?.namespaceId, error);
       throw error;
@@ -247,6 +268,131 @@ export class FederationInboundFileSync {
       .update(tables.fileSyncProgress)
       .set({ bytesReceived: BigInt(received), updatedAt: new Date() })
       .where(eq(tables.fileSyncProgress.id, progressId));
+    await this.publishProgress(progressId, received);
+  }
+
+  private async publishProgress(
+    progressId: bigint,
+    received: number,
+  ): Promise<void> {
+    const target = await this.progressTarget(progressId);
+    if (!target) return;
+    if (
+      !this.sse.hasMediaFileProgressSubscriber(
+        target.threadId,
+        target.seq,
+        target.file.digest,
+      )
+    )
+      return;
+    this.sse.onMediaFileDownloadProgress({
+      threadId: target.threadId,
+      seq: target.seq,
+      status: 'downloading',
+      file: target.file,
+      loaded: received,
+      total: target.total,
+    });
+  }
+
+  private async publishMessageProgress(
+    progressId: bigint,
+    includeActiveFile: boolean,
+  ): Promise<void> {
+    const target = await this.progressTarget(progressId);
+    if (!target) return;
+    if (!this.sse.hasMediaMessageProgressSubscriber(target.threadId, target.seq))
+      return;
+    const [counts] = await this.database.db
+      .select({
+        totalFiles: sql<number>`COUNT(*)::int`,
+        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'SUCCEEDED')::int`,
+      })
+      .from(tables.fileSyncProgress)
+      .where(eq(tables.fileSyncProgress.batchId, target.batchId));
+    this.sse.onMediaMessageDownloadProgress({
+      threadId: target.threadId,
+      seq: target.seq,
+      status: 'downloading',
+      completedFiles: counts?.completedFiles ?? 0,
+      totalFiles: counts?.totalFiles ?? 0,
+      activeFile: includeActiveFile ? target.file : null,
+    });
+  }
+
+  private async publishFileTerminal(
+    progressId: bigint,
+    status: 'ready' | 'failed',
+  ): Promise<void> {
+    const target = await this.progressTarget(progressId);
+    if (!target) return;
+    if (
+      !this.sse.hasMediaFileProgressSubscriber(
+        target.threadId,
+        target.seq,
+        target.file.digest,
+      )
+    )
+      return;
+    const row = await this.database.db.query.fileSyncProgress.findFirst({
+      where: eq(tables.fileSyncProgress.id, progressId),
+      columns: { bytesReceived: true, bytesTotal: true },
+    });
+    this.sse.completeMediaFileDownloadProgress({
+      threadId: target.threadId,
+      seq: target.seq,
+      file: target.file,
+      status,
+      loaded: Number(
+        row && status === 'ready' && row.bytesTotal > row.bytesReceived
+          ? row.bytesTotal
+          : (row?.bytesReceived ?? 0n),
+      ),
+      total: row && row.bytesTotal > 0n ? Number(row.bytesTotal) : target.total,
+    });
+  }
+
+  private async progressTarget(progressId: bigint): Promise<{
+    threadId: number;
+    seq: number;
+    file: MediaProgressFileRef;
+    batchId: string;
+    total: number | null;
+  } | null> {
+    const key = progressId.toString();
+    const cached = this.progressTargets.get(key);
+    if (cached) return cached;
+    const row = await this.database.db.query.fileSyncProgress.findFirst({
+      where: eq(tables.fileSyncProgress.id, progressId),
+      columns: { batchId: true, digest: true, bytesTotal: true },
+    });
+    if (!row?.batchId) return null;
+    const pending = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(tables.pendingMedia.batchId, row.batchId),
+        eq(tables.pendingMedia.direction, 'INBOUND'),
+      ),
+      columns: { messageId: true },
+    });
+    if (!pending?.messageId) return null;
+    const message = await this.database.db.query.message.findFirst({
+      where: eq(tables.message.id, pending.messageId),
+      columns: { threadId: true, seq: true, content: true },
+    });
+    if (!message) return null;
+    const file = extractDigestFileRefs(message.content).find(
+      (item) => item.digest === row.digest,
+    );
+    if (!file) return null;
+    const target = {
+      batchId: row.batchId,
+      threadId: message.threadId,
+      seq: message.seq,
+      file,
+      total: row.bytesTotal > 0n ? Number(row.bytesTotal) : null,
+    };
+    this.progressTargets.set(key, target);
+    return target;
   }
 
   private async handleFailure(
@@ -261,7 +407,7 @@ export class FederationInboundFileSync {
       error instanceof BusinessException &&
       error.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED;
     if (error instanceof FederationDownloadTerminatedError) return;
-    await this.database.db
+    const failed = await this.database.db
       .update(tables.fileSyncProgress)
       .set({
         status: quotaPaused ? 'PENDING' : 'FAILED',
@@ -277,11 +423,15 @@ export class FederationInboundFileSync {
           eq(tables.fileSyncProgress.id, progressId),
           inArray(tables.fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
         ),
-      );
+      )
+      .returning({ id: tables.fileSyncProgress.id });
+    if (!quotaPaused && failed.length > 0)
+      await this.publishFileTerminal(progressId, 'failed');
+    this.progressTargets.delete(progressId.toString());
   }
 
   private async markCoalescedWaiterReady(progressId: bigint): Promise<void> {
-    await this.database.db
+    const updated = await this.database.db
       .update(tables.fileSyncProgress)
       .set({ status: 'SUCCEEDED', updatedAt: new Date() })
       .where(
@@ -289,6 +439,12 @@ export class FederationInboundFileSync {
           eq(tables.fileSyncProgress.id, progressId),
           eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
-      );
+      )
+      .returning({ id: tables.fileSyncProgress.id });
+    if (updated.length > 0) {
+      await this.publishFileTerminal(progressId, 'ready');
+      await this.publishMessageProgress(progressId, false);
+    }
+    this.progressTargets.delete(progressId.toString());
   }
 }

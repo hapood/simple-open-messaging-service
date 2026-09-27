@@ -132,6 +132,70 @@ describe('framework SSE streams', () => {
     svc.onModuleDestroy();
   });
 
+  it('sends media progress through temporary keyed streams and closes on terminal events', () => {
+    const { svc } = makeService();
+    const messageEvents: MessageEvent[] = [];
+    const fileEvents: MessageEvent[] = [];
+    const otherFileEvents: MessageEvent[] = [];
+    const messageSub = svc
+      .registerMediaMessageProgress(7, 3, 9)
+      .subscribe((event) => messageEvents.push(event));
+    const fileSub = svc
+      .registerMediaFileProgress(7, 3, 9, 'a'.repeat(64))
+      .subscribe((event) => fileEvents.push(event));
+    const otherFileSub = svc
+      .registerMediaFileProgress(7, 3, 9, 'b'.repeat(64))
+      .subscribe((event) => otherFileEvents.push(event));
+
+    svc.onMediaMessageDownloadProgress({
+      threadId: 3,
+      seq: 9,
+      status: 'downloading',
+      completedFiles: 1,
+      totalFiles: 2,
+      activeFile: { digest: 'a'.repeat(64), name: 'a.png' },
+    });
+    svc.onMediaFileDownloadProgress({
+      threadId: 3,
+      seq: 9,
+      file: { digest: 'a'.repeat(64), name: 'a.png' },
+      status: 'downloading',
+      loaded: 128,
+      total: 256,
+    });
+    svc.completeMediaFileDownloadProgress({
+      threadId: 3,
+      seq: 9,
+      file: { digest: 'a'.repeat(64), name: 'a.png' },
+      status: 'ready',
+      loaded: 256,
+      total: 256,
+    });
+    svc.completeMediaMessageDownloadProgress({
+      threadId: 3,
+      seq: 9,
+      status: 'ready',
+      completedFiles: 2,
+      totalFiles: 2,
+      activeFile: null,
+    });
+
+    expect(messageEvents.map((event) => event.type)).toEqual([
+      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
+      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
+    ]);
+    expect(fileEvents.map((event) => event.type)).toEqual([
+      'MEDIA_FILE_DOWNLOAD_PROGRESS',
+      'MEDIA_FILE_DOWNLOAD_PROGRESS',
+    ]);
+    expect(otherFileEvents).toHaveLength(0);
+    expect(messageSub.closed).toBe(true);
+    expect(fileSub.closed).toBe(true);
+    expect(otherFileSub.closed).toBe(false);
+    otherFileSub.unsubscribe();
+    svc.onModuleDestroy();
+  });
+
   it('sends push revision only to matching sessions and thread wake-up only to its user', () => {
     const { svc } = makeService();
     const a = connect(svc, 7, 11);

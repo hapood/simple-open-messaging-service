@@ -1,8 +1,7 @@
-/** Federated media localize status — the stable wire format shared by the message DTOs, the
- *  attachMediaStatus query field, the MEDIA_STATUS SSE frame, and the localize push. Centralized as a
- *  const object so every reference is `MEDIA_STATUS.READY` (typed + refactor-safe), not a bare literal
- *  scattered across services. Mirrors the frontend's web/src/app/services/model.ts MEDIA_STATUS (same
- *  strings — the wire contract).
+/** Federated media localize status — the stable wire format shared by message DTOs and the
+ *  attachMediaStatus query field. Centralized as a const object so every reference is
+ *  `MEDIA_STATUS.READY` (typed + refactor-safe), not a bare literal scattered across services.
+ *  Mirrors the frontend's web/src/app/services/model.ts MEDIA_STATUS (same strings — the wire contract).
  *
  *  - 'ready'       bytes local + authz written → the URL serves 200.
  *  - 'pending'     a durable inbound job exists but has not started transferring.

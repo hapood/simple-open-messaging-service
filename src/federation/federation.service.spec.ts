@@ -466,7 +466,7 @@ function makeStubs() {
     mediaAsset: { findFirst: vi.fn() },
     deletedParticipant: { findFirst: vi.fn() },
   };
-  const sse = { onMediaStatus: vi.fn() };
+  const sse = {};
   const deletedMessages = {
     applyFederated: vi.fn(),
   };

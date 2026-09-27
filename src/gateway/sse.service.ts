@@ -22,6 +22,34 @@ interface SseClient {
   sseUuid: string;
 }
 
+interface TemporarySseClient {
+  sink: Subscriber<MessageEvent>;
+  userId: number;
+}
+
+export interface MediaProgressFileRef {
+  digest: string;
+  name: string;
+}
+
+export interface MediaMessageDownloadProgressEvent {
+  threadId: number;
+  seq: number;
+  status: 'downloading' | 'ready' | 'failed';
+  completedFiles: number;
+  totalFiles: number;
+  activeFile: MediaProgressFileRef | null;
+}
+
+export interface MediaFileDownloadProgressEvent {
+  threadId: number;
+  seq: number;
+  file: MediaProgressFileRef;
+  status: 'downloading' | 'ready' | 'failed';
+  loaded: number;
+  total: number | null;
+}
+
 /**
  * SSE (Server-Sent Events) downstream push service: push-only, no business uplink.
  *
@@ -40,6 +68,14 @@ export class SseService implements OnModuleDestroy {
   private readonly clients: Record<number, SseClient[]> = {};
   private readonly clientsBySession = new Map<number, SseClient>();
   private readonly notificationHeads = new Map<number, number>();
+  private readonly mediaMessageProgressClients = new Map<
+    string,
+    Set<TemporarySseClient>
+  >();
+  private readonly mediaFileProgressClients = new Map<
+    string,
+    Set<TemporarySseClient>
+  >();
   private readonly receipts = new Map<
     number,
     {
@@ -264,6 +300,153 @@ export class SseService implements OnModuleDestroy {
     };
   }
 
+  registerMediaMessageProgress(
+    userId: number,
+    threadId: number,
+    seq: number,
+  ): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((sink) => {
+      const key = this.mediaMessageProgressKey(threadId, seq);
+      const entry: TemporarySseClient = { sink, userId };
+      this.addTemporaryClient(this.mediaMessageProgressClients, key, entry);
+      return () =>
+        this.removeTemporaryClient(
+          this.mediaMessageProgressClients,
+          key,
+          entry,
+        );
+    });
+  }
+
+  registerMediaFileProgress(
+    userId: number,
+    threadId: number,
+    seq: number,
+    digest: string,
+  ): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((sink) => {
+      const key = this.mediaFileProgressKey(threadId, seq, digest);
+      const entry: TemporarySseClient = { sink, userId };
+      this.addTemporaryClient(this.mediaFileProgressClients, key, entry);
+      return () =>
+        this.removeTemporaryClient(this.mediaFileProgressClients, key, entry);
+    });
+  }
+
+  hasMediaMessageProgressSubscriber(threadId: number, seq: number): boolean {
+    return this.mediaMessageProgressClients.has(
+      this.mediaMessageProgressKey(threadId, seq),
+    );
+  }
+
+  hasMediaFileProgressSubscriber(
+    threadId: number,
+    seq: number,
+    digest: string,
+  ): boolean {
+    return this.mediaFileProgressClients.has(
+      this.mediaFileProgressKey(threadId, seq, digest),
+    );
+  }
+
+  onMediaMessageDownloadProgress(
+    data: MediaMessageDownloadProgressEvent,
+  ): void {
+    this.pushTemporary(
+      this.mediaMessageProgressClients,
+      this.mediaMessageProgressKey(data.threadId, data.seq),
+      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
+      data,
+      false,
+    );
+  }
+
+  completeMediaMessageDownloadProgress(
+    data: MediaMessageDownloadProgressEvent,
+  ): void {
+    this.pushTemporary(
+      this.mediaMessageProgressClients,
+      this.mediaMessageProgressKey(data.threadId, data.seq),
+      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
+      data,
+      true,
+    );
+  }
+
+  onMediaFileDownloadProgress(data: MediaFileDownloadProgressEvent): void {
+    this.pushTemporary(
+      this.mediaFileProgressClients,
+      this.mediaFileProgressKey(data.threadId, data.seq, data.file.digest),
+      'MEDIA_FILE_DOWNLOAD_PROGRESS',
+      data,
+      false,
+    );
+  }
+
+  completeMediaFileDownloadProgress(
+    data: MediaFileDownloadProgressEvent,
+  ): void {
+    this.pushTemporary(
+      this.mediaFileProgressClients,
+      this.mediaFileProgressKey(data.threadId, data.seq, data.file.digest),
+      'MEDIA_FILE_DOWNLOAD_PROGRESS',
+      data,
+      true,
+    );
+  }
+
+  private addTemporaryClient(
+    map: Map<string, Set<TemporarySseClient>>,
+    key: string,
+    entry: TemporarySseClient,
+  ): void {
+    let clients = map.get(key);
+    if (!clients) {
+      clients = new Set();
+      map.set(key, clients);
+    }
+    clients.add(entry);
+  }
+
+  private removeTemporaryClient(
+    map: Map<string, Set<TemporarySseClient>>,
+    key: string,
+    entry: TemporarySseClient,
+  ): void {
+    const clients = map.get(key);
+    if (!clients) return;
+    clients.delete(entry);
+    if (clients.size === 0) map.delete(key);
+  }
+
+  private pushTemporary(
+    map: Map<string, Set<TemporarySseClient>>,
+    key: string,
+    eventName: string,
+    data: unknown,
+    terminal: boolean,
+  ): void {
+    const clients = map.get(key);
+    if (!clients) return;
+    if (terminal) map.delete(key);
+    for (const client of clients) {
+      this.emit(client.sink, eventName, data);
+      if (terminal) client.sink.complete();
+    }
+  }
+
+  private mediaMessageProgressKey(threadId: number, seq: number): string {
+    return `${threadId}:${seq}`;
+  }
+
+  private mediaFileProgressKey(
+    threadId: number,
+    seq: number,
+    digest: string,
+  ): string {
+    return `${threadId}:${seq}:${digest}`;
+  }
+
   /** Publish to subscribed streams; Nest serializes events and handles stream backpressure. */
   onPushSubscriptionChanged(
     userId: number,
@@ -312,23 +495,6 @@ export class SseService implements OnModuleDestroy {
    *  never inspects or stores the WebRTC payload, only forwards it to the addressed peer. */
   onCallSignal(userId: number, data: unknown) {
     this.pushToUser(userId, 'CALL_SIGNAL', data);
-  }
-
-  /**
-   * A federated media message finished localizing. Signal-only state flip: the recipient sets that
-   * message's mediaStatus after a committed materialization transition, then re-renders every mounted
-   * consumer of that message. No message-cursor id: reconnecting clients reconcile their registered
-   * messages through the status query.
-   */
-  onMediaStatus(
-    userId: number,
-    data: {
-      threadId: number;
-      seq: number;
-      status: 'pending' | 'downloading' | 'ready' | 'failed';
-    },
-  ) {
-    this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
 
   onProfileAvailable(

@@ -206,7 +206,8 @@ data: <json>
 | -------------------------- | ------------------------------------------------- | ------------------------------------------ |
 | `HELLO`                    | connection handshake and current high-water marks | sent on every connection                   |
 | `STATE_FEED_UPDATED`       | identity-only Client State Feed wake `{ feedId }` | `HELLO.stateFeedEndId` + ranged state pull |
-| `MEDIA_STATUS`             | media-localization completion wake                | message/media query                        |
+| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS` | temporary message-level media download progress | terminal frame closes the temporary stream |
+| `MEDIA_FILE_DOWNLOAD_PROGRESS`    | temporary file-level media byte progress         | terminal frame closes the temporary stream |
 | `CALL_EVENT`/`CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling     | active-call snapshot/new negotiation       |
 | `FORCE_LOGOUT`             | terminate a revoked session                       | authentication state                       |
 

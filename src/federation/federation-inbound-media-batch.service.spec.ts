@@ -6,6 +6,7 @@ function serviceWith(overrides?: {
   pendingMedia?: unknown;
   message?: unknown;
   progress?: unknown;
+  progressRows?: unknown[];
 }) {
   const returning = vi.fn().mockResolvedValue([{ id: 7n }]);
   const where = vi.fn().mockReturnValue({ returning });
@@ -13,6 +14,17 @@ function serviceWith(overrides?: {
   const update = vi.fn().mockReturnValue({ set });
   const deleteWhere = vi.fn().mockResolvedValue([]);
   const remove = vi.fn().mockReturnValue({ where: deleteWhere });
+  const selectWhere = vi.fn().mockResolvedValue([
+    {
+      totalFiles: overrides?.progressRows?.length ?? 0,
+      completedFiles:
+        overrides?.progressRows?.filter(
+          (row) => (row as { status?: string }).status === 'SUCCEEDED',
+        ).length ?? 0,
+    },
+  ]);
+  const from = vi.fn().mockReturnValue({ where: selectWhere });
+  const select = vi.fn().mockReturnValue({ from });
   const database = {
     db: {
       query: {
@@ -22,8 +34,10 @@ function serviceWith(overrides?: {
         message: { findFirst: vi.fn().mockResolvedValue(overrides?.message) },
         fileSyncProgress: {
           findFirst: vi.fn().mockResolvedValue(overrides?.progress),
+          findMany: vi.fn().mockResolvedValue(overrides?.progressRows ?? []),
         },
       },
+      select,
       update,
       delete: remove,
       transaction: vi.fn(),
@@ -33,16 +47,17 @@ function serviceWith(overrides?: {
   const fileSync = { runBatch: vi.fn().mockResolvedValue(undefined) };
   const promoter = { promote: vi.fn().mockResolvedValue(null) };
   const mediaRanges = { fetch: vi.fn() };
-  const participants = {
-    getActiveParticipantUserIds: vi.fn().mockResolvedValue([]),
+  const sse = {
+    onMediaMessageDownloadProgress: vi.fn(),
+    hasMediaMessageProgressSubscriber: vi.fn().mockReturnValue(true),
+    completeMediaMessageDownloadProgress: vi.fn(),
+    completeMediaFileDownloadProgress: vi.fn(),
   };
-  const sse = { onMediaStatus: vi.fn() };
   const service = new FederationInboundMediaBatchService(
     database as never,
     fileSync as never,
     promoter as never,
     mediaRanges as never,
-    participants as never,
     sse as never,
   );
   return {
@@ -51,7 +66,6 @@ function serviceWith(overrides?: {
     fileSync,
     promoter,
     mediaRanges,
-    participants,
     sse,
     set,
   };
@@ -68,7 +82,6 @@ describe('FederationInboundMediaBatchService', () => {
 
   it('promotes completed batches and recursively wakes quote dependents', async () => {
     const { service, fileSync, promoter } = serviceWith();
-    const notify = vi.spyOn(service, 'publishMessageStatus');
     promoter.promote
       .mockResolvedValueOnce({
         dependentBatchIds: ['quote-a', 'quote-b'],
@@ -87,7 +100,6 @@ describe('FederationInboundMediaBatchService', () => {
     expect(promoter.promote).toHaveBeenNthCalledWith(1, 'root');
     expect(promoter.promote).toHaveBeenNthCalledWith(2, 'quote-a');
     expect(promoter.promote).toHaveBeenNthCalledWith(3, 'quote-b');
-    expect(notify).not.toHaveBeenCalled();
   });
 
   it('replays the persisted authorization route when retrying a stalled batch', async () => {
@@ -145,6 +157,55 @@ describe('FederationInboundMediaBatchService', () => {
     );
   });
 
+  it('closes message and file progress streams after a completed batch is promoted', async () => {
+    const { service, promoter, sse } = serviceWith({
+      pendingMedia: {
+        id: 11n,
+        batchId: 'batch-a',
+        direction: 'INBOUND',
+        messageId: 23n,
+        threadId: null,
+        creatorAccount: null,
+        creatorDomain: null,
+        contentType: null,
+        content: null,
+        clientMessageId: null,
+        originDomain: 'origin.example',
+        namespaceId: 3,
+        expectedAuthorizationEpoch: 4,
+        dependsOnOriginSeq: null,
+      },
+      message: { threadId: 8, seq: 13 },
+      progressRows: [
+        {
+          digest: 'a'.repeat(64),
+          status: 'SUCCEEDED',
+          bytesReceived: 10n,
+          bytesTotal: 100n,
+        },
+        {
+          digest: 'b'.repeat(64),
+          status: 'SUCCEEDED',
+          bytesReceived: 50n,
+          bytesTotal: 50n,
+        },
+      ],
+    });
+    promoter.promote.mockResolvedValue({ dependentBatchIds: [] });
+
+    await service.promotePendingMessage('batch-a');
+
+    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
+      threadId: 8,
+      seq: 13,
+      status: 'ready',
+      completedFiles: 2,
+      totalFiles: 2,
+      activeFile: null,
+    });
+    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
+  });
+
   it('retains a failed inbound task with its error after removing spent progress', async () => {
     const batch = {
       id: 11n,
@@ -163,16 +224,21 @@ describe('FederationInboundMediaBatchService', () => {
       expectedAuthorizationEpoch: 4,
       dependsOnOriginSeq: null,
     };
-    const { service, database, fileSync, participants, sse, set } = serviceWith(
+    const { service, database, fileSync, sse, set } = serviceWith(
       {
         pendingMedia: batch,
         message: { threadId: 8, seq: 13 },
         progress: { errorKind: 'REMOTE_IO' },
+        progressRows: [
+          {
+            digest: 'a'.repeat(64),
+            status: 'DOWNLOADING',
+            bytesReceived: 10n,
+            bytesTotal: 100n,
+          },
+        ],
       },
     );
-    participants.getActiveParticipantUserIds.mockResolvedValue([
-      { userId: 19, blocked: false },
-    ]);
     fileSync.runBatch.mockImplementation(
       async (
         _batchId: string,
@@ -191,10 +257,14 @@ describe('FederationInboundMediaBatchService', () => {
         failReason: 'REMOTE_IO',
       }),
     );
-    expect(sse.onMediaStatus).toHaveBeenCalledWith(19, {
+    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
       threadId: 8,
       seq: 13,
       status: 'failed',
+      completedFiles: 0,
+      totalFiles: 1,
+      activeFile: null,
     });
+    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
   });
 });

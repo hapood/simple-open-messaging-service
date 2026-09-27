@@ -139,10 +139,6 @@ export class FederationMediaLocalizationService {
         toAccount,
       });
       if (batchId) {
-        await this.inboundBatches.publishMessageStatus(
-          { threadId: msg.threadId, seq: msg.seq },
-          'pending',
-        );
         void this.inboundBatches
           .runFileSyncBatch(batchId, (digest, offset) =>
             this.mediaRanges.fetch(
